@@ -16,11 +16,13 @@ datasource db {
 enum PlatformRole {
   NONE
   SAAS_OWNER
+  SUPPORT
+  MARKETING
 }
 
 enum TenantRole {
-  CLIENT_ADMIN
-  CLIENT_USER
+  TENANT_ADMIN
+  TENANT_USER
 }
 
 enum MembershipStatus {
@@ -49,23 +51,28 @@ enum SubscriptionStatus {
   CANCELED
 }
 
+enum OtpPurpose {
+  LOGIN
+}
+
 model User {
   id           String       @id @default(cuid())
   email        String       @unique
-  name         String?
+  name         String
   passwordHash String?
   platformRole PlatformRole @default(NONE)
 
+  otpEnabled   Boolean   @default(true)
+
+  sessions      Session[]
   memberships Membership[]
+  loginChallenges LoginChallenge[]
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   emailVerified Boolean   @default(false)
   image         String?
-  sessions      Session[]
-  accounts      Account[]
 
-  @@map("user")
 }
 
 model Session {
@@ -74,24 +81,59 @@ model Session {
   tokenHash String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  token     String
   updatedAt DateTime @updatedAt
+
   ipAddress String?
   userAgent String?
 
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@index([expiresAt])
-  @@unique([token])
+}
+
+model LoginChallenge {
+  id        String   @id @default(cuid())
+  userId    String
+  nonceHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@index([userId])
-  @@map("session")
+  @@index([expiresAt])
+}
+
+model EmailOtp {
+  id        String     @id @default(cuid())
+  email     String
+  purpose   OtpPurpose @default(LOGIN)
+
+  codeHash  String
+  expiresAt DateTime
+  usedAt    DateTime?
+  attempts  Int        @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@index([email, purpose])
+  @@index([expiresAt])
 }
 
 model Tenant {
   id   String @id @default(cuid())
   name String
   slug String @unique
+  email String?
+  phone String?
+  addressLine1 String?
+  addressLine2 String?
+  city String?
+  state String?
+  postalCode String?
+  country String?
+  timezone String?
+  website String?
 
   members      Membership[]
   invites      Invite[]
@@ -154,36 +196,5 @@ model TenantSubscription {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([status])
-}
 
-model Account {
-  id                    String    @id
-  accountId             String
-  providerId            String
-  userId                String
-  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  accessToken           String?
-  refreshToken          String?
-  idToken               String?
-  accessTokenExpiresAt  DateTime?
-  refreshTokenExpiresAt DateTime?
-  scope                 String?
-  password              String?
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
-
-  @@index([userId])
-  @@map("account")
-}
-
-model Verification {
-  id         String   @id
-  identifier String
-  value      String
-  expiresAt  DateTime
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  @@index([identifier])
-  @@map("verification")
 }

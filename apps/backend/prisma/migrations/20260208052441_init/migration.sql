@@ -47,29 +47,29 @@ CREATE TABLE "session" (
 );
 
 -- CreateTable
-CREATE TABLE "Tenant" (
+CREATE TABLE "tenant" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "slug" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "Tenant_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "tenant_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "Membership" (
+CREATE TABLE "membership" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
     "role" "TenantRole" NOT NULL,
     "status" "MembershipStatus" NOT NULL DEFAULT 'ACTIVE',
 
-    CONSTRAINT "Membership_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "membership_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "Invite" (
+CREATE TABLE "invite" (
     "id" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
     "email" TEXT NOT NULL,
@@ -80,11 +80,11 @@ CREATE TABLE "Invite" (
     "expiresAt" TIMESTAMP(3) NOT NULL,
     "acceptedAt" TIMESTAMP(3),
 
-    CONSTRAINT "Invite_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "invite_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "TenantSubscription" (
+CREATE TABLE "tenant_subscription" (
     "id" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
     "planKey" "PlanKey" NOT NULL DEFAULT 'STARTER',
@@ -97,7 +97,7 @@ CREATE TABLE "TenantSubscription" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "TenantSubscription_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "tenant_subscription_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -144,37 +144,34 @@ CREATE INDEX "session_expiresAt_idx" ON "session"("expiresAt");
 CREATE INDEX "session_userId_idx" ON "session"("userId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "session_token_key" ON "session"("token");
+CREATE UNIQUE INDEX "tenant_slug_key" ON "tenant"("slug");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Tenant_slug_key" ON "Tenant"("slug");
+CREATE INDEX "membership_tenantId_idx" ON "membership"("tenantId");
 
 -- CreateIndex
-CREATE INDEX "Membership_tenantId_idx" ON "Membership"("tenantId");
+CREATE INDEX "membership_userId_idx" ON "membership"("userId");
 
 -- CreateIndex
-CREATE INDEX "Membership_userId_idx" ON "Membership"("userId");
+CREATE UNIQUE INDEX "membership_userId_tenantId_key" ON "membership"("userId", "tenantId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Membership_userId_tenantId_key" ON "Membership"("userId", "tenantId");
+CREATE UNIQUE INDEX "invite_tokenHash_key" ON "invite"("tokenHash");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Invite_tokenHash_key" ON "Invite"("tokenHash");
+CREATE INDEX "invite_tenantId_idx" ON "invite"("tenantId");
 
 -- CreateIndex
-CREATE INDEX "Invite_tenantId_idx" ON "Invite"("tenantId");
+CREATE INDEX "invite_email_idx" ON "invite"("email");
 
 -- CreateIndex
-CREATE INDEX "Invite_email_idx" ON "Invite"("email");
+CREATE UNIQUE INDEX "invite_tenantId_email_key" ON "invite"("tenantId", "email");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Invite_tenantId_email_key" ON "Invite"("tenantId", "email");
+CREATE UNIQUE INDEX "tenant_subscription_tenantId_key" ON "tenant_subscription"("tenantId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "TenantSubscription_tenantId_key" ON "TenantSubscription"("tenantId");
-
--- CreateIndex
-CREATE INDEX "TenantSubscription_status_idx" ON "TenantSubscription"("status");
+CREATE INDEX "tenant_subscription_status_idx" ON "tenant_subscription"("status");
 
 -- CreateIndex
 CREATE INDEX "account_userId_idx" ON "account"("userId");
@@ -186,16 +183,16 @@ CREATE INDEX "verification_identifier_idx" ON "verification"("identifier");
 ALTER TABLE "session" ADD CONSTRAINT "session_userId_fkey" FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Membership" ADD CONSTRAINT "Membership_userId_fkey" FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "membership" ADD CONSTRAINT "membership_userId_fkey" FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Membership" ADD CONSTRAINT "Membership_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "membership" ADD CONSTRAINT "membership_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Invite" ADD CONSTRAINT "Invite_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "invite" ADD CONSTRAINT "invite_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "TenantSubscription" ADD CONSTRAINT "TenantSubscription_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "tenant_subscription" ADD CONSTRAINT "tenant_subscription_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "account" ADD CONSTRAINT "account_userId_fkey" FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE;

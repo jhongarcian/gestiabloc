@@ -3,10 +3,9 @@ import http from "http"
 import express from "express"
 import cors, { type CorsOptions } from "cors"
 import cookieParser from "cookie-parser"
-import { toNodeHandler } from "better-auth/node"
-import { auth } from "./lib/auth"
 import { prisma } from "./lib/prisma"
 import { Server } from "socket.io"
+import authRoutes from "./routes/auth.routes"
 
 const env = {
   port: Number(process.env.PORT ?? 4000),
@@ -20,21 +19,18 @@ const corsOptions: CorsOptions = {
   origin: env.webOrigin,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   credentials: true,
-  allowedHeaders: ["Content-Type", "Authorization"],
 }
 
 app.use(cors(corsOptions))
 app.options("/*splat", cors(corsOptions))
 app.use(cookieParser())
-app.all("/api/auth/*splat", toNodeHandler(auth))
 app.use(express.json())
 
 app.get("/api/heartbeat", (_req, res) => {
   res.status(200).json({ ok: true })
 })
 
-console.log("AUTH DATABASE_URL =", process.env.DATABASE_URL);
-console.log("AUTH dbname =", new URL(process.env.DATABASE_URL!).pathname);
+app.use("/api/auth", authRoutes)
 
 const server = http.createServer(app)
 
