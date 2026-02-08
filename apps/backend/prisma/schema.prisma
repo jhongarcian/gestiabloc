@@ -1,0 +1,144 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PlatformRole {
+  NONE
+  SAAS_OWNER
+}
+
+enum TenantRole {
+  CLIENT_ADMIN
+  CLIENT_USER
+}
+
+enum MembershipStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum PlanKey {
+  STARTER
+  PRO
+  BUSINESS
+}
+
+enum SubscriptionStatus {
+  NONE
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+model User {
+  id           String       @id @default(cuid())
+  email        String       @unique
+  name         String?
+  passwordHash String?
+  platformRole PlatformRole @default(NONE)
+
+  memberships  Membership[]
+  session      Session?      // single active session enforced by Session.userId @unique
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}
+
+model Tenant {
+  id        String @id @default(cuid())
+  name      String
+  slug      String @unique
+
+  members   Membership[]
+  invites   Invite[]
+  subscription TenantSubscription?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Membership {
+  id        String           @id @default(cuid())
+  userId    String
+  tenantId  String
+  role      TenantRole
+  status    MembershipStatus @default(ACTIVE)
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId])
+  @@index([tenantId])
+  @@index([userId])
+}
+
+model Invite {
+  id        String       @id @default(cuid())
+  tenantId  String
+  email     String
+  role      TenantRole
+  tokenHash String       @unique
+  status    InviteStatus @default(PENDING)
+
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  acceptedAt DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([email])
+}
+
+model TenantSubscription {
+  id        String             @id @default(cuid())
+  tenantId  String             @unique
+
+  planKey   PlanKey            @default(STARTER)
+  seatLimit Int                @default(3)
+  status    SubscriptionStatus @default(NONE)
+
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  stripePriceId        String?
+  currentPeriodEnd     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
