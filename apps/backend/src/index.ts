@@ -1,14 +1,12 @@
+import "dotenv/config"
 import http from "http"
-import dotenv from "dotenv"
 import express from "express"
 import cors, { type CorsOptions } from "cors"
 import cookieParser from "cookie-parser"
-
+import { toNodeHandler } from "better-auth/node"
+import { auth } from "./lib/auth"
+import { prisma } from "./lib/prisma"
 import { Server } from "socket.io"
-import { Prisma, PrismaClient } from "./generated/prisma/client"
-import { PrismaPg } from "@prisma/adapter-pg"
-
-dotenv.config()
 
 const env = {
   port: Number(process.env.PORT ?? 4000),
@@ -16,23 +14,27 @@ const env = {
   cookieDomain: process.env.COOKIE_DOMAIN || undefined,
 }
 
-const pool = new PrismaPg({ connectionString: process.env.DATABASE_URL! })
-const prisma = new PrismaClient({ adapter: pool })
-
 const app = express()
 
 const corsOptions: CorsOptions = {
   origin: env.webOrigin,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization"],
 }
 
 app.use(cors(corsOptions))
-app.use(express.json())
+app.options("/*splat", cors(corsOptions))
 app.use(cookieParser())
+app.all("/api/auth/*splat", toNodeHandler(auth))
+app.use(express.json())
 
-app.get("/health", (_req, res) => {
+app.get("/api/heartbeat", (_req, res) => {
   res.status(200).json({ ok: true })
 })
+
+console.log("AUTH DATABASE_URL =", process.env.DATABASE_URL);
+console.log("AUTH dbname =", new URL(process.env.DATABASE_URL!).pathname);
 
 const server = http.createServer(app)
 

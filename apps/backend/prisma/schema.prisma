@@ -5,7 +5,7 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
-  provider = "prisma-client"
+  provider = "prisma-client-js"
   output   = "../src/generated/prisma"
 }
 
@@ -56,32 +56,45 @@ model User {
   passwordHash String?
   platformRole PlatformRole @default(NONE)
 
-  memberships  Membership[]
-  session      Session?      // single active session enforced by Session.userId @unique
+  memberships Membership[]
 
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  emailVerified Boolean   @default(false)
+  image         String?
+  sessions      Session[]
+  accounts      Account[]
+
+  @@map("user")
 }
 
 model Session {
   id        String   @id @default(cuid())
-  userId    String   @unique
+  userId    String
   tokenHash String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  token     String
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+
   @@index([expiresAt])
+  @@unique([token])
+  @@index([userId])
+  @@map("session")
 }
 
 model Tenant {
-  id        String @id @default(cuid())
-  name      String
-  slug      String @unique
+  id   String @id @default(cuid())
+  name String
+  slug String @unique
 
-  members   Membership[]
-  invites   Invite[]
+  members      Membership[]
+  invites      Invite[]
   subscription TenantSubscription?
 
   createdAt DateTime @default(now())
@@ -89,11 +102,11 @@ model Tenant {
 }
 
 model Membership {
-  id        String           @id @default(cuid())
-  userId    String
-  tenantId  String
-  role      TenantRole
-  status    MembershipStatus @default(ACTIVE)
+  id       String           @id @default(cuid())
+  userId   String
+  tenantId String
+  role     TenantRole
+  status   MembershipStatus @default(ACTIVE)
 
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -111,7 +124,7 @@ model Invite {
   tokenHash String       @unique
   status    InviteStatus @default(PENDING)
 
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
   expiresAt  DateTime
   acceptedAt DateTime?
 
@@ -123,8 +136,8 @@ model Invite {
 }
 
 model TenantSubscription {
-  id        String             @id @default(cuid())
-  tenantId  String             @unique
+  id       String @id @default(cuid())
+  tenantId String @unique
 
   planKey   PlanKey            @default(STARTER)
   seatLimit Int                @default(3)
@@ -141,4 +154,36 @@ model TenantSubscription {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([status])
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
 }
