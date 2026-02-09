@@ -56,7 +56,7 @@ enum OtpPurpose {
 }
 
 model User {
-  id           String       @id @default(cuid())
+  id           String       @id @default(uuid())
   email        String       @unique
   name         String
   passwordHash String?
@@ -67,6 +67,7 @@ model User {
   sessions      Session[]
   memberships Membership[]
   loginChallenges LoginChallenge[]
+  emailVerifications EmailVerification[]
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -76,7 +77,7 @@ model User {
 }
 
 model Session {
-  id        String   @id @default(cuid())
+  id        String   @id @default(uuid())
   userId    String
   tokenHash String   @unique
   expiresAt DateTime
@@ -92,7 +93,7 @@ model Session {
 }
 
 model LoginChallenge {
-  id        String   @id @default(cuid())
+  id        String   @id @default(uuid())
   userId    String
   nonceHash String   @unique
   expiresAt DateTime
@@ -105,7 +106,7 @@ model LoginChallenge {
 }
 
 model EmailOtp {
-  id        String     @id @default(cuid())
+  id        String     @id @default(uuid())
   email     String
   purpose   OtpPurpose @default(LOGIN)
 
@@ -121,7 +122,7 @@ model EmailOtp {
 }
 
 model Tenant {
-  id   String @id @default(cuid())
+  id   String @id @default(uuid())
   name String
   slug String @unique
   email String?
@@ -134,6 +135,7 @@ model Tenant {
   country String?
   timezone String?
   website String?
+  emailVerified Boolean @default(false)
 
   members      Membership[]
   invites      Invite[]
@@ -143,8 +145,22 @@ model Tenant {
   updatedAt DateTime @updatedAt
 }
 
+model EmailVerification {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  usedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
 model Membership {
-  id       String           @id @default(cuid())
+  id       String           @id @default(uuid())
   userId   String
   tenantId String
   role     TenantRole
@@ -159,7 +175,7 @@ model Membership {
 }
 
 model Invite {
-  id        String       @id @default(cuid())
+  id        String       @id @default(uuid())
   tenantId  String
   email     String
   role      TenantRole
@@ -178,7 +194,7 @@ model Invite {
 }
 
 model TenantSubscription {
-  id       String @id @default(cuid())
+  id       String @id @default(uuid())
   tenantId String @unique
 
   planKey   PlanKey            @default(STARTER)

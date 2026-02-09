@@ -6,14 +6,38 @@ import { prisma } from "../lib/prisma.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { generateOtp6, randomToken, sha256 } from "../lib/crypto.js"
 import { clearSessionCookie, setSessionCookie } from "../lib/cookies.js"
-import { sendLoginOtpEmail } from "../lib/email.js"
+import { sendLoginOtpEmail, sendVerifyEmail } from "../lib/email.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
 
+const passwordSchema = z
+  .string()
+  .min(8, "Password must be at least 8 characters.")
+  .regex(/[A-Za-z]/, "Password must include at least one letter.")
+  .regex(/[0-9]/, "Password must include at least one number.")
+  .regex(/[^A-Za-z0-9]/, "Password must include at least one symbol.")
+
+const TenantSignupSchema = z.object({
+  tenantName: z.string().min(1).max(120),
+  planKey: z.enum(["STARTER", "PRO", "BUSINESS"]),
+  paidNow: z.boolean().default(false),
+  adminName: z.string().min(1).max(120),
+  adminEmail: z.string().email().max(255),
+  adminPassword: passwordSchema.max(200),
+})
+
+function slugifyTenantName(name: string) {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+}
+
 const RegisterSchema = z.object({
   email: z.string().email().max(255),
-  password: z.string().min(8).max(200),
+  password: passwordSchema.max(200),
   name: z.string().min(1).max(120),
 })
 
@@ -54,6 +78,23 @@ async function issueSession(opts: {
   return { token: raw, expiresAt }
 }
 
+async function createEmailVerification(userId: string) {
+  const raw = randomToken(32)
+  const tokenHash = sha256(raw)
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+
+  await prisma.emailVerification.deleteMany({ where: { userId } })
+  await prisma.emailVerification.create({
+    data: {
+      userId,
+      tokenHash,
+      expiresAt,
+    },
+  })
+
+  return raw
+}
+
 /**
  * POST /api/auth/register
  * Creates a user (password-based).
@@ -78,6 +119,121 @@ router.post("/register", async (req, res, next) => {
     // optional: auto-login after register?
     // We'll NOT auto-login; require login + OTP.
     return res.status(201).json({ ok: true, userId: user.id })
+  } catch (e) {
+    return next(e)
+  }
+})
+
+/**
+ * POST /api/auth/tenant/signup
+ * Public tenant signup: creates Tenant + TenantSubscription + admin User + Membership.
+ */
+router.post("/tenant/signup", async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+
+    const {
+      tenantName,
+      planKey,
+      paidNow,
+      adminName,
+      adminEmail,
+      adminPassword,
+    } = TenantSignupSchema.parse(req.body)
+
+    const baseSlug = slugifyTenantName(tenantName)
+    if (!baseSlug || baseSlug.length < 2) {
+      return res.status(400).json({ error: "INVALID_TENANT_NAME" })
+    }
+
+    const [existingUser, existingTenantByEmail] = await Promise.all([
+      prisma.user.findUnique({ where: { email: adminEmail } }),
+      prisma.tenant.findFirst({ where: { email: adminEmail } }),
+    ])
+
+    if (existingUser) return res.status(409).json({ error: "EMAIL_IN_USE" })
+    if (existingTenantByEmail)
+      return res.status(409).json({ error: "TENANT_EMAIL_IN_USE" })
+
+    let tenantSlug = baseSlug
+    for (let i = 0; i < 10; i += 1) {
+      const exists = await prisma.tenant.findUnique({
+        where: { slug: tenantSlug },
+        select: { id: true },
+      })
+      if (!exists) break
+      tenantSlug = `${baseSlug}-${i + 2}`
+    }
+
+    const slugTaken = await prisma.tenant.findUnique({
+      where: { slug: tenantSlug },
+      select: { id: true },
+    })
+    if (slugTaken) {
+      return res.status(409).json({ error: "TENANT_SLUG_IN_USE" })
+    }
+
+    const passwordHash = await argon2.hash(adminPassword, {
+      type: argon2.argon2id,
+    })
+
+    const seatLimitByPlan: Record<string, number> = {
+      STARTER: 3,
+      PRO: 10,
+      BUSINESS: 25,
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const tenant = await tx.tenant.create({
+        data: {
+          name: tenantName,
+          slug: tenantSlug,
+          email: adminEmail,
+        },
+        select: { id: true },
+      })
+
+      const user = await tx.user.create({
+        data: {
+          name: adminName,
+          email: adminEmail,
+          passwordHash,
+        },
+        select: { id: true },
+      })
+
+      await tx.membership.create({
+        data: {
+          tenantId: tenant.id,
+          userId: user.id,
+          role: "TENANT_ADMIN",
+        },
+      })
+
+      await tx.tenantSubscription.create({
+        data: {
+          tenantId: tenant.id,
+          planKey,
+          seatLimit: seatLimitByPlan[planKey] ?? 3,
+          status: paidNow ? "ACTIVE" : "TRIALING",
+          currentPeriodEnd: paidNow
+            ? null
+            : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      })
+
+      return { tenantId: tenant.id, userId: user.id }
+    })
+
+    const verifyToken = await createEmailVerification(result.userId)
+    const base = (process.env.WEB_ORIGIN ?? "http://localhost:3000").replace(
+      /\/$/,
+      "",
+    )
+    const verifyUrl = `${base}/verify?token=${encodeURIComponent(verifyToken)}`
+    await sendVerifyEmail(adminEmail, verifyUrl)
+
+    return res.status(201).json({ ok: true, ...result })
   } catch (e) {
     return next(e)
   }
@@ -256,6 +412,55 @@ router.post("/otp/verify", async (req, res, next) => {
 router.get("/me", requireAuth, async (req, res) => {
   const u = (req as AuthedRequest).user
   return res.json({ ok: true, user: u })
+})
+
+/**
+ * GET /api/auth/verify-email?token=...
+ * Verifies user email and activates tenant(s) they admin.
+ */
+router.get("/verify-email", async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+
+    const token = String(req.query.token || "")
+    if (!token || token.length < 10) {
+      return res.status(400).json({ error: "INVALID_TOKEN" })
+    }
+
+    const tokenHash = sha256(token)
+    const record = await prisma.emailVerification.findUnique({
+      where: { tokenHash },
+    })
+
+    if (!record) return res.status(404).json({ error: "TOKEN_NOT_FOUND" })
+    if (record.usedAt) return res.status(400).json({ error: "TOKEN_USED" })
+    if (record.expiresAt.getTime() < Date.now()) {
+      return res.status(400).json({ error: "TOKEN_EXPIRED" })
+    }
+
+    await prisma.$transaction([
+      prisma.emailVerification.update({
+        where: { id: record.id },
+        data: { usedAt: new Date() },
+      }),
+      prisma.user.update({
+        where: { id: record.userId },
+        data: { emailVerified: true },
+      }),
+      prisma.tenant.updateMany({
+        where: {
+          members: {
+            some: { userId: record.userId, role: "TENANT_ADMIN" },
+          },
+        },
+        data: { emailVerified: true },
+      }),
+    ])
+
+    return res.json({ ok: true })
+  } catch (e) {
+    return next(e)
+  }
 })
 
 /**

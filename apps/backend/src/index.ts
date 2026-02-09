@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser"
 import { prisma } from "./lib/prisma"
 import { Server } from "socket.io"
 import authRoutes from "./routes/auth.routes"
+import { ZodError } from "zod"
 
 const env = {
   port: Number(process.env.PORT ?? 4000),
@@ -31,6 +32,36 @@ app.get("/api/heartbeat", (_req, res) => {
 })
 
 app.use("/api/auth", authRoutes)
+
+app.use(
+  (
+    err: unknown,
+    _req: express.Request,
+    res: express.Response,
+    _next: express.NextFunction,
+  ) => {
+    if (err instanceof ZodError) {
+      return res.status(400).json({
+        error: "INVALID_REQUEST",
+        details: err.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message,
+        })),
+      })
+    }
+
+    console.error("API error:", err)
+
+    const status = typeof (err as any)?.status === "number" ? (err as any).status : 500
+
+    const prismaCode = (err as any)?.code
+    if (prismaCode === "P2002") {
+      return res.status(409).json({ error: "UNIQUE_CONSTRAINT" })
+    }
+
+    return res.status(status).json({ error: "INTERNAL_ERROR" })
+  },
+)
 
 const server = http.createServer(app)
 
