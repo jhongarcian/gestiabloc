@@ -27,3 +27,27 @@ export async function verifyEmail(token: string) {
   })
   return data
 }
+
+export type LoginPayload = {
+  email: string
+  password: string
+}
+
+export type LoginResponse = {
+  ok: boolean
+  requiresOtp: boolean
+  challengeToken?: string
+}
+
+export async function login(payload: LoginPayload): Promise<LoginResponse> {
+  const { data } = await api.post("/api/auth/login", payload)
+  return data
+}
+
+export async function verifyOtp(payload: {
+  challengeToken: string
+  code: string
+}) {
+  const { data } = await api.post("/api/auth/otp/verify", payload)
+  return data
+}

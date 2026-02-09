@@ -4,24 +4,29 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { tenantSignup } from "@/lib/api"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { Checkbox } from "@/components/ui/checkbox"
 import { isAxiosError } from "axios"
-import { Eye, EyeOff } from "lucide-react"
+import {
+  ArrowRight,
+  Bolt,
+  Building2,
+  Check,
+  Circle,
+  Eye,
+  EyeOff,
+  Lock,
+  Mail,
+  Rocket,
+  User,
+} from "lucide-react"
 
 export default function SignUpPage() {
   const router = useRouter()
-  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">(
-    "idle",
-  )
+  const [status, setStatus] = useState<
+    "idle" | "loading" | "success" | "error"
+  >("idle")
   const [error, setError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [planKey, setPlanKey] = useState<"STARTER" | "PRO" | "BUSINESS">(
@@ -34,6 +39,10 @@ export default function SignUpPage() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const passwordsMatch =
     confirmPassword.length > 0 && adminPassword === confirmPassword
+  const hasLength = adminPassword.length >= 8
+  const hasLetter = /[A-Za-z]/.test(adminPassword)
+  const hasNumber = /[0-9]/.test(adminPassword)
+  const hasSymbol = /[^A-Za-z0-9]/.test(adminPassword)
 
   const isLoading = status === "loading"
 
@@ -139,69 +148,119 @@ export default function SignUpPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#f5f5f5,_#e4e7eb_45%,_#d7dbe1_100%)] px-6 py-16 text-zinc-900">
-      <div className="mx-auto w-full max-w-2xl">
-        <section className="rounded-3xl border border-black/10 bg-white p-10 shadow-2xl">
-          <div className="mb-8">
-            <p className="text-xs uppercase tracking-[0.35em] text-zinc-500">
-              GestiaBloc
-            </p>
-            <h1 className="mt-4 text-3xl font-semibold tracking-tight">
-              Create your workspace
-            </h1>
-            <p className="mt-2 text-sm text-zinc-500">
-              Already have a workspace?{" "}
-              <a className="font-medium text-zinc-900" href="/login">
-                Sign in
-              </a>
-            </p>
+    <div className="min-h-screen bg-slate-100 text-slate-900  md:h-screen md:overflow-hidden overflow-x-hidden">
+      <div className="mx-auto flex w-full  items-stretch justify-center md:h-full">
+        <div
+          id="signup-container"
+          className="w-full  flex flex-col md:flex-row relative z-10 md:h-full md:min-h-0"
+        >
+          <div className="hidden md:flex md:w-1/2 bg-white/50 backdrop-blur-sm relative items-center justify-center p-12 lg:p-20 overflow-hidden md:sticky md:top-0 md:self-start md:h-full">
+            <div className="absolute inset-0 bg-gradient-to-br from-indigo-600/5 to-purple-600/5" />
+
+            <div className="relative z-20 max-w-lg">
+              <div className="mb-12">
+                <div className="w-full h-80 relative">
+                  <img
+                    src="https://storage.googleapis.com/uxpilot-auth.appspot.com/22ea104277-9d0d4b32f30ca58e8409.png"
+                    className="w-full h-full object-contain drop-shadow-2xl animate-float"
+                    alt="Create Account Illustration"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-6 text-center">
+                <h2 className="text-3xl lg:text-4xl font-bold text-slate-900 leading-tight">
+                  Join thousands of teams{" "}
+                  <span className="text-indigo-600">already using</span>{" "}
+                  Gestiabloc
+                </h2>
+                <p className="text-slate-500 text-lg">
+                  Start your journey today with a flexible plan that grows with
+                  your business needs.
+                </p>
+              </div>
+            </div>
           </div>
 
-          <form className="space-y-8" onSubmit={onSubmit}>
+          <div className="w-full md:w-1/2 flex flex-col justify-start items-center p-4 sm:p-6 lg:p-8 bg-white shadow-2xl md:shadow-none md:h-full md:overflow-y-auto">
+            <div className="max-w-2xl mx-auto px-0 sm:px-2 md:px-6 py-8 sm:py-10 lg:py-16">
+              <div className="mb-10">
+                <h2 className="text-3xl font-bold text-slate-900 mb-2">
+                  Create your account
+                </h2>
+                <p className="text-slate-500">
+                  Start your 7-day free trial. No credit card required.
+                </p>
+                <p className="mt-3 text-sm text-slate-500">
+                  Already have a workspace?{" "}
+                  <a className="text-indigo-600 hover:underline" href="/login">
+                    Sign in
+                  </a>
+                </p>
+              </div>
+
+              <form
+                id="create-account-form"
+                className="space-y-6"
+                onSubmit={onSubmit}
+              >
                 <div className="space-y-4">
-                  <div>
-                    <p className="text-sm font-semibold text-zinc-900">
-                      Admin account
-                    </p>
-                    <p className="text-xs text-zinc-500">
-                      This person manages billing and invites.
-                    </p>
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label htmlFor="adminName">Full name</Label>
-                      <Input
-                        className={
-                          fieldErrors.adminName
-                            ? "border-red-300 focus-visible:ring-red-200"
-                            : undefined
-                        }
-                        id="adminName"
-                        name="adminName"
-                        placeholder="Ada Lovelace"
-                        required
-                        type="text"
-                      />
+                  <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">
+                    Personal Information
+                  </h3>
+
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label
+                        htmlFor="adminName"
+                        className="text-sm font-semibold text-slate-700"
+                      >
+                        Full Name
+                      </Label>
+                      <div className="relative">
+                        <User className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <Input
+                          type="text"
+                          id="adminName"
+                          name="adminName"
+                          placeholder="John Doe"
+                          required
+                          className={`w-full pl-10 pr-4 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
+                            fieldErrors.adminName
+                              ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
+                              : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
+                          }`}
+                        />
+                      </div>
                       {fieldErrors.adminName ? (
                         <p className="text-xs text-red-600">
                           {fieldErrors.adminName}
                         </p>
                       ) : null}
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="adminEmail">Work email</Label>
-                      <Input
-                        className={
-                          fieldErrors.adminEmail
-                            ? "border-red-300 focus-visible:ring-red-200"
-                            : undefined
-                        }
-                        id="adminEmail"
-                        name="adminEmail"
-                        placeholder="you@company.com"
-                        required
-                        type="email"
-                      />
+
+                    <div className="space-y-1.5">
+                      <Label
+                        htmlFor="adminEmail"
+                        className="text-sm font-semibold text-slate-700"
+                      >
+                        Work Email
+                      </Label>
+                      <div className="relative">
+                        <Mail className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <Input
+                          type="email"
+                          id="adminEmail"
+                          name="adminEmail"
+                          placeholder="name@company.com"
+                          required
+                          className={`w-full pl-10 pr-4 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
+                            fieldErrors.adminEmail
+                              ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
+                              : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
+                          }`}
+                        />
+                      </div>
                       {fieldErrors.adminEmail ? (
                         <p className="text-xs text-red-600">
                           {fieldErrors.adminEmail}
@@ -209,237 +268,437 @@ export default function SignUpPage() {
                       ) : null}
                     </div>
                   </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="adminPassword">Password</Label>
-                    <div className="relative">
-                      <Input
-                        className={
-                          fieldErrors.adminPassword
-                            ? "border-red-300 pr-10 focus-visible:ring-red-200"
-                            : "pr-10"
-                        }
-                        id="adminPassword"
-                        name="adminPassword"
-                        placeholder="At least 8 characters"
-                        required
-                        type={showPassword ? "text" : "password"}
-                        value={adminPassword}
-                        onChange={(event) => setAdminPassword(event.target.value)}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword((prev) => !prev)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-700"
-                          aria-label={
-                            showPassword ? "Hide password" : "Show password"
-                          }
-                        >
-                          {showPassword ? (
-                            <EyeOff className="h-4 w-4" />
-                          ) : (
-                            <Eye className="h-4 w-4" />
-                          )}
-                      </button>
-                    </div>
-                    <div className="grid gap-1 text-xs text-zinc-500">
-                      <p
-                        className={
-                          adminPassword.length >= 8
-                            ? "text-emerald-600"
-                            : undefined
-                        }
-                      >
-                        {adminPassword.length >= 8 ? "✓" : "•"} 8+ characters
-                      </p>
-                      <p
-                        className={
-                          /[A-Za-z]/.test(adminPassword)
-                            ? "text-emerald-600"
-                            : undefined
-                        }
-                      >
-                        {/[A-Za-z]/.test(adminPassword) ? "✓" : "•"} At least 1
-                        letter
-                      </p>
-                      <p
-                        className={
-                          /[0-9]/.test(adminPassword)
-                            ? "text-emerald-600"
-                            : undefined
-                        }
-                      >
-                        {/[0-9]/.test(adminPassword) ? "✓" : "•"} At least 1
-                        number
-                      </p>
-                      <p
-                        className={
-                          /[^A-Za-z0-9]/.test(adminPassword)
-                            ? "text-emerald-600"
-                            : undefined
-                        }
-                      >
-                        { /[^A-Za-z0-9]/.test(adminPassword) ? "✓" : "•"} At
-                        least 1 symbol
-                      </p>
-                    </div>
-                    {fieldErrors.adminPassword ? (
-                      <p className="text-xs text-red-600">
-                        {fieldErrors.adminPassword}
-                      </p>
-                    ) : null}
-                    </div>
-                <div className="space-y-2">
-                  <Label htmlFor="confirmPassword">Confirm password</Label>
-                  <div className="relative">
-                    <Input
-                          className={
-                            fieldErrors.confirmPassword
-                              ? "border-red-300 pr-10 focus-visible:ring-red-200"
-                              : "pr-10"
-                          }
-                          id="confirmPassword"
-                          name="confirmPassword"
-                          placeholder="Repeat your password"
-                          required
-                          type={showConfirmPassword ? "text" : "password"}
-                          value={confirmPassword}
-                          onChange={(event) =>
-                        setConfirmPassword(event.target.value)
-                      }
-                    />
-                    <button
-                      type="button"
-                          onClick={() =>
-                            setShowConfirmPassword((prev) => !prev)
-                          }
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-700"
-                          aria-label={
-                            showConfirmPassword
-                              ? "Hide confirm password"
-                              : "Show confirm password"
-                          }
-                        >
-                          {showConfirmPassword ? (
-                            <EyeOff className="h-4 w-4" />
-                          ) : (
-                        <Eye className="h-4 w-4" />
-                      )}
-                    </button>
-                  </div>
-                  {confirmPassword.length > 0 ? (
-                    <p
-                      className={
-                        passwordsMatch
-                          ? "text-xs text-emerald-600"
-                          : "text-xs text-red-600"
-                      }
-                    >
-                      {passwordsMatch
-                        ? "✓ Passwords match"
-                        : "Passwords do not match"}
-                    </p>
-                  ) : null}
-                  {fieldErrors.confirmPassword ? (
-                    <p className="text-xs text-red-600">
-                      {fieldErrors.confirmPassword}
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
                 </div>
 
-                <div className="h-px w-full bg-zinc-100" />
-
                 <div className="space-y-4">
-                  <div>
-                    <p className="text-sm font-semibold text-zinc-900">
-                      Workspace details
+                  <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">
+                    Workspace Information
+                  </h3>
+
+                  <div className="space-y-1.5">
+                    <Label
+                      htmlFor="tenantName"
+                      className="text-sm font-semibold text-slate-700"
+                    >
+                      Workspace Name
+                    </Label>
+                    <div className="relative">
+                      <Building2 className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        type="text"
+                        id="tenantName"
+                        name="tenantName"
+                        placeholder="Acme Inc."
+                        required
+                        className={`w-full pl-10 pr-4 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
+                          fieldErrors.tenantName
+                            ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
+                            : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
+                        }`}
+                      />
+                    </div>
+                    <p className="text-xs text-slate-400 pl-1">
+                      Your workspace URL will be: gestiabloc.com/workspaces/
+                      <span className="font-medium text-indigo-500">
+                        acme-inc
+                      </span>
                     </p>
-                    <p className="text-xs text-zinc-500">
-                      We use this to create your tenant and plan.
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="tenantName">Workspace name</Label>
-                    <Input
-                      className={
-                        fieldErrors.tenantName
-                          ? "border-red-300 focus-visible:ring-red-200"
-                          : undefined
-                      }
-                      id="tenantName"
-                      name="tenantName"
-                      placeholder="Acme Studio"
-                      required
-                      type="text"
-                    />
                     {fieldErrors.tenantName ? (
                       <p className="text-xs text-red-600">
                         {fieldErrors.tenantName}
                       </p>
                     ) : null}
                   </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="planKey">Plan</Label>
-                    <Select
-                      value={planKey}
-                      onValueChange={(value) =>
-                        setPlanKey(
-                          value as "STARTER" | "PRO" | "BUSINESS",
-                        )
-                      }
-                    >
-                      <SelectTrigger id="planKey">
-                        <SelectValue placeholder="Select a plan" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="STARTER">
-                          Starter (3 seats)
-                        </SelectItem>
-                        <SelectItem value="PRO">Pro (10 seats)</SelectItem>
-                        <SelectItem value="BUSINESS">
-                          Business (25 seats)
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-zinc-500">
-                      You can change your plan anytime after signup.
-                    </p>
-                  </div>
-
-                  <label className="flex items-center gap-3 text-sm text-zinc-600">
-                    <Checkbox
-                      checked={paidNow}
-                      onCheckedChange={(value) => setPaidNow(Boolean(value))}
-                    />
-                    Pay now (skip 7-day trial)
-                  </label>
                 </div>
 
-                <Button className="w-full" disabled={isLoading} type="submit">
-                  {isLoading ? "Creating account..." : "Create account"}
-                </Button>
+                <div className="space-y-4">
+                  <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">
+                    Security
+                  </h3>
 
-                {status === "success" ? (
-                  <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                    Account created. Check your email for verification steps.
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label
+                        htmlFor="adminPassword"
+                        className="text-sm font-semibold text-slate-700"
+                      >
+                        Password
+                      </Label>
+                      <div className="relative">
+                        <Lock className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <Input
+                          type={showPassword ? "text" : "password"}
+                          id="adminPassword"
+                          name="adminPassword"
+                          placeholder="Create a password"
+                          value={adminPassword}
+                          required
+                          onChange={(event) =>
+                            setAdminPassword(event.target.value)
+                          }
+                          className={`w-full pl-10 pr-10 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
+                            fieldErrors.adminPassword
+                              ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
+                              : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
+                          }`}
+                        />
+                        <button
+                          type="button"
+                          className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                          aria-label={
+                            showPassword ? "Hide password" : "Show password"
+                          }
+                          onClick={() => setShowPassword((prev) => !prev)}
+                        >
+                          {showPassword ? (
+                            <EyeOff className="h-4 w-4" />
+                          ) : (
+                            <Eye className="h-4 w-4" />
+                          )}
+                        </button>
+                      </div>
+                      {fieldErrors.adminPassword ? (
+                        <p className="text-xs text-red-600">
+                          {fieldErrors.adminPassword}
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label
+                        htmlFor="confirmPassword"
+                        className="text-sm font-semibold text-slate-700"
+                      >
+                        Confirm Password
+                      </Label>
+                      <div className="relative">
+                        <Lock className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <Input
+                          type={showConfirmPassword ? "text" : "password"}
+                          id="confirmPassword"
+                          name="confirmPassword"
+                          placeholder="Confirm password"
+                          value={confirmPassword}
+                          required
+                          onChange={(event) =>
+                            setConfirmPassword(event.target.value)
+                          }
+                          className={`w-full pl-10 pr-10 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
+                            fieldErrors.confirmPassword
+                              ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
+                              : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
+                          }`}
+                        />
+                        <button
+                          type="button"
+                          className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                          aria-label={
+                            showConfirmPassword
+                              ? "Hide confirm password"
+                              : "Show confirm password"
+                          }
+                          onClick={() =>
+                            setShowConfirmPassword((prev) => !prev)
+                          }
+                        >
+                          {showConfirmPassword ? (
+                            <EyeOff className="h-4 w-4" />
+                          ) : (
+                            <Eye className="h-4 w-4" />
+                          )}
+                        </button>
+                      </div>
+                      {confirmPassword.length > 0 ? (
+                        <p
+                          className={
+                            passwordsMatch
+                              ? "text-xs text-emerald-600"
+                              : "text-xs text-red-600"
+                          }
+                        >
+                          {passwordsMatch
+                            ? "✓ Passwords match"
+                            : "Passwords do not match"}
+                        </p>
+                      ) : null}
+                      {fieldErrors.confirmPassword ? (
+                        <p className="text-xs text-red-600">
+                          {fieldErrors.confirmPassword}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="bg-indigo-50 rounded-xl p-4 border border-indigo-200 shadow-sm">
+                    <h4 className="text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
+                      Password Requirements
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-600">
+                      <div className="validation-item flex items-center gap-2">
+                        <Circle
+                          className={`h-2.5 w-2.5 ${
+                            hasLength ? "text-emerald-500" : "text-slate-400"
+                          }`}
+                        />
+                        <span
+                          className={hasLength ? "text-emerald-700" : undefined}
+                        >
+                          At least 8 characters
+                        </span>
+                      </div>
+
+                      <div className="validation-item flex items-center gap-2">
+                        <Circle
+                          className={`h-2.5 w-2.5 ${
+                            hasLetter ? "text-emerald-500" : "text-slate-400"
+                          }`}
+                        />
+                        <span
+                          className={hasLetter ? "text-emerald-700" : undefined}
+                        >
+                          At least 1 letter
+                        </span>
+                      </div>
+
+                      <div className="validation-item flex items-center gap-2">
+                        <Circle
+                          className={`h-2.5 w-2.5 ${
+                            hasNumber ? "text-emerald-500" : "text-slate-400"
+                          }`}
+                        />
+                        <span
+                          className={hasNumber ? "text-emerald-700" : undefined}
+                        >
+                          At least 1 number
+                        </span>
+                      </div>
+
+                      <div className="validation-item flex items-center gap-2">
+                        <Circle
+                          className={`h-2.5 w-2.5 ${
+                            hasSymbol ? "text-emerald-500" : "text-slate-400"
+                          }`}
+                        />
+                        <span
+                          className={hasSymbol ? "text-emerald-700" : undefined}
+                        >
+                          At least 1 symbol
+                        </span>
+                      </div>
+
+                      <div className="validation-item flex items-center gap-2 col-span-1 sm:col-span-2">
+                        <Circle
+                          className={`h-2.5 w-2.5 ${
+                            passwordsMatch
+                              ? "text-emerald-500"
+                              : "text-slate-400"
+                          }`}
+                        />
+                        <span
+                          className={
+                            passwordsMatch ? "text-emerald-700" : undefined
+                          }
+                        >
+                          Passwords match
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">
+                    Select Plan
+                  </h3>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <label className="cursor-pointer relative group">
+                      <input
+                        type="radio"
+                        name="planKey"
+                        value="STARTER"
+                        checked={planKey === "STARTER"}
+                        onChange={() => setPlanKey("STARTER")}
+                        className="peer sr-only"
+                      />
+                      <div className="p-4 rounded-xl bg-white border border-slate-200 hover:border-indigo-300 transition-all h-full flex flex-col justify-between peer-checked:border-indigo-500 peer-checked:ring-2 peer-checked:ring-indigo-200">
+                        <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs opacity-0 scale-50 transition-all duration-300 peer-checked:opacity-100 peer-checked:scale-100">
+                          <Check className="h-3 w-3" />
+                        </div>
+
+                        <div>
+                          <div className="w-10 h-10 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center mb-3">
+                            <Rocket className="h-5 w-5" />
+                          </div>
+                          <h3 className="font-bold text-slate-800">Starter</h3>
+                          <p className="text-xs text-slate-500 mt-1">
+                            For small teams getting started.
+                          </p>
+                        </div>
+
+                        <div className="mt-4 pt-4 border-t border-slate-100">
+                          <span className="text-lg font-bold text-slate-900">
+                            $0
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            /mo per user
+                          </span>
+                        </div>
+                      </div>
+                    </label>
+
+                    <label className="cursor-pointer relative group">
+                      <input
+                        type="radio"
+                        name="planKey"
+                        value="PRO"
+                        checked={planKey === "PRO"}
+                        onChange={() => setPlanKey("PRO")}
+                        className="peer sr-only"
+                      />
+                      <div className="p-4 rounded-xl bg-white border border-slate-200 hover:border-indigo-300 transition-all h-full flex flex-col justify-between relative overflow-hidden peer-checked:border-indigo-500 peer-checked:ring-2 peer-checked:ring-indigo-200">
+                        <div className="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-lg z-10">
+                          POPULAR
+                        </div>
+
+                        <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs opacity-0 scale-50 transition-all duration-300 peer-checked:opacity-100 peer-checked:scale-100">
+                          <Check className="h-3 w-3" />
+                        </div>
+
+                        <div>
+                          <div className="w-10 h-10 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center mb-3">
+                            <Bolt className="h-5 w-5" />
+                          </div>
+                          <h3 className="font-bold text-slate-800">
+                            Pro Business
+                          </h3>
+                          <p className="text-xs text-slate-500 mt-1">
+                            For growing teams needing power.
+                          </p>
+                        </div>
+
+                        <div className="mt-4 pt-4 border-t border-slate-100">
+                          <span className="text-lg font-bold text-slate-900">
+                            $29
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            /mo per user
+                          </span>
+                        </div>
+                      </div>
+                    </label>
+
+                    <label className="cursor-pointer relative group">
+                      <input
+                        type="radio"
+                        name="planKey"
+                        value="BUSINESS"
+                        checked={planKey === "BUSINESS"}
+                        onChange={() => setPlanKey("BUSINESS")}
+                        className="peer sr-only"
+                      />
+                      <div className="p-4 rounded-xl bg-white border border-slate-200 hover:border-indigo-300 transition-all h-full flex flex-col justify-between peer-checked:border-indigo-500 peer-checked:ring-2 peer-checked:ring-indigo-200">
+                        <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs opacity-0 scale-50 transition-all duration-300 peer-checked:opacity-100 peer-checked:scale-100">
+                          <Check className="h-3 w-3" />
+                        </div>
+
+                        <div>
+                          <div className="w-10 h-10 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center mb-3">
+                            <Building2 className="h-5 w-5" />
+                          </div>
+                          <h3 className="font-bold text-slate-800">
+                            Enterprise
+                          </h3>
+                          <p className="text-xs text-slate-500 mt-1">
+                            Custom solutions for large orgs.
+                          </p>
+                        </div>
+
+                        <div className="mt-4 pt-4 border-t border-slate-100">
+                          <span className="text-lg font-bold text-slate-900">
+                            $99
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            /mo per user
+                          </span>
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 flex items-start gap-3 shadow-sm">
+                    <Checkbox
+                      id="pay-now"
+                      checked={paidNow}
+                      onCheckedChange={(value) => setPaidNow(Boolean(value))}
+                      className="mt-0.5 h-5 w-5 rounded border-2 border-slate-300 data-[state=checked]:bg-indigo-600 data-[state=checked]:border-indigo-600"
+                    />
+
+                    <div className="flex-1">
+                      <Label
+                        htmlFor="pay-now"
+                        className="text-sm font-bold text-slate-800 cursor-pointer select-none"
+                      >
+                        Pay now &amp; Skip Trial
+                      </Label>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Get an immediate 20% discount on your first year by
+                        skipping the 7-day trial period.
+                      </p>
+                    </div>
+
+                    <div className="text-green-600 bg-green-50 px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wide">
+                      Save 20%
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-2">
+                  <Button
+                    type="submit"
+                    disabled={isLoading}
+                    className={`w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl shadow-lg hover:shadow-indigo-500/30 transition-all duration-300 transform hover:-translate-y-0.5 flex items-center justify-center gap-2 group ${
+                      isLoading ? "opacity-70 cursor-not-allowed" : ""
+                    }`}
+                  >
+                    <span>
+                      {isLoading ? "Creating account..." : "Create Account"}
+                    </span>
+                    <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+                  </Button>
+
+                  {status === "success" ? (
+                    <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                      Account created. Check your email for verification steps.
+                    </p>
+                  ) : null}
+
+                  {status === "error" && error ? (
+                    <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {error}
+                    </p>
+                  ) : null}
+
+                  <p className="text-xs text-center text-slate-400 mt-4">
+                    By clicking "Create Account", you agree to our{" "}
+                    <a href="#" className="text-indigo-600 hover:underline">
+                      Terms of Service
+                    </a>{" "}
+                    and{" "}
+                    <a href="#" className="text-indigo-600 hover:underline">
+                      Privacy Policy
+                    </a>
+                    .
                   </p>
-                ) : null}
+                </div>
+              </form>
+            </div>
 
-                {status === "error" && error ? (
-                  <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                    {error}
-                  </p>
-                ) : null}
-
-                <p className="text-xs text-zinc-500">
-                  By creating an account you agree to our Terms and Privacy
-                  Policy.
-                </p>
-          </form>
-        </section>
+            <div className="mt-12 text-center text-xs text-slate-400">
+              © 2024 Gestiabloc Inc. All rights reserved.
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )
