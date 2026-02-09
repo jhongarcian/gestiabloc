@@ -7,6 +7,10 @@ import { prisma } from "./lib/prisma"
 import { Server } from "socket.io"
 import authRoutes from "./routes/auth.routes"
 import { ZodError } from "zod"
+import swaggerUi from "swagger-ui-express"
+import { readFileSync } from "fs"
+import { resolve } from "path"
+import { parse as parseYaml } from "yaml"
 
 const env = {
   port: Number(process.env.PORT ?? 4000),
@@ -30,6 +34,10 @@ app.use(express.json())
 app.get("/api/heartbeat", (_req, res) => {
   res.status(200).json({ ok: true })
 })
+
+const openApiPath = resolve(process.cwd(), "docs/openapi.yml")
+const openApiSpec = parseYaml(readFileSync(openApiPath, "utf-8"))
+app.use("/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec))
 
 app.use("/api/auth", authRoutes)
 
