@@ -383,7 +383,7 @@ export default function LoginPage() {
                   </div>
 
                   <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-4 flex items-start gap-3">
-                    <div className="w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <div className="w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center shrink-0 mt-0.5">
                       <Info className="h-3.5 w-3.5 text-indigo-600" />
                     </div>
                     <div className="text-sm text-slate-600">
