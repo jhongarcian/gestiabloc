@@ -1,14 +1,36 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { isAxiosError } from "axios"
 import Link from "next/link"
+import Image from "next/image"
 
 import { login, verifyOtp } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import {
+  InputOTP,
+  InputOTPGroup,
+  InputOTPSeparator,
+  InputOTPSlot,
+} from "@/components/ui/input-otp"
 import { Label } from "@/components/ui/label"
+import loginImage from "@/public/illustrations/login.png"
+import { REGEXP_ONLY_DIGITS } from "input-otp"
+import {
+  ArrowLeft,
+  ArrowRight,
+  Box,
+  Clock,
+  Eye,
+  EyeOff,
+  Info,
+  Lock,
+  Mail,
+  Shield,
+  Star,
+} from "lucide-react"
 
 type Step = "login" | "otp"
 
@@ -23,6 +45,8 @@ export default function LoginPage() {
   const [password, setPassword] = useState("")
   const [otp, setOtp] = useState("")
   const [showPassword, setShowPassword] = useState(false)
+  const [otpExpiresAt, setOtpExpiresAt] = useState<number | null>(null)
+  const [otpCountdown, setOtpCountdown] = useState(0)
 
   const isLoading = status === "loading"
 
@@ -46,6 +70,7 @@ export default function LoginPage() {
       if (result.requiresOtp && result.challengeToken) {
         setChallengeToken(result.challengeToken)
         setStep("otp")
+        setOtpExpiresAt(Date.now() + 5 * 60 * 1000)
       } else {
         router.push("/")
       }
@@ -53,10 +78,8 @@ export default function LoginPage() {
       if (isAxiosError(err)) {
         const code = err.response?.data?.error
         if (code === "INVALID_CREDENTIALS") {
-          setFieldErrors({
-            email: "Invalid email or password.",
-            password: "Invalid email or password.",
-          })
+          setError("Invalid email or password.")
+          setFieldErrors({})
         } else {
           setError("Something went wrong. Please try again.")
         }
@@ -114,137 +137,314 @@ export default function LoginPage() {
     }
   }
 
+  useEffect(() => {
+    if (step !== "otp" || !otpExpiresAt) {
+      setOtpCountdown(0)
+      return
+    }
+
+    const tick = () => {
+      const remaining = Math.max(0, Math.floor((otpExpiresAt - Date.now()) / 1000))
+      setOtpCountdown(remaining)
+    }
+
+    tick()
+    const interval = setInterval(tick, 1000)
+    return () => clearInterval(interval)
+  }, [step, otpExpiresAt])
+
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#f5f5f5,#e4e7eb_45%,#d7dbe1_100%)] px-6 py-16 text-zinc-900">
-      <div className="mx-auto w-full max-w-2xl rounded-3xl border border-black/10 bg-white p-10 shadow-2xl">
-        <p className="text-xs uppercase tracking-[0.35em] text-zinc-500">
-          GestiaBloc
-        </p>
-        <h1 className="mt-4 text-3xl font-semibold tracking-tight">
-          {step === "login" ? "Welcome back" : "Verify your login"}
-        </h1>
-        <p className="mt-2 text-sm text-zinc-500">
-          {step === "login" ? (
-            <>
-              Don&apos;t have a workspace?{" "}
-              <Link className="font-medium text-zinc-900" href="/signup">
-                Create one
-              </Link>
-            </>
-          ) : (
-            "Enter the 6-digit code we emailed you."
-          )}
-        </p>
+    <div className="min-h-screen bg-slate-100 text-slate-900 md:h-screen md:overflow-hidden overflow-x-hidden">
+      <div className="mx-auto flex w-full  items-stretch justify-center md:h-full">
+        <div
+          id="login-container"
+          className="w-full  flex flex-col md:flex-row relative z-10 md:h-full md:min-h-0"
+        >
+          <div className="hidden md:flex md:w-1/2 bg-white/50 backdrop-blur-sm relative items-center justify-center p-12 lg:p-20 overflow-hidden md:sticky md:top-0 md:self-start md:h-full">
+            <div className="absolute inset-0 bg-gradient-to-br from-indigo-600/5 to-purple-600/5" />
 
-        {step === "login" ? (
-          <form className="mt-8 space-y-6" onSubmit={onLogin}>
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                name="email"
-                type="email"
-                placeholder="you@company.com"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                className={
-                  fieldErrors.email
-                    ? "border-red-300 focus-visible:ring-red-200"
-                    : undefined
-                }
-              />
-              {fieldErrors.email ? (
-                <p className="text-xs text-red-600">{fieldErrors.email}</p>
-              ) : null}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <div className="relative">
-                <Input
-                  id="password"
-                  name="password"
-                  type={showPassword ? "text" : "password"}
-                  placeholder="Your password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  className={
-                    fieldErrors.password
-                      ? "border-red-300 pr-10 focus-visible:ring-red-200"
-                      : "pr-10"
-                  }
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-700"
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                >
-                  {showPassword ? "Hide" : "Show"}
-                </button>
+            <div className="relative z-20 max-w-lg">
+              <div className="mb-12 flex justify-center">
+                <div className="w-full max-w-md h-64 sm:h-72 lg:h-80 relative flex items-center justify-center">
+                  <Image
+                    src={loginImage}
+                    alt="Login illustration"
+                    fill
+                    sizes="(min-width: 1024px) 420px, (min-width: 640px) 360px, 280px"
+                    className="object-contain"
+                    priority
+                  />
+                </div>
               </div>
-              {fieldErrors.password ? (
-                <p className="text-xs text-red-600">{fieldErrors.password}</p>
-              ) : null}
+
+              <div className="space-y-6 text-center">
+                <h2 className="text-3xl lg:text-4xl font-bold text-slate-900 leading-tight">
+                  Manage your workspace with{" "}
+                  <span className="text-indigo-600">confidence</span>
+                </h2>
+                <p className="text-slate-500 text-lg">
+                  Streamline your workflow, track analytics, and collaborate
+                  seamlessly with your team in one unified platform.
+                </p>
+
+                
+              </div>
             </div>
+          </div>
 
-            {error ? (
-              <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {error}
+          <div className="w-full md:w-1/2 flex flex-col justify-start md:justify-center items-center p-4 sm:p-6 lg:p-8 bg-white shadow-2xl md:shadow-none md:h-full md:overflow-y-auto">
+            <div className="max-w-2xl mx-auto px-0 sm:px-2 md:px-6 py-8 sm:py-10 lg:py-16 w-full">
+              <div className="mb-10">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center text-white shadow-glow">
+                    <Box className="h-5 w-5" />
+                  </div>
+                  <h1 className="font-bold text-2xl tracking-tight text-slate-900">
+                    Gestiabloc
+                  </h1>
+                </div>
+
+                <h2 className="text-3xl font-bold text-slate-900">
+                  {step === "login" ? "Welcome back" : "Verify your login"}
+                </h2>
+                <p className="mt-2 text-slate-500">
+                  {step === "login"
+                    ? "Please enter your details to sign in."
+                    : "Enter the 6-digit code we emailed you."}
+                </p>
+                {step === "login" ? (
+                  <p className="mt-3 text-sm text-slate-500">
+                    Don&apos;t have a workspace?{" "}
+                    <Link
+                      className="text-indigo-600 hover:underline"
+                      href="/signup"
+                    >
+                      Create one
+                    </Link>
+                  </p>
+                ) : null}
+              </div>
+
+              {step === "login" ? (
+                <form className="space-y-6" onSubmit={onLogin}>
+                  <div className="space-y-2">
+                    <Label htmlFor="email" className="text-sm text-slate-700">
+                      Email Address
+                    </Label>
+                    <div className="relative">
+                      <Mail className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        id="email"
+                        name="email"
+                        type="email"
+                        placeholder="name@company.com"
+                        value={email}
+                        onChange={(event) => setEmail(event.target.value)}
+                        className={`w-full pl-10 pr-4 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
+                          fieldErrors.email
+                            ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
+                            : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
+                        }`}
+                      />
+                    </div>
+                    {fieldErrors.email ? (
+                      <p className="text-xs text-red-600">
+                        {fieldErrors.email}
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="password" className="text-sm text-slate-700">
+                        Password
+                      </Label>
+                      <Link
+                        href="#"
+                        className="text-sm font-medium text-indigo-600 hover:text-indigo-500"
+                      >
+                        Forgot password?
+                      </Link>
+                    </div>
+                    <div className="relative">
+                      <Lock className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        id="password"
+                        name="password"
+                        type={showPassword ? "text" : "password"}
+                        placeholder="••••••••"
+                        value={password}
+                        onChange={(event) => setPassword(event.target.value)}
+                        className={`w-full pl-10 pr-10 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
+                          fieldErrors.password
+                            ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
+                            : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
+                        }`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                        aria-label={
+                          showPassword ? "Hide password" : "Show password"
+                        }
+                      >
+                        {showPassword ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+                    {fieldErrors.password ? (
+                      <p className="text-xs text-red-600">
+                        {fieldErrors.password}
+                      </p>
+                    ) : null}
+                  </div>
+
+                  {error ? (
+                    <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {error}
+                    </p>
+                  ) : null}
+
+                  <Button
+                    className={`w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl shadow-lg hover:shadow-indigo-500/30 transition-all duration-300 transform hover:-translate-y-0.5 ${
+                      isLoading ? "opacity-70 cursor-not-allowed" : ""
+                    }`}
+                    disabled={isLoading}
+                    type="submit"
+                  >
+                    {isLoading ? "Signing in..." : "Sign in"}
+                  </Button>
+                </form>
+              ) : (
+                <form className="space-y-6" onSubmit={onVerifyOtp}>
+                  <div className="space-y-4">
+                    <Label className="text-sm font-medium text-slate-700 text-center md:text-left">
+                      Enter OTP Code
+                    </Label>
+                    <InputOTP
+                      maxLength={6}
+                      pattern={REGEXP_ONLY_DIGITS}
+                      value={otp}
+                      onChange={(value) => setOtp(value.replace(/\D/g, ""))}
+                      containerClassName="flex justify-center md:justify-start gap-3"
+                      className={fieldErrors.otp ? "text-red-600" : undefined}
+                    >
+                      <InputOTPGroup>
+                        {Array.from({ length: 3 }).map((_, index) => (
+                          <InputOTPSlot
+                            key={`otp-slot-${index}`}
+                            index={index}
+                            className={`h-12 w-12 rounded-xl border text-base ${
+                              fieldErrors.otp
+                                ? "border-red-300 aria-invalid:ring-red-200"
+                                : "border-slate-200"
+                            }`}
+                          />
+                        ))}
+                      </InputOTPGroup>
+                      <InputOTPSeparator />
+                      <InputOTPGroup>
+                        {Array.from({ length: 3 }).map((_, index) => (
+                          <InputOTPSlot
+                            key={`otp-slot-${index + 3}`}
+                            index={index + 3}
+                            className={`h-12 w-12 rounded-xl border text-base ${
+                              fieldErrors.otp
+                                ? "border-red-300 aria-invalid:ring-red-200"
+                                : "border-slate-200"
+                            }`}
+                          />
+                        ))}
+                      </InputOTPGroup>
+                    </InputOTP>
+                    {fieldErrors.otp ? (
+                      <p className="text-xs text-red-600 text-center md:text-left">
+                        {fieldErrors.otp}
+                      </p>
+                    ) : null}
+
+                    <div className="flex items-center justify-center md:justify-start gap-2 text-sm text-slate-500">
+                      <Clock className="h-4 w-4 text-slate-400" />
+                      <span>
+                        Code expires in{" "}
+                        <span className="font-semibold text-slate-700">
+                          {`${Math.floor(otpCountdown / 60)
+                            .toString()
+                            .padStart(2, "0")}:${(otpCountdown % 60)
+                            .toString()
+                            .padStart(2, "0")}`}
+                        </span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-4 flex items-start gap-3">
+                    <div className="w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Info className="h-3.5 w-3.5 text-indigo-600" />
+                    </div>
+                    <div className="text-sm text-slate-600">
+                      <p className="font-medium text-slate-700">
+                        Didn&apos;t receive the code?
+                      </p>
+                      <p className="text-slate-500 mt-1">
+                        Check your spam folder or try signing in again.
+                      </p>
+                    </div>
+                  </div>
+
+                  {error ? (
+                    <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {error}
+                    </p>
+                  ) : null}
+
+                  <div className="space-y-3">
+                    <Button
+                      className={`w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl shadow-lg hover:shadow-indigo-500/30 transition-all duration-300 transform hover:-translate-y-0.5 ${
+                        isLoading ? "opacity-70 cursor-not-allowed" : ""
+                      }`}
+                      disabled={isLoading}
+                      type="submit"
+                    >
+                      <span>
+                        {isLoading ? "Verifying..." : "Verify & Continue"}
+                      </span>
+                      <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full border-slate-200 text-slate-700 hover:bg-slate-50"
+                      onClick={() => {
+                        setStep("login")
+                        setOtp("")
+                        setChallengeToken("")
+                      }}
+                    >
+                      <ArrowLeft className="h-4 w-4" />
+                      Back to sign in
+                    </Button>
+                  </div>
+
+                  <div className="pt-2 text-center">
+                    <div className="inline-flex items-center gap-2 px-4 py-2 bg-green-50 border border-green-200 rounded-full text-xs font-medium text-green-700">
+                      <Shield className="h-3.5 w-3.5" />
+                      <span>Secure verification powered by Gestiabloc</span>
+                    </div>
+                  </div>
+                </form>
+              )}
+
+              <p className="text-center text-xs text-slate-400 mt-10">
+                © 2024 Gestiabloc Inc. All rights reserved.
               </p>
-            ) : null}
-
-            <Button className="w-full" disabled={isLoading} type="submit">
-              {isLoading ? "Signing in..." : "Sign in"}
-            </Button>
-          </form>
-        ) : (
-          <form className="mt-8 space-y-6" onSubmit={onVerifyOtp}>
-            <div className="space-y-2">
-              <Label htmlFor="otp">Verification code</Label>
-              <Input
-                id="otp"
-                name="otp"
-                type="text"
-                inputMode="numeric"
-                placeholder="123456"
-                value={otp}
-                onChange={(event) =>
-                  setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))
-                }
-                className={
-                  fieldErrors.otp
-                    ? "border-red-300 focus-visible:ring-red-200"
-                    : undefined
-                }
-              />
-              {fieldErrors.otp ? (
-                <p className="text-xs text-red-600">{fieldErrors.otp}</p>
-              ) : null}
             </div>
-
-            {error ? (
-              <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {error}
-              </p>
-            ) : null}
-
-            <Button className="w-full" disabled={isLoading} type="submit">
-              {isLoading ? "Verifying..." : "Verify and continue"}
-            </Button>
-            <button
-              type="button"
-              className="text-sm text-zinc-600 hover:text-zinc-900"
-              onClick={() => {
-                setStep("login")
-                setOtp("")
-                setChallengeToken("")
-              }}
-            >
-              Back to sign in
-            </button>
-          </form>
-        )}
+          </div>
+        </div>
       </div>
     </div>
   )

@@ -21,6 +21,8 @@ import {
   Rocket,
   User,
 } from "lucide-react"
+import Image from "next/image"
+import signup_image from "@/public/illustrations/signup.png"
 
 export default function SignUpPage() {
   const router = useRouter()
@@ -158,12 +160,15 @@ export default function SignUpPage() {
             <div className="absolute inset-0 bg-gradient-to-br from-indigo-600/5 to-purple-600/5" />
 
             <div className="relative z-20 max-w-lg">
-              <div className="mb-12">
-                <div className="w-full h-80 relative">
-                  <img
-                    src="https://storage.googleapis.com/uxpilot-auth.appspot.com/22ea104277-9d0d4b32f30ca58e8409.png"
-                    className="w-full h-full object-contain drop-shadow-2xl animate-float"
-                    alt="Create Account Illustration"
+              <div className="mb-12 flex justify-center">
+                <div className="w-full max-w-md h-64 sm:h-72 lg:h-80 relative flex items-center justify-center">
+                  <Image
+                    src={signup_image}
+                    alt="Signup illustration"
+                    fill
+                    sizes="(min-width: 1024px) 420px, (min-width: 640px) 360px, 280px"
+                    className="object-contain"
+                    priority
                   />
                 </div>
               </div>
