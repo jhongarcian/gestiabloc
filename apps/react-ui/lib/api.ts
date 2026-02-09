@@ -51,3 +51,24 @@ export async function verifyOtp(payload: {
   const { data } = await api.post("/api/auth/otp/verify", payload)
   return data
 }
+
+export type MeResponse = {
+  ok: boolean
+  user: {
+    id: string
+    email: string
+    name: string
+    platformRole: string
+    emailVerified: boolean
+    memberships: Array<{
+      role: string
+      status: string
+      tenant: { id: string; slug: string; name: string }
+    }>
+  }
+}
+
+export async function getMe(): Promise<MeResponse> {
+  const { data } = await api.get("/api/auth/me")
+  return data
+}

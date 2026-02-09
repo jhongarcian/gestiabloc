@@ -68,6 +68,7 @@ model User {
   memberships Membership[]
   loginChallenges LoginChallenge[]
   emailVerifications EmailVerification[]
+  passwordResetTokens PasswordResetToken[]
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -118,6 +119,20 @@ model EmailOtp {
   createdAt DateTime @default(now())
 
   @@index([email, purpose])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  usedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
   @@index([expiresAt])
 }
 

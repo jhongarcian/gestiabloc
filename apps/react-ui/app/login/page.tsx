@@ -6,7 +6,7 @@ import { isAxiosError } from "axios"
 import Link from "next/link"
 import Image from "next/image"
 
-import { login, verifyOtp } from "@/lib/api"
+import { getMe, login, verifyOtp } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -72,7 +72,13 @@ export default function LoginPage() {
         setStep("otp")
         setOtpExpiresAt(Date.now() + 5 * 60 * 1000)
       } else {
-        router.push("/")
+        const me = await getMe()
+        const tenantSlug = me.user.memberships[0]?.tenant?.slug
+        if (tenantSlug) {
+          router.push(`/app/${tenantSlug}`)
+        } else {
+          setError("No tenant workspace found for this account.")
+        }
       }
     } catch (err) {
       if (isAxiosError(err)) {
@@ -105,7 +111,13 @@ export default function LoginPage() {
 
     try {
       await verifyOtp({ challengeToken, code: otp.trim() })
-      router.push("/")
+      const me = await getMe()
+      const tenantSlug = me.user.memberships[0]?.tenant?.slug
+      if (tenantSlug) {
+        router.push(`/app/${tenantSlug}`)
+      } else {
+        setError("No tenant workspace found for this account.")
+      }
     } catch (err) {
       if (isAxiosError(err)) {
         const code = err.response?.data?.error

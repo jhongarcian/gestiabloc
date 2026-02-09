@@ -6,7 +6,11 @@ import { prisma } from "../lib/prisma.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { generateOtp6, randomToken, sha256 } from "../lib/crypto.js"
 import { clearSessionCookie, setSessionCookie } from "../lib/cookies.js"
-import { sendLoginOtpEmail, sendVerifyEmail } from "../lib/email.js"
+import {
+  sendLoginOtpEmail,
+  sendPasswordResetEmail,
+  sendVerifyEmail,
+} from "../lib/email.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
@@ -51,6 +55,15 @@ const OtpVerifySchema = z.object({
   code: z.string().regex(/^\d{6}$/),
 })
 
+const ForgotPasswordSchema = z.object({
+  email: z.email().max(255),
+})
+
+const ResetPasswordSchema = z.object({
+  token: z.string().min(20).max(500),
+  newPassword: passwordSchema.max(200),
+})
+
 // helper: create session + cookie
 async function issueSession(opts: {
   userId: string
@@ -85,6 +98,23 @@ async function createEmailVerification(userId: string) {
 
   await prisma.emailVerification.deleteMany({ where: { userId } })
   await prisma.emailVerification.create({
+    data: {
+      userId,
+      tokenHash,
+      expiresAt,
+    },
+  })
+
+  return raw
+}
+
+async function createPasswordResetToken(userId: string) {
+  const raw = randomToken(32)
+  const tokenHash = sha256(raw)
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000)
+
+  await prisma.passwordResetToken.deleteMany({ where: { userId } })
+  await prisma.passwordResetToken.create({
     data: {
       userId,
       tokenHash,
@@ -411,7 +441,24 @@ router.post("/otp/verify", async (req, res, next) => {
  */
 router.get("/me", requireAuth, async (req, res) => {
   const u = (req as AuthedRequest).user
-  return res.json({ ok: true, user: u })
+  const user = await prisma.user.findUnique({
+    where: { id: u.id },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      platformRole: true,
+      emailVerified: true,
+      memberships: {
+        select: {
+          role: true,
+          status: true,
+          tenant: { select: { id: true, slug: true, name: true } },
+        },
+      },
+    },
+  })
+  return res.json({ ok: true, user })
 })
 
 /**
@@ -455,6 +502,78 @@ router.get("/verify-email", async (req, res, next) => {
         },
         data: { emailVerified: true },
       }),
+    ])
+
+    return res.json({ ok: true })
+  } catch (e) {
+    return next(e)
+  }
+})
+
+/**
+ * POST /api/auth/forgot-password
+ * Always returns ok to avoid account enumeration.
+ */
+router.post("/forgot-password", async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+
+    const { email } = ForgotPasswordSchema.parse(req.body)
+    const user = await prisma.user.findUnique({ where: { email } })
+
+    if (user) {
+      const token = await createPasswordResetToken(user.id)
+      const base = (process.env.WEB_ORIGIN ?? "http://localhost:3000").replace(
+        /\/$/,
+        "",
+      )
+      const resetUrl = `${base}/reset-password?token=${encodeURIComponent(
+        token,
+      )}`
+      await sendPasswordResetEmail(email, resetUrl)
+    }
+
+    return res.json({ ok: true })
+  } catch (e) {
+    return next(e)
+  }
+})
+
+/**
+ * POST /api/auth/reset-password
+ * Resets password and invalidates sessions.
+ */
+router.post("/reset-password", async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+
+    const { token, newPassword } = ResetPasswordSchema.parse(req.body)
+    const tokenHash = sha256(token)
+
+    const record = await prisma.passwordResetToken.findUnique({
+      where: { tokenHash },
+    })
+
+    if (!record) return res.status(400).json({ error: "TOKEN_NOT_FOUND" })
+    if (record.usedAt) return res.status(400).json({ error: "TOKEN_USED" })
+    if (record.expiresAt.getTime() < Date.now()) {
+      return res.status(400).json({ error: "TOKEN_EXPIRED" })
+    }
+
+    const passwordHash = await argon2.hash(newPassword, {
+      type: argon2.argon2id,
+    })
+
+    await prisma.$transaction([
+      prisma.passwordResetToken.update({
+        where: { id: record.id },
+        data: { usedAt: new Date() },
+      }),
+      prisma.user.update({
+        where: { id: record.userId },
+        data: { passwordHash },
+      }),
+      prisma.session.deleteMany({ where: { userId: record.userId } }),
     ])
 
     return res.json({ ok: true })

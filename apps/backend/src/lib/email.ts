@@ -34,3 +34,20 @@ export async function sendVerifyEmail(to: string, verifyUrl: string) {
     text: `Verify your email to activate your workspace:\n\n${verifyUrl}\n\nThis link expires in 24 hours.`,
   })
 }
+
+export async function sendPasswordResetEmail(to: string, resetUrl: string) {
+  if (!process.env.RESEND_API_KEY) {
+    console.log(`[DEV RESET] Send to ${to}: ${resetUrl}`)
+    return
+  }
+
+  const { Resend } = await import("resend")
+  const resend = new Resend(process.env.RESEND_API_KEY)
+
+  await resend.emails.send({
+    from,
+    to,
+    subject: "Reset your password",
+    text: `Reset your password using this link:\n\n${resetUrl}\n\nThis link expires in 60 minutes.`,
+  })
+}
