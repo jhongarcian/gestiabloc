@@ -14,7 +14,7 @@ export async function sendLoginOtpEmail(to: string, code: string) {
     from,
     to,
     subject: "Your login code",
-    text: `Your login code is: ${code}\n\nIt expires in 10 minutes.`,
+    text: `Your login code is: ${code}\n\nIt expires in 5 minutes.`,
   })
 }
 
