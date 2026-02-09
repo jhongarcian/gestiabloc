@@ -527,7 +527,7 @@ router.post("/forgot-password", async (req, res, next) => {
         /\/$/,
         "",
       )
-      const resetUrl = `${base}/reset-password?token=${encodeURIComponent(
+      const resetUrl = `${base}/create-new-password?token=${encodeURIComponent(
         token,
       )}`
       await sendPasswordResetEmail(email, resetUrl)

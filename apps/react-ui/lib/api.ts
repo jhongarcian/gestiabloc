@@ -5,6 +5,8 @@ const baseURL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:4000"
 export const api = axios.create({
   baseURL,
   withCredentials: true,
+  // Avoid proxy-from-env (uses deprecated url.parse in Node 20+)
+  proxy: false,
 })
 
 export type TenantSignupPayload = {
@@ -49,6 +51,19 @@ export async function verifyOtp(payload: {
   code: string
 }) {
   const { data } = await api.post("/api/auth/otp/verify", payload)
+  return data
+}
+
+export async function forgotPassword(email: string) {
+  const { data } = await api.post("/api/auth/forgot-password", { email })
+  return data
+}
+
+export async function resetPassword(payload: {
+  token: string
+  newPassword: string
+}) {
+  const { data } = await api.post("/api/auth/reset-password", payload)
   return data
 }
 
