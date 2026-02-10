@@ -2,11 +2,14 @@ import { redirect } from "next/navigation"
 import { headers } from "next/headers"
 
 import { api } from "@/lib/api"
+import { TenantShell } from "./_components/tenant-shell"
 
 export default async function TenantLayout({
   children,
+  params,
 }: Readonly<{
   children: React.ReactNode
+  params: { tenantSlug: string }
 }>) {
   try {
     const cookie = (await headers()).get("cookie") ?? ""
@@ -20,5 +23,7 @@ export default async function TenantLayout({
     redirect("/login")
   }
 
-  return <>{children}</>
+  return (
+    <TenantShell tenantSlug={params.tenantSlug}>{children}</TenantShell>
+  )
 }
