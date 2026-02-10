@@ -70,8 +70,8 @@ export function TenantShell({ tenantSlug, children }: TenantShellProps) {
       <AppSidebar tenantSlug={tenantSlug} className="md:h-full" />
 
       <SidebarInset className="min-w-0 bg-slate-50">
-        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md supports-[backdrop-filter]:bg-white/70">
-          <div className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:justify-between md:px-8">
+        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md supports-backdrop-filter:bg-white/70">
+          <div className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:justify-between ">
             <div className="flex flex-1 items-center gap-3">
               <SidebarTrigger className="h-9 w-9" />
               <Breadcrumb>

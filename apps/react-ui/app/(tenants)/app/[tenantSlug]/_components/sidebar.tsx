@@ -35,7 +35,6 @@ import {
   ListChecks,
   HelpCircle,
   LogOut,
-  Sparkles,
 } from "lucide-react"
 
 type SidebarItem = {
@@ -55,7 +54,7 @@ const MENU_ITEMS: SidebarItem[] = [
   { key: "calendar", label: "Calendar", path: "/calendar", icon: Calendar },
   { key: "opportunities", label: "Opportunities", path: "/opportunities", icon: Target },
   { key: "services", label: "Services", path: "/services", icon: Briefcase },
-  { key: "task", label: "Task", path: "/task", icon: ListChecks },
+  { key: "tasks", label: "Tasks", path: "/tasks", icon: ListChecks },
 ]
 
 const SUPPORT_ITEMS: SidebarItem[] = [
@@ -87,7 +86,7 @@ function AppSidebarContent({
               Gestiabloc
             </h1>
             <p className="text-xs font-medium text-indigo-200">
-              Management Panel
+              Agency Panel
             </p>
           </div>
         </div>
@@ -171,9 +170,7 @@ function AppSidebarContent({
             <div className="absolute -right-4 -top-4 h-24 w-24 rounded-full bg-white/10 blur-2xl transition-all group-hover:bg-white/20" />
 
             <div className="relative z-10 flex items-start gap-3">
-              <div className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-white/15 bg-white/15">
-                <Sparkles className="h-5 w-5" />
-              </div>
+
               <div className="flex-1">
                 <h4 className="mb-1 text-sm font-bold">Trial Plan</h4>
                 <p className="mb-3 text-xs text-indigo-100/90">
@@ -289,11 +286,11 @@ export function AppSidebar({
     <Sidebar
       collapsible="icon"
       className={cn(
-        "bg-transparent [&_[data-sidebar=sidebar]]:!bg-transparent",
+        "bg-transparent **:data-[sidebar=sidebar]:bg-transparent!",
         className,
       )}
     >
-      <div className="flex h-full flex-col bg-gradient-to-b from-indigo-600 to-purple-700 text-white shadow-xl">
+      <div className="flex h-full flex-col bg-linear-to-b from-indigo-600 to-purple-700 text-white shadow-xl">
         <AppSidebarContent
           activeKey={activeKey ?? derivedActiveKey}
           onNavigate={handleNavigate}
