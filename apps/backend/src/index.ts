@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser"
 import { prisma } from "./lib/prisma"
 import { Server } from "socket.io"
 import authRoutes from "./routes/auth.routes"
+import filesRoutes from "./routes/files.routes"
 import { ZodError } from "zod"
 import swaggerUi from "swagger-ui-express"
 import { readFileSync } from "fs"
@@ -40,6 +41,7 @@ const openApiSpec = parseYaml(readFileSync(openApiPath, "utf-8"))
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec))
 
 app.use("/api/auth", authRoutes)
+app.use("/api/files", filesRoutes);
 
 app.use(
   (

@@ -109,7 +109,7 @@ function AppSidebarContent({
                       isActive={isActive}
                       tooltip={item.label}
                       className={cn(
-                        "text-indigo-100 hover:bg-white/10 hover:text-white data-[active=true]:bg-white/20 data-[active=true]:text-white",
+                        "text-indigo-50 font-semibold text-sm hover:bg-white/10 hover:text-white data-[active=true]:bg-white/20 data-[active=true]:text-white",
                         "group-data-[collapsible=icon]:size-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:[&>span]:hidden"
                       )}
                       onClick={() => onNavigate?.(item.key, item.href)}
@@ -143,7 +143,7 @@ function AppSidebarContent({
                       isActive={isActive}
                       tooltip={item.label}
                       className={cn(
-                        "text-indigo-100 hover:bg-white/10 hover:text-white data-[active=true]:bg-white/20 data-[active=true]:text-white",
+                        "text-indigo-50 font-semibold hover:bg-white/10 hover:text-white data-[active=true]:bg-white/20 data-[active=true]:text-white",
                         "group-data-[collapsible=icon]:size-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:[&>span]:hidden"
                       )}
                       onClick={() => onNavigate?.(item.key, item.href)}
@@ -196,7 +196,7 @@ function AppSidebarContent({
               onClick={() => onNavigate?.("logout", "#")}
               tooltip="Logout"
               className={cn(
-                "text-indigo-100 hover:bg-white/10 hover:text-white",
+                "text-indigo-50 font-semibold hover:bg-white/10 hover:text-white",
                 "group-data-[collapsible=icon]:size-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:[&>span]:hidden"
               )}
             >
@@ -290,7 +290,7 @@ export function AppSidebar({
         className,
       )}
     >
-      <div className="flex h-full flex-col bg-linear-to-b from-indigo-600 to-purple-700 text-white shadow-xl">
+      <div className="flex h-full flex-col bg-linear-to-br from-blue-950  to-blue-950 text-white shadow-xl">
         <AppSidebarContent
           activeKey={activeKey ?? derivedActiveKey}
           onNavigate={handleNavigate}
