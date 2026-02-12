@@ -447,8 +447,11 @@ router.get("/me", requireAuth, async (req, res) => {
       id: true,
       email: true,
       name: true,
+      image: true,
       platformRole: true,
       emailVerified: true,
+      createdAt: true,
+      updatedAt: true,
       memberships: {
         select: {
           role: true,

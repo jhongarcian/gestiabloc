@@ -9,15 +9,21 @@ export default async function TenantLayout({
   params,
 }: Readonly<{
   children: React.ReactNode
-  params: { tenantSlug: string }
+  params: Promise<{ tenantSlug: string }>
 }>) {
   let user: {
+    id: string
     name: string
+    email: string
     image?: string | null
     platformRole?: string | null
+    emailVerified: boolean
+    createdAt?: string
+    updatedAt?: string
     memberships?: Array<{
       role: string
-      tenant: { slug: string }
+      status: string
+      tenant: { id: string; slug: string; name: string }
     }>
   } | null = null
 
@@ -38,18 +44,35 @@ export default async function TenantLayout({
     redirect("/login")
   }
 
+  const { tenantSlug: slug } = await params
+
   const membership =
-    user.memberships?.find((item) => item.tenant?.slug === params.tenantSlug) ??
+    user.memberships?.find((item) => item.tenant?.slug === slug) ??
     user.memberships?.[0]
   const role = membership?.role ?? null
 
+  if (!membership?.tenant?.slug) {
+    redirect("/login")
+  }
+
+  if (!slug || slug !== membership.tenant.slug) {
+    redirect(`/app/${membership.tenant.slug}`)
+  }
+
   return (
     <TenantShell
-      tenantSlug={params.tenantSlug}
+      tenantSlug={slug}
       user={{
+        id: user.id,
         name: user.name,
+        email: user.email,
         role,
         image: user.image ?? null,
+        platformRole: user.platformRole ?? null,
+        emailVerified: user.emailVerified,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+        memberships: user.memberships ?? [],
       }}
     >
       {children}

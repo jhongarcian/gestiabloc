@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import {
   Breadcrumb,
@@ -38,15 +38,13 @@ import {
 } from "lucide-react"
 
 import { AppSidebar } from "./sidebar"
+import { TenantUserProvider, type TenantUser } from "./tenant-context"
+import { api } from "@/lib/api"
 
 type TenantShellProps = {
   tenantSlug: string
   children: React.ReactNode
-  user: {
-    name: string
-    role?: string | null
-    image?: string | null
-  }
+  user: TenantUser & { role?: string | null }
 }
 
 const formatSegment = (segment: string) =>
@@ -66,8 +64,18 @@ const getInitials = (value: string) => {
 export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
   const pathname = usePathname() ?? ""
   const [profileOpen, setProfileOpen] = useState(false)
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
 
-  const basePath = useMemo(() => `/app/${tenantSlug}`, [tenantSlug])
+  const resolvedTenantSlug = useMemo(() => {
+    if (tenantSlug) return tenantSlug
+    const match = pathname.match(/^\/app\/([^/]+)/)
+    return match?.[1] ?? ""
+  }, [tenantSlug, pathname])
+
+  const basePath = useMemo(
+    () => `/app/${resolvedTenantSlug}`,
+    [resolvedTenantSlug],
+  )
   const segments = useMemo(() => {
     if (!pathname.startsWith(basePath)) {
       return []
@@ -97,6 +105,41 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
     return items
   }, [segments, basePath])
 
+  useEffect(() => {
+    if (!user.image) {
+      setAvatarUrl(null)
+      return
+    }
+
+    if (user.image.startsWith("http")) {
+      setAvatarUrl(user.image)
+      return
+    }
+
+    const tenantId = user.memberships?.find(
+      (item) => item.tenant?.slug === resolvedTenantSlug,
+    )?.tenant?.id
+
+    if (!tenantId) return
+
+    const load = async () => {
+      try {
+        const { data } = await api.post("/api/files/presign-download", {
+          tenantId,
+          key: user.image,
+        })
+        if (data?.url) {
+          console.log("Presigned URL:", data.url)
+          setAvatarUrl(data.url)
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    void load()
+  }, [user.image, user.memberships, resolvedTenantSlug])
+
   return (
     <SidebarProvider className="min-h-screen w-full bg-slate-50">
       <AppSidebar tenantSlug={tenantSlug} className="md:h-full" />
@@ -111,16 +154,18 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
                   {crumbs.map((crumb, index) => {
                     const isLast = index === crumbs.length - 1
                     return (
-                      <BreadcrumbItem key={crumb.href}>
-                        {isLast ? (
-                          <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
-                        ) : (
-                          <BreadcrumbLink asChild>
-                            <Link href={crumb.href}>{crumb.label}</Link>
-                          </BreadcrumbLink>
-                        )}
+                      <div key={crumb.href} className="contents">
+                        <BreadcrumbItem>
+                          {isLast ? (
+                            <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
+                          ) : (
+                            <BreadcrumbLink asChild>
+                              <Link href={crumb.href}>{crumb.label}</Link>
+                            </BreadcrumbLink>
+                          )}
+                        </BreadcrumbItem>
                         {!isLast && <BreadcrumbSeparator />}
-                      </BreadcrumbItem>
+                      </div>
                     )
                   })}
                 </BreadcrumbList>
@@ -152,8 +197,11 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
                 aria-label="Open profile"
               >
                 <Avatar className="h-9 w-9">
-                  {user.image ? (
-                    <AvatarImage src={user.image} alt={user.name} />
+                  {avatarUrl || user.image ? (
+                    <AvatarImage
+                      src={avatarUrl ?? user.image ?? ""}
+                      alt={user.name}
+                    />
                   ) : null}
                   <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
                 </Avatar>
@@ -162,7 +210,9 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
           </div>
         </header>
 
-        <div className="px-4 py-6 md:px-8 bg-slate-100 min-h-screen">{children}</div>
+        <div className="px-4 py-4 md:py-6 md:px-6 bg-slate-100 ">
+          <TenantUserProvider user={user}>{children}</TenantUserProvider>
+        </div>
       </SidebarInset>
 
       <Sheet open={profileOpen} onOpenChange={setProfileOpen}>
@@ -179,8 +229,11 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
             <SheetTitle className="sr-only">Profile</SheetTitle>
             <div className="relative flex flex-col items-center gap-4 bg-linear-to-br from-blue-950 to-blue-900 px-6 py-14 text-center text-white">
               <Avatar className="h-20 w-20 border-4 border-white/70 bg-white/10">
-                {user.image ? (
-                  <AvatarImage src={user.image} alt={user.name} />
+                {avatarUrl || user.image ? (
+                  <AvatarImage
+                    src={avatarUrl ?? user.image ?? ""}
+                    alt={user.name}
+                  />
                 ) : null}
                 <AvatarFallback className="text-white font-bold text-lg bg-transparent ">
                   {getInitials(user.name)}
@@ -206,7 +259,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
               </p>
               <div className="mt-4 space-y-2">
                 <Link
-                  href="/app/profile"
+                  href={`${basePath}/profile`}
                   className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-100"
                   onClick={() => setProfileOpen(false)}
                 >
@@ -218,7 +271,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
                 </Link>
 
                 <Link
-                  href="/app/account-settings"
+                  href={`${basePath}/account-settings`}
                   className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-100"
                   onClick={() => setProfileOpen(false)}
                 >
@@ -230,7 +283,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
                 </Link>
 
                 <Link
-                  href="/app/subscription"
+                  href={`${basePath}/subscription`}
                   className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-100"
                   onClick={() => setProfileOpen(false)}
                 >

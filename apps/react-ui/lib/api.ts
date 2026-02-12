@@ -73,8 +73,11 @@ export type MeResponse = {
     id: string
     email: string
     name: string
+    image?: string | null
     platformRole: string
     emailVerified: boolean
+    createdAt?: string
+    updatedAt?: string
     memberships: Array<{
       role: string
       status: string

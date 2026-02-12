@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { Suspense, useEffect, useState } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { isAxiosError } from "axios"
@@ -9,6 +9,7 @@ import { forgotPassword } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   ArrowLeft,
   Box,
@@ -20,6 +21,14 @@ import {
 } from "lucide-react"
 
 export default function ResetPasswordPanel() {
+  return (
+    <Suspense fallback={<ResetPasswordSkeleton />}>
+      <ResetPasswordPanelContent />
+    </Suspense>
+  )
+}
+
+function ResetPasswordPanelContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [email, setEmail] = useState("")
@@ -201,6 +210,33 @@ export default function ResetPasswordPanel() {
             </a>
           </p>
         </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ResetPasswordSkeleton() {
+  return (
+    <div className="min-h-screen bg-slate-100 flex items-center justify-center px-4 py-6 sm:px-6 sm:py-8">
+      <div className="w-full max-w-xl rounded-3xl shadow-2xl p-6 sm:p-8 bg-white">
+        <div className="w-full max-w-lg mx-auto space-y-6">
+          <div className="space-y-4">
+            <div className="flex flex-col items-center justify-center gap-3">
+              <Skeleton className="h-12 w-12 rounded-2xl" />
+              <Skeleton className="h-8 w-36" />
+            </div>
+            <div className="space-y-2 text-center">
+              <Skeleton className="mx-auto h-8 w-64" />
+              <Skeleton className="mx-auto h-4 w-72" />
+            </div>
+          </div>
+          <div className="space-y-4">
+            <Skeleton className="h-4 w-28" />
+            <Skeleton className="h-12 w-full rounded-2xl" />
+            <Skeleton className="h-12 w-full rounded-2xl" />
+            <Skeleton className="h-24 w-full rounded-2xl" />
+          </div>
         </div>
       </div>
     </div>

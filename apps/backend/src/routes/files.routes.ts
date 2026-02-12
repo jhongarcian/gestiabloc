@@ -5,6 +5,7 @@ import {
   s3KeyForTenantFile,
   s3KeyForTenantAvatar,
   presignGetObject,
+  deleteObject,
 } from "../lib/s3.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 import { randomUUID } from "crypto"
@@ -153,32 +154,53 @@ router.post("/complete-upload", requireAuth, async (req, res) => {
     data: { size },
   })
 
-  if (file.purpose === "AVATAR" && file.createdById === user.id) {
+  let avatarUpdate: { imageKey: string; oldKey?: string } | null = null
+
+  if (file.purpose === "AVATAR") {
+    const targetUserId = file.createdById
+    const existingUser = await prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { image: true },
+    })
+    const oldKey = existingUser?.image ?? null
+
     await prisma.user.update({
-      where: { id: user.id },
+      where: { id: targetUserId },
       data: { image: file.key },
     })
+
+    if (oldKey && oldKey !== file.key) {
+      const oldFile = await prisma.file.findUnique({ where: { key: oldKey } })
+      if (oldFile?.tenantId === file.tenantId) {
+        await prisma.file
+          .delete({ where: { key: oldKey } })
+          .catch(() => {})
+      }
+      await deleteObject({ key: oldKey }).catch(() => {})
+    }
+
+    avatarUpdate = { imageKey: file.key, oldKey: oldKey ?? undefined }
   }
 
-  res.json({ ok: true })
+  res.json({ ok: true, avatarUpdate })
 })
 
 const PresignDownloadSchema = z.object({
-  tenantId: z.string().min(1),
+  tenantId: z.string().min(1).optional(),
   key: z.string().min(1),
 })
 
 router.post("/presign-download", requireAuth, async (req, res) => {
   const user = (req as AuthedRequest).user
-  const { tenantId, key } = PresignDownloadSchema.parse(req.body)
+  const { key } = PresignDownloadSchema.parse(req.body)
 
   const file = await prisma.file.findUnique({ where: { key } })
-  if (!file || file.tenantId !== tenantId) {
+  if (!file) {
     return res.status(404).json({ error: "NOT_FOUND" })
   }
 
   const membership = await prisma.membership.findUnique({
-    where: { userId_tenantId: { userId: user.id, tenantId } },
+    where: { userId_tenantId: { userId: user.id, tenantId: file.tenantId } },
   })
 
   if (!membership || membership.status !== "ACTIVE") {
