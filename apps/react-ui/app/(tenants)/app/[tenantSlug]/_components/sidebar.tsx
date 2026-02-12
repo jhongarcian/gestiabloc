@@ -196,7 +196,7 @@ function AppSidebarContent({
               onClick={() => onNavigate?.("logout", "#")}
               tooltip="Logout"
               className={cn(
-                "text-indigo-50 font-semibold hover:bg-white/10 hover:text-white",
+                "text-indigo-50 font-semibold hover:bg-white/10 hover:text-white cursor-pointer",
                 "group-data-[collapsible=icon]:size-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:[&>span]:hidden"
               )}
             >

@@ -1,8 +1,8 @@
 "use client"
 
 import Link from "next/link"
-import { usePathname } from "next/navigation"
-import { useEffect, useMemo, useState } from "react"
+import { usePathname, useRouter } from "next/navigation"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 import {
   Breadcrumb,
@@ -64,6 +64,7 @@ const getInitials = (value: string) => {
 }
 
 export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
+  const router = useRouter()
   const pathname = usePathname() ?? ""
   const [profileOpen, setProfileOpen] = useState(false)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
@@ -157,6 +158,27 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
     }
   }, [])
 
+  const handleLogout = useCallback(async () => {
+    try {
+      await api.post("/api/auth/logout")
+    } catch {
+      // Even if logout request fails, clear UI state by forcing login route.
+    } finally {
+      setProfileOpen(false)
+      router.replace("/login")
+      router.refresh()
+    }
+  }, [router])
+
+  const handleSidebarNavigate = useCallback(
+    (key: string) => {
+      if (key === "logout") {
+        void handleLogout()
+      }
+    },
+    [handleLogout],
+  )
+
   useEffect(() => {
     setCurrentUser(user)
   }, [user])
@@ -183,7 +205,11 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
 
   return (
     <SidebarProvider className="min-h-screen w-full bg-slate-50">
-      <AppSidebar tenantSlug={tenantSlug} className="md:h-full" />
+      <AppSidebar
+        tenantSlug={tenantSlug}
+        className="md:h-full"
+        onNavigate={handleSidebarNavigate}
+      />
 
       <SidebarInset className="min-w-0 bg-slate-50">
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md supports-backdrop-filter:bg-white/70">
@@ -317,7 +343,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
 
                 {canAccessAccountSettings ? (
                   <Link
-                    href={`${basePath}/account-settings`}
+                    href={`${basePath}/account-settings/account`}
                     className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-100"
                     onClick={() => setProfileOpen(false)}
                   >
@@ -346,6 +372,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
             <div className="mt-auto border-t border-slate-200 px-6 py-4">
               <button
                 type="button"
+                onClick={() => void handleLogout()}
                 className="flex w-full items-center gap-3 px-1 py-2 text-left text-sm font-semibold text-rose-600 transition hover:text-rose-700"
               >
                 <LogOut className="h-4 w-4" />

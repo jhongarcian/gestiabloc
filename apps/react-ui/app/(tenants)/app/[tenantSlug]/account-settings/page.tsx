@@ -6,5 +6,5 @@ export default async function AccountSettingsIndexPage({
   params: Promise<{ tenantSlug: string }>
 }) {
   const { tenantSlug } = await params
-  redirect(`/app/${tenantSlug}/account-settings/users`)
+  redirect(`/app/${tenantSlug}/account-settings/account`)
 }
