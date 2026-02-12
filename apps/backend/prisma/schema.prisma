@@ -55,6 +55,11 @@ enum OtpPurpose {
   LOGIN
 }
 
+enum FilePurpose {
+  AVATAR
+  GENERIC
+}
+
 model User {
   id           String       @id @default(uuid())
   email        String       @unique
@@ -66,6 +71,7 @@ model User {
 
   sessions      Session[]
   memberships Membership[]
+  files       File[]
   loginChallenges LoginChallenge[]
   emailVerifications EmailVerification[]
   passwordResetTokens PasswordResetToken[]
@@ -75,6 +81,26 @@ model User {
   emailVerified Boolean   @default(false)
   image         String?
 
+}
+
+model File {
+  id          String      @id @default(uuid())
+  tenantId    String
+  key         String      @unique
+  contentType String
+  size        Int?
+  createdById String
+  purpose     FilePurpose @default(GENERIC)
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([createdById])
+  @@index([purpose])
 }
 
 model Session {
@@ -153,6 +179,7 @@ model Tenant {
   emailVerified Boolean @default(false)
 
   members      Membership[]
+  files        File[]
   invites      Invite[]
   subscription TenantSubscription?
 

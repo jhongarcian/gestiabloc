@@ -1,14 +1,15 @@
 openapi: 3.0.3
 info:
-  title: Gestiabloc Auth API
+  title: Gestiabloc API
   version: 1.0.0
   description: |
-    Authentication and account lifecycle endpoints for Gestiabloc.
+    Authentication and file upload endpoints for Gestiabloc.
 servers:
   - url: http://localhost:4000
     description: Local backend
 tags:
   - name: Auth
+  - name: Files
 paths:
   /api/auth/register:
     post:
@@ -207,6 +208,166 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
+  /api/files/presign-upload:
+    post:
+      tags: [Files]
+      summary: Get a presigned POST for a generic file upload
+      description: |
+        Step 1 of 2. Use the returned `url` and `fields` to upload directly to S3 via multipart/form-data.
+        The client must send a POST request to `url` with all `fields`, a `Content-Type` field, and the `file` itself.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresignUploadRequest"
+      responses:
+        "200":
+          description: Presigned POST data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresignPostResponse"
+        "400":
+          description: Invalid request or unsupported content type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not authorized for tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/files/presign-avatar-upload:
+    post:
+      tags: [Files]
+      summary: Get a presigned POST for avatar upload
+      description: |
+        Step 1 of 2. Use the returned `url` and `fields` to upload directly to S3 via multipart/form-data.
+        The client must send a POST request to `url` with all `fields`, a `Content-Type` field, and the `file` itself.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresignUploadRequest"
+      responses:
+        "200":
+          description: Presigned POST data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresignPostResponse"
+        "400":
+          description: Invalid request or unsupported content type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not authorized for tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/files/complete-upload:
+    post:
+      tags: [Files]
+      summary: Finalize upload and store metadata
+      description: |
+        Step 2 of 2. Call this after the S3 upload succeeds to store size and update avatar (if applicable).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteUploadRequest"
+      responses:
+        "200":
+          description: Upload finalized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid request or file too large
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not authorized for tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/files/presign-download:
+    post:
+      tags: [Files]
+      summary: Get a presigned URL to download a file
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresignDownloadRequest"
+      responses:
+        "200":
+          description: Presigned URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresignDownloadResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not authorized for tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
 components:
   schemas:
@@ -365,3 +526,49 @@ components:
                         type: string
                       name:
                         type: string
+    PresignUploadRequest:
+      type: object
+      required: [tenantId, filename, contentType]
+      properties:
+        tenantId:
+          type: string
+        filename:
+          type: string
+        contentType:
+          type: string
+          description: "Allowed types: image/png, image/jpeg, image/jpg, image/webp, application/pdf"
+    PresignPostResponse:
+      type: object
+      properties:
+        url:
+          type: string
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+        key:
+          type: string
+        fileId:
+          type: string
+    CompleteUploadRequest:
+      type: object
+      required: [fileId, size]
+      properties:
+        fileId:
+          type: string
+        size:
+          type: integer
+          description: File size in bytes
+    PresignDownloadRequest:
+      type: object
+      required: [tenantId, key]
+      properties:
+        tenantId:
+          type: string
+        key:
+          type: string
+    PresignDownloadResponse:
+      type: object
+      properties:
+        url:
+          type: string

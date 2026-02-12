@@ -1,12 +1,13 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { Suspense, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { isAxiosError } from "axios"
 
 import { verifyEmail } from "@/lib/api"
 import { Button } from "@/components/ui/button"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   Box,
   CheckCircle,
@@ -19,6 +20,14 @@ import {
 type VerifyState = "idle" | "loading" | "success" | "error"
 
 export default function VerifyEmailPage() {
+  return (
+    <Suspense fallback={<VerifyEmailSkeleton />}>
+      <VerifyEmailContent />
+    </Suspense>
+  )
+}
+
+function VerifyEmailContent() {
   const searchParams = useSearchParams()
   const token = searchParams.get("token") || ""
   const [state, setState] = useState<VerifyState>("idle")
@@ -185,6 +194,30 @@ export default function VerifyEmailPage() {
           <div className="mt-10 text-center text-xs text-slate-400 relative z-10">
             © 2024 Gestiabloc Inc. All rights reserved.
           </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function VerifyEmailSkeleton() {
+  return (
+    <div className="min-h-screen bg-white/50 backdrop-blur-sm px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10 flex items-center justify-center">
+      <div className="w-full max-w-2xl bg-white rounded-3xl shadow-2xl p-8 sm:p-10 lg:p-16">
+        <div className="space-y-8">
+          <div className="flex items-center justify-center gap-3">
+            <Skeleton className="h-10 w-10 rounded-xl" />
+            <Skeleton className="h-8 w-40" />
+          </div>
+          <div className="flex justify-center">
+            <Skeleton className="h-20 w-20 rounded-full" />
+          </div>
+          <div className="space-y-3 text-center">
+            <Skeleton className="mx-auto h-10 w-80" />
+            <Skeleton className="mx-auto h-6 w-72" />
+          </div>
+          <Skeleton className="h-36 w-full rounded-2xl" />
+          <Skeleton className="h-12 w-full rounded-xl" />
         </div>
       </div>
     </div>
