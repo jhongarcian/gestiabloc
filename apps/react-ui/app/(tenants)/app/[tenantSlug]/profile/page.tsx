@@ -5,7 +5,6 @@ import { useParams, usePathname } from "next/navigation"
 import {
   Camera,
   KeyRound,
-  Loader2,
   ShieldCheck,
 } from "lucide-react"
 
@@ -147,48 +146,22 @@ export default function ProfilePage() {
 
     setIsUploading(true)
     try {
-      const { data } = await api.post("/api/files/presign-avatar-upload", {
-        tenantId: membership.tenant.id,
-        filename: file.name,
-        contentType,
-      })
-
       const formData = new FormData()
-      Object.entries(data.fields).forEach(([key, value]) => {
-        formData.append(key, value as string)
-      })
-      if (!("Content-Type" in data.fields)) {
-        formData.append("Content-Type", contentType)
-      }
+      formData.append("tenantId", membership.tenant.id)
       formData.append("file", file)
 
-      const uploadRes = await fetch(data.url, {
-        method: "POST",
-        body: formData,
+      const { data } = await api.post("/api/files/avatar-upload", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
       })
-
-      if (!uploadRes.ok) {
+      if (!data?.ok) {
         throw new Error("UPLOAD_FAILED")
       }
 
-      await api.post("/api/files/complete-upload", {
-        fileId: data.fileId,
-        size: file.size,
-      })
-
-      const previewUrl = URL.createObjectURL(file)
-      setAvatarUrl(previewUrl)
-
-      try {
-        const download = await api.post("/api/files/presign-download", {
-          tenantId: membership.tenant.id,
-          key: data.key,
-        })
-        if (download?.data?.url) {
-          setAvatarUrl(download.data.url)
-        }
-      } catch {
-        // Keep local preview if download presign fails.
+      if (data?.imageUrl) {
+        setAvatarUrl(data.imageUrl)
+        window.dispatchEvent(
+          new CustomEvent("avatar-updated", { detail: { imageUrl: data.imageUrl } }),
+        )
       }
     } finally {
       setIsUploading(false)
@@ -227,23 +200,21 @@ export default function ProfilePage() {
           <div className="bg-linear-to-br from-blue-950 to-blue-900 px-6 py-8 text-white">
             <div className="flex flex-col items-center text-center">
               <div className="relative">
+                {isUploading ? (
+                  <div className="pointer-events-none absolute -inset-1 rounded-full border-3 border-emerald-400/80 border-t-transparent animate-spin" />
+                ) : null}
                 <Avatar className="h-24 w-24 border-4 border-white/70 bg-white/10 shadow-sm">
                   {avatarUrl || user?.image ? (
                     <AvatarImage
                       src={avatarUrl ?? user?.image ?? ""}
                       alt={user?.name ?? "User"}
+                      className=" object-cover"
                     />
                   ) : null}
                   <AvatarFallback className="text-lg font-semibold text-white bg-blue-950">
                     {getInitials(user?.name ?? "User")}
                   </AvatarFallback>
                 </Avatar>
-                {isUploading ? (
-                  <div className="absolute inset-0 flex items-center justify-center rounded-full bg-blue-950/70 text-white">
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                    <span className="sr-only">Uploading</span>
-                  </div>
-                ) : null}
                 <button
                   type="button"
                   onClick={handleAvatarClick}
@@ -251,11 +222,7 @@ export default function ProfilePage() {
                   className="absolute bottom-0 right-1 flex h-8 w-8 items-center justify-center rounded-full border-2 border-blue-900 bg-white text-blue-950 shadow-sm transition hover:scale-105 disabled:opacity-60"
                   aria-label="Upload avatar"
                 >
-                  {isUploading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Camera className="h-4 w-4" />
-                  )}
+                  <Camera className="h-4 w-4" />
                 </button>
               </div>
               <input

@@ -246,28 +246,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-  /api/files/presign-avatar-upload:
+  /api/files/avatar-upload:
     post:
       tags: [Files]
-      summary: Get a presigned POST for avatar upload
+      summary: Upload or replace current user avatar (Vercel Blob)
       description: |
-        Step 1 of 2. Use the returned `url` and `fields` to upload directly to S3 via multipart/form-data.
-        The client must send a POST request to `url` with all `fields`, a `Content-Type` field, and the `file` itself.
+        Uploads avatar directly through backend to Vercel Blob.
+        Replaces previous avatar and deletes the old object when upload succeeds.
       requestBody:
         required: true
         content:
-          application/json:
+          multipart/form-data:
             schema:
-              $ref: "#/components/schemas/PresignUploadRequest"
+              $ref: "#/components/schemas/AvatarUploadRequest"
       responses:
         "200":
-          description: Presigned POST data
+          description: Avatar uploaded
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PresignPostResponse"
+                $ref: "#/components/schemas/AvatarUploadResponse"
         "400":
-          description: Invalid request or unsupported content type
+          description: Invalid request, unsupported type, or file too large
           content:
             application/json:
               schema:
@@ -280,49 +280,6 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
           description: Not authorized for tenant
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/files/complete-upload:
-    post:
-      tags: [Files]
-      summary: Finalize upload and store metadata
-      description: |
-        Step 2 of 2. Call this after the S3 upload succeeds to store size and update avatar (if applicable).
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CompleteUploadRequest"
-      responses:
-        "200":
-          description: Upload finalized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OkResponse"
-        "400":
-          description: Invalid request or file too large
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "401":
-          description: Not authenticated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "403":
-          description: Not authorized for tenant
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: File not found
           content:
             application/json:
               schema:
@@ -550,18 +507,28 @@ components:
           type: string
         fileId:
           type: string
-    CompleteUploadRequest:
+    AvatarUploadRequest:
       type: object
-      required: [fileId, size]
+      required: [tenantId, file]
       properties:
+        tenantId:
+          type: string
+        file:
+          type: string
+          format: binary
+    AvatarUploadResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        imageUrl:
+          type: string
         fileId:
           type: string
-        size:
-          type: integer
-          description: File size in bytes
     PresignDownloadRequest:
       type: object
-      required: [tenantId, key]
+      required: [key]
       properties:
         tenantId:
           type: string

@@ -129,7 +129,6 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
           key: user.image,
         })
         if (data?.url) {
-          console.log("Presigned URL:", data.url)
           setAvatarUrl(data.url)
         }
       } catch {
@@ -139,6 +138,20 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
 
     void load()
   }, [user.image, user.memberships, resolvedTenantSlug])
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const customEvent = event as CustomEvent<{ imageUrl?: string }>
+      if (customEvent.detail?.imageUrl) {
+        setAvatarUrl(customEvent.detail.imageUrl)
+      }
+    }
+
+    window.addEventListener("avatar-updated", handler as EventListener)
+    return () => {
+      window.removeEventListener("avatar-updated", handler as EventListener)
+    }
+  }, [])
 
   return (
     <SidebarProvider className="min-h-screen w-full bg-slate-50">
@@ -201,6 +214,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
                     <AvatarImage
                       src={avatarUrl ?? user.image ?? ""}
                       alt={user.name}
+                      className="object-cover"
                     />
                   ) : null}
                   <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
@@ -233,6 +247,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
                   <AvatarImage
                     src={avatarUrl ?? user.image ?? ""}
                     alt={user.name}
+                    className="object-cover"
                   />
                 ) : null}
                 <AvatarFallback className="text-white font-bold text-lg bg-transparent ">
