@@ -28,6 +28,9 @@ const TenantPathSchema = z.object({
 const TenantRecordPathSchema = TenantPathSchema.extend({
   recordId: z.string().min(1),
 });
+const TenantUserPathSchema = TenantPathSchema.extend({
+  userId: z.string().min(1),
+});
 
 const TenantScopedMutationSchema = z
   .object({
@@ -183,6 +186,68 @@ router.get("/:tenantId/users", ...readMiddlewares, async (req, res, next) => {
         totalPages,
       },
       timezone: tenant?.timezone ?? null,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:tenantId/users/:userId", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId, userId } = TenantUserPathSchema.parse(req.params);
+    const now = new Date();
+
+    const member = await prisma.membership.findUnique({
+      where: {
+        userId_tenantId: {
+          tenantId,
+          userId,
+        },
+      },
+      select: {
+        userId: true,
+        role: true,
+        status: true,
+        user: {
+          select: {
+            name: true,
+            email: true,
+            image: true,
+            emailVerified: true,
+            createdAt: true,
+            updatedAt: true,
+            lastLoginAt: true,
+            sessions: {
+              select: { createdAt: true },
+              where: { expiresAt: { gt: now } },
+              orderBy: { createdAt: "desc" },
+              take: 1,
+            },
+          },
+        },
+      },
+    });
+
+    if (!member) {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    return res.json({
+      ok: true,
+      user: {
+        id: member.userId,
+        name: member.user.name,
+        email: member.user.email,
+        avatar: member.user.image ?? null,
+        emailVerified: member.user.emailVerified,
+        isOnline: member.user.sessions.length > 0,
+        sessionCreatedAt: member.user.sessions[0]?.createdAt ?? null,
+        role: member.role,
+        accountStatus: member.status,
+        lastLoginAt: member.user.lastLoginAt ?? null,
+        createdAt: member.user.createdAt,
+        updatedAt: member.user.updatedAt,
+      },
     });
   } catch (error) {
     return next(error);

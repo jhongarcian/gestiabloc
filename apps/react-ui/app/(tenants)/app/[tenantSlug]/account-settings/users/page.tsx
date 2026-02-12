@@ -37,5 +37,10 @@ export default async function AccountSettingsUsersPage({
     redirect(`/app/${tenantSlug}`)
   }
 
-  return <UsersMembersTable tenantId={membership.tenant.id} />
+  return (
+    <UsersMembersTable
+      tenantId={membership.tenant.id}
+      tenantSlug={tenantSlug}
+    />
+  )
 }

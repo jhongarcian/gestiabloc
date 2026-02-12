@@ -211,7 +211,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
         onNavigate={handleSidebarNavigate}
       />
 
-      <SidebarInset className="min-w-0 bg-slate-50">
+      <SidebarInset className="min-w-0 bg-slate-50 flex min-h-screen flex-col">
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md supports-backdrop-filter:bg-white/70">
           <div className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:justify-between ">
             <div className="flex flex-1 items-center gap-3">
@@ -280,8 +280,10 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
           </div>
         </header>
 
-        <div className="px-4 py-4 md:py-6 md:px-6 bg-slate-100 ">
-          <TenantUserProvider user={currentUser}>{children}</TenantUserProvider>
+        <div className="flex flex-1 min-h-0 bg-slate-100 px-4 py-4 md:px-6 md:py-6">
+          <TenantUserProvider user={currentUser}>
+            <div className="flex h-full w-full min-h-0 flex-col">{children}</div>
+          </TenantUserProvider>
         </div>
       </SidebarInset>
 

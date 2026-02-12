@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 
@@ -25,6 +26,7 @@ import { cn } from "@/lib/utils"
 
 type UsersMembersTableProps = {
   tenantId: string
+  tenantSlug: string
 }
 
 type UsersResponse = {
@@ -82,14 +84,11 @@ const formatDateTime = (value: string | null, timezone?: string | null) => {
   return new Intl.DateTimeFormat("en-US", baseOptions).format(date)
 }
 
-const formatSessionState = (
-  isOnline: boolean,
-  sessionCreatedAt: string | null,
-  timezone?: string | null,
-) =>
-  isOnline && sessionCreatedAt
-    ? `Online since ${formatDateTime(sessionCreatedAt, timezone)}`
-    : "Offline"
+const formatRoleLabel = (role: string) =>
+  role === "TENANT_ADMIN" ? "Admin" : role === "TENANT_USER" ? "User" : "User"
+
+const formatAccountStatusLabel = (status: string) =>
+  status === "ACTIVE" ? "Active" : status === "DISABLED" ? "Disabled" : "Unknown"
 
 const getInitials = (value: string) => {
   const parts = value.trim().split(/\s+/)
@@ -104,15 +103,16 @@ function StatusBadge({
   tone,
 }: {
   label: string
-  tone: "success" | "muted"
+  tone: "neutral" | "info" | "accent" | "warning"
 }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold",
-        tone === "success"
-          ? "bg-emerald-100 text-emerald-700"
-          : "bg-slate-100 text-slate-600",
+        "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold tracking-wide",
+        tone === "neutral" && "bg-slate-100 text-slate-700",
+        tone === "info" && "bg-sky-100 text-sky-700",
+        tone === "accent" && "bg-indigo-100 text-indigo-700",
+        tone === "warning" && "bg-amber-100 text-amber-700",
       )}
     >
       {label}
@@ -120,7 +120,8 @@ function StatusBadge({
   )
 }
 
-export function UsersMembersTable({ tenantId }: UsersMembersTableProps) {
+export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTableProps) {
+  const router = useRouter()
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(
     10,
@@ -182,7 +183,7 @@ export function UsersMembersTable({ tenantId }: UsersMembersTableProps) {
   }, [data?.items, page, pageSize, total])
 
   return (
-    <div className="space-y-4">
+    <div className="flex h-full min-h-0 flex-col gap-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold text-slate-900">Tenant Members</h2>
@@ -199,34 +200,54 @@ export function UsersMembersTable({ tenantId }: UsersMembersTableProps) {
         </Button>
       </div>
 
-      <div className="rounded-lg border border-slate-200 bg-white">
-        <Table>
+      <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-slate-200 bg-white">
+        <div className="min-h-0 flex-1 overflow-auto">
+          <Table className="[&_td]:py-1.5 [&_th]:h-8">
           <TableHeader>
             <TableRow>
-              <TableHead className="min-w-44">User</TableHead>
-              <TableHead className="min-w-56">Email</TableHead>
-              <TableHead className="min-w-32">Verified</TableHead>
-              <TableHead className="min-w-36">Account Status</TableHead>
-              <TableHead className="min-w-44">Session</TableHead>
-              <TableHead className="min-w-44">Last Login</TableHead>
+              <TableHead className="min-w-44 text-xs">User</TableHead>
+              <TableHead className="min-w-56 text-xs">Email</TableHead>
+              <TableHead className="min-w-28 text-xs">Role</TableHead>
+              <TableHead className="min-w-32 text-xs">Verified</TableHead>
+              <TableHead className="min-w-36 text-xs">Account Status</TableHead>
+              <TableHead className="min-w-44 text-xs">Session</TableHead>
+              <TableHead className="min-w-44 text-xs">Last Login</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={6} className="py-8 text-center text-slate-500">
+                <TableCell colSpan={7} className="py-8 text-center text-slate-500">
                   Loading members...
                 </TableCell>
               </TableRow>
             ) : errorMessage ? (
               <TableRow>
-                <TableCell colSpan={6} className="py-8 text-center text-rose-600">
+                <TableCell colSpan={7} className="py-8 text-center text-rose-600">
                   {errorMessage}
                 </TableCell>
               </TableRow>
             ) : data?.items.length ? (
-              data.items.map((member) => (
-                <TableRow key={member.id}>
+              data.items.map((member) => {
+                const memberHref = `/app/${tenantSlug}/account-settings/users/${member.id}`
+
+                return (
+                  <TableRow
+                    key={member.id}
+                    tabIndex={0}
+                    role="link"
+                    aria-label={`Open ${member.name} details`}
+                    className="cursor-pointer transition-colors hover:bg-slate-50 focus-visible:bg-slate-50"
+                    onClick={() => {
+                      router.push(memberHref)
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault()
+                        router.push(memberHref)
+                      }
+                    }}
+                  >
                   <TableCell>
                     <div className="flex items-center gap-3">
                       <Avatar className="h-9 w-9 border border-slate-200">
@@ -241,7 +262,6 @@ export function UsersMembersTable({ tenantId }: UsersMembersTableProps) {
                       </Avatar>
                       <div className="min-w-0">
                         <p className="truncate font-medium text-slate-900">{member.name}</p>
-                        <p className="text-xs text-slate-500">{formatSegment(member.role)}</p>
                       </div>
                     </div>
                   </TableCell>
@@ -249,50 +269,52 @@ export function UsersMembersTable({ tenantId }: UsersMembersTableProps) {
                   <TableCell className="text-slate-700">{member.email}</TableCell>
 
                   <TableCell>
+                    <StatusBadge
+                      label={formatRoleLabel(member.role)}
+                      tone={member.role === "TENANT_ADMIN" ? "accent" : "neutral"}
+                    />
+                  </TableCell>
+
+                  <TableCell>
                     {member.emailVerified ? (
-                      <StatusBadge label="Verified" tone="success" />
+                      <StatusBadge label="Verified" tone="info" />
                     ) : (
-                      <StatusBadge label="Not Verified" tone="muted" />
+                      <StatusBadge label="Not Verified" tone="warning" />
                     )}
                   </TableCell>
 
                   <TableCell>
                     <StatusBadge
-                      label={formatSegment(member.accountStatus)}
-                      tone={member.accountStatus === "ACTIVE" ? "success" : "muted"}
+                      label={formatAccountStatusLabel(member.accountStatus)}
+                      tone={member.accountStatus === "ACTIVE" ? "info" : "neutral"}
                     />
                   </TableCell>
 
                   <TableCell>
-                    <div className="flex flex-col gap-1">
+                    <div className="flex flex-col gap-1 w-fit">
                       <StatusBadge
                         label={member.isOnline ? "Online" : "Offline"}
-                        tone={member.isOnline ? "success" : "muted"}
+                        tone={member.isOnline ? "accent" : "neutral"}
                       />
-                      <span className="text-xs text-slate-500">
-                        {formatSessionState(
-                          member.isOnline,
-                          member.sessionCreatedAt,
-                          tenantTimezone,
-                        )}
-                      </span>
                     </div>
                   </TableCell>
 
                   <TableCell className="text-slate-600">
                     {formatDateTime(member.lastLoginAt, tenantTimezone)}
                   </TableCell>
-                </TableRow>
-              ))
+                  </TableRow>
+                )
+              })
             ) : (
               <TableRow>
-                <TableCell colSpan={6} className="py-8 text-center text-slate-500">
+                <TableCell colSpan={7} className="py-8 text-center text-slate-500">
                   No members found.
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
-        </Table>
+          </Table>
+        </div>
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
