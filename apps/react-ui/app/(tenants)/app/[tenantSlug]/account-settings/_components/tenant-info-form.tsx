@@ -281,7 +281,9 @@ export function TenantInfoForm({ tenantId }: TenantInfoFormProps) {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold text-slate-900">Tenant Information</h2>
+        <h2 className="text-lg font-semibold text-slate-900">
+          Tenant Information
+        </h2>
         <p className="text-sm text-slate-500">
           Update your tenant profile, contact details, and location settings.
         </p>
@@ -381,7 +383,10 @@ export function TenantInfoForm({ tenantId }: TenantInfoFormProps) {
             id="tenant-address1"
             value={payload.addressLine1}
             onChange={(event) =>
-              setPayload((prev) => ({ ...prev, addressLine1: event.target.value }))
+              setPayload((prev) => ({
+                ...prev,
+                addressLine1: event.target.value,
+              }))
             }
             placeholder="Address line 1"
           />
@@ -393,7 +398,10 @@ export function TenantInfoForm({ tenantId }: TenantInfoFormProps) {
             id="tenant-address2"
             value={payload.addressLine2}
             onChange={(event) =>
-              setPayload((prev) => ({ ...prev, addressLine2: event.target.value }))
+              setPayload((prev) => ({
+                ...prev,
+                addressLine2: event.target.value,
+              }))
             }
             placeholder="Address line 2"
           />
@@ -429,7 +437,10 @@ export function TenantInfoForm({ tenantId }: TenantInfoFormProps) {
             id="tenant-postal"
             value={payload.postalCode}
             onChange={(event) =>
-              setPayload((prev) => ({ ...prev, postalCode: event.target.value }))
+              setPayload((prev) => ({
+                ...prev,
+                postalCode: event.target.value,
+              }))
             }
             placeholder="Postal code"
           />
@@ -453,7 +464,12 @@ export function TenantInfoForm({ tenantId }: TenantInfoFormProps) {
       ) : null}
 
       <div className="flex justify-end">
-        <Button type="button" onClick={handleSave} disabled={isSaving}>
+        <Button
+          type="button"
+          onClick={handleSave}
+          disabled={isSaving}
+          className="cursor-pointer"
+        >
           {isSaving ? "Saving..." : "Save Changes"}
         </Button>
       </div>

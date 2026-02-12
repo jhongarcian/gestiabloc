@@ -57,9 +57,36 @@ const optionalStringField = (max: number) =>
     z.string().max(max).nullable().optional(),
   );
 
+const optionalEmailField = () =>
+  z.preprocess(
+    (value) => {
+      if (typeof value !== "string") return value;
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    },
+    z.string().email().max(255).nullable().optional(),
+  );
+
+const optionalUrlField = () =>
+  z.preprocess(
+    (value) => {
+      if (typeof value !== "string") return value;
+      const trimmed = value.trim();
+      if (trimmed.length === 0) return null;
+
+      // Accept domain-style input (e.g. "acme.com") and normalize to https URL.
+      if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed)) {
+        return `https://${trimmed}`;
+      }
+
+      return trimmed;
+    },
+    z.string().url().max(255).nullable().optional(),
+  );
+
 const UpdateTenantInfoSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  email: optionalStringField(255),
+  email: optionalEmailField(),
   phone: optionalStringField(60),
   addressLine1: optionalStringField(255),
   addressLine2: optionalStringField(255),
@@ -68,7 +95,7 @@ const UpdateTenantInfoSchema = z.object({
   postalCode: optionalStringField(40),
   country: optionalStringField(120),
   timezone: optionalStringField(100),
-  website: optionalStringField(255),
+  website: optionalUrlField(),
 });
 
 const readMiddlewares = [
