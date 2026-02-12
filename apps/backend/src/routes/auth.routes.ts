@@ -80,6 +80,8 @@ async function issueSession(opts: {
   ipAddress?: string | null
   userAgent?: string | null
 }) {
+  const loginAt = new Date()
+
   // enforce single-session: delete old session first
   await prisma.session.deleteMany({ where: { userId: opts.userId } })
 
@@ -88,15 +90,21 @@ async function issueSession(opts: {
 
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
 
-  await prisma.session.create({
-    data: {
-      userId: opts.userId,
-      tokenHash,
-      expiresAt,
-      ipAddress: opts.ipAddress ?? undefined,
-      userAgent: opts.userAgent ?? undefined,
-    },
-  })
+  await prisma.$transaction([
+    prisma.session.create({
+      data: {
+        userId: opts.userId,
+        tokenHash,
+        expiresAt,
+        ipAddress: opts.ipAddress ?? undefined,
+        userAgent: opts.userAgent ?? undefined,
+      },
+    }),
+    prisma.user.update({
+      where: { id: opts.userId },
+      data: { lastLoginAt: loginAt },
+    }),
+  ])
 
   return { token: raw, expiresAt }
 }
@@ -460,6 +468,7 @@ router.get("/me", requireAuth, async (req, res) => {
       image: true,
       platformRole: true,
       emailVerified: true,
+      lastLoginAt: true,
       createdAt: true,
       updatedAt: true,
       memberships: {
@@ -514,6 +523,7 @@ router.patch("/me", requireAuth, async (req, res, next) => {
         image: true,
         platformRole: true,
         emailVerified: true,
+        lastLoginAt: true,
         createdAt: true,
         updatedAt: true,
         memberships: {

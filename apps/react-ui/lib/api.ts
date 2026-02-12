@@ -76,6 +76,7 @@ export type MeResponse = {
     image?: string | null
     platformRole: string
     emailVerified: boolean
+    lastLoginAt?: string | null
     createdAt?: string
     updatedAt?: string
     memberships: Array<{

@@ -408,12 +408,26 @@ paths:
     get:
       tags: [Account Settings]
       summary: List account-settings resources by section
+      description: |
+        For `section=users`, returns tenant members with pagination.
+        For `section=account`, returns tenant profile information.
+        For other sections, returns `501 NOT_IMPLEMENTED` until implemented.
       security:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
         - $ref: "#/components/parameters/AccountSettingsSectionPathParam"
+        - $ref: "#/components/parameters/AccountSettingsPageQueryParam"
+        - $ref: "#/components/parameters/AccountSettingsPageSizeQueryParam"
       responses:
+        "200":
+          description: Returned when `section=users` or `section=account`
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AccountSettingsUsersListResponse"
+                  - $ref: "#/components/schemas/AccountSettingsTenantInfoResponse"
         "401":
           description: Not authenticated
           content:
@@ -432,6 +446,52 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AccountSettingsNotImplementedCollectionResponse"
+    patch:
+      tags: [Account Settings]
+      summary: Update tenant information
+      description: Only valid when `section=account`.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsSectionPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsTenantInfoUpdateRequest"
+      responses:
+        "200":
+          description: Tenant profile updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsTenantInfoResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     post:
       tags: [Account Settings]
       summary: Create account-settings resource in section
@@ -602,6 +662,7 @@ components:
         type: string
         enum:
           - users
+          - account
           - services
           - professionals
           - follow-ups
@@ -615,6 +676,22 @@ components:
       required: true
       schema:
         type: string
+    AccountSettingsPageQueryParam:
+      in: query
+      name: page
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    AccountSettingsPageSizeQueryParam:
+      in: query
+      name: pageSize
+      required: false
+      schema:
+        type: integer
+        enum: [10, 25]
+        default: 10
   schemas:
     OkResponse:
       type: object
@@ -782,6 +859,10 @@ components:
               type: string
             emailVerified:
               type: boolean
+            lastLoginAt:
+              type: string
+              format: date-time
+              nullable: true
             createdAt:
               type: string
               format: date-time
@@ -903,3 +984,151 @@ components:
         scope:
           type: string
           example: record
+    AccountSettingsUsersListResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsUserItem"
+        pagination:
+          $ref: "#/components/schemas/AccountSettingsPagination"
+        timezone:
+          type: string
+          nullable: true
+          description: Tenant timezone (IANA). If null, clients should use system timezone.
+    AccountSettingsUserItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        avatar:
+          type: string
+          nullable: true
+        emailVerified:
+          type: boolean
+        isOnline:
+          type: boolean
+        sessionCreatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        role:
+          type: string
+          enum: [TENANT_ADMIN, TENANT_USER]
+        accountStatus:
+          type: string
+          enum: [ACTIVE, DISABLED]
+        lastLoginAt:
+          type: string
+          format: date-time
+          nullable: true
+    AccountSettingsPagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        pageSize:
+          type: integer
+          enum: [10, 25]
+        total:
+          type: integer
+        totalPages:
+          type: integer
+    AccountSettingsTenantInfoUpdateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        email:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        addressLine1:
+          type: string
+          nullable: true
+        addressLine2:
+          type: string
+          nullable: true
+        city:
+          type: string
+          nullable: true
+        state:
+          type: string
+          nullable: true
+        postalCode:
+          type: string
+          nullable: true
+        country:
+          type: string
+          nullable: true
+        timezone:
+          type: string
+          nullable: true
+        website:
+          type: string
+          nullable: true
+    AccountSettingsTenantInfoResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        tenant:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            email:
+              type: string
+              nullable: true
+            phone:
+              type: string
+              nullable: true
+            addressLine1:
+              type: string
+              nullable: true
+            addressLine2:
+              type: string
+              nullable: true
+            city:
+              type: string
+              nullable: true
+            state:
+              type: string
+              nullable: true
+            postalCode:
+              type: string
+              nullable: true
+            country:
+              type: string
+              nullable: true
+            timezone:
+              type: string
+              nullable: true
+            website:
+              type: string
+              nullable: true
+            emailVerified:
+              type: boolean
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time

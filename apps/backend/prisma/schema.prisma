@@ -80,6 +80,7 @@ model User {
   updatedAt     DateTime  @updatedAt
   emailVerified Boolean   @default(false)
   image         String?
+  lastLoginAt   DateTime?
 
 }
 

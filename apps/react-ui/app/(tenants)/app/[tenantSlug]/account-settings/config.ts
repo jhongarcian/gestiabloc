@@ -1,4 +1,5 @@
 export const ACCOUNT_SETTINGS_TABS = [
+  { key: "account", label: "Account" },
   { key: "users", label: "Users" },
   { key: "services", label: "Services" },
   { key: "professionals", label: "Professionals" },
@@ -16,6 +17,7 @@ export const ACCOUNT_SETTINGS_SECTIONS = new Set<AccountSettingsSection>(
 )
 
 export const ACCOUNT_SETTINGS_COPY: Record<AccountSettingsSection, string> = {
+  "account": "Manage tenant profile details and contact information.",
   users: "Manage tenant users and access levels.",
   services: "Manage service catalog options for your tenant.",
   professionals: "Manage professionals and assignment settings.",
