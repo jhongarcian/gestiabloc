@@ -53,6 +53,8 @@ const formatSegment = (segment: string) =>
 const formatRole = (role?: string | null) =>
   role ? formatSegment(role.toLowerCase()) : null
 
+const isTenantAdmin = (role?: string | null) => role === "TENANT_ADMIN"
+
 const getInitials = (value: string) => {
   const parts = value.trim().split(/\s+/)
   if (!parts.length) return "U"
@@ -66,6 +68,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
   const [profileOpen, setProfileOpen] = useState(false)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [currentUser, setCurrentUser] = useState(user)
+  const canAccessAccountSettings = isTenantAdmin(currentUser.role)
 
   const resolvedTenantSlug = useMemo(() => {
     if (tenantSlug) return tenantSlug
@@ -312,17 +315,19 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
                   <ChevronRight className="h-4 w-4 text-slate-400" />
                 </Link>
 
-                <Link
-                  href={`${basePath}/account-settings`}
-                  className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-100"
-                  onClick={() => setProfileOpen(false)}
-                >
-                  <div className="flex items-center gap-3">
-                    <Settings className="h-4 w-4 text-slate-500" />
-                    <span>Account Settings</span>
-                  </div>
-                  <ChevronRight className="h-4 w-4 text-slate-400" />
-                </Link>
+                {canAccessAccountSettings ? (
+                  <Link
+                    href={`${basePath}/account-settings`}
+                    className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                    onClick={() => setProfileOpen(false)}
+                  >
+                    <div className="flex items-center gap-3">
+                      <Settings className="h-4 w-4 text-slate-500" />
+                      <span>Account Settings</span>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-slate-400" />
+                  </Link>
+                ) : null}
 
                 <Link
                   href={`${basePath}/subscription`}

@@ -7,6 +7,7 @@ import { prisma } from "./lib/prisma"
 import { Server } from "socket.io"
 import authRoutes from "./routes/auth.routes"
 import filesRoutes from "./routes/files.routes"
+import accountSettingsRoutes from "./routes/account-settings.routes"
 import { ZodError } from "zod"
 import swaggerUi from "swagger-ui-express"
 import { readFileSync } from "fs"
@@ -20,6 +21,24 @@ const env = {
 }
 
 const app = express()
+
+function hasNumericStatus(error: unknown): error is { status: number } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof error.status === "number"
+  )
+}
+
+function hasStringCode(error: unknown): error is { code: string } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+  )
+}
 
 const corsOptions: CorsOptions = {
   origin: env.webOrigin,
@@ -42,6 +61,7 @@ app.use("/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec))
 
 app.use("/api/auth", authRoutes)
 app.use("/api/files", filesRoutes);
+app.use("/api/account-settings", accountSettingsRoutes);
 
 app.use(
   (
@@ -62,9 +82,9 @@ app.use(
 
     console.error("API error:", err)
 
-    const status = typeof (err as any)?.status === "number" ? (err as any).status : 500
+    const status = hasNumericStatus(err) ? err.status : 500
 
-    const prismaCode = (err as any)?.code
+    const prismaCode = hasStringCode(err) ? err.code : null
     if (prismaCode === "P2002") {
       return res.status(409).json({ error: "UNIQUE_CONSTRAINT" })
     }

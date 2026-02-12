@@ -333,8 +333,8 @@ export default function ProfilePage() {
   }
 
   return (
-    <div className="flex flex-col gap-8">
-      <div className="space-y-1">
+    <div className="flex flex-col gap-4">
+      <div className="space-y-0.5">
         <h1 className="text-2xl font-semibold text-slate-900">
           Profile Settings
         </h1>

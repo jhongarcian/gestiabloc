@@ -10,6 +10,7 @@ servers:
 tags:
   - name: Auth
   - name: Files
+  - name: Account Settings
 paths:
   /api/auth/register:
     post:
@@ -403,6 +404,182 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/account-settings/{tenantId}/{section}:
+    get:
+      tags: [Account Settings]
+      summary: List account-settings resources by section
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsSectionPathParam"
+      responses:
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "501":
+          description: Endpoint scaffolded but not implemented yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsNotImplementedCollectionResponse"
+    post:
+      tags: [Account Settings]
+      summary: Create account-settings resource in section
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsSectionPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsMutationRequest"
+      responses:
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "501":
+          description: Endpoint scaffolded but not implemented yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsNotImplementedCollectionResponse"
+  /api/account-settings/{tenantId}/{section}/{recordId}:
+    put:
+      tags: [Account Settings]
+      summary: Replace account-settings record in section
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsSectionPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsMutationRequest"
+      responses:
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "501":
+          description: Endpoint scaffolded but not implemented yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsNotImplementedRecordResponse"
+    patch:
+      tags: [Account Settings]
+      summary: Update account-settings record in section
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsSectionPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsMutationRequest"
+      responses:
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "501":
+          description: Endpoint scaffolded but not implemented yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsNotImplementedRecordResponse"
+    delete:
+      tags: [Account Settings]
+      summary: Delete account-settings record in section
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsSectionPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      responses:
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "501":
+          description: Endpoint scaffolded but not implemented yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsNotImplementedRecordResponse"
 
 components:
   securitySchemes:
@@ -410,6 +587,34 @@ components:
       type: apiKey
       in: cookie
       name: sid
+  parameters:
+    TenantIdPathParam:
+      in: path
+      name: tenantId
+      required: true
+      schema:
+        type: string
+    AccountSettingsSectionPathParam:
+      in: path
+      name: section
+      required: true
+      schema:
+        type: string
+        enum:
+          - users
+          - services
+          - professionals
+          - follow-ups
+          - status-config
+          - features
+          - subscription
+          - custom-fields
+    AccountSettingsRecordIdPathParam:
+      in: path
+      name: recordId
+      required: true
+      schema:
+        type: string
   schemas:
     OkResponse:
       type: object
@@ -657,3 +862,44 @@ components:
       properties:
         url:
           type: string
+    AccountSettingsMutationRequest:
+      type: object
+      properties:
+        tenantId:
+          type: string
+          description: Optional fallback tenant id. Path tenantId is authoritative.
+      additionalProperties: true
+    AccountSettingsNotImplementedCollectionResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: NOT_IMPLEMENTED
+        tenantId:
+          type: string
+        section:
+          type: string
+        method:
+          type: string
+          example: POST
+        scope:
+          type: string
+          example: collection
+    AccountSettingsNotImplementedRecordResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: NOT_IMPLEMENTED
+        tenantId:
+          type: string
+        section:
+          type: string
+        recordId:
+          type: string
+        method:
+          type: string
+          example: PATCH
+        scope:
+          type: string
+          example: record
