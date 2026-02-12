@@ -120,6 +120,8 @@ paths:
     get:
       tags: [Auth]
       summary: Get current user
+      security:
+        - cookieAuth: []
       responses:
         "200":
           description: Current user
@@ -127,6 +129,74 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MeResponse"
+    patch:
+      tags: [Auth]
+      summary: Update current user profile
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMeRequest"
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email already in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/password:
+    patch:
+      tags: [Auth]
+      summary: Update current user password
+      description: Requires current password and enforces 8+ chars, at least one letter, one number, and one symbol.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePasswordRequest"
+      responses:
+        "200":
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid current password or invalid new password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/auth/verify-email:
     get:
       tags: [Auth]
@@ -201,6 +271,8 @@ paths:
     post:
       tags: [Auth]
       summary: Logout
+      security:
+        - cookieAuth: []
       responses:
         "200":
           description: Logged out
@@ -212,6 +284,8 @@ paths:
     post:
       tags: [Files]
       summary: Get a presigned POST for a generic file upload
+      security:
+        - cookieAuth: []
       description: |
         Step 1 of 2. Use the returned `url` and `fields` to upload directly to S3 via multipart/form-data.
         The client must send a POST request to `url` with all `fields`, a `Content-Type` field, and the `file` itself.
@@ -250,6 +324,8 @@ paths:
     post:
       tags: [Files]
       summary: Upload or replace current user avatar (Vercel Blob)
+      security:
+        - cookieAuth: []
       description: |
         Uploads avatar directly through backend to Vercel Blob.
         Replaces previous avatar and deletes the old object when upload succeeds.
@@ -288,6 +364,8 @@ paths:
     post:
       tags: [Files]
       summary: Get a presigned URL to download a file
+      security:
+        - cookieAuth: []
       requestBody:
         required: true
         content:
@@ -327,6 +405,11 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
 
 components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sid
   schemas:
     OkResponse:
       type: object
@@ -445,6 +528,32 @@ components:
         newPassword:
           type: string
           minLength: 8
+          description: Must include at least one letter, one number, and one symbol.
+    UpdateMeRequest:
+      type: object
+      required: [name, email]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        email:
+          type: string
+          format: email
+          maxLength: 255
+    UpdatePasswordRequest:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          maxLength: 200
+        newPassword:
+          type: string
+          minLength: 8
+          maxLength: 200
+          description: Must include at least one letter, one number, and one symbol.
     MeResponse:
       type: object
       properties:
@@ -461,10 +570,19 @@ components:
               format: email
             name:
               type: string
+            image:
+              type: string
+              nullable: true
             platformRole:
               type: string
             emailVerified:
               type: boolean
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
             memberships:
               type: array
               items:

@@ -23,7 +23,7 @@ const app = express()
 
 const corsOptions: CorsOptions = {
   origin: env.webOrigin,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   credentials: true,
 }
 

@@ -6,10 +6,14 @@ import {
   CalendarDays,
   Camera,
   Clock3,
+  Eye,
+  EyeOff,
   KeyRound,
   ShieldCheck,
   UserRoundCheck,
 } from "lucide-react"
+import { isAxiosError } from "axios"
+import { toast } from "sonner"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -84,6 +88,22 @@ export default function ProfilePage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [isUploading, setIsUploading] = useState(false)
+  const [fullName, setFullName] = useState("")
+  const [email, setEmail] = useState("")
+  const [isSavingProfile, setIsSavingProfile] = useState(false)
+  const [profileFieldErrors, setProfileFieldErrors] = useState<
+    Record<string, string>
+  >({})
+  const [currentPassword, setCurrentPassword] = useState("")
+  const [newPassword, setNewPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false)
+  const [showNewPassword, setShowNewPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false)
+  const [passwordFieldErrors, setPasswordFieldErrors] = useState<
+    Record<string, string>
+  >({})
 
   const membership = useMemo(() => {
     if (!user?.memberships?.length) return null
@@ -97,6 +117,11 @@ export default function ProfilePage() {
   const statusLabel = membership?.status
     ? formatSegment(membership.status)
     : "Unknown"
+
+  useEffect(() => {
+    setFullName(user?.name ?? "")
+    setEmail(user?.email ?? "")
+  }, [user?.name, user?.email])
 
   useEffect(() => {
     if (!user?.image || !membership?.tenant?.id) return
@@ -162,17 +187,148 @@ export default function ProfilePage() {
 
       if (data?.imageUrl) {
         setAvatarUrl(data.imageUrl)
+        toast.success("Avatar updated.")
         window.dispatchEvent(
           new CustomEvent("avatar-updated", {
             detail: { imageUrl: data.imageUrl },
           }),
         )
       }
+    } catch {
+      toast.error("Could not update avatar. Please try again.")
     } finally {
       setIsUploading(false)
       if (fileInputRef.current) {
         fileInputRef.current.value = ""
       }
+    }
+  }
+
+  const handleSaveProfile = async () => {
+    setProfileFieldErrors({})
+
+    const payload = {
+      name: fullName.trim(),
+      email: email.trim(),
+    }
+
+    const nextFieldErrors: Record<string, string> = {}
+    if (!payload.name) nextFieldErrors.name = "Full name is required."
+    if (!payload.email) nextFieldErrors.email = "Email is required."
+
+    if (Object.keys(nextFieldErrors).length > 0) {
+      setProfileFieldErrors(nextFieldErrors)
+      return
+    }
+
+    setIsSavingProfile(true)
+    try {
+      await api.patch("/api/auth/me", payload)
+      toast.success("Profile updated.")
+      window.dispatchEvent(
+        new CustomEvent("profile-updated", {
+          detail: { name: payload.name, email: payload.email },
+        }),
+      )
+    } catch (error) {
+      if (isAxiosError(error)) {
+        const code = error.response?.data?.error
+        const details = error.response?.data?.details
+        if (Array.isArray(details)) {
+          const zodErrors: Record<string, string> = {}
+          for (const item of details) {
+            if (item?.path) zodErrors[item.path] = item.message
+          }
+          setProfileFieldErrors(zodErrors)
+        }
+        if (code === "EMAIL_IN_USE") {
+          setProfileFieldErrors((prev) => ({
+            ...prev,
+            email: "That email is already in use.",
+          }))
+        } else if (code && !Array.isArray(details)) {
+          toast.error("Could not save changes. Please try again.")
+        }
+      } else {
+        toast.error("Could not save changes. Please try again.")
+      }
+    } finally {
+      setIsSavingProfile(false)
+    }
+  }
+
+  const handleUpdatePassword = async () => {
+    setPasswordFieldErrors({})
+
+    const nextFieldErrors: Record<string, string> = {}
+    if (!currentPassword) {
+      nextFieldErrors.currentPassword = "Current password is required."
+    }
+    if (!newPassword) {
+      nextFieldErrors.newPassword = "New password is required."
+    }
+    if (!confirmPassword) {
+      nextFieldErrors.confirmPassword = "Confirm your new password."
+    }
+    if (newPassword && confirmPassword && newPassword !== confirmPassword) {
+      nextFieldErrors.confirmPassword = "Passwords do not match."
+    }
+    if (newPassword && newPassword.length < 8) {
+      nextFieldErrors.newPassword = "Password must be at least 8 characters."
+    }
+    if (newPassword && !/[A-Za-z]/.test(newPassword)) {
+      nextFieldErrors.newPassword = "Password must include at least one letter."
+    }
+    if (newPassword && !/[0-9]/.test(newPassword)) {
+      nextFieldErrors.newPassword = "Password must include at least one number."
+    }
+    if (newPassword && !/[^A-Za-z0-9]/.test(newPassword)) {
+      nextFieldErrors.newPassword = "Password must include at least one symbol."
+    }
+
+    if (Object.keys(nextFieldErrors).length > 0) {
+      setPasswordFieldErrors(nextFieldErrors)
+      return
+    }
+
+    setIsUpdatingPassword(true)
+    try {
+      await api.patch("/api/auth/me/password", {
+        currentPassword,
+        newPassword,
+      })
+      setCurrentPassword("")
+      setNewPassword("")
+      setConfirmPassword("")
+      toast.success("Password updated.")
+    } catch (error) {
+      if (isAxiosError(error)) {
+        const code = error.response?.data?.error
+        const details = error.response?.data?.details
+        if (Array.isArray(details)) {
+          const zodErrors: Record<string, string> = {}
+          for (const item of details) {
+            if (item?.path) zodErrors[item.path] = item.message
+          }
+          setPasswordFieldErrors(zodErrors)
+          return
+        }
+        if (code === "INVALID_CURRENT_PASSWORD") {
+          setPasswordFieldErrors({
+            currentPassword: "Current password is invalid.",
+          })
+          return
+        }
+        if (code === "NEW_PASSWORD_SAME_AS_CURRENT") {
+          setPasswordFieldErrors({
+            newPassword: "Use a different password than your current one.",
+          })
+          return
+        }
+      }
+      toast.error("Could not update password. Please try again.")
+    } finally {
+      setIsUpdatingPassword(false)
     }
   }
 
@@ -211,7 +367,7 @@ export default function ProfilePage() {
                   type="button"
                   onClick={handleAvatarClick}
                   disabled={isUploading}
-                  className="absolute bottom-0 right-1 flex h-8 w-8 items-center justify-center rounded-full border-2 border-blue-900 bg-white text-blue-950 shadow-sm transition hover:scale-105 disabled:opacity-60"
+                  className="absolute bottom-0 right-1 flex h-8 w-8 items-center justify-center rounded-full border-2 border-blue-900 bg-white text-blue-950 shadow-sm transition hover:scale-105 disabled:opacity-60 cursor-pointer"
                   aria-label="Upload avatar"
                 >
                   <Camera className="h-4 w-4" />
@@ -231,10 +387,10 @@ export default function ProfilePage() {
               ) : null}
               <div className="mt-4 space-y-1">
                 <CardTitle className="text-xl text-white">
-                  {user?.name ?? "User"}
+                  {fullName || "User"}
                 </CardTitle>
                 <CardDescription className="text-sm text-indigo-100">
-                  {user?.email ?? ""}
+                  {email || ""}
                 </CardDescription>
               </div>
             </div>
@@ -299,26 +455,52 @@ export default function ProfilePage() {
                   <Label htmlFor="fullName">Full Name</Label>
                   <Input
                     id="fullName"
-                    defaultValue={user?.name ?? ""}
+                    value={fullName}
+                    onChange={(event) => setFullName(event.target.value)}
                     placeholder="Full name"
+                    className={
+                      profileFieldErrors.name
+                        ? "border-red-300 focus-visible:ring-red-200"
+                        : undefined
+                    }
                   />
+                  {profileFieldErrors.name ? (
+                    <p className="text-xs text-red-600">
+                      {profileFieldErrors.name}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="email">Email Address</Label>
                   <Input
                     id="email"
                     type="email"
-                    defaultValue={user?.email ?? ""}
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
                     placeholder="Email address"
+                    className={
+                      profileFieldErrors.email
+                        ? "border-red-300 focus-visible:ring-red-200"
+                        : undefined
+                    }
                   />
+                  {profileFieldErrors.email ? (
+                    <p className="text-xs text-red-600">
+                      {profileFieldErrors.email}
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </CardContent>
             <CardContent className="pt-0">
               <div className="flex flex-wrap items-center justify-end gap-3">
-                <Button className="gap-2 bg-blue-950 hover:bg-blue-900">
+                <Button
+                  className="gap-2 bg-blue-950 hover:bg-blue-900 cursor-pointer"
+                  onClick={handleSaveProfile}
+                  disabled={isSavingProfile}
+                >
                   <ShieldCheck className="h-4 w-4" />
-                  Save Changes
+                  {isSavingProfile ? "Saving..." : "Save Changes"}
                 </Button>
               </div>
             </CardContent>
@@ -332,39 +514,135 @@ export default function ProfilePage() {
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="currentPassword">Current Password</Label>
-                <Input
-                  id="currentPassword"
-                  type="password"
-                  placeholder="Enter current password"
-                />
+                <div className="relative">
+                  <Input
+                    id="currentPassword"
+                    type={showCurrentPassword ? "text" : "password"}
+                    placeholder="Enter current password"
+                    value={currentPassword}
+                    onChange={(event) => setCurrentPassword(event.target.value)}
+                    className={
+                      passwordFieldErrors.currentPassword
+                        ? "border-red-300 pr-10 focus-visible:ring-red-200"
+                        : "pr-10"
+                    }
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCurrentPassword((prev) => !prev)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    aria-label={
+                      showCurrentPassword
+                        ? "Hide current password"
+                        : "Show current password"
+                    }
+                  >
+                    {showCurrentPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+                {passwordFieldErrors.currentPassword ? (
+                  <p className="text-xs text-red-600">
+                    {passwordFieldErrors.currentPassword}
+                  </p>
+                ) : null}
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="newPassword">New Password</Label>
-                  <Input
-                    id="newPassword"
-                    type="password"
-                    placeholder="New password"
-                  />
+                  <div className="relative">
+                    <Input
+                      id="newPassword"
+                      type={showNewPassword ? "text" : "password"}
+                      placeholder="New password"
+                      value={newPassword}
+                      onChange={(event) => setNewPassword(event.target.value)}
+                      className={
+                        passwordFieldErrors.newPassword
+                          ? "border-red-300 pr-10 focus-visible:ring-red-200"
+                          : "pr-10"
+                      }
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword((prev) => !prev)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                      aria-label={
+                        showNewPassword
+                          ? "Hide new password"
+                          : "Show new password"
+                      }
+                    >
+                      {showNewPassword ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                  {passwordFieldErrors.newPassword ? (
+                    <p className="text-xs text-red-600">
+                      {passwordFieldErrors.newPassword}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="confirmPassword">Confirm New Password</Label>
-                  <Input
-                    id="confirmPassword"
-                    type="password"
-                    placeholder="Confirm new password"
-                  />
+                  <div className="relative">
+                    <Input
+                      id="confirmPassword"
+                      type={showConfirmPassword ? "text" : "password"}
+                      placeholder="Confirm new password"
+                      value={confirmPassword}
+                      onChange={(event) =>
+                        setConfirmPassword(event.target.value)
+                      }
+                      className={
+                        passwordFieldErrors.confirmPassword
+                          ? "border-red-300 pr-10 focus-visible:ring-red-200"
+                          : "pr-10"
+                      }
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword((prev) => !prev)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                      aria-label={
+                        showConfirmPassword
+                          ? "Hide confirm password"
+                          : "Show confirm password"
+                      }
+                    >
+                      {showConfirmPassword ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                  {passwordFieldErrors.confirmPassword ? (
+                    <p className="text-xs text-red-600">
+                      {passwordFieldErrors.confirmPassword}
+                    </p>
+                  ) : null}
                 </div>
               </div>
               <Separator className="my-2" />
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-xs text-slate-500">
                   <KeyRound className="h-3.5 w-3.5" />
-                  Use at least 8 characters, including a number.
+                  Use at least 8 characters, including 1 letter, 1 number and 1 symbol.
                 </div>
-                <Button className="gap-2 bg-blue-950 hover:bg-blue-900">
+                <Button
+                  className="gap-2 bg-blue-950 hover:bg-blue-900 cursor-pointer"
+                  onClick={handleUpdatePassword}
+                  disabled={isUpdatingPassword}
+                >
                   <ShieldCheck className="h-4 w-4" />
-                  Update Password
+                  {isUpdatingPassword ? "Updating..." : "Update Password"}
                 </Button>
               </div>
             </CardContent>
