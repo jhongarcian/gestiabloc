@@ -23,6 +23,7 @@ export default async function TenantLayout({
     memberships?: Array<{
       role: string
       status: string
+      securityLevel?: "LOW" | "MEDIUM" | "MAX"
       tenant: { id: string; slug: string; name: string }
     }>
   } | null = null

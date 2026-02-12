@@ -255,6 +255,7 @@ router.post("/tenant/signup", async (req, res, next) => {
           tenantId: tenant.id,
           userId: user.id,
           role: "TENANT_ADMIN",
+          securityLevel: "MAX",
         },
       })
 
@@ -475,6 +476,7 @@ router.get("/me", requireAuth, async (req, res) => {
         select: {
           role: true,
           status: true,
+          securityLevel: true,
           tenant: { select: { id: true, slug: true, name: true } },
         },
       },
@@ -530,6 +532,7 @@ router.patch("/me", requireAuth, async (req, res, next) => {
           select: {
             role: true,
             status: true,
+            securityLevel: true,
             tenant: { select: { id: true, slug: true, name: true } },
           },
         },

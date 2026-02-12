@@ -101,6 +101,10 @@ const UpdateTenantInfoSchema = z.object({
   website: optionalUrlField(),
 });
 
+const UpdateMemberSecurityLevelSchema = z.object({
+  securityLevel: z.enum(["LOW", "MEDIUM", "MAX"]),
+});
+
 const readMiddlewares = [
   requireAuth,
   requireTenantAdmin({
@@ -137,6 +141,7 @@ router.get("/:tenantId/users", ...readMiddlewares, async (req, res, next) => {
           userId: true,
           role: true,
           status: true,
+          securityLevel: true,
           user: {
             select: {
               name: true,
@@ -177,6 +182,7 @@ router.get("/:tenantId/users", ...readMiddlewares, async (req, res, next) => {
         sessionCreatedAt: member.user.sessions[0]?.createdAt ?? null,
         role: member.role,
         accountStatus: member.status,
+        securityLevel: member.securityLevel,
         lastLoginAt: member.user.lastLoginAt ?? null,
       })),
       pagination: {
@@ -208,6 +214,7 @@ router.get("/:tenantId/users/:userId", ...readMiddlewares, async (req, res, next
         userId: true,
         role: true,
         status: true,
+        securityLevel: true,
         user: {
           select: {
             name: true,
@@ -244,6 +251,7 @@ router.get("/:tenantId/users/:userId", ...readMiddlewares, async (req, res, next
         sessionCreatedAt: member.user.sessions[0]?.createdAt ?? null,
         role: member.role,
         accountStatus: member.status,
+        securityLevel: member.securityLevel,
         lastLoginAt: member.user.lastLoginAt ?? null,
         createdAt: member.user.createdAt,
         updatedAt: member.user.updatedAt,
@@ -253,6 +261,72 @@ router.get("/:tenantId/users/:userId", ...readMiddlewares, async (req, res, next
     return next(error);
   }
 });
+
+router.patch(
+  "/:tenantId/users/:userId/security-level",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      const { tenantId, userId } = TenantUserPathSchema.parse(req.params);
+      const { securityLevel } = UpdateMemberSecurityLevelSchema.parse(req.body);
+
+      const existingMembership = await prisma.membership.findUnique({
+        where: {
+          userId_tenantId: {
+            tenantId,
+            userId,
+          },
+        },
+        select: {
+          userId: true,
+          tenantId: true,
+          role: true,
+          status: true,
+          securityLevel: true,
+        },
+      });
+
+      if (!existingMembership) {
+        return res.status(404).json({ error: "USER_NOT_FOUND" });
+      }
+
+      if (
+        existingMembership.role === "TENANT_ADMIN" &&
+        securityLevel !== "MAX"
+      ) {
+        return res.status(400).json({
+          error: "TENANT_ADMIN_SECURITY_LEVEL_FIXED",
+        });
+      }
+
+      const membership = await prisma.membership.update({
+        where: {
+          userId_tenantId: {
+            tenantId,
+            userId,
+          },
+        },
+        data: {
+          securityLevel,
+        },
+        select: {
+          userId: true,
+          tenantId: true,
+          role: true,
+          status: true,
+          securityLevel: true,
+        },
+      });
+
+      return res.json({
+        ok: true,
+        membership,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 router.get("/:tenantId/account", ...readMiddlewares, async (req, res, next) => {
   try {

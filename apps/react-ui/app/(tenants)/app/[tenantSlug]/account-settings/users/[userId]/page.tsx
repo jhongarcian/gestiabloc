@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation"
 
 import { Button } from "@/components/ui/button"
 import { api, type MeResponse } from "@/lib/api"
+import { UserSecurityLevelControl } from "../../_components/user-security-level-control"
 
 type UserDetailsResponse = {
   ok: boolean
@@ -17,6 +18,7 @@ type UserDetailsResponse = {
     sessionCreatedAt: string | null
     role: string
     accountStatus: string
+    securityLevel: "LOW" | "MEDIUM" | "MAX"
     lastLoginAt: string | null
     createdAt: string
     updatedAt: string
@@ -38,6 +40,9 @@ const formatDateTime = (value: string | null) => {
     minute: "2-digit",
   }).format(date)
 }
+
+const formatSecurityLevelLabel = (level: "LOW" | "MEDIUM" | "MAX") =>
+  level === "LOW" ? "Low" : level === "MEDIUM" ? "Medium" : "Max"
 
 export default async function AccountSettingsUserDetailsPage({
   params,
@@ -108,6 +113,12 @@ export default async function AccountSettingsUserDetailsPage({
           <p className="mt-1 text-sm font-medium text-slate-900">{formatSegment(userDetails.role)}</p>
         </div>
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <p className="text-xs text-slate-500">Security Level</p>
+          <p className="mt-1 text-sm font-medium text-slate-900">
+            {formatSecurityLevelLabel(userDetails.securityLevel)}
+          </p>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
           <p className="text-xs text-slate-500">Account Status</p>
           <p className="mt-1 text-sm font-medium text-slate-900">{formatSegment(userDetails.accountStatus)}</p>
         </div>
@@ -136,6 +147,13 @@ export default async function AccountSettingsUserDetailsPage({
           </p>
         </div>
       </div>
+
+      <UserSecurityLevelControl
+        tenantId={membership.tenant.id}
+        userId={userDetails.id}
+        role={userDetails.role}
+        initialSecurityLevel={userDetails.securityLevel}
+      />
     </section>
   )
 }

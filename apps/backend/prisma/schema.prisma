@@ -30,6 +30,12 @@ enum MembershipStatus {
   DISABLED
 }
 
+enum SecurityLevel {
+  LOW
+  MEDIUM
+  MAX
+}
+
 enum InviteStatus {
   PENDING
   ACCEPTED
@@ -208,6 +214,7 @@ model Membership {
   tenantId String
   role     TenantRole
   status   MembershipStatus @default(ACTIVE)
+  securityLevel SecurityLevel @default(LOW)
 
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -215,6 +222,7 @@ model Membership {
   @@unique([userId, tenantId])
   @@index([tenantId])
   @@index([userId])
+  @@index([tenantId, securityLevel])
 }
 
 model Invite {

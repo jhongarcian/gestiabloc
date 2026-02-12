@@ -33,6 +33,7 @@ import { useTenantUser } from "../_components/tenant-context"
 type Membership = {
   role: string
   status: string
+  securityLevel?: "LOW" | "MEDIUM" | "MAX"
   tenant: { id: string; slug: string; name: string }
 }
 

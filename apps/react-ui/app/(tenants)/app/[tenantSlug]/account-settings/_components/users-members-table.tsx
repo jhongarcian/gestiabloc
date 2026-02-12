@@ -41,6 +41,7 @@ type UsersResponse = {
     sessionCreatedAt: string | null
     role: string
     accountStatus: string
+    securityLevel: "LOW" | "MEDIUM" | "MAX"
     lastLoginAt: string | null
   }>
   pagination: {
@@ -89,6 +90,9 @@ const formatRoleLabel = (role: string) =>
 
 const formatAccountStatusLabel = (status: string) =>
   status === "ACTIVE" ? "Active" : status === "DISABLED" ? "Disabled" : "Unknown"
+
+const formatSecurityLevelLabel = (level: "LOW" | "MEDIUM" | "MAX") =>
+  level === "LOW" ? "Low" : level === "MEDIUM" ? "Medium" : "Max"
 
 const getInitials = (value: string) => {
   const parts = value.trim().split(/\s+/)
@@ -208,6 +212,7 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
               <TableHead className="min-w-44 text-xs">User</TableHead>
               <TableHead className="min-w-56 text-xs">Email</TableHead>
               <TableHead className="min-w-28 text-xs">Role</TableHead>
+              <TableHead className="min-w-28 text-xs">Security</TableHead>
               <TableHead className="min-w-32 text-xs">Verified</TableHead>
               <TableHead className="min-w-36 text-xs">Account Status</TableHead>
               <TableHead className="min-w-44 text-xs">Session</TableHead>
@@ -217,13 +222,13 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={7} className="py-8 text-center text-slate-500">
+                <TableCell colSpan={8} className="py-8 text-center text-slate-500">
                   Loading members...
                 </TableCell>
               </TableRow>
             ) : errorMessage ? (
               <TableRow>
-                <TableCell colSpan={7} className="py-8 text-center text-rose-600">
+                <TableCell colSpan={8} className="py-8 text-center text-rose-600">
                   {errorMessage}
                 </TableCell>
               </TableRow>
@@ -274,6 +279,18 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
                       tone={member.role === "TENANT_ADMIN" ? "accent" : "neutral"}
                     />
                   </TableCell>
+                  <TableCell>
+                    <StatusBadge
+                      label={formatSecurityLevelLabel(member.securityLevel)}
+                      tone={
+                        member.securityLevel === "MAX"
+                          ? "accent"
+                          : member.securityLevel === "MEDIUM"
+                            ? "warning"
+                            : "neutral"
+                      }
+                    />
+                  </TableCell>
 
                   <TableCell>
                     {member.emailVerified ? (
@@ -307,7 +324,7 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
               })
             ) : (
               <TableRow>
-                <TableCell colSpan={7} className="py-8 text-center text-slate-500">
+                <TableCell colSpan={8} className="py-8 text-center text-slate-500">
                   No members found.
                 </TableCell>
               </TableRow>

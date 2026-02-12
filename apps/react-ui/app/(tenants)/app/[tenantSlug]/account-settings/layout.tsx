@@ -18,6 +18,7 @@ export default async function AccountSettingsLayout({
     memberships?: Array<{
       role: string
       status: string
+      securityLevel?: "LOW" | "MEDIUM" | "MAX"
       tenant: { slug: string }
     }>
   } | null = null

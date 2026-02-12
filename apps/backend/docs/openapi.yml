@@ -640,6 +640,57 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AccountSettingsNotImplementedRecordResponse"
+  /api/account-settings/{tenantId}/users/{userId}/security-level:
+    patch:
+      tags: [Account Settings]
+      summary: Update member security level
+      description: Tenant-admin only. Tenant admins are fixed at `MAX`.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMemberSecurityLevelRequest"
+      responses:
+        "200":
+          description: Security level updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateMemberSecurityLevelResponse"
+        "400":
+          description: Invalid request or invalid level for tenant admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Member not found for tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
 components:
   securitySchemes:
@@ -878,6 +929,9 @@ components:
                     type: string
                   status:
                     type: string
+                  securityLevel:
+                    type: string
+                    enum: [LOW, MEDIUM, MAX]
                   tenant:
                     type: object
                     properties:
@@ -1027,6 +1081,9 @@ components:
         accountStatus:
           type: string
           enum: [ACTIVE, DISABLED]
+        securityLevel:
+          type: string
+          enum: [LOW, MEDIUM, MAX]
         lastLoginAt:
           type: string
           format: date-time
@@ -1132,3 +1189,32 @@ components:
             updatedAt:
               type: string
               format: date-time
+    UpdateMemberSecurityLevelRequest:
+      type: object
+      required: [securityLevel]
+      properties:
+        securityLevel:
+          type: string
+          enum: [LOW, MEDIUM, MAX]
+    UpdateMemberSecurityLevelResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        membership:
+          type: object
+          properties:
+            userId:
+              type: string
+            tenantId:
+              type: string
+            role:
+              type: string
+              enum: [TENANT_ADMIN, TENANT_USER]
+            status:
+              type: string
+              enum: [ACTIVE, DISABLED]
+            securityLevel:
+              type: string
+              enum: [LOW, MEDIUM, MAX]
