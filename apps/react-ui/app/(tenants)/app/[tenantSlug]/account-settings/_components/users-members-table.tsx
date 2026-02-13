@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { ShieldCheck, XCircle } from "lucide-react"
 import { isAxiosError } from "axios"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -21,8 +22,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { CreateUserDialog } from "./create-user-dialog"
 
 type UsersMembersTableProps = {
   tenantId: string
@@ -50,6 +58,12 @@ type UsersResponse = {
     total: number
     totalPages: number
   }
+  seatUsage: {
+    used: number
+    limit: number
+    available: number
+    planKey: "STARTER" | "PRO" | "BUSINESS"
+  } | null
   timezone: string | null
 }
 
@@ -93,6 +107,9 @@ const formatAccountStatusLabel = (status: string) =>
 
 const formatSecurityLevelLabel = (level: "LOW" | "MEDIUM" | "MAX") =>
   level === "LOW" ? "Low" : level === "MEDIUM" ? "Medium" : "Max"
+
+const formatPlanLabel = (planKey: "STARTER" | "PRO" | "BUSINESS") =>
+  planKey.toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase())
 
 const getInitials = (value: string) => {
   const parts = value.trim().split(/\s+/)
@@ -171,9 +188,11 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
 
   const total = data?.pagination.total ?? 0
   const totalPages = data?.pagination.totalPages ?? 1
+  const seatUsage = data?.seatUsage ?? null
   const tenantTimezone = data?.timezone ?? null
   const canGoPrevious = page > 1
   const canGoNext = page < totalPages
+  const isSeatLimitReached = seatUsage ? seatUsage.used >= seatUsage.limit : false
 
   const summaryLabel = useMemo(() => {
     if (!data?.items?.length) {
@@ -192,43 +211,71 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
         <div>
           <h2 className="text-lg font-semibold text-slate-900">Tenant Members</h2>
           <p className="text-sm text-slate-500">{summaryLabel}</p>
-          <p className="text-xs text-slate-400">
-            {tenantTimezone
-              ? `Times shown in tenant timezone (${tenantTimezone}).`
-              : "Times shown in system timezone."}
-          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <StatusBadge
+              label={
+                tenantTimezone
+                  ? `Timezone: ${tenantTimezone}`
+                  : "Timezone: System default"
+              }
+              tone="neutral"
+            />
+            {seatUsage ? (
+              <>
+                <StatusBadge
+                  label={`Seats: ${seatUsage.used}/${seatUsage.limit}`}
+                  tone={isSeatLimitReached ? "warning" : "info"}
+                />
+                <StatusBadge
+                  label={`Available: ${seatUsage.available}`}
+                  tone={seatUsage.available > 0 ? "accent" : "warning"}
+                />
+                <StatusBadge
+                  label={`${formatPlanLabel(seatUsage.planKey)} Plan`}
+                  tone="neutral"
+                />
+              </>
+            ) : (
+              <StatusBadge label="Seat usage unavailable" tone="warning" />
+            )}
+          </div>
         </div>
 
-        <Button type="button" className="sm:self-start">
-          Add User
-        </Button>
+        <CreateUserDialog
+          tenantId={tenantId}
+          onCreated={load}
+          disabled={isSeatLimitReached}
+          disabledReason={
+            isSeatLimitReached
+              ? "Seat limit reached. Upgrade plan to add more users."
+              : undefined
+          }
+        />
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-slate-200 bg-white">
         <div className="min-h-0 flex-1 overflow-auto">
-          <Table className="[&_td]:py-1.5 [&_th]:h-8">
+          <Table className="[&_td]:py-2 [&_th]:h-8">
           <TableHeader>
             <TableRow>
               <TableHead className="min-w-44 text-xs">User</TableHead>
               <TableHead className="min-w-56 text-xs">Email</TableHead>
               <TableHead className="min-w-28 text-xs">Role</TableHead>
               <TableHead className="min-w-28 text-xs">Security</TableHead>
-              <TableHead className="min-w-32 text-xs">Verified</TableHead>
               <TableHead className="min-w-36 text-xs">Account Status</TableHead>
-              <TableHead className="min-w-44 text-xs">Session</TableHead>
               <TableHead className="min-w-44 text-xs">Last Login</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={8} className="py-8 text-center text-slate-500">
+                <TableCell colSpan={6} className="py-8 text-center text-slate-500">
                   Loading members...
                 </TableCell>
               </TableRow>
             ) : errorMessage ? (
               <TableRow>
-                <TableCell colSpan={8} className="py-8 text-center text-rose-600">
+                <TableCell colSpan={6} className="py-8 text-center text-rose-600">
                   {errorMessage}
                 </TableCell>
               </TableRow>
@@ -242,7 +289,7 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
                     tabIndex={0}
                     role="link"
                     aria-label={`Open ${member.name} details`}
-                    className="cursor-pointer transition-colors hover:bg-slate-50 focus-visible:bg-slate-50"
+                    className="cursor-pointer transition-colors hover:bg-slate-50 focus-visible:bg-slate-50 py-2"
                     onClick={() => {
                       router.push(memberHref)
                     }}
@@ -254,24 +301,73 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
                     }}
                   >
                   <TableCell>
-                    <div className="flex items-center gap-3">
-                      <Avatar className="h-9 w-9 border border-slate-200">
-                        {member.avatar ? (
-                          <AvatarImage
-                            src={member.avatar}
-                            alt={member.name}
-                            className="object-cover border border-blue-950"
-                          />
-                        ) : null}
-                        <AvatarFallback>{getInitials(member.name)}</AvatarFallback>
-                      </Avatar>
+                    <div className="flex items-center gap-2.5">
+                      {member.isOnline ? (
+                        <TooltipProvider delayDuration={120}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="inline-flex rounded-full ring-2 ring-emerald-500 ring-offset-1 ring-offset-white">
+                                <Avatar className="h-8 w-8 border border-slate-200">
+                                  {member.avatar ? (
+                                    <AvatarImage
+                                      src={member.avatar}
+                                      alt={member.name}
+                                      className="object-cover border border-blue-950"
+                                    />
+                                  ) : null}
+                                  <AvatarFallback>{getInitials(member.name)}</AvatarFallback>
+                                </Avatar>
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">Online</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : (
+                        <Avatar className="h-8 w-8 border border-slate-200">
+                          {member.avatar ? (
+                            <AvatarImage
+                              src={member.avatar}
+                              alt={member.name}
+                              className="object-cover border border-blue-950"
+                            />
+                          ) : null}
+                          <AvatarFallback>{getInitials(member.name)}</AvatarFallback>
+                        </Avatar>
+                      )}
                       <div className="min-w-0">
                         <p className="truncate font-medium text-slate-900">{member.name}</p>
                       </div>
                     </div>
                   </TableCell>
 
-                  <TableCell className="text-slate-700">{member.email}</TableCell>
+                  <TableCell className="text-slate-700">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate">{member.email}</span>
+                      <TooltipProvider delayDuration={120}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span
+                              className={cn(
+                                "inline-flex shrink-0 items-center",
+                                member.emailVerified
+                                  ? "text-emerald-600"
+                                  : "text-rose-600",
+                              )}
+                            >
+                              {member.emailVerified ? (
+                                <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                              ) : (
+                                <XCircle className="h-4 w-4" aria-hidden="true" />
+                              )}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="top">
+                            {member.emailVerified ? "Verified" : "Not Verified"}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
+                  </TableCell>
 
                   <TableCell>
                     <StatusBadge
@@ -293,27 +389,10 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
                   </TableCell>
 
                   <TableCell>
-                    {member.emailVerified ? (
-                      <StatusBadge label="Verified" tone="info" />
-                    ) : (
-                      <StatusBadge label="Not Verified" tone="warning" />
-                    )}
-                  </TableCell>
-
-                  <TableCell>
                     <StatusBadge
                       label={formatAccountStatusLabel(member.accountStatus)}
                       tone={member.accountStatus === "ACTIVE" ? "info" : "neutral"}
                     />
-                  </TableCell>
-
-                  <TableCell>
-                    <div className="flex flex-col gap-1 w-fit">
-                      <StatusBadge
-                        label={member.isOnline ? "Online" : "Offline"}
-                        tone={member.isOnline ? "accent" : "neutral"}
-                      />
-                    </div>
                   </TableCell>
 
                   <TableCell className="text-slate-600">
@@ -324,7 +403,7 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
               })
             ) : (
               <TableRow>
-                <TableCell colSpan={8} className="py-8 text-center text-slate-500">
+                <TableCell colSpan={6} className="py-8 text-center text-slate-500">
                   No members found.
                 </TableCell>
               </TableRow>

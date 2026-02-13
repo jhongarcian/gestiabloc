@@ -30,7 +30,7 @@ export function AccountSettingsTabs({ tenantSlug }: AccountSettingsTabsProps) {
                 href={href}
                 aria-current={isActive ? "page" : undefined}
                 className={cn(
-                  "inline-flex h-10 items-center rounded-md px-3 text-sm font-medium whitespace-nowrap transition",
+                  "inline-flex h-8 items-center rounded-md px-2.5 text-xs font-medium whitespace-nowrap transition",
                   "text-slate-600 hover:bg-blue-900/10 hover:text-slate-900",
                   isActive &&
                     "bg-blue-950 text-white hover:bg-blue-950/90 hover:text-white",
@@ -54,7 +54,7 @@ export function AccountSettingsTabs({ tenantSlug }: AccountSettingsTabsProps) {
               href={href}
               aria-current={isActive ? "page" : undefined}
               className={cn(
-                "inline-flex h-10 items-center rounded-md px-3 text-sm font-medium transition",
+                "inline-flex h-8 items-center rounded-md px-2.5 text-sm font-medium transition",
                 "text-slate-600 hover:bg-blue-900/10 hover:text-slate-900",
                 isActive &&
                   "bg-blue-950 text-white hover:bg-blue-950/90 hover:text-white",

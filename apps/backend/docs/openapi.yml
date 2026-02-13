@@ -531,6 +531,54 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AccountSettingsNotImplementedCollectionResponse"
+  /api/account-settings/{tenantId}/users:
+    post:
+      tags: [Account Settings]
+      summary: Create tenant member user
+      description: |
+        Tenant-admin only. Creates a new user account, adds membership to the tenant,
+        and sends an email verification link.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantUserRequest"
+      responses:
+        "201":
+          description: User created and verification email sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateTenantUserResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email in use or seat limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/account-settings/{tenantId}/{section}/{recordId}:
     put:
       tags: [Account Settings]
@@ -1050,10 +1098,25 @@ components:
             $ref: "#/components/schemas/AccountSettingsUserItem"
         pagination:
           $ref: "#/components/schemas/AccountSettingsPagination"
+        seatUsage:
+          $ref: "#/components/schemas/AccountSettingsSeatUsage"
         timezone:
           type: string
           nullable: true
           description: Tenant timezone (IANA). If null, clients should use system timezone.
+    AccountSettingsSeatUsage:
+      type: object
+      nullable: true
+      properties:
+        used:
+          type: integer
+        limit:
+          type: integer
+        available:
+          type: integer
+        planKey:
+          type: string
+          enum: [STARTER, PRO, BUSINESS]
     AccountSettingsUserItem:
       type: object
       properties:
@@ -1213,6 +1276,60 @@ components:
               type: string
               enum: [TENANT_ADMIN, TENANT_USER]
             status:
+              type: string
+              enum: [ACTIVE, DISABLED]
+            securityLevel:
+              type: string
+              enum: [LOW, MEDIUM, MAX]
+    CreateTenantUserRequest:
+      type: object
+      required: [name, email, password, role]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        password:
+          type: string
+          minLength: 8
+          maxLength: 200
+          description: Must include at least one letter, one number, and one symbol.
+        role:
+          type: string
+          enum: [TENANT_ADMIN, TENANT_USER]
+        securityLevel:
+          type: string
+          enum: [LOW, MEDIUM, MAX]
+          description: Optional override. Defaults to MAX for admin role, LOW for user role.
+    CreateTenantUserResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+            avatar:
+              type: string
+              nullable: true
+            emailVerified:
+              type: boolean
+            role:
+              type: string
+              enum: [TENANT_ADMIN, TENANT_USER]
+            accountStatus:
               type: string
               enum: [ACTIVE, DISABLED]
             securityLevel:

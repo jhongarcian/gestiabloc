@@ -22,6 +22,7 @@ type UserSecurityLevelControlProps = {
   userId: string
   role: TenantRole
   initialSecurityLevel: SecurityLevel
+  onSaved?: (securityLevel: SecurityLevel) => void
 }
 
 const SECURITY_LEVEL_OPTIONS: Array<{ value: SecurityLevel; label: string }> = [
@@ -38,6 +39,7 @@ export function UserSecurityLevelControl({
   userId,
   role,
   initialSecurityLevel,
+  onSaved,
 }: UserSecurityLevelControlProps) {
   const isTenantAdmin = role === "TENANT_ADMIN"
   const lockedValue: SecurityLevel = "MAX"
@@ -60,6 +62,7 @@ export function UserSecurityLevelControl({
         securityLevel: value,
       })
       setSavedValue(value)
+      onSaved?.(value)
       toast.success("Security level updated.")
     } catch (error) {
       if (isAxiosError(error)) {
