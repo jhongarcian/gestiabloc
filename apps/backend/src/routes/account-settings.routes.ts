@@ -14,6 +14,7 @@ import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js";
 import { requireTenantAdmin } from "../middleware/requireTenantAdmin.js";
 
 const router = Router();
+const prismaWithContacts = prisma as any;
 
 const ACCOUNT_SETTINGS_SECTIONS = [
   "users",
@@ -133,11 +134,50 @@ const UpdateTenantMemberSchema = z.object({
   email: z.string().trim().email().max(255),
 });
 
+const STATUS_HEX_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/;
+
+const CreateContactStatusConfigSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  bgColor: z.string().trim().regex(STATUS_HEX_COLOR_REGEX),
+  textColor: z.string().trim().regex(STATUS_HEX_COLOR_REGEX),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+  isActive: z.boolean().default(true),
+});
+
+const UpdateContactStatusConfigSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  bgColor: z.string().trim().regex(STATUS_HEX_COLOR_REGEX).optional(),
+  textColor: z.string().trim().regex(STATUS_HEX_COLOR_REGEX).optional(),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+  isActive: z.boolean().optional(),
+});
+
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const avatarUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: IMAGE_MAX_BYTES },
 });
+
+const CONTACT_DEFAULT_STATUSES = [
+  {
+    name: "Active",
+    bgColor: "#DCFCE7",
+    textColor: "#166534",
+    sortOrder: 10,
+  },
+  {
+    name: "Inactive",
+    bgColor: "#E2E8F0",
+    textColor: "#334155",
+    sortOrder: 20,
+  },
+  {
+    name: "Pending",
+    bgColor: "#FEF3C7",
+    textColor: "#92400E",
+    sortOrder: 30,
+  },
+] as const;
 
 function sanitizeFilename(filename: string) {
   return filename.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -150,6 +190,32 @@ async function deleteLegacyAvatar(oldKey: string) {
   }
 
   await deleteObject({ key: oldKey }).catch(() => {});
+}
+
+async function ensureDefaultContactStatuses(tenantId: string) {
+  await prismaWithContacts.contactStatusConfig.updateMany({
+    where: {
+      tenantId,
+      name: { in: CONTACT_DEFAULT_STATUSES.map((item) => item.name) },
+      isSystemDefault: false,
+    },
+    data: {
+      isSystemDefault: true,
+    },
+  });
+
+  await prismaWithContacts.contactStatusConfig.createMany({
+    data: CONTACT_DEFAULT_STATUSES.map((item) => ({
+      tenantId,
+      name: item.name,
+      bgColor: item.bgColor,
+      textColor: item.textColor,
+      sortOrder: item.sortOrder,
+      isActive: true,
+      isSystemDefault: true,
+    })),
+    skipDuplicates: true,
+  });
 }
 
 const readMiddlewares = [
@@ -999,6 +1065,199 @@ router.patch("/:tenantId/account", ...writeMiddlewares, async (req, res, next) =
   }
 });
 
+router.get("/:tenantId/status-config", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+
+    await ensureDefaultContactStatuses(tenantId);
+
+    const contactStatuses = await prismaWithContacts.contactStatusConfig.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        bgColor: true,
+        textColor: true,
+        sortOrder: true,
+        isActive: true,
+        isSystemDefault: true,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      configurations: [
+        {
+          key: "contacts",
+          label: "Contacts",
+          statusCount: contactStatuses.length,
+          activeStatusCount: contactStatuses.filter((item: { isActive: boolean }) => item.isActive).length,
+        },
+      ],
+      contactStatuses,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:tenantId/status-config", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    await ensureDefaultContactStatuses(tenantId);
+
+    const payload = CreateContactStatusConfigSchema.parse(req.body);
+    const normalizedName = payload.name.trim();
+    const maxSortOrderRecord = await prismaWithContacts.contactStatusConfig.findFirst({
+      where: { tenantId },
+      orderBy: { sortOrder: "desc" },
+      select: { sortOrder: true },
+    });
+    const nextSortOrder = (maxSortOrderRecord?.sortOrder ?? 0) + 10;
+
+    const created = await prismaWithContacts.contactStatusConfig.create({
+      data: {
+        tenantId,
+        name: normalizedName,
+        bgColor: payload.bgColor,
+        textColor: payload.textColor,
+        sortOrder: payload.sortOrder ?? nextSortOrder,
+        isActive: payload.isActive,
+        isSystemDefault: false,
+      },
+      select: {
+        id: true,
+        name: true,
+        bgColor: true,
+        textColor: true,
+        sortOrder: true,
+        isActive: true,
+        isSystemDefault: true,
+      },
+    });
+
+    return res.status(201).json({ ok: true, status: created });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch(
+  "/:tenantId/status-config/:recordId",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      await ensureDefaultContactStatuses(tenantId);
+      const payload = UpdateContactStatusConfigSchema.parse(req.body);
+
+      if (Object.keys(payload).length === 0) {
+        return res.status(400).json({ error: "NO_CHANGES_PROVIDED" });
+      }
+
+      const existing = await prismaWithContacts.contactStatusConfig.findUnique({
+        where: { id: recordId },
+        select: {
+          id: true,
+          tenantId: true,
+          isSystemDefault: true,
+        },
+      });
+
+      if (!existing || existing.tenantId !== tenantId) {
+        return res.status(404).json({ error: "STATUS_NOT_FOUND" });
+      }
+
+      if (existing.isSystemDefault && payload.name) {
+        return res
+          .status(400)
+          .json({ error: "DEFAULT_STATUS_NAME_CANNOT_BE_CHANGED" });
+      }
+
+      const updated = await prismaWithContacts.contactStatusConfig.update({
+        where: { id: recordId },
+        data: {
+          name: payload.name?.trim(),
+          bgColor: payload.bgColor,
+          textColor: payload.textColor,
+          sortOrder: payload.sortOrder,
+          isActive: payload.isActive,
+        },
+        select: {
+          id: true,
+          name: true,
+          bgColor: true,
+          textColor: true,
+          sortOrder: true,
+          isActive: true,
+          isSystemDefault: true,
+        },
+      });
+
+      return res.json({ ok: true, status: updated });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.delete(
+  "/:tenantId/status-config/:recordId",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      await ensureDefaultContactStatuses(tenantId);
+
+      const existing = await prismaWithContacts.contactStatusConfig.findUnique({
+        where: { id: recordId },
+        select: {
+          id: true,
+          tenantId: true,
+          isSystemDefault: true,
+        },
+      });
+
+      if (!existing || existing.tenantId !== tenantId) {
+        return res.status(404).json({ error: "STATUS_NOT_FOUND" });
+      }
+
+      if (existing.isSystemDefault) {
+        return res.status(409).json({ error: "CANNOT_DELETE_DEFAULT_STATUS" });
+      }
+
+      const inUseCount = await prismaWithContacts.contact.count({
+        where: {
+          tenantId,
+          statusConfigId: recordId,
+        },
+      });
+
+      if (inUseCount > 0) {
+        return res.status(409).json({
+          error: "STATUS_IN_USE",
+          details: { contactCount: inUseCount },
+        });
+      }
+
+      await prismaWithContacts.contactStatusConfig.delete({
+        where: { id: recordId },
+      });
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
 const handleSectionListNotImplemented = (section: AccountSettingsSection) => (
   req: Request,
   res: Response,
@@ -1047,12 +1306,15 @@ const handleSectionRecordNotImplemented = (section: AccountSettingsSection) => (
 };
 
 for (const section of ACCOUNT_SETTINGS_SECTIONS) {
-  if (section !== "users" && section !== "account") {
+  if (section !== "users" && section !== "account" && section !== "status-config") {
     router.get(
       "/:tenantId/" + section,
       ...readMiddlewares,
       handleSectionListNotImplemented(section),
     );
+  }
+  if (section === "users" || section === "account" || section === "status-config") {
+    continue;
   }
   router.post(
     "/:tenantId/" + section,

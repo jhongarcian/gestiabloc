@@ -66,6 +66,21 @@ enum FilePurpose {
   GENERIC
 }
 
+enum ContactGender {
+  FEMALE
+  MALE
+  NON_BINARY
+  OTHER
+  UNKNOWN
+}
+
+enum ContactSmokerStatus {
+  UNKNOWN
+  NEVER
+  CURRENT
+  FORMER
+}
+
 model User {
   id           String       @id @default(uuid())
   email        String       @unique
@@ -73,13 +88,13 @@ model User {
   passwordHash String?
   platformRole PlatformRole @default(NONE)
 
-  otpEnabled   Boolean   @default(true)
+  otpEnabled Boolean @default(true)
 
-  sessions      Session[]
-  memberships Membership[]
-  files       File[]
-  loginChallenges LoginChallenge[]
-  emailVerifications EmailVerification[]
+  sessions            Session[]
+  memberships         Membership[]
+  files               File[]
+  loginChallenges     LoginChallenge[]
+  emailVerifications  EmailVerification[]
   passwordResetTokens PasswordResetToken[]
 
   createdAt     DateTime  @default(now())
@@ -87,7 +102,6 @@ model User {
   emailVerified Boolean   @default(false)
   image         String?
   lastLoginAt   DateTime?
-
 }
 
 model File {
@@ -140,14 +154,14 @@ model LoginChallenge {
 }
 
 model EmailOtp {
-  id        String     @id @default(uuid())
-  email     String
-  purpose   OtpPurpose @default(LOGIN)
+  id      String     @id @default(uuid())
+  email   String
+  purpose OtpPurpose @default(LOGIN)
 
   codeHash  String
   expiresAt DateTime
   usedAt    DateTime?
-  attempts  Int        @default(0)
+  attempts  Int       @default(0)
 
   createdAt DateTime @default(now())
 
@@ -156,11 +170,11 @@ model EmailOtp {
 }
 
 model PasswordResetToken {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   usedAt    DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -170,36 +184,38 @@ model PasswordResetToken {
 }
 
 model Tenant {
-  id   String @id @default(uuid())
-  name String
-  slug String @unique
-  email String?
-  phone String?
-  addressLine1 String?
-  addressLine2 String?
-  city String?
-  state String?
-  postalCode String?
-  country String?
-  timezone String?
-  website String?
+  id            String  @id @default(uuid())
+  name          String
+  slug          String  @unique
+  email         String?
+  phone         String?
+  addressLine1  String?
+  addressLine2  String?
+  city          String?
+  state         String?
+  postalCode    String?
+  country       String?
+  timezone      String?
+  website       String?
   emailVerified Boolean @default(false)
 
-  members      Membership[]
-  files        File[]
-  invites      Invite[]
-  subscription TenantSubscription?
+  members              Membership[]
+  files                File[]
+  invites              Invite[]
+  subscription         TenantSubscription?
+  contacts             Contact[]
+  contactStatusConfigs ContactStatusConfig[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
 model EmailVerification {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   usedAt    DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -209,15 +225,18 @@ model EmailVerification {
 }
 
 model Membership {
-  id       String           @id @default(uuid())
-  userId   String
-  tenantId String
-  role     TenantRole
-  status   MembershipStatus @default(ACTIVE)
-  securityLevel SecurityLevel @default(LOW)
+  id            String           @id @default(uuid())
+  userId        String
+  tenantId      String
+  role          TenantRole
+  status        MembershipStatus @default(ACTIVE)
+  securityLevel SecurityLevel    @default(LOW)
 
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant                  Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assignedContacts        Contact[] @relation("ContactAssignedToMembership")
+  servicingAgentContacts  Contact[] @relation("ContactServicingAgentMembership")
+  additionalAgentContacts Contact[] @relation("ContactAdditionalAgentMembership")
 
   @@unique([userId, tenantId])
   @@index([tenantId])
@@ -263,5 +282,100 @@ model TenantSubscription {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([status])
+}
 
+model ContactStatusConfig {
+  id              String  @id @default(uuid())
+  tenantId        String
+  name            String
+  bgColor         String
+  textColor       String
+  sortOrder       Int     @default(0)
+  isActive        Boolean @default(true)
+  isSystemDefault Boolean @default(false)
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contacts Contact[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+}
+
+model Contact {
+  id       String @id @default(uuid())
+  tenantId String
+
+  firstName  String
+  middleName String?
+  lastName   String
+
+  phone          String?
+  secondaryPhone String?
+  email          String?
+
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  country      String?
+
+  mailingAddressLine1 String?
+  mailingAddressLine2 String?
+  mailingCity         String?
+  mailingState        String?
+  mailingPostalCode   String?
+  mailingCountry      String?
+
+  statusConfigId   String?
+  assignedToUserId String?
+  ssnLast4         String?
+  ssnCiphertext    String?
+  ssnIv            String?
+  ssnAuthTag       String?
+  ssnKeyVersion    Int     @default(1)
+
+  emergencyContactName         String?
+  emergencyContactPhone        String?
+  emergencyContactRelationship String?
+
+  dateOfBirth DateTime?
+  gender      ContactGender?
+  height      String?
+  weight      String?
+  deceasedAt  DateTime?
+
+  medicarePartA Boolean?
+  medicarePartB Boolean?
+  smokerStatus  ContactSmokerStatus?
+
+  servicingAgentUserId  String?
+  additionalAgentUserId String?
+
+  leadDate        DateTime?
+  leadSource      String?
+  leadOtherSource String?
+
+  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  statusConfig ContactStatusConfig? @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
+
+  assignedToMembership      Membership? @relation("ContactAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
+  servicingAgentMembership  Membership? @relation("ContactServicingAgentMembership", fields: [tenantId, servicingAgentUserId], references: [tenantId, userId])
+  additionalAgentMembership Membership? @relation("ContactAdditionalAgentMembership", fields: [tenantId, additionalAgentUserId], references: [tenantId, userId])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, lastName, firstName])
+  @@index([tenantId, statusConfigId])
+  @@index([tenantId, assignedToUserId])
+  @@index([tenantId, servicingAgentUserId])
+  @@index([tenantId, additionalAgentUserId])
+  @@index([tenantId, email])
+  @@index([tenantId, phone])
+  @@index([tenantId, ssnLast4])
 }

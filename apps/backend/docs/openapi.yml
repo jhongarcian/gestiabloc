@@ -411,6 +411,7 @@ paths:
       description: |
         For `section=users`, returns tenant members with pagination.
         For `section=account`, returns tenant profile information.
+        For `section=status-config`, returns contact status configuration.
         For other sections, returns `501 NOT_IMPLEMENTED` until implemented.
       security:
         - cookieAuth: []
@@ -421,13 +422,14 @@ paths:
         - $ref: "#/components/parameters/AccountSettingsPageSizeQueryParam"
       responses:
         "200":
-          description: Returned when `section=users` or `section=account`
+          description: Returned when `section=users`, `section=account`, or `section=status-config`
           content:
             application/json:
               schema:
                 oneOf:
                   - $ref: "#/components/schemas/AccountSettingsUsersListResponse"
                   - $ref: "#/components/schemas/AccountSettingsTenantInfoResponse"
+                  - $ref: "#/components/schemas/AccountSettingsStatusConfigListResponse"
         "401":
           description: Not authenticated
           content:
@@ -495,6 +497,9 @@ paths:
     post:
       tags: [Account Settings]
       summary: Create account-settings resource in section
+      description: |
+        For `section=status-config`, creates a new contact status.
+        Other sections return `501 NOT_IMPLEMENTED` until implemented.
       security:
         - cookieAuth: []
       parameters:
@@ -505,8 +510,16 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AccountSettingsMutationRequest"
+              oneOf:
+                - $ref: "#/components/schemas/AccountSettingsStatusConfigCreateRequest"
+                - $ref: "#/components/schemas/AccountSettingsMutationRequest"
       responses:
+        "201":
+          description: Returned when `section=status-config` and status is created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsStatusConfigCreateResponse"
         "400":
           description: Invalid request
           content:
@@ -526,7 +539,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "501":
-          description: Endpoint scaffolded but not implemented yet
+          description: Endpoint scaffolded but not implemented yet (non status-config sections)
           content:
             application/json:
               schema:
@@ -623,6 +636,9 @@ paths:
     patch:
       tags: [Account Settings]
       summary: Update account-settings record in section
+      description: |
+        For `section=status-config`, updates a contact status.
+        Other sections return `501 NOT_IMPLEMENTED` until implemented.
       security:
         - cookieAuth: []
       parameters:
@@ -634,8 +650,16 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AccountSettingsMutationRequest"
+              oneOf:
+                - $ref: "#/components/schemas/AccountSettingsStatusConfigUpdateRequest"
+                - $ref: "#/components/schemas/AccountSettingsMutationRequest"
       responses:
+        "200":
+          description: Returned when `section=status-config` and status is updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsStatusConfigUpdateResponse"
         "400":
           description: Invalid request
           content:
@@ -654,8 +678,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Returned when `section=status-config` and status is not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Returned when `section=status-config` and status is default or in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "501":
-          description: Endpoint scaffolded but not implemented yet
+          description: Endpoint scaffolded but not implemented yet (non status-config sections)
           content:
             application/json:
               schema:
@@ -663,6 +699,10 @@ paths:
     delete:
       tags: [Account Settings]
       summary: Delete account-settings record in section
+      description: |
+        For `section=status-config`, deletes a contact status when it is not a default
+        and not currently used by contacts.
+        Other sections return `501 NOT_IMPLEMENTED` until implemented.
       security:
         - cookieAuth: []
       parameters:
@@ -670,6 +710,12 @@ paths:
         - $ref: "#/components/parameters/AccountSettingsSectionPathParam"
         - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
       responses:
+        "200":
+          description: Returned when `section=status-config` and status is deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
         "401":
           description: Not authenticated
           content:
@@ -682,8 +728,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Returned when `section=status-config` and status is not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Returned when `section=status-config` and status is default or in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "501":
-          description: Endpoint scaffolded but not implemented yet
+          description: Endpoint scaffolded but not implemented yet (non status-config sections)
           content:
             application/json:
               schema:
@@ -1335,3 +1393,107 @@ components:
             securityLevel:
               type: string
               enum: [LOW, MEDIUM, MAX]
+    AccountSettingsStatusConfigItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        bgColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        textColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        sortOrder:
+          type: integer
+        isActive:
+          type: boolean
+        isSystemDefault:
+          type: boolean
+    AccountSettingsStatusConfigSummaryItem:
+      type: object
+      properties:
+        key:
+          type: string
+          example: contacts
+        label:
+          type: string
+          example: Contacts
+        statusCount:
+          type: integer
+        activeStatusCount:
+          type: integer
+    AccountSettingsStatusConfigListResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        configurations:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsStatusConfigSummaryItem"
+        contactStatuses:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
+    AccountSettingsStatusConfigCreateRequest:
+      type: object
+      required: [name, bgColor, textColor]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        bgColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        textColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        sortOrder:
+          type: integer
+          minimum: 0
+          maximum: 9999
+          nullable: true
+          description: Optional. If omitted, backend appends the new status to the end.
+        isActive:
+          type: boolean
+          default: true
+    AccountSettingsStatusConfigCreateResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        status:
+          $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
+    AccountSettingsStatusConfigUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        bgColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        textColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        sortOrder:
+          type: integer
+          minimum: 0
+          maximum: 9999
+        isActive:
+          type: boolean
+    AccountSettingsStatusConfigUpdateResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        status:
+          $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
