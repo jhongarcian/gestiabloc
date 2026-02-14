@@ -1,0 +1,101 @@
+import { headers } from "next/headers"
+import { redirect } from "next/navigation"
+
+import { api, type MeResponse } from "@/lib/api"
+import { ContactsTable } from "./_components/contacts-table"
+
+type ContactStatusConfigResponse = {
+  ok: boolean
+  items: Array<{
+    id: string
+    name: string
+    bgColor: string
+    textColor: string
+    isActive: boolean
+    sortOrder: number
+  }>
+}
+
+export default async function ContactsPage({
+  params,
+}: {
+  params: Promise<{ tenantSlug: string }>
+}) {
+  const { tenantSlug } = await params
+  const cookie = (await headers()).get("cookie") ?? ""
+  let me: MeResponse["user"] | null = null
+
+  try {
+    const { data } = await api.get<MeResponse>("/api/auth/me", {
+      headers: { cookie },
+    })
+    me = data?.user ?? null
+  } catch {
+    redirect("/login")
+  }
+
+  if (!me?.memberships?.length) {
+    redirect("/login")
+  }
+
+  const membership = me.memberships.find(
+    (item) => item.tenant?.slug === tenantSlug,
+  )
+
+  if (!membership?.tenant?.id) {
+    redirect(`/app/${tenantSlug}`)
+  }
+
+  let statusOptions: Array<{
+    label: string
+    value: string
+    bgColor?: string
+    textColor?: string
+  }> = [
+    { label: "All Statuses", value: "ALL" },
+  ]
+
+  try {
+    const { data } = await api.get<ContactStatusConfigResponse>(
+      `/api/contacts/${membership.tenant.id}/statuses`,
+      {
+        headers: { cookie },
+      },
+    )
+
+    statusOptions = [
+      { label: "All Statuses", value: "ALL" },
+      ...data.items.map((status) => ({
+        label: status.name,
+        value: status.id,
+        bgColor: status.bgColor,
+        textColor: status.textColor,
+      })),
+    ]
+  } catch {
+    // Fallback keeps the filter usable even if status lookup fails.
+  }
+
+  return (
+    <section className="flex h-full min-h-0 flex-col gap-4">
+      <div className="space-y-0.5">
+        <h1 className="text-xl font-semibold text-slate-900 sm:text-2xl">
+          Contacts
+        </h1>
+        <p className="max-w-2xl text-sm text-slate-500">
+          Manage tenant contacts, filters, and follow-up visibility.
+        </p>
+      </div>
+
+      <div className="flex min-h-0 flex-1 rounded-xl bg-white p-2 md:p-4">
+        <div className="flex h-full w-full min-h-0 flex-col">
+          <ContactsTable
+            tenantSlug={tenantSlug}
+            tenantId={membership.tenant.id}
+            statusOptions={statusOptions}
+          />
+        </div>
+      </div>
+    </section>
+  )
+}

@@ -11,6 +11,7 @@ tags:
   - name: Auth
   - name: Files
   - name: Account Settings
+  - name: Contacts
 paths:
   /api/auth/register:
     post:
@@ -400,6 +401,164 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/statuses:
+    get:
+      tags: [Contacts]
+      summary: List active contact statuses for a tenant
+      description: Ensures default statuses exist and returns active status options for the tenant.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Active statuses returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactsStatusesResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}:
+    get:
+      tags: [Contacts]
+      summary: List contacts for a tenant
+      description: Returns paginated contacts with optional debounced text search and status filtering.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          required: false
+          schema:
+            type: integer
+            enum: [10, 25]
+            default: 10
+        - in: query
+          name: search
+          required: false
+          schema:
+            type: string
+            maxLength: 120
+        - in: query
+          name: statusConfigId
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Contacts returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactsListResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [Contacts]
+      summary: Create a contact
+      description: Creates a new contact in the tenant and applies selected status or the default Active status.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateContactRequest"
+      responses:
+        "201":
+          description: Contact created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateContactResponse"
+        "400":
+          description: Invalid input or invalid status config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/{contactId}:
+    get:
+      tags: [Contacts]
+      summary: Get a single contact by id
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Contact details returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactDetailsResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact not found
           content:
             application/json:
               schema:
@@ -1497,3 +1656,217 @@ components:
           example: true
         status:
           $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
+    ContactsStatusItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        bgColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        textColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        sortOrder:
+          type: integer
+        isActive:
+          type: boolean
+    ContactsStatusesResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactsStatusItem"
+    ContactListItem:
+      type: object
+      properties:
+        id:
+          type: string
+        fullName:
+          type: string
+        dateOfBirth:
+          type: string
+          format: date-time
+          nullable: true
+        phoneNumber:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        status:
+          type: string
+        statusConfigId:
+          type: string
+          nullable: true
+        statusBgColor:
+          type: string
+          nullable: true
+        statusTextColor:
+          type: string
+          nullable: true
+        followUps:
+          type: integer
+    ContactDetailsResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        contact:
+          type: object
+          properties:
+            id:
+              type: string
+            firstName:
+              type: string
+            middleName:
+              type: string
+              nullable: true
+            lastName:
+              type: string
+            fullName:
+              type: string
+            dateOfBirth:
+              type: string
+              format: date-time
+              nullable: true
+            phoneNumber:
+              type: string
+              nullable: true
+            secondaryPhoneNumber:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+            address:
+              type: object
+              properties:
+                addressLine1:
+                  type: string
+                  nullable: true
+                addressLine2:
+                  type: string
+                  nullable: true
+                city:
+                  type: string
+                  nullable: true
+                state:
+                  type: string
+                  nullable: true
+                postalCode:
+                  type: string
+                  nullable: true
+                country:
+                  type: string
+                  nullable: true
+            status:
+              type: string
+            statusConfigId:
+              type: string
+              nullable: true
+            statusBgColor:
+              type: string
+              nullable: true
+            statusTextColor:
+              type: string
+              nullable: true
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+    ContactsListResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactListItem"
+        pagination:
+          $ref: "#/components/schemas/AccountSettingsPagination"
+    CreateContactRequest:
+      type: object
+      required: [firstName, lastName]
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        middleName:
+          type: string
+          nullable: true
+          maxLength: 120
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        dateOfBirth:
+          type: string
+          format: date-time
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        email:
+          type: string
+          format: email
+          nullable: true
+        statusConfigId:
+          type: string
+          nullable: true
+    CreateContactResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        contact:
+          type: object
+          properties:
+            id:
+              type: string
+            firstName:
+              type: string
+            middleName:
+              type: string
+              nullable: true
+            lastName:
+              type: string
+            fullName:
+              type: string
+            dateOfBirth:
+              type: string
+              format: date-time
+              nullable: true
+            phoneNumber:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+            status:
+              type: string
+            statusConfigId:
+              type: string
+              nullable: true
+            statusBgColor:
+              type: string
+              nullable: true
+            statusTextColor:
+              type: string
+              nullable: true
+            createdAt:
+              type: string
+              format: date-time

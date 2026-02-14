@@ -8,6 +8,7 @@ import { Server } from "socket.io"
 import authRoutes from "./routes/auth.routes"
 import filesRoutes from "./routes/files.routes"
 import accountSettingsRoutes from "./routes/account-settings.routes"
+import contactsRoutes from "./routes/contacts.routes"
 import { ZodError } from "zod"
 import swaggerUi from "swagger-ui-express"
 import { readFileSync } from "fs"
@@ -62,6 +63,7 @@ app.use("/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec))
 app.use("/api/auth", authRoutes)
 app.use("/api/files", filesRoutes);
 app.use("/api/account-settings", accountSettingsRoutes);
+app.use("/api/contacts", contactsRoutes);
 
 app.use(
   (
