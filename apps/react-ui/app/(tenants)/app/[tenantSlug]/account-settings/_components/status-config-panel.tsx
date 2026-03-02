@@ -1,6 +1,5 @@
 "use client"
 
-import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 import {
@@ -19,14 +18,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
-import {
-  ArrowLeft,
-  GripVertical,
-  Palette,
-  Plus,
-  ShieldCheck,
-  Tag,
-} from "lucide-react"
+import { GripVertical, Palette, Plus, ShieldCheck, Tag } from "lucide-react"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
@@ -54,7 +46,7 @@ import { cn } from "@/lib/utils"
 
 type ContactStatusConfigPanelProps = {
   tenantId: string
-  tenantSlug: string
+  configKey: "contacts" | "tasks"
 }
 
 type ContactStatus = {
@@ -69,13 +61,8 @@ type ContactStatus = {
 
 type StatusConfigResponse = {
   ok: boolean
-  configurations: Array<{
-    key: string
-    label: string
-    statusCount: number
-    activeStatusCount: number
-  }>
-  contactStatuses: ContactStatus[]
+  configKey: "contacts" | "tasks"
+  statuses: ContactStatus[]
 }
 
 const CREATE_FORM_INITIAL = {
@@ -215,12 +202,11 @@ function SortableStatusRow({
 
 export function ContactStatusConfigPanel({
   tenantId,
-  tenantSlug,
+  configKey,
 }: ContactStatusConfigPanelProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [isBusy, setIsBusy] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [data, setData] = useState<StatusConfigResponse | null>(null)
   const [statuses, setStatuses] = useState<ContactStatus[]>([])
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [createForm, setCreateForm] = useState(CREATE_FORM_INITIAL)
@@ -240,12 +226,11 @@ export function ContactStatusConfigPanel({
 
     try {
       const { data: response } = await api.get<StatusConfigResponse>(
-        `/api/account-settings/${tenantId}/status-config`,
+        `/api/account-settings/${tenantId}/status-config/${configKey}`,
       )
-      const sorted = [...response.contactStatuses].sort(
+      const sorted = [...response.statuses].sort(
         (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
       )
-      setData(response)
       setStatuses(sorted)
     } catch (error) {
       if (isAxiosError(error)) {
@@ -261,22 +246,25 @@ export function ContactStatusConfigPanel({
     } finally {
       setIsLoading(false)
     }
-  }, [tenantId])
+  }, [configKey, tenantId])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const contactsSummary = useMemo(
-    () => data?.configurations.find((item) => item.key === "contacts") ?? null,
-    [data?.configurations],
-  )
   const selectedTheme = useMemo(
     () => STATUS_THEMES.find((item) => item.key === createForm.themeKey) ?? STATUS_THEMES[0],
     [createForm.themeKey],
   )
   const activeCount = statuses.filter((item) => item.isActive).length
   const defaultCount = statuses.filter((item) => item.isSystemDefault).length
+  const configLabel = configKey === "contacts" ? "Contact" : "Task"
+  const configLabelPlural =
+    configKey === "contacts" ? "Contact Statuses" : "Task Statuses"
+  const protectedStatusesLabel =
+    configKey === "contacts"
+      ? "Active, Inactive, and Pending cannot be deleted."
+      : "To Do, In Progress, and Completed cannot be deleted."
 
   const createStatus = async () => {
     const trimmedName = createForm.name.trim()
@@ -289,7 +277,7 @@ export function ContactStatusConfigPanel({
     setErrorMessage(null)
 
     try {
-      await api.post(`/api/account-settings/${tenantId}/status-config`, {
+      await api.post(`/api/account-settings/${tenantId}/status-config/${configKey}`, {
         name: trimmedName,
         bgColor: selectedTheme.bgColor,
         textColor: selectedTheme.textColor,
@@ -320,7 +308,7 @@ export function ContactStatusConfigPanel({
   const toggleStatusActive = async (id: string, isActive: boolean) => {
     setIsBusy(true)
     try {
-      await api.patch(`/api/account-settings/${tenantId}/status-config/${id}`, {
+      await api.patch(`/api/account-settings/${tenantId}/status-config/${configKey}/${id}`, {
         isActive: !isActive,
       })
       await load()
@@ -342,7 +330,7 @@ export function ContactStatusConfigPanel({
   const deleteStatus = async (id: string) => {
     setIsBusy(true)
     try {
-      await api.delete(`/api/account-settings/${tenantId}/status-config/${id}`)
+      await api.delete(`/api/account-settings/${tenantId}/status-config/${configKey}/${id}`)
       toast.success("Status deleted.")
       await load()
     } catch (error) {
@@ -371,7 +359,7 @@ export function ContactStatusConfigPanel({
     try {
       await Promise.all(
         withNewOrder.map((item) =>
-          api.patch(`/api/account-settings/${tenantId}/status-config/${item.id}`, {
+          api.patch(`/api/account-settings/${tenantId}/status-config/${configKey}/${item.id}`, {
             sortOrder: item.sortOrder,
           }),
         ),
@@ -400,7 +388,7 @@ export function ContactStatusConfigPanel({
   return (
     <div className="space-y-6">
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold text-slate-900">Contact Statuses</h2>
+        <h2 className="text-lg font-semibold text-slate-900">{configLabelPlural}</h2>
         <p className="text-sm text-slate-500">
           Drag and drop to reorder statuses. New statuses are added to the end of
           the list by default.
@@ -419,7 +407,7 @@ export function ContactStatusConfigPanel({
             Total Statuses
           </p>
           <p className="mt-1 text-3xl font-semibold text-slate-900">
-            {contactsSummary?.statusCount ?? statuses.length}
+            {statuses.length}
           </p>
         </div>
         <div className="rounded-lg border border-slate-200 bg-white p-4">
@@ -444,7 +432,7 @@ export function ContactStatusConfigPanel({
               <p className="text-base font-semibold text-slate-900">Status List</p>
             </div>
             <p className="mt-1 text-sm text-slate-600">
-              Active, Inactive, and Pending cannot be deleted.
+              {protectedStatusesLabel}
             </p>
           </div>
           <Button
@@ -519,7 +507,7 @@ export function ContactStatusConfigPanel({
       <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add Contact Status</DialogTitle>
+            <DialogTitle>Add {configLabel} Status</DialogTitle>
             <DialogDescription>
               Choose a status name and color theme. The new status will be added to the
               end of the list.

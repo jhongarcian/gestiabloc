@@ -433,6 +433,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/search:
+    get:
+      tags: [Contacts]
+      summary: Search contacts for relationship linking
+      description: Returns up to 8 ranked contacts matching name, phone, or email for the tenant.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: q
+          required: false
+          schema:
+            type: string
+            maxLength: 120
+        - in: query
+          name: excludeContactId
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Search results returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactSearchResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/contacts/{tenantId}:
     get:
       tags: [Contacts]
@@ -608,6 +647,315 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Contact not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/{contactId}/notes:
+    get:
+      tags: [Contacts]
+      summary: List notes for a contact
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            enum: [10, 25, 50]
+            default: 10
+        - in: query
+          name: q
+          schema:
+            type: string
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [updated_desc, updated_asc, created_desc]
+            default: updated_desc
+      responses:
+        "200":
+          description: Notes returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactNotesResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [Contacts]
+      summary: Create a note for a contact
+      description: Any active tenant member can create a note. Attachments must reference existing tenant files uploaded through the presign endpoint.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContactNoteMutationRequest"
+      responses:
+        "201":
+          description: Note created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactNoteMutationResponse"
+        "400":
+          description: Invalid input or invalid attachments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/{contactId}/notes/{noteId}:
+    patch:
+      tags: [Contacts]
+      summary: Update a contact note
+      description: Only the note creator or a tenant admin can update the note.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: noteId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContactNoteMutationRequest"
+      responses:
+        "200":
+          description: Note updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactNoteMutationResponse"
+        "400":
+          description: Invalid input or invalid attachments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User does not have permission to update the note
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Note not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Contacts]
+      summary: Delete a contact note
+      description: Only the note creator or a tenant admin can delete the note.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: noteId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Note deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User does not have permission to delete the note
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Note not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/{contactId}/relationships:
+    post:
+      tags: [Contacts]
+      summary: Create a relationship between two contacts
+      description: Creates one logical bidirectional relationship. If one side removes it, the relationship is removed for both contacts.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateContactRelationshipRequest"
+      responses:
+        "201":
+          description: Relationship created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactRelationshipMutationResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Relationship already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/{contactId}/relationships/{relationshipId}:
+    delete:
+      tags: [Contacts]
+      summary: Delete a contact relationship
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: relationshipId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Relationship deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Relationship not found
           content:
             application/json:
               schema:
@@ -796,6 +1144,214 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Email in use or seat limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/account-settings/{tenantId}/status-config:
+    get:
+      tags: [Account Settings]
+      summary: List status configuration groups
+      description: Returns overview counts for contact and task statuses, plus the full configured lists.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Status configuration groups returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsStatusConfigListResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/account-settings/{tenantId}/status-config/{configKey}:
+    get:
+      tags: [Account Settings]
+      summary: Get statuses for a configuration group
+      description: Returns ordered statuses for `contacts` or `tasks`.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: configKey
+          required: true
+          schema:
+            $ref: "#/components/schemas/AccountSettingsStatusConfigKey"
+      responses:
+        "200":
+          description: Statuses returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsStatusConfigGroupResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [Account Settings]
+      summary: Create a status in a configuration group
+      description: Creates a new status for `contacts` or `tasks`.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: configKey
+          required: true
+          schema:
+            $ref: "#/components/schemas/AccountSettingsStatusConfigKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsStatusConfigCreateRequest"
+      responses:
+        "201":
+          description: Status created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsStatusConfigCreateResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/account-settings/{tenantId}/status-config/{configKey}/{recordId}:
+    patch:
+      tags: [Account Settings]
+      summary: Update a status in a configuration group
+      description: Updates a status for `contacts` or `tasks`.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: configKey
+          required: true
+          schema:
+            $ref: "#/components/schemas/AccountSettingsStatusConfigKey"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsStatusConfigUpdateRequest"
+      responses:
+        "200":
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsStatusConfigUpdateResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Status not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Status is protected or still in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Account Settings]
+      summary: Delete a status in a configuration group
+      description: Deletes a non-default status for `contacts` or `tasks`. Contact statuses cannot be deleted while in use.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: configKey
+          required: true
+          schema:
+            $ref: "#/components/schemas/AccountSettingsStatusConfigKey"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      responses:
+        "200":
+          description: Status deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Status not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Status is protected or still in use
           content:
             application/json:
               schema:
@@ -1633,6 +2189,9 @@ components:
           type: integer
         activeStatusCount:
           type: integer
+    AccountSettingsStatusConfigKey:
+      type: string
+      enum: [contacts, tasks]
     AccountSettingsStatusConfigListResponse:
       type: object
       properties:
@@ -1644,6 +2203,22 @@ components:
           items:
             $ref: "#/components/schemas/AccountSettingsStatusConfigSummaryItem"
         contactStatuses:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
+        taskStatuses:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
+    AccountSettingsStatusConfigGroupResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        configKey:
+          $ref: "#/components/schemas/AccountSettingsStatusConfigKey"
+        statuses:
           type: array
           items:
             $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
@@ -1831,6 +2406,10 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/ContactCustomFieldWithValue"
+            relationships:
+              type: array
+              items:
+                $ref: "#/components/schemas/ContactRelationshipItem"
             createdAt:
               type: string
               format: date-time
@@ -1992,7 +2571,7 @@ components:
           nullable: true
         fieldType:
           type: string
-          enum: [TEXT, NUMBER, SELECT, MULTI_SELECT, RADIO, TEXTAREA, CHECKBOX]
+          enum: [TEXT, NUMBER, PHONE, CURRENCY, DATE, SELECT, MULTI_SELECT, RADIO, TEXTAREA, CHECKBOX]
         isRequired:
           type: boolean
         isEncrypted:
@@ -2013,3 +2592,164 @@ components:
           type: string
         value:
           nullable: true
+    ContactSearchItem:
+      type: object
+      properties:
+        id:
+          type: string
+        fullName:
+          type: string
+        phoneNumber:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+    ContactSearchResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactSearchItem"
+    ContactRelationshipType:
+      type: string
+      enum: [FATHER, MOTHER, PARENT, SON, DAUGHTER, CHILD, HUSBAND, WIFE, SPOUSE, PARTNER, BROTHER, SISTER, SIBLING, GRANDFATHER, GRANDMOTHER, GRANDPARENT, GRANDSON, GRANDDAUGHTER, GRANDCHILD, UNCLE, AUNT, AUNT_OR_UNCLE, NEPHEW, NIECE, NIECE_OR_NEPHEW, COUSIN, GUARDIAN, WARD, CAREGIVER, DEPENDENT, FRIEND, OTHER]
+    RelatedContactSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        fullName:
+          type: string
+        phoneNumber:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+    ContactRelationshipItem:
+      type: object
+      properties:
+        id:
+          type: string
+        relatedContactId:
+          type: string
+        relationshipType:
+          $ref: "#/components/schemas/ContactRelationshipType"
+        relationshipLabel:
+          type: string
+        relatedContact:
+          $ref: "#/components/schemas/RelatedContactSummary"
+    CreateContactRelationshipRequest:
+      type: object
+      required: [relatedContactId, relationshipType]
+      properties:
+        relatedContactId:
+          type: string
+        relationshipType:
+          $ref: "#/components/schemas/ContactRelationshipType"
+    ContactRelationshipMutationResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        relationship:
+          $ref: "#/components/schemas/ContactRelationshipItem"
+    ContactNoteAttachment:
+      type: object
+      properties:
+        id:
+          type: string
+        fileId:
+          type: string
+        key:
+          type: string
+        fileName:
+          type: string
+        contentType:
+          type: string
+        size:
+          type: integer
+          nullable: true
+    ContactNoteAuthor:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+    ContactNotePermissions:
+      type: object
+      properties:
+        canEdit:
+          type: boolean
+        canDelete:
+          type: boolean
+    ContactNoteItem:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        body:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        author:
+          $ref: "#/components/schemas/ContactNoteAuthor"
+        permissions:
+          $ref: "#/components/schemas/ContactNotePermissions"
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactNoteAttachment"
+    ContactNotesResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactNoteItem"
+        pagination:
+          $ref: "#/components/schemas/AccountSettingsPagination"
+    ContactNoteMutationRequest:
+      type: object
+      required: [title, body, attachmentFileIds]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 160
+        body:
+          type: string
+          minLength: 1
+          maxLength: 5000
+        attachmentFileIds:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+    ContactNoteMutationResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        note:
+          $ref: "#/components/schemas/ContactNoteItem"

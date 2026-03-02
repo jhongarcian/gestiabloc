@@ -141,6 +141,7 @@ model User {
   sessions            Session[]
   memberships         Membership[]
   files               File[]
+  contactNotes        ContactNote[]
   loginChallenges     LoginChallenge[]
   emailVerifications  EmailVerification[]
   passwordResetTokens PasswordResetToken[]
@@ -163,6 +164,7 @@ model File {
 
   tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdBy User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  noteAttachments ContactNoteAttachment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -253,9 +255,12 @@ model Tenant {
   subscription         TenantSubscription?
   contacts             Contact[]
   contactStatusConfigs ContactStatusConfig[]
+  taskStatusConfigs    TaskStatusConfig[]
   contactCustomFields  ContactCustomField[]
   contactCustomFieldValues ContactCustomFieldValue[]
   contactRelationships ContactRelationship[]
+  contactNotes         ContactNote[]
+  contactNoteAttachments ContactNoteAttachment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -347,6 +352,26 @@ model ContactStatusConfig {
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contacts Contact[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+}
+
+model TaskStatusConfig {
+  id              String  @id @default(uuid())
+  tenantId        String
+  name            String
+  bgColor         String
+  textColor       String
+  sortOrder       Int     @default(0)
+  isActive        Boolean @default(true)
+  isSystemDefault Boolean @default(false)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -468,6 +493,7 @@ model Contact {
   customFieldValues         ContactCustomFieldValue[]
   outgoingRelationships     ContactRelationship[] @relation("ContactRelationshipSource")
   incomingRelationships     ContactRelationship[] @relation("ContactRelationshipTarget")
+  notes                     ContactNote[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -501,4 +527,42 @@ model ContactRelationship {
   @@unique([tenantId, relationshipPairKey])
   @@index([tenantId, contactId])
   @@index([tenantId, relatedContactId])
+}
+
+model ContactNote {
+  id          String @id @default(uuid())
+  tenantId    String
+  contactId   String
+  title       String
+  body        String
+  createdById String
+
+  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact     Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  createdBy   User @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  attachments ContactNoteAttachment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactId, createdAt])
+  @@index([tenantId, createdById])
+}
+
+model ContactNoteAttachment {
+  id       String @id @default(uuid())
+  tenantId String
+  noteId   String
+  fileId   String
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  note   ContactNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  file   File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, noteId, fileId])
+  @@index([tenantId, noteId])
+  @@index([tenantId, fileId])
 }

@@ -22,6 +22,8 @@ type StatusConfigResponse = {
     statusCount: number
     activeStatusCount: number
   }>
+  contactStatuses?: Array<unknown>
+  taskStatuses?: Array<unknown>
 }
 
 type ConfigCard = {
@@ -49,6 +51,7 @@ const CONFIG_CARDS: ConfigCard[] = [
     description: "Define task workflow states for team operations.",
     href: "tasks",
     icon: ListChecks,
+    alwaysAvailable: true,
   },
   {
     key: "services",

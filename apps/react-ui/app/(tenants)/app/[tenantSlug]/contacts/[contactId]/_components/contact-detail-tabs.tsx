@@ -10,7 +10,10 @@ type ContactDetailTabsProps = {
   contactId: string
 }
 
-const TABS = [{ key: "overview", label: "Overview" }] as const
+const TABS = [
+  { key: "overview", label: "Overview" },
+  { key: "notes", label: "Notes" },
+] as const
 
 export function ContactDetailTabs({
   tenantSlug,

@@ -5,7 +5,7 @@ import { api, type MeResponse } from "@/lib/api"
 
 import { ContactStatusConfigPanel } from "../../_components/status-config-panel"
 
-const SUPPORTED_CONFIG_KEYS = new Set(["contacts"])
+const SUPPORTED_CONFIG_KEYS = new Set(["contacts", "tasks"])
 
 export default async function AccountSettingsStatusConfigDetailPage({
   params,
@@ -47,7 +47,16 @@ export default async function AccountSettingsStatusConfigDetailPage({
     return (
       <ContactStatusConfigPanel
         tenantId={membership.tenant.id}
-        tenantSlug={tenantSlug}
+        configKey="contacts"
+      />
+    )
+  }
+
+  if (configKey === "tasks") {
+    return (
+      <ContactStatusConfigPanel
+        tenantId={membership.tenant.id}
+        configKey="tasks"
       />
     )
   }

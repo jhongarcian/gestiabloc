@@ -34,7 +34,16 @@ const TenantPathSchema = z.object({
   tenantId: z.string().min(1),
 });
 
+const StatusConfigKeySchema = z.enum(["contacts", "tasks"]);
+
+const TenantStatusConfigPathSchema = TenantPathSchema.extend({
+  configKey: StatusConfigKeySchema,
+});
+
 const TenantRecordPathSchema = TenantPathSchema.extend({
+  recordId: z.string().min(1),
+});
+const TenantStatusConfigRecordPathSchema = TenantStatusConfigPathSchema.extend({
   recordId: z.string().min(1),
 });
 const TenantUserPathSchema = TenantPathSchema.extend({
@@ -218,6 +227,27 @@ const CONTACT_DEFAULT_STATUSES = [
   },
 ] as const;
 
+const TASK_DEFAULT_STATUSES = [
+  {
+    name: "To Do",
+    bgColor: "#E2E8F0",
+    textColor: "#334155",
+    sortOrder: 10,
+  },
+  {
+    name: "In Progress",
+    bgColor: "#DBEAFE",
+    textColor: "#1E3A8A",
+    sortOrder: 20,
+  },
+  {
+    name: "Completed",
+    bgColor: "#DCFCE7",
+    textColor: "#166534",
+    sortOrder: 30,
+  },
+] as const;
+
 function sanitizeFilename(filename: string) {
   return filename.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -343,6 +373,44 @@ async function ensureDefaultContactStatuses(tenantId: string) {
     })),
     skipDuplicates: true,
   });
+}
+
+async function ensureDefaultTaskStatuses(tenantId: string) {
+  await prismaWithContacts.taskStatusConfig.updateMany({
+    where: {
+      tenantId,
+      name: { in: TASK_DEFAULT_STATUSES.map((item) => item.name) },
+      isSystemDefault: false,
+    },
+    data: {
+      isSystemDefault: true,
+    },
+  });
+
+  await prismaWithContacts.taskStatusConfig.createMany({
+    data: TASK_DEFAULT_STATUSES.map((item) => ({
+      tenantId,
+      name: item.name,
+      bgColor: item.bgColor,
+      textColor: item.textColor,
+      sortOrder: item.sortOrder,
+      isActive: true,
+      isSystemDefault: true,
+    })),
+    skipDuplicates: true,
+  });
+}
+
+async function ensureDefaultStatusesForConfigKey(
+  tenantId: string,
+  configKey: z.infer<typeof StatusConfigKeySchema>,
+) {
+  if (configKey === "contacts") {
+    await ensureDefaultContactStatuses(tenantId);
+    return;
+  }
+
+  await ensureDefaultTaskStatuses(tenantId);
 }
 
 const readMiddlewares = [
@@ -1197,8 +1265,22 @@ router.get("/:tenantId/status-config", ...readMiddlewares, async (req, res, next
     const { tenantId } = TenantPathSchema.parse(req.params);
 
     await ensureDefaultContactStatuses(tenantId);
+    await ensureDefaultTaskStatuses(tenantId);
 
     const contactStatuses = await prismaWithContacts.contactStatusConfig.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        bgColor: true,
+        textColor: true,
+        sortOrder: true,
+        isActive: true,
+        isSystemDefault: true,
+      },
+    });
+    const taskStatuses = await prismaWithContacts.taskStatusConfig.findMany({
       where: { tenantId },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       select: {
@@ -1221,31 +1303,75 @@ router.get("/:tenantId/status-config", ...readMiddlewares, async (req, res, next
           statusCount: contactStatuses.length,
           activeStatusCount: contactStatuses.filter((item: { isActive: boolean }) => item.isActive).length,
         },
+        {
+          key: "tasks",
+          label: "Tasks",
+          statusCount: taskStatuses.length,
+          activeStatusCount: taskStatuses.filter((item: { isActive: boolean }) => item.isActive).length,
+        },
       ],
       contactStatuses,
+      taskStatuses,
     });
   } catch (error) {
     return next(error);
   }
 });
 
-router.post("/:tenantId/status-config", ...writeMiddlewares, async (req, res, next) => {
+router.get("/:tenantId/status-config/:configKey", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId, configKey } = TenantStatusConfigPathSchema.parse(req.params);
+    await ensureDefaultStatusesForConfigKey(tenantId, configKey);
+
+    const statusModel =
+      configKey === "contacts"
+        ? prismaWithContacts.contactStatusConfig
+        : prismaWithContacts.taskStatusConfig;
+    const statuses = await statusModel.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        bgColor: true,
+        textColor: true,
+        sortOrder: true,
+        isActive: true,
+        isSystemDefault: true,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      configKey,
+      statuses,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:tenantId/status-config/:configKey", ...writeMiddlewares, async (req, res, next) => {
   try {
     enforceSameOrigin(req);
 
-    const { tenantId } = TenantPathSchema.parse(req.params);
-    await ensureDefaultContactStatuses(tenantId);
+    const { tenantId, configKey } = TenantStatusConfigPathSchema.parse(req.params);
+    await ensureDefaultStatusesForConfigKey(tenantId, configKey);
 
     const payload = CreateContactStatusConfigSchema.parse(req.body);
     const normalizedName = payload.name.trim();
-    const maxSortOrderRecord = await prismaWithContacts.contactStatusConfig.findFirst({
+    const statusModel =
+      configKey === "contacts"
+        ? prismaWithContacts.contactStatusConfig
+        : prismaWithContacts.taskStatusConfig;
+    const maxSortOrderRecord = await statusModel.findFirst({
       where: { tenantId },
       orderBy: { sortOrder: "desc" },
       select: { sortOrder: true },
     });
     const nextSortOrder = (maxSortOrderRecord?.sortOrder ?? 0) + 10;
 
-    const created = await prismaWithContacts.contactStatusConfig.create({
+    const created = await statusModel.create({
       data: {
         tenantId,
         name: normalizedName,
@@ -1273,21 +1399,26 @@ router.post("/:tenantId/status-config", ...writeMiddlewares, async (req, res, ne
 });
 
 router.patch(
-  "/:tenantId/status-config/:recordId",
+  "/:tenantId/status-config/:configKey/:recordId",
   ...writeMiddlewares,
   async (req, res, next) => {
     try {
       enforceSameOrigin(req);
 
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-      await ensureDefaultContactStatuses(tenantId);
+      const { tenantId, configKey, recordId } =
+        TenantStatusConfigRecordPathSchema.parse(req.params);
+      await ensureDefaultStatusesForConfigKey(tenantId, configKey);
       const payload = UpdateContactStatusConfigSchema.parse(req.body);
 
       if (Object.keys(payload).length === 0) {
         return res.status(400).json({ error: "NO_CHANGES_PROVIDED" });
       }
 
-      const existing = await prismaWithContacts.contactStatusConfig.findUnique({
+      const statusModel =
+        configKey === "contacts"
+          ? prismaWithContacts.contactStatusConfig
+          : prismaWithContacts.taskStatusConfig;
+      const existing = await statusModel.findUnique({
         where: { id: recordId },
         select: {
           id: true,
@@ -1306,7 +1437,7 @@ router.patch(
           .json({ error: "DEFAULT_STATUS_NAME_CANNOT_BE_CHANGED" });
       }
 
-      const updated = await prismaWithContacts.contactStatusConfig.update({
+      const updated = await statusModel.update({
         where: { id: recordId },
         data: {
           name: payload.name?.trim(),
@@ -1334,16 +1465,21 @@ router.patch(
 );
 
 router.delete(
-  "/:tenantId/status-config/:recordId",
+  "/:tenantId/status-config/:configKey/:recordId",
   ...writeMiddlewares,
   async (req, res, next) => {
     try {
       enforceSameOrigin(req);
 
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-      await ensureDefaultContactStatuses(tenantId);
+      const { tenantId, configKey, recordId } =
+        TenantStatusConfigRecordPathSchema.parse(req.params);
+      await ensureDefaultStatusesForConfigKey(tenantId, configKey);
 
-      const existing = await prismaWithContacts.contactStatusConfig.findUnique({
+      const statusModel =
+        configKey === "contacts"
+          ? prismaWithContacts.contactStatusConfig
+          : prismaWithContacts.taskStatusConfig;
+      const existing = await statusModel.findUnique({
         where: { id: recordId },
         select: {
           id: true,
@@ -1360,21 +1496,23 @@ router.delete(
         return res.status(409).json({ error: "CANNOT_DELETE_DEFAULT_STATUS" });
       }
 
-      const inUseCount = await prismaWithContacts.contact.count({
-        where: {
-          tenantId,
-          statusConfigId: recordId,
-        },
-      });
-
-      if (inUseCount > 0) {
-        return res.status(409).json({
-          error: "STATUS_IN_USE",
-          details: { contactCount: inUseCount },
+      if (configKey === "contacts") {
+        const inUseCount = await prismaWithContacts.contact.count({
+          where: {
+            tenantId,
+            statusConfigId: recordId,
+          },
         });
+
+        if (inUseCount > 0) {
+          return res.status(409).json({
+            error: "STATUS_IN_USE",
+            details: { contactCount: inUseCount },
+          });
+        }
       }
 
-      await prismaWithContacts.contactStatusConfig.delete({
+      await statusModel.delete({
         where: { id: recordId },
       });
 
