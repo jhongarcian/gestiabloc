@@ -200,125 +200,6 @@ function getFieldTypeAccent(fieldType: CustomFieldType) {
   }
 }
 
-function CompactFieldPreview({
-  fieldType,
-  options,
-  isEncrypted,
-}: {
-  fieldType: CustomFieldType
-  options: string[]
-  isEncrypted: boolean
-}) {
-  const previewOptions = options.length > 0 ? options : ["Option A", "Option B", "Option C"]
-
-  if (fieldType === "TEXT") {
-    return (
-      <div className="relative rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-400">
-        Example text value
-        {isEncrypted ? (
-          <Lock className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-slate-400" />
-        ) : null}
-      </div>
-    )
-  }
-
-  if (fieldType === "NUMBER") {
-    return (
-      <div className="relative rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-400">
-        12345
-        {isEncrypted ? (
-          <Lock className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-slate-400" />
-        ) : null}
-      </div>
-    )
-  }
-
-  if (fieldType === "PHONE") {
-    return (
-      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-400">
-        (555) 123-4567
-      </div>
-    )
-  }
-
-  if (fieldType === "CURRENCY") {
-    return (
-      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-400">
-        $1,250.00
-      </div>
-    )
-  }
-
-  if (fieldType === "DATE") {
-    return (
-      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-400">
-        Mar 01, 2026
-      </div>
-    )
-  }
-
-  if (fieldType === "TEXTAREA") {
-    return (
-      <div className="relative rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm text-slate-400">
-        Longer notes or detailed contact information...
-        {isEncrypted ? (
-          <Lock className="pointer-events-none absolute top-3 right-3 h-4 w-4 text-slate-400" />
-        ) : null}
-      </div>
-    )
-  }
-
-  if (fieldType === "SELECT") {
-    return (
-      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-500">
-        {previewOptions[0]} in dropdown
-      </div>
-    )
-  }
-
-  if (fieldType === "MULTI_SELECT") {
-    return (
-      <div className="flex flex-wrap gap-1.5">
-        {previewOptions.slice(0, 3).map((option) => (
-          <span
-            key={option}
-            className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600"
-          >
-            {option}
-          </span>
-        ))}
-      </div>
-    )
-  }
-
-  if (fieldType === "RADIO") {
-    return (
-      <div className="space-y-1.5">
-        {previewOptions.slice(0, 3).map((option, index) => (
-          <div key={option} className="flex items-center gap-2 text-sm text-slate-600">
-            <span
-              className={cn(
-                "flex h-4 w-4 items-center justify-center rounded-full border",
-                index === 0 ? "border-blue-700" : "border-slate-300",
-              )}
-            >
-              {index === 0 ? <span className="h-2 w-2 rounded-full bg-blue-700" /> : null}
-            </span>
-            {option}
-          </div>
-        ))}
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex items-center gap-2 text-sm text-slate-600">
-      <Checkbox checked disabled />
-      <span>Checkbox option</span>
-    </div>
-  )
-}
-
 function FieldPreview({
   fieldType,
   options,
@@ -932,87 +813,52 @@ export function CustomFieldsPanel({
                       </div>
                     </div>
 
-                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                            Behavior
-                          </p>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-700">
-                              {field.isRequired ? "Must be completed" : "Can be skipped"}
-                            </span>
-                            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-700">
-                              {field.isActive ? "Shown in future forms" : "Hidden from future forms"}
-                            </span>
-                            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-700">
-                              {field.isEncrypted ? "Extra protection enabled" : "Standard storage"}
-                            </span>
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+                      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="grid gap-3 md:grid-cols-3">
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                              Visibility
+                            </p>
+                            <p className="text-sm font-medium text-slate-900">
+                              {field.isActive ? "Active" : "Inactive"}
+                            </p>
                           </div>
-                        </div>
-
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                            Options
-                          </p>
-                          <div className="mt-3">
-                            {field.options.length > 0 ? (
-                              <div className="flex flex-wrap gap-2">
-                                {field.options.map((option) => (
-                                  <span
-                                    key={option}
-                                    className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600"
-                                  >
-                                    {option}
-                                  </span>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="text-sm text-slate-500">
-                                This input does not use predefined choices.
-                              </p>
-                            )}
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                              Requirement
+                            </p>
+                            <p className="text-sm font-medium text-slate-900">
+                              {field.isRequired ? "Required" : "Optional"}
+                            </p>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                              Security
+                            </p>
+                            <p className="text-sm font-medium text-slate-900">
+                              {field.isEncrypted ? "Encrypted" : "Standard"}
+                            </p>
                           </div>
                         </div>
                       </div>
 
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                          Form preview
+                      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                          Options
                         </p>
-                        <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3.5">
-                          <div className="mb-2 flex items-center gap-2">
-                            <p className="text-sm font-medium text-slate-900">
-                              {field.label}
-                              {field.isRequired ? (
-                                <span className="ml-1 text-rose-600">*</span>
-                              ) : null}
-                            </p>
-                            {field.description?.trim() ? (
-                              <TooltipProvider delayDuration={120}>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <button
-                                      type="button"
-                                      className="inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-                                      aria-label={`More information about ${field.label}`}
-                                    >
-                                      <CircleHelp className="h-4 w-4" />
-                                    </button>
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top" className="max-w-64 leading-5">
-                                    {field.description}
-                                  </TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            ) : null}
-                          </div>
-                          <CompactFieldPreview
-                            fieldType={field.fieldType}
-                            options={field.options}
-                            isEncrypted={field.isEncrypted}
-                          />
-                        </div>
+                        <p className="mt-1 text-sm font-medium text-slate-900">
+                          {field.options.length} option{field.options.length === 1 ? "" : "s"}
+                        </p>
+                        {field.options.length > 0 ? (
+                          <p className="mt-2 line-clamp-3 text-xs leading-5 text-slate-500">
+                            {field.options.join(", ")}
+                          </p>
+                        ) : (
+                          <p className="mt-2 text-xs leading-5 text-slate-500">
+                            No predefined choices.
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>
