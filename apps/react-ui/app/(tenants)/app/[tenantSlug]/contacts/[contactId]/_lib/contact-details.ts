@@ -51,6 +51,50 @@ export type ContactDetailsResponse = {
       sortOrder: number
       value: unknown
     }>
+    relationships: Array<{
+      id: string
+      relatedContactId: string
+      relationshipType:
+        | "FATHER"
+        | "MOTHER"
+        | "PARENT"
+        | "SON"
+        | "DAUGHTER"
+        | "CHILD"
+        | "HUSBAND"
+        | "WIFE"
+        | "SPOUSE"
+        | "PARTNER"
+        | "BROTHER"
+        | "SISTER"
+        | "SIBLING"
+        | "GRANDFATHER"
+        | "GRANDMOTHER"
+        | "GRANDPARENT"
+        | "GRANDSON"
+        | "GRANDDAUGHTER"
+        | "GRANDCHILD"
+        | "UNCLE"
+        | "AUNT"
+        | "AUNT_OR_UNCLE"
+        | "NEPHEW"
+        | "NIECE"
+        | "NIECE_OR_NEPHEW"
+        | "COUSIN"
+        | "GUARDIAN"
+        | "WARD"
+        | "CAREGIVER"
+        | "DEPENDENT"
+        | "FRIEND"
+        | "OTHER"
+      relationshipLabel: string
+      relatedContact: {
+        id: string
+        fullName: string
+        phoneNumber: string | null
+        email: string | null
+      }
+    }>
     createdAt: string
     updatedAt: string
   }

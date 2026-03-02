@@ -18,6 +18,9 @@ const TenantPathSchema = z.object({
 const TenantContactPathSchema = TenantPathSchema.extend({
   contactId: z.string().min(1),
 });
+const TenantContactRelationshipPathSchema = TenantContactPathSchema.extend({
+  relationshipId: z.string().min(1),
+});
 
 const ContactsListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -31,6 +34,51 @@ const ContactsListQuerySchema = z.object({
     .default(10),
   search: z.string().trim().max(120).optional().default(""),
   statusConfigId: z.string().trim().max(80).optional(),
+});
+
+const ContactSearchQuerySchema = z.object({
+  q: z.string().trim().max(120).optional().default(""),
+  excludeContactId: z.string().trim().min(1).optional(),
+});
+
+const ContactRelationshipTypeSchema = z.enum([
+  "FATHER",
+  "MOTHER",
+  "PARENT",
+  "SON",
+  "DAUGHTER",
+  "CHILD",
+  "HUSBAND",
+  "WIFE",
+  "SPOUSE",
+  "PARTNER",
+  "BROTHER",
+  "SISTER",
+  "SIBLING",
+  "GRANDFATHER",
+  "GRANDMOTHER",
+  "GRANDPARENT",
+  "GRANDSON",
+  "GRANDDAUGHTER",
+  "GRANDCHILD",
+  "UNCLE",
+  "AUNT",
+  "AUNT_OR_UNCLE",
+  "NEPHEW",
+  "NIECE",
+  "NIECE_OR_NEPHEW",
+  "COUSIN",
+  "GUARDIAN",
+  "WARD",
+  "CAREGIVER",
+  "DEPENDENT",
+  "FRIEND",
+  "OTHER",
+]);
+
+const CreateContactRelationshipSchema = z.object({
+  relatedContactId: z.string().min(1),
+  relationshipType: ContactRelationshipTypeSchema,
 });
 
 const optionalStringField = (max: number) =>
@@ -360,6 +408,190 @@ function areCustomFieldValuesEqual(left: unknown, right: unknown) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
+const RELATIONSHIP_LABELS: Record<z.infer<typeof ContactRelationshipTypeSchema>, string> = {
+  FATHER: "Father",
+  MOTHER: "Mother",
+  PARENT: "Parent",
+  SON: "Son",
+  DAUGHTER: "Daughter",
+  CHILD: "Child",
+  HUSBAND: "Husband",
+  WIFE: "Wife",
+  SPOUSE: "Spouse",
+  PARTNER: "Partner",
+  BROTHER: "Brother",
+  SISTER: "Sister",
+  SIBLING: "Sibling",
+  GRANDFATHER: "Grandfather",
+  GRANDMOTHER: "Grandmother",
+  GRANDPARENT: "Grandparent",
+  GRANDSON: "Grandson",
+  GRANDDAUGHTER: "Granddaughter",
+  GRANDCHILD: "Grandchild",
+  UNCLE: "Uncle",
+  AUNT: "Aunt",
+  AUNT_OR_UNCLE: "Aunt or Uncle",
+  NEPHEW: "Nephew",
+  NIECE: "Niece",
+  NIECE_OR_NEPHEW: "Niece or Nephew",
+  COUSIN: "Cousin",
+  GUARDIAN: "Guardian",
+  WARD: "Ward",
+  CAREGIVER: "Caregiver",
+  DEPENDENT: "Dependent",
+  FRIEND: "Friend",
+  OTHER: "Other",
+};
+
+function resolveGenderedType(
+  gender: string | null | undefined,
+  options: {
+    male: z.infer<typeof ContactRelationshipTypeSchema>;
+    female: z.infer<typeof ContactRelationshipTypeSchema>;
+    neutral: z.infer<typeof ContactRelationshipTypeSchema>;
+  },
+) {
+  if (gender === "MALE") return options.male;
+  if (gender === "FEMALE") return options.female;
+  return options.neutral;
+}
+
+function getReciprocalRelationshipType(
+  relationshipType: z.infer<typeof ContactRelationshipTypeSchema>,
+  sourceContactGender: string | null | undefined,
+) {
+  switch (relationshipType) {
+    case "FATHER":
+    case "MOTHER":
+    case "PARENT":
+      return resolveGenderedType(sourceContactGender, {
+        male: "SON",
+        female: "DAUGHTER",
+        neutral: "CHILD",
+      });
+    case "SON":
+    case "DAUGHTER":
+    case "CHILD":
+      return resolveGenderedType(sourceContactGender, {
+        male: "FATHER",
+        female: "MOTHER",
+        neutral: "PARENT",
+      });
+    case "HUSBAND":
+      return resolveGenderedType(sourceContactGender, {
+        male: "HUSBAND",
+        female: "WIFE",
+        neutral: "SPOUSE",
+      });
+    case "WIFE":
+      return resolveGenderedType(sourceContactGender, {
+        male: "HUSBAND",
+        female: "WIFE",
+        neutral: "SPOUSE",
+      });
+    case "SPOUSE":
+    case "PARTNER":
+      return relationshipType;
+    case "BROTHER":
+    case "SISTER":
+    case "SIBLING":
+      return resolveGenderedType(sourceContactGender, {
+        male: "BROTHER",
+        female: "SISTER",
+        neutral: "SIBLING",
+      });
+    case "GRANDFATHER":
+    case "GRANDMOTHER":
+    case "GRANDPARENT":
+      return resolveGenderedType(sourceContactGender, {
+        male: "GRANDSON",
+        female: "GRANDDAUGHTER",
+        neutral: "GRANDCHILD",
+      });
+    case "GRANDSON":
+    case "GRANDDAUGHTER":
+    case "GRANDCHILD":
+      return resolveGenderedType(sourceContactGender, {
+        male: "GRANDFATHER",
+        female: "GRANDMOTHER",
+        neutral: "GRANDPARENT",
+      });
+    case "UNCLE":
+    case "AUNT":
+    case "AUNT_OR_UNCLE":
+      return resolveGenderedType(sourceContactGender, {
+        male: "NEPHEW",
+        female: "NIECE",
+        neutral: "NIECE_OR_NEPHEW",
+      });
+    case "NEPHEW":
+    case "NIECE":
+    case "NIECE_OR_NEPHEW":
+      return resolveGenderedType(sourceContactGender, {
+        male: "UNCLE",
+        female: "AUNT",
+        neutral: "AUNT_OR_UNCLE",
+      });
+    case "COUSIN":
+      return "COUSIN";
+    case "GUARDIAN":
+      return "WARD";
+    case "WARD":
+    case "DEPENDENT":
+      return "GUARDIAN";
+    case "CAREGIVER":
+      return "DEPENDENT";
+    case "FRIEND":
+      return "FRIEND";
+    case "OTHER":
+      return "OTHER";
+  }
+}
+
+function buildRelationshipPairKey(contactId: string, relatedContactId: string) {
+  return [contactId, relatedContactId].sort((left, right) => left.localeCompare(right)).join(":");
+}
+
+function normalizeSearchValue(value: string | null | undefined) {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function normalizePhoneSearchValue(value: string | null | undefined) {
+  return (value ?? "").replace(/\D/g, "");
+}
+
+function getContactSearchRank(
+  contact: {
+    firstName: string;
+    middleName: string | null;
+    lastName: string;
+    email: string | null;
+    phone: string | null;
+  },
+  query: string,
+) {
+  const normalizedQuery = normalizeSearchValue(query);
+  const queryPhone = normalizePhoneSearchValue(query);
+  const firstName = normalizeSearchValue(contact.firstName);
+  const middleName = normalizeSearchValue(contact.middleName);
+  const lastName = normalizeSearchValue(contact.lastName);
+  const fullName = [firstName, middleName, lastName].filter(Boolean).join(" ");
+  const email = normalizeSearchValue(contact.email);
+  const phone = normalizePhoneSearchValue(contact.phone);
+
+  if (fullName === normalizedQuery) return 0;
+  if (email && email === normalizedQuery) return 1;
+  if (phone && queryPhone && phone === queryPhone) return 2;
+  if (firstName.startsWith(normalizedQuery) || lastName.startsWith(normalizedQuery)) return 3;
+  if (fullName.startsWith(normalizedQuery)) return 4;
+  if (email && email.startsWith(normalizedQuery)) return 5;
+  if (phone && queryPhone && phone.startsWith(queryPhone)) return 6;
+  if (fullName.includes(normalizedQuery)) return 7;
+  if (email && email.includes(normalizedQuery)) return 8;
+  if (phone && queryPhone && phone.includes(queryPhone)) return 9;
+  return 10;
+}
+
 router.get("/:tenantId/statuses", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest;
@@ -384,6 +616,73 @@ router.get("/:tenantId/statuses", requireAuth, async (req, res, next) => {
     return res.json({
       ok: true,
       items: statuses,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:tenantId/search", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest;
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const { q, excludeContactId } = ContactSearchQuerySchema.parse(req.query);
+
+    const membership = await requireActiveMembership(authed, res, tenantId);
+    if (!membership) return;
+
+    if (q.trim().length < 2) {
+      return res.json({ ok: true, items: [] });
+    }
+
+    const contacts = await prisma.contact.findMany({
+      where: {
+        tenantId,
+        ...(excludeContactId ? { NOT: { id: excludeContactId } } : {}),
+        OR: [
+          { firstName: { contains: q, mode: "insensitive" } },
+          { middleName: { contains: q, mode: "insensitive" } },
+          { lastName: { contains: q, mode: "insensitive" } },
+          { email: { contains: q, mode: "insensitive" } },
+          { phone: { contains: q, mode: "insensitive" } },
+        ],
+      },
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+      take: 20,
+      select: {
+        id: true,
+        firstName: true,
+        middleName: true,
+        lastName: true,
+        phone: true,
+        email: true,
+      },
+    });
+
+    const rankedContacts = [...contacts].sort((left, right) => {
+      const rankDiff = getContactSearchRank(left, q) - getContactSearchRank(right, q);
+      if (rankDiff !== 0) return rankDiff;
+
+      const leftFullName = [left.firstName, left.middleName, left.lastName]
+        .filter(Boolean)
+        .join(" ");
+      const rightFullName = [right.firstName, right.middleName, right.lastName]
+        .filter(Boolean)
+        .join(" ");
+
+      return leftFullName.localeCompare(rightFullName);
+    });
+
+    return res.json({
+      ok: true,
+      items: rankedContacts.slice(0, 8).map((contact) => ({
+        id: contact.id,
+        fullName: [contact.firstName, contact.middleName, contact.lastName]
+          .filter(Boolean)
+          .join(" "),
+        phoneNumber: contact.phone ?? null,
+        email: contact.email ?? null,
+      })),
     });
   } catch (error) {
     return next(error);
@@ -482,7 +781,7 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId);
     if (!membership) return;
 
-    const [contact, customFields, customFieldValues] = await Promise.all([
+    const [contact, customFields, customFieldValues, relationships] = await Promise.all([
       prisma.contact.findFirst({
         where: {
           id: contactId,
@@ -503,6 +802,7 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           state: true,
           postalCode: true,
           country: true,
+          gender: true,
           statusConfig: {
             select: {
               id: true,
@@ -539,6 +839,40 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           valueIv: true,
           valueAuthTag: true,
           valueKeyVersion: true,
+        },
+      }),
+      prismaWithContacts.contactRelationship.findMany({
+        where: {
+          tenantId,
+          OR: [{ contactId }, { relatedContactId: contactId }],
+        },
+        orderBy: [{ createdAt: "asc" }],
+        select: {
+          id: true,
+          contactId: true,
+          relatedContactId: true,
+          relationshipType: true,
+          reciprocalRelationshipType: true,
+          contact: {
+            select: {
+              id: true,
+              firstName: true,
+              middleName: true,
+              lastName: true,
+              phone: true,
+              email: true,
+            },
+          },
+          relatedContact: {
+            select: {
+              id: true,
+              firstName: true,
+              middleName: true,
+              lastName: true,
+              phone: true,
+              email: true,
+            },
+          },
         },
       }),
     ]);
@@ -592,6 +926,28 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
             storedValueByFieldId.get(field.id) ?? EMPTY_STORED_CUSTOM_FIELD_VALUE,
           ),
         })),
+        relationships: relationships.map((relationship: any) => {
+          const isSource = relationship.contactId === contactId;
+          const related = isSource ? relationship.relatedContact : relationship.contact;
+          const relationshipType: z.infer<typeof ContactRelationshipTypeSchema> = isSource
+            ? relationship.relationshipType
+            : relationship.reciprocalRelationshipType;
+
+          return {
+            id: relationship.id,
+            relatedContactId: related.id,
+            relationshipType,
+            relationshipLabel: RELATIONSHIP_LABELS[relationshipType],
+            relatedContact: {
+              id: related.id,
+              fullName: [related.firstName, related.middleName, related.lastName]
+                .filter(Boolean)
+                .join(" "),
+              phoneNumber: related.phone ?? null,
+              email: related.email ?? null,
+            },
+          };
+        }),
         createdAt: contact.createdAt,
         updatedAt: contact.updatedAt,
       },
@@ -600,6 +956,146 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
     return next(error);
   }
 });
+
+router.post("/:tenantId/:contactId/relationships", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const authed = req as AuthedRequest;
+    const { tenantId, contactId } = TenantContactPathSchema.parse(req.params);
+    const payload = CreateContactRelationshipSchema.parse(req.body);
+
+    const membership = await requireActiveMembership(authed, res, tenantId);
+    if (!membership) return;
+
+    if (payload.relatedContactId === contactId) {
+      return res.status(400).json({ error: "CANNOT_RELATE_CONTACT_TO_SELF" });
+    }
+
+    const [sourceContact, relatedContact, existingRelationship] = await Promise.all([
+      prisma.contact.findFirst({
+        where: { id: contactId, tenantId },
+        select: { id: true, gender: true },
+      }),
+      prisma.contact.findFirst({
+        where: { id: payload.relatedContactId, tenantId },
+        select: { id: true },
+      }),
+      prismaWithContacts.contactRelationship.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            { contactId, relatedContactId: payload.relatedContactId },
+            { contactId: payload.relatedContactId, relatedContactId: contactId },
+          ],
+        },
+        select: { id: true },
+      }),
+    ]);
+
+    if (!sourceContact || !relatedContact) {
+      return res.status(404).json({ error: "CONTACT_NOT_FOUND" });
+    }
+
+    if (existingRelationship) {
+      return res.status(409).json({ error: "RELATIONSHIP_ALREADY_EXISTS" });
+    }
+
+    const reciprocalRelationshipType = getReciprocalRelationshipType(
+      payload.relationshipType,
+      sourceContact.gender,
+    );
+
+    const created = await prismaWithContacts.contactRelationship.create({
+      data: {
+        tenantId,
+        contactId,
+        relatedContactId: payload.relatedContactId,
+        relationshipPairKey: buildRelationshipPairKey(contactId, payload.relatedContactId),
+        relationshipType: payload.relationshipType,
+        reciprocalRelationshipType,
+      },
+      select: {
+        id: true,
+        contactId: true,
+        relatedContactId: true,
+        relationshipType: true,
+        reciprocalRelationshipType: true,
+        relatedContact: {
+          select: {
+            id: true,
+            firstName: true,
+            middleName: true,
+            lastName: true,
+            phone: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    return res.status(201).json({
+      ok: true,
+      relationship: {
+        id: created.id,
+        relatedContactId: created.relatedContact.id,
+        relationshipType: created.relationshipType,
+        relationshipLabel:
+          RELATIONSHIP_LABELS[
+            created.relationshipType as z.infer<typeof ContactRelationshipTypeSchema>
+          ],
+        relatedContact: {
+          id: created.relatedContact.id,
+          fullName: [created.relatedContact.firstName, created.relatedContact.middleName, created.relatedContact.lastName]
+            .filter(Boolean)
+            .join(" "),
+          phoneNumber: created.relatedContact.phone ?? null,
+          email: created.relatedContact.email ?? null,
+        },
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete(
+  "/:tenantId/:contactId/relationships/:relationshipId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const authed = req as AuthedRequest;
+      const { tenantId, contactId, relationshipId } =
+        TenantContactRelationshipPathSchema.parse(req.params);
+
+      const membership = await requireActiveMembership(authed, res, tenantId);
+      if (!membership) return;
+
+      const existing = await prismaWithContacts.contactRelationship.findFirst({
+        where: {
+          id: relationshipId,
+          tenantId,
+          OR: [{ contactId }, { relatedContactId: contactId }],
+        },
+        select: { id: true },
+      });
+
+      if (!existing) {
+        return res.status(404).json({ error: "RELATIONSHIP_NOT_FOUND" });
+      }
+
+      await prismaWithContacts.contactRelationship.delete({
+        where: { id: relationshipId },
+      });
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 router.post("/:tenantId", requireAuth, async (req, res, next) => {
   try {

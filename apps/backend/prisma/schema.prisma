@@ -94,6 +94,41 @@ enum ContactCustomFieldType {
   CHECKBOX
 }
 
+enum ContactRelationshipType {
+  FATHER
+  MOTHER
+  PARENT
+  SON
+  DAUGHTER
+  CHILD
+  HUSBAND
+  WIFE
+  SPOUSE
+  PARTNER
+  BROTHER
+  SISTER
+  SIBLING
+  GRANDFATHER
+  GRANDMOTHER
+  GRANDPARENT
+  GRANDSON
+  GRANDDAUGHTER
+  GRANDCHILD
+  UNCLE
+  AUNT
+  AUNT_OR_UNCLE
+  NEPHEW
+  NIECE
+  NIECE_OR_NEPHEW
+  COUSIN
+  GUARDIAN
+  WARD
+  CAREGIVER
+  DEPENDENT
+  FRIEND
+  OTHER
+}
+
 model User {
   id           String       @id @default(uuid())
   email        String       @unique
@@ -220,6 +255,7 @@ model Tenant {
   contactStatusConfigs ContactStatusConfig[]
   contactCustomFields  ContactCustomField[]
   contactCustomFieldValues ContactCustomFieldValue[]
+  contactRelationships ContactRelationship[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -430,6 +466,8 @@ model Contact {
   servicingAgentMembership  Membership? @relation("ContactServicingAgentMembership", fields: [tenantId, servicingAgentUserId], references: [tenantId, userId])
   additionalAgentMembership Membership? @relation("ContactAdditionalAgentMembership", fields: [tenantId, additionalAgentUserId], references: [tenantId, userId])
   customFieldValues         ContactCustomFieldValue[]
+  outgoingRelationships     ContactRelationship[] @relation("ContactRelationshipSource")
+  incomingRelationships     ContactRelationship[] @relation("ContactRelationshipTarget")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -442,4 +480,25 @@ model Contact {
   @@index([tenantId, email])
   @@index([tenantId, phone])
   @@index([tenantId, ssnLast4])
+}
+
+model ContactRelationship {
+  id                       String                  @id @default(uuid())
+  tenantId                 String
+  contactId                String
+  relatedContactId         String
+  relationshipPairKey      String
+  relationshipType         ContactRelationshipType
+  reciprocalRelationshipType ContactRelationshipType
+
+  tenant         Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact        Contact @relation("ContactRelationshipSource", fields: [contactId], references: [id], onDelete: Cascade)
+  relatedContact Contact @relation("ContactRelationshipTarget", fields: [relatedContactId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, relationshipPairKey])
+  @@index([tenantId, contactId])
+  @@index([tenantId, relatedContactId])
 }
