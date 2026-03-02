@@ -81,6 +81,19 @@ enum ContactSmokerStatus {
   FORMER
 }
 
+enum ContactCustomFieldType {
+  TEXT
+  NUMBER
+  PHONE
+  CURRENCY
+  DATE
+  SELECT
+  MULTI_SELECT
+  RADIO
+  TEXTAREA
+  CHECKBOX
+}
+
 model User {
   id           String       @id @default(uuid())
   email        String       @unique
@@ -205,6 +218,8 @@ model Tenant {
   subscription         TenantSubscription?
   contacts             Contact[]
   contactStatusConfigs ContactStatusConfig[]
+  contactCustomFields  ContactCustomField[]
+  contactCustomFieldValues ContactCustomFieldValue[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -305,6 +320,54 @@ model ContactStatusConfig {
   @@index([tenantId, sortOrder])
 }
 
+model ContactCustomField {
+  id          String                 @id @default(uuid())
+  tenantId    String
+  key         String
+  label       String
+  description String?
+  fieldType   ContactCustomFieldType
+  isRequired  Boolean                @default(false)
+  isEncrypted Boolean                @default(false)
+  isActive    Boolean                @default(true)
+  options     Json?
+  sortOrder   Int                    @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  values ContactCustomFieldValue[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, key])
+  @@index([tenantId, sortOrder])
+}
+
+model ContactCustomFieldValue {
+  id       String @id @default(uuid())
+  tenantId String
+  contactId String
+  fieldId  String
+  value    Json?
+  valueCiphertext String?
+  valueIv         String?
+  valueAuthTag    String?
+  valueKeyVersion Int?
+
+  tenant   Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact  Contact            @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  field    ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, contactId, fieldId])
+  @@index([tenantId, contactId])
+  @@index([tenantId, fieldId])
+}
+
 model Contact {
   id       String @id @default(uuid())
   tenantId String
@@ -366,6 +429,7 @@ model Contact {
   assignedToMembership      Membership? @relation("ContactAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
   servicingAgentMembership  Membership? @relation("ContactServicingAgentMembership", fields: [tenantId, servicingAgentUserId], references: [tenantId, userId])
   additionalAgentMembership Membership? @relation("ContactAdditionalAgentMembership", fields: [tenantId, additionalAgentUserId], references: [tenantId, userId])
+  customFieldValues         ContactCustomFieldValue[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

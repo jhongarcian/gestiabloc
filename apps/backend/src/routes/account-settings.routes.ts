@@ -152,6 +152,45 @@ const UpdateContactStatusConfigSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+const ContactCustomFieldTypeSchema = z.enum([
+  "TEXT",
+  "NUMBER",
+  "PHONE",
+  "CURRENCY",
+  "DATE",
+  "SELECT",
+  "MULTI_SELECT",
+  "RADIO",
+  "TEXTAREA",
+  "CHECKBOX",
+]);
+
+const CustomFieldOptionsSchema = z
+  .array(z.string().trim().min(1).max(120))
+  .max(50)
+  .optional();
+
+const CreateContactCustomFieldSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  description: optionalStringField(500),
+  fieldType: ContactCustomFieldTypeSchema,
+  isRequired: z.boolean().default(false),
+  isEncrypted: z.boolean().default(false),
+  isActive: z.boolean().default(true),
+  options: CustomFieldOptionsSchema,
+});
+
+const UpdateContactCustomFieldSchema = z.object({
+  label: z.string().trim().min(1).max(80).optional(),
+  description: optionalStringField(500),
+  fieldType: ContactCustomFieldTypeSchema.optional(),
+  isRequired: z.boolean().optional(),
+  isEncrypted: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+  options: CustomFieldOptionsSchema,
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+});
+
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const avatarUpload = multer({
   storage: multer.memoryStorage(),
@@ -181,6 +220,94 @@ const CONTACT_DEFAULT_STATUSES = [
 
 function sanitizeFilename(filename: string) {
   return filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function slugifyCustomFieldKey(value: string) {
+  const normalized = value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return normalized || "custom_field";
+}
+
+function normalizeCustomFieldOptions(options?: string[]) {
+  if (!options) return null;
+
+  const uniqueValues = [
+    ...new Map(
+      options
+        .map((option) => option.trim())
+        .filter(Boolean)
+        .map((option) => [option.toLowerCase(), option]),
+    ).values(),
+  ];
+
+  return uniqueValues.length > 0 ? uniqueValues : null;
+}
+
+function fieldTypeSupportsOptions(fieldType: z.infer<typeof ContactCustomFieldTypeSchema>) {
+  return (
+    fieldType === "SELECT" || fieldType === "MULTI_SELECT" || fieldType === "RADIO"
+  );
+}
+
+function validateCustomFieldOptions(
+  fieldType: z.infer<typeof ContactCustomFieldTypeSchema>,
+  options?: string[] | null,
+) {
+  const normalizedOptions = normalizeCustomFieldOptions(options ?? undefined);
+
+  if (fieldTypeSupportsOptions(fieldType)) {
+    if (!normalizedOptions?.length) {
+      return {
+        ok: false as const,
+        error: "FIELD_OPTIONS_REQUIRED",
+        details: [{ path: "options", message: "At least one option is required." }],
+      };
+    }
+  } else if (normalizedOptions?.length) {
+    return {
+      ok: false as const,
+      error: "FIELD_OPTIONS_NOT_SUPPORTED",
+      details: [{ path: "options", message: "Options are only supported for choice fields." }],
+    };
+  }
+
+  return {
+    ok: true as const,
+    options: normalizedOptions,
+  };
+}
+
+async function buildUniqueCustomFieldKey(tenantId: string, label: string, excludeId?: string) {
+  const baseKey = slugifyCustomFieldKey(label);
+
+  const existing = await prismaWithContacts.contactCustomField.findMany({
+    where: {
+      tenantId,
+      key: {
+        startsWith: baseKey,
+      },
+      ...(excludeId ? { NOT: { id: excludeId } } : {}),
+    },
+    select: {
+      key: true,
+    },
+  });
+
+  const existingKeys = new Set(existing.map((item: { key: string }) => item.key));
+  if (!existingKeys.has(baseKey)) {
+    return baseKey;
+  }
+
+  let counter = 2;
+  while (existingKeys.has(`${baseKey}_${counter}`)) {
+    counter += 1;
+  }
+
+  return `${baseKey}_${counter}`;
 }
 
 async function deleteLegacyAvatar(oldKey: string) {
@@ -1258,6 +1385,225 @@ router.delete(
   },
 );
 
+router.get("/:tenantId/custom-fields", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+
+    const customFields = await prismaWithContacts.contactCustomField.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+      select: {
+        id: true,
+        key: true,
+        label: true,
+        description: true,
+        fieldType: true,
+        isRequired: true,
+        isEncrypted: true,
+        isActive: true,
+        options: true,
+        sortOrder: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      customFields: customFields.map((field: any) => ({
+        ...field,
+        options: Array.isArray(field.options) ? field.options : [],
+      })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:tenantId/custom-fields", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = CreateContactCustomFieldSchema.parse(req.body);
+    const optionValidation = validateCustomFieldOptions(payload.fieldType, payload.options);
+
+    if (!optionValidation.ok) {
+      return res.status(400).json({
+        error: optionValidation.error,
+        details: optionValidation.details,
+      });
+    }
+
+    const maxSortOrderRecord = await prismaWithContacts.contactCustomField.findFirst({
+      where: { tenantId },
+      orderBy: { sortOrder: "desc" },
+      select: { sortOrder: true },
+    });
+    const nextSortOrder = (maxSortOrderRecord?.sortOrder ?? 0) + 10;
+    const uniqueKey = await buildUniqueCustomFieldKey(tenantId, payload.label);
+
+    const created = await prismaWithContacts.contactCustomField.create({
+      data: {
+        tenantId,
+        key: uniqueKey,
+        label: payload.label.trim(),
+        description: payload.description ?? null,
+        fieldType: payload.fieldType,
+        isRequired: payload.isRequired,
+        isEncrypted: payload.isEncrypted,
+        isActive: payload.isActive,
+        options: optionValidation.options,
+        sortOrder: nextSortOrder,
+      },
+      select: {
+        id: true,
+        key: true,
+        label: true,
+        description: true,
+        fieldType: true,
+        isRequired: true,
+        isEncrypted: true,
+        isActive: true,
+        options: true,
+        sortOrder: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.status(201).json({
+      ok: true,
+      customField: {
+        ...created,
+        options: Array.isArray(created.options) ? created.options : [],
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch(
+  "/:tenantId/custom-fields/:recordId",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      const payload = UpdateContactCustomFieldSchema.parse(req.body);
+
+      if (Object.keys(payload).length === 0) {
+        return res.status(400).json({ error: "NO_CHANGES_PROVIDED" });
+      }
+
+      const existing = await prismaWithContacts.contactCustomField.findUnique({
+        where: { id: recordId },
+        select: {
+          id: true,
+          tenantId: true,
+          label: true,
+          fieldType: true,
+          options: true,
+        },
+      });
+
+      if (!existing || existing.tenantId !== tenantId) {
+        return res.status(404).json({ error: "CUSTOM_FIELD_NOT_FOUND" });
+      }
+
+      const nextFieldType = payload.fieldType ?? existing.fieldType;
+      const nextOptions = payload.options ?? (Array.isArray(existing.options) ? existing.options : []);
+      const optionValidation = validateCustomFieldOptions(nextFieldType, nextOptions);
+
+      if (!optionValidation.ok) {
+        return res.status(400).json({
+          error: optionValidation.error,
+          details: optionValidation.details,
+        });
+      }
+
+      const nextLabel = payload.label?.trim() ?? existing.label;
+      const nextKey =
+        nextLabel !== existing.label
+          ? await buildUniqueCustomFieldKey(tenantId, nextLabel, recordId)
+          : undefined;
+
+      const updated = await prismaWithContacts.contactCustomField.update({
+        where: { id: recordId },
+        data: {
+          key: nextKey,
+          label: payload.label?.trim(),
+          description: payload.description,
+          fieldType: payload.fieldType,
+          isRequired: payload.isRequired,
+          isEncrypted: payload.isEncrypted,
+          isActive: payload.isActive,
+          options: optionValidation.options,
+          sortOrder: payload.sortOrder,
+        },
+        select: {
+          id: true,
+          key: true,
+          label: true,
+          description: true,
+          fieldType: true,
+          isRequired: true,
+          isEncrypted: true,
+          isActive: true,
+          options: true,
+          sortOrder: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      return res.json({
+        ok: true,
+        customField: {
+          ...updated,
+          options: Array.isArray(updated.options) ? updated.options : [],
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.delete(
+  "/:tenantId/custom-fields/:recordId",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+
+      const existing = await prismaWithContacts.contactCustomField.findUnique({
+        where: { id: recordId },
+        select: {
+          id: true,
+          tenantId: true,
+        },
+      });
+
+      if (!existing || existing.tenantId !== tenantId) {
+        return res.status(404).json({ error: "CUSTOM_FIELD_NOT_FOUND" });
+      }
+
+      await prismaWithContacts.contactCustomField.delete({
+        where: { id: recordId },
+      });
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
 const handleSectionListNotImplemented = (section: AccountSettingsSection) => (
   req: Request,
   res: Response,
@@ -1306,14 +1652,24 @@ const handleSectionRecordNotImplemented = (section: AccountSettingsSection) => (
 };
 
 for (const section of ACCOUNT_SETTINGS_SECTIONS) {
-  if (section !== "users" && section !== "account" && section !== "status-config") {
+  if (
+    section !== "users" &&
+    section !== "account" &&
+    section !== "status-config" &&
+    section !== "custom-fields"
+  ) {
     router.get(
       "/:tenantId/" + section,
       ...readMiddlewares,
       handleSectionListNotImplemented(section),
     );
   }
-  if (section === "users" || section === "account" || section === "status-config") {
+  if (
+    section === "users" ||
+    section === "account" ||
+    section === "status-config" ||
+    section === "custom-fields"
+  ) {
     continue;
   }
   router.post(

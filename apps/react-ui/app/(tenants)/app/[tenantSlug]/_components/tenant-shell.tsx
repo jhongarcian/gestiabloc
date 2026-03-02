@@ -69,6 +69,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
   const [profileOpen, setProfileOpen] = useState(false)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [currentUser, setCurrentUser] = useState(user)
+  const [contactCrumbLabel, setContactCrumbLabel] = useState<string | null>(null)
   const canAccessAccountSettings = isTenantAdmin(currentUser.role)
 
   const resolvedTenantSlug = useMemo(() => {
@@ -100,15 +101,21 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
       return items
     }
     let acc = basePath
-    segments.forEach((segment) => {
+    segments.forEach((segment, index) => {
       acc += `/${segment}`
+      const isContactIdSegment = segments[0] === "contacts" && index === 1
+
+      if (isContactIdSegment && !contactCrumbLabel) {
+        return
+      }
+
       items.push({
-        label: formatSegment(segment),
+        label: isContactIdSegment ? contactCrumbLabel : formatSegment(segment),
         href: acc,
       })
     })
     return items
-  }, [segments, basePath])
+  }, [segments, basePath, contactCrumbLabel])
 
   useEffect(() => {
     if (!currentUser.image) {
@@ -155,6 +162,33 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
     window.addEventListener("avatar-updated", handler as EventListener)
     return () => {
       window.removeEventListener("avatar-updated", handler as EventListener)
+    }
+  }, [])
+
+  useEffect(() => {
+    const contactId = segments[0] === "contacts" ? segments[1] : null
+    if (!contactId) {
+      setContactCrumbLabel(null)
+    }
+  }, [segments])
+
+  useEffect(() => {
+    const handler = (
+      event: Event,
+    ) => {
+      const customEvent = event as CustomEvent<{ label?: string | null }>
+      setContactCrumbLabel(customEvent.detail?.label ?? null)
+    }
+
+    window.addEventListener(
+      "contact-breadcrumb-updated",
+      handler as EventListener,
+    )
+    return () => {
+      window.removeEventListener(
+        "contact-breadcrumb-updated",
+        handler as EventListener,
+      )
     }
   }, [])
 

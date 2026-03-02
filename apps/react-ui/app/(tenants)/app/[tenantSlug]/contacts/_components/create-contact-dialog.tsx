@@ -1,13 +1,15 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { format } from "date-fns"
-import { CalendarIcon } from "lucide-react"
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
-import { Calendar } from "@/components/ui/calendar"
+import {
+  DateInput,
+  parseDateInput,
+  serializeDateOnly,
+} from "@/components/ui/date-input"
 import {
   Dialog,
   DialogContent,
@@ -20,7 +22,6 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { AppPhoneInput } from "@/components/ui/phone-input"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -63,6 +64,7 @@ export function CreateContactDialog({
   const [middleName, setMiddleName] = useState("")
   const [lastName, setLastName] = useState("")
   const [dateOfBirth, setDateOfBirth] = useState<Date | undefined>(undefined)
+  const [dateOfBirthInput, setDateOfBirthInput] = useState("")
   const [phone, setPhone] = useState("")
   const [email, setEmail] = useState("")
   const [statusConfigId, setStatusConfigId] = useState<string | undefined>(undefined)
@@ -77,6 +79,7 @@ export function CreateContactDialog({
     setMiddleName("")
     setLastName("")
     setDateOfBirth(undefined)
+    setDateOfBirthInput("")
     setPhone("")
     setEmail("")
     setStatusConfigId(undefined)
@@ -85,8 +88,12 @@ export function CreateContactDialog({
 
   const validate = () => {
     const nextErrors: FieldErrors = {}
+    const parsedDateOfBirth = parseDateInput(dateOfBirthInput)
     if (!firstName.trim()) nextErrors.firstName = "First name is required."
     if (!lastName.trim()) nextErrors.lastName = "Last name is required."
+    if (parsedDateOfBirth === null) {
+      nextErrors.dateOfBirth = "Enter a valid date in MM/DD/YYYY format."
+    }
 
     if (email.trim()) {
       const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
@@ -102,18 +109,7 @@ export function CreateContactDialog({
 
     setIsSubmitting(true)
     try {
-      const dateOfBirthIso = dateOfBirth
-        ? new Date(
-            Date.UTC(
-              dateOfBirth.getFullYear(),
-              dateOfBirth.getMonth(),
-              dateOfBirth.getDate(),
-              0,
-              0,
-              0,
-            ),
-          ).toISOString()
-        : null
+      const dateOfBirthIso = serializeDateOnly(dateOfBirth)
 
       await api.post(`/api/contacts/${tenantId}`, {
         firstName: firstName.trim(),
@@ -251,28 +247,22 @@ export function CreateContactDialog({
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div className="grid gap-2">
                 <Label htmlFor="create-contact-date-of-birth">Date of Birth</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      id="create-contact-date-of-birth"
-                      type="button"
-                      variant="outline"
-                      className="w-full justify-between font-normal"
-                    >
-                      {dateOfBirth ? format(dateOfBirth, "MMM dd, yyyy") : "Pick a date"}
-                      <CalendarIcon className="h-4 w-4 opacity-60" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={dateOfBirth}
-                      captionLayout="dropdown"
-                      onSelect={(date) => setDateOfBirth(date)}
-                      disabled={(date) => date > new Date()}
-                    />
-                  </PopoverContent>
-                </Popover>
+                <DateInput
+                  id="create-contact-date-of-birth"
+                  value={dateOfBirthInput}
+                  onValueChange={(nextValue) => {
+                    setDateOfBirthInput(nextValue)
+                    if (fieldErrors.dateOfBirth) {
+                      setFieldErrors((prev) => {
+                        const next = { ...prev }
+                        delete next.dateOfBirth
+                        return next
+                      })
+                    }
+                  }}
+                  onDateChange={setDateOfBirth}
+                  ariaInvalid={Boolean(fieldErrors.dateOfBirth)}
+                />
                 {fieldErrors.dateOfBirth ? (
                   <p className="text-xs text-rose-600">{fieldErrors.dateOfBirth}</p>
                 ) : null}

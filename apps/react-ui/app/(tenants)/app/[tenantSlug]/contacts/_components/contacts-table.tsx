@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { api } from "@/lib/api"
+import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { CreateContactDialog } from "./create-contact-dialog"
 
 type ContactsTableProps = {
@@ -288,7 +289,7 @@ export function ContactsTable({
                         {formatDate(contact.dateOfBirth)}
                       </TableCell>
                       <TableCell className="text-slate-700">
-                        {contact.phoneNumber ?? "—"}
+                        {formatPhoneNumber(contact.phoneNumber)}
                       </TableCell>
                       <TableCell className="text-slate-700">{contact.email ?? "—"}</TableCell>
                       <TableCell>

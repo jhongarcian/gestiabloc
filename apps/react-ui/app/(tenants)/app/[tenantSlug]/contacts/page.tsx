@@ -1,7 +1,7 @@
-import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 
-import { api, type MeResponse } from "@/lib/api"
+import { api } from "@/lib/api"
+import { getTenantMembershipContext } from "../_lib/tenant-session"
 import { ContactsTable } from "./_components/contacts-table"
 
 type ContactStatusConfigResponse = {
@@ -22,25 +22,7 @@ export default async function ContactsPage({
   params: Promise<{ tenantSlug: string }>
 }) {
   const { tenantSlug } = await params
-  const cookie = (await headers()).get("cookie") ?? ""
-  let me: MeResponse["user"] | null = null
-
-  try {
-    const { data } = await api.get<MeResponse>("/api/auth/me", {
-      headers: { cookie },
-    })
-    me = data?.user ?? null
-  } catch {
-    redirect("/login")
-  }
-
-  if (!me?.memberships?.length) {
-    redirect("/login")
-  }
-
-  const membership = me.memberships.find(
-    (item) => item.tenant?.slug === tenantSlug,
-  )
+  const { cookie, membership } = await getTenantMembershipContext(tenantSlug)
 
   if (!membership?.tenant?.id) {
     redirect(`/app/${tenantSlug}`)

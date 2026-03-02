@@ -563,6 +563,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags: [Contacts]
+      summary: Update a contact
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContactRequest"
+      responses:
+        "200":
+          description: Contact updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactDetailsResponse"
+        "400":
+          description: Invalid input or invalid status config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/account-settings/{tenantId}/{section}:
     get:
       tags: [Account Settings]
@@ -1778,6 +1827,10 @@ components:
             statusTextColor:
               type: string
               nullable: true
+            customFields:
+              type: array
+              items:
+                $ref: "#/components/schemas/ContactCustomFieldWithValue"
             createdAt:
               type: string
               format: date-time
@@ -1870,3 +1923,93 @@ components:
             createdAt:
               type: string
               format: date-time
+    UpdateContactRequest:
+      type: object
+      required: [firstName, lastName]
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        middleName:
+          type: string
+          nullable: true
+          maxLength: 120
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        dateOfBirth:
+          type: string
+          format: date-time
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        secondaryPhone:
+          type: string
+          nullable: true
+        email:
+          type: string
+          format: email
+          nullable: true
+        addressLine1:
+          type: string
+          nullable: true
+        addressLine2:
+          type: string
+          nullable: true
+        city:
+          type: string
+          nullable: true
+        state:
+          type: string
+          nullable: true
+        postalCode:
+          type: string
+          nullable: true
+        country:
+          type: string
+          nullable: true
+        statusConfigId:
+          type: string
+          nullable: true
+        customFieldValues:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactCustomFieldValueInput"
+    ContactCustomFieldWithValue:
+      type: object
+      properties:
+        id:
+          type: string
+        key:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+          nullable: true
+        fieldType:
+          type: string
+          enum: [TEXT, NUMBER, SELECT, MULTI_SELECT, RADIO, TEXTAREA, CHECKBOX]
+        isRequired:
+          type: boolean
+        isEncrypted:
+          type: boolean
+        options:
+          type: array
+          items:
+            type: string
+        sortOrder:
+          type: integer
+        value:
+          nullable: true
+    ContactCustomFieldValueInput:
+      type: object
+      required: [fieldId]
+      properties:
+        fieldId:
+          type: string
+        value:
+          nullable: true
