@@ -39,7 +39,8 @@ const ContactsListQuerySchema = z.object({
     })
     .default(10),
   search: z.string().trim().max(120).optional().default(""),
-  statusConfigId: z.string().trim().max(80).optional(),
+  statusConfigIds: z.string().trim().max(2000).optional().default(""),
+  tagIds: z.string().trim().max(2000).optional().default(""),
 })
 
 const ContactSearchQuerySchema = z.object({
@@ -846,6 +847,35 @@ router.get("/:tenantId/statuses", requireAuth, async (req, res, next) => {
   }
 })
 
+router.get("/:tenantId/tags", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const tags = await prismaWithContacts.tenantTag.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        bgColor: true,
+        textColor: true,
+        sortOrder: true,
+      },
+    })
+
+    return res.json({
+      ok: true,
+      items: tags,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.get("/:tenantId/search", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
@@ -918,17 +948,46 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
     const { tenantId } = TenantPathSchema.parse(req.params)
-    const { page, pageSize, search, statusConfigId } =
+    const { page, pageSize, search, statusConfigIds, tagIds } =
       ContactsListQuerySchema.parse(req.query)
 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
     const skip = (page - 1) * pageSize
+    const selectedStatusConfigIds = [...new Set(
+      statusConfigIds
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    )]
+    const selectedTagIds = [...new Set(
+      tagIds
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    )]
 
     const where = {
       tenantId,
-      ...(statusConfigId ? { statusConfigId } : {}),
+      ...(selectedStatusConfigIds.length > 0
+        ? {
+            statusConfigId: {
+              in: selectedStatusConfigIds,
+            },
+          }
+        : {}),
+      ...(selectedTagIds.length > 0
+        ? {
+            tags: {
+              some: {
+                tagId: {
+                  in: selectedTagIds,
+                },
+              },
+            },
+          }
+        : {}),
       ...(search
         ? {
             OR: [

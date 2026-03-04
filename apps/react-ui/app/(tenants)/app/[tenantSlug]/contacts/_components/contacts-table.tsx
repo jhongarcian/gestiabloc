@@ -1,18 +1,23 @@
 "use client"
 
 import { isAxiosError } from "axios"
+import { Filter } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import {
   Table,
   TableBody,
@@ -29,6 +34,12 @@ type ContactsTableProps = {
   tenantSlug: string
   tenantId: string
   statusOptions: Array<{
+    label: string
+    value: string
+    bgColor?: string
+    textColor?: string
+  }>
+  tagOptions: Array<{
     label: string
     value: string
     bgColor?: string
@@ -102,16 +113,70 @@ export function ContactsTable({
   tenantSlug,
   tenantId,
   statusOptions,
+  tagOptions,
 }: ContactsTableProps) {
   const router = useRouter()
   const [query, setQuery] = useState("")
   const [debouncedQuery, setDebouncedQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState(ALL_STATUS_VALUE)
+  const [statusFilters, setStatusFilters] = useState<string[]>([])
+  const [tagFilters, setTagFilters] = useState<string[]>([])
+  const [tagFilterOptions, setTagFilterOptions] = useState(tagOptions)
+  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false)
+  const [draftStatusFilters, setDraftStatusFilters] = useState<string[]>([])
+  const [draftTagFilters, setDraftTagFilters] = useState<string[]>([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(10)
   const [isLoading, setIsLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [data, setData] = useState<ContactsListResponse | null>(null)
+
+  const selectableStatusOptions = useMemo(
+    () => statusOptions.filter((option) => option.value !== ALL_STATUS_VALUE),
+    [statusOptions],
+  )
+
+  useEffect(() => {
+    setTagFilterOptions(tagOptions)
+  }, [tagOptions])
+
+  useEffect(() => {
+    if (tagFilterOptions.length > 0) return
+
+    let cancelled = false
+
+    const loadTagOptions = async () => {
+      try {
+        const { data } = await api.get<{
+          ok: boolean
+          items: Array<{
+            id: string
+            name: string
+            bgColor: string
+            textColor: string
+          }>
+        }>(`/api/contacts/${tenantId}/tags`)
+
+        if (cancelled) return
+
+        setTagFilterOptions(
+          data.items.map((tag) => ({
+            label: tag.name,
+            value: tag.id,
+            bgColor: tag.bgColor,
+            textColor: tag.textColor,
+          })),
+        )
+      } catch {
+        if (cancelled) return
+      }
+    }
+
+    void loadTagOptions()
+
+    return () => {
+      cancelled = true
+    }
+  }, [tagFilterOptions.length, tenantId])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -136,8 +201,8 @@ export function ContactsTable({
             page,
             pageSize,
             search: debouncedQuery || undefined,
-            statusConfigId:
-              statusFilter === ALL_STATUS_VALUE ? undefined : statusFilter,
+            statusConfigIds: statusFilters.length ? statusFilters.join(",") : undefined,
+            tagIds: tagFilters.length ? tagFilters.join(",") : undefined,
           },
         },
       )
@@ -156,7 +221,7 @@ export function ContactsTable({
     } finally {
       setIsLoading(false)
     }
-  }, [tenantId, page, pageSize, debouncedQuery, statusFilter])
+  }, [tenantId, page, pageSize, debouncedQuery, statusFilters, tagFilters])
 
   useEffect(() => {
     void loadContacts()
@@ -168,6 +233,7 @@ export function ContactsTable({
   const startIndex = (page - 1) * pageSize
   const canGoPrevious = page > 1
   const canGoNext = page < totalPages
+  const activeFilterCount = statusFilters.length + tagFilters.length
 
   const summaryLabel = useMemo(() => {
     if (!total) return "No contacts found"
@@ -192,7 +258,7 @@ export function ContactsTable({
       </div>
 
       <div className="flex flex-col gap-2 rounded-lg bg-white py-1">
-        <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_200px_auto]">
+        <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
           <Input
             placeholder="Search by name, email, or phone"
             value={query}
@@ -201,32 +267,29 @@ export function ContactsTable({
               setPage(1)
             }}
           />
-          <Select
-            value={statusFilter}
-            onValueChange={(value) => {
-              setStatusFilter(value)
-              setPage(1)
-            }}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              {statusOptions.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
           <Button
             type="button"
             variant="outline"
-            className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+            className="cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+            onClick={() => {
+              setDraftStatusFilters(statusFilters)
+              setDraftTagFilters(tagFilters)
+              setIsFilterSheetOpen(true)
+            }}
+          >
+            <Filter className="h-4 w-4" />
+            Filters
+            {activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
             onClick={() => {
               setQuery("")
               setDebouncedQuery("")
-              setStatusFilter(ALL_STATUS_VALUE)
+              setStatusFilters([])
+              setTagFilters([])
               setPage(1)
             }}
           >
@@ -234,6 +297,133 @@ export function ContactsTable({
           </Button>
         </div>
       </div>
+
+      <Sheet open={isFilterSheetOpen} onOpenChange={setIsFilterSheetOpen}>
+        <SheetContent side="right" className="sm:max-w-md">
+          <SheetHeader>
+            <SheetTitle>Filters</SheetTitle>
+            <SheetDescription>
+              Select one or more status and tag filters.
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pb-4">
+            <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+              <div className="space-y-1">
+                <Label className="text-sm font-semibold text-slate-900">Status</Label>
+                <p className="text-xs text-slate-500">Show contacts matching any selected status.</p>
+              </div>
+
+              {selectableStatusOptions.length ? (
+                <div className="space-y-2">
+                  {selectableStatusOptions.map((option) => {
+                    const checked = draftStatusFilters.includes(option.value)
+                    return (
+                      <label
+                        key={option.value}
+                        className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1.5 hover:bg-slate-50"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(nextChecked) => {
+                            setDraftStatusFilters((prev) =>
+                              nextChecked
+                                ? [...prev, option.value]
+                                : prev.filter((value) => value !== option.value),
+                            )
+                          }}
+                        />
+                        <span
+                          className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                          style={
+                            option.bgColor && option.textColor
+                              ? { backgroundColor: option.bgColor, color: option.textColor }
+                              : undefined
+                          }
+                        >
+                          {option.label}
+                        </span>
+                      </label>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">No status filters available.</p>
+              )}
+            </section>
+
+            <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+              <div className="space-y-1">
+                <Label className="text-sm font-semibold text-slate-900">Tags</Label>
+                <p className="text-xs text-slate-500">Show contacts matching any selected tag.</p>
+              </div>
+
+              {tagFilterOptions.length ? (
+                <div className="space-y-2">
+                  {tagFilterOptions.map((option) => {
+                    const checked = draftTagFilters.includes(option.value)
+                    return (
+                      <label
+                        key={option.value}
+                        className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1.5 hover:bg-slate-50"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(nextChecked) => {
+                            setDraftTagFilters((prev) =>
+                              nextChecked
+                                ? [...prev, option.value]
+                                : prev.filter((value) => value !== option.value),
+                            )
+                          }}
+                        />
+                        <span
+                          className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                          style={
+                            option.bgColor && option.textColor
+                              ? { backgroundColor: option.bgColor, color: option.textColor }
+                              : undefined
+                          }
+                        >
+                          {option.label}
+                        </span>
+                      </label>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">No tag filters available.</p>
+              )}
+            </section>
+          </div>
+
+          <SheetFooter>
+            <Button
+              type="button"
+              variant="outline"
+              className="cursor-pointer"
+              onClick={() => {
+                setDraftStatusFilters([])
+                setDraftTagFilters([])
+              }}
+            >
+              Clear
+            </Button>
+            <Button
+              type="button"
+              className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+              onClick={() => {
+                setStatusFilters([...new Set(draftStatusFilters)])
+                setTagFilters([...new Set(draftTagFilters)])
+                setPage(1)
+                setIsFilterSheetOpen(false)
+              }}
+            >
+              Apply Filters
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
 
       <div className="flex min-h-0 flex-1 flex-col rounded-lg bg-white">
         <div className="min-h-0 flex-1 overflow-auto">

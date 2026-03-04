@@ -286,14 +286,11 @@ export function ContactRelationshipsSection({
 
   return (
     <>
-      <details className="group rounded-lg py-1" open>
+      <details className="group rounded-lg py-1">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-2 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-50">
           <span className="flex items-center gap-2">
             <ChevronDown className="h-4 w-4 text-slate-400 transition group-open:rotate-180" />
-            Relationship
-            <span className="rounded-full border border-slate-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-950">
-              {relationships.length}
-            </span>
+            Relationships
           </span>
           <button
             type="button"
@@ -310,10 +307,10 @@ export function ContactRelationshipsSection({
         </summary>
 
         {relationships.length > 0 ? (
-          <div className="mt-1 space-y-3 pl-2">
+          <div className="mt-1 space-y-3 pl-8">
             {groupedRelationships.map((group) => (
               <div key={group.label} className="space-y-1.5">
-                <div className="flex items-center gap-2 px-3">
+                <div className="flex items-center gap-2 px-1">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
                     {group.label}
                   </p>
@@ -324,7 +321,7 @@ export function ContactRelationshipsSection({
                   {group.items.map((relationship) => (
                     <div
                       key={relationship.id}
-                      className="flex items-start justify-between gap-3 rounded-lg px-3 py-2 transition hover:bg-slate-50/70"
+                      className="flex items-start justify-between gap-3 rounded-lg px-1 py-2 transition hover:bg-slate-50/70"
                     >
                       <div className="min-w-0 space-y-0.5">
                         <Link
@@ -353,6 +350,7 @@ export function ContactRelationshipsSection({
                 </div>
               </div>
             ))}
+
           </div>
         ) : (
           <p className="mt-1 pl-8 text-sm leading-6 text-slate-500">

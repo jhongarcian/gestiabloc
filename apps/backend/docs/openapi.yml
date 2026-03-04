@@ -435,6 +435,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/tags:
+    get:
+      tags: [Contacts]
+      summary: List tenant tags for contact filters
+      description: Returns tenant tags sorted for use in contact filtering UIs.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Contact tag filter options returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactsTagOptionsResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/contacts/{tenantId}/search:
     get:
       tags: [Contacts]
@@ -504,10 +532,17 @@ paths:
             type: string
             maxLength: 120
         - in: query
-          name: statusConfigId
+          name: statusConfigIds
           required: false
           schema:
             type: string
+          description: Comma-separated status config ids. Matches contacts with any selected status.
+        - in: query
+          name: tagIds
+          required: false
+          schema:
+            type: string
+          description: Comma-separated tenant tag ids. Matches contacts that have at least one selected tag.
       responses:
         "200":
           description: Contacts returned
@@ -3266,6 +3301,16 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ContactsStatusItem"
+    ContactsTagOptionsResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactTagItem"
     ContactListItem:
       type: object
       properties:

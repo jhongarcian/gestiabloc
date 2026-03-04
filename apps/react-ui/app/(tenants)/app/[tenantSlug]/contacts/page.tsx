@@ -16,6 +16,17 @@ type ContactStatusConfigResponse = {
   }>
 }
 
+type ContactTagsFilterResponse = {
+  ok: boolean
+  items: Array<{
+    id: string
+    name: string
+    bgColor: string
+    textColor: string
+    sortOrder: number
+  }>
+}
+
 export default async function ContactsPage({
   params,
 }: {
@@ -58,6 +69,31 @@ export default async function ContactsPage({
     // Fallback keeps the filter usable even if status lookup fails.
   }
 
+  let tagOptions: Array<{
+    label: string
+    value: string
+    bgColor?: string
+    textColor?: string
+  }> = []
+
+  try {
+    const { data } = await api.get<ContactTagsFilterResponse>(
+      `/api/contacts/${membership.tenant.id}/tags`,
+      {
+        headers: { cookie },
+      },
+    )
+
+    tagOptions = data.items.map((tag) => ({
+      label: tag.name,
+      value: tag.id,
+      bgColor: tag.bgColor,
+      textColor: tag.textColor,
+    }))
+  } catch {
+    // Optional enhancement: contacts can still load without tag filter options.
+  }
+
   return (
     <section className="flex h-full min-h-0 flex-col gap-4">
       <div className="space-y-0.5">
@@ -75,6 +111,7 @@ export default async function ContactsPage({
             tenantSlug={tenantSlug}
             tenantId={membership.tenant.id}
             statusOptions={statusOptions}
+            tagOptions={tagOptions}
           />
         </div>
       </div>

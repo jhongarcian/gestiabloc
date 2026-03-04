@@ -53,7 +53,7 @@ export function ContactTagsSection({
   initialTags,
 }: ContactTagsSectionProps) {
   const [assignedTags, setAssignedTags] = useState<ContactTag[]>(sortTags(initialTags))
-  const [isDialogOpen, setIsDialogOpen] = useState(false)
+  const [open, setOpen] = useState(false)
   const [isBusy, setIsBusy] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
   const [searchInput, setSearchInput] = useState("")
@@ -78,7 +78,7 @@ export function ContactTagsSection({
   }, [searchInput])
 
   useEffect(() => {
-    if (!isDialogOpen) return
+    if (!open) return
 
     let isCancelled = false
 
@@ -124,7 +124,7 @@ export function ContactTagsSection({
     return () => {
       isCancelled = true
     }
-  }, [contactId, debouncedSearch, isDialogOpen, page, tenantId])
+  }, [contactId, debouncedSearch, open, page, tenantId])
 
   const assignedIds = useMemo(
     () => new Set(assignedTags.map((tag) => tag.id)),
@@ -179,10 +179,22 @@ export function ContactTagsSection({
         <span className="flex items-center gap-2">
           <ChevronDown className="h-4 w-4 text-slate-400 transition group-open:rotate-180" />
           Tags
+          <span className="rounded-full border border-slate-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-950">
+            {assignedTags.length}
+          </span>
         </span>
-        <span className="text-xs text-slate-500">
-          {assignedTags.length} assigned
-        </span>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            setOpen(true)
+          }}
+          className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+          aria-label="Add tag"
+        >
+          <Plus className="h-4 w-4" />
+        </button>
       </summary>
 
       <div className="mt-1 space-y-3 pl-8">
@@ -200,7 +212,7 @@ export function ContactTagsSection({
                 {tag.name}
                 <button
                   type="button"
-                  className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-black/10 transition hover:bg-black/20"
+                  className="inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded-full bg-black/10 transition hover:bg-black/20"
                   aria-label={`Remove ${tag.name}`}
                   disabled={isBusy}
                   onClick={() => void handleRemove(tag.id)}
@@ -214,22 +226,12 @@ export function ContactTagsSection({
           <p className="text-sm leading-6 text-slate-500">No tags assigned yet.</p>
         )}
 
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="cursor-pointer"
-          onClick={() => setIsDialogOpen(true)}
-        >
-          <Plus className="h-4 w-4" />
-          Add Tag
-        </Button>
       </div>
 
       <Dialog
-        open={isDialogOpen}
+        open={open}
         onOpenChange={(open) => {
-          setIsDialogOpen(open)
+          setOpen(open)
           if (!open) {
             setSearchInput("")
             setDebouncedSearch("")
@@ -332,7 +334,7 @@ export function ContactTagsSection({
               type="button"
               variant="outline"
               className="cursor-pointer"
-              onClick={() => setIsDialogOpen(false)}
+              onClick={() => setOpen(false)}
             >
               Close
             </Button>
