@@ -83,7 +83,7 @@ export type MeResponse = {
       role: string
       status: string
       securityLevel: "LOW" | "MEDIUM" | "MAX"
-      tenant: { id: string; slug: string; name: string }
+      tenant: { id: string; slug: string; name: string; timezone?: string | null }
     }>
   }
 }

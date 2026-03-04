@@ -1,0 +1,1013 @@
+import { type Response, Router } from "express"
+import { z } from "zod"
+
+import { prisma } from "../lib/prisma.js"
+import {
+  getTaskDueDayOffset,
+  getTaskPriorityFromDueDate,
+  getTenantTimezone,
+} from "../lib/task-priority.js"
+import { createTaskAssignmentNotification } from "../lib/task-notifications.js"
+import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
+
+const router = Router()
+const prismaWithTasks = prisma as any
+
+const TenantPathSchema = z.object({
+  tenantId: z.string().min(1),
+})
+
+const TenantTaskPathSchema = TenantPathSchema.extend({
+  taskId: z.string().min(1),
+})
+
+const TenantTaskReminderPathSchema = TenantTaskPathSchema.extend({
+  reminderId: z.string().min(1),
+})
+
+const TasksListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce
+    .number()
+    .int()
+    .refine((value) => value === 10 || value === 25, {
+      message: "pageSize must be 10 or 25",
+    })
+    .default(10),
+  search: z.string().trim().max(120).optional().default(""),
+  statusConfigId: z.string().trim().max(80).optional(),
+  priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(),
+  contactId: z.string().trim().min(1).optional(),
+})
+
+const CreateTaskReminderSchema = z.object({
+  remindAt: z.string().datetime(),
+  recipientUserId: z.string().min(1).optional(),
+  message: z.string().trim().max(500).nullable().optional(),
+})
+
+const CreateTaskSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  contactId: z.string().trim().min(1),
+  description: z.string().trim().max(4000).nullable().optional(),
+  statusConfigId: z.string().trim().max(80).nullable().optional(),
+  assignedToUserId: z.string().trim().min(1).nullable().optional(),
+  dueDate: z.string().datetime().nullable().optional(),
+  startedAt: z.string().datetime(),
+  reminderAt: z.string().datetime().nullable().optional(),
+})
+
+const UpdateTaskSchema = CreateTaskSchema.partial()
+
+const TASK_DEFAULT_STATUSES = [
+  {
+    name: "To Do",
+    bgColor: "#E2E8F0",
+    textColor: "#334155",
+    sortOrder: 10,
+  },
+  {
+    name: "In Progress",
+    bgColor: "#DBEAFE",
+    textColor: "#1E3A8A",
+    sortOrder: 20,
+  },
+  {
+    name: "Completed",
+    bgColor: "#DCFCE7",
+    textColor: "#166534",
+    sortOrder: 30,
+  },
+] as const
+
+async function ensureDefaultTaskStatuses(tenantId: string) {
+  await prismaWithTasks.taskStatusConfig.updateMany({
+    where: {
+      tenantId,
+      name: { in: TASK_DEFAULT_STATUSES.map((item) => item.name) },
+      isSystemDefault: false,
+    },
+    data: {
+      isSystemDefault: true,
+    },
+  })
+
+  await prismaWithTasks.taskStatusConfig.createMany({
+    data: TASK_DEFAULT_STATUSES.map((item) => ({
+      tenantId,
+      name: item.name,
+      bgColor: item.bgColor,
+      textColor: item.textColor,
+      sortOrder: item.sortOrder,
+      isActive: true,
+      isSystemDefault: true,
+    })),
+    skipDuplicates: true,
+  })
+}
+
+async function requireActiveMembership(
+  req: AuthedRequest,
+  res: Response,
+  tenantId: string,
+) {
+  const membership = await prisma.membership.findUnique({
+    where: {
+      userId_tenantId: {
+        userId: req.user.id,
+        tenantId,
+      },
+    },
+    select: {
+      role: true,
+      status: true,
+    },
+  })
+
+  if (!membership || membership.status !== "ACTIVE") {
+    res.status(403).json({ error: "TENANT_ACCESS_DENIED" })
+    return null
+  }
+
+  return membership
+}
+
+async function getTaskForTenant(tenantId: string, taskId: string) {
+  return prismaWithTasks.task.findFirst({
+    where: {
+      id: taskId,
+      tenantId,
+    },
+    select: {
+      id: true,
+      tenantId: true,
+      name: true,
+      description: true,
+      statusConfigId: true,
+      assignedToUserId: true,
+      dueDate: true,
+      startedAt: true,
+    },
+  })
+}
+
+async function resolveTaskMutationPayload(
+  tenantId: string,
+  payload: z.infer<typeof CreateTaskSchema> | z.infer<typeof UpdateTaskSchema>,
+) {
+  const statusConfigId = payload.statusConfigId ?? null
+  const contactId = "contactId" in payload ? payload.contactId ?? null : null
+  const assignedToUserId = payload.assignedToUserId ?? null
+  const dueDate = payload.dueDate ? new Date(payload.dueDate) : null
+  const startedAt = payload.startedAt ? new Date(payload.startedAt) : null
+
+  if (dueDate && Number.isNaN(dueDate.getTime())) {
+    return { error: "INVALID_DUE_DATE" as const }
+  }
+
+  if (startedAt && Number.isNaN(startedAt.getTime())) {
+    return { error: "INVALID_START_DATE" as const }
+  }
+
+  if (statusConfigId) {
+    const status = await prismaWithTasks.taskStatusConfig.findFirst({
+      where: {
+        id: statusConfigId,
+        tenantId,
+        isActive: true,
+      },
+      select: {
+        id: true,
+      },
+    })
+
+    if (!status) {
+      return { error: "INVALID_STATUS_CONFIG" as const }
+    }
+  }
+
+  if (assignedToUserId) {
+    const membership = await prisma.membership.findUnique({
+      where: {
+        userId_tenantId: {
+          userId: assignedToUserId,
+          tenantId,
+        },
+      },
+      select: {
+        id: true,
+        status: true,
+      },
+    })
+
+    if (!membership || membership.status !== "ACTIVE") {
+      return { error: "INVALID_ASSIGNEE" as const }
+    }
+  }
+
+  if (contactId) {
+    const contact = await prisma.contact.findFirst({
+      where: {
+        id: contactId,
+        tenantId,
+      },
+      select: {
+        id: true,
+      },
+    })
+
+    if (!contact) {
+      return { error: "INVALID_CONTACT" as const }
+    }
+  }
+
+  return {
+    contactId,
+    statusConfigId,
+    assignedToUserId,
+    dueDate,
+    startedAt,
+  }
+}
+
+router.get("/:tenantId/statuses", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    await ensureDefaultTaskStatuses(tenantId)
+
+    const statuses = await prismaWithTasks.taskStatusConfig.findMany({
+      where: { tenantId, isActive: true },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        bgColor: true,
+        textColor: true,
+        sortOrder: true,
+        isActive: true,
+      },
+    })
+
+    return res.json({
+      ok: true,
+      items: statuses,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/assignees", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const assignees = await prisma.membership.findMany({
+      where: {
+        tenantId,
+        status: "ACTIVE",
+      },
+      orderBy: [{ user: { name: "asc" } }],
+      select: {
+        userId: true,
+        user: {
+          select: {
+            name: true,
+            email: true,
+          },
+        },
+      },
+    })
+
+    return res.json({
+      ok: true,
+      items: assignees.map((assignee) => ({
+        value: assignee.userId,
+        label: assignee.user.name?.trim() || assignee.user.email,
+        email: assignee.user.email,
+      })),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/summary", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const tenantTimezone = await getTenantTimezone(tenantId)
+    const tasks = await prismaWithTasks.task.findMany({
+      where: { tenantId },
+      select: {
+        dueDate: true,
+        priority: true,
+        assignedToUserId: true,
+      },
+    })
+
+    const summary = tasks.reduce(
+      (acc: any, task: any) => {
+        acc.totalTasks += 1
+
+        const offset = getTaskDueDayOffset(task.dueDate, tenantTimezone)
+        if (offset !== null && offset < 0) {
+          acc.overdueTasks += 1
+        }
+        if (offset !== null && offset >= 0 && offset <= 7) {
+          acc.dueThisWeek += 1
+        }
+        if (task.priority === "HIGH") {
+          acc.highPriorityTasks += 1
+        }
+
+        if (task.assignedToUserId === authed.user.id && task.priority) {
+          acc.myPriorityCounts[task.priority] += 1
+        }
+
+        return acc
+      },
+      {
+        totalTasks: 0,
+        overdueTasks: 0,
+        dueThisWeek: 0,
+        highPriorityTasks: 0,
+        myPriorityCounts: {
+          HIGH: 0,
+          MEDIUM: 0,
+          LOW: 0,
+        },
+      },
+    )
+
+    return res.json({
+      ok: true,
+      summary,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const { page, pageSize, search, statusConfigId, priority, contactId } =
+      TasksListQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const skip = (page - 1) * pageSize
+
+    const where = {
+      tenantId,
+      ...(contactId ? { contactId } : {}),
+      ...(statusConfigId ? { statusConfigId } : {}),
+      ...(priority ? { priority } : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: "insensitive" as const } },
+              {
+                description: { contains: search, mode: "insensitive" as const },
+              },
+              {
+                linkedEntityName: {
+                  contains: search,
+                  mode: "insensitive" as const,
+                },
+              },
+              {
+                contact: {
+                  OR: [
+                    {
+                      firstName: {
+                        contains: search,
+                        mode: "insensitive" as const,
+                      },
+                    },
+                    {
+                      middleName: {
+                        contains: search,
+                        mode: "insensitive" as const,
+                      },
+                    },
+                    {
+                      lastName: {
+                        contains: search,
+                        mode: "insensitive" as const,
+                      },
+                    },
+                  ],
+                },
+              },
+              {
+                assignedToMembership: {
+                  user: {
+                    name: { contains: search, mode: "insensitive" as const },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+    }
+
+    const [total, tasks] = await prisma.$transaction([
+      prismaWithTasks.task.count({ where }),
+      prismaWithTasks.task.findMany({
+        where,
+        orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          assignedToUserId: true,
+          priority: true,
+          dueDate: true,
+          startedAt: true,
+          linkedEntityName: true,
+          linkedEntityType: true,
+          contact: {
+            select: {
+              firstName: true,
+              middleName: true,
+              lastName: true,
+            },
+          },
+          assignedToMembership: {
+            select: {
+              user: {
+                select: {
+                  name: true,
+                },
+              },
+            },
+          },
+          statusConfig: {
+            select: {
+              id: true,
+              name: true,
+              bgColor: true,
+              textColor: true,
+            },
+          },
+        },
+      }),
+    ])
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+    return res.json({
+      ok: true,
+      items: tasks.map((task: any) => ({
+        id: task.id,
+        name: task.name,
+        description: task.description ?? null,
+        assignedToUserId: task.assignedToUserId ?? null,
+        priority: task.priority ?? null,
+        dueDate: task.dueDate,
+        assignedPersonName: task.assignedToMembership?.user?.name ?? null,
+        startedAt: task.startedAt,
+        status: task.statusConfig?.name ?? "Unassigned",
+        statusConfigId: task.statusConfig?.id ?? null,
+        statusBgColor: task.statusConfig?.bgColor ?? null,
+        statusTextColor: task.statusConfig?.textColor ?? null,
+        contactName: task.contact
+          ? [task.contact.firstName, task.contact.middleName, task.contact.lastName]
+              .filter(Boolean)
+              .join(" ")
+          : null,
+        linkedEntityName: task.linkedEntityName ?? null,
+        linkedEntityType: task.linkedEntityType ?? null,
+      })),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post("/:tenantId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const payload = CreateTaskSchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const reminderAt = payload.reminderAt ? new Date(payload.reminderAt) : null
+
+    if (reminderAt && Number.isNaN(reminderAt.getTime())) {
+      return res.status(400).json({ error: "INVALID_REMINDER_DATE" })
+    }
+
+    const resolvedPayload = await resolveTaskMutationPayload(tenantId, payload)
+    if ("error" in resolvedPayload) {
+      return res.status(400).json({ error: resolvedPayload.error })
+    }
+    const tenantTimezone = await getTenantTimezone(tenantId)
+
+    const { contactId, statusConfigId, assignedToUserId, dueDate, startedAt } =
+      resolvedPayload
+
+    const task = await prisma.$transaction(async (tx) => {
+      const prismaTx = tx as any
+
+      const createdTask = await prismaTx.task.create({
+        data: {
+          tenantId,
+          contactId,
+          priority: getTaskPriorityFromDueDate(dueDate, tenantTimezone),
+          name: payload.name.trim(),
+          description: payload.description?.trim() || null,
+          statusConfigId,
+          assignedToUserId,
+          dueDate,
+          startedAt,
+        },
+        select: {
+          id: true,
+          name: true,
+          assignedToUserId: true,
+        },
+      })
+
+      if (reminderAt) {
+        const recipientMembership = await tx.membership.findUnique({
+          where: {
+            userId_tenantId: {
+              userId:
+                createdTask.assignedToUserId ?? assignedToUserId ?? authed.user.id,
+              tenantId,
+            },
+          },
+          select: {
+            id: true,
+            userId: true,
+            status: true,
+          },
+        })
+
+        if (recipientMembership?.status === "ACTIVE") {
+          await prismaTx.taskReminder.create({
+            data: {
+              tenantId,
+              taskId: createdTask.id,
+              recipientUserId: recipientMembership.userId,
+              membershipId: recipientMembership.id,
+              createdById: authed.user.id,
+              remindAt: reminderAt,
+            },
+          })
+        }
+      }
+
+      return createdTask
+    })
+
+    if (task.assignedToUserId) {
+      await createTaskAssignmentNotification({
+        tenantId,
+        taskId: task.id,
+        taskName: task.name,
+        assignedToUserId: task.assignedToUserId,
+        actorName: authed.user.name?.trim() || authed.user.email || "A teammate",
+      })
+    }
+
+    return res.status(201).json({
+      ok: true,
+      task,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, taskId } = TenantTaskPathSchema.parse(req.params)
+    const payload = UpdateTaskSchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const existingTask = await getTaskForTenant(tenantId, taskId)
+    if (!existingTask) {
+      return res.status(404).json({ error: "TASK_NOT_FOUND" })
+    }
+
+    const mergedPayload = {
+      name: payload.name ?? existingTask.name,
+      description:
+        payload.description === undefined
+          ? existingTask.description
+          : payload.description,
+      statusConfigId:
+        payload.statusConfigId === undefined
+          ? existingTask.statusConfigId
+          : payload.statusConfigId,
+      assignedToUserId:
+        payload.assignedToUserId === undefined
+          ? existingTask.assignedToUserId
+          : payload.assignedToUserId,
+      dueDate:
+        payload.dueDate === undefined
+          ? existingTask.dueDate?.toISOString() ?? null
+          : payload.dueDate,
+      startedAt:
+        payload.startedAt === undefined
+          ? existingTask.startedAt?.toISOString() ?? null
+          : payload.startedAt,
+      reminderAt: payload.reminderAt,
+    }
+
+    const resolvedPayload = await resolveTaskMutationPayload(tenantId, mergedPayload)
+    if ("error" in resolvedPayload) {
+      return res.status(400).json({ error: resolvedPayload.error })
+    }
+    const tenantTimezone = await getTenantTimezone(tenantId)
+
+    const reminderAt = payload.reminderAt ? new Date(payload.reminderAt) : null
+
+    if (reminderAt && Number.isNaN(reminderAt.getTime())) {
+      return res.status(400).json({ error: "INVALID_REMINDER_DATE" })
+    }
+
+    const task = await prisma.$transaction(async (tx) => {
+      const prismaTx = tx as any
+
+      const updatedTask = await prismaTx.task.update({
+        where: { id: existingTask.id },
+        data: {
+          name: mergedPayload.name.trim(),
+          description: mergedPayload.description?.trim() || null,
+          statusConfigId: resolvedPayload.statusConfigId,
+          assignedToUserId: resolvedPayload.assignedToUserId,
+          priority: getTaskPriorityFromDueDate(
+            resolvedPayload.dueDate,
+            tenantTimezone,
+          ),
+          dueDate: resolvedPayload.dueDate,
+          startedAt: resolvedPayload.startedAt,
+        },
+        select: {
+          id: true,
+          name: true,
+          assignedToUserId: true,
+        },
+      })
+
+      if (reminderAt) {
+        const recipientMembership = await tx.membership.findUnique({
+          where: {
+            userId_tenantId: {
+              userId: updatedTask.assignedToUserId ?? authed.user.id,
+              tenantId,
+            },
+          },
+          select: {
+            id: true,
+            userId: true,
+            status: true,
+          },
+        })
+
+        if (recipientMembership?.status === "ACTIVE") {
+          await prismaTx.taskReminder.create({
+            data: {
+              tenantId,
+              taskId: existingTask.id,
+              recipientUserId: recipientMembership.userId,
+              membershipId: recipientMembership.id,
+              createdById: authed.user.id,
+              remindAt: reminderAt,
+            },
+          })
+        }
+      }
+
+      return updatedTask
+    })
+
+    const assigneeChanged = existingTask.assignedToUserId !== task.assignedToUserId
+    if (assigneeChanged && task.assignedToUserId) {
+      await createTaskAssignmentNotification({
+        tenantId,
+        taskId: task.id,
+        taskName: task.name,
+        assignedToUserId: task.assignedToUserId,
+        actorName: authed.user.name?.trim() || authed.user.email || "A teammate",
+      })
+    }
+
+    return res.json({
+      ok: true,
+      task,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.delete("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, taskId } = TenantTaskPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const existingTask = await getTaskForTenant(tenantId, taskId)
+    if (!existingTask) {
+      return res.status(404).json({ error: "TASK_NOT_FOUND" })
+    }
+
+    await prismaWithTasks.task.delete({
+      where: {
+        id: existingTask.id,
+      },
+    })
+
+    return res.json({ ok: true })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, taskId } = TenantTaskPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const task = await prismaWithTasks.task.findFirst({
+      where: {
+        id: taskId,
+        tenantId,
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        assignedToUserId: true,
+        priority: true,
+        dueDate: true,
+        startedAt: true,
+        linkedEntityName: true,
+        linkedEntityType: true,
+        contact: {
+          select: {
+            firstName: true,
+            middleName: true,
+            lastName: true,
+          },
+        },
+        assignedToMembership: {
+          select: {
+            user: {
+              select: {
+                name: true,
+              },
+            },
+          },
+        },
+        statusConfig: {
+          select: {
+            id: true,
+            name: true,
+            bgColor: true,
+            textColor: true,
+          },
+        },
+        reminders: {
+          where: {
+            canceledAt: null,
+          },
+          orderBy: [{ remindAt: "asc" }],
+          select: {
+            id: true,
+            remindAt: true,
+            message: true,
+            notifiedAt: true,
+            recipient: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+              },
+            },
+            createdBy: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
+      },
+    })
+
+    if (!task) {
+      return res.status(404).json({ error: "TASK_NOT_FOUND" })
+    }
+
+    return res.json({
+      ok: true,
+      task: {
+        id: task.id,
+        name: task.name,
+        description: task.description ?? null,
+        assignedToUserId: task.assignedToUserId ?? null,
+        priority: task.priority ?? null,
+        dueDate: task.dueDate,
+        startedAt: task.startedAt,
+        assignedPersonName: task.assignedToMembership?.user?.name ?? null,
+        status: task.statusConfig?.name ?? "Unassigned",
+        statusConfigId: task.statusConfig?.id ?? null,
+        statusBgColor: task.statusConfig?.bgColor ?? null,
+        statusTextColor: task.statusConfig?.textColor ?? null,
+        contactName: task.contact
+          ? [task.contact.firstName, task.contact.middleName, task.contact.lastName]
+              .filter(Boolean)
+              .join(" ")
+          : null,
+        linkedEntityName: task.linkedEntityName ?? null,
+        linkedEntityType: task.linkedEntityType ?? null,
+        reminders: task.reminders.map((reminder: any) => ({
+          id: reminder.id,
+          remindAt: reminder.remindAt,
+          message: reminder.message ?? null,
+          notifiedAt: reminder.notifiedAt ?? null,
+          recipient: reminder.recipient,
+          createdBy: reminder.createdBy,
+        })),
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post("/:tenantId/:taskId/reminders", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, taskId } = TenantTaskPathSchema.parse(req.params)
+    const payload = CreateTaskReminderSchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const task = await getTaskForTenant(tenantId, taskId)
+    if (!task) {
+      return res.status(404).json({ error: "TASK_NOT_FOUND" })
+    }
+
+    const recipientUserId = payload.recipientUserId ?? task.assignedToUserId ?? authed.user.id
+    const remindAt = new Date(payload.remindAt)
+
+    if (Number.isNaN(remindAt.getTime())) {
+      return res.status(400).json({ error: "INVALID_REMINDER_DATE" })
+    }
+
+    const recipientMembership = await prisma.membership.findUnique({
+      where: {
+        userId_tenantId: {
+          userId: recipientUserId,
+          tenantId,
+        },
+      },
+      select: {
+        id: true,
+        status: true,
+      },
+    })
+
+    if (!recipientMembership || recipientMembership.status !== "ACTIVE") {
+      return res.status(400).json({ error: "INVALID_REMINDER_RECIPIENT" })
+    }
+
+    const reminder = await prismaWithTasks.taskReminder.create({
+      data: {
+        tenantId,
+        taskId,
+        recipientUserId,
+        membershipId: recipientMembership.id,
+        createdById: authed.user.id,
+        remindAt,
+        message: payload.message?.trim() || null,
+      },
+      select: {
+        id: true,
+        remindAt: true,
+        message: true,
+        notifiedAt: true,
+        recipient: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    })
+
+    return res.status(201).json({
+      ok: true,
+      reminder: {
+        id: reminder.id,
+        remindAt: reminder.remindAt,
+        message: reminder.message ?? null,
+        notifiedAt: reminder.notifiedAt ?? null,
+        recipient: reminder.recipient,
+        createdBy: reminder.createdBy,
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.delete(
+  "/:tenantId/:taskId/reminders/:reminderId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, taskId, reminderId } = TenantTaskReminderPathSchema.parse(
+        req.params,
+      )
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const reminder = await prismaWithTasks.taskReminder.findFirst({
+        where: {
+          id: reminderId,
+          taskId,
+          tenantId,
+          canceledAt: null,
+        },
+        select: {
+          id: true,
+        },
+      })
+
+      if (!reminder) {
+        return res.status(404).json({ error: "TASK_REMINDER_NOT_FOUND" })
+      }
+
+      await prisma.$transaction([
+        prismaWithTasks.taskReminder.update({
+          where: { id: reminder.id },
+          data: {
+            canceledAt: new Date(),
+          },
+        }),
+        prismaWithTasks.notification.deleteMany({
+          where: {
+            taskReminderId: reminder.id,
+          },
+        }),
+      ])
+
+      return res.json({ ok: true })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+export default router

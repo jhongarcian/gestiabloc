@@ -102,7 +102,7 @@ export type ContactDetailsResponse = {
 
 export const getContactDetailsContext = cache(
   async (tenantSlug: string, contactId: string) => {
-    const { cookie, membership } = await getTenantMembershipContext(tenantSlug)
+    const { cookie, membership, tenantTimezone } = await getTenantMembershipContext(tenantSlug)
 
     if (!membership?.tenant?.id) {
       redirect(`/app/${tenantSlug}/contacts`)
@@ -118,6 +118,7 @@ export const getContactDetailsContext = cache(
 
       return {
         tenantId: membership.tenant.id,
+        tenantTimezone,
         contact: data.contact,
       }
     } catch (error) {

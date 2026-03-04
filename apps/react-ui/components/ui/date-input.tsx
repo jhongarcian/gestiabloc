@@ -88,6 +88,7 @@ type DateInputProps = {
   disabled?: boolean
   ariaInvalid?: boolean
   className?: string
+  disabledDate?: (date: Date) => boolean
 }
 
 export function DateInput({
@@ -99,6 +100,7 @@ export function DateInput({
   disabled = false,
   ariaInvalid = false,
   className,
+  disabledDate = (date) => date > new Date(),
 }: DateInputProps) {
   const parsedDate = parseDateInput(value)
   const calendarMonth =
@@ -151,7 +153,7 @@ export function DateInput({
               onDateChange(date)
               onValueChange(date ? format(date, "MM/dd/yyyy") : "")
             }}
-            disabled={(date) => date > new Date()}
+            disabled={disabledDate}
           />
         </PopoverContent>
       </Popover>

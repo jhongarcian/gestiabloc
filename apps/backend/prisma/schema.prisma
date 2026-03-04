@@ -94,6 +94,23 @@ enum ContactCustomFieldType {
   CHECKBOX
 }
 
+enum TaskLinkedEntityType {
+  SERVICE
+  PRODUCT
+}
+
+enum TaskPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum NotificationType {
+  TASK_REMINDER
+  TASK_ASSIGNED
+  TASK_DUE
+}
+
 enum ContactRelationshipType {
   FATHER
   MOTHER
@@ -141,6 +158,9 @@ model User {
   sessions            Session[]
   memberships         Membership[]
   files               File[]
+  notifications       Notification[]
+  createdTaskReminders TaskReminder[] @relation("TaskReminderCreatedBy")
+  reminderAssignments TaskReminder[] @relation("TaskReminderRecipient")
   contactNotes        ContactNote[]
   loginChallenges     LoginChallenge[]
   emailVerifications  EmailVerification[]
@@ -254,8 +274,11 @@ model Tenant {
   invites              Invite[]
   subscription         TenantSubscription?
   contacts             Contact[]
+  tasks                Task[]
   contactStatusConfigs ContactStatusConfig[]
   taskStatusConfigs    TaskStatusConfig[]
+  taskReminders        TaskReminder[]
+  notifications        Notification[]
   contactCustomFields  ContactCustomField[]
   contactCustomFieldValues ContactCustomFieldValue[]
   contactRelationships ContactRelationship[]
@@ -291,6 +314,8 @@ model Membership {
   user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenant                  Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   assignedContacts        Contact[] @relation("ContactAssignedToMembership")
+  assignedTasks           Task[]    @relation("TaskAssignedToMembership")
+  assignedTaskReminders   TaskReminder[] @relation("TaskReminderMembershipRecipient")
   servicingAgentContacts  Contact[] @relation("ContactServicingAgentMembership")
   additionalAgentContacts Contact[] @relation("ContactAdditionalAgentMembership")
 
@@ -372,6 +397,7 @@ model TaskStatusConfig {
   isSystemDefault Boolean @default(false)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tasks  Task[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -403,6 +429,90 @@ model ContactCustomField {
   @@unique([tenantId, id])
   @@unique([tenantId, key])
   @@index([tenantId, sortOrder])
+}
+
+model Task {
+  id                String               @id @default(uuid())
+  tenantId          String
+  contactId         String?
+  statusConfigId    String?
+  assignedToUserId  String?
+  priority          TaskPriority?
+  name              String
+  description       String?
+  dueDate           DateTime?
+  startedAt         DateTime?
+  linkedEntityName  String?
+  linkedEntityType  TaskLinkedEntityType?
+
+  tenant              Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact             Contact?          @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  statusConfig        TaskStatusConfig? @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
+  assignedToMembership Membership?      @relation("TaskAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
+  reminders           TaskReminder[]
+  notifications       Notification[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, dueDate])
+  @@index([tenantId, statusConfigId])
+  @@index([tenantId, priority])
+  @@index([tenantId, assignedToUserId])
+  @@index([tenantId, contactId])
+  @@index([tenantId, createdAt])
+}
+
+model TaskReminder {
+  id              String   @id @default(uuid())
+  tenantId        String
+  taskId          String
+  recipientUserId String
+  membershipId    String?
+  createdById     String
+  remindAt        DateTime
+  message         String?
+  notifiedAt      DateTime?
+  canceledAt      DateTime?
+
+  tenant               Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  task                 Task        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  recipient            User        @relation("TaskReminderRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+  recipientMembership  Membership? @relation("TaskReminderMembershipRecipient", fields: [membershipId], references: [id], onDelete: SetNull)
+  createdBy            User        @relation("TaskReminderCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+  notification         Notification?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, taskId])
+  @@index([tenantId, recipientUserId, remindAt])
+  @@index([tenantId, notifiedAt, canceledAt, remindAt])
+}
+
+model Notification {
+  id             String           @id @default(uuid())
+  tenantId       String
+  userId         String
+  taskId         String?
+  taskReminderId String?          @unique
+  eventKey       String?          @unique
+  type           NotificationType
+  title          String
+  body           String?
+  readAt         DateTime?
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task         Task?        @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  taskReminder TaskReminder? @relation(fields: [taskReminderId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, userId, createdAt])
+  @@index([tenantId, userId, readAt, createdAt])
 }
 
 model ContactCustomFieldValue {
@@ -494,6 +604,7 @@ model Contact {
   outgoingRelationships     ContactRelationship[] @relation("ContactRelationshipSource")
   incomingRelationships     ContactRelationship[] @relation("ContactRelationshipTarget")
   notes                     ContactNote[]
+  tasks                     Task[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

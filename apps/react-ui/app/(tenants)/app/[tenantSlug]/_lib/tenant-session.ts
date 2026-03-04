@@ -45,5 +45,6 @@ export const getTenantMembershipContext = cache(async (tenantSlug: string) => {
     user,
     membership,
     tenantId: membership.tenant.id,
+    tenantTimezone: membership.tenant.timezone ?? null,
   }
 })
