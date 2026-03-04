@@ -47,6 +47,15 @@ type TaskStatusConfigResponse = {
   }>
 }
 
+type TaskAssigneesResponse = {
+  ok: boolean
+  items: Array<{
+    value: string
+    label: string
+    email: string
+  }>
+}
+
 const formatLinkedEntity = (
   task: ContactTasksResponse["items"][number],
 ) => {
@@ -103,9 +112,13 @@ export default async function ContactTasksPage({
     bgColor?: string
     textColor?: string
   }> = []
+  let assigneeOptions: Array<{
+    label: string
+    value: string
+  }> = []
 
   try {
-    const [{ data: tasksData }, { data: statusesData }] = await Promise.all([
+    const [{ data: tasksData }, { data: statusesData }, { data: assigneesData }] = await Promise.all([
       api.get<ContactTasksResponse>(`/api/tasks/${tenantId}`, {
         headers: { cookie },
         params: {
@@ -116,6 +129,9 @@ export default async function ContactTasksPage({
         },
       }),
       api.get<TaskStatusConfigResponse>(`/api/tasks/${tenantId}/statuses`, {
+        headers: { cookie },
+      }),
+      api.get<TaskAssigneesResponse>(`/api/tasks/${tenantId}/assignees`, {
         headers: { cookie },
       }),
     ])
@@ -129,11 +145,16 @@ export default async function ContactTasksPage({
       bgColor: status.bgColor,
       textColor: status.textColor,
     }))
+    assigneeOptions = assigneesData.items.map((assignee) => ({
+      label: assignee.label,
+      value: assignee.value,
+    }))
   } catch {
     tasks = []
     total = 0
     totalPages = 1
     statusOptions = []
+    assigneeOptions = []
   }
 
   if (page > totalPages && total > 0) {
@@ -170,6 +191,7 @@ export default async function ContactTasksPage({
               tenantId={tenantId}
               tenantTimezone={tenantTimezone}
               statusOptions={statusOptions}
+              assigneeOptions={assigneeOptions}
               initialContact={{
                 id: contact.id,
                 fullName: contact.fullName,

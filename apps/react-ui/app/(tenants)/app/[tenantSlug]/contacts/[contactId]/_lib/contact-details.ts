@@ -29,6 +29,13 @@ export type ContactDetailsResponse = {
     statusConfigId: string | null
     statusBgColor: string | null
     statusTextColor: string | null
+    tags: Array<{
+      id: string
+      name: string
+      bgColor: string
+      textColor: string
+      sortOrder: number
+    }>
     customFields: Array<{
       id: string
       key: string

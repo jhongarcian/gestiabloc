@@ -28,6 +28,13 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import {
@@ -46,6 +53,10 @@ type CreateTaskDialogProps = {
   tenantId: string
   tenantTimezone?: string | null
   statusOptions: TaskStatusOption[]
+  assigneeOptions?: Array<{
+    label: string
+    value: string
+  }>
   onCreated?: () => Promise<void> | void
   initialContact?: ContactSearchItem | null
   lockContact?: boolean
@@ -57,6 +68,7 @@ type FieldErrors = Partial<
     | "name"
     | "contactId"
     | "description"
+    | "assignedToUserId"
     | "status"
     | "dueDate"
     | "startedAt"
@@ -83,6 +95,7 @@ export function CreateTaskDialog({
   tenantId,
   tenantTimezone,
   statusOptions,
+  assigneeOptions = [],
   onCreated,
   initialContact = null,
   lockContact = false,
@@ -106,6 +119,7 @@ export function CreateTaskDialog({
   )
   const [contactResults, setContactResults] = useState<ContactSearchItem[]>([])
   const [isSearchingContacts, setIsSearchingContacts] = useState(false)
+  const [assignedToUserId, setAssignedToUserId] = useState<string>("__UNASSIGNED__")
   const [statusConfigId, setStatusConfigId] = useState<string | undefined>(undefined)
   const [dueDateInput, setDueDateInput] = useState<DateTimeDraft>({ date: "", time: "" })
   const [startedAtInput, setStartedAtInput] = useState<DateTimeDraft>({ date: "", time: "" })
@@ -119,6 +133,10 @@ export function CreateTaskDialog({
     () => statusOptions.filter((option) => option.value !== ALL_STATUS_VALUE),
     [statusOptions],
   )
+  const dialogDescription = lockContact
+    ? "Create a task already attached to this contact."
+    : "Add a new task for this tenant."
+
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       setDebouncedContactQuery(contactQuery.trim())
@@ -180,6 +198,7 @@ export function CreateTaskDialog({
     setDebouncedContactQuery("")
     setSelectedContact(initialContact)
     setContactResults([])
+    setAssignedToUserId("__UNASSIGNED__")
     setStatusConfigId(undefined)
     setDueDateInput({ date: "", time: "" })
     setStartedAtInput(getDefaultStartedAtDraft())
@@ -233,6 +252,8 @@ export function CreateTaskDialog({
         name: name.trim(),
         contactId: selectedContact?.id,
         description: description.trim() || null,
+        assignedToUserId:
+          assignedToUserId === "__UNASSIGNED__" ? null : assignedToUserId,
         statusConfigId: statusConfigId ?? null,
         dueDate,
         startedAt,
@@ -266,6 +287,9 @@ export function CreateTaskDialog({
             if (detail.path === "description" && detail.message) {
               mappedErrors.description = detail.message
             }
+            if (detail.path === "assignedToUserId" && detail.message) {
+              mappedErrors.assignedToUserId = detail.message
+            }
             if (detail.path === "dueDate" && detail.message) {
               mappedErrors.dueDate = detail.message
             }
@@ -289,6 +313,12 @@ export function CreateTaskDialog({
             status: "Selected status is invalid for this tenant.",
           }))
           toast.error("Selected status is invalid for this tenant.")
+        } else if (backendError === "INVALID_ASSIGNEE") {
+          setFieldErrors((prev) => ({
+            ...prev,
+            assignedToUserId: "Selected assignee is invalid for this tenant.",
+          }))
+          toast.error("Selected assignee is invalid for this tenant.")
         } else if (backendError === "INVALID_CONTACT") {
           setFieldErrors((prev) => ({
             ...prev,
@@ -339,90 +369,153 @@ export function CreateTaskDialog({
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Create Task</DialogTitle>
-          <DialogDescription>
-            Add a new task for this tenant.
-          </DialogDescription>
+          <DialogDescription>{dialogDescription}</DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-6">
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
             <div className="grid gap-2">
-            <Label htmlFor="create-task-name">Task Name</Label>
-            <Input
-              id="create-task-name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="Follow up on contract review"
-            />
-            {fieldErrors.name ? (
-              <p className="text-xs text-rose-600">{fieldErrors.name}</p>
-            ) : null}
+              <Label htmlFor="create-task-name">Task Name</Label>
+              <Input
+                id="create-task-name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Follow up on contract review"
+              />
+              {fieldErrors.name ? (
+                <p className="text-xs text-rose-600">{fieldErrors.name}</p>
+              ) : null}
             </div>
 
             <div className="grid gap-2">
               <Label htmlFor="create-task-contact">Contact</Label>
-              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                <Command shouldFilter={false}>
-                  <CommandInput
-                    id="create-task-contact"
-                    value={contactQuery}
-                    onValueChange={(value) => {
-                      if (lockContact) return
+              {lockContact && selectedContact ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                  <div className="flex flex-col gap-1">
+                    <Input
+                      id="create-task-contact"
+                      value={selectedContact.fullName}
+                      readOnly
+                      disabled
+                      className="h-10 border-0 bg-transparent px-0 text-sm font-medium text-slate-950 shadow-none disabled:cursor-default disabled:opacity-100"
+                    />
+                    <p className="text-xs text-slate-500">
+                      {selectedContact.email ?? selectedContact.phoneNumber ?? "Task will stay linked to this contact."}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                  <Command shouldFilter={false}>
+                    <CommandInput
+                      id="create-task-contact"
+                      value={contactQuery}
+                      onValueChange={(value) => {
+                        if (lockContact) return
 
-                      setContactQuery(value)
-                      setFieldErrors((prev) => ({ ...prev, contactId: undefined }))
+                        setContactQuery(value)
+                        setFieldErrors((prev) => ({ ...prev, contactId: undefined }))
 
-                      if (
-                        !isSelectingContactRef.current &&
-                        selectedContact &&
-                        value !== selectedContact.fullName
-                      ) {
-                        setSelectedContact(null)
-                      }
-                    }}
-                    placeholder="Search contact by name, email, or phone"
-                    disabled={lockContact}
-                  />
-                  {!lockContact && contactQuery.trim().length >= 2 && !selectedContact ? (
-                    <CommandList>
-                      <CommandEmpty>
-                        {isSearchingContacts ? "Searching contacts..." : "No contacts found."}
-                      </CommandEmpty>
-                      <CommandGroup>
-                        {contactResults.map((contact) => (
-                          <CommandItem
-                            key={contact.id}
-                            value={contact.id}
-                            onSelect={() => {
-                              isSelectingContactRef.current = true
-                              setSelectedContact(contact)
-                              setContactQuery(contact.fullName)
-                              setDebouncedContactQuery(contact.fullName)
-                              setContactResults([])
-                              setFieldErrors((prev) => ({
-                                ...prev,
-                                contactId: undefined,
-                              }))
-                              window.setTimeout(() => {
-                                isSelectingContactRef.current = false
-                              }, 0)
-                            }}
-                          >
-                            <div className="flex flex-col">
-                              <span>{contact.fullName}</span>
-                              <span className="text-xs text-slate-500">
-                                {contact.email ?? contact.phoneNumber ?? "No extra details"}
-                              </span>
-                            </div>
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  ) : null}
-                </Command>
-              </div>
+                        if (
+                          !isSelectingContactRef.current &&
+                          selectedContact &&
+                          value !== selectedContact.fullName
+                        ) {
+                          setSelectedContact(null)
+                        }
+                      }}
+                      placeholder="Search contact by name, email, or phone"
+                      disabled={lockContact}
+                    />
+                    {!lockContact && contactQuery.trim().length >= 2 && !selectedContact ? (
+                      <CommandList>
+                        <CommandEmpty>
+                          {isSearchingContacts ? "Searching contacts..." : "No contacts found."}
+                        </CommandEmpty>
+                        <CommandGroup>
+                          {contactResults.map((contact) => (
+                            <CommandItem
+                              key={contact.id}
+                              value={contact.id}
+                              onSelect={() => {
+                                isSelectingContactRef.current = true
+                                setSelectedContact(contact)
+                                setContactQuery(contact.fullName)
+                                setDebouncedContactQuery(contact.fullName)
+                                setContactResults([])
+                                setFieldErrors((prev) => ({
+                                  ...prev,
+                                  contactId: undefined,
+                                }))
+                                window.setTimeout(() => {
+                                  isSelectingContactRef.current = false
+                                }, 0)
+                              }}
+                            >
+                              <div className="flex flex-col">
+                                <span>{contact.fullName}</span>
+                                <span className="text-xs text-slate-500">
+                                  {contact.email ?? contact.phoneNumber ?? "No extra details"}
+                                </span>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    ) : null}
+                  </Command>
+                </div>
+              )}
               {fieldErrors.contactId ? (
                 <p className="text-xs text-rose-600">{fieldErrors.contactId}</p>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-2">
+              <Label htmlFor="create-task-assignee">Assignee</Label>
+              <Select
+                value={assignedToUserId}
+                onValueChange={(value) => {
+                  setAssignedToUserId(value)
+                  setFieldErrors((prev) => ({ ...prev, assignedToUserId: undefined }))
+                }}
+                disabled={isSubmitting}
+              >
+                <SelectTrigger id="create-task-assignee" className="bg-white">
+                  <SelectValue placeholder="Not assigned" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__UNASSIGNED__">Not assigned</SelectItem>
+                  {assigneeOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {fieldErrors.assignedToUserId ? (
+                <p className="text-xs text-rose-600">{fieldErrors.assignedToUserId}</p>
+              ) : null}
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="create-task-status">Status</Label>
+              <TaskStatusSelect
+                id="create-task-status"
+                value={statusConfigId ?? "__none__"}
+                onValueChange={(value) => {
+                  setStatusConfigId(value === "__none__" ? undefined : value)
+                  setFieldErrors((prev) => ({ ...prev, status: undefined }))
+                }}
+                options={selectableStatuses}
+                disabled={isSubmitting}
+                noneValue="__none__"
+                noneLabel="No status"
+              />
+              {fieldErrors.status ? (
+                <p className="text-xs text-rose-600">{fieldErrors.status}</p>
               ) : null}
             </div>
           </div>
@@ -481,25 +574,6 @@ export function CreateTaskDialog({
               ) : null}
             </div>
             </div>
-          </div>
-
-          <div className="grid gap-2">
-            <Label htmlFor="create-task-status">Status</Label>
-            <TaskStatusSelect
-              id="create-task-status"
-              value={statusConfigId ?? "__none__"}
-              onValueChange={(value) => {
-                setStatusConfigId(value === "__none__" ? undefined : value)
-                setFieldErrors((prev) => ({ ...prev, status: undefined }))
-              }}
-              options={selectableStatuses}
-              disabled={isSubmitting}
-              noneValue="__none__"
-              noneLabel="No status"
-            />
-            {fieldErrors.status ? (
-              <p className="text-xs text-rose-600">{fieldErrors.status}</p>
-            ) : null}
           </div>
 
           <div className="grid gap-2">

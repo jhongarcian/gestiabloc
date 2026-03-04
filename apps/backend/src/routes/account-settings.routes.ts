@@ -23,6 +23,7 @@ const ACCOUNT_SETTINGS_SECTIONS = [
   "professionals",
   "follow-ups",
   "status-config",
+  "tags",
   "features",
   "subscription",
   "custom-fields",
@@ -161,6 +162,20 @@ const UpdateContactStatusConfigSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+const CreateTenantTagSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  bgColor: z.string().trim().regex(STATUS_HEX_COLOR_REGEX),
+  textColor: z.string().trim().regex(STATUS_HEX_COLOR_REGEX),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+});
+
+const UpdateTenantTagSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  bgColor: z.string().trim().regex(STATUS_HEX_COLOR_REGEX).optional(),
+  textColor: z.string().trim().regex(STATUS_HEX_COLOR_REGEX).optional(),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+});
+
 const ContactCustomFieldTypeSchema = z.enum([
   "TEXT",
   "NUMBER",
@@ -260,6 +275,17 @@ function slugifyCustomFieldKey(value: string) {
     .replace(/^_+|_+$/g, "");
 
   return normalized || "custom_field";
+}
+
+function normalizeTenantTagName(value: string) {
+  const normalized = value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized;
 }
 
 function normalizeCustomFieldOptions(options?: string[]) {
@@ -411,6 +437,21 @@ async function ensureDefaultStatusesForConfigKey(
   }
 
   await ensureDefaultTaskStatuses(tenantId);
+}
+
+async function findTenantTagByName(tenantId: string, name: string, excludeId?: string) {
+  const normalizedName = normalizeTenantTagName(name);
+
+  return prismaWithContacts.tenantTag.findFirst({
+    where: {
+      tenantId,
+      name: normalizedName,
+      ...(excludeId ? { NOT: { id: excludeId } } : {}),
+    },
+    select: {
+      id: true,
+    },
+  });
 }
 
 const readMiddlewares = [
@@ -1523,6 +1564,170 @@ router.delete(
   },
 );
 
+router.get("/:tenantId/tags", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+
+    const tags = await prismaWithContacts.tenantTag.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        bgColor: true,
+        textColor: true,
+        sortOrder: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      tags,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:tenantId/tags", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = CreateTenantTagSchema.parse(req.body);
+    const normalizedName = normalizeTenantTagName(payload.name);
+
+    if (!normalizedName) {
+      return res.status(400).json({ error: "INVALID_TAG_NAME" });
+    }
+
+    const duplicate = await findTenantTagByName(tenantId, normalizedName);
+    if (duplicate) {
+      return res.status(409).json({ error: "TAG_NAME_ALREADY_EXISTS" });
+    }
+
+    const maxSortOrderRecord = await prismaWithContacts.tenantTag.findFirst({
+      where: { tenantId },
+      orderBy: { sortOrder: "desc" },
+      select: { sortOrder: true },
+    });
+    const nextSortOrder = (maxSortOrderRecord?.sortOrder ?? 0) + 10;
+
+    const created = await prismaWithContacts.tenantTag.create({
+      data: {
+        tenantId,
+        name: normalizedName,
+        bgColor: payload.bgColor,
+        textColor: payload.textColor,
+        sortOrder: payload.sortOrder ?? nextSortOrder,
+      },
+      select: {
+        id: true,
+        name: true,
+        bgColor: true,
+        textColor: true,
+        sortOrder: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.status(201).json({ ok: true, tag: created });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/tags/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+    const payload = UpdateTenantTagSchema.parse(req.body);
+
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({ error: "NO_CHANGES_PROVIDED" });
+    }
+
+    const existing = await prismaWithContacts.tenantTag.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId) {
+      return res.status(404).json({ error: "TAG_NOT_FOUND" });
+    }
+
+    if (payload.name) {
+      const normalizedName = normalizeTenantTagName(payload.name);
+      if (!normalizedName) {
+        return res.status(400).json({ error: "INVALID_TAG_NAME" });
+      }
+
+      const duplicate = await findTenantTagByName(tenantId, payload.name, recordId);
+      if (duplicate) {
+        return res.status(409).json({ error: "TAG_NAME_ALREADY_EXISTS" });
+      }
+    }
+
+    const updated = await prismaWithContacts.tenantTag.update({
+      where: { id: recordId },
+      data: {
+        name: payload.name ? normalizeTenantTagName(payload.name) : undefined,
+        bgColor: payload.bgColor,
+        textColor: payload.textColor,
+        sortOrder: payload.sortOrder,
+      },
+      select: {
+        id: true,
+        name: true,
+        bgColor: true,
+        textColor: true,
+        sortOrder: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.json({ ok: true, tag: updated });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete("/:tenantId/tags/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+
+    const existing = await prismaWithContacts.tenantTag.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId) {
+      return res.status(404).json({ error: "TAG_NOT_FOUND" });
+    }
+
+    await prismaWithContacts.tenantTag.delete({
+      where: { id: recordId },
+    });
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get("/:tenantId/custom-fields", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
@@ -1794,6 +1999,7 @@ for (const section of ACCOUNT_SETTINGS_SECTIONS) {
     section !== "users" &&
     section !== "account" &&
     section !== "status-config" &&
+    section !== "tags" &&
     section !== "custom-fields"
   ) {
     router.get(
@@ -1806,6 +2012,7 @@ for (const section of ACCOUNT_SETTINGS_SECTIONS) {
     section === "users" ||
     section === "account" ||
     section === "status-config" ||
+    section === "tags" ||
     section === "custom-fields"
   ) {
     continue;

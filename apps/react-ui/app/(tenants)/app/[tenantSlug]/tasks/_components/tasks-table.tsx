@@ -135,6 +135,7 @@ export function TasksTable({
   tenantId,
   tenantTimezone,
   statusOptions,
+  assigneeOptions,
 }: TasksTableProps) {
   const router = useRouter()
   const [query, setQuery] = useState("")
@@ -224,6 +225,7 @@ export function TasksTable({
           tenantId={tenantId}
           tenantTimezone={tenantTimezone}
           statusOptions={statusOptions}
+          assigneeOptions={assigneeOptions}
           onCreated={loadTasks}
         />
       </div>

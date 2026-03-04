@@ -13,6 +13,7 @@ tags:
   - name: Account Settings
   - name: Contacts
   - name: Notifications
+  - name: Tasks
 paths:
   /api/auth/register:
     post:
@@ -648,6 +649,159 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Contact not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/{contactId}/tags/search:
+    get:
+      tags: [Contacts]
+      summary: Search available tenant tags for a contact
+      description: Returns paginated tenant tags that are not yet assigned to the contact. Search input is normalized to tag slug format.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: q
+          required: false
+          schema:
+            type: string
+            maxLength: 120
+        - in: query
+          name: page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          required: false
+          schema:
+            type: integer
+            enum: [10, 25]
+            default: 10
+      responses:
+        "200":
+          description: Available tags returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactTagSearchResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/{contactId}/tags:
+    post:
+      tags: [Contacts]
+      summary: Assign a tag to a contact
+      description: Assigns one tenant tag to the contact. The same tag cannot be assigned twice.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContactTagAssignRequest"
+      responses:
+        "201":
+          description: Tag assigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactTagAssignResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact or tag not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Contact already has this tag
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/{contactId}/tags/{tagId}:
+    delete:
+      tags: [Contacts]
+      summary: Remove a tag from a contact
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: tagId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tag removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact tag assignment not found
           content:
             application/json:
               schema:
@@ -1357,6 +1511,165 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/account-settings/{tenantId}/tags:
+    get:
+      tags: [Account Settings]
+      summary: List tenant tags
+      description: Returns the ordered tenant tag configuration.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Tags returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsTagsListResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [Account Settings]
+      summary: Create a tenant tag
+      description: Creates a new tag and appends it to the end unless `sortOrder` is provided. Tag names are normalized to lowercase slug values, and spaces are converted to hyphens.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsTagCreateRequest"
+      responses:
+        "201":
+          description: Tag created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsTagCreateResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Tag name already exists for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/account-settings/{tenantId}/tags/{recordId}:
+    patch:
+      tags: [Account Settings]
+      summary: Update a tenant tag
+      description: Updates a tenant tag name, colors, or sort order. Tag names are normalized to lowercase slug values, and spaces are converted to hyphens.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsTagUpdateRequest"
+      responses:
+        "200":
+          description: Tag updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsTagUpdateResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Tag not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Tag name already exists for this tenant, including case-insensitive duplicates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Account Settings]
+      summary: Delete a tenant tag
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      responses:
+        "200":
+          description: Tag deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Tag not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/account-settings/{tenantId}/{section}/{recordId}:
     put:
       tags: [Account Settings]
@@ -1735,6 +2048,380 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/tasks/{tenantId}/statuses:
+    get:
+      tags: [Tasks]
+      summary: List active task statuses for a tenant
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Task statuses returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskStatusesResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/tasks/{tenantId}/assignees:
+    get:
+      tags: [Tasks]
+      summary: List active assignees for a tenant
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Active assignees returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskAssigneesResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/tasks/{tenantId}/summary:
+    get:
+      tags: [Tasks]
+      summary: Get task summary metrics for a tenant
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Task summary returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskSummaryResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/tasks/{tenantId}:
+    get:
+      tags: [Tasks]
+      summary: List tasks for a tenant
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            enum: [10, 25]
+            default: 10
+        - in: query
+          name: search
+          schema:
+            type: string
+            maxLength: 120
+        - in: query
+          name: statusConfigId
+          schema:
+            type: string
+        - in: query
+          name: priority
+          schema:
+            $ref: "#/components/schemas/TaskPriority"
+        - in: query
+          name: contactId
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tasks returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TasksListResponse"
+        "400":
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [Tasks]
+      summary: Create a task
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "201":
+          description: Task created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateTaskResponse"
+        "400":
+          description: Invalid input or invalid related records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/tasks/{tenantId}/{taskId}:
+    get:
+      tags: [Tasks]
+      summary: Get a single task by id
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/TaskIdPathParam"
+      responses:
+        "200":
+          description: Task returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetailsResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags: [Tasks]
+      summary: Update a task
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/TaskIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskRequest"
+      responses:
+        "200":
+          description: Task updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateTaskResponse"
+        "400":
+          description: Invalid input or invalid related records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Tasks]
+      summary: Delete a task
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/TaskIdPathParam"
+      responses:
+        "200":
+          description: Task deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/tasks/{tenantId}/{taskId}/reminders:
+    post:
+      tags: [Tasks]
+      summary: Create a reminder for a task
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/TaskIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskReminderRequest"
+      responses:
+        "201":
+          description: Reminder created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateTaskReminderResponse"
+        "400":
+          description: Invalid reminder date or invalid recipient
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/tasks/{tenantId}/{taskId}/reminders/{reminderId}:
+    delete:
+      tags: [Tasks]
+      summary: Cancel a task reminder
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/TaskIdPathParam"
+        - $ref: "#/components/parameters/TaskReminderIdPathParam"
+      responses:
+        "200":
+          description: Reminder canceled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Reminder not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   securitySchemes:
     cookieAuth:
@@ -1745,6 +2432,18 @@ components:
     TenantIdPathParam:
       in: path
       name: tenantId
+      required: true
+      schema:
+        type: string
+    TaskIdPathParam:
+      in: path
+      name: taskId
+      required: true
+      schema:
+        type: string
+    TaskReminderIdPathParam:
+      in: path
+      name: reminderId
       required: true
       schema:
         type: string
@@ -1761,6 +2460,7 @@ components:
           - professionals
           - follow-ups
           - status-config
+          - tags
           - features
           - subscription
           - custom-fields
@@ -2403,6 +3103,7 @@ components:
           type: string
           minLength: 1
           maxLength: 80
+          description: Stored as a lowercase slug. Spaces and separators are converted to hyphens.
         bgColor:
           type: string
           pattern: "^#[0-9a-fA-F]{6}$"
@@ -2433,6 +3134,7 @@ components:
           type: string
           minLength: 1
           maxLength: 80
+          description: Stored as a lowercase slug. Spaces and separators are converted to hyphens.
         bgColor:
           type: string
           pattern: "^#[0-9a-fA-F]{6}$"
@@ -2453,6 +3155,90 @@ components:
           example: true
         status:
           $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
+    AccountSettingsTagItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        bgColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        textColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        sortOrder:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AccountSettingsTagsListResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        tags:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsTagItem"
+    AccountSettingsTagCreateRequest:
+      type: object
+      required: [name, bgColor, textColor]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        bgColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        textColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        sortOrder:
+          type: integer
+          minimum: 0
+          maximum: 9999
+          nullable: true
+          description: Optional. If omitted, backend appends the new tag to the end.
+    AccountSettingsTagCreateResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        tag:
+          $ref: "#/components/schemas/AccountSettingsTagItem"
+    AccountSettingsTagUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        bgColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        textColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        sortOrder:
+          type: integer
+          minimum: 0
+          maximum: 9999
+    AccountSettingsTagUpdateResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        tag:
+          $ref: "#/components/schemas/AccountSettingsTagItem"
     ContactsStatusItem:
       type: object
       properties:
@@ -2575,6 +3361,10 @@ components:
             statusTextColor:
               type: string
               nullable: true
+            tags:
+              type: array
+              items:
+                $ref: "#/components/schemas/ContactTagItem"
             customFields:
               type: array
               items:
@@ -2788,6 +3578,49 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ContactSearchItem"
+    ContactTagItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        bgColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        textColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        sortOrder:
+          type: integer
+    ContactTagSearchResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactTagItem"
+        pagination:
+          $ref: "#/components/schemas/AccountSettingsPagination"
+        query:
+          type: string
+    ContactTagAssignRequest:
+      type: object
+      required: [tagId]
+      properties:
+        tagId:
+          type: string
+    ContactTagAssignResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        tag:
+          $ref: "#/components/schemas/ContactTagItem"
     ContactRelationshipType:
       type: string
       enum: [FATHER, MOTHER, PARENT, SON, DAUGHTER, CHILD, HUSBAND, WIFE, SPOUSE, PARTNER, BROTHER, SISTER, SIBLING, GRANDFATHER, GRANDMOTHER, GRANDPARENT, GRANDSON, GRANDDAUGHTER, GRANDCHILD, UNCLE, AUNT, AUNT_OR_UNCLE, NEPHEW, NIECE, NIECE_OR_NEPHEW, COUSIN, GUARDIAN, WARD, CAREGIVER, DEPENDENT, FRIEND, OTHER]
@@ -3000,5 +3833,392 @@ components:
         ok:
           type: boolean
           example: true
+    TaskPriority:
+      type: string
+      enum: [HIGH, MEDIUM, LOW]
+    TaskActivityType:
+      type: string
+      enum:
+        - CREATED
+        - UPDATED
+        - STATUS_CHANGED
+        - ASSIGNEE_CHANGED
+        - DUE_DATE_CHANGED
+        - START_DATE_CHANGED
+        - REMINDER_CREATED
+        - REMINDER_CANCELED
+    TaskStatusItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        bgColor:
+          type: string
+        textColor:
+          type: string
+        sortOrder:
+          type: integer
+        isActive:
+          type: boolean
+    TaskStatusesResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskStatusItem"
+    TaskAssigneeItem:
+      type: object
+      properties:
+        value:
+          type: string
+        label:
+          type: string
+        email:
+          type: string
+          format: email
+    TaskAssigneesResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskAssigneeItem"
+    TaskPriorityCounts:
+      type: object
+      properties:
+        HIGH:
+          type: integer
+        MEDIUM:
+          type: integer
+        LOW:
+          type: integer
+    TaskSummary:
+      type: object
+      properties:
+        totalTasks:
+          type: integer
+        overdueTasks:
+          type: integer
+        dueToday:
+          type: integer
+        dueThisWeek:
+          type: integer
+        highPriorityTasks:
+          type: integer
+        unassignedTasks:
+          type: integer
+        completedToday:
+          type: integer
+        myPriorityCounts:
+          $ref: "#/components/schemas/TaskPriorityCounts"
+    TaskSummaryResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        summary:
+          $ref: "#/components/schemas/TaskSummary"
+    TaskListItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        assignedToUserId:
+          type: string
+          nullable: true
+        priority:
+          allOf:
+            - $ref: "#/components/schemas/TaskPriority"
+          nullable: true
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        assignedPersonName:
+          type: string
+          nullable: true
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+        statusConfigId:
+          type: string
+          nullable: true
+        statusBgColor:
+          type: string
+          nullable: true
+        statusTextColor:
+          type: string
+          nullable: true
+        contactName:
+          type: string
+          nullable: true
+        linkedEntityName:
+          type: string
+          nullable: true
+        linkedEntityType:
+          type: string
+          enum: [SERVICE, PRODUCT]
+          nullable: true
+    TasksListResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskListItem"
+        pagination:
+          $ref: "#/components/schemas/AccountSettingsPagination"
+    CreateTaskRequest:
+      type: object
+      required: [name, contactId, startedAt]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        contactId:
+          type: string
+        description:
+          type: string
+          nullable: true
+          maxLength: 4000
+        statusConfigId:
+          type: string
+          nullable: true
+        assignedToUserId:
+          type: string
+          nullable: true
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        startedAt:
+          type: string
+          format: date-time
+        reminderAt:
+          type: string
+          format: date-time
+          nullable: true
+    UpdateTaskRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        contactId:
+          type: string
+        description:
+          type: string
+          nullable: true
+          maxLength: 4000
+        statusConfigId:
+          type: string
+          nullable: true
+        assignedToUserId:
+          type: string
+          nullable: true
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        reminderAt:
+          type: string
+          format: date-time
+          nullable: true
+    TaskMutationItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        assignedToUserId:
+          type: string
+          nullable: true
+    CreateTaskResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        task:
+          $ref: "#/components/schemas/TaskMutationItem"
+    TaskReminderPerson:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+    TaskReminderCreator:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+    TaskReminderItem:
+      type: object
+      properties:
+        id:
+          type: string
+        remindAt:
+          type: string
+          format: date-time
+        message:
+          type: string
+          nullable: true
+        notifiedAt:
+          type: string
+          format: date-time
+          nullable: true
+        recipient:
+          $ref: "#/components/schemas/TaskReminderPerson"
+        createdBy:
+          $ref: "#/components/schemas/TaskReminderCreator"
+    TaskActivityActor:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+    TaskActivityItem:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          $ref: "#/components/schemas/TaskActivityType"
+        title:
+          type: string
+        details:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        actor:
+          allOf:
+            - $ref: "#/components/schemas/TaskActivityActor"
+          nullable: true
+    TaskDetailsItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        assignedToUserId:
+          type: string
+          nullable: true
+        priority:
+          allOf:
+            - $ref: "#/components/schemas/TaskPriority"
+          nullable: true
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        statusConfigId:
+          type: string
+          nullable: true
+        assignedPersonName:
+          type: string
+          nullable: true
+        status:
+          type: string
+        statusBgColor:
+          type: string
+          nullable: true
+        statusTextColor:
+          type: string
+          nullable: true
+        contactName:
+          type: string
+          nullable: true
+        linkedEntityName:
+          type: string
+          nullable: true
+        linkedEntityType:
+          type: string
+          enum: [SERVICE, PRODUCT]
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        reminders:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskReminderItem"
+        activities:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskActivityItem"
+    TaskDetailsResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        task:
+          $ref: "#/components/schemas/TaskDetailsItem"
+    CreateTaskReminderRequest:
+      type: object
+      required: [remindAt]
+      properties:
+        remindAt:
+          type: string
+          format: date-time
+        recipientUserId:
+          type: string
+        message:
+          type: string
+          nullable: true
+          maxLength: 500
+    CreateTaskReminderResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        reminder:
+          $ref: "#/components/schemas/TaskReminderItem"
         deletedCount:
           type: integer

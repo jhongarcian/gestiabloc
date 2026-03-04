@@ -105,6 +105,17 @@ enum TaskPriority {
   LOW
 }
 
+enum TaskActivityType {
+  CREATED
+  UPDATED
+  STATUS_CHANGED
+  ASSIGNEE_CHANGED
+  DUE_DATE_CHANGED
+  START_DATE_CHANGED
+  REMINDER_CREATED
+  REMINDER_CANCELED
+}
+
 enum NotificationType {
   TASK_REMINDER
   TASK_ASSIGNED
@@ -159,6 +170,7 @@ model User {
   memberships         Membership[]
   files               File[]
   notifications       Notification[]
+  taskActivities      TaskActivity[]
   createdTaskReminders TaskReminder[] @relation("TaskReminderCreatedBy")
   reminderAssignments TaskReminder[] @relation("TaskReminderRecipient")
   contactNotes        ContactNote[]
@@ -192,6 +204,25 @@ model File {
   @@index([tenantId])
   @@index([createdById])
   @@index([purpose])
+}
+
+model TaskActivity {
+  id          String           @id @default(uuid())
+  tenantId    String
+  taskId      String
+  actorUserId String?
+  type        TaskActivityType
+  title       String
+  details     String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, taskId, createdAt])
+  @@index([tenantId, actorUserId, createdAt])
 }
 
 model Session {
@@ -279,6 +310,9 @@ model Tenant {
   taskStatusConfigs    TaskStatusConfig[]
   taskReminders        TaskReminder[]
   notifications        Notification[]
+  taskActivities       TaskActivity[]
+  tenantTags           TenantTag[]
+  contactTags          ContactTag[]
   contactCustomFields  ContactCustomField[]
   contactCustomFieldValues ContactCustomFieldValue[]
   contactRelationships ContactRelationship[]
@@ -431,6 +465,25 @@ model ContactCustomField {
   @@index([tenantId, sortOrder])
 }
 
+model TenantTag {
+  id        String @id @default(uuid())
+  tenantId  String
+  name      String
+  bgColor   String
+  textColor String
+  sortOrder Int    @default(0)
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactTags ContactTag[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+}
+
 model Task {
   id                String               @id @default(uuid())
   tenantId          String
@@ -451,6 +504,7 @@ model Task {
   assignedToMembership Membership?      @relation("TaskAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
   reminders           TaskReminder[]
   notifications       Notification[]
+  activities          TaskActivity[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -600,6 +654,7 @@ model Contact {
   assignedToMembership      Membership? @relation("ContactAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
   servicingAgentMembership  Membership? @relation("ContactServicingAgentMembership", fields: [tenantId, servicingAgentUserId], references: [tenantId, userId])
   additionalAgentMembership Membership? @relation("ContactAdditionalAgentMembership", fields: [tenantId, additionalAgentUserId], references: [tenantId, userId])
+  tags                      ContactTag[]
   customFieldValues         ContactCustomFieldValue[]
   outgoingRelationships     ContactRelationship[] @relation("ContactRelationshipSource")
   incomingRelationships     ContactRelationship[] @relation("ContactRelationshipTarget")
@@ -617,6 +672,24 @@ model Contact {
   @@index([tenantId, email])
   @@index([tenantId, phone])
   @@index([tenantId, ssnLast4])
+}
+
+model ContactTag {
+  id        String @id @default(uuid())
+  tenantId  String
+  contactId String
+  tagId     String
+
+  tenant  Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag     TenantTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, contactId, tagId])
+  @@index([tenantId, contactId])
+  @@index([tenantId, tagId])
 }
 
 model ContactRelationship {

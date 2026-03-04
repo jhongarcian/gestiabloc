@@ -10,6 +10,10 @@ function getSafeTimezone(timezone?: string | null) {
   return timezone?.trim() || DEFAULT_TIMEZONE
 }
 
+export function isCompletedStatusName(statusName?: string | null) {
+  return statusName?.trim().toLowerCase() === "completed"
+}
+
 function getLocalDateParts(date: Date, timezone?: string | null) {
   const formatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: getSafeTimezone(timezone),
@@ -25,6 +29,23 @@ function getLocalDateParts(date: Date, timezone?: string | null) {
     month: Number(parts.find((part) => part.type === "month")?.value ?? "1"),
     day: Number(parts.find((part) => part.type === "day")?.value ?? "1"),
   }
+}
+
+export function isSameLocalDay(
+  left: Date | null,
+  right: Date | null,
+  timezone?: string | null,
+) {
+  if (!left || !right) return false
+
+  const leftParts = getLocalDateParts(left, timezone)
+  const rightParts = getLocalDateParts(right, timezone)
+
+  return (
+    leftParts.year === rightParts.year &&
+    leftParts.month === rightParts.month &&
+    leftParts.day === rightParts.day
+  )
 }
 
 function startOfDayInTimezone(date: Date, timezone?: string | null) {
@@ -46,7 +67,9 @@ export function getTaskDueDayOffset(
 export function getTaskPriorityFromDueDate(
   dueDate: Date | null,
   timezone?: string | null,
+  isCompleted = false,
 ) {
+  if (isCompleted) return null
   if (!dueDate) return null
 
   const diffInDays = getTaskDueDayOffset(dueDate, timezone)
@@ -100,6 +123,11 @@ export async function refreshTaskPrioritiesForTenants(
       tenantId: true,
       dueDate: true,
       priority: true,
+      statusConfig: {
+        select: {
+          name: true,
+        },
+      },
     },
   })
 
@@ -109,6 +137,7 @@ export async function refreshTaskPrioritiesForTenants(
       priority: getTaskPriorityFromDueDate(
         task.dueDate,
         tenantTimezoneMap.get(task.tenantId),
+        isCompletedStatusName(task.statusConfig?.name),
       ),
       currentPriority: task.priority,
     }))

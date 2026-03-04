@@ -6,7 +6,10 @@ import {
   getTaskDueDayOffset,
   getTaskPriorityFromDueDate,
   getTenantTimezone,
+  isSameLocalDay,
+  isCompletedStatusName,
 } from "../lib/task-priority.js"
+import { createTaskActivity } from "../lib/task-activity.js"
 import { createTaskAssignmentNotification } from "../lib/task-notifications.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
@@ -151,11 +154,55 @@ async function getTaskForTenant(tenantId: string, taskId: string) {
   })
 }
 
+function formatActivityDateTime(value: Date | null) {
+  if (!value) return "None"
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
+  }).format(value)
+}
+
+async function getUserDisplayName(userId: string | null | undefined) {
+  if (!userId) return "Not assigned"
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      name: true,
+      email: true,
+    },
+  })
+
+  return user?.name?.trim() || user?.email || "Unknown user"
+}
+
+async function getStatusDisplayName(tenantId: string, statusConfigId: string | null | undefined) {
+  if (!statusConfigId) return "No status"
+
+  const status = await prismaWithTasks.taskStatusConfig.findFirst({
+    where: {
+      tenantId,
+      id: statusConfigId,
+    },
+    select: {
+      name: true,
+    },
+  })
+
+  return status?.name ?? "No status"
+}
+
 async function resolveTaskMutationPayload(
   tenantId: string,
   payload: z.infer<typeof CreateTaskSchema> | z.infer<typeof UpdateTaskSchema>,
 ) {
   const statusConfigId = payload.statusConfigId ?? null
+  let statusName: string | null = null
   const contactId = "contactId" in payload ? payload.contactId ?? null : null
   const assignedToUserId = payload.assignedToUserId ?? null
   const dueDate = payload.dueDate ? new Date(payload.dueDate) : null
@@ -178,12 +225,15 @@ async function resolveTaskMutationPayload(
       },
       select: {
         id: true,
+        name: true,
       },
     })
 
     if (!status) {
       return { error: "INVALID_STATUS_CONFIG" as const }
     }
+
+    statusName = status.name
   }
 
   if (assignedToUserId) {
@@ -224,6 +274,7 @@ async function resolveTaskMutationPayload(
   return {
     contactId,
     statusConfigId,
+    statusName,
     assignedToUserId,
     dueDate,
     startedAt,
@@ -315,25 +366,41 @@ router.get("/:tenantId/summary", requireAuth, async (req, res, next) => {
         dueDate: true,
         priority: true,
         assignedToUserId: true,
+        updatedAt: true,
+        statusConfig: {
+          select: {
+            name: true,
+          },
+        },
       },
     })
 
     const summary = tasks.reduce(
       (acc: any, task: any) => {
         acc.totalTasks += 1
+        const isCompleted = isCompletedStatusName(task.statusConfig?.name)
 
         const offset = getTaskDueDayOffset(task.dueDate, tenantTimezone)
-        if (offset !== null && offset < 0) {
+        if (!isCompleted && offset !== null && offset < 0) {
           acc.overdueTasks += 1
         }
-        if (offset !== null && offset >= 0 && offset <= 7) {
+        if (!isCompleted && offset === 0) {
+          acc.dueToday += 1
+        }
+        if (!isCompleted && offset !== null && offset >= 0 && offset <= 7) {
           acc.dueThisWeek += 1
         }
-        if (task.priority === "HIGH") {
+        if (!isCompleted && task.priority === "HIGH") {
           acc.highPriorityTasks += 1
         }
+        if (!isCompleted && !task.assignedToUserId) {
+          acc.unassignedTasks += 1
+        }
+        if (isCompleted && isSameLocalDay(task.updatedAt, new Date(), tenantTimezone)) {
+          acc.completedToday += 1
+        }
 
-        if (task.assignedToUserId === authed.user.id && task.priority) {
+        if (!isCompleted && task.assignedToUserId === authed.user.id && task.priority) {
           acc.myPriorityCounts[task.priority] += 1
         }
 
@@ -342,8 +409,11 @@ router.get("/:tenantId/summary", requireAuth, async (req, res, next) => {
       {
         totalTasks: 0,
         overdueTasks: 0,
+        dueToday: 0,
         dueThisWeek: 0,
         highPriorityTasks: 0,
+        unassignedTasks: 0,
+        completedToday: 0,
         myPriorityCounts: {
           HIGH: 0,
           MEDIUM: 0,
@@ -530,7 +600,14 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
     }
     const tenantTimezone = await getTenantTimezone(tenantId)
 
-    const { contactId, statusConfigId, assignedToUserId, dueDate, startedAt } =
+    const {
+      contactId,
+      statusConfigId,
+      statusName,
+      assignedToUserId,
+      dueDate,
+      startedAt,
+    } =
       resolvedPayload
 
     const task = await prisma.$transaction(async (tx) => {
@@ -540,7 +617,11 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
         data: {
           tenantId,
           contactId,
-          priority: getTaskPriorityFromDueDate(dueDate, tenantTimezone),
+          priority: getTaskPriorityFromDueDate(
+            dueDate,
+            tenantTimezone,
+            isCompletedStatusName(statusName),
+          ),
           name: payload.name.trim(),
           description: payload.description?.trim() || null,
           statusConfigId,
@@ -553,6 +634,16 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
           name: true,
           assignedToUserId: true,
         },
+      })
+
+      await createTaskActivity({
+        prismaClient: prismaTx,
+        tenantId,
+        taskId: createdTask.id,
+        actorUserId: authed.user.id,
+        type: "CREATED",
+        title: "Task created",
+        details: `Created by ${authed.user.name?.trim() || authed.user.email || "a teammate"}.`,
       })
 
       if (reminderAt) {
@@ -581,6 +672,16 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
               createdById: authed.user.id,
               remindAt: reminderAt,
             },
+          })
+
+          await createTaskActivity({
+            prismaClient: prismaTx,
+            tenantId,
+            taskId: createdTask.id,
+            actorUserId: authed.user.id,
+            type: "REMINDER_CREATED",
+            title: "Reminder scheduled",
+            details: `Reminder set for ${formatActivityDateTime(reminderAt)}.`,
           })
         }
       }
@@ -658,6 +759,18 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: "INVALID_REMINDER_DATE" })
     }
 
+    const [
+      previousAssigneeLabel,
+      nextAssigneeLabel,
+      previousStatusLabel,
+      nextStatusLabel,
+    ] = await Promise.all([
+      getUserDisplayName(existingTask.assignedToUserId),
+      getUserDisplayName(resolvedPayload.assignedToUserId),
+      getStatusDisplayName(tenantId, existingTask.statusConfigId),
+      getStatusDisplayName(tenantId, resolvedPayload.statusConfigId),
+    ])
+
     const task = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any
 
@@ -671,6 +784,7 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
           priority: getTaskPriorityFromDueDate(
             resolvedPayload.dueDate,
             tenantTimezone,
+            isCompletedStatusName(resolvedPayload.statusName),
           ),
           dueDate: resolvedPayload.dueDate,
           startedAt: resolvedPayload.startedAt,
@@ -681,6 +795,74 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
           assignedToUserId: true,
         },
       })
+
+      if (
+        mergedPayload.name.trim() !== existingTask.name ||
+        (mergedPayload.description?.trim() || null) !== (existingTask.description?.trim() || null)
+      ) {
+        await createTaskActivity({
+          prismaClient: prismaTx,
+          tenantId,
+          taskId: existingTask.id,
+          actorUserId: authed.user.id,
+          type: "UPDATED",
+          title: "Task details updated",
+        })
+      }
+
+      if (existingTask.statusConfigId !== resolvedPayload.statusConfigId) {
+        await createTaskActivity({
+          prismaClient: prismaTx,
+          tenantId,
+          taskId: existingTask.id,
+          actorUserId: authed.user.id,
+          type: "STATUS_CHANGED",
+          title: "Status changed",
+          details: `${previousStatusLabel} -> ${nextStatusLabel}`,
+        })
+      }
+
+      if (existingTask.assignedToUserId !== resolvedPayload.assignedToUserId) {
+        await createTaskActivity({
+          prismaClient: prismaTx,
+          tenantId,
+          taskId: existingTask.id,
+          actorUserId: authed.user.id,
+          type: "ASSIGNEE_CHANGED",
+          title: "Assignee changed",
+          details: `${previousAssigneeLabel} -> ${nextAssigneeLabel}`,
+        })
+      }
+
+      if (
+        (existingTask.dueDate?.getTime() ?? null) !==
+        (resolvedPayload.dueDate?.getTime() ?? null)
+      ) {
+        await createTaskActivity({
+          prismaClient: prismaTx,
+          tenantId,
+          taskId: existingTask.id,
+          actorUserId: authed.user.id,
+          type: "DUE_DATE_CHANGED",
+          title: "Due date changed",
+          details: `${formatActivityDateTime(existingTask.dueDate)} -> ${formatActivityDateTime(resolvedPayload.dueDate)}`,
+        })
+      }
+
+      if (
+        (existingTask.startedAt?.getTime() ?? null) !==
+        (resolvedPayload.startedAt?.getTime() ?? null)
+      ) {
+        await createTaskActivity({
+          prismaClient: prismaTx,
+          tenantId,
+          taskId: existingTask.id,
+          actorUserId: authed.user.id,
+          type: "START_DATE_CHANGED",
+          title: "Start date changed",
+          details: `${formatActivityDateTime(existingTask.startedAt)} -> ${formatActivityDateTime(resolvedPayload.startedAt)}`,
+        })
+      }
 
       if (reminderAt) {
         const recipientMembership = await tx.membership.findUnique({
@@ -707,6 +889,16 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
               createdById: authed.user.id,
               remindAt: reminderAt,
             },
+          })
+
+          await createTaskActivity({
+            prismaClient: prismaTx,
+            tenantId,
+            taskId: existingTask.id,
+            actorUserId: authed.user.id,
+            type: "REMINDER_CREATED",
+            title: "Reminder scheduled",
+            details: `Reminder set for ${formatActivityDateTime(reminderAt)}.`,
           })
         }
       }
@@ -831,6 +1023,24 @@ router.get("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
             },
           },
         },
+        activities: {
+          orderBy: [{ createdAt: "desc" }],
+          take: 20,
+          select: {
+            id: true,
+            type: true,
+            title: true,
+            details: true,
+            createdAt: true,
+            actor: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+              },
+            },
+          },
+        },
       },
     })
 
@@ -867,6 +1077,20 @@ router.get("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
           notifiedAt: reminder.notifiedAt ?? null,
           recipient: reminder.recipient,
           createdBy: reminder.createdBy,
+        })),
+        activities: task.activities.map((activity: any) => ({
+          id: activity.id,
+          type: activity.type,
+          title: activity.title,
+          details: activity.details ?? null,
+          createdAt: activity.createdAt,
+          actor: activity.actor
+            ? {
+                id: activity.actor.id,
+                name: activity.actor.name,
+                email: activity.actor.email,
+              }
+            : null,
         })),
       },
     })
@@ -944,6 +1168,16 @@ router.post("/:tenantId/:taskId/reminders", requireAuth, async (req, res, next) 
       },
     })
 
+    await createTaskActivity({
+      prismaClient: prismaWithTasks,
+      tenantId,
+      taskId,
+      actorUserId: authed.user.id,
+      type: "REMINDER_CREATED",
+      title: "Reminder scheduled",
+      details: `Reminder set for ${formatActivityDateTime(reminder.remindAt)}.`,
+    })
+
     return res.status(201).json({
       ok: true,
       reminder: {
@@ -982,6 +1216,7 @@ router.delete(
         },
         select: {
           id: true,
+          remindAt: true,
         },
       })
 
@@ -999,6 +1234,16 @@ router.delete(
         prismaWithTasks.notification.deleteMany({
           where: {
             taskReminderId: reminder.id,
+          },
+        }),
+        prismaWithTasks.taskActivity.create({
+          data: {
+            tenantId,
+            taskId,
+            actorUserId: authed.user.id,
+            type: "REMINDER_CANCELED",
+            title: "Reminder canceled",
+            details: `Reminder for ${formatActivityDateTime(reminder.remindAt)} was canceled.`,
           },
         }),
       ])

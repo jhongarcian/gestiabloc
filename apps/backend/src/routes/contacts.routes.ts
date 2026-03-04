@@ -22,6 +22,9 @@ const TenantContactPathSchema = TenantPathSchema.extend({
 const TenantContactRelationshipPathSchema = TenantContactPathSchema.extend({
   relationshipId: z.string().min(1),
 })
+const TenantContactTagPathSchema = TenantContactPathSchema.extend({
+  tagId: z.string().min(1),
+})
 const TenantContactNotePathSchema = TenantContactPathSchema.extend({
   noteId: z.string().min(1),
 })
@@ -42,6 +45,18 @@ const ContactsListQuerySchema = z.object({
 const ContactSearchQuerySchema = z.object({
   q: z.string().trim().max(120).optional().default(""),
   excludeContactId: z.string().trim().min(1).optional(),
+})
+
+const ContactTagSearchQuerySchema = z.object({
+  q: z.string().trim().max(120).optional().default(""),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce
+    .number()
+    .int()
+    .refine((value) => value === 10 || value === 25, {
+      message: "pageSize must be 10 or 25",
+    })
+    .default(10),
 })
 
 const ContactNotesQuerySchema = z.object({
@@ -116,6 +131,10 @@ const UpdateContactNoteSchema = z.object({
   attachmentFileIds: ContactNoteAttachmentIdsSchema,
 })
 
+const CreateContactTagSchema = z.object({
+  tagId: z.string().min(1),
+})
+
 const optionalStringField = (max: number) =>
   z.preprocess((value) => {
     if (typeof value !== "string") return value
@@ -137,6 +156,15 @@ const optionalDateField = () =>
     const trimmed = value.trim()
     return trimmed.length > 0 ? trimmed : null
   }, z.string().datetime().nullable().optional())
+
+function normalizeTagSearchTerm(value: string) {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+}
 
 const CreateContactSchema = z.object({
   firstName: z.string().trim().min(1).max(120),
@@ -981,7 +1009,7 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    const [contact, customFields, customFieldValues, relationships] =
+    const [contact, tags, customFields, customFieldValues, relationships] =
       await Promise.all([
         prisma.contact.findFirst({
           where: {
@@ -1014,6 +1042,21 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
             },
             createdAt: true,
             updatedAt: true,
+          },
+        }),
+        prismaWithContacts.contactTag.findMany({
+          where: { tenantId, contactId },
+          orderBy: [{ tag: { sortOrder: "asc" } }, { tag: { name: "asc" } }],
+          select: {
+            tag: {
+              select: {
+                id: true,
+                name: true,
+                bgColor: true,
+                textColor: true,
+                sortOrder: true,
+              },
+            },
           },
         }),
         prismaWithContacts.contactCustomField.findMany({
@@ -1115,6 +1158,13 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
         statusConfigId: contact.statusConfig?.id ?? null,
         statusBgColor: contact.statusConfig?.bgColor ?? null,
         statusTextColor: contact.statusConfig?.textColor ?? null,
+        tags: tags.map((item: any) => ({
+          id: item.tag.id,
+          name: item.tag.name,
+          bgColor: item.tag.bgColor,
+          textColor: item.tag.textColor,
+          sortOrder: item.tag.sortOrder,
+        })),
         customFields: customFields.map((field: any) => ({
           id: field.id,
           key: field.key,
@@ -1810,6 +1860,165 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
         createdAt: created.createdAt,
       },
     })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/:contactId/tags/search", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, contactId } = TenantContactPathSchema.parse(req.params)
+    const { q, page, pageSize } = ContactTagSearchQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const contact = await prisma.contact.findFirst({
+      where: { id: contactId, tenantId },
+      select: { id: true },
+    })
+
+    if (!contact) {
+      return res.status(404).json({ error: "CONTACT_NOT_FOUND" })
+    }
+
+    const normalizedQuery = normalizeTagSearchTerm(q)
+    const skip = (page - 1) * pageSize
+    const where = {
+      tenantId,
+      ...(normalizedQuery
+        ? {
+            name: {
+              contains: normalizedQuery,
+            },
+          }
+        : {}),
+      contactTags: {
+        none: {
+          contactId,
+        },
+      },
+    } as const
+
+    const [total, tags] = await Promise.all([
+      prismaWithContacts.tenantTag.count({ where }),
+      prismaWithContacts.tenantTag.findMany({
+        where,
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          name: true,
+          bgColor: true,
+          textColor: true,
+          sortOrder: true,
+        },
+      }),
+    ])
+
+    return res.json({
+      ok: true,
+      items: tags,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      },
+      query: normalizedQuery,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post("/:tenantId/:contactId/tags", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+
+    const authed = req as AuthedRequest
+    const { tenantId, contactId } = TenantContactPathSchema.parse(req.params)
+    const { tagId } = CreateContactTagSchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const [contact, tag, existingAssignment] = await Promise.all([
+      prisma.contact.findFirst({
+        where: { id: contactId, tenantId },
+        select: { id: true },
+      }),
+      prismaWithContacts.tenantTag.findFirst({
+        where: { id: tagId, tenantId },
+        select: {
+          id: true,
+          name: true,
+          bgColor: true,
+          textColor: true,
+          sortOrder: true,
+        },
+      }),
+      prismaWithContacts.contactTag.findFirst({
+        where: { tenantId, contactId, tagId },
+        select: { id: true },
+      }),
+    ])
+
+    if (!contact) {
+      return res.status(404).json({ error: "CONTACT_NOT_FOUND" })
+    }
+
+    if (!tag) {
+      return res.status(404).json({ error: "TAG_NOT_FOUND" })
+    }
+
+    if (existingAssignment) {
+      return res.status(409).json({ error: "CONTACT_TAG_ALREADY_EXISTS" })
+    }
+
+    await prismaWithContacts.contactTag.create({
+      data: {
+        tenantId,
+        contactId,
+        tagId,
+      },
+    })
+
+    return res.status(201).json({
+      ok: true,
+      tag,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.delete("/:tenantId/:contactId/tags/:tagId", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+
+    const authed = req as AuthedRequest
+    const { tenantId, contactId, tagId } = TenantContactTagPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const existingAssignment = await prismaWithContacts.contactTag.findFirst({
+      where: { tenantId, contactId, tagId },
+      select: { id: true },
+    })
+
+    if (!existingAssignment) {
+      return res.status(404).json({ error: "CONTACT_TAG_NOT_FOUND" })
+    }
+
+    await prismaWithContacts.contactTag.delete({
+      where: { id: existingAssignment.id },
+    })
+
+    return res.json({ ok: true })
   } catch (error) {
     return next(error)
   }

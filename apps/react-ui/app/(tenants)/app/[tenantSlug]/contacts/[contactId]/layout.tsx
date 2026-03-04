@@ -5,6 +5,7 @@ import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { ContactBreadcrumbSync } from "./_components/contact-breadcrumb-sync"
 import { ContactDetailTabs } from "./_components/contact-detail-tabs"
 import { ContactRelationshipsSection } from "./_components/contact-relationships-section"
+import { ContactTagsSection } from "./_components/contact-tags-section"
 import {
   formatContactDate,
   formatContactDateTime,
@@ -137,17 +138,11 @@ export default async function ContactDetailsLayout({
                 initialRelationships={contact.relationships}
               />
 
-              <details className="group rounded-lg py-1">
-                <summary className="flex cursor-pointer list-none items-center gap-3 rounded-lg px-2 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-50">
-                  <span className="flex items-center gap-2">
-                    <ChevronDown className="h-4 w-4 text-slate-400 transition group-open:rotate-180" />
-                    Tags
-                  </span>
-                </summary>
-                <p className="mt-1 pl-8 text-sm leading-6 text-slate-500">
-                  No tags assigned yet.
-                </p>
-              </details>
+              <ContactTagsSection
+                tenantId={tenantId}
+                contactId={contactId}
+                initialTags={contact.tags}
+              />
 
               <details className="group rounded-lg py-1">
                 <summary className="flex cursor-pointer list-none items-center gap-3 rounded-lg px-2 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-50">

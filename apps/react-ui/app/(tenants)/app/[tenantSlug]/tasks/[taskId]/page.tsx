@@ -12,6 +12,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 import { api } from "@/lib/api"
 import { getTenantMembershipContext } from "../../_lib/tenant-session"
 import { DeleteTaskDialog } from "./_components/delete-task-dialog"
+import { TaskActivityPanel } from "./_components/task-activity-panel"
 import { EditTaskDialog } from "./_components/edit-task-dialog"
 import { TaskOverviewPanel } from "./_components/task-overview-panel"
 import { TaskReminderPanel } from "./_components/task-reminder-panel"
@@ -48,6 +49,26 @@ type TaskDetailsResponse = {
         id: string
         name: string
       }
+    }>
+    activities: Array<{
+      id: string
+      type:
+        | "CREATED"
+        | "UPDATED"
+        | "STATUS_CHANGED"
+        | "ASSIGNEE_CHANGED"
+        | "DUE_DATE_CHANGED"
+        | "START_DATE_CHANGED"
+        | "REMINDER_CREATED"
+        | "REMINDER_CANCELED"
+      title: string
+      details: string | null
+      createdAt: string
+      actor: {
+        id: string
+        name: string
+        email: string
+      } | null
     }>
   }
 }
@@ -162,14 +183,16 @@ export default async function TaskDetailsPage({
 
             <div className="flex gap-2">
               {task ? (
-            <EditTaskDialog
-              tenantId={membership.tenant.id}
-              tenantTimezone={tenantTimezone}
-              taskId={task.id}
-              statusOptions={statusOptions}
+                <EditTaskDialog
+                  tenantId={membership.tenant.id}
+                  tenantTimezone={tenantTimezone}
+                  taskId={task.id}
+                  statusOptions={statusOptions}
+                  assigneeOptions={assigneeOptions}
                   initialTask={{
                     name: task.name,
                     description: task.description,
+                    assignedToUserId: task.assignedToUserId,
                     dueDate: task.dueDate,
                     startedAt: task.startedAt,
                     reminderAt: task.reminders[0]?.remindAt ?? null,
@@ -219,6 +242,11 @@ export default async function TaskDetailsPage({
               currentUserId={user.id}
               assignedPersonName={task.assignedPersonName}
               initialReminders={task.reminders}
+            />
+
+            <TaskActivityPanel
+              tenantTimezone={tenantTimezone}
+              activities={task.activities}
             />
           </div>
         </div>

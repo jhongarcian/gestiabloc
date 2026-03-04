@@ -20,6 +20,13 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import {
@@ -39,9 +46,14 @@ type EditTaskDialogProps = {
   tenantTimezone?: string | null
   taskId: string
   statusOptions: TaskStatusOption[]
+  assigneeOptions: Array<{
+    label: string
+    value: string
+  }>
   initialTask: {
     name: string
     description: string | null
+    assignedToUserId: string | null
     dueDate: string | null
     startedAt: string | null
     reminderAt: string | null
@@ -51,7 +63,13 @@ type EditTaskDialogProps = {
 
 type FieldErrors = Partial<
   Record<
-    "name" | "description" | "status" | "dueDate" | "startedAt" | "reminderAt",
+    | "name"
+    | "description"
+    | "assignedToUserId"
+    | "status"
+    | "dueDate"
+    | "startedAt"
+    | "reminderAt",
     string
   >
 >
@@ -63,6 +81,7 @@ export function EditTaskDialog({
   tenantTimezone,
   taskId,
   statusOptions,
+  assigneeOptions,
   initialTask,
 }: EditTaskDialogProps) {
   const router = useRouter()
@@ -72,6 +91,9 @@ export function EditTaskDialog({
 
   const [name, setName] = useState(initialTask.name)
   const [description, setDescription] = useState(initialTask.description ?? "")
+  const [assignedToUserId, setAssignedToUserId] = useState(
+    initialTask.assignedToUserId ?? "__UNASSIGNED__",
+  )
   const [statusConfigId, setStatusConfigId] = useState<string | undefined>(
     initialTask.statusConfigId ?? undefined,
   )
@@ -93,6 +115,7 @@ export function EditTaskDialog({
   const resetForm = () => {
     setName(initialTask.name)
     setDescription(initialTask.description ?? "")
+    setAssignedToUserId(initialTask.assignedToUserId ?? "__UNASSIGNED__")
     setStatusConfigId(initialTask.statusConfigId ?? undefined)
     setDueDateInput(formatUtcIsoToDateTimeDraft(initialTask.dueDate, tenantTimezone))
     setStartedAtInput(formatUtcIsoToDateTimeDraft(initialTask.startedAt, tenantTimezone))
@@ -141,6 +164,8 @@ export function EditTaskDialog({
       await api.patch(`/api/tasks/${tenantId}/${taskId}`, {
         name: name.trim(),
         description: description.trim() || null,
+        assignedToUserId:
+          assignedToUserId === "__UNASSIGNED__" ? null : assignedToUserId,
         statusConfigId: statusConfigId ?? null,
         dueDate,
         startedAt,
@@ -166,6 +191,9 @@ export function EditTaskDialog({
             if (detail.path === "description" && detail.message) {
               mappedErrors.description = detail.message
             }
+            if (detail.path === "assignedToUserId" && detail.message) {
+              mappedErrors.assignedToUserId = detail.message
+            }
             if (detail.path === "dueDate" && detail.message) {
               mappedErrors.dueDate = detail.message
             }
@@ -189,6 +217,12 @@ export function EditTaskDialog({
             status: "Selected status is invalid for this tenant.",
           }))
           toast.error("Selected status is invalid for this tenant.")
+        } else if (backendError === "INVALID_ASSIGNEE") {
+          setFieldErrors((prev) => ({
+            ...prev,
+            assignedToUserId: "Selected assignee is invalid for this tenant.",
+          }))
+          toast.error("Selected assignee is invalid for this tenant.")
         } else if (typeof backendError === "string") {
           toast.error(backendError.replace(/_/g, " "))
         } else {
@@ -235,6 +269,54 @@ export function EditTaskDialog({
             {fieldErrors.name ? (
               <p className="text-xs text-rose-600">{fieldErrors.name}</p>
             ) : null}
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <Label htmlFor="edit-task-assignee">Assignee</Label>
+              <Select
+                value={assignedToUserId}
+                onValueChange={(value) => {
+                  setAssignedToUserId(value)
+                  setFieldErrors((prev) => ({ ...prev, assignedToUserId: undefined }))
+                }}
+                disabled={isSubmitting}
+              >
+                <SelectTrigger id="edit-task-assignee" className="bg-white">
+                  <SelectValue placeholder="Not assigned" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__UNASSIGNED__">Not assigned</SelectItem>
+                  {assigneeOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {fieldErrors.assignedToUserId ? (
+                <p className="text-xs text-rose-600">{fieldErrors.assignedToUserId}</p>
+              ) : null}
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="edit-task-status">Status</Label>
+              <TaskStatusSelect
+                id="edit-task-status"
+                value={statusConfigId ?? "__none__"}
+                onValueChange={(value) => {
+                  setStatusConfigId(value === "__none__" ? undefined : value)
+                  setFieldErrors((prev) => ({ ...prev, status: undefined }))
+                }}
+                options={selectableStatuses}
+                disabled={isSubmitting}
+                noneValue="__none__"
+                noneLabel="No status"
+              />
+              {fieldErrors.status ? (
+                <p className="text-xs text-rose-600">{fieldErrors.status}</p>
+              ) : null}
+            </div>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-3">
@@ -285,25 +367,6 @@ export function EditTaskDialog({
                 <p className="text-xs text-rose-600">{fieldErrors.reminderAt}</p>
               ) : null}
             </div>
-          </div>
-
-          <div className="grid gap-2">
-            <Label htmlFor="edit-task-status">Status</Label>
-            <TaskStatusSelect
-              id="edit-task-status"
-              value={statusConfigId ?? "__none__"}
-              onValueChange={(value) => {
-                setStatusConfigId(value === "__none__" ? undefined : value)
-                setFieldErrors((prev) => ({ ...prev, status: undefined }))
-              }}
-              options={selectableStatuses}
-              disabled={isSubmitting}
-              noneValue="__none__"
-              noneLabel="No status"
-            />
-            {fieldErrors.status ? (
-              <p className="text-xs text-rose-600">{fieldErrors.status}</p>
-            ) : null}
           </div>
 
           <div className="grid gap-2">

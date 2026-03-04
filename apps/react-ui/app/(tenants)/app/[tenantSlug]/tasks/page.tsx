@@ -31,8 +31,11 @@ type TaskSummaryResponse = {
   summary: {
     totalTasks: number
     overdueTasks: number
+    dueToday: number
     dueThisWeek: number
     highPriorityTasks: number
+    unassignedTasks: number
+    completedToday: number
     myPriorityCounts: {
       HIGH: number
       MEDIUM: number
@@ -67,8 +70,11 @@ export default async function TasksPage({
   let summary: TaskSummaryResponse["summary"] = {
     totalTasks: 0,
     overdueTasks: 0,
+    dueToday: 0,
     dueThisWeek: 0,
     highPriorityTasks: 0,
+    unassignedTasks: 0,
+    completedToday: 0,
     myPriorityCounts: {
       HIGH: 0,
       MEDIUM: 0,
