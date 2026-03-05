@@ -62,6 +62,7 @@ type CustomFieldRecord = {
   fieldType: CustomFieldType
   isRequired: boolean
   isEncrypted: boolean
+  isSensitive: boolean
   isActive: boolean
   options: string[]
   sortOrder: number
@@ -85,6 +86,7 @@ type FormState = {
   fieldType: CustomFieldType
   isRequired: boolean
   isEncrypted: boolean
+  isSensitive: boolean
   isActive: boolean
   optionsText: string
 }
@@ -156,6 +158,7 @@ const INITIAL_FORM: FormState = {
   fieldType: "TEXT",
   isRequired: false,
   isEncrypted: false,
+  isSensitive: false,
   isActive: true,
   optionsText: "",
 }
@@ -471,6 +474,10 @@ export function CustomFieldsPanel({
     () => customFields.filter((field) => field.isEncrypted).length,
     [customFields],
   )
+  const sensitiveCount = useMemo(
+    () => customFields.filter((field) => field.isSensitive).length,
+    [customFields],
+  )
   const activeCount = useMemo(
     () => customFields.filter((field) => field.isActive).length,
     [customFields],
@@ -503,6 +510,7 @@ export function CustomFieldsPanel({
       fieldType: field.fieldType,
       isRequired: field.isRequired,
       isEncrypted: field.isEncrypted,
+      isSensitive: field.isSensitive,
       isActive: field.isActive,
       optionsText: field.options.join("\n"),
     })
@@ -537,6 +545,7 @@ export function CustomFieldsPanel({
       fieldType: form.fieldType,
       isRequired: form.isRequired,
       isEncrypted: form.isEncrypted,
+      isSensitive: form.isSensitive,
       isActive: form.isActive,
       options: supportsOptions(form.fieldType) ? parseOptions(form.optionsText) : [],
     }
@@ -637,7 +646,7 @@ export function CustomFieldsPanel({
               </div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-4">
               <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
                 <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
                   Field library
@@ -658,6 +667,13 @@ export function CustomFieldsPanel({
                 </p>
                 <p className="mt-2 text-3xl font-semibold text-slate-950">{encryptedCount}</p>
                 <p className="mt-1 text-sm text-slate-500">Fields marked for extra protection.</p>
+              </div>
+              <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                  Sensitive
+                </p>
+                <p className="mt-2 text-3xl font-semibold text-slate-950">{sensitiveCount}</p>
+                <p className="mt-1 text-sm text-slate-500">Restricted from low-security users.</p>
               </div>
             </div>
           </div>
@@ -772,6 +788,12 @@ export function CustomFieldsPanel({
                               Encrypted
                             </Badge>
                           ) : null}
+                          {field.isSensitive ? (
+                            <Badge className="bg-rose-100 text-rose-700 hover:bg-rose-100">
+                              <Lock className="mr-1 h-3.5 w-3.5" />
+                              Sensitive
+                            </Badge>
+                          ) : null}
                           {!field.isActive ? <Badge variant="outline">Inactive</Badge> : null}
                         </div>
 
@@ -815,7 +837,7 @@ export function CustomFieldsPanel({
 
                     <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
                       <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                        <div className="grid gap-3 md:grid-cols-3">
+                        <div className="grid gap-3 md:grid-cols-4">
                           <div className="space-y-1">
                             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
                               Visibility
@@ -838,6 +860,14 @@ export function CustomFieldsPanel({
                             </p>
                             <p className="text-sm font-medium text-slate-900">
                               {field.isEncrypted ? "Encrypted" : "Standard"}
+                            </p>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                              Access
+                            </p>
+                            <p className="text-sm font-medium text-slate-900">
+                              {field.isSensitive ? "Sensitive" : "Standard"}
                             </p>
                           </div>
                         </div>
@@ -1164,6 +1194,25 @@ export function CustomFieldsPanel({
                       <span className="block text-sm font-medium text-slate-900">Encrypted value</span>
                       <span className="block text-xs text-slate-500">
                         Use this for highly sensitive values that need stronger protection.
+                      </span>
+                    </span>
+                  </label>
+
+                  <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <Checkbox
+                      checked={form.isSensitive}
+                      onCheckedChange={(checked) =>
+                        setForm((current) => ({
+                          ...current,
+                          isSensitive: checked === true,
+                        }))
+                      }
+                    />
+                    <span className="space-y-1">
+                      <span className="block text-sm font-medium text-slate-900">Sensitive access</span>
+                      <span className="block text-xs text-slate-500">
+                        Low-security users cannot view this value. Medium users must request
+                        access.
                       </span>
                     </span>
                   </label>

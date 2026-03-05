@@ -6,9 +6,11 @@ import {
   encryptCustomFieldValue,
 } from "../lib/contact-custom-field-encryption.js"
 import { prisma } from "../lib/prisma.js"
+import { emitNotificationCreated } from "../lib/realtime.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { deleteObject } from "../lib/s3.js"
 import { normalizeTagSearchTerm, parseCsvIds } from "../lib/tag-utils.js"
+import { serializeNotification } from "../lib/task-notifications.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
@@ -28,6 +30,9 @@ const TenantContactTagPathSchema = TenantContactPathSchema.extend({
 })
 const TenantContactNotePathSchema = TenantContactPathSchema.extend({
   noteId: z.string().min(1),
+})
+const TenantFieldAccessRequestPathSchema = TenantPathSchema.extend({
+  requestId: z.string().min(1),
 })
 
 const ContactsListQuerySchema = z.object({
@@ -136,6 +141,50 @@ const UpdateContactNoteSchema = z.object({
 const CreateContactTagSchema = z.object({
   tagId: z.string().min(1),
 })
+const RequestCustomFieldAccessSchema = z.object({
+  fieldId: z.string().min(1),
+})
+const ResolveCustomFieldAccessRequestSchema = z.object({
+  decisionNote: z.preprocess((value) => {
+    if (typeof value !== "string") return value
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : null
+  }, z.string().max(500).nullable().optional()),
+})
+const ApproveCustomFieldAccessRequestSchema = ResolveCustomFieldAccessRequestSchema.extend({
+  grantMode: z.enum(["ONCE", "MINUTES", "HOURS"]).default("ONCE"),
+  durationValue: z.coerce.number().int().min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (value.grantMode === "ONCE") {
+    return
+  }
+
+  if (!value.durationValue) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["durationValue"],
+      message: "Duration is required.",
+    })
+    return
+  }
+
+  if (value.grantMode === "HOURS" && value.durationValue > 12) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["durationValue"],
+      message: "Hours cannot exceed 12.",
+    })
+    return
+  }
+
+  if (value.grantMode === "MINUTES" && value.durationValue > 720) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["durationValue"],
+      message: "Minutes cannot exceed 720.",
+    })
+  }
+})
 
 const optionalStringField = (max: number) =>
   z.preprocess((value) => {
@@ -215,6 +264,65 @@ const CONTACT_DEFAULT_STATUSES = [
     sortOrder: 30,
   },
 ] as const
+
+const NOTIFICATION_SELECT = {
+  id: true,
+  tenantId: true,
+  userId: true,
+  type: true,
+  title: true,
+  body: true,
+  readAt: true,
+  createdAt: true,
+  taskId: true,
+  taskReminderId: true,
+} as const
+
+const SECURITY_LEVEL_WEIGHT = {
+  LOW: 1,
+  MEDIUM: 2,
+  MAX: 3,
+} as const
+
+function canApproveSensitiveFieldAccess(membership: {
+  role: "TENANT_ADMIN" | "TENANT_USER"
+  securityLevel: "LOW" | "MEDIUM" | "MAX"
+}) {
+  return membership.role === "TENANT_ADMIN" || membership.securityLevel === "MAX"
+}
+
+function canReadSensitiveFieldValue(
+  membership: {
+    role: "TENANT_ADMIN" | "TENANT_USER"
+    securityLevel: "LOW" | "MEDIUM" | "MAX"
+  },
+  hasGrant: boolean,
+) {
+  if (membership.role === "TENANT_ADMIN") return true
+  if (SECURITY_LEVEL_WEIGHT[membership.securityLevel] >= SECURITY_LEVEL_WEIGHT.MAX) {
+    return true
+  }
+  return hasGrant
+}
+
+function isGrantActive(
+  grant:
+    | {
+        expiresAt: Date | null
+        remainingReads: number | null
+      }
+    | undefined,
+  now = new Date(),
+) {
+  if (!grant) return false
+  if (typeof grant.remainingReads === "number") {
+    return grant.remainingReads > 0
+  }
+  if (grant.expiresAt) {
+    return grant.expiresAt.getTime() > now.getTime()
+  }
+  return false
+}
 
 async function ensureDefaultContactStatuses(tenantId: string) {
   await prismaWithContacts.contactStatusConfig.updateMany({
@@ -1121,6 +1229,7 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
             fieldType: true,
             isRequired: true,
             isEncrypted: true,
+            isSensitive: true,
             options: true,
             sortOrder: true,
           },
@@ -1183,6 +1292,119 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
       ]),
     )
 
+    const sensitiveFieldIds = (customFields as Array<any>)
+      .filter((field) => field.isSensitive)
+      .map((field) => field.id)
+
+    const [grants, ownPendingRequests, approverPendingRequests] = await Promise.all([
+      sensitiveFieldIds.length > 0
+        ? prismaWithContacts.contactCustomFieldAccessGrant.findMany({
+            where: {
+              tenantId,
+              userId: authed.user.id,
+              fieldId: { in: sensitiveFieldIds },
+            },
+            select: {
+              id: true,
+              fieldId: true,
+              expiresAt: true,
+              remainingReads: true,
+            },
+          })
+        : Promise.resolve([]),
+      sensitiveFieldIds.length > 0
+        ? prismaWithContacts.contactCustomFieldAccessRequest.findMany({
+            where: {
+              tenantId,
+              requesterUserId: authed.user.id,
+              fieldId: { in: sensitiveFieldIds },
+              status: "PENDING",
+            },
+            select: {
+              id: true,
+              fieldId: true,
+              status: true,
+              createdAt: true,
+            },
+          })
+        : Promise.resolve([]),
+      canApproveSensitiveFieldAccess(membership) && sensitiveFieldIds.length > 0
+        ? prismaWithContacts.contactCustomFieldAccessRequest.findMany({
+            where: {
+              tenantId,
+              status: "PENDING",
+              fieldId: { in: sensitiveFieldIds },
+            },
+            orderBy: [{ createdAt: "asc" }],
+            select: {
+              id: true,
+              fieldId: true,
+              status: true,
+              createdAt: true,
+              requesterUserId: true,
+              requester: {
+                select: {
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+          })
+        : Promise.resolve([]),
+    ])
+
+    const now = new Date()
+    const activeGrantByFieldId = new Map<
+      string,
+      {
+        id: string
+        fieldId: string
+        expiresAt: Date | null
+        remainingReads: number | null
+      }
+    >()
+    for (const grant of grants as Array<any>) {
+      if (!isGrantActive(grant, now)) continue
+      activeGrantByFieldId.set(grant.fieldId, grant)
+    }
+    const ownPendingByFieldId = new Map<
+      string,
+      {
+        id: string
+        status: "PENDING"
+        createdAt: Date
+      }
+    >(
+      ownPendingRequests.map((request: any) => [request.fieldId, request]),
+    )
+    const approverPendingByFieldId = new Map<
+      string,
+      Array<{
+        id: string
+        status: "PENDING"
+        createdAt: Date
+        requesterUserId: string
+        requester: {
+          name: string
+          email: string
+        }
+      }>
+    >()
+    for (const request of approverPendingRequests as Array<any>) {
+      const existing = approverPendingByFieldId.get(request.fieldId) ?? []
+      existing.push({
+        id: request.id,
+        status: "PENDING",
+        createdAt: request.createdAt,
+        requesterUserId: request.requesterUserId,
+        requester: {
+          name: request.requester.name,
+          email: request.requester.email,
+        },
+      })
+      approverPendingByFieldId.set(request.fieldId, existing)
+    }
+
     return res.json({
       ok: true,
       contact: {
@@ -1217,6 +1439,47 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           sortOrder: item.tag.sortOrder,
         })),
         customFields: customFields.map((field: any) => ({
+          ...(function resolveFieldAccess() {
+            const hasGrant = activeGrantByFieldId.has(field.id)
+            const canReadSensitiveValue = !field.isSensitive
+              ? true
+              : canReadSensitiveFieldValue(membership, hasGrant)
+            const ownPendingRequest = ownPendingByFieldId.get(field.id)
+            const pendingApprovals = approverPendingByFieldId.get(field.id) ?? []
+
+            return {
+              isSensitive: field.isSensitive,
+              isValueRestricted: field.isSensitive && !canReadSensitiveValue,
+              canRequestAccess:
+                field.isSensitive &&
+                membership.securityLevel === "MEDIUM" &&
+                membership.role !== "TENANT_ADMIN" &&
+                !hasGrant,
+              hasAccessGrant: hasGrant,
+              pendingAccessRequest: ownPendingRequest
+                ? {
+                    id: ownPendingRequest.id,
+                    status: ownPendingRequest.status,
+                    createdAt: ownPendingRequest.createdAt,
+                  }
+                : null,
+              pendingApprovals: pendingApprovals.map((request) => ({
+                id: request.id,
+                status: request.status,
+                createdAt: request.createdAt,
+                requesterUserId: request.requesterUserId,
+                requesterName: request.requester.name,
+                requesterEmail: request.requester.email,
+              })),
+              value: canReadSensitiveValue
+                ? decodeCustomFieldValue(
+                    field,
+                    storedValueByFieldId.get(field.id) ??
+                      EMPTY_STORED_CUSTOM_FIELD_VALUE,
+                  )
+                : null,
+            }
+          })(),
           id: field.id,
           key: field.key,
           label: field.label,
@@ -1226,11 +1489,6 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           isEncrypted: field.isEncrypted,
           options: Array.isArray(field.options) ? field.options : [],
           sortOrder: field.sortOrder,
-          value: decodeCustomFieldValue(
-            field,
-            storedValueByFieldId.get(field.id) ??
-              EMPTY_STORED_CUSTOM_FIELD_VALUE,
-          ),
         })),
         relationships: relationships.map((relationship: any) => {
           const isSource = relationship.contactId === contactId
@@ -1266,10 +1524,379 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
         updatedAt: contact.updatedAt,
       },
     })
+
+    const oneTimeGrantIdsToConsume = Array.from(activeGrantByFieldId.values())
+      .filter((grant) => typeof grant.remainingReads === "number")
+      .filter((grant) => (grant.remainingReads ?? 0) > 0)
+      .map((grant) => grant.id)
+    if (oneTimeGrantIdsToConsume.length > 0) {
+      await Promise.all(
+        oneTimeGrantIdsToConsume.map((grantId) =>
+          prismaWithContacts.contactCustomFieldAccessGrant.updateMany({
+            where: {
+              id: grantId,
+              remainingReads: {
+                gt: 0,
+              },
+            },
+            data: {
+              remainingReads: {
+                decrement: 1,
+              },
+            },
+          }),
+        ),
+      )
+    }
   } catch (error) {
     return next(error)
   }
 })
+
+router.post("/:tenantId/custom-field-access-requests", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const payload = RequestCustomFieldAccessSchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    if (membership.securityLevel !== "MEDIUM" || membership.role === "TENANT_ADMIN") {
+      return res.status(403).json({ error: "FORBIDDEN" })
+    }
+
+    const field = await prismaWithContacts.contactCustomField.findFirst({
+      where: {
+        id: payload.fieldId,
+        tenantId,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        label: true,
+        isSensitive: true,
+      },
+    })
+
+    if (!field) {
+      return res.status(404).json({ error: "CUSTOM_FIELD_NOT_FOUND" })
+    }
+
+    if (!field.isSensitive) {
+      return res.status(400).json({ error: "FIELD_IS_NOT_SENSITIVE" })
+    }
+
+    const [existingGrant, existingPendingRequest] = await Promise.all([
+      prismaWithContacts.contactCustomFieldAccessGrant.findFirst({
+        where: {
+          tenantId,
+          fieldId: field.id,
+          userId: authed.user.id,
+        },
+        select: {
+          id: true,
+          expiresAt: true,
+          remainingReads: true,
+        },
+      }),
+      prismaWithContacts.contactCustomFieldAccessRequest.findFirst({
+        where: {
+          tenantId,
+          fieldId: field.id,
+          requesterUserId: authed.user.id,
+          status: "PENDING",
+        },
+        select: {
+          id: true,
+          createdAt: true,
+        },
+      }),
+    ])
+
+    if (isGrantActive(existingGrant ?? undefined)) {
+      return res.status(409).json({ error: "CUSTOM_FIELD_ACCESS_ALREADY_GRANTED" })
+    }
+
+    if (existingPendingRequest) {
+      return res.status(409).json({
+        error: "CUSTOM_FIELD_ACCESS_REQUEST_ALREADY_PENDING",
+        request: {
+          id: existingPendingRequest.id,
+          status: "PENDING",
+          createdAt: existingPendingRequest.createdAt,
+        },
+      })
+    }
+
+    const approvers = await prisma.membership.findMany({
+      where: {
+        tenantId,
+        status: "ACTIVE",
+        userId: { not: authed.user.id },
+        OR: [{ role: "TENANT_ADMIN" }, { securityLevel: "MAX" }],
+      },
+      select: {
+        userId: true,
+      },
+    })
+
+    const requestRecord = await prismaWithContacts.contactCustomFieldAccessRequest.create({
+      data: {
+        tenantId,
+        fieldId: field.id,
+        requesterUserId: authed.user.id,
+        status: "PENDING",
+      },
+      select: {
+        id: true,
+        status: true,
+        createdAt: true,
+      },
+    })
+
+    const approverIds = Array.from(new Set(approvers.map((item: any) => item.userId)))
+    if (approverIds.length > 0) {
+      const notifications = await Promise.all(
+        approverIds.map((approverId) =>
+          prismaWithContacts.notification.create({
+            data: {
+              tenantId,
+              userId: approverId,
+              eventKey: `custom-field-access-request:${requestRecord.id}:${approverId}`,
+              type: "CUSTOM_FIELD_ACCESS_REQUEST",
+              title: `Sensitive field access request: ${field.label}`,
+              body: `${authed.user.name} requested access to "${field.label}".`,
+            },
+            select: NOTIFICATION_SELECT,
+          }),
+        ),
+      )
+
+      for (const notification of notifications) {
+        const serialized = serializeNotification(notification)
+        emitNotificationCreated(serialized.userId, serialized)
+      }
+    }
+
+    return res.status(201).json({
+      ok: true,
+      request: requestRecord,
+      notifiedApproverCount: approverIds.length,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post(
+  "/:tenantId/custom-field-access-requests/:requestId/approve",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req)
+
+      const authed = req as AuthedRequest
+      const { tenantId, requestId } = TenantFieldAccessRequestPathSchema.parse(req.params)
+      const payload = ApproveCustomFieldAccessRequestSchema.parse(req.body ?? {})
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      if (!canApproveSensitiveFieldAccess(membership)) {
+        return res.status(403).json({ error: "FORBIDDEN" })
+      }
+
+      const existing = await prismaWithContacts.contactCustomFieldAccessRequest.findFirst({
+        where: {
+          id: requestId,
+          tenantId,
+        },
+        select: {
+          id: true,
+          tenantId: true,
+          fieldId: true,
+          requesterUserId: true,
+          status: true,
+          field: {
+            select: {
+              label: true,
+              isSensitive: true,
+            },
+          },
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "CUSTOM_FIELD_ACCESS_REQUEST_NOT_FOUND" })
+      }
+
+      if (existing.status !== "PENDING") {
+        return res.status(409).json({ error: "CUSTOM_FIELD_ACCESS_REQUEST_ALREADY_RESOLVED" })
+      }
+
+      if (!existing.field.isSensitive) {
+        return res.status(400).json({ error: "FIELD_IS_NOT_SENSITIVE" })
+      }
+
+      const now = new Date()
+      const grantData =
+        payload.grantMode === "ONCE"
+          ? {
+              expiresAt: null,
+              remainingReads: 1,
+            }
+          : payload.grantMode === "MINUTES"
+            ? {
+                expiresAt: new Date(now.getTime() + (payload.durationValue ?? 0) * 60_000),
+                remainingReads: null,
+              }
+            : {
+                expiresAt: new Date(now.getTime() + (payload.durationValue ?? 0) * 3_600_000),
+                remainingReads: null,
+              }
+      const grantSummary =
+        payload.grantMode === "ONCE"
+          ? "for one-time view"
+          : payload.grantMode === "MINUTES"
+            ? `for ${payload.durationValue} minute${payload.durationValue === 1 ? "" : "s"}`
+            : `for ${payload.durationValue} hour${payload.durationValue === 1 ? "" : "s"}`
+
+      const result = await prisma.$transaction(async (tx) => {
+        const txAny = tx as any
+        const updatedRequest = await txAny.contactCustomFieldAccessRequest.update({
+          where: { id: existing.id },
+          data: {
+            status: "APPROVED",
+            decidedByUserId: authed.user.id,
+            decidedAt: new Date(),
+            decisionNote: payload.decisionNote ?? null,
+          },
+          select: {
+            id: true,
+            status: true,
+            createdAt: true,
+            decidedAt: true,
+            decisionNote: true,
+          },
+        })
+
+        await txAny.contactCustomFieldAccessGrant.upsert({
+          where: {
+            tenantId_fieldId_userId: {
+              tenantId,
+              fieldId: existing.fieldId,
+              userId: existing.requesterUserId,
+            },
+          },
+          update: {
+            grantedByUserId: authed.user.id,
+            expiresAt: grantData.expiresAt,
+            remainingReads: grantData.remainingReads,
+          },
+          create: {
+            tenantId,
+            fieldId: existing.fieldId,
+            userId: existing.requesterUserId,
+            grantedByUserId: authed.user.id,
+            expiresAt: grantData.expiresAt,
+            remainingReads: grantData.remainingReads,
+          },
+        })
+
+        const notification = await txAny.notification.create({
+          data: {
+            tenantId,
+            userId: existing.requesterUserId,
+            eventKey: `custom-field-access-granted:${existing.id}:${existing.requesterUserId}`,
+            type: "CUSTOM_FIELD_ACCESS_GRANTED",
+            title: `Access granted: ${existing.field.label}`,
+            body: `${authed.user.name} approved your request ${grantSummary}.`,
+          },
+          select: NOTIFICATION_SELECT,
+        })
+
+        return { updatedRequest, notification }
+      })
+
+      const serialized = serializeNotification(result.notification)
+      emitNotificationCreated(serialized.userId, serialized)
+
+      return res.json({
+        ok: true,
+        request: result.updatedRequest,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.post(
+  "/:tenantId/custom-field-access-requests/:requestId/reject",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req)
+
+      const authed = req as AuthedRequest
+      const { tenantId, requestId } = TenantFieldAccessRequestPathSchema.parse(req.params)
+      const payload = ResolveCustomFieldAccessRequestSchema.parse(req.body ?? {})
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      if (!canApproveSensitiveFieldAccess(membership)) {
+        return res.status(403).json({ error: "FORBIDDEN" })
+      }
+
+      const existing = await prismaWithContacts.contactCustomFieldAccessRequest.findFirst({
+        where: {
+          id: requestId,
+          tenantId,
+        },
+        select: {
+          id: true,
+          status: true,
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "CUSTOM_FIELD_ACCESS_REQUEST_NOT_FOUND" })
+      }
+
+      if (existing.status !== "PENDING") {
+        return res.status(409).json({ error: "CUSTOM_FIELD_ACCESS_REQUEST_ALREADY_RESOLVED" })
+      }
+
+      const updated = await prismaWithContacts.contactCustomFieldAccessRequest.update({
+        where: { id: existing.id },
+        data: {
+          status: "REJECTED",
+          decidedByUserId: authed.user.id,
+          decidedAt: new Date(),
+          decisionNote: payload.decisionNote ?? null,
+        },
+        select: {
+          id: true,
+          status: true,
+          createdAt: true,
+          decidedAt: true,
+          decisionNote: true,
+        },
+      })
+
+      return res.json({
+        ok: true,
+        request: updated,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
 
 router.get(
   "/:tenantId/:contactId/notes",
@@ -2114,6 +2741,7 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
             fieldType: true,
             isRequired: true,
             isEncrypted: true,
+            isSensitive: true,
             options: true,
             sortOrder: true,
           },
@@ -2134,6 +2762,36 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
     if (!existing) {
       return res.status(404).json({ error: "CONTACT_NOT_FOUND" })
     }
+
+    const sensitiveFieldIds = (customFields as Array<any>)
+      .filter((field) => field.isSensitive)
+      .map((field) => field.id)
+    const grants = sensitiveFieldIds.length
+      ? await prismaWithContacts.contactCustomFieldAccessGrant.findMany({
+          where: {
+            tenantId,
+            userId: authed.user.id,
+            fieldId: { in: sensitiveFieldIds },
+          },
+          select: {
+            id: true,
+            fieldId: true,
+            expiresAt: true,
+            remainingReads: true,
+          },
+        })
+      : []
+    const now = new Date()
+    const grantFieldIds = new Set(
+      grants
+        .filter((grant: any) => isGrantActive(grant, now))
+        .map((grant: any) => grant.fieldId),
+    )
+    const oneTimeGrantIdsToConsume = (grants as Array<any>)
+      .filter((grant) => isGrantActive(grant, now))
+      .filter((grant) => typeof grant.remainingReads === "number")
+      .filter((grant) => (grant.remainingReads ?? 0) > 0)
+      .map((grant) => grant.id)
 
     const customFieldInputMap = new Map(
       payload.customFieldValues.map((item) => [item.fieldId, item.value]),
@@ -2160,13 +2818,27 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
 
     for (const field of customFields as Array<any>) {
       const existingValue = existingStoredValueByFieldId.get(field.id)
+      const hasGrant = grantFieldIds.has(field.id)
+      const canReadSensitiveValue = !field.isSensitive
+        ? true
+        : canReadSensitiveFieldValue(membership, hasGrant)
       nextDecodedValueByFieldId.set(
         field.id,
-        existingValue ? decodeCustomFieldValue(field, existingValue) : null,
+        canReadSensitiveValue && existingValue
+          ? decodeCustomFieldValue(field, existingValue)
+          : null,
       )
     }
 
     for (const field of customFields as Array<any>) {
+      const hasGrant = grantFieldIds.has(field.id)
+      const canReadSensitiveValue = !field.isSensitive
+        ? true
+        : canReadSensitiveFieldValue(membership, hasGrant)
+      if (field.isSensitive && !canReadSensitiveValue) {
+        continue
+      }
+
       const result = normalizeCustomFieldValue(
         {
           id: field.id,
@@ -2375,6 +3047,26 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
       },
     })
 
+    if (oneTimeGrantIdsToConsume.length > 0) {
+      await Promise.all(
+        oneTimeGrantIdsToConsume.map((grantId) =>
+          prismaWithContacts.contactCustomFieldAccessGrant.updateMany({
+            where: {
+              id: grantId,
+              remainingReads: {
+                gt: 0,
+              },
+            },
+            data: {
+              remainingReads: {
+                decrement: 1,
+              },
+            },
+          }),
+        ),
+      )
+    }
+
     return res.json({
       ok: true,
       contact: {
@@ -2420,9 +3112,25 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           fieldType: field.fieldType,
           isRequired: field.isRequired,
           isEncrypted: field.isEncrypted,
+          isSensitive: field.isSensitive,
           options: Array.isArray(field.options) ? field.options : [],
           sortOrder: field.sortOrder,
-          value: nextDecodedValueByFieldId.get(field.id) ?? null,
+          value:
+            field.isSensitive &&
+            !canReadSensitiveFieldValue(membership, grantFieldIds.has(field.id))
+              ? null
+              : nextDecodedValueByFieldId.get(field.id) ?? null,
+          isValueRestricted:
+            field.isSensitive &&
+            !canReadSensitiveFieldValue(membership, grantFieldIds.has(field.id)),
+          canRequestAccess:
+            field.isSensitive &&
+            membership.securityLevel === "MEDIUM" &&
+            membership.role !== "TENANT_ADMIN" &&
+            !grantFieldIds.has(field.id),
+          hasAccessGrant: grantFieldIds.has(field.id),
+          pendingAccessRequest: null,
+          pendingApprovals: [],
         })),
         createdAt: updated.updatedContact.createdAt,
         updatedAt: updated.updatedContact.updatedAt,

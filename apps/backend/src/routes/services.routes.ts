@@ -1,0 +1,627 @@
+import { type Response, Router } from "express"
+import { z } from "zod"
+
+import { prisma } from "../lib/prisma.js"
+import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
+
+const router = Router()
+const prismaWithServices = prisma as any
+
+const TenantPathSchema = z.object({
+  tenantId: z.string().min(1),
+})
+
+const TenantContactServicePathSchema = TenantPathSchema.extend({
+  contactServiceId: z.string().min(1),
+})
+
+const TenantFollowUpStepPathSchema = TenantContactServicePathSchema.extend({
+  followUpStepId: z.string().min(1),
+})
+
+const ContactServicesListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce
+    .number()
+    .int()
+    .refine((value) => value === 10 || value === 25, {
+      message: "pageSize must be 10 or 25",
+    })
+    .default(10),
+  contactId: z.string().trim().min(1).optional(),
+  status: z.enum(["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELED"]).optional(),
+})
+
+const CreateContactServiceSchema = z.object({
+  contactId: z.string().min(1),
+  serviceId: z.string().min(1),
+  purchasedAt: z.string().datetime().nullable().optional(),
+  startedAt: z.string().datetime().nullable().optional(),
+  totalPriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+  notes: z.string().trim().max(4000).nullable().optional(),
+  initialPaymentCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+})
+
+const CreateContactServicePaymentSchema = z.object({
+  amountCents: z.coerce.number().int().min(1).max(1_000_000_000),
+  paidAt: z.string().datetime().optional(),
+  paymentMethod: z.string().trim().max(120).nullable().optional(),
+  note: z.string().trim().max(1000).nullable().optional(),
+})
+
+const UpdateFollowUpStepSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  notesTemplate: z.string().trim().max(1000).nullable().optional(),
+  dueAt: z.string().datetime().nullable().optional(),
+  completedAt: z.string().datetime().nullable().optional(),
+  assignedToUserId: z.string().trim().min(1).nullable().optional(),
+  note: z.string().trim().max(2000).nullable().optional(),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+})
+
+const CreateFollowUpStepSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  notesTemplate: z.string().trim().max(1000).nullable().optional(),
+  dueAt: z.string().datetime().nullable().optional(),
+  assignedToUserId: z.string().trim().min(1).nullable().optional(),
+  note: z.string().trim().max(2000).nullable().optional(),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+})
+
+async function requireActiveMembership(
+  req: AuthedRequest,
+  res: Response,
+  tenantId: string,
+) {
+  const membership = await prisma.membership.findUnique({
+    where: {
+      userId_tenantId: {
+        userId: req.user.id,
+        tenantId,
+      },
+    },
+    select: {
+      role: true,
+      status: true,
+    },
+  })
+
+  if (!membership || membership.status !== "ACTIVE") {
+    res.status(403).json({ error: "TENANT_ACCESS_DENIED" })
+    return null
+  }
+
+  return membership
+}
+
+router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const { page, pageSize, contactId, status } = ContactServicesListQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const skip = (page - 1) * pageSize
+
+    const where = {
+      tenantId,
+      ...(contactId ? { contactId } : {}),
+      ...(status ? { status } : {}),
+    }
+
+    const [total, items] = await prisma.$transaction([
+      prismaWithServices.contactService.count({ where }),
+      prismaWithServices.contactService.findMany({
+        where,
+        orderBy: [{ createdAt: "desc" }],
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          status: true,
+          startedAt: true,
+          purchasedAt: true,
+          completedAt: true,
+          canceledAt: true,
+          totalPriceCents: true,
+          currency: true,
+          allowPartialPayments: true,
+          notes: true,
+          contact: {
+            select: {
+              firstName: true,
+              middleName: true,
+              lastName: true,
+            },
+          },
+          service: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          payments: {
+            select: {
+              amountCents: true,
+            },
+          },
+          followUpSteps: {
+            select: {
+              id: true,
+              title: true,
+              dueAt: true,
+              completedAt: true,
+              assignedToUserId: true,
+              sortOrder: true,
+            },
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          },
+        },
+      }),
+    ])
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+    return res.json({
+      ok: true,
+      items: items.map((item: any) => {
+        const paidCents = item.payments.reduce(
+          (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
+          0,
+        )
+
+        return {
+          id: item.id,
+          status: item.status,
+          startedAt: item.startedAt,
+          purchasedAt: item.purchasedAt,
+          completedAt: item.completedAt,
+          canceledAt: item.canceledAt,
+          totalPriceCents: item.totalPriceCents,
+          paidCents,
+          remainingCents: Math.max(0, item.totalPriceCents - paidCents),
+          currency: item.currency,
+          allowPartialPayments: item.allowPartialPayments,
+          notes: item.notes,
+          contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
+            .filter(Boolean)
+            .join(" "),
+          service: item.service,
+          followUpSteps: item.followUpSteps,
+        }
+      }),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const payload = CreateContactServiceSchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const [contact, service] = await Promise.all([
+      prisma.contact.findFirst({
+        where: {
+          id: payload.contactId,
+          tenantId,
+        },
+        select: { id: true },
+      }),
+      prismaWithServices.service.findFirst({
+        where: {
+          id: payload.serviceId,
+          tenantId,
+        },
+        select: {
+          id: true,
+          basePriceCents: true,
+          currency: true,
+          allowPartialPayments: true,
+          followUpTemplateSteps: {
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: {
+              title: true,
+              notesTemplate: true,
+              dueDaysFromStart: true,
+              sortOrder: true,
+            },
+          },
+        },
+      }),
+    ])
+
+    if (!contact) {
+      return res.status(400).json({ error: "INVALID_CONTACT" })
+    }
+
+    if (!service) {
+      return res.status(400).json({ error: "INVALID_SERVICE" })
+    }
+
+    const purchasedAt = payload.purchasedAt ? new Date(payload.purchasedAt) : new Date()
+    const startedAt = payload.startedAt ? new Date(payload.startedAt) : new Date()
+    const totalPriceCents = payload.totalPriceCents ?? service.basePriceCents
+
+    const created = await prisma.$transaction(async (tx) => {
+      const prismaTx = tx as any
+
+      const contactService = await prismaTx.contactService.create({
+        data: {
+          tenantId,
+          contactId: payload.contactId,
+          serviceId: payload.serviceId,
+          status: "IN_PROGRESS",
+          startedAt,
+          purchasedAt,
+          totalPriceCents,
+          currency: service.currency,
+          allowPartialPayments: service.allowPartialPayments,
+          notes: payload.notes?.trim() || null,
+        },
+        select: {
+          id: true,
+        },
+      })
+
+      if (payload.initialPaymentCents && payload.initialPaymentCents > 0) {
+        await prismaTx.contactServicePayment.create({
+          data: {
+            tenantId,
+            contactServiceId: contactService.id,
+            amountCents: payload.initialPaymentCents,
+            paidAt: purchasedAt,
+            paymentMethod: null,
+            note: "Initial payment",
+            recordedById: authed.user.id,
+          },
+        })
+      }
+
+      if (service.followUpTemplateSteps.length) {
+        await prismaTx.contactServiceFollowUpStep.createMany({
+          data: service.followUpTemplateSteps.map((step: any) => {
+            const dueAt = new Date(startedAt)
+            dueAt.setDate(dueAt.getDate() + step.dueDaysFromStart)
+
+            return {
+              tenantId,
+              contactServiceId: contactService.id,
+              title: step.title,
+              notesTemplate: step.notesTemplate,
+              dueAt,
+              sortOrder: step.sortOrder,
+            }
+          }),
+        })
+      }
+
+      return contactService
+    })
+
+    return res.status(201).json({
+      ok: true,
+      contactService: created,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post(
+  "/:tenantId/contact-services/:contactServiceId/payments",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+      const payload = CreateContactServicePaymentSchema.parse(req.body)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const contactService = await prismaWithServices.contactService.findFirst({
+        where: {
+          id: contactServiceId,
+          tenantId,
+        },
+        select: {
+          id: true,
+          totalPriceCents: true,
+        },
+      })
+
+      if (!contactService) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const payment = await prismaWithServices.contactServicePayment.create({
+        data: {
+          tenantId,
+          contactServiceId,
+          amountCents: payload.amountCents,
+          paidAt: payload.paidAt ? new Date(payload.paidAt) : new Date(),
+          paymentMethod: payload.paymentMethod?.trim() || null,
+          note: payload.note?.trim() || null,
+          recordedById: authed.user.id,
+        },
+        select: {
+          id: true,
+          amountCents: true,
+          paidAt: true,
+          paymentMethod: true,
+          note: true,
+          recordedById: true,
+        },
+      })
+
+      const payments = await prismaWithServices.contactServicePayment.findMany({
+        where: {
+          tenantId,
+          contactServiceId,
+        },
+        select: {
+          amountCents: true,
+        },
+      })
+
+      const totalPaidCents = payments.reduce(
+        (sum: number, entry: { amountCents: number }) => sum + entry.amountCents,
+        0,
+      )
+
+      if (totalPaidCents >= contactService.totalPriceCents) {
+        await prismaWithServices.contactService.update({
+          where: { id: contactServiceId },
+          data: {
+            status: "COMPLETED",
+            completedAt: new Date(),
+          },
+        })
+      }
+
+      return res.status(201).json({
+        ok: true,
+        payment,
+        summary: {
+          totalPriceCents: contactService.totalPriceCents,
+          paidCents: totalPaidCents,
+          remainingCents: Math.max(0, contactService.totalPriceCents - totalPaidCents),
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.patch(
+  "/:tenantId/contact-services/:contactServiceId/follow-up-steps/:followUpStepId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId, followUpStepId } = TenantFollowUpStepPathSchema.parse(
+        req.params,
+      )
+      const payload = UpdateFollowUpStepSchema.parse(req.body)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      if (payload.assignedToUserId) {
+        const assigneeMembership = await prisma.membership.findUnique({
+          where: {
+            userId_tenantId: {
+              userId: payload.assignedToUserId,
+              tenantId,
+            },
+          },
+          select: {
+            status: true,
+          },
+        })
+
+        if (!assigneeMembership || assigneeMembership.status !== "ACTIVE") {
+          return res.status(400).json({ error: "INVALID_ASSIGNEE" })
+        }
+      }
+
+      const existing = await prismaWithServices.contactServiceFollowUpStep.findFirst({
+        where: {
+          id: followUpStepId,
+          tenantId,
+          contactServiceId,
+        },
+        select: {
+          id: true,
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
+      }
+
+      const updated = await prismaWithServices.contactServiceFollowUpStep.update({
+        where: {
+          id: followUpStepId,
+        },
+        data: {
+          ...(payload.title !== undefined ? { title: payload.title.trim() } : {}),
+          ...(payload.notesTemplate !== undefined
+            ? { notesTemplate: payload.notesTemplate?.trim() || null }
+            : {}),
+          ...(payload.dueAt !== undefined
+            ? { dueAt: payload.dueAt ? new Date(payload.dueAt) : null }
+            : {}),
+          ...(payload.completedAt !== undefined
+            ? { completedAt: payload.completedAt ? new Date(payload.completedAt) : null }
+            : {}),
+          ...(payload.assignedToUserId !== undefined
+            ? { assignedToUserId: payload.assignedToUserId || null }
+            : {}),
+          ...(payload.note !== undefined ? { note: payload.note?.trim() || null } : {}),
+          ...(payload.sortOrder !== undefined ? { sortOrder: payload.sortOrder } : {}),
+        },
+        select: {
+          id: true,
+          title: true,
+          notesTemplate: true,
+          dueAt: true,
+          completedAt: true,
+          assignedToUserId: true,
+          note: true,
+          sortOrder: true,
+        },
+      })
+
+      return res.json({
+        ok: true,
+        followUpStep: updated,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.post(
+  "/:tenantId/contact-services/:contactServiceId/follow-up-steps",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+      const payload = CreateFollowUpStepSchema.parse(req.body)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      if (payload.assignedToUserId) {
+        const assigneeMembership = await prisma.membership.findUnique({
+          where: {
+            userId_tenantId: {
+              userId: payload.assignedToUserId,
+              tenantId,
+            },
+          },
+          select: {
+            status: true,
+          },
+        })
+
+        if (!assigneeMembership || assigneeMembership.status !== "ACTIVE") {
+          return res.status(400).json({ error: "INVALID_ASSIGNEE" })
+        }
+      }
+
+      const contactService = await prismaWithServices.contactService.findFirst({
+        where: {
+          id: contactServiceId,
+          tenantId,
+        },
+        select: {
+          id: true,
+        },
+      })
+
+      if (!contactService) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const maxSortOrder = await prismaWithServices.contactServiceFollowUpStep.findFirst({
+        where: {
+          tenantId,
+          contactServiceId,
+        },
+        orderBy: { sortOrder: "desc" },
+        select: { sortOrder: true },
+      })
+
+      const created = await prismaWithServices.contactServiceFollowUpStep.create({
+        data: {
+          tenantId,
+          contactServiceId,
+          title: payload.title.trim(),
+          notesTemplate: payload.notesTemplate?.trim() || null,
+          dueAt: payload.dueAt ? new Date(payload.dueAt) : null,
+          completedAt: null,
+          assignedToUserId: payload.assignedToUserId || null,
+          note: payload.note?.trim() || null,
+          sortOrder: payload.sortOrder ?? (maxSortOrder?.sortOrder ?? 0) + 10,
+        },
+        select: {
+          id: true,
+          title: true,
+          notesTemplate: true,
+          dueAt: true,
+          completedAt: true,
+          assignedToUserId: true,
+          note: true,
+          sortOrder: true,
+        },
+      })
+
+      return res.status(201).json({
+        ok: true,
+        followUpStep: created,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.delete(
+  "/:tenantId/contact-services/:contactServiceId/follow-up-steps/:followUpStepId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId, followUpStepId } = TenantFollowUpStepPathSchema.parse(
+        req.params,
+      )
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const existing = await prismaWithServices.contactServiceFollowUpStep.findFirst({
+        where: {
+          id: followUpStepId,
+          tenantId,
+          contactServiceId,
+        },
+        select: {
+          id: true,
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
+      }
+
+      await prismaWithServices.contactServiceFollowUpStep.delete({
+        where: { id: followUpStepId },
+      })
+
+      return res.json({ ok: true })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+export default router

@@ -94,6 +94,18 @@ enum ContactCustomFieldType {
   CHECKBOX
 }
 
+enum ServiceProfessionalKind {
+  INTERNAL_USER
+  EXTERNAL
+}
+
+enum ContactServiceStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELED
+}
+
 enum TaskLinkedEntityType {
   SERVICE
   PRODUCT
@@ -120,6 +132,14 @@ enum NotificationType {
   TASK_REMINDER
   TASK_ASSIGNED
   TASK_DUE
+  CUSTOM_FIELD_ACCESS_REQUEST
+  CUSTOM_FIELD_ACCESS_GRANTED
+}
+
+enum ContactCustomFieldAccessRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum ContactRelationshipType {
@@ -170,10 +190,17 @@ model User {
   memberships         Membership[]
   files               File[]
   notifications       Notification[]
+  customFieldAccessRequests ContactCustomFieldAccessRequest[] @relation("CustomFieldAccessRequester")
+  customFieldAccessDecisions ContactCustomFieldAccessRequest[] @relation("CustomFieldAccessDecidedBy")
+  customFieldAccessGrants ContactCustomFieldAccessGrant[] @relation("CustomFieldAccessGrantedUser")
+  issuedCustomFieldAccessGrants ContactCustomFieldAccessGrant[] @relation("CustomFieldAccessGrantedBy")
   taskActivities      TaskActivity[]
   createdTaskReminders TaskReminder[] @relation("TaskReminderCreatedBy")
   reminderAssignments TaskReminder[] @relation("TaskReminderRecipient")
   contactNotes        ContactNote[]
+  serviceProfessionals ServiceProfessional[]
+  recordedServicePayments ContactServicePayment[] @relation("ContactServicePaymentRecordedBy")
+  assignedServiceFollowUps ContactServiceFollowUpStep[] @relation("ContactServiceFollowUpAssignedUser")
   loginChallenges     LoginChallenge[]
   emailVerifications  EmailVerification[]
   passwordResetTokens PasswordResetToken[]
@@ -312,10 +339,19 @@ model Tenant {
   notifications        Notification[]
   taskActivities       TaskActivity[]
   linkedEntities       TenantLinkedEntity[]
+  services             Service[]
+  serviceChecklistItems ServiceChecklistItem[]
+  serviceFollowUpTemplateSteps ServiceFollowUpTemplateStep[]
+  serviceProfessionals ServiceProfessional[]
+  contactServices      ContactService[]
+  contactServicePayments ContactServicePayment[]
+  contactServiceFollowUpSteps ContactServiceFollowUpStep[]
   tenantTags           TenantTag[]
   contactTags          ContactTag[]
   contactCustomFields  ContactCustomField[]
   contactCustomFieldValues ContactCustomFieldValue[]
+  contactCustomFieldAccessRequests ContactCustomFieldAccessRequest[]
+  contactCustomFieldAccessGrants ContactCustomFieldAccessGrant[]
   contactRelationships ContactRelationship[]
   contactNotes         ContactNote[]
   contactNoteAttachments ContactNoteAttachment[]
@@ -340,6 +376,168 @@ model TenantLinkedEntity {
   @@unique([tenantId, id])
   @@unique([tenantId, type, name])
   @@index([tenantId, type, sortOrder])
+}
+
+model Service {
+  id                        String  @id @default(uuid())
+  tenantId                  String
+  name                      String
+  description               String?
+  basePriceCents            Int
+  currency                  String  @default("USD")
+  allowPartialPayments      Boolean @default(false)
+  minimumPartialPaymentCents Int?
+  isActive                  Boolean @default(true)
+  sortOrder                 Int     @default(0)
+
+  tenant             Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  checklistItems     ServiceChecklistItem[]
+  followUpTemplateSteps ServiceFollowUpTemplateStep[]
+  professionals      ServiceProfessional[]
+  contactServices    ContactService[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, isActive, sortOrder])
+}
+
+model ServiceChecklistItem {
+  id          String  @id @default(uuid())
+  tenantId    String
+  serviceId   String
+  label       String
+  isRequired  Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, sortOrder])
+}
+
+model ServiceFollowUpTemplateStep {
+  id               String @id @default(uuid())
+  tenantId         String
+  serviceId        String
+  title            String
+  notesTemplate    String?
+  dueDaysFromStart Int    @default(0)
+  sortOrder        Int    @default(0)
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, sortOrder])
+}
+
+model ServiceProfessional {
+  id                       String                 @id @default(uuid())
+  tenantId                 String
+  serviceId                String
+  kind                     ServiceProfessionalKind
+  userId                   String?
+  externalProfessionalName String?
+  externalContact          String?
+  notes                    String?
+  sortOrder                Int                    @default(0)
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, sortOrder])
+  @@index([tenantId, userId])
+}
+
+model ContactService {
+  id                   String               @id @default(uuid())
+  tenantId             String
+  contactId            String
+  serviceId            String
+  status               ContactServiceStatus @default(PENDING)
+  startedAt            DateTime?
+  purchasedAt          DateTime?
+  completedAt          DateTime?
+  canceledAt           DateTime?
+  totalPriceCents      Int
+  currency             String               @default("USD")
+  allowPartialPayments Boolean              @default(false)
+  notes                String?
+
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact        Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  service        Service   @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  payments       ContactServicePayment[]
+  followUpSteps  ContactServiceFollowUpStep[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactId, createdAt])
+  @@index([tenantId, serviceId, createdAt])
+  @@index([tenantId, status, createdAt])
+}
+
+model ContactServicePayment {
+  id               String   @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  amountCents      Int
+  paidAt           DateTime
+  paymentMethod    String?
+  note             String?
+  recordedById     String?
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  recordedBy     User?          @relation("ContactServicePaymentRecordedBy", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, paidAt])
+}
+
+model ContactServiceFollowUpStep {
+  id                String   @id @default(uuid())
+  tenantId          String
+  contactServiceId  String
+  title             String
+  notesTemplate     String?
+  dueAt             DateTime?
+  completedAt       DateTime?
+  assignedToUserId  String?
+  note              String?
+  sortOrder         Int      @default(0)
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  assignedTo     User?          @relation("ContactServiceFollowUpAssignedUser", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, sortOrder])
+  @@index([tenantId, assignedToUserId, dueAt])
 }
 
 model EmailVerification {
@@ -469,12 +667,15 @@ model ContactCustomField {
   fieldType   ContactCustomFieldType
   isRequired  Boolean                @default(false)
   isEncrypted Boolean                @default(false)
+  isSensitive Boolean                @default(false)
   isActive    Boolean                @default(true)
   options     Json?
   sortOrder   Int                    @default(0)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   values ContactCustomFieldValue[]
+  accessRequests ContactCustomFieldAccessRequest[]
+  accessGrants ContactCustomFieldAccessGrant[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -482,6 +683,52 @@ model ContactCustomField {
   @@unique([tenantId, id])
   @@unique([tenantId, key])
   @@index([tenantId, sortOrder])
+}
+
+model ContactCustomFieldAccessRequest {
+  id            String                               @id @default(uuid())
+  tenantId      String
+  fieldId       String
+  requesterUserId String
+  status        ContactCustomFieldAccessRequestStatus @default(PENDING)
+  decidedByUserId String?
+  decidedAt     DateTime?
+  decisionNote  String?
+
+  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  field       ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  requester   User               @relation("CustomFieldAccessRequester", fields: [requesterUserId], references: [id], onDelete: Cascade)
+  decidedBy   User?              @relation("CustomFieldAccessDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, fieldId, requesterUserId, status])
+  @@index([tenantId, requesterUserId, status, createdAt])
+}
+
+model ContactCustomFieldAccessGrant {
+  id          String @id @default(uuid())
+  tenantId    String
+  fieldId     String
+  userId      String
+  grantedByUserId String
+  expiresAt   DateTime?
+  remainingReads Int?
+
+  tenant     Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  field      ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  user       User               @relation("CustomFieldAccessGrantedUser", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy  User               @relation("CustomFieldAccessGrantedBy", fields: [grantedByUserId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, fieldId, userId])
+  @@index([tenantId, userId, createdAt])
+  @@index([tenantId, fieldId, createdAt])
+  @@index([tenantId, userId, expiresAt])
 }
 
 model TenantTag {
@@ -679,6 +926,7 @@ model Contact {
   incomingRelationships     ContactRelationship[] @relation("ContactRelationshipTarget")
   notes                     ContactNote[]
   tasks                     Task[]
+  serviceProcesses          ContactService[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -19,7 +19,13 @@ export default async function ContactOverviewPage({
   params: Promise<{ tenantSlug: string; contactId: string }>
 }) {
   const { tenantSlug, contactId } = await params
-  const { tenantId, contact } = await getContactDetailsContext(tenantSlug, contactId)
+  const {
+    tenantId,
+    contact,
+    currentUserId,
+    membershipSecurityLevel,
+    canApproveSensitiveFieldAccess,
+  } = await getContactDetailsContext(tenantSlug, contactId)
   const cookie = (await headers()).get("cookie") ?? ""
 
   let statusOptions: Array<{ label: string; value: string }> = []
@@ -73,6 +79,9 @@ export default async function ContactOverviewPage({
       <ContactOverviewForm
         tenantId={tenantId}
         contactId={contactId}
+        currentUserId={currentUserId}
+        membershipSecurityLevel={membershipSecurityLevel}
+        canApproveSensitiveFieldAccess={canApproveSensitiveFieldAccess}
         initialContact={contact}
         statusOptions={statusOptions}
       />

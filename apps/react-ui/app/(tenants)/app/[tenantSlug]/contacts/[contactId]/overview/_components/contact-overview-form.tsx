@@ -44,6 +44,9 @@ type StatusOption = {
 type ContactOverviewFormProps = {
   tenantId: string
   contactId: string
+  currentUserId: string
+  membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
+  canApproveSensitiveFieldAccess: boolean
   initialContact: {
     firstName: string
     middleName: string | null
@@ -79,9 +82,26 @@ type ContactOverviewFormProps = {
         | "CHECKBOX"
       isRequired: boolean
       isEncrypted: boolean
+      isSensitive: boolean
       options: string[]
       sortOrder: number
       value: unknown
+      isValueRestricted: boolean
+      canRequestAccess: boolean
+      hasAccessGrant: boolean
+      pendingAccessRequest: {
+        id: string
+        status: "PENDING"
+        createdAt: string
+      } | null
+      pendingApprovals: Array<{
+        id: string
+        status: "PENDING"
+        createdAt: string
+        requesterUserId: string
+        requesterName: string
+        requesterEmail: string
+      }>
     }>
   }
   statusOptions: StatusOption[]
@@ -89,6 +109,19 @@ type ContactOverviewFormProps = {
 
 type CustomField = ContactOverviewFormProps["initialContact"]["customFields"][number]
 type FieldErrors = Partial<Record<string, string>>
+
+const SENSITIVE_ACCESS_GRANT_OPTIONS = [
+  { value: "ONCE", label: "One time" },
+  { value: "15M", label: "15 minutes" },
+  { value: "30M", label: "30 minutes" },
+  { value: "1H", label: "1 hour" },
+  { value: "2H", label: "2 hours" },
+  { value: "4H", label: "4 hours" },
+  { value: "8H", label: "8 hours" },
+  { value: "12H", label: "12 hours" },
+] as const
+
+type SensitiveAccessGrantOption = (typeof SENSITIVE_ACCESS_GRANT_OPTIONS)[number]["value"]
 
 const optionalStringSchema = z.string().trim().max(255)
 const optionalPhoneSchema = z
@@ -411,12 +444,20 @@ function areValuesEqual(left: unknown, right: unknown) {
 export function ContactOverviewForm({
   tenantId,
   contactId,
+  currentUserId,
+  membershipSecurityLevel,
+  canApproveSensitiveFieldAccess,
   initialContact,
   statusOptions,
 }: ContactOverviewFormProps) {
   const router = useRouter()
   const initialDateOfBirth = parseStoredDate(initialContact.dateOfBirth)
   const [isSaving, setIsSaving] = useState(false)
+  const [requestingFieldId, setRequestingFieldId] = useState<string | null>(null)
+  const [resolvingRequestId, setResolvingRequestId] = useState<string | null>(null)
+  const [grantOptionByRequestId, setGrantOptionByRequestId] = useState<
+    Record<string, SensitiveAccessGrantOption>
+  >({})
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [firstName, setFirstName] = useState(initialContact.firstName)
   const [middleName, setMiddleName] = useState(initialContact.middleName ?? "")
@@ -457,6 +498,13 @@ export function ContactOverviewForm({
       ),
   )
   const parsedDateOfBirthInput = parseDateInput(dateOfBirthInput)
+  const editableCustomFields = useMemo(
+    () =>
+      initialContact.customFields.filter(
+        (field) => !(field.isSensitive && field.isValueRestricted),
+      ),
+    [initialContact.customFields],
+  )
   const isDirty = useMemo(() => {
     const initialBaseState = {
       firstName: initialContact.firstName,
@@ -564,7 +612,7 @@ export function ContactOverviewForm({
       }
     }
 
-    for (const field of initialContact.customFields) {
+    for (const field of editableCustomFields) {
       const error = validateCustomField(field, customFieldValues[field.id])
       if (error) {
         nextErrors[`customFieldValues.${field.id}`] = error
@@ -603,7 +651,7 @@ export function ContactOverviewForm({
         country: country.trim() || null,
         statusConfigId:
           statusConfigId === "__unassigned__" ? null : statusConfigId,
-        customFieldValues: initialContact.customFields.map((field) => ({
+        customFieldValues: editableCustomFields.map((field) => ({
           fieldId: field.id,
           value: normalizeCustomFieldSubmissionValue(
             field,
@@ -644,6 +692,70 @@ export function ContactOverviewForm({
       }
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  const handleRequestSensitiveFieldAccess = async (fieldId: string) => {
+    setRequestingFieldId(fieldId)
+    try {
+      await api.post(`/api/contacts/${tenantId}/custom-field-access-requests`, {
+        fieldId,
+      })
+      toast.success("Access request sent.")
+      router.refresh()
+    } catch (error) {
+      if (isAxiosError(error)) {
+        const backendError = error.response?.data?.error
+        if (backendError === "CUSTOM_FIELD_ACCESS_REQUEST_ALREADY_PENDING") {
+          toast.info("An access request is already pending.")
+        } else if (backendError === "CUSTOM_FIELD_ACCESS_ALREADY_GRANTED") {
+          toast.info("Access is already granted.")
+        } else {
+          toast.error("Could not submit access request.")
+        }
+      } else {
+        toast.error("Could not submit access request.")
+      }
+    } finally {
+      setRequestingFieldId(null)
+    }
+  }
+
+  const handleResolveSensitiveFieldAccess = async (
+    requestId: string,
+    action: "approve" | "reject",
+  ) => {
+    setResolvingRequestId(requestId)
+    try {
+      const selectedOption = grantOptionByRequestId[requestId] ?? "ONCE"
+      await api.post(
+        `/api/contacts/${tenantId}/custom-field-access-requests/${requestId}/${action}`,
+        action === "approve" ? resolveGrantPayload(selectedOption) : {},
+      )
+      toast.success(action === "approve" ? "Access approved." : "Access request rejected.")
+      router.refresh()
+    } catch {
+      toast.error("Could not update access request.")
+    } finally {
+      setResolvingRequestId(null)
+    }
+  }
+
+  const resolveGrantPayload = (option: SensitiveAccessGrantOption) => {
+    if (option === "ONCE") {
+      return { grantMode: "ONCE" as const }
+    }
+
+    if (option.endsWith("M")) {
+      return {
+        grantMode: "MINUTES" as const,
+        durationValue: Number(option.replace("M", "")),
+      }
+    }
+
+    return {
+      grantMode: "HOURS" as const,
+      durationValue: Number(option.replace("H", "")),
     }
   }
 
@@ -901,6 +1013,9 @@ export function ContactOverviewForm({
                     fieldErrors[`customFieldValues.${field.id}`] ?? fieldErrors[field.id]
                   const isFullWidth =
                     field.fieldType === "TEXTAREA" || field.fieldType === "MULTI_SELECT"
+                  const approvalsForOthers = field.pendingApprovals.filter(
+                    (request) => request.requesterUserId !== currentUserId,
+                  )
 
                   return (
                     <div
@@ -917,7 +1032,125 @@ export function ContactOverviewForm({
                         description={field.description}
                       />
 
-                      {field.fieldType === "TEXT" ? (
+                      {canApproveSensitiveFieldAccess && approvalsForOthers.length > 0 ? (
+                        <div className="rounded-md border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-900">
+                          <p className="mb-2 font-medium">
+                            Pending sensitive-access requests
+                          </p>
+                          <div className="space-y-2">
+                            {approvalsForOthers.map((request) => (
+                              <div
+                                key={request.id}
+                                className="rounded-md border border-indigo-200 bg-white p-2.5"
+                              >
+                                <p className="font-medium text-slate-900">{request.requesterName}</p>
+                                <p className="text-slate-600">{request.requesterEmail}</p>
+                                <div className="mt-2">
+                                  <Select
+                                    value={grantOptionByRequestId[request.id] ?? "ONCE"}
+                                    onValueChange={(nextValue) => {
+                                      const allowed = SENSITIVE_ACCESS_GRANT_OPTIONS.some(
+                                        (item) => item.value === nextValue,
+                                      )
+                                      if (!allowed) return
+                                      setGrantOptionByRequestId((prev) => ({
+                                        ...prev,
+                                        [request.id]: nextValue as SensitiveAccessGrantOption,
+                                      }))
+                                    }}
+                                  >
+                                    <SelectTrigger className="h-8 cursor-pointer text-xs">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {SENSITIVE_ACCESS_GRANT_OPTIONS.map((option) => (
+                                        <SelectItem key={option.value} value={option.value}>
+                                          {option.label}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div className="mt-2 flex items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    className="h-7 cursor-pointer bg-emerald-600 px-2.5 text-xs text-white hover:bg-emerald-700"
+                                    disabled={resolvingRequestId === request.id}
+                                    onClick={() =>
+                                      void handleResolveSensitiveFieldAccess(
+                                        request.id,
+                                        "approve",
+                                      )
+                                    }
+                                  >
+                                    Approve
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 cursor-pointer px-2.5 text-xs"
+                                    disabled={resolvingRequestId === request.id}
+                                    onClick={() =>
+                                      void handleResolveSensitiveFieldAccess(
+                                        request.id,
+                                        "reject",
+                                      )
+                                    }
+                                  >
+                                    Reject
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {field.isSensitive && field.isValueRestricted ? (
+                        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="space-y-1">
+                              <p className="font-medium">Restricted sensitive field</p>
+                              <p className="text-xs leading-5 text-amber-800">
+                                This value is hidden for your security level.
+                                {membershipSecurityLevel === "LOW"
+                                  ? " Ask a tenant admin to grant you higher security."
+                                  : " Request access to view and edit this value."}
+                              </p>
+                            </div>
+                            <Lock className="h-4 w-4 shrink-0 text-amber-700" />
+                          </div>
+
+                          {field.pendingAccessRequest ? (
+                            <p className="mt-2 text-xs text-amber-800">
+                              Request pending since{" "}
+                              {new Intl.DateTimeFormat("en-US", {
+                                month: "short",
+                                day: "2-digit",
+                                year: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              }).format(new Date(field.pendingAccessRequest.createdAt))}
+                              .
+                            </p>
+                          ) : null}
+
+                          {field.canRequestAccess && !field.pendingAccessRequest ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="mt-3 cursor-pointer bg-amber-600 text-white hover:bg-amber-700"
+                              disabled={requestingFieldId === field.id}
+                              onClick={() => void handleRequestSensitiveFieldAccess(field.id)}
+                            >
+                              {requestingFieldId === field.id ? "Requesting..." : "Request Access"}
+                            </Button>
+                          ) : null}
+
+                        </div>
+                      ) : field.fieldType === "TEXT" ? (
                         <EncryptedFieldShell
                           encrypted={field.isEncrypted}
                           className="w-full"

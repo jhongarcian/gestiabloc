@@ -4,7 +4,12 @@ export type RealtimeNotificationPayload = {
   id: string
   tenantId: string
   userId: string
-  type: "TASK_REMINDER" | "TASK_ASSIGNED" | "TASK_DUE"
+  type:
+    | "TASK_REMINDER"
+    | "TASK_ASSIGNED"
+    | "TASK_DUE"
+    | "CUSTOM_FIELD_ACCESS_REQUEST"
+    | "CUSTOM_FIELD_ACCESS_GRANTED"
   title: string
   body: string | null
   readAt: string | null

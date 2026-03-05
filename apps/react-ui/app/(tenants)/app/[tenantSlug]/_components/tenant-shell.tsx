@@ -57,7 +57,12 @@ type TenantShellProps = {
 
 type NotificationItem = {
   id: string
-  type: "TASK_REMINDER" | "TASK_ASSIGNED" | "TASK_DUE"
+  type:
+    | "TASK_REMINDER"
+    | "TASK_ASSIGNED"
+    | "TASK_DUE"
+    | "CUSTOM_FIELD_ACCESS_REQUEST"
+    | "CUSTOM_FIELD_ACCESS_GRANTED"
   title: string
   body: string | null
   readAt: string | null
@@ -161,6 +166,18 @@ const notificationMeta = (
         label: "Due now",
         chipClassName:
           "border border-amber-200/80 bg-amber-100/80 text-amber-700",
+      }
+    case "CUSTOM_FIELD_ACCESS_REQUEST":
+      return {
+        label: "Access request",
+        chipClassName:
+          "border border-indigo-200/80 bg-indigo-100/80 text-indigo-700",
+      }
+    case "CUSTOM_FIELD_ACCESS_GRANTED":
+      return {
+        label: "Access granted",
+        chipClassName:
+          "border border-emerald-200/80 bg-emerald-100/80 text-emerald-700",
       }
     default:
       return {

@@ -54,9 +54,26 @@ export type ContactDetailsResponse = {
         | "CHECKBOX"
       isRequired: boolean
       isEncrypted: boolean
+      isSensitive: boolean
       options: string[]
       sortOrder: number
       value: unknown
+      isValueRestricted: boolean
+      canRequestAccess: boolean
+      hasAccessGrant: boolean
+      pendingAccessRequest: {
+        id: string
+        status: "PENDING"
+        createdAt: string
+      } | null
+      pendingApprovals: Array<{
+        id: string
+        status: "PENDING"
+        createdAt: string
+        requesterUserId: string
+        requesterName: string
+        requesterEmail: string
+      }>
     }>
     relationships: Array<{
       id: string
@@ -126,6 +143,10 @@ export const getContactDetailsContext = cache(
       return {
         tenantId: membership.tenant.id,
         tenantTimezone,
+        currentUserId: membership.userId,
+        membershipSecurityLevel: membership.securityLevel,
+        canApproveSensitiveFieldAccess:
+          membership.role === "TENANT_ADMIN" || membership.securityLevel === "MAX",
         canManageContactTags:
           membership.role === "TENANT_ADMIN" || membership.securityLevel !== "LOW",
         contact: data.contact,

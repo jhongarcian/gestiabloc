@@ -177,6 +177,103 @@ const UpdateTenantTagSchema = z.object({
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
 });
 
+const ServicesPaginationQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z
+    .coerce
+    .number()
+    .int()
+    .refine((value) => value === 10 || value === 25, {
+      message: "pageSize must be 10 or 25",
+    })
+    .default(10),
+  search: z.string().trim().max(120).optional().default(""),
+  isActive: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => {
+      if (value === "true") return true;
+      if (value === "false") return false;
+      return undefined;
+    }),
+});
+const ServiceOptionsQuerySchema = z.object({
+  includeInactive: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => value === "true"),
+});
+
+const ServiceProfessionalKindSchema = z.enum(["INTERNAL_USER", "EXTERNAL"]);
+
+const ServiceChecklistItemInputSchema = z.object({
+  label: z.string().trim().min(1).max(200),
+  isRequired: z.boolean().default(true),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+});
+
+const ServiceFollowUpTemplateStepInputSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  notesTemplate: optionalStringField(1000),
+  dueDaysFromStart: z.coerce.number().int().min(0).max(3650).default(0),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+});
+
+const ServiceProfessionalInputSchema = z.object({
+  kind: ServiceProfessionalKindSchema,
+  userId: optionalStringField(120),
+  externalProfessionalName: optionalStringField(160),
+  externalContact: optionalStringField(160),
+  notes: optionalStringField(500),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+});
+
+const CreateServiceSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: optionalStringField(2000),
+  basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000),
+  currency: z.string().trim().min(3).max(3).default("USD"),
+  allowPartialPayments: z.boolean().default(false),
+  minimumPartialPaymentCents: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(1_000_000_000)
+    .nullable()
+    .optional(),
+  isActive: z.boolean().default(true),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+  checklistItems: z.array(ServiceChecklistItemInputSchema).max(100).default([]),
+  followUpTemplateSteps: z
+    .array(ServiceFollowUpTemplateStepInputSchema)
+    .max(100)
+    .default([]),
+  professionals: z.array(ServiceProfessionalInputSchema).max(100).default([]),
+});
+
+const UpdateServiceSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  description: optionalStringField(2000),
+  basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+  currency: z.string().trim().min(3).max(3).optional(),
+  allowPartialPayments: z.boolean().optional(),
+  minimumPartialPaymentCents: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(1_000_000_000)
+    .nullable()
+    .optional(),
+  isActive: z.boolean().optional(),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+  checklistItems: z.array(ServiceChecklistItemInputSchema).max(100).optional(),
+  followUpTemplateSteps: z
+    .array(ServiceFollowUpTemplateStepInputSchema)
+    .max(100)
+    .optional(),
+  professionals: z.array(ServiceProfessionalInputSchema).max(100).optional(),
+});
+
 const ContactCustomFieldTypeSchema = z.enum([
   "TEXT",
   "NUMBER",
@@ -201,6 +298,7 @@ const CreateContactCustomFieldSchema = z.object({
   fieldType: ContactCustomFieldTypeSchema,
   isRequired: z.boolean().default(false),
   isEncrypted: z.boolean().default(false),
+  isSensitive: z.boolean().default(false),
   isActive: z.boolean().default(true),
   options: CustomFieldOptionsSchema,
 });
@@ -211,6 +309,7 @@ const UpdateContactCustomFieldSchema = z.object({
   fieldType: ContactCustomFieldTypeSchema.optional(),
   isRequired: z.boolean().optional(),
   isEncrypted: z.boolean().optional(),
+  isSensitive: z.boolean().optional(),
   isActive: z.boolean().optional(),
   options: CustomFieldOptionsSchema,
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
@@ -442,6 +541,78 @@ async function findTenantTagByName(tenantId: string, name: string, excludeId?: s
       id: true,
     },
   });
+}
+
+async function findServiceByName(
+  tenantId: string,
+  name: string,
+  excludeId?: string,
+) {
+  return prismaWithContacts.service.findFirst({
+    where: {
+      tenantId,
+      name: {
+        equals: name.trim(),
+        mode: "insensitive",
+      },
+      ...(excludeId ? { NOT: { id: excludeId } } : {}),
+    },
+    select: {
+      id: true,
+    },
+  });
+}
+
+function normalizeServicePayload(
+  payload: z.infer<typeof CreateServiceSchema> | z.infer<typeof UpdateServiceSchema>,
+) {
+  const normalized = {
+    ...payload,
+    currency: payload.currency?.trim().toUpperCase(),
+  } as typeof payload & { currency?: string };
+
+  if (normalized.allowPartialPayments === false) {
+    normalized.minimumPartialPaymentCents = null;
+  }
+
+  return normalized;
+}
+
+async function validateServiceProfessionalsForTenant(
+  tenantId: string,
+  professionals: Array<z.infer<typeof ServiceProfessionalInputSchema>>,
+) {
+  const internalUserIds = [
+    ...new Set(
+      professionals
+        .filter((item) => item.kind === "INTERNAL_USER")
+        .map((item) => item.userId)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+
+  if (!internalUserIds.length) {
+    return { ok: true as const };
+  }
+
+  const memberships = await prisma.membership.findMany({
+    where: {
+      tenantId,
+      status: "ACTIVE",
+      userId: { in: internalUserIds },
+    },
+    select: {
+      userId: true,
+    },
+  });
+
+  const activeUserIds = new Set(memberships.map((item) => item.userId));
+  const invalidUserId = internalUserIds.find((userId) => !activeUserIds.has(userId));
+  if (invalidUserId) {
+    return { ok: false as const, error: "INVALID_SERVICE_PROFESSIONAL_USER" as const };
+  }
+
+  return { ok: true as const };
 }
 
 const readMiddlewares = [
@@ -1554,6 +1725,544 @@ router.delete(
   },
 );
 
+router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const { page, pageSize, search, isActive } = ServicesPaginationQuerySchema.parse(req.query);
+    const skip = (page - 1) * pageSize;
+
+    const where = {
+      tenantId,
+      ...(typeof isActive === "boolean" ? { isActive } : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: "insensitive" as const } },
+              { description: { contains: search, mode: "insensitive" as const } },
+            ],
+          }
+        : {}),
+    };
+
+    const [total, services] = await prisma.$transaction([
+      prismaWithContacts.service.count({ where }),
+      prismaWithContacts.service.findMany({
+        where,
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          basePriceCents: true,
+          currency: true,
+          allowPartialPayments: true,
+          minimumPartialPaymentCents: true,
+          isActive: true,
+          sortOrder: true,
+          checklistItems: {
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: {
+              id: true,
+              label: true,
+              isRequired: true,
+              sortOrder: true,
+            },
+          },
+          followUpTemplateSteps: {
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: {
+              id: true,
+              title: true,
+              notesTemplate: true,
+              dueDaysFromStart: true,
+              sortOrder: true,
+            },
+          },
+          professionals: {
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: {
+              id: true,
+              kind: true,
+              userId: true,
+              externalProfessionalName: true,
+              externalContact: true,
+              notes: true,
+              sortOrder: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+    return res.json({
+      ok: true,
+      items: services,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const { includeInactive } = ServiceOptionsQuerySchema.parse(req.query);
+
+    const items = await prismaWithContacts.service.findMany({
+      where: {
+        tenantId,
+        ...(includeInactive ? {} : { isActive: true }),
+      },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        sortOrder: true,
+        checklistItems: {
+          select: { id: true },
+        },
+        followUpTemplateSteps: {
+          select: { id: true },
+        },
+        professionals: {
+          select: { id: true },
+        },
+      },
+    });
+
+    return res.json({
+      ok: true,
+      items: items.map((item: any) => ({
+        id: item.id,
+        name: item.name,
+        isActive: item.isActive,
+        sortOrder: item.sortOrder,
+        checklistCount: item.checklistItems.length,
+        followUpTemplateStepsCount: item.followUpTemplateSteps.length,
+        professionalsCount: item.professionals.length,
+      })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+
+    const service = await prismaWithContacts.service.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+        name: true,
+        description: true,
+        basePriceCents: true,
+        currency: true,
+        allowPartialPayments: true,
+        minimumPartialPaymentCents: true,
+        isActive: true,
+        sortOrder: true,
+        checklistItems: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            label: true,
+            isRequired: true,
+            sortOrder: true,
+          },
+        },
+        followUpTemplateSteps: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            title: true,
+            notesTemplate: true,
+            dueDaysFromStart: true,
+            sortOrder: true,
+          },
+        },
+        professionals: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            kind: true,
+            userId: true,
+            externalProfessionalName: true,
+            externalContact: true,
+            notes: true,
+            sortOrder: true,
+            user: {
+              select: {
+                name: true,
+                email: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!service || service.tenantId !== tenantId) {
+      return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
+    }
+
+    return res.json({
+      ok: true,
+      service: {
+        ...service,
+        configStatus: {
+          checklistComplete: service.checklistItems.length > 0,
+          followUpsComplete: service.followUpTemplateSteps.length > 0,
+          professionalsComplete: service.professionals.length > 0,
+          isComplete:
+            service.checklistItems.length > 0 &&
+            service.followUpTemplateSteps.length > 0 &&
+            service.professionals.length > 0,
+        },
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = CreateServiceSchema.parse(req.body);
+    const normalizedPayload = {
+      ...payload,
+      currency: payload.currency.trim().toUpperCase(),
+      minimumPartialPaymentCents: payload.allowPartialPayments
+        ? payload.minimumPartialPaymentCents ?? null
+        : null,
+    };
+    const normalizedName = normalizedPayload.name.trim();
+
+    const duplicate = await findServiceByName(tenantId, normalizedName);
+    if (duplicate) {
+      return res.status(409).json({ error: "SERVICE_NAME_ALREADY_EXISTS" });
+    }
+
+    const professionalValidation = await validateServiceProfessionalsForTenant(
+      tenantId,
+      payload.professionals,
+    );
+    if (!professionalValidation.ok) {
+      return res.status(400).json({ error: professionalValidation.error });
+    }
+
+    if (
+      payload.allowPartialPayments &&
+      normalizedPayload.minimumPartialPaymentCents !== null &&
+      normalizedPayload.minimumPartialPaymentCents > payload.basePriceCents
+    ) {
+      return res.status(400).json({ error: "MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE" });
+    }
+
+    const maxSortOrderRecord = await prismaWithContacts.service.findFirst({
+      where: { tenantId },
+      orderBy: { sortOrder: "desc" },
+      select: { sortOrder: true },
+    });
+    const nextSortOrder = (maxSortOrderRecord?.sortOrder ?? 0) + 10;
+
+    const created = await prismaWithContacts.service.create({
+      data: {
+        tenantId,
+        name: normalizedName,
+        description: normalizedPayload.description ?? null,
+        basePriceCents: payload.basePriceCents,
+        currency: normalizedPayload.currency || "USD",
+        allowPartialPayments: payload.allowPartialPayments,
+        minimumPartialPaymentCents: normalizedPayload.minimumPartialPaymentCents,
+        isActive: payload.isActive,
+        sortOrder: payload.sortOrder ?? nextSortOrder,
+        checklistItems: {
+          create: payload.checklistItems.map((item, index) => ({
+            label: item.label.trim(),
+            isRequired: item.isRequired,
+            sortOrder: item.sortOrder ?? (index + 1) * 10,
+            tenantId,
+          })),
+        },
+        followUpTemplateSteps: {
+          create: payload.followUpTemplateSteps.map((step, index) => ({
+            title: step.title.trim(),
+            notesTemplate: step.notesTemplate ?? null,
+            dueDaysFromStart: step.dueDaysFromStart,
+            sortOrder: step.sortOrder ?? (index + 1) * 10,
+            tenantId,
+          })),
+        },
+        professionals: {
+          create: payload.professionals.map((professional, index) => ({
+            kind: professional.kind,
+            userId:
+              professional.kind === "INTERNAL_USER"
+                ? professional.userId ?? null
+                : null,
+            externalProfessionalName:
+              professional.kind === "EXTERNAL"
+                ? professional.externalProfessionalName ?? null
+                : null,
+            externalContact:
+              professional.kind === "EXTERNAL"
+                ? professional.externalContact ?? null
+                : null,
+            notes: professional.notes ?? null,
+            sortOrder: professional.sortOrder ?? (index + 1) * 10,
+            tenantId,
+          })),
+        },
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        basePriceCents: true,
+        currency: true,
+        allowPartialPayments: true,
+        minimumPartialPaymentCents: true,
+        isActive: true,
+        sortOrder: true,
+      },
+    });
+
+    return res.status(201).json({ ok: true, service: created });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+    const payload = normalizeServicePayload(UpdateServiceSchema.parse(req.body));
+
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({ error: "NO_CHANGES_PROVIDED" });
+    }
+
+    const existing = await prismaWithContacts.service.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+        basePriceCents: true,
+        allowPartialPayments: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId) {
+      return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
+    }
+
+    if (payload.name) {
+      const duplicate = await findServiceByName(tenantId, payload.name, recordId);
+      if (duplicate) {
+        return res.status(409).json({ error: "SERVICE_NAME_ALREADY_EXISTS" });
+      }
+    }
+
+    if (payload.professionals) {
+      const professionalValidation = await validateServiceProfessionalsForTenant(
+        tenantId,
+        payload.professionals,
+      );
+      if (!professionalValidation.ok) {
+        return res.status(400).json({ error: professionalValidation.error });
+      }
+    }
+
+    const nextBasePriceCents = payload.basePriceCents ?? existing.basePriceCents;
+    const nextAllowPartialPayments = payload.allowPartialPayments ?? existing.allowPartialPayments;
+    const nextMinimumPartial =
+      payload.minimumPartialPaymentCents === undefined
+        ? undefined
+        : payload.minimumPartialPaymentCents;
+
+    if (
+      nextAllowPartialPayments &&
+      nextMinimumPartial !== undefined &&
+      nextMinimumPartial !== null &&
+      nextMinimumPartial > nextBasePriceCents
+    ) {
+      return res.status(400).json({ error: "MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE" });
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const prismaTx = tx as any;
+
+      if (payload.checklistItems) {
+        await prismaTx.serviceChecklistItem.deleteMany({
+          where: {
+            tenantId,
+            serviceId: recordId,
+          },
+        });
+      }
+
+      if (payload.followUpTemplateSteps) {
+        await prismaTx.serviceFollowUpTemplateStep.deleteMany({
+          where: {
+            tenantId,
+            serviceId: recordId,
+          },
+        });
+      }
+
+      if (payload.professionals) {
+        await prismaTx.serviceProfessional.deleteMany({
+          where: {
+            tenantId,
+            serviceId: recordId,
+          },
+        });
+      }
+
+      return prismaTx.service.update({
+        where: { id: recordId },
+        data: {
+          ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
+          ...(payload.description !== undefined ? { description: payload.description ?? null } : {}),
+          ...(payload.basePriceCents !== undefined
+            ? { basePriceCents: payload.basePriceCents }
+            : {}),
+          ...(payload.currency !== undefined ? { currency: payload.currency } : {}),
+          ...(payload.allowPartialPayments !== undefined
+            ? { allowPartialPayments: payload.allowPartialPayments }
+            : {}),
+          ...(payload.minimumPartialPaymentCents !== undefined
+            ? {
+                minimumPartialPaymentCents: nextAllowPartialPayments
+                  ? payload.minimumPartialPaymentCents
+                  : null,
+              }
+            : {}),
+          ...(payload.isActive !== undefined ? { isActive: payload.isActive } : {}),
+          ...(payload.sortOrder !== undefined ? { sortOrder: payload.sortOrder } : {}),
+          ...(payload.checklistItems
+            ? {
+                checklistItems: {
+                  create: payload.checklistItems.map((item, index) => ({
+                    label: item.label.trim(),
+                    isRequired: item.isRequired,
+                    sortOrder: item.sortOrder ?? (index + 1) * 10,
+                    tenantId,
+                  })),
+                },
+              }
+            : {}),
+          ...(payload.followUpTemplateSteps
+            ? {
+                followUpTemplateSteps: {
+                  create: payload.followUpTemplateSteps.map((step, index) => ({
+                    title: step.title.trim(),
+                    notesTemplate: step.notesTemplate ?? null,
+                    dueDaysFromStart: step.dueDaysFromStart,
+                    sortOrder: step.sortOrder ?? (index + 1) * 10,
+                    tenantId,
+                  })),
+                },
+              }
+            : {}),
+          ...(payload.professionals
+            ? {
+                professionals: {
+                  create: payload.professionals.map((professional, index) => ({
+                    kind: professional.kind,
+                    userId:
+                      professional.kind === "INTERNAL_USER"
+                        ? professional.userId ?? null
+                        : null,
+                    externalProfessionalName:
+                      professional.kind === "EXTERNAL"
+                        ? professional.externalProfessionalName ?? null
+                        : null,
+                    externalContact:
+                      professional.kind === "EXTERNAL"
+                        ? professional.externalContact ?? null
+                        : null,
+                    notes: professional.notes ?? null,
+                    sortOrder: professional.sortOrder ?? (index + 1) * 10,
+                    tenantId,
+                  })),
+                },
+              }
+            : {}),
+        },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          basePriceCents: true,
+          currency: true,
+          allowPartialPayments: true,
+          minimumPartialPaymentCents: true,
+          isActive: true,
+          sortOrder: true,
+        },
+      });
+    });
+
+    return res.json({ ok: true, service: updated });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+
+    const existing = await prismaWithContacts.service.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId) {
+      return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
+    }
+
+    await prismaWithContacts.service.delete({
+      where: { id: recordId },
+    });
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get("/:tenantId/tags", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
@@ -1733,6 +2442,7 @@ router.get("/:tenantId/custom-fields", ...readMiddlewares, async (req, res, next
         fieldType: true,
         isRequired: true,
         isEncrypted: true,
+        isSensitive: true,
         isActive: true,
         options: true,
         sortOrder: true,
@@ -1785,6 +2495,7 @@ router.post("/:tenantId/custom-fields", ...writeMiddlewares, async (req, res, ne
         fieldType: payload.fieldType,
         isRequired: payload.isRequired,
         isEncrypted: payload.isEncrypted,
+        isSensitive: payload.isSensitive,
         isActive: payload.isActive,
         options: optionValidation.options,
         sortOrder: nextSortOrder,
@@ -1797,6 +2508,7 @@ router.post("/:tenantId/custom-fields", ...writeMiddlewares, async (req, res, ne
         fieldType: true,
         isRequired: true,
         isEncrypted: true,
+        isSensitive: true,
         isActive: true,
         options: true,
         sortOrder: true,
@@ -1872,6 +2584,7 @@ router.patch(
           fieldType: payload.fieldType,
           isRequired: payload.isRequired,
           isEncrypted: payload.isEncrypted,
+          isSensitive: payload.isSensitive,
           isActive: payload.isActive,
           options: optionValidation.options,
           sortOrder: payload.sortOrder,
@@ -1884,6 +2597,7 @@ router.patch(
           fieldType: true,
           isRequired: true,
           isEncrypted: true,
+          isSensitive: true,
           isActive: true,
           options: true,
           sortOrder: true,
