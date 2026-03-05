@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --import tsx --test src/**/*.test.ts",
     "db:seed": "node --import tsx prisma/seed.ts"
   },
   "prisma": {

@@ -20,7 +20,10 @@ export default async function ContactDetailsLayout({
   params: Promise<{ tenantSlug: string; contactId: string }>
 }>) {
   const { tenantSlug, contactId } = await params
-  const { tenantId, contact } = await getContactDetailsContext(tenantSlug, contactId)
+  const { tenantId, contact, canManageContactTags } = await getContactDetailsContext(
+    tenantSlug,
+    contactId,
+  )
 
   const addressLine = [
     contact.address.addressLine1,
@@ -142,6 +145,7 @@ export default async function ContactDetailsLayout({
                 tenantId={tenantId}
                 contactId={contactId}
                 initialTags={contact.tags}
+                canManageTags={canManageContactTags}
               />
 
               <details className="group rounded-lg py-1">

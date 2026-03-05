@@ -197,6 +197,8 @@ export default async function TaskDetailsPage({
                     startedAt: task.startedAt,
                     reminderAt: task.reminders[0]?.remindAt ?? null,
                     statusConfigId: task.statusConfigId,
+                    linkedEntityName: task.linkedEntityName,
+                    linkedEntityType: task.linkedEntityType,
                   }}
                 />
               ) : (

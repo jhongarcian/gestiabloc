@@ -126,6 +126,8 @@ export const getContactDetailsContext = cache(
       return {
         tenantId: membership.tenant.id,
         tenantTimezone,
+        canManageContactTags:
+          membership.role === "TENANT_ADMIN" || membership.securityLevel !== "LOW",
         contact: data.contact,
       }
     } catch (error) {

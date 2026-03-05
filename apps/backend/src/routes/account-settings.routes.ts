@@ -9,6 +9,7 @@ import { deleteBlobByUrl, uploadPublicBlob } from "../lib/blob.js";
 import { sendVerifyEmail } from "../lib/email.js";
 import { prisma } from "../lib/prisma.js";
 import { enforceSameOrigin } from "../lib/security.js";
+import { normalizeTenantTagName } from "../lib/tag-utils.js";
 import { deleteObject } from "../lib/s3.js";
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js";
 import { requireTenantAdmin } from "../middleware/requireTenantAdmin.js";
@@ -275,17 +276,6 @@ function slugifyCustomFieldKey(value: string) {
     .replace(/^_+|_+$/g, "");
 
   return normalized || "custom_field";
-}
-
-function normalizeTenantTagName(value: string) {
-  const normalized = value
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return normalized;
 }
 
 function normalizeCustomFieldOptions(options?: string[]) {

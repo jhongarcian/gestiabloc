@@ -13,6 +13,7 @@ import accountSettingsRoutes from "./routes/account-settings.routes"
 import contactsRoutes from "./routes/contacts.routes"
 import notificationsRoutes from "./routes/notifications.routes"
 import tasksRoutes from "./routes/tasks.routes"
+import servicesProductsRoutes from "./routes/services-products.routes"
 import { getUserRoom, setRealtimeServer } from "./lib/realtime"
 import {
   getNextPriorityRefreshSchedule,
@@ -76,6 +77,7 @@ app.use("/api/account-settings", accountSettingsRoutes);
 app.use("/api/contacts", contactsRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/tasks", tasksRoutes);
+app.use("/api/services-products", servicesProductsRoutes);
 
 app.use(
   (

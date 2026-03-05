@@ -2,7 +2,7 @@
 
 import { isAxiosError } from "axios"
 import { useRouter } from "next/navigation"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -58,6 +58,8 @@ type EditTaskDialogProps = {
     startedAt: string | null
     reminderAt: string | null
     statusConfigId: string | null
+    linkedEntityName: string | null
+    linkedEntityType: "SERVICE" | "PRODUCT" | null
   }
 }
 
@@ -67,6 +69,7 @@ type FieldErrors = Partial<
     | "description"
     | "assignedToUserId"
     | "status"
+    | "linkedEntity"
     | "dueDate"
     | "startedAt"
     | "reminderAt",
@@ -75,6 +78,17 @@ type FieldErrors = Partial<
 >
 
 const ALL_STATUS_VALUE = "ALL"
+
+type LinkedEntityOption = {
+  id: string
+  name: string
+  type: "SERVICE" | "PRODUCT"
+}
+
+type LinkedEntityOptionsResponse = {
+  ok: boolean
+  items: LinkedEntityOption[]
+}
 
 export function EditTaskDialog({
   tenantId,
@@ -97,6 +111,13 @@ export function EditTaskDialog({
   const [statusConfigId, setStatusConfigId] = useState<string | undefined>(
     initialTask.statusConfigId ?? undefined,
   )
+  const [linkedEntityType, setLinkedEntityType] = useState<"__none__" | "SERVICE" | "PRODUCT">(
+    initialTask.linkedEntityType ?? "__none__",
+  )
+  const [linkedEntityName, setLinkedEntityName] = useState(
+    initialTask.linkedEntityName ?? "",
+  )
+  const [linkedEntityOptions, setLinkedEntityOptions] = useState<LinkedEntityOption[]>([])
   const [dueDateInput, setDueDateInput] = useState<DateTimeDraft>(
     formatUtcIsoToDateTimeDraft(initialTask.dueDate, tenantTimezone),
   )
@@ -117,6 +138,8 @@ export function EditTaskDialog({
     setDescription(initialTask.description ?? "")
     setAssignedToUserId(initialTask.assignedToUserId ?? "__UNASSIGNED__")
     setStatusConfigId(initialTask.statusConfigId ?? undefined)
+    setLinkedEntityType(initialTask.linkedEntityType ?? "__none__")
+    setLinkedEntityName(initialTask.linkedEntityName ?? "")
     setDueDateInput(formatUtcIsoToDateTimeDraft(initialTask.dueDate, tenantTimezone))
     setStartedAtInput(formatUtcIsoToDateTimeDraft(initialTask.startedAt, tenantTimezone))
     setReminderAtInput(formatUtcIsoToDateTimeDraft(initialTask.reminderAt, tenantTimezone))
@@ -140,6 +163,13 @@ export function EditTaskDialog({
 
     if (!isDateTimeDraftEmpty(reminderAtInput) && !isDateTimeDraftComplete(reminderAtInput)) {
       nextErrors.reminderAt = "Enter a valid reminder date and time."
+    }
+
+    if (
+      (linkedEntityType === "__none__" && linkedEntityName.trim()) ||
+      (linkedEntityType !== "__none__" && !linkedEntityName.trim())
+    ) {
+      nextErrors.linkedEntity = "Select a type and enter a matching name."
     }
 
     setFieldErrors(nextErrors)
@@ -167,6 +197,8 @@ export function EditTaskDialog({
         assignedToUserId:
           assignedToUserId === "__UNASSIGNED__" ? null : assignedToUserId,
         statusConfigId: statusConfigId ?? null,
+        linkedEntityName: linkedEntityName.trim() || null,
+        linkedEntityType: linkedEntityType === "__none__" ? null : linkedEntityType,
         dueDate,
         startedAt,
         reminderAt,
@@ -223,6 +255,15 @@ export function EditTaskDialog({
             assignedToUserId: "Selected assignee is invalid for this tenant.",
           }))
           toast.error("Selected assignee is invalid for this tenant.")
+        } else if (
+          backendError === "LINKED_ENTITY_NAME_REQUIRED" ||
+          backendError === "LINKED_ENTITY_TYPE_REQUIRED"
+        ) {
+          setFieldErrors((prev) => ({
+            ...prev,
+            linkedEntity: "Select a type and enter a matching name.",
+          }))
+          toast.error("Service/Product information is incomplete.")
         } else if (typeof backendError === "string") {
           toast.error(backendError.replace(/_/g, " "))
         } else {
@@ -235,6 +276,33 @@ export function EditTaskDialog({
       setIsSubmitting(false)
     }
   }
+
+  useEffect(() => {
+    if (!open) return
+
+    let cancelled = false
+    void (async () => {
+      try {
+        const { data } = await api.get<LinkedEntityOptionsResponse>(
+          `/api/services-products/${tenantId}/options`,
+          {
+            params: { limit: 100 },
+          },
+        )
+        if (!cancelled) {
+          setLinkedEntityOptions(data.items)
+        }
+      } catch {
+        if (!cancelled) {
+          setLinkedEntityOptions([])
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, tenantId])
 
   return (
     <Dialog
@@ -318,6 +386,54 @@ export function EditTaskDialog({
               ) : null}
             </div>
           </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <Label htmlFor="edit-task-linked-type">Service / Product Type</Label>
+              <Select
+                value={linkedEntityType}
+                onValueChange={(value) => {
+                  setLinkedEntityType(value as "__none__" | "SERVICE" | "PRODUCT")
+                  setFieldErrors((prev) => ({ ...prev, linkedEntity: undefined }))
+                }}
+                disabled={isSubmitting}
+              >
+                <SelectTrigger id="edit-task-linked-type" className="bg-white">
+                  <SelectValue placeholder="No linked item" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">No linked item</SelectItem>
+                  <SelectItem value="SERVICE">Service</SelectItem>
+                  <SelectItem value="PRODUCT">Product</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="edit-task-linked-name">Service / Product Name</Label>
+              <Input
+                id="edit-task-linked-name"
+                value={linkedEntityName}
+                onChange={(event) => {
+                  setLinkedEntityName(event.target.value)
+                  setFieldErrors((prev) => ({ ...prev, linkedEntity: undefined }))
+                }}
+                placeholder="Type or select from catalog"
+                list="edit-task-linked-name-options"
+                disabled={isSubmitting}
+              />
+              <datalist id="edit-task-linked-name-options">
+                {linkedEntityOptions
+                  .filter((option) => linkedEntityType === "__none__" || option.type === linkedEntityType)
+                  .map((option) => (
+                    <option key={option.id} value={option.name} />
+                  ))}
+              </datalist>
+            </div>
+          </div>
+          {fieldErrors.linkedEntity ? (
+            <p className="text-xs text-rose-600">{fieldErrors.linkedEntity}</p>
+          ) : null}
 
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="grid gap-2">

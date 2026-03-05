@@ -311,6 +311,7 @@ model Tenant {
   taskReminders        TaskReminder[]
   notifications        Notification[]
   taskActivities       TaskActivity[]
+  linkedEntities       TenantLinkedEntity[]
   tenantTags           TenantTag[]
   contactTags          ContactTag[]
   contactCustomFields  ContactCustomField[]
@@ -321,6 +322,24 @@ model Tenant {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model TenantLinkedEntity {
+  id        String               @id @default(uuid())
+  tenantId  String
+  name      String
+  type      TaskLinkedEntityType
+  isActive  Boolean              @default(true)
+  sortOrder Int                  @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, type, name])
+  @@index([tenantId, type, sortOrder])
 }
 
 model EmailVerification {

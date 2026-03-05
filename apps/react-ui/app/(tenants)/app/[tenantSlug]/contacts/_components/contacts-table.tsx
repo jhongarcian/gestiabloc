@@ -2,8 +2,8 @@
 
 import { isAxiosError } from "axios"
 import { Filter } from "lucide-react"
-import { useRouter } from "next/navigation"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { startTransition, useCallback, useEffect, useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -74,6 +74,25 @@ type ContactsListResponse = {
 const PAGE_SIZE_OPTIONS = [10, 25] as const
 const ALL_STATUS_VALUE = "ALL"
 
+function parseCsvParam(value: string | null) {
+  if (!value) return []
+
+  return [
+    ...new Set(
+      value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ]
+}
+
+function parsePositiveInt(value: string | null, fallback: number) {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 1) return fallback
+  return parsed
+}
+
 function StatusBadge({
   label,
   bgColor,
@@ -116,16 +135,31 @@ export function ContactsTable({
   tagOptions,
 }: ContactsTableProps) {
   const router = useRouter()
-  const [query, setQuery] = useState("")
-  const [debouncedQuery, setDebouncedQuery] = useState("")
-  const [statusFilters, setStatusFilters] = useState<string[]>([])
-  const [tagFilters, setTagFilters] = useState<string[]>([])
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const [query, setQuery] = useState(() => searchParams.get("search") ?? "")
+  const [debouncedQuery, setDebouncedQuery] = useState(() => (searchParams.get("search") ?? "").trim())
+  const [statusFilters, setStatusFilters] = useState<string[]>(() => {
+    const multi = parseCsvParam(searchParams.get("statusConfigIds"))
+    if (multi.length) return multi
+
+    const legacySingle = searchParams.get("statusConfigId")
+    return legacySingle ? [legacySingle] : []
+  })
+  const [tagFilters, setTagFilters] = useState<string[]>(() =>
+    parseCsvParam(searchParams.get("tagIds")),
+  )
   const [tagFilterOptions, setTagFilterOptions] = useState(tagOptions)
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false)
   const [draftStatusFilters, setDraftStatusFilters] = useState<string[]>([])
   const [draftTagFilters, setDraftTagFilters] = useState<string[]>([])
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(10)
+  const [page, setPage] = useState(() =>
+    parsePositiveInt(searchParams.get("page"), 1),
+  )
+  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(() => {
+    const parsed = parsePositiveInt(searchParams.get("pageSize"), 10)
+    return parsed === 25 ? 25 : 10
+  })
   const [isLoading, setIsLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [data, setData] = useState<ContactsListResponse | null>(null)
@@ -188,6 +222,35 @@ export function ContactsTable({
       window.clearTimeout(timeout)
     }
   }, [query])
+
+  useEffect(() => {
+    const nextParams = new URLSearchParams()
+
+    if (debouncedQuery) nextParams.set("search", debouncedQuery)
+    if (statusFilters.length) nextParams.set("statusConfigIds", statusFilters.join(","))
+    if (tagFilters.length) nextParams.set("tagIds", tagFilters.join(","))
+    if (page > 1) nextParams.set("page", String(page))
+    if (pageSize !== 10) nextParams.set("pageSize", String(pageSize))
+
+    const nextQuery = nextParams.toString()
+    const currentQuery = searchParams.toString()
+    if (nextQuery === currentQuery) return
+
+    startTransition(() => {
+      router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, {
+        scroll: false,
+      })
+    })
+  }, [
+    debouncedQuery,
+    page,
+    pageSize,
+    pathname,
+    router,
+    searchParams,
+    statusFilters,
+    tagFilters,
+  ])
 
   const loadContacts = useCallback(async () => {
     setIsLoading(true)

@@ -70,6 +70,7 @@ type FieldErrors = Partial<
     | "description"
     | "assignedToUserId"
     | "status"
+    | "linkedEntity"
     | "dueDate"
     | "startedAt"
     | "reminderAt",
@@ -87,6 +88,17 @@ type ContactSearchItem = {
 type ContactSearchResponse = {
   ok: boolean
   items: ContactSearchItem[]
+}
+
+type LinkedEntityOption = {
+  id: string
+  name: string
+  type: "SERVICE" | "PRODUCT"
+}
+
+type LinkedEntityOptionsResponse = {
+  ok: boolean
+  items: LinkedEntityOption[]
 }
 
 const ALL_STATUS_VALUE = "ALL"
@@ -121,6 +133,11 @@ export function CreateTaskDialog({
   const [isSearchingContacts, setIsSearchingContacts] = useState(false)
   const [assignedToUserId, setAssignedToUserId] = useState<string>("__UNASSIGNED__")
   const [statusConfigId, setStatusConfigId] = useState<string | undefined>(undefined)
+  const [linkedEntityType, setLinkedEntityType] = useState<"__none__" | "SERVICE" | "PRODUCT">(
+    "__none__",
+  )
+  const [linkedEntityName, setLinkedEntityName] = useState("")
+  const [linkedEntityOptions, setLinkedEntityOptions] = useState<LinkedEntityOption[]>([])
   const [dueDateInput, setDueDateInput] = useState<DateTimeDraft>({ date: "", time: "" })
   const [startedAtInput, setStartedAtInput] = useState<DateTimeDraft>({ date: "", time: "" })
   const [reminderAtInput, setReminderAtInput] = useState<DateTimeDraft>({
@@ -200,6 +217,8 @@ export function CreateTaskDialog({
     setContactResults([])
     setAssignedToUserId("__UNASSIGNED__")
     setStatusConfigId(undefined)
+    setLinkedEntityType("__none__")
+    setLinkedEntityName("")
     setDueDateInput({ date: "", time: "" })
     setStartedAtInput(getDefaultStartedAtDraft())
     setReminderAtInput({ date: "", time: "" })
@@ -231,6 +250,13 @@ export function CreateTaskDialog({
       nextErrors.reminderAt = "Enter a valid reminder date and time."
     }
 
+    if (
+      (linkedEntityType === "__none__" && linkedEntityName.trim()) ||
+      (linkedEntityType !== "__none__" && !linkedEntityName.trim())
+    ) {
+      nextErrors.linkedEntity = "Select a type and enter a matching name."
+    }
+
     setFieldErrors(nextErrors)
     return Object.keys(nextErrors).length === 0
   }
@@ -255,6 +281,8 @@ export function CreateTaskDialog({
         assignedToUserId:
           assignedToUserId === "__UNASSIGNED__" ? null : assignedToUserId,
         statusConfigId: statusConfigId ?? null,
+        linkedEntityName: linkedEntityName.trim() || null,
+        linkedEntityType: linkedEntityType === "__none__" ? null : linkedEntityType,
         dueDate,
         startedAt,
         reminderAt,
@@ -325,6 +353,15 @@ export function CreateTaskDialog({
             contactId: "Selected contact is invalid for this tenant.",
           }))
           toast.error("Selected contact is invalid for this tenant.")
+        } else if (
+          backendError === "LINKED_ENTITY_NAME_REQUIRED" ||
+          backendError === "LINKED_ENTITY_TYPE_REQUIRED"
+        ) {
+          setFieldErrors((prev) => ({
+            ...prev,
+            linkedEntity: "Select a type and enter a matching name.",
+          }))
+          toast.error("Service/Product information is incomplete.")
         } else if (typeof backendError === "string") {
           toast.error(backendError.replace(/_/g, " "))
         } else {
@@ -349,6 +386,33 @@ export function CreateTaskDialog({
 
     setStartedAtInput(getDefaultStartedAtDraft())
   }, [getDefaultStartedAtDraft, open, startedAtInput])
+
+  useEffect(() => {
+    if (!open) return
+
+    let cancelled = false
+    void (async () => {
+      try {
+        const { data } = await api.get<LinkedEntityOptionsResponse>(
+          `/api/services-products/${tenantId}/options`,
+          {
+            params: { limit: 100 },
+          },
+        )
+        if (!cancelled) {
+          setLinkedEntityOptions(data.items)
+        }
+      } catch {
+        if (!cancelled) {
+          setLinkedEntityOptions([])
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, tenantId])
 
   return (
     <Dialog
@@ -519,6 +583,54 @@ export function CreateTaskDialog({
               ) : null}
             </div>
           </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-2">
+              <Label htmlFor="create-task-linked-type">Service / Product Type</Label>
+              <Select
+                value={linkedEntityType}
+                onValueChange={(value) => {
+                  setLinkedEntityType(value as "__none__" | "SERVICE" | "PRODUCT")
+                  setFieldErrors((prev) => ({ ...prev, linkedEntity: undefined }))
+                }}
+                disabled={isSubmitting}
+              >
+                <SelectTrigger id="create-task-linked-type" className="bg-white">
+                  <SelectValue placeholder="No linked item" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">No linked item</SelectItem>
+                  <SelectItem value="SERVICE">Service</SelectItem>
+                  <SelectItem value="PRODUCT">Product</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="create-task-linked-name">Service / Product Name</Label>
+              <Input
+                id="create-task-linked-name"
+                value={linkedEntityName}
+                onChange={(event) => {
+                  setLinkedEntityName(event.target.value)
+                  setFieldErrors((prev) => ({ ...prev, linkedEntity: undefined }))
+                }}
+                placeholder="Type or select from catalog"
+                list="create-task-linked-name-options"
+                disabled={isSubmitting}
+              />
+              <datalist id="create-task-linked-name-options">
+                {linkedEntityOptions
+                  .filter((option) => linkedEntityType === "__none__" || option.type === linkedEntityType)
+                  .map((option) => (
+                    <option key={option.id} value={option.name} />
+                  ))}
+              </datalist>
+            </div>
+          </div>
+          {fieldErrors.linkedEntity ? (
+            <p className="text-xs text-rose-600">{fieldErrors.linkedEntity}</p>
+          ) : null}
 
           <div className="grid gap-4 md:grid-cols-3">
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">

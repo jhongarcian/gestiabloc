@@ -29,6 +29,7 @@ type ContactTagsSectionProps = {
   tenantId: string
   contactId: string
   initialTags: ContactTag[]
+  canManageTags: boolean
 }
 
 type SearchResponse = {
@@ -51,6 +52,7 @@ export function ContactTagsSection({
   tenantId,
   contactId,
   initialTags,
+  canManageTags,
 }: ContactTagsSectionProps) {
   const [assignedTags, setAssignedTags] = useState<ContactTag[]>(sortTags(initialTags))
   const [open, setOpen] = useState(false)
@@ -183,18 +185,20 @@ export function ContactTagsSection({
             {assignedTags.length}
           </span>
         </span>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            setOpen(true)
-          }}
-          className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
-          aria-label="Add tag"
-        >
-          <Plus className="h-4 w-4" />
-        </button>
+        {canManageTags ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              setOpen(true)
+            }}
+            className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+            aria-label="Add tag"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        ) : null}
       </summary>
 
       <div className="mt-1 space-y-3 pl-8">
@@ -210,15 +214,17 @@ export function ContactTagsSection({
                 }}
               >
                 {tag.name}
-                <button
-                  type="button"
-                  className="inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded-full bg-black/10 transition hover:bg-black/20"
-                  aria-label={`Remove ${tag.name}`}
-                  disabled={isBusy}
-                  onClick={() => void handleRemove(tag.id)}
-                >
-                  <X className="h-3 w-3" />
-                </button>
+                {canManageTags ? (
+                  <button
+                    type="button"
+                    className="inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded-full bg-black/10 transition hover:bg-black/20"
+                    aria-label={`Remove ${tag.name}`}
+                    disabled={isBusy}
+                    onClick={() => void handleRemove(tag.id)}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                ) : null}
               </span>
             ))}
           </div>
@@ -228,26 +234,27 @@ export function ContactTagsSection({
 
       </div>
 
-      <Dialog
-        open={open}
-        onOpenChange={(open) => {
-          setOpen(open)
-          if (!open) {
-            setSearchInput("")
-            setDebouncedSearch("")
-            setPage(1)
-            setSearchError(null)
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add Tag</DialogTitle>
-            <DialogDescription>
-              Search tenant tags and add one to this contact. Results are paginated and
-              already-assigned tags are excluded.
-            </DialogDescription>
-          </DialogHeader>
+      {canManageTags ? (
+        <Dialog
+          open={open}
+          onOpenChange={(open) => {
+            setOpen(open)
+            if (!open) {
+              setSearchInput("")
+              setDebouncedSearch("")
+              setPage(1)
+              setSearchError(null)
+            }
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Add Tag</DialogTitle>
+              <DialogDescription>
+                Search tenant tags and add one to this contact. Results are paginated and
+                already-assigned tags are excluded.
+              </DialogDescription>
+            </DialogHeader>
 
           <div className="space-y-4">
             <div className="relative">
@@ -329,18 +336,19 @@ export function ContactTagsSection({
             </div>
           </div>
 
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              className="cursor-pointer"
-              onClick={() => setOpen(false)}
-            >
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                className="cursor-pointer"
+                onClick={() => setOpen(false)}
+              >
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
     </details>
   )
 }

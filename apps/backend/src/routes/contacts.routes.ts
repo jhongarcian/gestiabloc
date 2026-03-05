@@ -8,6 +8,7 @@ import {
 import { prisma } from "../lib/prisma.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { deleteObject } from "../lib/s3.js"
+import { normalizeTagSearchTerm, parseCsvIds } from "../lib/tag-utils.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
@@ -158,15 +159,6 @@ const optionalDateField = () =>
     return trimmed.length > 0 ? trimmed : null
   }, z.string().datetime().nullable().optional())
 
-function normalizeTagSearchTerm(value: string) {
-  return value
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "")
-}
-
 const CreateContactSchema = z.object({
   firstName: z.string().trim().min(1).max(120),
   middleName: optionalStringField(120),
@@ -265,6 +257,7 @@ async function requireActiveMembership(
     select: {
       role: true,
       status: true,
+      securityLevel: true,
     },
   })
 
@@ -274,6 +267,15 @@ async function requireActiveMembership(
   }
 
   return membership
+}
+
+function canManageContactTags(membership: {
+  role: string
+  securityLevel: "LOW" | "MEDIUM" | "MAX"
+}) {
+  return (
+    membership.role === "TENANT_ADMIN" || membership.securityLevel !== "LOW"
+  )
 }
 
 function canManageContactNote(
@@ -955,18 +957,8 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
     if (!membership) return
 
     const skip = (page - 1) * pageSize
-    const selectedStatusConfigIds = [...new Set(
-      statusConfigIds
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean),
-    )]
-    const selectedTagIds = [...new Set(
-      tagIds
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean),
-    )]
+    const selectedStatusConfigIds = parseCsvIds(statusConfigIds)
+    const selectedTagIds = parseCsvIds(tagIds)
 
     const where = {
       tenantId,
@@ -2003,6 +1995,9 @@ router.post("/:tenantId/:contactId/tags", requireAuth, async (req, res, next) =>
 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
+    if (!canManageContactTags(membership)) {
+      return res.status(403).json({ error: "FORBIDDEN" })
+    }
 
     const [contact, tag, existingAssignment] = await Promise.all([
       prisma.contact.findFirst({
@@ -2063,6 +2058,9 @@ router.delete("/:tenantId/:contactId/tags/:tagId", requireAuth, async (req, res,
 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
+    if (!canManageContactTags(membership)) {
+      return res.status(403).json({ error: "FORBIDDEN" })
+    }
 
     const existingAssignment = await prismaWithContacts.contactTag.findFirst({
       where: { tenantId, contactId, tagId },
@@ -2361,6 +2359,22 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
       return { updatedContact }
     })
 
+    const tags = await prismaWithContacts.contactTag.findMany({
+      where: { tenantId, contactId },
+      orderBy: [{ tag: { sortOrder: "asc" } }, { tag: { name: "asc" } }],
+      select: {
+        tag: {
+          select: {
+            id: true,
+            name: true,
+            bgColor: true,
+            textColor: true,
+            sortOrder: true,
+          },
+        },
+      },
+    })
+
     return res.json({
       ok: true,
       contact: {
@@ -2391,6 +2405,13 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
         statusConfigId: updated.updatedContact.statusConfig?.id ?? null,
         statusBgColor: updated.updatedContact.statusConfig?.bgColor ?? null,
         statusTextColor: updated.updatedContact.statusConfig?.textColor ?? null,
+        tags: tags.map((item: any) => ({
+          id: item.tag.id,
+          name: item.tag.name,
+          bgColor: item.tag.bgColor,
+          textColor: item.tag.textColor,
+          sortOrder: item.tag.sortOrder,
+        })),
         customFields: customFields.map((field: any) => ({
           id: field.id,
           key: field.key,

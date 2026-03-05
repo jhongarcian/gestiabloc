@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { ShieldCheck, XCircle } from "lucide-react"
+import { Clock3, ShieldCheck, Users, XCircle } from "lucide-react"
 import { isAxiosError } from "axios"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -205,21 +205,121 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
     return `Showing ${start}-${end} of ${total} members`
   }, [data?.items, page, pageSize, total])
 
+  const adminCount = useMemo(
+    () => data?.items.filter((member) => member.role === "TENANT_ADMIN").length ?? 0,
+    [data?.items],
+  )
+
+  const onlineCount = useMemo(
+    () => data?.items.filter((member) => member.isOnline).length ?? 0,
+    [data?.items],
+  )
+
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900">Tenant Members</h2>
-          <p className="text-sm text-slate-500">{summaryLabel}</p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <StatusBadge
-              label={
-                tenantTimezone
-                  ? `Timezone: ${tenantTimezone}`
-                  : "Timezone: System default"
-              }
-              tone="neutral"
-            />
+    <div className="space-y-6">
+      <section className="overflow-hidden rounded-[28px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_45%,#fff7ed_100%)]">
+        <div className="grid gap-6 p-5 lg:grid-cols-[minmax(0,1.3fr)_360px] lg:p-7">
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
+                Members Workspace
+              </p>
+              <div className="space-y-3">
+                <h2 className="max-w-2xl text-2xl font-semibold tracking-tight text-slate-950">
+                  Manage access, seats, and security for your tenant team.
+                </h2>
+                <p className="max-w-2xl text-sm leading-6 text-slate-600">
+                  Control who can access workspace data, monitor verification and login activity,
+                  and keep seat usage aligned with your subscription plan.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                  Total members
+                </p>
+                <p className="mt-2 text-3xl font-semibold text-slate-950">{total}</p>
+                <p className="mt-1 text-sm text-slate-500">{summaryLabel}</p>
+              </div>
+              <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                  Admins
+                </p>
+                <p className="mt-2 text-3xl font-semibold text-slate-950">{adminCount}</p>
+                <p className="mt-1 text-sm text-slate-500">Members with elevated access.</p>
+              </div>
+              <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                  Online now
+                </p>
+                <p className="mt-2 text-3xl font-semibold text-slate-950">{onlineCount}</p>
+                <p className="mt-1 text-sm text-slate-500">Active sessions currently open.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col justify-between rounded-[24px] border border-slate-300/60 bg-slate-950 p-5 text-white shadow-sm">
+            <div className="space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-blue-200/90">
+                Workspace
+              </p>
+              <div>
+                <p className="text-lg font-semibold">{tenantSlug}</p>
+                <p className="mt-1 text-sm leading-6 text-slate-300">
+                  Add users when seats are available and review their role assignments before
+                  granting admin permissions.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 space-y-3">
+              <CreateUserDialog
+                tenantId={tenantId}
+                onCreated={load}
+                disabled={isSeatLimitReached}
+                disabledReason={
+                  isSeatLimitReached
+                    ? "Seat limit reached. Upgrade plan to add more users."
+                    : undefined
+                }
+              />
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-sm text-slate-300">
+                {seatUsage
+                  ? `${seatUsage.available} seat${seatUsage.available === 1 ? "" : "s"} available on the ${formatPlanLabel(seatUsage.planKey)} plan.`
+                  : "Seat usage data is currently unavailable."}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-5 sm:flex-row sm:items-end sm:justify-between">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
+              Team Directory
+            </p>
+            <h3 className="text-xl font-semibold text-slate-950">Tenant members</h3>
+            <p className="text-sm text-slate-500">
+              Open a member to edit profile, access level, and account controls.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs text-slate-500">
+            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">
+              <Users className="h-3.5 w-3.5" />
+              {total} members
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">
+              <Clock3 className="h-3.5 w-3.5" />
+              {tenantTimezone ? tenantTimezone : "System timezone"}
+            </span>
+          </div>
+        </div>
+
+        <div className="border-b border-slate-200 px-5 py-4">
+          <div className="flex flex-wrap items-center gap-2">
             {seatUsage ? (
               <>
                 <StatusBadge
@@ -241,32 +341,19 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
           </div>
         </div>
 
-        <CreateUserDialog
-          tenantId={tenantId}
-          onCreated={load}
-          disabled={isSeatLimitReached}
-          disabledReason={
-            isSeatLimitReached
-              ? "Seat limit reached. Upgrade plan to add more users."
-              : undefined
-          }
-        />
-      </div>
-
-      <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-slate-200 bg-white">
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div className="min-h-0 overflow-auto px-4 py-4 md:px-5">
           <Table className="[&_td]:py-2 [&_th]:h-8">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="min-w-44 text-xs">User</TableHead>
-              <TableHead className="min-w-56 text-xs">Email</TableHead>
-              <TableHead className="min-w-28 text-xs">Role</TableHead>
-              <TableHead className="min-w-28 text-xs">Security</TableHead>
-              <TableHead className="min-w-36 text-xs">Account Status</TableHead>
-              <TableHead className="min-w-44 text-xs">Last Login</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="min-w-44 text-xs">User</TableHead>
+                <TableHead className="min-w-56 text-xs">Email</TableHead>
+                <TableHead className="min-w-28 text-xs">Role</TableHead>
+                <TableHead className="min-w-28 text-xs">Security</TableHead>
+                <TableHead className="min-w-36 text-xs">Account Status</TableHead>
+                <TableHead className="min-w-44 text-xs">Last Login</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
             {isLoading ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-8 text-center text-slate-500">
@@ -408,61 +495,62 @@ export function UsersMembersTable({ tenantId, tenantSlug }: UsersMembersTablePro
                 </TableCell>
               </TableRow>
             )}
-          </TableBody>
+            </TableBody>
           </Table>
         </div>
-      </div>
+        <div className="flex flex-col gap-3 border-t border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2 text-sm text-slate-600">
+            <span>Rows per page</span>
+            <Select
+              value={String(pageSize)}
+              onValueChange={(value) => {
+                const next = Number(value)
+                if (next === 10 || next === 25) {
+                  setPageSize(next)
+                  setPage(1)
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-20">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <SelectItem key={size} value={String(size)}>
+                    {size}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2 text-sm text-slate-600">
-          <span>Rows per page</span>
-          <Select
-            value={String(pageSize)}
-            onValueChange={(value) => {
-              const next = Number(value)
-              if (next === 10 || next === 25) {
-                setPageSize(next)
-                setPage(1)
-              }
-            }}
-          >
-            <SelectTrigger size="sm" className="w-20">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PAGE_SIZE_OPTIONS.map((size) => (
-                <SelectItem key={size} value={String(size)}>
-                  {size}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="cursor-pointer"
+              disabled={!canGoPrevious || isLoading}
+              onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+            >
+              Previous
+            </Button>
+            <span className="px-1 text-sm text-slate-600">
+              Page {page} of {totalPages}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="cursor-pointer"
+              disabled={!canGoNext || isLoading}
+              onClick={() => setPage((prev) => prev + 1)}
+            >
+              Next
+            </Button>
+          </div>
         </div>
-
-        <div className="flex items-center gap-2 self-end sm:self-auto">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!canGoPrevious || isLoading}
-            onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-          >
-            Previous
-          </Button>
-          <span className="px-1 text-sm text-slate-600">
-            Page {page} of {totalPages}
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!canGoNext || isLoading}
-            onClick={() => setPage((prev) => prev + 1)}
-          >
-            Next
-          </Button>
-        </div>
-      </div>
+      </section>
     </div>
   )
 }

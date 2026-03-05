@@ -186,7 +186,11 @@ export function CreateUserDialog({
     >
       <div className="flex flex-col items-end gap-1">
         <DialogTrigger asChild>
-          <Button type="button" className="sm:self-start" disabled={disabled}>
+          <Button
+            type="button"
+            className="w-full cursor-pointer bg-white text-slate-950 hover:bg-slate-100 sm:self-start"
+            disabled={disabled}
+          >
             Add User
           </Button>
         </DialogTrigger>

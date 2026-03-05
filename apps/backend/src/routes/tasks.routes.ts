@@ -53,6 +53,8 @@ const CreateTaskSchema = z.object({
   name: z.string().trim().min(1).max(160),
   contactId: z.string().trim().min(1),
   description: z.string().trim().max(4000).nullable().optional(),
+  linkedEntityName: z.string().trim().min(1).max(120).nullable().optional(),
+  linkedEntityType: z.enum(["SERVICE", "PRODUCT"]).nullable().optional(),
   statusConfigId: z.string().trim().max(80).nullable().optional(),
   assignedToUserId: z.string().trim().min(1).nullable().optional(),
   dueDate: z.string().datetime().nullable().optional(),
@@ -146,6 +148,8 @@ async function getTaskForTenant(tenantId: string, taskId: string) {
       tenantId: true,
       name: true,
       description: true,
+      linkedEntityName: true,
+      linkedEntityType: true,
       statusConfigId: true,
       assignedToUserId: true,
       dueDate: true,
@@ -205,6 +209,8 @@ async function resolveTaskMutationPayload(
   let statusName: string | null = null
   const contactId = "contactId" in payload ? payload.contactId ?? null : null
   const assignedToUserId = payload.assignedToUserId ?? null
+  const linkedEntityName = payload.linkedEntityName?.trim() || null
+  const linkedEntityType = payload.linkedEntityType ?? null
   const dueDate = payload.dueDate ? new Date(payload.dueDate) : null
   const startedAt = payload.startedAt ? new Date(payload.startedAt) : null
 
@@ -271,11 +277,21 @@ async function resolveTaskMutationPayload(
     }
   }
 
+  if (linkedEntityName && !linkedEntityType) {
+    return { error: "LINKED_ENTITY_TYPE_REQUIRED" as const }
+  }
+
+  if (!linkedEntityName && linkedEntityType) {
+    return { error: "LINKED_ENTITY_NAME_REQUIRED" as const }
+  }
+
   return {
     contactId,
     statusConfigId,
     statusName,
     assignedToUserId,
+    linkedEntityName,
+    linkedEntityType,
     dueDate,
     startedAt,
   }
@@ -605,6 +621,8 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
       statusConfigId,
       statusName,
       assignedToUserId,
+      linkedEntityName,
+      linkedEntityType,
       dueDate,
       startedAt,
     } =
@@ -624,6 +642,8 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
           ),
           name: payload.name.trim(),
           description: payload.description?.trim() || null,
+          linkedEntityName,
+          linkedEntityType,
           statusConfigId,
           assignedToUserId,
           dueDate,
@@ -736,6 +756,14 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
         payload.assignedToUserId === undefined
           ? existingTask.assignedToUserId
           : payload.assignedToUserId,
+      linkedEntityName:
+        payload.linkedEntityName === undefined
+          ? existingTask.linkedEntityName
+          : payload.linkedEntityName,
+      linkedEntityType:
+        payload.linkedEntityType === undefined
+          ? existingTask.linkedEntityType
+          : payload.linkedEntityType,
       dueDate:
         payload.dueDate === undefined
           ? existingTask.dueDate?.toISOString() ?? null
@@ -779,6 +807,8 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
         data: {
           name: mergedPayload.name.trim(),
           description: mergedPayload.description?.trim() || null,
+          linkedEntityName: resolvedPayload.linkedEntityName,
+          linkedEntityType: resolvedPayload.linkedEntityType,
           statusConfigId: resolvedPayload.statusConfigId,
           assignedToUserId: resolvedPayload.assignedToUserId,
           priority: getTaskPriorityFromDueDate(
@@ -798,7 +828,12 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
 
       if (
         mergedPayload.name.trim() !== existingTask.name ||
-        (mergedPayload.description?.trim() || null) !== (existingTask.description?.trim() || null)
+        (mergedPayload.description?.trim() || null) !==
+          (existingTask.description?.trim() || null) ||
+        (resolvedPayload.linkedEntityName ?? null) !==
+          (existingTask.linkedEntityName ?? null) ||
+        (resolvedPayload.linkedEntityType ?? null) !==
+          (existingTask.linkedEntityType ?? null)
       ) {
         await createTaskActivity({
           prismaClient: prismaTx,
