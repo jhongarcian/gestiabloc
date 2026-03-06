@@ -189,25 +189,26 @@ const ServicesPaginationQuerySchema = z.object({
     .default(10),
   search: z.string().trim().max(120).optional().default(""),
   isActive: z
-    .enum(["true", "false"])
+    .union([z.enum(["true", "false"]), z.boolean()])
     .optional()
     .transform((value) => {
-      if (value === "true") return true;
-      if (value === "false") return false;
+      if (value === "true" || value === true) return true;
+      if (value === "false" || value === false) return false;
       return undefined;
     }),
 });
 const ServiceOptionsQuerySchema = z.object({
   includeInactive: z
-    .enum(["true", "false"])
+    .union([z.enum(["true", "false"]), z.boolean()])
     .optional()
-    .transform((value) => value === "true"),
+    .transform((value) => value === "true" || value === true),
 });
 
 const ServiceProfessionalKindSchema = z.enum(["INTERNAL_USER", "EXTERNAL"]);
 
 const ServiceChecklistItemInputSchema = z.object({
   label: z.string().trim().min(1).max(200),
+  description: optionalStringField(1000),
   isRequired: z.boolean().default(true),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
 });
@@ -217,6 +218,19 @@ const ServiceFollowUpTemplateStepInputSchema = z.object({
   notesTemplate: optionalStringField(1000),
   dueDaysFromStart: z.coerce.number().int().min(0).max(3650).default(0),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+});
+const ServiceFollowUpTemplateSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+  flowNodes: z.array(z.unknown()).optional(),
+  flowEdges: z.array(z.unknown()).optional(),
+});
+const ServiceFollowUpTemplatePatchSchema = z.object({
+  name: z.string().trim().min(1).max(160).optional(),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+  flowNodes: z.array(z.unknown()).optional(),
+  flowEdges: z.array(z.unknown()).optional(),
+  steps: z.array(ServiceFollowUpTemplateStepInputSchema).optional(),
 });
 
 const ServiceProfessionalInputSchema = z.object({
@@ -1766,6 +1780,7 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
             select: {
               id: true,
               label: true,
+              description: true,
               isRequired: true,
               sortOrder: true,
             },
@@ -1778,6 +1793,11 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
               notesTemplate: true,
               dueDaysFromStart: true,
               sortOrder: true,
+            },
+          },
+          followUpTemplates: {
+            select: {
+              id: true,
             },
           },
           professionals: {
@@ -1841,6 +1861,9 @@ router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, n
         followUpTemplateSteps: {
           select: { id: true },
         },
+        followUpTemplates: {
+          select: { id: true },
+        },
         professionals: {
           select: { id: true },
         },
@@ -1856,8 +1879,302 @@ router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, n
         sortOrder: item.sortOrder,
         checklistCount: item.checklistItems.length,
         followUpTemplateStepsCount: item.followUpTemplateSteps.length,
+        followUpTemplatesCount: item.followUpTemplates.length,
         professionalsCount: item.professionals.length,
       })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get(
+  "/:tenantId/services/:recordId/follow-up-templates",
+  ...readMiddlewares,
+  async (req, res, next) => {
+    try {
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+
+      const service = await prismaWithContacts.service.findUnique({
+        where: { id: recordId },
+        select: { id: true, tenantId: true },
+      });
+      if (!service || service.tenantId !== tenantId) {
+        return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
+      }
+
+      const items = await prismaWithContacts.serviceFollowUpTemplate.findMany({
+        where: { tenantId, serviceId: recordId },
+        orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          sortOrder: true,
+          flowNodes: true,
+          flowEdges: true,
+          steps: {
+            select: { id: true },
+          },
+        },
+      });
+
+      return res.json({
+        ok: true,
+        items: items.map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          sortOrder: item.sortOrder,
+          flowNodes: item.flowNodes ?? [],
+          flowEdges: item.flowEdges ?? [],
+          stepsCount: item.steps.length,
+        })),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/:tenantId/services/:recordId/follow-up-templates",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      const payload = ServiceFollowUpTemplateSchema.parse(req.body);
+
+      const service = await prismaWithContacts.service.findUnique({
+        where: { id: recordId },
+        select: { id: true, tenantId: true },
+      });
+      if (!service || service.tenantId !== tenantId) {
+        return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
+      }
+
+      const maxSortOrderRecord = await prismaWithContacts.serviceFollowUpTemplate.findFirst({
+        where: { tenantId, serviceId: recordId },
+        orderBy: { sortOrder: "desc" },
+        select: { sortOrder: true },
+      });
+      const nextSortOrder = (maxSortOrderRecord?.sortOrder ?? 0) + 10;
+
+      const created = await prismaWithContacts.serviceFollowUpTemplate.create({
+        data: {
+          tenantId,
+          serviceId: recordId,
+          name: payload.name.trim(),
+          sortOrder: payload.sortOrder ?? nextSortOrder,
+          flowNodes: payload.flowNodes ?? [],
+          flowEdges: payload.flowEdges ?? [],
+        },
+        select: {
+          id: true,
+          name: true,
+          sortOrder: true,
+          flowNodes: true,
+          flowEdges: true,
+        },
+      });
+
+      return res.status(201).json({ ok: true, template: created });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.get(
+  "/:tenantId/services/:recordId/follow-up-templates/:templateId",
+  ...readMiddlewares,
+  async (req, res, next) => {
+    try {
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      const templateId = z.string().trim().min(1).parse(req.params.templateId);
+
+      const template = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
+        where: { id: templateId },
+        select: {
+          id: true,
+          tenantId: true,
+          serviceId: true,
+          name: true,
+          sortOrder: true,
+          flowNodes: true,
+          flowEdges: true,
+        },
+      });
+
+      if (!template || template.tenantId !== tenantId || template.serviceId !== recordId) {
+        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
+      }
+
+      return res.json({
+        ok: true,
+        template: {
+          ...template,
+          flowNodes: template.flowNodes ?? [],
+          flowEdges: template.flowEdges ?? [],
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.patch(
+  "/:tenantId/services/:recordId/follow-up-templates/:templateId",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      const templateId = z.string().trim().min(1).parse(req.params.templateId);
+      const payload = ServiceFollowUpTemplatePatchSchema.parse(req.body);
+
+      if (Object.keys(payload).length === 0) {
+        return res.status(400).json({ error: "NO_CHANGES_PROVIDED" });
+      }
+
+      const existing = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
+        where: { id: templateId },
+        select: { id: true, tenantId: true, serviceId: true },
+      });
+      if (!existing || existing.tenantId !== tenantId || existing.serviceId !== recordId) {
+        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
+      }
+
+      const updated = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any;
+
+        if (payload.steps) {
+          await prismaTx.serviceFollowUpTemplateStep.deleteMany({
+            where: { tenantId, serviceId: recordId, templateId },
+          });
+        }
+
+        return prismaTx.serviceFollowUpTemplate.update({
+          where: { id: templateId },
+          data: {
+            ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
+            ...(payload.sortOrder !== undefined ? { sortOrder: payload.sortOrder } : {}),
+            ...(payload.flowNodes !== undefined ? { flowNodes: payload.flowNodes } : {}),
+            ...(payload.flowEdges !== undefined ? { flowEdges: payload.flowEdges } : {}),
+            ...(payload.steps
+              ? {
+                  steps: {
+                    create: payload.steps.map((step, index) => ({
+                      tenantId,
+                      serviceId: recordId,
+                      title: step.title.trim(),
+                      notesTemplate: step.notesTemplate ?? null,
+                      dueDaysFromStart: step.dueDaysFromStart,
+                      sortOrder: step.sortOrder ?? (index + 1) * 10,
+                    })),
+                  },
+                }
+              : {}),
+          },
+          select: {
+            id: true,
+            name: true,
+            sortOrder: true,
+            flowNodes: true,
+            flowEdges: true,
+          },
+        });
+      });
+
+      return res.json({
+        ok: true,
+        template: {
+          ...updated,
+          flowNodes: updated.flowNodes ?? [],
+          flowEdges: updated.flowEdges ?? [],
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.delete(
+  "/:tenantId/services/:recordId/follow-up-templates/:templateId",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      const templateId = z.string().trim().min(1).parse(req.params.templateId);
+
+      const existing = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
+        where: { id: templateId },
+        select: { id: true, tenantId: true, serviceId: true },
+      });
+      if (!existing || existing.tenantId !== tenantId || existing.serviceId !== recordId) {
+        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
+      }
+
+      await prismaWithContacts.serviceFollowUpTemplate.delete({
+        where: { id: templateId },
+      });
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.get("/:tenantId/service-professionals", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+
+    const services = await prismaWithContacts.service.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        professionals: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            kind: true,
+            userId: true,
+            externalProfessionalName: true,
+            user: {
+              select: {
+                name: true,
+                email: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const items = services.flatMap((service: any) =>
+      service.professionals.map((professional: any) => ({
+        id: professional.id,
+        serviceId: service.id,
+        serviceName: service.name,
+        kind: professional.kind,
+        name:
+          professional.kind === "INTERNAL_USER"
+            ? professional.user?.name?.trim() || professional.user?.email || "Unassigned user"
+            : professional.externalProfessionalName?.trim() || "External professional",
+      })),
+    );
+
+    return res.json({
+      ok: true,
+      items,
     });
   } catch (error) {
     return next(error);
@@ -1886,6 +2203,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
           select: {
             id: true,
             label: true,
+            description: true,
             isRequired: true,
             sortOrder: true,
           },
@@ -1898,6 +2216,16 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
             notesTemplate: true,
             dueDaysFromStart: true,
             sortOrder: true,
+          },
+        },
+        followUpTemplates: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            name: true,
+            sortOrder: true,
+            flowNodes: true,
+            flowEdges: true,
           },
         },
         professionals: {
@@ -1931,11 +2259,14 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
         ...service,
         configStatus: {
           checklistComplete: service.checklistItems.length > 0,
-          followUpsComplete: service.followUpTemplateSteps.length > 0,
+          followUpsComplete:
+            service.followUpTemplates.length > 0 ||
+            service.followUpTemplateSteps.length > 0,
           professionalsComplete: service.professionals.length > 0,
           isComplete:
             service.checklistItems.length > 0 &&
-            service.followUpTemplateSteps.length > 0 &&
+            (service.followUpTemplates.length > 0 ||
+              service.followUpTemplateSteps.length > 0) &&
             service.professionals.length > 0,
         },
       },
@@ -2002,6 +2333,7 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
         checklistItems: {
           create: payload.checklistItems.map((item, index) => ({
             label: item.label.trim(),
+            description: item.description ?? null,
             isRequired: item.isRequired,
             sortOrder: item.sortOrder ?? (index + 1) * 10,
             tenantId,
@@ -2170,6 +2502,7 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
                 checklistItems: {
                   create: payload.checklistItems.map((item, index) => ({
                     label: item.label.trim(),
+                    description: item.description ?? null,
                     isRequired: item.isRequired,
                     sortOrder: item.sortOrder ?? (index + 1) * 10,
                     tenantId,

@@ -1942,6 +1942,137 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/account-settings/{tenantId}/service-professionals:
+    get:
+      tags: [Account Settings]
+      summary: List professionals assigned to services
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Service professionals returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsServiceProfessionalsListResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/account-settings/{tenantId}/services/{recordId}/follow-up-templates:
+    get:
+      tags: [Account Settings]
+      summary: List follow-up templates for a service
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      responses:
+        "200":
+          description: Templates returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplatesResponse"
+    post:
+      tags: [Account Settings]
+      summary: Create a follow-up template for a service
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateCreateRequest"
+      responses:
+        "201":
+          description: Template created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateMutationResponse"
+  /api/account-settings/{tenantId}/services/{recordId}/follow-up-templates/{templateId}:
+    get:
+      tags: [Account Settings]
+      summary: Get a follow-up template
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Template returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateMutationResponse"
+    patch:
+      tags: [Account Settings]
+      summary: Update a follow-up template
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateUpdateRequest"
+      responses:
+        "200":
+          description: Template updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateMutationResponse"
+    delete:
+      tags: [Account Settings]
+      summary: Delete a follow-up template
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Template deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
   /api/account-settings/{tenantId}/services/{recordId}:
     patch:
       tags: [Account Settings]
@@ -4966,6 +5097,10 @@ components:
           type: string
           minLength: 1
           maxLength: 200
+        description:
+          type: string
+          nullable: true
+          maxLength: 1000
         isRequired:
           type: boolean
           default: true
@@ -5130,6 +5265,9 @@ components:
                 type: string
               label:
                 type: string
+              description:
+                type: string
+                nullable: true
               isRequired:
                 type: boolean
               sortOrder:
@@ -5150,6 +5288,13 @@ components:
                 type: integer
               sortOrder:
                 type: integer
+        followUpTemplates:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
         professionals:
           type: array
           items:
@@ -5174,6 +5319,109 @@ components:
                 nullable: true
               sortOrder:
                 type: integer
+    AccountSettingsServiceProfessionalSummaryItem:
+      type: object
+      properties:
+        id:
+          type: string
+        serviceId:
+          type: string
+        serviceName:
+          type: string
+        kind:
+          type: string
+          enum: [INTERNAL_USER, EXTERNAL]
+        name:
+          type: string
+    AccountSettingsServiceFollowUpTemplateItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        sortOrder:
+          type: integer
+        flowNodes:
+          type: array
+          items: {}
+        flowEdges:
+          type: array
+          items: {}
+        stepsCount:
+          type: integer
+    AccountSettingsServiceFollowUpTemplateCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        sortOrder:
+          type: integer
+        flowNodes:
+          type: array
+          items: {}
+        flowEdges:
+          type: array
+          items: {}
+    AccountSettingsServiceFollowUpTemplateUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        sortOrder:
+          type: integer
+        flowNodes:
+          type: array
+          items: {}
+        flowEdges:
+          type: array
+          items: {}
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateStepInput"
+    AccountSettingsServiceFollowUpTemplateMutationResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        template:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            sortOrder:
+              type: integer
+            flowNodes:
+              type: array
+              items: {}
+            flowEdges:
+              type: array
+              items: {}
+    AccountSettingsServiceFollowUpTemplatesResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateItem"
+    AccountSettingsServiceProfessionalsListResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsServiceProfessionalSummaryItem"
     AccountSettingsServicesListResponse:
       type: object
       properties:

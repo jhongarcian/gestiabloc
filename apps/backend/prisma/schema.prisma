@@ -186,24 +186,24 @@ model User {
 
   otpEnabled Boolean @default(true)
 
-  sessions            Session[]
-  memberships         Membership[]
-  files               File[]
-  notifications       Notification[]
-  customFieldAccessRequests ContactCustomFieldAccessRequest[] @relation("CustomFieldAccessRequester")
-  customFieldAccessDecisions ContactCustomFieldAccessRequest[] @relation("CustomFieldAccessDecidedBy")
-  customFieldAccessGrants ContactCustomFieldAccessGrant[] @relation("CustomFieldAccessGrantedUser")
-  issuedCustomFieldAccessGrants ContactCustomFieldAccessGrant[] @relation("CustomFieldAccessGrantedBy")
-  taskActivities      TaskActivity[]
-  createdTaskReminders TaskReminder[] @relation("TaskReminderCreatedBy")
-  reminderAssignments TaskReminder[] @relation("TaskReminderRecipient")
-  contactNotes        ContactNote[]
-  serviceProfessionals ServiceProfessional[]
-  recordedServicePayments ContactServicePayment[] @relation("ContactServicePaymentRecordedBy")
-  assignedServiceFollowUps ContactServiceFollowUpStep[] @relation("ContactServiceFollowUpAssignedUser")
-  loginChallenges     LoginChallenge[]
-  emailVerifications  EmailVerification[]
-  passwordResetTokens PasswordResetToken[]
+  sessions                      Session[]
+  memberships                   Membership[]
+  files                         File[]
+  notifications                 Notification[]
+  customFieldAccessRequests     ContactCustomFieldAccessRequest[] @relation("CustomFieldAccessRequester")
+  customFieldAccessDecisions    ContactCustomFieldAccessRequest[] @relation("CustomFieldAccessDecidedBy")
+  customFieldAccessGrants       ContactCustomFieldAccessGrant[]   @relation("CustomFieldAccessGrantedUser")
+  issuedCustomFieldAccessGrants ContactCustomFieldAccessGrant[]   @relation("CustomFieldAccessGrantedBy")
+  taskActivities                TaskActivity[]
+  createdTaskReminders          TaskReminder[]                    @relation("TaskReminderCreatedBy")
+  reminderAssignments           TaskReminder[]                    @relation("TaskReminderRecipient")
+  contactNotes                  ContactNote[]
+  serviceProfessionals          ServiceProfessional[]
+  recordedServicePayments       ContactServicePayment[]           @relation("ContactServicePaymentRecordedBy")
+  assignedServiceFollowUps      ContactServiceFollowUpStep[]      @relation("ContactServiceFollowUpAssignedUser")
+  loginChallenges               LoginChallenge[]
+  emailVerifications            EmailVerification[]
+  passwordResetTokens           PasswordResetToken[]
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -221,8 +221,8 @@ model File {
   createdById String
   purpose     FilePurpose @default(GENERIC)
 
-  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdBy User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  tenant          Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy       User                    @relation(fields: [createdById], references: [id], onDelete: Cascade)
   noteAttachments ContactNoteAttachment[]
 
   createdAt DateTime @default(now())
@@ -327,34 +327,35 @@ model Tenant {
   website       String?
   emailVerified Boolean @default(false)
 
-  members              Membership[]
-  files                File[]
-  invites              Invite[]
-  subscription         TenantSubscription?
-  contacts             Contact[]
-  tasks                Task[]
-  contactStatusConfigs ContactStatusConfig[]
-  taskStatusConfigs    TaskStatusConfig[]
-  taskReminders        TaskReminder[]
-  notifications        Notification[]
-  taskActivities       TaskActivity[]
-  linkedEntities       TenantLinkedEntity[]
-  services             Service[]
-  serviceChecklistItems ServiceChecklistItem[]
-  serviceFollowUpTemplateSteps ServiceFollowUpTemplateStep[]
-  serviceProfessionals ServiceProfessional[]
-  contactServices      ContactService[]
-  contactServicePayments ContactServicePayment[]
-  contactServiceFollowUpSteps ContactServiceFollowUpStep[]
-  tenantTags           TenantTag[]
-  contactTags          ContactTag[]
-  contactCustomFields  ContactCustomField[]
-  contactCustomFieldValues ContactCustomFieldValue[]
+  members                          Membership[]
+  files                            File[]
+  invites                          Invite[]
+  subscription                     TenantSubscription?
+  contacts                         Contact[]
+  tasks                            Task[]
+  contactStatusConfigs             ContactStatusConfig[]
+  taskStatusConfigs                TaskStatusConfig[]
+  taskReminders                    TaskReminder[]
+  notifications                    Notification[]
+  taskActivities                   TaskActivity[]
+  linkedEntities                   TenantLinkedEntity[]
+  services                         Service[]
+  serviceChecklistItems            ServiceChecklistItem[]
+  serviceFollowUpTemplates         ServiceFollowUpTemplate[]
+  serviceFollowUpTemplateSteps     ServiceFollowUpTemplateStep[]
+  serviceProfessionals             ServiceProfessional[]
+  contactServices                  ContactService[]
+  contactServicePayments           ContactServicePayment[]
+  contactServiceFollowUpSteps      ContactServiceFollowUpStep[]
+  tenantTags                       TenantTag[]
+  contactTags                      ContactTag[]
+  contactCustomFields              ContactCustomField[]
+  contactCustomFieldValues         ContactCustomFieldValue[]
   contactCustomFieldAccessRequests ContactCustomFieldAccessRequest[]
-  contactCustomFieldAccessGrants ContactCustomFieldAccessGrant[]
-  contactRelationships ContactRelationship[]
-  contactNotes         ContactNote[]
-  contactNoteAttachments ContactNoteAttachment[]
+  contactCustomFieldAccessGrants   ContactCustomFieldAccessGrant[]
+  contactRelationships             ContactRelationship[]
+  contactNotes                     ContactNote[]
+  contactNoteAttachments           ContactNoteAttachment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -379,22 +380,23 @@ model TenantLinkedEntity {
 }
 
 model Service {
-  id                        String  @id @default(uuid())
-  tenantId                  String
-  name                      String
-  description               String?
-  basePriceCents            Int
-  currency                  String  @default("USD")
-  allowPartialPayments      Boolean @default(false)
+  id                         String  @id @default(uuid())
+  tenantId                   String
+  name                       String
+  description                String?
+  basePriceCents             Int
+  currency                   String  @default("USD")
+  allowPartialPayments       Boolean @default(false)
   minimumPartialPaymentCents Int?
-  isActive                  Boolean @default(true)
-  sortOrder                 Int     @default(0)
+  isActive                   Boolean @default(true)
+  sortOrder                  Int     @default(0)
 
-  tenant             Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  checklistItems     ServiceChecklistItem[]
+  tenant                Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  checklistItems        ServiceChecklistItem[]
+  followUpTemplates     ServiceFollowUpTemplate[]
   followUpTemplateSteps ServiceFollowUpTemplateStep[]
-  professionals      ServiceProfessional[]
-  contactServices    ContactService[]
+  professionals         ServiceProfessional[]
+  contactServices       ContactService[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -410,6 +412,7 @@ model ServiceChecklistItem {
   tenantId    String
   serviceId   String
   label       String
+  description String?
   isRequired  Boolean @default(true)
   sortOrder   Int     @default(0)
 
@@ -423,17 +426,18 @@ model ServiceChecklistItem {
   @@index([tenantId, serviceId, sortOrder])
 }
 
-model ServiceFollowUpTemplateStep {
-  id               String @id @default(uuid())
-  tenantId         String
-  serviceId        String
-  title            String
-  notesTemplate    String?
-  dueDaysFromStart Int    @default(0)
-  sortOrder        Int    @default(0)
+model ServiceFollowUpTemplate {
+  id        String @id @default(uuid())
+  tenantId  String
+  serviceId String
+  name      String
+  sortOrder Int    @default(0)
+  flowNodes Json?
+  flowEdges Json?
 
-  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  tenant  Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  steps   ServiceFollowUpTemplateStep[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -442,8 +446,30 @@ model ServiceFollowUpTemplateStep {
   @@index([tenantId, serviceId, sortOrder])
 }
 
+model ServiceFollowUpTemplateStep {
+  id               String  @id @default(uuid())
+  tenantId         String
+  serviceId        String
+  templateId       String?
+  title            String
+  notesTemplate    String?
+  dueDaysFromStart Int     @default(0)
+  sortOrder        Int     @default(0)
+
+  tenant   Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service  Service                  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  template ServiceFollowUpTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, sortOrder])
+  @@index([tenantId, templateId, sortOrder])
+}
+
 model ServiceProfessional {
-  id                       String                 @id @default(uuid())
+  id                       String                  @id @default(uuid())
   tenantId                 String
   serviceId                String
   kind                     ServiceProfessionalKind
@@ -451,7 +477,7 @@ model ServiceProfessional {
   externalProfessionalName String?
   externalContact          String?
   notes                    String?
-  sortOrder                Int                    @default(0)
+  sortOrder                Int                     @default(0)
 
   tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
@@ -480,11 +506,11 @@ model ContactService {
   allowPartialPayments Boolean              @default(false)
   notes                String?
 
-  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  contact        Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  service        Service   @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  payments       ContactServicePayment[]
-  followUpSteps  ContactServiceFollowUpStep[]
+  tenant        Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact       Contact                      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  service       Service                      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  payments      ContactServicePayment[]
+  followUpSteps ContactServiceFollowUpStep[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -517,16 +543,16 @@ model ContactServicePayment {
 }
 
 model ContactServiceFollowUpStep {
-  id                String   @id @default(uuid())
-  tenantId          String
-  contactServiceId  String
-  title             String
-  notesTemplate     String?
-  dueAt             DateTime?
-  completedAt       DateTime?
-  assignedToUserId  String?
-  note              String?
-  sortOrder         Int      @default(0)
+  id               String    @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  title            String
+  notesTemplate    String?
+  dueAt            DateTime?
+  completedAt      DateTime?
+  assignedToUserId String?
+  note             String?
+  sortOrder        Int       @default(0)
 
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
@@ -562,13 +588,13 @@ model Membership {
   status        MembershipStatus @default(ACTIVE)
   securityLevel SecurityLevel    @default(LOW)
 
-  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenant                  Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  assignedContacts        Contact[] @relation("ContactAssignedToMembership")
-  assignedTasks           Task[]    @relation("TaskAssignedToMembership")
+  user                    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant                  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assignedContacts        Contact[]      @relation("ContactAssignedToMembership")
+  assignedTasks           Task[]         @relation("TaskAssignedToMembership")
   assignedTaskReminders   TaskReminder[] @relation("TaskReminderMembershipRecipient")
-  servicingAgentContacts  Contact[] @relation("ContactServicingAgentMembership")
-  additionalAgentContacts Contact[] @relation("ContactAdditionalAgentMembership")
+  servicingAgentContacts  Contact[]      @relation("ContactServicingAgentMembership")
+  additionalAgentContacts Contact[]      @relation("ContactAdditionalAgentMembership")
 
   @@unique([userId, tenantId])
   @@index([tenantId])
@@ -672,10 +698,10 @@ model ContactCustomField {
   options     Json?
   sortOrder   Int                    @default(0)
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  values ContactCustomFieldValue[]
+  tenant         Tenant                            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  values         ContactCustomFieldValue[]
   accessRequests ContactCustomFieldAccessRequest[]
-  accessGrants ContactCustomFieldAccessGrant[]
+  accessGrants   ContactCustomFieldAccessGrant[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -686,19 +712,19 @@ model ContactCustomField {
 }
 
 model ContactCustomFieldAccessRequest {
-  id            String                               @id @default(uuid())
-  tenantId      String
-  fieldId       String
+  id              String                                @id @default(uuid())
+  tenantId        String
+  fieldId         String
   requesterUserId String
-  status        ContactCustomFieldAccessRequestStatus @default(PENDING)
+  status          ContactCustomFieldAccessRequestStatus @default(PENDING)
   decidedByUserId String?
-  decidedAt     DateTime?
-  decisionNote  String?
+  decidedAt       DateTime?
+  decisionNote    String?
 
-  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  field       ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
-  requester   User               @relation("CustomFieldAccessRequester", fields: [requesterUserId], references: [id], onDelete: Cascade)
-  decidedBy   User?              @relation("CustomFieldAccessDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+  tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  field     ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  requester User               @relation("CustomFieldAccessRequester", fields: [requesterUserId], references: [id], onDelete: Cascade)
+  decidedBy User?              @relation("CustomFieldAccessDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -709,18 +735,18 @@ model ContactCustomFieldAccessRequest {
 }
 
 model ContactCustomFieldAccessGrant {
-  id          String @id @default(uuid())
-  tenantId    String
-  fieldId     String
-  userId      String
+  id              String    @id @default(uuid())
+  tenantId        String
+  fieldId         String
+  userId          String
   grantedByUserId String
-  expiresAt   DateTime?
-  remainingReads Int?
+  expiresAt       DateTime?
+  remainingReads  Int?
 
-  tenant     Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  field      ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
-  user       User               @relation("CustomFieldAccessGrantedUser", fields: [userId], references: [id], onDelete: Cascade)
-  grantedBy  User               @relation("CustomFieldAccessGrantedBy", fields: [grantedByUserId], references: [id], onDelete: Cascade)
+  tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  field     ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  user      User               @relation("CustomFieldAccessGrantedUser", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy User               @relation("CustomFieldAccessGrantedBy", fields: [grantedByUserId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -739,7 +765,7 @@ model TenantTag {
   textColor String
   sortOrder Int    @default(0)
 
-  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contactTags ContactTag[]
 
   createdAt DateTime @default(now())
@@ -751,26 +777,26 @@ model TenantTag {
 }
 
 model Task {
-  id                String               @id @default(uuid())
-  tenantId          String
-  contactId         String?
-  statusConfigId    String?
-  assignedToUserId  String?
-  priority          TaskPriority?
-  name              String
-  description       String?
-  dueDate           DateTime?
-  startedAt         DateTime?
-  linkedEntityName  String?
-  linkedEntityType  TaskLinkedEntityType?
+  id               String                @id @default(uuid())
+  tenantId         String
+  contactId        String?
+  statusConfigId   String?
+  assignedToUserId String?
+  priority         TaskPriority?
+  name             String
+  description      String?
+  dueDate          DateTime?
+  startedAt        DateTime?
+  linkedEntityName String?
+  linkedEntityType TaskLinkedEntityType?
 
-  tenant              Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  contact             Contact?          @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  statusConfig        TaskStatusConfig? @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
-  assignedToMembership Membership?      @relation("TaskAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
-  reminders           TaskReminder[]
-  notifications       Notification[]
-  activities          TaskActivity[]
+  tenant               Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact              Contact?          @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  statusConfig         TaskStatusConfig? @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
+  assignedToMembership Membership?       @relation("TaskAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
+  reminders            TaskReminder[]
+  notifications        Notification[]
+  activities           TaskActivity[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -785,7 +811,7 @@ model Task {
 }
 
 model TaskReminder {
-  id              String   @id @default(uuid())
+  id              String    @id @default(uuid())
   tenantId        String
   taskId          String
   recipientUserId String
@@ -796,12 +822,12 @@ model TaskReminder {
   notifiedAt      DateTime?
   canceledAt      DateTime?
 
-  tenant               Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  task                 Task        @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  recipient            User        @relation("TaskReminderRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
-  recipientMembership  Membership? @relation("TaskReminderMembershipRecipient", fields: [membershipId], references: [id], onDelete: SetNull)
-  createdBy            User        @relation("TaskReminderCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
-  notification         Notification?
+  tenant              Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  task                Task          @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  recipient           User          @relation("TaskReminderRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+  recipientMembership Membership?   @relation("TaskReminderMembershipRecipient", fields: [membershipId], references: [id], onDelete: SetNull)
+  createdBy           User          @relation("TaskReminderCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+  notification        Notification?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -823,9 +849,9 @@ model Notification {
   body           String?
   readAt         DateTime?
 
-  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  task         Task?        @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task         Task?         @relation(fields: [taskId], references: [id], onDelete: SetNull)
   taskReminder TaskReminder? @relation(fields: [taskReminderId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
@@ -836,19 +862,19 @@ model Notification {
 }
 
 model ContactCustomFieldValue {
-  id       String @id @default(uuid())
-  tenantId String
-  contactId String
-  fieldId  String
-  value    Json?
+  id              String  @id @default(uuid())
+  tenantId        String
+  contactId       String
+  fieldId         String
+  value           Json?
   valueCiphertext String?
   valueIv         String?
   valueAuthTag    String?
   valueKeyVersion Int?
 
-  tenant   Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  contact  Contact            @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  field    ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  tenant  Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact Contact            @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  field   ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -917,13 +943,13 @@ model Contact {
   tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   statusConfig ContactStatusConfig? @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
 
-  assignedToMembership      Membership? @relation("ContactAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
-  servicingAgentMembership  Membership? @relation("ContactServicingAgentMembership", fields: [tenantId, servicingAgentUserId], references: [tenantId, userId])
-  additionalAgentMembership Membership? @relation("ContactAdditionalAgentMembership", fields: [tenantId, additionalAgentUserId], references: [tenantId, userId])
+  assignedToMembership      Membership?               @relation("ContactAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
+  servicingAgentMembership  Membership?               @relation("ContactServicingAgentMembership", fields: [tenantId, servicingAgentUserId], references: [tenantId, userId])
+  additionalAgentMembership Membership?               @relation("ContactAdditionalAgentMembership", fields: [tenantId, additionalAgentUserId], references: [tenantId, userId])
   tags                      ContactTag[]
   customFieldValues         ContactCustomFieldValue[]
-  outgoingRelationships     ContactRelationship[] @relation("ContactRelationshipSource")
-  incomingRelationships     ContactRelationship[] @relation("ContactRelationshipTarget")
+  outgoingRelationships     ContactRelationship[]     @relation("ContactRelationshipSource")
+  incomingRelationships     ContactRelationship[]     @relation("ContactRelationshipTarget")
   notes                     ContactNote[]
   tasks                     Task[]
   serviceProcesses          ContactService[]
@@ -960,12 +986,12 @@ model ContactTag {
 }
 
 model ContactRelationship {
-  id                       String                  @id @default(uuid())
-  tenantId                 String
-  contactId                String
-  relatedContactId         String
-  relationshipPairKey      String
-  relationshipType         ContactRelationshipType
+  id                         String                  @id @default(uuid())
+  tenantId                   String
+  contactId                  String
+  relatedContactId           String
+  relationshipPairKey        String
+  relationshipType           ContactRelationshipType
   reciprocalRelationshipType ContactRelationshipType
 
   tenant         Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -988,9 +1014,9 @@ model ContactNote {
   body        String
   createdById String
 
-  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  contact     Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  createdBy   User @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  tenant      Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact     Contact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  createdBy   User                    @relation(fields: [createdById], references: [id], onDelete: Cascade)
   attachments ContactNoteAttachment[]
 
   createdAt DateTime @default(now())
@@ -1007,9 +1033,9 @@ model ContactNoteAttachment {
   noteId   String
   fileId   String
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   note   ContactNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
-  file   File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  file   File        @relation(fields: [fileId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
