@@ -35,6 +35,7 @@ const ContactServicesListQuerySchema = z.object({
 const CreateContactServiceSchema = z.object({
   contactId: z.string().min(1),
   serviceId: z.string().min(1),
+  followUpTemplateId: z.string().min(1).optional(),
   purchasedAt: z.string().datetime().nullable().optional(),
   startedAt: z.string().datetime().nullable().optional(),
   totalPriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
@@ -231,6 +232,22 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           basePriceCents: true,
           currency: true,
           allowPartialPayments: true,
+          followUpTemplates: {
+            where: { isPublished: true },
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: {
+              id: true,
+              steps: {
+                orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+                select: {
+                  title: true,
+                  notesTemplate: true,
+                  dueDaysFromStart: true,
+                  sortOrder: true,
+                },
+              },
+            },
+          },
           followUpTemplateSteps: {
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: {
@@ -251,6 +268,17 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
     if (!service) {
       return res.status(400).json({ error: "INVALID_SERVICE" })
     }
+
+    const selectedPublishedTemplate = payload.followUpTemplateId
+      ? service.followUpTemplates.find((item: any) => item.id === payload.followUpTemplateId) ?? null
+      : service.followUpTemplates[0] ?? null
+    if (payload.followUpTemplateId && !selectedPublishedTemplate) {
+      return res.status(400).json({ error: "INVALID_FOLLOW_UP_TEMPLATE" })
+    }
+    const templateStepsForEnrollment =
+      selectedPublishedTemplate?.steps?.length
+        ? selectedPublishedTemplate.steps
+        : service.followUpTemplateSteps
 
     const purchasedAt = payload.purchasedAt ? new Date(payload.purchasedAt) : new Date()
     const startedAt = payload.startedAt ? new Date(payload.startedAt) : new Date()
@@ -291,9 +319,9 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         })
       }
 
-      if (service.followUpTemplateSteps.length) {
+      if (templateStepsForEnrollment.length) {
         await prismaTx.contactServiceFollowUpStep.createMany({
-          data: service.followUpTemplateSteps.map((step: any) => {
+          data: templateStepsForEnrollment.map((step: any) => {
             const dueAt = new Date(startedAt)
             dueAt.setDate(dueAt.getDate() + step.dueDaysFromStart)
 

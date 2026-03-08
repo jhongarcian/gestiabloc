@@ -5342,6 +5342,12 @@ components:
           type: string
         sortOrder:
           type: integer
+        isPublished:
+          type: boolean
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
         flowNodes:
           type: array
           items: {}
@@ -5358,6 +5364,8 @@ components:
           type: string
         sortOrder:
           type: integer
+        isPublished:
+          type: boolean
         flowNodes:
           type: array
           items: {}
@@ -5371,6 +5379,8 @@ components:
           type: string
         sortOrder:
           type: integer
+        isPublished:
+          type: boolean
         flowNodes:
           type: array
           items: {}
@@ -5396,6 +5406,12 @@ components:
               type: string
             sortOrder:
               type: integer
+            isPublished:
+              type: boolean
+            publishedAt:
+              type: string
+              format: date-time
+              nullable: true
             flowNodes:
               type: array
               items: {}
@@ -5570,6 +5586,8 @@ components:
         contactId:
           type: string
         serviceId:
+          type: string
+        followUpTemplateId:
           type: string
         purchasedAt:
           type: string

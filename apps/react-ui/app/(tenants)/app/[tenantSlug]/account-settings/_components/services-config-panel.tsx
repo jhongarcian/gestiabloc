@@ -65,6 +65,7 @@ type ServiceItem = {
   sortOrder: number
   checklistItems: Array<{ id: string }>
   followUpTemplateSteps: Array<{ id: string }>
+  followUpTemplates?: Array<{ id: string }>
   professionals: Array<{ id: string }>
 }
 
@@ -343,7 +344,8 @@ function SortableServiceRow({
 
   const isConfigured =
     service.checklistItems.length > 0 &&
-    service.followUpTemplateSteps.length > 0 &&
+    ((service.followUpTemplates?.length ?? 0) > 0 ||
+      service.followUpTemplateSteps.length > 0) &&
     service.professionals.length > 0
 
   return (
@@ -651,33 +653,33 @@ export function ServicesConfigPanel({ tenantId, tenantSlug }: ServicesConfigPane
           </div>
         </div>
 
-        <div className="min-h-0 overflow-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10" />
-                <TableHead>Name</TableHead>
-                <TableHead>Price</TableHead>
-                <TableHead>Billing</TableHead>
-                <TableHead>Setup status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <div className="min-h-0 overflow-auto">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-slate-500">
-                    Loading services...
-                  </TableCell>
+                  <TableHead className="w-10" />
+                  <TableHead>Name</TableHead>
+                  <TableHead>Price</TableHead>
+                  <TableHead>Billing</TableHead>
+                  <TableHead>Setup status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
-              ) : errorMessage ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-rose-600">
-                    {errorMessage}
-                  </TableCell>
-                </TableRow>
-              ) : services.length ? (
-                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+              </TableHeader>
+              <TableBody>
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="py-8 text-center text-slate-500">
+                      Loading services...
+                    </TableCell>
+                  </TableRow>
+                ) : errorMessage ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="py-8 text-center text-rose-600">
+                      {errorMessage}
+                    </TableCell>
+                  </TableRow>
+                ) : services.length ? (
                   <SortableContext
                     items={services.map((service) => service.id)}
                     strategy={verticalListSortingStrategy}
@@ -693,17 +695,17 @@ export function ServicesConfigPanel({ tenantId, tenantSlug }: ServicesConfigPane
                       />
                     ))}
                   </SortableContext>
-                </DndContext>
-              ) : (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-slate-500">
-                    No services configured yet.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
+                ) : (
+                  <TableRow>
+                    <TableCell colSpan={6} className="py-8 text-center text-slate-500">
+                      No services configured yet.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </DndContext>
 
         <div className="flex flex-col gap-2 border-t border-slate-200 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-slate-500">

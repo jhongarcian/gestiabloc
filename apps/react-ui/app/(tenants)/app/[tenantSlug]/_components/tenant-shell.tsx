@@ -197,6 +197,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [currentUser, setCurrentUser] = useState(user)
   const [contactCrumbLabel, setContactCrumbLabel] = useState<string | null>(null)
+  const [serviceCrumbLabel, setServiceCrumbLabel] = useState<string | null>(null)
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
   const [isNotificationsLoading, setIsNotificationsLoading] = useState(false)
@@ -228,6 +229,12 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
     () => `/app/${resolvedTenantSlug}`,
     [resolvedTenantSlug],
   )
+  const isFlowBuilderRoute = useMemo(
+    () =>
+      pathname.includes("/account-settings/services/") &&
+      pathname.includes("/follow-up-templates/"),
+    [pathname],
+  )
   const segments = useMemo(() => {
     if (!pathname.startsWith(basePath)) {
       return []
@@ -250,18 +257,29 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
     segments.forEach((segment, index) => {
       acc += `/${segment}`
       const isContactIdSegment = segments[0] === "contacts" && index === 1
+      const isServiceIdSegment =
+        segments[0] === "account-settings" &&
+        segments[1] === "services" &&
+        index === 2
 
       if (isContactIdSegment && !contactCrumbLabel) {
         return
       }
+      if (isServiceIdSegment && !serviceCrumbLabel) {
+        return
+      }
 
       items.push({
-        label: isContactIdSegment ? contactCrumbLabel : formatSegment(segment),
+        label: isContactIdSegment
+          ? (contactCrumbLabel ?? "")
+          : isServiceIdSegment
+            ? (serviceCrumbLabel ?? "")
+            : formatSegment(segment),
         href: acc,
       })
     })
     return items
-  }, [segments, basePath, contactCrumbLabel])
+  }, [segments, basePath, contactCrumbLabel, serviceCrumbLabel])
 
   useEffect(() => {
     if (!currentUser.image) {
@@ -319,6 +337,16 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
   }, [segments])
 
   useEffect(() => {
+    const serviceId =
+      segments[0] === "account-settings" && segments[1] === "services"
+        ? segments[2]
+        : null
+    if (!serviceId) {
+      setServiceCrumbLabel(null)
+    }
+  }, [segments])
+
+  useEffect(() => {
     const handler = (
       event: Event,
     ) => {
@@ -335,6 +363,18 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
         "contact-breadcrumb-updated",
         handler as EventListener,
       )
+    }
+  }, [])
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const customEvent = event as CustomEvent<{ label?: string | null }>
+      setServiceCrumbLabel(customEvent.detail?.label ?? null)
+    }
+
+    window.addEventListener("service-breadcrumb-updated", handler as EventListener)
+    return () => {
+      window.removeEventListener("service-breadcrumb-updated", handler as EventListener)
     }
   }, [])
 
@@ -626,17 +666,27 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
 
   return (
     <SidebarProvider className="min-h-screen w-full bg-slate-50">
-      <AppSidebar
-        tenantSlug={tenantSlug}
-        className="md:h-full"
-        onNavigate={handleSidebarNavigate}
-      />
+      {!isFlowBuilderRoute ? (
+        <AppSidebar
+          tenantSlug={tenantSlug}
+          className="md:h-full"
+          onNavigate={handleSidebarNavigate}
+        />
+      ) : null}
 
       <SidebarInset className="min-w-0 bg-slate-50 flex min-h-screen flex-col">
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md supports-backdrop-filter:bg-white/70">
-          <div className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:justify-between ">
+          <div
+            className={`flex flex-col px-4 ${
+              isFlowBuilderRoute
+                ? "gap-2 py-2 md:flex-row md:items-center md:justify-between"
+                : "gap-3 py-3 md:flex-row md:items-center md:justify-between"
+            }`}
+          >
             <div className="flex flex-1 items-center gap-3">
-              <SidebarTrigger className="h-9 w-9 cursor-pointer" />
+              {!isFlowBuilderRoute ? (
+                <SidebarTrigger className="h-9 w-9 cursor-pointer" />
+              ) : null}
               <Breadcrumb>
                 <BreadcrumbList>
                   {crumbs.map((crumb, index) => {
@@ -660,6 +710,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
               </Breadcrumb>
             </div>
             <div className="flex items-center gap-3">
+              {!isFlowBuilderRoute ? (
               <div className="relative flex-1 max-w-md min-w-sm">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <Input
@@ -668,12 +719,15 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
                   aria-label="Search"
                 />
               </div>
+              ) : null}
 
               <Button
                 variant="ghost"
                 size="icon"
                 type="button"
-                className="relative h-10 w-10 shrink-0 rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm cursor-pointer transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700"
+                className={`relative shrink-0 rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm cursor-pointer transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700 ${
+                  isFlowBuilderRoute ? "h-9 w-9" : "h-10 w-10"
+                }`}
                 aria-label="Notifications"
                 onClick={() => setNotificationsOpen(true)}
               >
@@ -691,7 +745,11 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
                 className="rounded-full cursor-pointer transition focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-slate-100"
                 aria-label="Open profile"
               >
-                <Avatar className="h-9 w-9 border-2 border-blue-950 bg-slate-100">
+                <Avatar
+                  className={`border-2 border-blue-950 bg-slate-100 ${
+                    isFlowBuilderRoute ? "h-8 w-8" : "h-9 w-9"
+                  }`}
+                >
                   {avatarUrl || currentUser.image ? (
                     <AvatarImage
                       src={avatarUrl ?? currentUser.image ?? ""}
@@ -708,7 +766,13 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
           </div>
         </header>
 
-        <div className="flex flex-1 min-h-0 bg-slate-100 px-4 py-4 md:px-6 md:py-6">
+        <div
+          className={`flex flex-1 min-h-0 ${
+            isFlowBuilderRoute
+              ? "bg-slate-50 px-0 py-0"
+              : "bg-slate-100 px-4 py-4 md:px-6 md:py-6"
+          }`}
+        >
           <TenantUserProvider user={currentUser}>
             <div className="flex h-full w-full min-h-0 flex-col">{children}</div>
           </TenantUserProvider>

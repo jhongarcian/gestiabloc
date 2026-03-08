@@ -3,14 +3,14 @@ import { redirect } from "next/navigation"
 
 import { api, type MeResponse } from "@/lib/api"
 
-import { ServiceProfessionalsOverviewPanel } from "../_components/service-professionals-overview-panel"
+import { CreateTemplateRedirect } from "./_components/create-template-redirect"
 
-export default async function AccountSettingsProfessionalsPage({
+export default async function NewFollowUpTemplatePage({
   params,
 }: {
-  params: Promise<{ tenantSlug: string }>
+  params: Promise<{ tenantSlug: string; serviceId: string }>
 }) {
-  const { tenantSlug } = await params
+  const { tenantSlug, serviceId } = await params
 
   let me: MeResponse["user"] | null = null
 
@@ -36,6 +36,10 @@ export default async function AccountSettingsProfessionalsPage({
   }
 
   return (
-    <ServiceProfessionalsOverviewPanel tenantId={membership.tenant.id} tenantSlug={tenantSlug} />
+    <CreateTemplateRedirect
+      tenantId={membership.tenant.id}
+      tenantSlug={tenantSlug}
+      serviceId={serviceId}
+    />
   )
 }

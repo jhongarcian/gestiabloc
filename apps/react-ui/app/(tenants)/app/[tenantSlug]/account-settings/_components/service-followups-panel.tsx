@@ -72,12 +72,18 @@ export function ServiceFollowUpsPanel({
       const { data } = await api.get<ServiceOptionsResponse>(
         `/api/account-settings/${tenantId}/services/options`,
         {
-          params: { includeInactive: true },
+          params: { includeInactive: "true" },
         },
       )
       setServiceOptions(data.items)
 
-      if (!selectedServiceId && data.items.length) {
+      if (!data.items.length) {
+        setSelectedServiceId("")
+        return
+      }
+
+      const hasSelectedService = data.items.some((service) => service.id === selectedServiceId)
+      if (!selectedServiceId || !hasSelectedService) {
         setSelectedServiceId(data.items[0].id)
       }
     } catch {
@@ -212,7 +218,7 @@ export function ServiceFollowUpsPanel({
                 asChild
                 type="button"
                 variant="outline"
-                className="w-full border-white/20 text-white hover:bg-white/10"
+                className="w-full border-white/20 bg-transparent text-white hover:bg-white/10 hover:text-white"
               >
                 <Link href={`/app/${tenantSlug}/account-settings/professionals?serviceId=${selectedServiceId}`}>
                   Go to professionals

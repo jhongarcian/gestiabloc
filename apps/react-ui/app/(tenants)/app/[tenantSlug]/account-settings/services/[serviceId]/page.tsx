@@ -4,7 +4,7 @@ import { redirect } from "next/navigation"
 
 import { api, type MeResponse } from "@/lib/api"
 
-import { ServiceDetailsPanel } from "../../_components/service-details-panel"
+import { ServiceDetailsPanelClient } from "./_components/service-details-panel-client"
 
 type ServiceDetailsResponse = {
   ok: boolean
@@ -20,8 +20,36 @@ type ServiceDetailsResponse = {
     checklistItems: Array<{
       id: string
       label: string
+      description: string | null
       isRequired: boolean
       sortOrder: number
+    }>
+    followUpTemplateSteps: Array<{
+      id: string
+      title: string
+      notesTemplate: string | null
+      dueDaysFromStart: number
+      sortOrder: number
+    }>
+    followUpTemplates: Array<{
+      id: string
+      name: string
+      sortOrder: number
+      flowNodes: unknown[] | null
+      flowEdges: unknown[] | null
+    }>
+    professionals: Array<{
+      id: string
+      kind: "INTERNAL_USER" | "EXTERNAL"
+      userId: string | null
+      externalProfessionalName: string | null
+      externalContact: string | null
+      notes: string | null
+      sortOrder: number
+      user: {
+        name: string | null
+        email: string
+      } | null
     }>
     configStatus: {
       checklistComplete: boolean
@@ -71,7 +99,7 @@ export default async function AccountSettingsServiceDetailsPage({
     )
 
     return (
-      <ServiceDetailsPanel
+      <ServiceDetailsPanelClient
         tenantId={membership.tenant.id}
         tenantSlug={tenantSlug}
         service={data.service}
