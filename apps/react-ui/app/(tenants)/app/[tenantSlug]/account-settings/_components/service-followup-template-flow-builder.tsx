@@ -3562,7 +3562,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                 role="switch"
                 aria-checked={isPublished}
                 onClick={() => setIsPublished((prev) => !prev)}
-                className="inline-flex h-9 items-center rounded-full border border-slate-300 bg-white px-1 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+                className="inline-flex h-9 cursor-pointer items-center rounded-full border border-slate-300 bg-white px-1 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
               >
                 <span
                   className={`rounded-full px-3 py-1 transition ${

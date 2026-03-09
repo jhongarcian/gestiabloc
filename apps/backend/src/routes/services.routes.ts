@@ -50,6 +50,16 @@ const CreateContactServicePaymentSchema = z.object({
   note: z.string().trim().max(1000).nullable().optional(),
 })
 
+const UpdateContactServiceSchema = z.object({
+  status: z.enum(["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELED"]).optional(),
+  startedAt: z.string().datetime().nullable().optional(),
+  purchasedAt: z.string().datetime().nullable().optional(),
+  completedAt: z.string().datetime().nullable().optional(),
+  canceledAt: z.string().datetime().nullable().optional(),
+  totalPriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+  notes: z.string().trim().max(4000).nullable().optional(),
+})
+
 const UpdateFollowUpStepSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   notesTemplate: z.string().trim().max(1000).nullable().optional(),
@@ -430,6 +440,130 @@ router.post(
           remainingCents: Math.max(0, contactService.totalPriceCents - totalPaidCents),
         },
       })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.patch(
+  "/:tenantId/contact-services/:contactServiceId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+      const payload = UpdateContactServiceSchema.parse(req.body)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      if (Object.keys(payload).length === 0) {
+        return res.status(400).json({ error: "NO_CHANGES_PROVIDED" })
+      }
+
+      const existing = await prismaWithServices.contactService.findFirst({
+        where: {
+          id: contactServiceId,
+          tenantId,
+        },
+        select: {
+          id: true,
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const statusUpdate =
+        payload.status === undefined
+          ? {}
+          : payload.status === "COMPLETED"
+            ? {
+                status: "COMPLETED" as const,
+                completedAt: payload.completedAt ? new Date(payload.completedAt) : new Date(),
+                canceledAt: null,
+              }
+            : payload.status === "CANCELED"
+              ? {
+                  status: "CANCELED" as const,
+                  canceledAt: payload.canceledAt ? new Date(payload.canceledAt) : new Date(),
+                  completedAt: null,
+                }
+              : {
+                  status: payload.status,
+                  completedAt: null,
+                  canceledAt: null,
+                }
+
+      const updated = await prismaWithServices.contactService.update({
+        where: { id: contactServiceId },
+        data: {
+          ...statusUpdate,
+          ...(payload.startedAt !== undefined
+            ? { startedAt: payload.startedAt ? new Date(payload.startedAt) : null }
+            : {}),
+          ...(payload.purchasedAt !== undefined
+            ? { purchasedAt: payload.purchasedAt ? new Date(payload.purchasedAt) : null }
+            : {}),
+          ...(payload.totalPriceCents !== undefined
+            ? { totalPriceCents: payload.totalPriceCents }
+            : {}),
+          ...(payload.notes !== undefined ? { notes: payload.notes?.trim() || null } : {}),
+        },
+        select: {
+          id: true,
+          status: true,
+          startedAt: true,
+          purchasedAt: true,
+          completedAt: true,
+          canceledAt: true,
+          totalPriceCents: true,
+          notes: true,
+        },
+      })
+
+      return res.json({
+        ok: true,
+        contactService: updated,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.delete(
+  "/:tenantId/contact-services/:contactServiceId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const existing = await prismaWithServices.contactService.findFirst({
+        where: {
+          id: contactServiceId,
+          tenantId,
+        },
+        select: {
+          id: true,
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      await prismaWithServices.contactService.delete({
+        where: { id: contactServiceId },
+      })
+
+      return res.json({ ok: true })
     } catch (error) {
       return next(error)
     }

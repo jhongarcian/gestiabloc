@@ -12,6 +12,8 @@ type ContactDetailTabsProps = {
 
 const TABS = [
   { key: "overview", label: "Overview" },
+  { key: "services", label: "Services" },
+  { key: "follow-ups", label: "Follow-Ups" },
   { key: "notes", label: "Notes" },
   { key: "tasks", label: "Tasks" },
 ] as const

@@ -3001,6 +3001,93 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}:
+    patch:
+      tags: [Services]
+      summary: Update a contact service process
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContactServiceRequest"
+      responses:
+        "200":
+          description: Contact service process updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactServiceMutationResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Services]
+      summary: Delete a contact service process
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Contact service process deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/payments:
     post:
       tags: [Services]
@@ -5618,6 +5705,70 @@ components:
           properties:
             id:
               type: string
+    UpdateContactServiceRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [PENDING, IN_PROGRESS, COMPLETED, CANCELED]
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        purchasedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        canceledAt:
+          type: string
+          format: date-time
+          nullable: true
+        totalPriceCents:
+          type: integer
+          minimum: 0
+        notes:
+          type: string
+          nullable: true
+          maxLength: 4000
+    ContactServiceMutationResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        contactService:
+          type: object
+          properties:
+            id:
+              type: string
+            status:
+              type: string
+              enum: [PENDING, IN_PROGRESS, COMPLETED, CANCELED]
+            startedAt:
+              type: string
+              format: date-time
+              nullable: true
+            purchasedAt:
+              type: string
+              format: date-time
+              nullable: true
+            completedAt:
+              type: string
+              format: date-time
+              nullable: true
+            canceledAt:
+              type: string
+              format: date-time
+              nullable: true
+            totalPriceCents:
+              type: integer
+            notes:
+              type: string
+              nullable: true
     CreateContactServicePaymentRequest:
       type: object
       required: [amountCents]
