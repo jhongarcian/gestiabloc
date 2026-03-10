@@ -7,6 +7,18 @@ import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 const router = Router()
 const prismaWithServices = prisma as any
 
+const stripHtmlTags = (value: string) => value.replace(/<[^>]*>/g, " ")
+const removeUnsafeControls = (value: string) => value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+const sanitizeSingleLineText = (value: string) =>
+  removeUnsafeControls(stripHtmlTags(value)).replace(/\s+/g, " ").trim()
+const sanitizeMultilineText = (value: string) =>
+  removeUnsafeControls(stripHtmlTags(value))
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .join("\n")
+    .trim()
+
 const TenantPathSchema = z.object({
   tenantId: z.string().min(1),
 })
@@ -63,6 +75,8 @@ const UpdateContactServiceSchema = z.object({
 const UpdateFollowUpStepSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   notesTemplate: z.string().trim().max(1000).nullable().optional(),
+  status: z.enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED"]).optional(),
+  availableAt: z.string().datetime().nullable().optional(),
   dueAt: z.string().datetime().nullable().optional(),
   completedAt: z.string().datetime().nullable().optional(),
   assignedToUserId: z.string().trim().min(1).nullable().optional(),
@@ -73,6 +87,8 @@ const UpdateFollowUpStepSchema = z.object({
 const CreateFollowUpStepSchema = z.object({
   title: z.string().trim().min(1).max(200),
   notesTemplate: z.string().trim().max(1000).nullable().optional(),
+  status: z.enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED"]).optional(),
+  availableAt: z.string().datetime().nullable().optional(),
   dueAt: z.string().datetime().nullable().optional(),
   assignedToUserId: z.string().trim().min(1).nullable().optional(),
   note: z.string().trim().max(2000).nullable().optional(),
@@ -162,6 +178,8 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               title: true,
+              status: true,
+              availableAt: true,
               dueAt: true,
               completedAt: true,
               assignedToUserId: true,
@@ -293,6 +311,10 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
     const purchasedAt = payload.purchasedAt ? new Date(payload.purchasedAt) : new Date()
     const startedAt = payload.startedAt ? new Date(payload.startedAt) : new Date()
     const totalPriceCents = payload.totalPriceCents ?? service.basePriceCents
+    const sanitizedServiceNotes =
+      payload.notes && payload.notes.trim().length
+        ? sanitizeMultilineText(payload.notes)
+        : null
 
     const created = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any
@@ -308,7 +330,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           totalPriceCents,
           currency: service.currency,
           allowPartialPayments: service.allowPartialPayments,
-          notes: payload.notes?.trim() || null,
+          notes: sanitizedServiceNotes,
         },
         select: {
           id: true,
@@ -331,7 +353,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
 
       if (templateStepsForEnrollment.length) {
         await prismaTx.contactServiceFollowUpStep.createMany({
-          data: templateStepsForEnrollment.map((step: any) => {
+          data: templateStepsForEnrollment.map((step: any, index: number) => {
             const dueAt = new Date(startedAt)
             dueAt.setDate(dueAt.getDate() + step.dueDaysFromStart)
 
@@ -340,6 +362,8 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
               contactServiceId: contactService.id,
               title: step.title,
               notesTemplate: step.notesTemplate,
+              status: index === 0 ? "ACTIVE" : "PENDING",
+              availableAt: dueAt,
               dueAt,
               sortOrder: step.sortOrder,
             }
@@ -392,8 +416,14 @@ router.post(
           contactServiceId,
           amountCents: payload.amountCents,
           paidAt: payload.paidAt ? new Date(payload.paidAt) : new Date(),
-          paymentMethod: payload.paymentMethod?.trim() || null,
-          note: payload.note?.trim() || null,
+          paymentMethod:
+            payload.paymentMethod && payload.paymentMethod.trim().length
+              ? sanitizeSingleLineText(payload.paymentMethod)
+              : null,
+          note:
+            payload.note && payload.note.trim().length
+              ? sanitizeMultilineText(payload.note)
+              : null,
           recordedById: authed.user.id,
         },
         select: {
@@ -510,7 +540,14 @@ router.patch(
           ...(payload.totalPriceCents !== undefined
             ? { totalPriceCents: payload.totalPriceCents }
             : {}),
-          ...(payload.notes !== undefined ? { notes: payload.notes?.trim() || null } : {}),
+          ...(payload.notes !== undefined
+            ? {
+                notes:
+                  payload.notes && payload.notes.trim().length
+                    ? sanitizeMultilineText(payload.notes)
+                    : null,
+              }
+            : {}),
         },
         select: {
           id: true,
@@ -610,6 +647,8 @@ router.patch(
         },
         select: {
           id: true,
+          status: true,
+          completedAt: true,
         },
       })
 
@@ -617,31 +656,69 @@ router.patch(
         return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
       }
 
+      const statusUpdate =
+        payload.status === undefined
+          ? payload.completedAt === undefined
+            ? {}
+            : payload.completedAt
+              ? {
+                  status: "COMPLETED" as const,
+                  completedAt: new Date(payload.completedAt),
+                }
+              : {
+                  status: existing.status === "SKIPPED" ? "SKIPPED" : "ACTIVE",
+                  completedAt: null,
+                }
+          : payload.status === "COMPLETED"
+            ? {
+                status: "COMPLETED" as const,
+                completedAt: payload.completedAt ? new Date(payload.completedAt) : new Date(),
+              }
+            : {
+                status: payload.status,
+                completedAt: null,
+              }
+
       const updated = await prismaWithServices.contactServiceFollowUpStep.update({
         where: {
           id: followUpStepId,
         },
         data: {
-          ...(payload.title !== undefined ? { title: payload.title.trim() } : {}),
+          ...(payload.title !== undefined ? { title: sanitizeSingleLineText(payload.title) } : {}),
           ...(payload.notesTemplate !== undefined
-            ? { notesTemplate: payload.notesTemplate?.trim() || null }
+            ? {
+                notesTemplate:
+                  payload.notesTemplate && payload.notesTemplate.trim().length
+                    ? sanitizeMultilineText(payload.notesTemplate)
+                    : null,
+              }
+            : {}),
+          ...statusUpdate,
+          ...(payload.availableAt !== undefined
+            ? { availableAt: payload.availableAt ? new Date(payload.availableAt) : null }
             : {}),
           ...(payload.dueAt !== undefined
             ? { dueAt: payload.dueAt ? new Date(payload.dueAt) : null }
             : {}),
-          ...(payload.completedAt !== undefined
-            ? { completedAt: payload.completedAt ? new Date(payload.completedAt) : null }
-            : {}),
           ...(payload.assignedToUserId !== undefined
             ? { assignedToUserId: payload.assignedToUserId || null }
             : {}),
-          ...(payload.note !== undefined ? { note: payload.note?.trim() || null } : {}),
+          ...(payload.note !== undefined
+            ? {
+                note:
+                  payload.note && payload.note.trim().length
+                    ? sanitizeMultilineText(payload.note)
+                    : null,
+              }
+            : {}),
           ...(payload.sortOrder !== undefined ? { sortOrder: payload.sortOrder } : {}),
         },
         select: {
           id: true,
           title: true,
           notesTemplate: true,
+          status: true,
+          availableAt: true,
           dueAt: true,
           completedAt: true,
           assignedToUserId: true,
@@ -712,23 +789,52 @@ router.post(
         orderBy: { sortOrder: "desc" },
         select: { sortOrder: true },
       })
+      const hasActiveStep = await prismaWithServices.contactServiceFollowUpStep.findFirst({
+        where: {
+          tenantId,
+          contactServiceId,
+          status: "ACTIVE",
+        },
+        select: { id: true },
+      })
+
+      const nextStatus = payload.status ?? (hasActiveStep ? "PENDING" : "ACTIVE")
+      const nextDueAt = payload.dueAt ? new Date(payload.dueAt) : null
+      const nextAvailableAt =
+        payload.availableAt !== undefined
+          ? payload.availableAt
+            ? new Date(payload.availableAt)
+            : null
+          : nextStatus === "ACTIVE"
+            ? new Date()
+            : nextDueAt
 
       const created = await prismaWithServices.contactServiceFollowUpStep.create({
         data: {
           tenantId,
           contactServiceId,
-          title: payload.title.trim(),
-          notesTemplate: payload.notesTemplate?.trim() || null,
-          dueAt: payload.dueAt ? new Date(payload.dueAt) : null,
-          completedAt: null,
+          title: sanitizeSingleLineText(payload.title),
+          notesTemplate:
+            payload.notesTemplate && payload.notesTemplate.trim().length
+              ? sanitizeMultilineText(payload.notesTemplate)
+              : null,
+          status: nextStatus,
+          availableAt: nextAvailableAt,
+          dueAt: nextDueAt,
+          completedAt: nextStatus === "COMPLETED" ? new Date() : null,
           assignedToUserId: payload.assignedToUserId || null,
-          note: payload.note?.trim() || null,
+          note:
+            payload.note && payload.note.trim().length
+              ? sanitizeMultilineText(payload.note)
+              : null,
           sortOrder: payload.sortOrder ?? (maxSortOrder?.sortOrder ?? 0) + 10,
         },
         select: {
           id: true,
           title: true,
           notesTemplate: true,
+          status: true,
+          availableAt: true,
           dueAt: true,
           completedAt: true,
           assignedToUserId: true,

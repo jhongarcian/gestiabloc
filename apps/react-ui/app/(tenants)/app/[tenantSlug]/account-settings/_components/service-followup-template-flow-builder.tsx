@@ -1616,6 +1616,27 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const getIfBranchCanvasNodeId = (ifElseNodeId: string, branchId: string) =>
     `if-branch-${ifElseNodeId}-${branchId}`
 
+  const resolveCreateSourceNode = (sourceNodeId: string | null) => {
+    if (!sourceNodeId) return null
+    const parsedIfBranchSource = parseIfBranchSource(sourceNodeId)
+    const parsedEdgeInsertSource = parseEdgeInsertSource(sourceNodeId)
+    const parsedIfBranchEdgeInsertSource = parseIfBranchEdgeInsertSource(sourceNodeId)
+
+    return parsedIfBranchSource
+      ? nodes.find((node) => node.id === parsedIfBranchSource.ifElseNodeId) ?? null
+      : parsedIfBranchEdgeInsertSource
+        ? nodes.find((node) => node.id === parsedIfBranchEdgeInsertSource.ifElseNodeId) ?? null
+        : parsedEdgeInsertSource
+          ? nodes.find((node) => node.id === parsedEdgeInsertSource.sourceId) ?? null
+          : nodes.find((node) => node.id === sourceNodeId) ?? null
+  }
+
+  const canAddStepAfterSource = (sourceNodeId: string | null) => {
+    const sourceNode = resolveCreateSourceNode(sourceNodeId)
+    if (!sourceNode) return false
+    return sourceNode.data.kind === "wait"
+  }
+
   const addStepNode = () => {
     const stepCount = nodes.filter((node) => node.data.kind === "step").length
     const nextIndex = stepCount + 1
@@ -1630,15 +1651,13 @@ export function ServiceFollowUpTemplateFlowBuilder({
       return
     }
 
-    const sourceNode = parsedIfBranchSource
-      ? nodes.find((node) => node.id === parsedIfBranchSource.ifElseNodeId)
-      : parsedIfBranchEdgeInsertSource
-        ? nodes.find((node) => node.id === parsedIfBranchEdgeInsertSource.ifElseNodeId)
-        : parsedEdgeInsertSource
-          ? nodes.find((node) => node.id === parsedEdgeInsertSource.sourceId)
-      : nodes.find((node) => node.id === sourceNodeId)
+    const sourceNode = resolveCreateSourceNode(sourceNodeId)
     if (!sourceNode) {
       toast.error("Could not find the source action.")
+      return
+    }
+    if (newStepDraft.kind === "step" && !canAddStepAfterSource(sourceNodeId)) {
+      toast.error("Add a Wait action before adding a Step.")
       return
     }
 
@@ -3697,22 +3716,40 @@ export function ServiceFollowUpTemplateFlowBuilder({
                           Workflow
                         </p>
                         <div className="h-px bg-slate-200" />
-                        {WORKFLOW_NODE_KINDS.map((kind) => (
-                          <button
-                            key={kind}
-                            type="button"
-                            className="w-full cursor-pointer rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-slate-300 hover:bg-slate-50"
-                            onClick={() => {
-                              setNewStepDraft(makeDefaultDraft(kind))
-                              setIsContactInfoSectionOpen(false)
-                              setIsCustomFieldsSectionOpen(false)
-                              setCreatePanelView("form")
-                            }}
-                          >
-                            <p className="text-sm font-medium text-slate-900">{NODE_KIND_LABEL[kind]}</p>
-                            <p className="text-xs text-slate-500">{NODE_KIND_DESCRIPTION[kind]}</p>
-                          </button>
-                        ))}
+                        {WORKFLOW_NODE_KINDS.map((kind) => {
+                          const currentSourceNodeId =
+                            createSourceNodeId ?? orderedNodes[orderedNodes.length - 1]?.id ?? null
+                          const isStepBlocked = kind === "step" && !canAddStepAfterSource(currentSourceNodeId)
+                          return (
+                            <button
+                              key={kind}
+                              type="button"
+                              disabled={isStepBlocked}
+                              className={`w-full rounded-lg border px-3 py-2 text-left transition ${
+                                isStepBlocked
+                                  ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                                  : "cursor-pointer border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                              }`}
+                              onClick={() => {
+                                if (isStepBlocked) {
+                                  toast.error("Add a Wait action before adding a Step.")
+                                  return
+                                }
+                                setNewStepDraft(makeDefaultDraft(kind))
+                                setIsContactInfoSectionOpen(false)
+                                setIsCustomFieldsSectionOpen(false)
+                                setCreatePanelView("form")
+                              }}
+                            >
+                              <p className="text-sm font-medium">{NODE_KIND_LABEL[kind]}</p>
+                              <p className="text-xs">
+                                {isStepBlocked
+                                  ? "Requires a Wait action directly before this Step."
+                                  : NODE_KIND_DESCRIPTION[kind]}
+                              </p>
+                            </button>
+                          )
+                        })}
                       </div>
                       <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
                         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">

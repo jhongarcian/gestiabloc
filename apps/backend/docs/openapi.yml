@@ -5582,6 +5582,13 @@ components:
           type: string
         title:
           type: string
+        status:
+          type: string
+          enum: [PENDING, ACTIVE, COMPLETED, SKIPPED]
+        availableAt:
+          type: string
+          format: date-time
+          nullable: true
         dueAt:
           type: string
           format: date-time
@@ -5831,6 +5838,13 @@ components:
           type: string
           nullable: true
           maxLength: 1000
+        status:
+          type: string
+          enum: [PENDING, ACTIVE, COMPLETED, SKIPPED]
+        availableAt:
+          type: string
+          format: date-time
+          nullable: true
         dueAt:
           type: string
           format: date-time
@@ -5856,6 +5870,13 @@ components:
           type: string
           nullable: true
           maxLength: 1000
+        status:
+          type: string
+          enum: [PENDING, ACTIVE, COMPLETED, SKIPPED]
+        availableAt:
+          type: string
+          format: date-time
+          nullable: true
         dueAt:
           type: string
           format: date-time

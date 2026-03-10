@@ -106,6 +106,13 @@ enum ContactServiceStatus {
   CANCELED
 }
 
+enum ContactServiceFollowUpStepStatus {
+  PENDING
+  ACTIVE
+  COMPLETED
+  SKIPPED
+}
+
 enum TaskLinkedEntityType {
   SERVICE
   PRODUCT
@@ -550,6 +557,8 @@ model ContactServiceFollowUpStep {
   contactServiceId String
   title            String
   notesTemplate    String?
+  status           ContactServiceFollowUpStepStatus @default(PENDING)
+  availableAt      DateTime?
   dueAt            DateTime?
   completedAt      DateTime?
   assignedToUserId String?
@@ -565,6 +574,7 @@ model ContactServiceFollowUpStep {
 
   @@unique([tenantId, id])
   @@index([tenantId, contactServiceId, sortOrder])
+  @@index([tenantId, contactServiceId, status, sortOrder])
   @@index([tenantId, assignedToUserId, dueAt])
 }
 

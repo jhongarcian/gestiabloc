@@ -3,9 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 import { Plus, Settings2 } from "lucide-react"
+import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAxis } from "recharts"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import {
   Dialog,
   DialogContent,
@@ -16,6 +19,11 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -47,7 +55,11 @@ type ContactServiceItem = {
     id: string
     name: string
   }
-  followUpSteps: Array<{ id: string }>
+  followUpSteps: Array<{
+    id: string
+    status?: "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED"
+    completedAt?: string | null
+  }>
 }
 
 type ContactServicesResponse = {
@@ -120,6 +132,29 @@ const parseUsdToCents = (value: string) => {
   if (!Number.isFinite(parsed) || parsed < 0) return null
   return Math.round(parsed * 100)
 }
+
+const SERVICE_STATUS_STYLES: Record<ContactServiceItem["status"], string> = {
+  PENDING: "bg-amber-100 text-amber-800 hover:bg-amber-100",
+  IN_PROGRESS: "bg-sky-100 text-sky-800 hover:bg-sky-100",
+  COMPLETED: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
+  CANCELED: "bg-rose-100 text-rose-800 hover:bg-rose-100",
+}
+
+const STATUS_CHART_COLORS: Record<ContactServiceItem["status"], string> = {
+  PENDING: "#f59e0b",
+  IN_PROGRESS: "#0ea5e9",
+  COMPLETED: "#22c55e",
+  CANCELED: "#ef4444",
+}
+
+const spendingChartConfig = {
+  paid: { label: "Paid", color: "#0ea5e9" },
+  remaining: { label: "Remaining", color: "#f59e0b" },
+} satisfies ChartConfig
+
+const statusChartConfig = {
+  value: { label: "Services", color: "#64748b" },
+} satisfies ChartConfig
 
 export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPanelProps) {
   const [items, setItems] = useState<ContactServiceItem[]>([])
@@ -233,8 +268,51 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
   const totals = useMemo(() => {
     const enrolled = items.length
     const completed = items.filter((item) => item.status === "COMPLETED").length
-    return { enrolled, completed }
+    const inProgress = items.filter((item) => item.status === "IN_PROGRESS").length
+    const totalBilledCents = items.reduce((sum, item) => sum + item.totalPriceCents, 0)
+    const totalPaidCents = items.reduce((sum, item) => sum + item.paidCents, 0)
+    const totalRemainingCents = items.reduce((sum, item) => sum + item.remainingCents, 0)
+    return {
+      enrolled,
+      completed,
+      inProgress,
+      totalBilledCents,
+      totalPaidCents,
+      totalRemainingCents,
+    }
   }, [items])
+
+  const spendingBreakdownData = useMemo(
+    () => [
+      {
+        name: "Balance",
+        paid: Number((totals.totalPaidCents / 100).toFixed(2)),
+        remaining: Number((totals.totalRemainingCents / 100).toFixed(2)),
+      },
+    ],
+    [totals.totalPaidCents, totals.totalRemainingCents],
+  )
+
+  const statusBreakdownData = useMemo(
+    () =>
+      (["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELED"] as const).map((status) => ({
+        status,
+        label: toSentence(status),
+        value: items.filter((item) => item.status === status).length,
+        fill: STATUS_CHART_COLORS[status],
+      })),
+    [items],
+  )
+
+  const getServiceProgress = (item: ContactServiceItem) => {
+    const total = item.followUpSteps.length
+    const completed = item.followUpSteps.filter(
+      (step) => step.status === "COMPLETED" || Boolean(step.completedAt),
+    ).length
+    const remaining = Math.max(0, total - completed)
+    const percentage = total > 0 ? Math.round((completed / total) * 100) : 0
+    return { total, completed, remaining, percentage }
+  }
 
   const onCreate = async () => {
     if (!createServiceId) {
@@ -367,16 +445,70 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm">
-              <span className="font-semibold text-slate-950">{totals.enrolled}</span> enrolled
-            </div>
-            <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm">
-              <span className="font-semibold text-slate-950">{totals.completed}</span> completed
-            </div>
             <Button type="button" onClick={() => setIsCreateOpen(true)}>
               <Plus className="h-4 w-4" />
               Purchase service
             </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Enrolled Services</p>
+          <p className="mt-2 text-2xl font-medium text-slate-900">{totals.enrolled}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Completed Services</p>
+          <p className="mt-2 text-2xl font-medium text-emerald-700">{totals.completed}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Current Spending</p>
+          <p className="mt-2 text-2xl font-medium text-slate-900">{currencyFormatter(totals.totalPaidCents, "USD")}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Remaining Balance</p>
+          <p className="mt-2 text-2xl font-medium text-amber-700">{currencyFormatter(totals.totalRemainingCents, "USD")}</p>
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-3">
+        <div className="rounded-[20px] border border-slate-200 bg-white p-4 xl:col-span-2">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold text-slate-900">Balance Overview</h3>
+            <p className="text-xs text-slate-500">Paid vs remaining amount for this contact.</p>
+          </div>
+          <ChartContainer config={spendingChartConfig} className="mx-auto h-[220px] w-full max-w-[520px]">
+            <BarChart data={spendingBreakdownData}>
+              <CartesianGrid vertical={false} />
+              <XAxis dataKey="name" tickLine={false} axisLine={false} />
+              <ChartTooltip content={<ChartTooltipContent />} />
+              <Bar dataKey="paid" stackId="a" fill="var(--color-paid)" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="remaining" stackId="a" fill="var(--color-remaining)" radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ChartContainer>
+        </div>
+        <div className="rounded-[20px] border border-slate-200 bg-white p-4">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold text-slate-900">Service Status Mix</h3>
+            <p className="text-xs text-slate-500">How enrolled services are distributed by status.</p>
+          </div>
+          <ChartContainer config={statusChartConfig} className="h-[220px] w-full">
+            <PieChart>
+              <ChartTooltip content={<ChartTooltipContent nameKey="label" />} />
+              <Pie data={statusBreakdownData} dataKey="value" nameKey="label" innerRadius={45} outerRadius={76} paddingAngle={2}>
+                {statusBreakdownData.map((entry) => (
+                  <Cell key={entry.status} fill={entry.fill} />
+                ))}
+              </Pie>
+            </PieChart>
+          </ChartContainer>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {statusBreakdownData.map((entry) => (
+              <Badge key={entry.status} variant="outline" className="capitalize">
+                {entry.label}: {entry.value}
+              </Badge>
+            ))}
           </div>
         </div>
       </div>
@@ -390,32 +522,71 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
               <TableHead>Total</TableHead>
               <TableHead>Paid</TableHead>
               <TableHead>Remaining</TableHead>
+              <TableHead>Progress</TableHead>
               <TableHead>Follow-Ups</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={6} className="h-24 text-center text-slate-500">Loading services...</TableCell>
+                <TableCell colSpan={7} className="h-24 text-center text-slate-500">Loading services...</TableCell>
               </TableRow>
             ) : hasItems ? (
               items.map((item) => (
-                <TableRow
-                  key={item.id}
-                  className="cursor-pointer"
-                  onClick={() => openEdit(item)}
-                >
+                <TableRow key={item.id} className="cursor-pointer" onClick={() => openEdit(item)}>
                   <TableCell className="font-medium text-slate-900">{item.service.name}</TableCell>
-                  <TableCell className="capitalize text-slate-700">{toSentence(item.status)}</TableCell>
+                  <TableCell>
+                    <Badge className={`capitalize ${SERVICE_STATUS_STYLES[item.status]}`}>
+                      {toSentence(item.status)}
+                    </Badge>
+                  </TableCell>
                   <TableCell>{currencyFormatter(item.totalPriceCents, item.currency)}</TableCell>
                   <TableCell>{currencyFormatter(item.paidCents, item.currency)}</TableCell>
                   <TableCell>{currencyFormatter(item.remainingCents, item.currency)}</TableCell>
+                  <TableCell>
+                    {(() => {
+                      const progress = getServiceProgress(item)
+                      return (
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              className="w-[150px] cursor-pointer"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200">
+                                <div
+                                  className="h-full rounded-full bg-emerald-500 transition-all"
+                                  style={{ width: `${progress.percentage}%` }}
+                                />
+                              </div>
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent
+                            className="w-56"
+                            align="start"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <div className="space-y-1">
+                              <p className="text-sm font-semibold text-slate-900">
+                                {progress.percentage}% Completed
+                              </p>
+                              <p className="text-xs text-slate-600">
+                                {progress.completed} completed, {progress.remaining} remaining out of{" "}
+                                {progress.total} follow-ups.
+                              </p>
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      )
+                    })()}
+                  </TableCell>
                   <TableCell>{item.followUpSteps.length}</TableCell>
                 </TableRow>
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={6} className="h-24 text-center text-slate-500">No services enrolled yet.</TableCell>
+                <TableCell colSpan={7} className="h-24 text-center text-slate-500">No services enrolled yet.</TableCell>
               </TableRow>
             )}
           </TableBody>
