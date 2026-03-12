@@ -203,6 +203,19 @@ const ServiceOptionsQuerySchema = z.object({
     .optional()
     .transform((value) => value === "true" || value === true),
 });
+const FollowUpTemplatesPaginationQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z
+    .coerce
+    .number()
+    .int()
+    .refine((value) => value === 10 || value === 25, {
+      message: "pageSize must be 10 or 25",
+    })
+    .default(10),
+  search: z.string().trim().max(120).optional().default(""),
+  serviceId: z.string().trim().min(1).optional(),
+});
 
 const ServiceProfessionalKindSchema = z.enum(["INTERNAL_USER", "EXTERNAL"]);
 
@@ -216,6 +229,7 @@ const ServiceChecklistItemInputSchema = z.object({
 const ServiceFollowUpTemplateStepInputSchema = z.object({
   title: z.string().trim().min(1).max(200),
   notesTemplate: optionalStringField(1000),
+  templateNodeId: z.string().trim().min(1).max(120).nullable().optional(),
   dueDaysFromStart: z.coerce.number().int().min(0).max(3650).default(0),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
 });
@@ -1798,8 +1812,11 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
             },
           },
           followUpTemplates: {
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: {
               id: true,
+              name: true,
+              isPublished: true,
             },
           },
           professionals: {
@@ -1884,6 +1901,76 @@ router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, n
         followUpTemplatesCount: item.followUpTemplates.length,
         professionalsCount: item.professionals.length,
       })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:tenantId/follow-up-templates", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const { page, pageSize, search, serviceId } = FollowUpTemplatesPaginationQuerySchema.parse(req.query);
+    const skip = (page - 1) * pageSize;
+
+    const where = {
+      tenantId,
+      ...(serviceId ? { serviceId } : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: "insensitive" as const } },
+              { service: { name: { contains: search, mode: "insensitive" as const } } },
+            ],
+          }
+        : {}),
+    };
+
+    const [total, templates] = await prisma.$transaction([
+      prismaWithContacts.serviceFollowUpTemplate.count({ where }),
+      prismaWithContacts.serviceFollowUpTemplate.findMany({
+        where,
+        orderBy: [
+          { service: { sortOrder: "asc" } },
+          { service: { name: "asc" } },
+          { sortOrder: "asc" },
+          { createdAt: "asc" },
+        ],
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          name: true,
+          isPublished: true,
+          serviceId: true,
+          service: {
+            select: {
+              name: true,
+              isActive: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+    return res.json({
+      ok: true,
+      items: templates.map((template: any) => ({
+        id: template.id,
+        name: template.name,
+        isPublished: template.isPublished,
+        serviceId: template.serviceId,
+        serviceName: template.service?.name ?? "",
+        serviceIsActive: Boolean(template.service?.isActive),
+      })),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
     });
   } catch (error) {
     return next(error);
@@ -2089,6 +2176,7 @@ router.patch(
                       serviceId: recordId,
                       title: step.title.trim(),
                       notesTemplate: step.notesTemplate ?? null,
+                      templateNodeId: step.templateNodeId ?? null,
                       dueDaysFromStart: step.dueDaysFromStart,
                       sortOrder: step.sortOrder ?? (index + 1) * 10,
                     })),

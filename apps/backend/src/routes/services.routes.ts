@@ -2,6 +2,11 @@ import { type Response, Router } from "express"
 import { z } from "zod"
 
 import { prisma } from "../lib/prisma.js"
+import {
+  executeFollowUpFromStart,
+  executeFollowUpFromStep,
+  syncContactServiceActiveStep,
+} from "../lib/service-followup-execution.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
@@ -75,9 +80,11 @@ const UpdateContactServiceSchema = z.object({
 const UpdateFollowUpStepSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   notesTemplate: z.string().trim().max(1000).nullable().optional(),
-  status: z.enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED"]).optional(),
+  status: z.enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED", "POSTPONED"]).optional(),
   availableAt: z.string().datetime().nullable().optional(),
   dueAt: z.string().datetime().nullable().optional(),
+  postponeTo: z.string().datetime().optional(),
+  cascadeFutureSteps: z.boolean().optional(),
   completedAt: z.string().datetime().nullable().optional(),
   assignedToUserId: z.string().trim().min(1).nullable().optional(),
   note: z.string().trim().max(2000).nullable().optional(),
@@ -87,7 +94,7 @@ const UpdateFollowUpStepSchema = z.object({
 const CreateFollowUpStepSchema = z.object({
   title: z.string().trim().min(1).max(200),
   notesTemplate: z.string().trim().max(1000).nullable().optional(),
-  status: z.enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED"]).optional(),
+  status: z.enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED", "POSTPONED"]).optional(),
   availableAt: z.string().datetime().nullable().optional(),
   dueAt: z.string().datetime().nullable().optional(),
   assignedToUserId: z.string().trim().min(1).nullable().optional(),
@@ -138,7 +145,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
       ...(status ? { status } : {}),
     }
 
-    const [total, items] = await prisma.$transaction([
+    let [total, items] = await prisma.$transaction([
       prismaWithServices.contactService.count({ where }),
       prismaWithServices.contactService.findMany({
         where,
@@ -178,11 +185,13 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               title: true,
+              notesTemplate: true,
               status: true,
               availableAt: true,
               dueAt: true,
               completedAt: true,
               assignedToUserId: true,
+              note: true,
               sortOrder: true,
             },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
@@ -190,6 +199,74 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         },
       }),
     ])
+
+    const activatedStepIds = await prisma.$transaction(async (tx) => {
+      const prismaTx = tx as any
+      const activatedIds: string[] = []
+      for (const item of items) {
+        const activatedId = await syncContactServiceActiveStep({
+          prismaTx,
+          tenantId,
+          contactServiceId: item.id,
+        })
+        if (activatedId) activatedIds.push(activatedId)
+      }
+      return activatedIds
+    })
+
+    if (activatedStepIds.length > 0) {
+      items = await prismaWithServices.contactService.findMany({
+        where,
+        orderBy: [{ createdAt: "desc" }],
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          status: true,
+          startedAt: true,
+          purchasedAt: true,
+          completedAt: true,
+          canceledAt: true,
+          totalPriceCents: true,
+          currency: true,
+          allowPartialPayments: true,
+          notes: true,
+          contact: {
+            select: {
+              firstName: true,
+              middleName: true,
+              lastName: true,
+            },
+          },
+          service: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          payments: {
+            select: {
+              amountCents: true,
+            },
+          },
+          followUpSteps: {
+            select: {
+              id: true,
+              title: true,
+              notesTemplate: true,
+              status: true,
+              availableAt: true,
+              dueAt: true,
+              completedAt: true,
+              assignedToUserId: true,
+              note: true,
+              sortOrder: true,
+            },
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          },
+        },
+      })
+    }
 
     const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
@@ -268,6 +345,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
               steps: {
                 orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
                 select: {
+                  templateNodeId: true,
                   title: true,
                   notesTemplate: true,
                   dueDaysFromStart: true,
@@ -279,6 +357,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           followUpTemplateSteps: {
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: {
+              templateNodeId: true,
               title: true,
               notesTemplate: true,
               dueDaysFromStart: true,
@@ -307,6 +386,9 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       selectedPublishedTemplate?.steps?.length
         ? selectedPublishedTemplate.steps
         : service.followUpTemplateSteps
+    if (payload.followUpTemplateId && !templateStepsForEnrollment.length) {
+      return res.status(400).json({ error: "FOLLOW_UP_TEMPLATE_HAS_NO_STEPS" })
+    }
 
     const purchasedAt = payload.purchasedAt ? new Date(payload.purchasedAt) : new Date()
     const startedAt = payload.startedAt ? new Date(payload.startedAt) : new Date()
@@ -324,6 +406,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           tenantId,
           contactId: payload.contactId,
           serviceId: payload.serviceId,
+          followUpTemplateId: selectedPublishedTemplate?.id ?? null,
           status: "IN_PROGRESS",
           startedAt,
           purchasedAt,
@@ -360,14 +443,25 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
             return {
               tenantId,
               contactServiceId: contactService.id,
+              templateNodeId: step.templateNodeId ?? null,
               title: step.title,
               notesTemplate: step.notesTemplate,
               status: index === 0 ? "ACTIVE" : "PENDING",
-              availableAt: dueAt,
+              availableAt: index === 0 ? startedAt : dueAt,
               dueAt,
               sortOrder: step.sortOrder,
             }
           }),
+        })
+      }
+
+      if (selectedPublishedTemplate?.id) {
+        await executeFollowUpFromStart({
+          prismaTx,
+          tenantId,
+          contactServiceId: contactService.id,
+          actorUserId: authed.user.id,
+          ignoreWaitNodes: true,
         })
       }
 
@@ -649,11 +743,21 @@ router.patch(
           id: true,
           status: true,
           completedAt: true,
+          dueAt: true,
+          availableAt: true,
+          sortOrder: true,
+          templateNodeId: true,
         },
       })
 
       if (!existing) {
         return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
+      }
+      if (
+        existing.status === "PENDING" &&
+        (payload.status !== undefined || payload.postponeTo !== undefined)
+      ) {
+        return res.status(409).json({ error: "STEP_STATUS_LOCKED_UNTIL_ACTIVE" })
       }
 
       const statusUpdate =
@@ -679,52 +783,135 @@ router.patch(
                 completedAt: null,
               }
 
-      const updated = await prismaWithServices.contactServiceFollowUpStep.update({
-        where: {
-          id: followUpStepId,
-        },
-        data: {
-          ...(payload.title !== undefined ? { title: sanitizeSingleLineText(payload.title) } : {}),
-          ...(payload.notesTemplate !== undefined
-            ? {
-                notesTemplate:
-                  payload.notesTemplate && payload.notesTemplate.trim().length
-                    ? sanitizeMultilineText(payload.notesTemplate)
-                    : null,
-              }
-            : {}),
-          ...statusUpdate,
-          ...(payload.availableAt !== undefined
-            ? { availableAt: payload.availableAt ? new Date(payload.availableAt) : null }
-            : {}),
-          ...(payload.dueAt !== undefined
-            ? { dueAt: payload.dueAt ? new Date(payload.dueAt) : null }
-            : {}),
-          ...(payload.assignedToUserId !== undefined
-            ? { assignedToUserId: payload.assignedToUserId || null }
-            : {}),
-          ...(payload.note !== undefined
-            ? {
-                note:
-                  payload.note && payload.note.trim().length
-                    ? sanitizeMultilineText(payload.note)
-                    : null,
-              }
-            : {}),
-          ...(payload.sortOrder !== undefined ? { sortOrder: payload.sortOrder } : {}),
-        },
-        select: {
-          id: true,
-          title: true,
-          notesTemplate: true,
-          status: true,
-          availableAt: true,
-          dueAt: true,
-          completedAt: true,
-          assignedToUserId: true,
-          note: true,
-          sortOrder: true,
-        },
+      const postponeToDate = payload.postponeTo ? new Date(payload.postponeTo) : null
+      if (payload.postponeTo && Number.isNaN(postponeToDate?.getTime() ?? NaN)) {
+        return res.status(400).json({ error: "INVALID_POSTPONE_DATE" })
+      }
+
+      let updated: any
+      await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+
+        updated = await prismaTx.contactServiceFollowUpStep.update({
+          where: {
+            id: followUpStepId,
+          },
+          data: {
+            ...(payload.title !== undefined ? { title: sanitizeSingleLineText(payload.title) } : {}),
+            ...(payload.notesTemplate !== undefined
+              ? {
+                  notesTemplate:
+                    payload.notesTemplate && payload.notesTemplate.trim().length
+                      ? sanitizeMultilineText(payload.notesTemplate)
+                      : null,
+                }
+              : {}),
+            ...statusUpdate,
+            ...(payload.availableAt !== undefined
+              ? { availableAt: payload.availableAt ? new Date(payload.availableAt) : null }
+              : {}),
+            ...(payload.dueAt !== undefined
+              ? { dueAt: payload.dueAt ? new Date(payload.dueAt) : null }
+              : {}),
+            ...(postponeToDate ? { dueAt: postponeToDate } : {}),
+            ...(payload.assignedToUserId !== undefined
+              ? { assignedToUserId: payload.assignedToUserId || null }
+              : {}),
+            ...(payload.note !== undefined
+              ? {
+                  note:
+                    payload.note && payload.note.trim().length
+                      ? sanitizeMultilineText(payload.note)
+                      : null,
+                }
+              : {}),
+            ...(payload.sortOrder !== undefined ? { sortOrder: payload.sortOrder } : {}),
+          },
+          select: {
+            id: true,
+            title: true,
+            notesTemplate: true,
+            status: true,
+            availableAt: true,
+            dueAt: true,
+            completedAt: true,
+            assignedToUserId: true,
+            note: true,
+            sortOrder: true,
+            templateNodeId: true,
+          },
+        })
+
+        if (updated.status === "ACTIVE") {
+          await prismaTx.contactServiceFollowUpStep.updateMany({
+            where: {
+              tenantId,
+              contactServiceId,
+              id: { not: followUpStepId },
+              status: "ACTIVE",
+            },
+            data: {
+              status: "PENDING",
+            },
+          })
+        }
+
+        if (postponeToDate && existing.dueAt) {
+          const shiftMs = postponeToDate.getTime() - existing.dueAt.getTime()
+          const shouldCascade = payload.cascadeFutureSteps !== false
+
+          if (shouldCascade && shiftMs !== 0) {
+            const futureSteps = await prismaTx.contactServiceFollowUpStep.findMany({
+              where: {
+                tenantId,
+                contactServiceId,
+                sortOrder: { gt: existing.sortOrder },
+                status: { in: ["PENDING", "ACTIVE"] },
+              },
+              orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+              select: {
+                id: true,
+                dueAt: true,
+                availableAt: true,
+              },
+            })
+
+            for (const futureStep of futureSteps) {
+              await prismaTx.contactServiceFollowUpStep.update({
+                where: { id: futureStep.id },
+                data: {
+                  ...(futureStep.dueAt
+                    ? { dueAt: new Date(futureStep.dueAt.getTime() + shiftMs) }
+                    : {}),
+                  ...(futureStep.availableAt
+                    ? { availableAt: new Date(futureStep.availableAt.getTime() + shiftMs) }
+                    : {}),
+                },
+              })
+            }
+          }
+        }
+
+        if (
+          existing.status === "ACTIVE" &&
+          (updated.status === "COMPLETED" || updated.status === "SKIPPED")
+        ) {
+          await executeFollowUpFromStep({
+            prismaTx,
+            tenantId,
+            contactServiceId,
+            completedStepId: followUpStepId,
+            completedStepSortOrder: existing.sortOrder,
+            completedStepTemplateNodeId: existing.templateNodeId,
+            actorUserId: authed.user.id,
+            ignoreWaitNodes: true,
+          })
+          await syncContactServiceActiveStep({
+            prismaTx,
+            tenantId,
+            contactServiceId,
+          })
+        }
       })
 
       return res.json({

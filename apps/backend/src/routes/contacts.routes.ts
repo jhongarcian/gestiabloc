@@ -233,6 +233,7 @@ const UpdateContactSchema = z.object({
   postalCode: optionalStringField(40),
   country: optionalStringField(120),
   statusConfigId: optionalStringField(80),
+  assignedToUserId: optionalStringField(80),
   customFieldValues: z
     .array(
       z.object({
@@ -242,6 +243,10 @@ const UpdateContactSchema = z.object({
     )
     .optional()
     .default([]),
+})
+
+const UpdateContactAssigneeSchema = z.object({
+  assignedToUserId: optionalStringField(80),
 })
 
 const CONTACT_DEFAULT_STATUSES = [
@@ -1191,6 +1196,19 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
             postalCode: true,
             country: true,
             gender: true,
+            assignedToUserId: true,
+            assignedToMembership: {
+              select: {
+                userId: true,
+                user: {
+                  select: {
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+              },
+            },
             statusConfig: {
               select: {
                 id: true,
@@ -1427,6 +1445,16 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           postalCode: contact.postalCode ?? null,
           country: contact.country ?? null,
         },
+        assignedTo: contact.assignedToMembership
+          ? {
+              userId: contact.assignedToMembership.userId,
+              name:
+                contact.assignedToMembership.user.name?.trim() ||
+                contact.assignedToMembership.user.email,
+              email: contact.assignedToMembership.user.email,
+              image: contact.assignedToMembership.user.image ?? null,
+            }
+          : null,
         status: contact.statusConfig?.name ?? "Unassigned",
         statusConfigId: contact.statusConfig?.id ?? null,
         statusBgColor: contact.statusConfig?.bgColor ?? null,
@@ -2708,6 +2736,94 @@ router.delete("/:tenantId/:contactId/tags/:tagId", requireAuth, async (req, res,
   }
 })
 
+router.patch("/:tenantId/:contactId/assignee", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+
+    const authed = req as AuthedRequest
+    const { tenantId, contactId } = TenantContactPathSchema.parse(req.params)
+    const payload = UpdateContactAssigneeSchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const existing = await prisma.contact.findFirst({
+      where: {
+        id: contactId,
+        tenantId,
+      },
+      select: {
+        id: true,
+      },
+    })
+
+    if (!existing) {
+      return res.status(404).json({ error: "CONTACT_NOT_FOUND" })
+    }
+
+    const resolvedAssignedToUserId = payload.assignedToUserId ?? null
+    if (resolvedAssignedToUserId) {
+      const assigneeMembership = await prisma.membership.findUnique({
+        where: {
+          userId_tenantId: {
+            tenantId,
+            userId: resolvedAssignedToUserId,
+          },
+        },
+        select: {
+          userId: true,
+          status: true,
+        },
+      })
+
+      if (!assigneeMembership || assigneeMembership.status !== "ACTIVE") {
+        return res.status(400).json({ error: "INVALID_ASSIGNEE" })
+      }
+    }
+
+    const updatedContact = await prisma.contact.update({
+      where: { id: contactId },
+      data: {
+        assignedToUserId: resolvedAssignedToUserId,
+      },
+      select: {
+        id: true,
+        assignedToMembership: {
+          select: {
+            userId: true,
+            user: {
+              select: {
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+          },
+        },
+      },
+    })
+
+    return res.json({
+      ok: true,
+      contact: {
+        id: updatedContact.id,
+        assignedTo: updatedContact.assignedToMembership
+          ? {
+              userId: updatedContact.assignedToMembership.userId,
+              name:
+                updatedContact.assignedToMembership.user.name?.trim() ||
+                updatedContact.assignedToMembership.user.email,
+              email: updatedContact.assignedToMembership.user.email,
+              image: updatedContact.assignedToMembership.user.image ?? null,
+            }
+          : null,
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
   try {
     enforceSameOrigin(req)
@@ -2879,6 +2995,26 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
       }
     }
 
+    let resolvedAssignedToUserId = payload.assignedToUserId ?? null
+    if (resolvedAssignedToUserId) {
+      const assigneeMembership = await prisma.membership.findUnique({
+        where: {
+          userId_tenantId: {
+            tenantId,
+            userId: resolvedAssignedToUserId,
+          },
+        },
+        select: {
+          userId: true,
+          status: true,
+        },
+      })
+
+      if (!assigneeMembership || assigneeMembership.status !== "ACTIVE") {
+        return res.status(400).json({ error: "INVALID_ASSIGNEE" })
+      }
+    }
+
     const fieldsToDelete: string[] = []
     const fieldsToCreate: Array<Record<string, unknown>> = []
     const fieldsToUpdate: Array<{
@@ -2964,6 +3100,7 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           postalCode: payload.postalCode ?? null,
           country: payload.country ?? null,
           statusConfigId: resolvedStatusConfigId,
+          assignedToUserId: resolvedAssignedToUserId,
         },
         select: {
           id: true,
@@ -2980,6 +3117,19 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           state: true,
           postalCode: true,
           country: true,
+          assignedToUserId: true,
+          assignedToMembership: {
+            select: {
+              userId: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+            },
+          },
           statusConfig: {
             select: {
               id: true,
@@ -3093,6 +3243,16 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           postalCode: updated.updatedContact.postalCode ?? null,
           country: updated.updatedContact.country ?? null,
         },
+        assignedTo: updated.updatedContact.assignedToMembership
+          ? {
+              userId: updated.updatedContact.assignedToMembership.userId,
+              name:
+                updated.updatedContact.assignedToMembership.user.name?.trim() ||
+                updated.updatedContact.assignedToMembership.user.email,
+              email: updated.updatedContact.assignedToMembership.user.email,
+              image: updated.updatedContact.assignedToMembership.user.image ?? null,
+            }
+          : null,
         status: updated.updatedContact.statusConfig?.name ?? "Unassigned",
         statusConfigId: updated.updatedContact.statusConfig?.id ?? null,
         statusBgColor: updated.updatedContact.statusConfig?.bgColor ?? null,

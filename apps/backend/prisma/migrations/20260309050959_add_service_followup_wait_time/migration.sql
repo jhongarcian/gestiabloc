@@ -1,2 +1,3 @@
--- RenameIndex
-ALTER INDEX "ContactServiceFollowUpStep_tenantId_contactServiceId_status_sor" RENAME TO "ContactServiceFollowUpStep_tenantId_contactServiceId_status_idx";
+-- No-op migration.
+-- The previous SQL attempted to rename a non-existent index and fails on shadow DB creation.
+-- Keep this migration intentionally empty so historical ordering remains stable.

@@ -349,6 +349,7 @@ router.get("/:tenantId/assignees", requireAuth, async (req, res, next) => {
           select: {
             name: true,
             email: true,
+            image: true,
           },
         },
       },
@@ -360,6 +361,7 @@ router.get("/:tenantId/assignees", requireAuth, async (req, res, next) => {
         value: assignee.userId,
         label: assignee.user.name?.trim() || assignee.user.email,
         email: assignee.user.email,
+        image: assignee.user.image ?? null,
       })),
     })
   } catch (error) {

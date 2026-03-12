@@ -111,6 +111,7 @@ enum ContactServiceFollowUpStepStatus {
   ACTIVE
   COMPLETED
   SKIPPED
+  POSTPONED
 }
 
 enum TaskLinkedEntityType {
@@ -447,6 +448,7 @@ model ServiceFollowUpTemplate {
   tenant  Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   service Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   steps   ServiceFollowUpTemplateStep[]
+  contactServices ContactService[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -460,6 +462,7 @@ model ServiceFollowUpTemplateStep {
   tenantId         String
   serviceId        String
   templateId       String?
+  templateNodeId   String?
   title            String
   notesTemplate    String?
   dueDaysFromStart Int     @default(0)
@@ -475,6 +478,7 @@ model ServiceFollowUpTemplateStep {
   @@unique([tenantId, id])
   @@index([tenantId, serviceId, sortOrder])
   @@index([tenantId, templateId, sortOrder])
+  @@index([tenantId, templateId, templateNodeId])
 }
 
 model ServiceProfessional {
@@ -505,6 +509,7 @@ model ContactService {
   tenantId             String
   contactId            String
   serviceId            String
+  followUpTemplateId   String?
   status               ContactServiceStatus @default(PENDING)
   startedAt            DateTime?
   purchasedAt          DateTime?
@@ -518,6 +523,7 @@ model ContactService {
   tenant        Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact       Contact                      @relation(fields: [contactId], references: [id], onDelete: Cascade)
   service       Service                      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  followUpTemplate ServiceFollowUpTemplate?  @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
   payments      ContactServicePayment[]
   followUpSteps ContactServiceFollowUpStep[]
 
@@ -527,6 +533,7 @@ model ContactService {
   @@unique([tenantId, id])
   @@index([tenantId, contactId, createdAt])
   @@index([tenantId, serviceId, createdAt])
+  @@index([tenantId, followUpTemplateId])
   @@index([tenantId, status, createdAt])
 }
 
@@ -555,6 +562,7 @@ model ContactServiceFollowUpStep {
   id               String    @id @default(uuid())
   tenantId         String
   contactServiceId String
+  templateNodeId   String?
   title            String
   notesTemplate    String?
   status           ContactServiceFollowUpStepStatus @default(PENDING)
@@ -575,6 +583,7 @@ model ContactServiceFollowUpStep {
   @@unique([tenantId, id])
   @@index([tenantId, contactServiceId, sortOrder])
   @@index([tenantId, contactServiceId, status, sortOrder])
+  @@index([tenantId, contactServiceId, templateNodeId])
   @@index([tenantId, assignedToUserId, dueAt])
 }
 
