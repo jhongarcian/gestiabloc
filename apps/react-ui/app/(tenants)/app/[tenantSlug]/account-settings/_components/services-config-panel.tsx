@@ -1,7 +1,7 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   closestCenter,
@@ -19,7 +19,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
-import { AlertTriangle, CheckCircle2, GripVertical, Wrench } from "lucide-react"
+import { AlertTriangle, CheckCircle2, GripVertical } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -320,17 +320,15 @@ function ServiceCreateDialog({
 }
 
 function SortableServiceRow({
-  tenantSlug,
+  onOpen,
   service,
   isBusy,
   canReorder,
-  onDelete,
 }: {
-  tenantSlug: string
+  onOpen: (serviceId: string) => void
   service: ServiceItem
   isBusy: boolean
   canReorder: boolean
-  onDelete: (serviceId: string) => Promise<void>
 }) {
   const {
     attributes,
@@ -352,7 +350,11 @@ function SortableServiceRow({
     <TableRow
       ref={setNodeRef}
       style={{ transform: toTranslateString(transform), transition }}
-      className={cn(isDragging && "bg-slate-50")}
+      className={cn(
+        "cursor-pointer transition-colors hover:bg-slate-50",
+        isDragging && "bg-slate-50",
+      )}
+      onClick={() => onOpen(service.id)}
     >
       <TableCell className="w-10">
         <button
@@ -366,6 +368,7 @@ function SortableServiceRow({
           )}
           aria-label={`Reorder ${service.name}`}
           disabled={isBusy || !canReorder}
+          onClick={(event) => event.stopPropagation()}
           {...attributes}
           {...listeners}
         >
@@ -385,6 +388,7 @@ function SortableServiceRow({
           ? `Partial${service.minimumPartialPaymentCents !== null ? ` (min ${(service.minimumPartialPaymentCents / 100).toFixed(2)})` : ""}`
           : "Full only"}
       </TableCell>
+      <TableCell>{service.followUpTemplates?.length ?? 0}</TableCell>
       <TableCell>
         {isConfigured ? (
           <span className="inline-flex items-center gap-1 text-emerald-700">
@@ -398,31 +402,12 @@ function SortableServiceRow({
           </span>
         )}
       </TableCell>
-      <TableCell>
-        <div className="flex justify-end gap-2">
-          <Button asChild type="button" variant="outline" size="sm">
-            <Link href={`/app/${tenantSlug}/account-settings/services/${service.id}`}>
-              <Wrench className="h-4 w-4" />
-              Configure
-            </Link>
-          </Button>
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            onClick={() => {
-              void onDelete(service.id)
-            }}
-          >
-            Delete
-          </Button>
-        </div>
-      </TableCell>
     </TableRow>
   )
 }
 
 export function ServicesConfigPanel({ tenantId, tenantSlug }: ServicesConfigPanelProps) {
+  const router = useRouter()
   const [query, setQuery] = useState("")
   const [debouncedQuery, setDebouncedQuery] = useState("")
   const [isActiveFilter, setIsActiveFilter] = useState<"ALL" | "true" | "false">("ALL")
@@ -502,30 +487,6 @@ export function ServicesConfigPanel({ tenantId, tenantSlug }: ServicesConfigPane
     return `Showing ${start}-${end} of ${total} services`
   }, [page, pageSize, services.length, total])
 
-  const onDelete = async (serviceId: string) => {
-    const confirmed = window.confirm(
-      "Delete this service? Existing process records remain but this template will be removed.",
-    )
-    if (!confirmed) return
-
-    try {
-      await api.delete(`/api/account-settings/${tenantId}/services/${serviceId}`)
-      toast.success("Service deleted.")
-      await loadServices()
-    } catch (error) {
-      if (isAxiosError(error)) {
-        const backendError = error.response?.data?.error
-        toast.error(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ")
-            : "Could not delete service.",
-        )
-      } else {
-        toast.error("Could not delete service.")
-      }
-    }
-  }
-
   const persistReorder = async (reordered: ServiceItem[]) => {
     const nextServices = reordered.map((service, index) => ({
       ...service,
@@ -591,7 +552,7 @@ export function ServicesConfigPanel({ tenantId, tenantSlug }: ServicesConfigPane
               <div>
                 <p className="text-lg font-semibold">Services library</p>
                 <p className="mt-1 text-sm leading-6 text-slate-300">
-                  Keep order meaningful and use Configure to finish each service setup.
+                  Keep order meaningful and open each service to finish checklist, follow-ups, and professionals.
                 </p>
               </div>
             </div>
@@ -662,8 +623,8 @@ export function ServicesConfigPanel({ tenantId, tenantSlug }: ServicesConfigPane
                   <TableHead>Name</TableHead>
                   <TableHead>Price</TableHead>
                   <TableHead>Billing</TableHead>
+                  <TableHead>Templates</TableHead>
                   <TableHead>Setup status</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -687,11 +648,12 @@ export function ServicesConfigPanel({ tenantId, tenantSlug }: ServicesConfigPane
                     {services.map((service) => (
                       <SortableServiceRow
                         key={service.id}
-                        tenantSlug={tenantSlug}
+                        onOpen={(serviceId) =>
+                          router.push(`/app/${tenantSlug}/account-settings/services/${serviceId}`)
+                        }
                         service={service}
                         isBusy={isBusy}
                         canReorder={canReorder}
-                        onDelete={onDelete}
                       />
                     ))}
                   </SortableContext>

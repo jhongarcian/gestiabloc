@@ -2,7 +2,6 @@
 
 import "@xyflow/react/dist/style.css"
 
-import Link from "next/link"
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { isAxiosError } from "axios"
@@ -40,6 +39,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -234,6 +234,8 @@ const CONTACT_ACTION_NODE_KINDS: Exclude<PersistedNodeKind, "start">[] = CREATE_
 )
 
 const toTagPreviewName = (value: string) => value.trim().replace(/\s+/g, "-")
+const normalizeTagNames = (values: string[]) =>
+  [...new Set(values.map((value) => toTagPreviewName(value)).filter(Boolean))]
 
 const MAX_NOTE_ATTACHMENTS = 10
 const STEP_NODE_WIDTH = 260
@@ -569,6 +571,7 @@ type StepNodeData = {
   notesTemplate: string
   assigneeUserId?: string | null
   tagName?: string | null
+  tagNames?: string[]
   fieldKey?: string | null
   fieldValue?: string | null
   statusValue?: string | null
@@ -622,6 +625,7 @@ type CanvasNodeData = {
   notesTemplate: string
   assigneeUserId?: string | null
   tagName?: string | null
+  tagNames?: string[]
   fieldKey?: string | null
   fieldValue?: string | null
   statusValue?: string | null
@@ -685,6 +689,7 @@ type NewStepDraft = {
   notesTemplate: string
   assigneeUserId: string
   tagName: string
+  tagNames: string[]
   fieldKey: string
   fieldValue: string
   statusValue: string
@@ -738,6 +743,7 @@ const makeDefaultDraft = (
   notesTemplate: "",
   assigneeUserId: "",
   tagName: "",
+  tagNames: [],
   fieldKey: "",
   fieldValue: "",
   statusValue: "",
@@ -1107,6 +1113,11 @@ function toSafeNodes(raw: unknown[], templateId: string, templateName: string): 
         assigneeUserId:
           typeof data.assigneeUserId === "string" ? data.assigneeUserId : null,
         tagName: typeof data.tagName === "string" ? data.tagName : null,
+        tagNames: Array.isArray(data.tagNames)
+          ? data.tagNames.filter((value): value is string => typeof value === "string")
+          : typeof data.tagName === "string" && data.tagName.trim()
+            ? [data.tagName]
+            : [],
         fieldKey: typeof data.fieldKey === "string" ? data.fieldKey : null,
         fieldValue: typeof data.fieldValue === "string" ? data.fieldValue : null,
         statusValue: typeof data.statusValue === "string" ? data.statusValue : null,
@@ -1345,6 +1356,7 @@ function toSafeNodes(raw: unknown[], templateId: string, templateName: string): 
         notesTemplate: "",
         assigneeUserId: null,
         tagName: null,
+        tagNames: [],
         fieldKey: null,
         fieldValue: null,
         statusValue: null,
@@ -1398,6 +1410,27 @@ function toSafeEdges(raw: unknown[]): Edge[] {
     .map((item) => ({ ...item, type: "smoothstep" }))
 }
 
+function toPersistedSnapshot(nodes: StepNode[], edges: Edge[], name: string) {
+  return JSON.stringify({
+    name: name.trim(),
+    nodes: nodes.map((node) => ({
+      id: node.id,
+      type: node.type,
+      position: {
+        x: node.position.x,
+        y: node.position.y,
+      },
+      data: node.data,
+    })),
+    edges: edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      type: edge.type,
+    })),
+  })
+}
+
 export function ServiceFollowUpTemplateFlowBuilder({
   tenantId,
   tenantSlug,
@@ -1415,6 +1448,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const [nodes, setNodes] = useState<StepNode[]>(initialNodes)
   const [edges, setEdges] = useState<Edge[]>(toSafeEdges(template.flowEdges))
   const [isSaving, setIsSaving] = useState(false)
+  const [isPublishSaving, setIsPublishSaving] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialNodes[0]?.id ?? null)
   const [hasRenamedTemplate, setHasRenamedTemplate] = useState(false)
@@ -1440,25 +1474,137 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const [isCustomFieldsSectionOpen, setIsCustomFieldsSectionOpen] = useState(false)
   const [isCreatingTag, setIsCreatingTag] = useState(false)
   const [isTagsLoading, setIsTagsLoading] = useState(false)
+  const [selectedNodeTagQuery, setSelectedNodeTagQuery] = useState("")
   const [isUploadingNoteAttachment, setIsUploadingNoteAttachment] = useState(false)
   const [noteAttachmentTarget, setNoteAttachmentTarget] =
     useState<NoteAttachmentTarget>("create")
   const noteAttachmentInputRef = useRef<HTMLInputElement | null>(null)
+  const shouldBypassUnsavedPromptRef = useRef(false)
+  const hasPushedUnsavedHistoryRef = useRef(false)
   const canEditTemplateName = !hasRenamedTemplate && template.name.startsWith("Template ")
+  const initialBuilderSnapshot = useMemo(
+    () => toPersistedSnapshot(initialNodes, toSafeEdges(template.flowEdges), template.name),
+    [initialNodes, template.flowEdges, template.name],
+  )
+  const [lastSavedBuilderSnapshot, setLastSavedBuilderSnapshot] = useState(initialBuilderSnapshot)
 
   useEffect(() => {
     setIsPublished(Boolean(template.isPublished))
   }, [template.id, template.isPublished])
 
+  useEffect(() => {
+    setLastSavedBuilderSnapshot(initialBuilderSnapshot)
+  }, [initialBuilderSnapshot])
+
   const orderedNodes = useMemo(
     () => [...nodes].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x),
     [nodes],
   )
-
-  const selectedNode = useMemo(
-    () => nodes.find((node) => node.id === selectedNodeId) ?? null,
-    [nodes, selectedNodeId],
+  const currentBuilderSnapshot = useMemo(
+    () => toPersistedSnapshot(nodes, edges, name),
+    [edges, name, nodes],
   )
+  const hasUnsavedChanges = currentBuilderSnapshot !== lastSavedBuilderSnapshot
+  const confirmLeaveWithUnsavedChanges = useCallback(() => {
+    if (!hasUnsavedChanges || shouldBypassUnsavedPromptRef.current) {
+      return true
+    }
+
+    return window.confirm("You have unsaved changes. Leave the builder without saving?")
+  }, [hasUnsavedChanges])
+
+  const navigateWithUnsavedCheck = useCallback(
+    (href: string) => {
+      if (!confirmLeaveWithUnsavedChanges()) return
+      shouldBypassUnsavedPromptRef.current = true
+      router.push(href)
+    },
+    [confirmLeaveWithUnsavedChanges, router],
+  )
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ""
+    }
+
+    window.addEventListener("beforeunload", handleBeforeUnload)
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload)
+    }
+  }, [hasUnsavedChanges])
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return
+
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (
+        shouldBypassUnsavedPromptRef.current ||
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return
+      }
+
+      const target = event.target
+      if (!(target instanceof Element)) return
+
+      const anchor = target.closest("a[href]")
+      if (!anchor) return
+      if (anchor.target === "_blank" || anchor.hasAttribute("download")) return
+
+      const nextUrl = new URL(anchor.href, window.location.href)
+      if (nextUrl.href === window.location.href) return
+
+      event.preventDefault()
+      event.stopPropagation()
+
+      if (!confirmLeaveWithUnsavedChanges()) return
+
+      shouldBypassUnsavedPromptRef.current = true
+      window.location.assign(nextUrl.href)
+    }
+
+    document.addEventListener("click", handleDocumentClick, true)
+    return () => {
+      document.removeEventListener("click", handleDocumentClick, true)
+    }
+  }, [confirmLeaveWithUnsavedChanges, hasUnsavedChanges])
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) {
+      hasPushedUnsavedHistoryRef.current = false
+      return
+    }
+
+    if (!hasPushedUnsavedHistoryRef.current) {
+      window.history.pushState({ followUpBuilderGuard: true }, "", window.location.href)
+      hasPushedUnsavedHistoryRef.current = true
+    }
+
+    const handlePopState = () => {
+      if (shouldBypassUnsavedPromptRef.current) return
+
+      if (!confirmLeaveWithUnsavedChanges()) {
+        window.history.pushState({ followUpBuilderGuard: true }, "", window.location.href)
+        return
+      }
+
+      shouldBypassUnsavedPromptRef.current = true
+      window.history.back()
+    }
+
+    window.addEventListener("popstate", handlePopState)
+    return () => {
+      window.removeEventListener("popstate", handlePopState)
+    }
+  }, [confirmLeaveWithUnsavedChanges, hasUnsavedChanges])
 
   const customFieldByKey = useMemo(
     () => new Map(customFieldOptions.map((field) => [field.key, field])),
@@ -1678,7 +1824,10 @@ export function ServiceFollowUpTemplateFlowBuilder({
       toast.error("Select a user for reminder notification.")
       return
     }
-    if ((newStepDraft.kind === "tagAdd" || newStepDraft.kind === "tagRemove") && !newStepDraft.tagName.trim()) {
+    if (
+      (newStepDraft.kind === "tagAdd" || newStepDraft.kind === "tagRemove") &&
+      getNodeTagNames(newStepDraft).length === 0
+    ) {
       toast.error("Tag name is required.")
       return
     }
@@ -1909,8 +2058,12 @@ export function ServiceFollowUpTemplateFlowBuilder({
             : null,
         tagName:
           newStepDraft.kind === "tagAdd" || newStepDraft.kind === "tagRemove"
-            ? newStepDraft.tagName.trim()
+            ? getNodeTagNames(newStepDraft)[0] ?? null
             : null,
+        tagNames:
+          newStepDraft.kind === "tagAdd" || newStepDraft.kind === "tagRemove"
+            ? getNodeTagNames(newStepDraft)
+            : [],
         fieldKey: newStepDraft.kind === "contactFieldUpdate" ? newStepDraft.fieldKey.trim() : null,
         fieldValue:
           newStepDraft.kind === "contactFieldUpdate" && newStepDraft.fieldOperation === "update"
@@ -2870,6 +3023,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
           notesTemplate: "",
           assigneeUserId: null,
           tagName: null,
+          tagNames: [],
           fieldKey: null,
           fieldValue: null,
           statusValue: null,
@@ -2925,6 +3079,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
             notesTemplate: "",
             assigneeUserId: null,
             tagName: null,
+            tagNames: [],
             fieldKey: null,
             fieldValue: null,
             statusValue: null,
@@ -2986,6 +3141,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
             notesTemplate: "",
             assigneeUserId: null,
             tagName: null,
+            tagNames: [],
             fieldKey: null,
             fieldValue: null,
             statusValue: null,
@@ -3013,6 +3169,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
             notesTemplate: "",
             assigneeUserId: null,
             tagName: null,
+            tagNames: [],
             fieldKey: null,
             fieldValue: null,
             statusValue: null,
@@ -3355,6 +3512,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
       const steps = ordered
         .filter((node) => node.data.kind === "step")
         .map((node, index) => ({
+          templateNodeId: node.id,
           title: node.data.label.trim() || `Step ${index + 1}`,
           notesTemplate: node.data.notesTemplate.trim() || null,
           dueDaysFromStart: Math.floor(calcDueMinutes(node.id) / WAIT_UNIT_TO_MINUTES.days),
@@ -3372,10 +3530,19 @@ export function ServiceFollowUpTemplateFlowBuilder({
         },
       )
 
+      setLastSavedBuilderSnapshot(
+        JSON.stringify({
+          name,
+          nodes,
+          edges,
+        }),
+      )
+
       if (canEditTemplateName && name.trim() !== template.name) {
         setHasRenamedTemplate(true)
       }
 
+      shouldBypassUnsavedPromptRef.current = false
       toast.success("Template saved.")
       router.refresh()
     } catch (error) {
@@ -3391,6 +3558,37 @@ export function ServiceFollowUpTemplateFlowBuilder({
       }
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  const onTogglePublished = async () => {
+    const nextPublished = !isPublished
+    setIsPublished(nextPublished)
+    setIsPublishSaving(true)
+
+    try {
+      await api.patch(
+        `/api/account-settings/${tenantId}/services/${serviceId}/follow-up-templates/${template.id}`,
+        {
+          isPublished: nextPublished,
+        },
+      )
+      toast.success(nextPublished ? "Template published." : "Template moved to draft.")
+      router.refresh()
+    } catch (error) {
+      setIsPublished((prev) => !prev)
+      if (isAxiosError(error)) {
+        const backendError = error.response?.data?.error
+        toast.error(
+          typeof backendError === "string"
+            ? backendError.replace(/_/g, " ")
+            : "Could not update publish state.",
+        )
+      } else {
+        toast.error("Could not update publish state.")
+      }
+    } finally {
+      setIsPublishSaving(false)
     }
   }
 
@@ -3413,8 +3611,21 @@ export function ServiceFollowUpTemplateFlowBuilder({
     }
   }
 
+  const getNodeTagNames = useCallback(
+    (data: { tagName?: string | null; tagNames?: string[] }) =>
+      normalizeTagNames(
+        Array.isArray(data.tagNames) && data.tagNames.length
+          ? data.tagNames
+          : data.tagName
+            ? [data.tagName]
+            : [],
+      ),
+    [],
+  )
+
   const tagPreviewName = toTagPreviewName(newStepDraft.tagName)
   const tagQuery = tagPreviewName.toLowerCase()
+  const selectedDraftTagNames = getNodeTagNames(newStepDraft)
   const matchingTags = useMemo(() => {
     if (!tagQuery) return tenantTags
     return tenantTags.filter((tag) => tag.name.toLowerCase().includes(tagQuery))
@@ -3452,7 +3663,11 @@ export function ServiceFollowUpTemplateFlowBuilder({
         ...prev,
         { id: data.tag.id, name: data.tag.name, bgColor: "#DBEAFE", textColor: "#1E3A8A" },
       ])
-      setNewStepDraft((prev) => ({ ...prev, tagName: data.tag.name }))
+      setNewStepDraft((prev) => ({
+        ...prev,
+        tagName: "",
+        tagNames: normalizeTagNames([...getNodeTagNames(prev), data.tag.name]),
+      }))
       toast.success("Tag created.")
     } catch (error) {
       if (isAxiosError(error)) {
@@ -3507,6 +3722,64 @@ export function ServiceFollowUpTemplateFlowBuilder({
       contentType,
       size: file.size,
     }
+  }
+
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === selectedNodeId) ?? null,
+    [nodes, selectedNodeId],
+  )
+  const selectedNodeTagNames = useMemo(
+    () => (selectedNode ? getNodeTagNames(selectedNode.data) : []),
+    [getNodeTagNames, selectedNode],
+  )
+  const selectedNodeTagPreviewName = toTagPreviewName(selectedNodeTagQuery)
+  const selectedNodeTagQueryLower = selectedNodeTagPreviewName.toLowerCase()
+  const matchingSelectedNodeTags = useMemo(() => {
+    if (!selectedNodeTagQueryLower) return tenantTags
+    return tenantTags.filter((tag) =>
+      tag.name.toLowerCase().includes(selectedNodeTagQueryLower),
+    )
+  }, [selectedNodeTagQueryLower, tenantTags])
+  const visibleSelectedNodeTags = useMemo(
+    () => matchingSelectedNodeTags.slice(0, 6),
+    [matchingSelectedNodeTags],
+  )
+
+  useEffect(() => {
+    setSelectedNodeTagQuery("")
+  }, [selectedNodeId])
+
+  const toggleDraftTag = (tagName: string) => {
+    setNewStepDraft((prev) => {
+      const normalizedTag = toTagPreviewName(tagName)
+      const current = getNodeTagNames(prev)
+      const tagNames = current.includes(normalizedTag)
+        ? current.filter((item) => item !== normalizedTag)
+        : [...current, normalizedTag]
+
+      return {
+        ...prev,
+        tagName: "",
+        tagNames,
+      }
+    })
+  }
+
+  const toggleSelectedNodeTag = (tagName: string) => {
+    setSelectedNodeTagQuery("")
+    updateSelectedNode((data) => {
+      const normalizedTag = toTagPreviewName(tagName)
+      const current = getNodeTagNames(data)
+      const tagNames = current.includes(normalizedTag)
+        ? current.filter((item) => item !== normalizedTag)
+        : [...current, normalizedTag]
+
+      return {
+        ...data,
+        tagName: tagNames[0] ?? null,
+        tagNames,
+      }
+    })
   }
 
   const openNoteAttachmentPicker = (target: NoteAttachmentTarget) => {
@@ -3580,8 +3853,9 @@ export function ServiceFollowUpTemplateFlowBuilder({
                 type="button"
                 role="switch"
                 aria-checked={isPublished}
-                onClick={() => setIsPublished((prev) => !prev)}
-                className="inline-flex h-9 cursor-pointer items-center rounded-full border border-slate-300 bg-white px-1 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+                onClick={() => void onTogglePublished()}
+                disabled={isPublishSaving}
+                className="inline-flex h-9 cursor-pointer items-center rounded-full border border-slate-300 bg-white px-1 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
               >
                 <span
                   className={`rounded-full px-3 py-1 transition ${
@@ -3606,14 +3880,44 @@ export function ServiceFollowUpTemplateFlowBuilder({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" variant="outline" asChild>
-              <Link href={`/app/${tenantSlug}/account-settings/services/${serviceId}`}>Back to service</Link>
+            <Badge
+              variant="outline"
+              className={
+                hasUnsavedChanges
+                  ? "border-amber-200 bg-amber-50 text-amber-800"
+                  : "border-emerald-200 bg-emerald-50 text-emerald-700"
+              }
+            >
+              {hasUnsavedChanges ? "Unsaved changes" : "Saved"}
+            </Badge>
+            <Button
+              type="button"
+              variant="outline"
+              className="cursor-pointer"
+              onClick={() =>
+                navigateWithUnsavedCheck(
+                  `/app/${tenantSlug}/account-settings/services/${serviceId}`,
+                )
+              }
+            >
+              Back to service
             </Button>
-            <Button type="button" variant="destructive" onClick={onDelete} disabled={isDeleting}>
+            <Button
+              type="button"
+              variant="destructive"
+              className="cursor-pointer"
+              onClick={onDelete}
+              disabled={isDeleting}
+            >
               {isDeleting ? "Deleting..." : "Delete"}
             </Button>
-            <Button type="button" onClick={onSave} disabled={isSaving}>
-              {isSaving ? "Saving..." : "Save"}
+            <Button
+              type="button"
+              className="cursor-pointer"
+              onClick={onSave}
+              disabled={isSaving || !hasUnsavedChanges}
+            >
+              {isSaving ? "Saving..." : hasUnsavedChanges ? "Save" : "Saved"}
             </Button>
           </div>
         </div>
@@ -4812,7 +5116,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                     ) : null}
                     {newStepDraft.kind === "tagAdd" || newStepDraft.kind === "tagRemove" ? (
                       <div className="grid gap-2">
-                        <Label>{NODE_KIND_LABEL[newStepDraft.kind]}</Label>
+                        <Label>Tags</Label>
                         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                           <div className="border-b border-slate-200 p-2">
                             <Command shouldFilter={false}>
@@ -4828,6 +5132,28 @@ export function ServiceFollowUpTemplateFlowBuilder({
                               />
                             </Command>
                           </div>
+                          {selectedDraftTagNames.length ? (
+                            <div className="flex flex-wrap gap-2 border-b border-slate-200 px-3 py-3">
+                              {selectedDraftTagNames.map((tagName) => {
+                                const matchingTag = tenantTags.find((tag) => tag.name === tagName)
+                                return (
+                                  <button
+                                    key={tagName}
+                                    type="button"
+                                    className="inline-flex cursor-pointer items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium"
+                                    style={{
+                                      backgroundColor: matchingTag?.bgColor ?? "#DBEAFE",
+                                      color: matchingTag?.textColor ?? "#1E3A8A",
+                                    }}
+                                    onClick={() => toggleDraftTag(tagName)}
+                                  >
+                                    <span>{tagName}</span>
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          ) : null}
                           <Command shouldFilter={false}>
                             <CommandList>
                               {isTagsLoading ? (
@@ -4839,19 +5165,19 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                       key={tag.id}
                                       value={tag.id}
                                       className="cursor-pointer"
-                                      onSelect={() =>
-                                        setNewStepDraft((prev) => ({
-                                          ...prev,
-                                          tagName: tag.name,
-                                        }))
-                                      }
+                                      onSelect={() => toggleDraftTag(tag.name)}
                                     >
-                                      <span
-                                        className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
-                                        style={{ backgroundColor: tag.bgColor, color: tag.textColor }}
-                                      >
-                                        {tag.name}
-                                      </span>
+                                      <div className="flex w-full items-center justify-between gap-3">
+                                        <span
+                                          className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+                                          style={{ backgroundColor: tag.bgColor, color: tag.textColor }}
+                                        >
+                                          {tag.name}
+                                        </span>
+                                        {selectedDraftTagNames.includes(tag.name) ? (
+                                          <span className="text-[11px] font-medium text-slate-500">Selected</span>
+                                        ) : null}
+                                      </div>
                                     </CommandItem>
                                   ))}
                                 </CommandGroup>
@@ -6333,13 +6659,129 @@ export function ServiceFollowUpTemplateFlowBuilder({
                             />
                           </div>
                           <div className="grid gap-2">
-                            <Label>Tag name</Label>
-                            <Input
-                              value={selectedNode.data.tagName ?? ""}
-                              onChange={(event) =>
-                                updateSelectedNode((data) => ({ ...data, tagName: event.target.value }))
-                              }
-                            />
+                            <Label>Tags</Label>
+                            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                              <div className="border-b border-slate-200 p-2">
+                                <Command shouldFilter={false}>
+                                  <CommandInput
+                                    value={selectedNodeTagQuery}
+                                    onValueChange={setSelectedNodeTagQuery}
+                                    placeholder="Search tags"
+                                  />
+                                </Command>
+                              </div>
+                              {selectedNodeTagNames.length ? (
+                                <div className="flex flex-wrap gap-2 border-b border-slate-200 px-3 py-3">
+                                  {selectedNodeTagNames.map((tagName) => {
+                                    const matchingTag = tenantTags.find((tag) => tag.name === tagName)
+                                    return (
+                                      <button
+                                        key={tagName}
+                                        type="button"
+                                        className="inline-flex cursor-pointer items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium"
+                                        style={{
+                                          backgroundColor: matchingTag?.bgColor ?? "#DBEAFE",
+                                          color: matchingTag?.textColor ?? "#1E3A8A",
+                                        }}
+                                        onClick={() => toggleSelectedNodeTag(tagName)}
+                                      >
+                                        <span>{tagName}</span>
+                                        <X className="h-3 w-3" />
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                              ) : null}
+                              <Command shouldFilter={false}>
+                                <CommandList>
+                                  {isTagsLoading ? (
+                                    <div className="px-3 py-3 text-xs text-slate-500">Loading tags...</div>
+                                  ) : visibleSelectedNodeTags.length ? (
+                                    <CommandGroup>
+                                      {visibleSelectedNodeTags.map((tag) => (
+                                        <CommandItem
+                                          key={tag.id}
+                                          value={tag.id}
+                                          className="cursor-pointer"
+                                          onSelect={() => toggleSelectedNodeTag(tag.name)}
+                                        >
+                                          <div className="flex w-full items-center justify-between gap-3">
+                                            <span
+                                              className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+                                              style={{ backgroundColor: tag.bgColor, color: tag.textColor }}
+                                            >
+                                              {tag.name}
+                                            </span>
+                                            {selectedNodeTagNames.includes(tag.name) ? (
+                                              <span className="text-[11px] font-medium text-slate-500">Selected</span>
+                                            ) : null}
+                                          </div>
+                                        </CommandItem>
+                                      ))}
+                                    </CommandGroup>
+                                  ) : (
+                                    <div className="px-3 py-3 text-xs text-slate-500">No matching tags.</div>
+                                  )}
+                                  {selectedNode.data.kind === "tagAdd" &&
+                                  selectedNodeTagPreviewName &&
+                                  !tenantTags.some(
+                                    (tag) =>
+                                      tag.name.toLowerCase() ===
+                                      selectedNodeTagPreviewName.toLowerCase(),
+                                  ) &&
+                                  !visibleSelectedNodeTags.length ? (
+                                    <div className="border-t border-slate-200 p-2">
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="w-full cursor-pointer"
+                                        onClick={async () => {
+                                          setIsCreatingTag(true)
+                                          try {
+                                            const { data } = await api.post<{
+                                              ok: boolean
+                                              tag: { id: string; name: string }
+                                            }>(`/api/account-settings/${tenantId}/tags`, {
+                                              name: selectedNodeTagPreviewName,
+                                              bgColor: "#DBEAFE",
+                                              textColor: "#1E3A8A",
+                                            })
+                                            setTenantTags((prev) => [
+                                              ...prev,
+                                              {
+                                                id: data.tag.id,
+                                                name: data.tag.name,
+                                                bgColor: "#DBEAFE",
+                                                textColor: "#1E3A8A",
+                                              },
+                                            ])
+                                            toggleSelectedNodeTag(data.tag.name)
+                                            setSelectedNodeTagQuery("")
+                                            toast.success("Tag created.")
+                                          } catch (error) {
+                                            if (
+                                              isAxiosError(error) &&
+                                              error.response?.data?.error === "TAG_NAME_ALREADY_EXISTS"
+                                            ) {
+                                              toast.error("Tag already exists.")
+                                            } else {
+                                              toast.error("Could not create tag.")
+                                            }
+                                          } finally {
+                                            setIsCreatingTag(false)
+                                          }
+                                        }}
+                                        disabled={isCreatingTag}
+                                      >
+                                        {isCreatingTag
+                                          ? "Creating..."
+                                          : `Create "${selectedNodeTagPreviewName}"`}
+                                      </Button>
+                                    </div>
+                                  ) : null}
+                                </CommandList>
+                              </Command>
+                            </div>
                           </div>
                           <div className="grid gap-2">
                             <Label>Description</Label>

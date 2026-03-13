@@ -164,7 +164,7 @@ export default async function ContactTasksPage({
   return (
     <section className="flex flex-col gap-5">
       <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
             Contact Tasks
@@ -179,7 +179,7 @@ export default async function ContactTasksPage({
             </div>
           </div>
 
-          <div className="flex flex-col gap-3 md:items-end">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:self-center">
             <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm">
               <span className="inline-flex items-center gap-2">
                 <ClipboardList className="h-4 w-4 text-slate-500" />

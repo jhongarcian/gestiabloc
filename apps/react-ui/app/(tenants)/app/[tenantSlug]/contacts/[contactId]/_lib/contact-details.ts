@@ -25,6 +25,12 @@ export type ContactDetailsResponse = {
       postalCode: string | null
       country: string | null
     }
+    assignedTo: {
+      userId: string
+      name: string
+      email: string
+      image: string | null
+    } | null
     status: string
     statusConfigId: string | null
     statusBgColor: string | null

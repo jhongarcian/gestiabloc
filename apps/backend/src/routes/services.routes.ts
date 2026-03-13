@@ -32,8 +32,16 @@ const TenantContactServicePathSchema = TenantPathSchema.extend({
   contactServiceId: z.string().min(1),
 })
 
+const TenantContactServicePaymentPathSchema = TenantContactServicePathSchema.extend({
+  paymentId: z.string().min(1),
+})
+
 const TenantFollowUpStepPathSchema = TenantContactServicePathSchema.extend({
   followUpStepId: z.string().min(1),
+})
+
+const TenantContactServiceChecklistItemPathSchema = TenantContactServicePathSchema.extend({
+  checklistItemId: z.string().min(1),
 })
 
 const ContactServicesListQuerySchema = z.object({
@@ -63,7 +71,20 @@ const CreateContactServiceSchema = z.object({
 const CreateContactServicePaymentSchema = z.object({
   amountCents: z.coerce.number().int().min(1).max(1_000_000_000),
   paidAt: z.string().datetime().optional(),
-  paymentMethod: z.string().trim().max(120).nullable().optional(),
+  paymentMethod: z
+    .enum(["CASH", "CARD", "CHECK", "TRANSFER", "ACH"])
+    .nullable()
+    .optional(),
+  note: z.string().trim().max(1000).nullable().optional(),
+})
+
+const UpdateContactServicePaymentSchema = z.object({
+  amountCents: z.coerce.number().int().min(1).max(1_000_000_000).optional(),
+  paidAt: z.string().datetime().optional(),
+  paymentMethod: z
+    .enum(["CASH", "CARD", "CHECK", "TRANSFER", "ACH"])
+    .nullable()
+    .optional(),
   note: z.string().trim().max(1000).nullable().optional(),
 })
 
@@ -75,6 +96,11 @@ const UpdateContactServiceSchema = z.object({
   canceledAt: z.string().datetime().nullable().optional(),
   totalPriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
   notes: z.string().trim().max(4000).nullable().optional(),
+})
+
+const CreateContactServiceNoteSchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  body: z.string().trim().min(1).max(8000),
 })
 
 const UpdateFollowUpStepSchema = z.object({
@@ -102,6 +128,10 @@ const CreateFollowUpStepSchema = z.object({
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
 })
 
+const UpdateContactServiceChecklistItemSchema = z.object({
+  completed: z.boolean().optional(),
+})
+
 async function requireActiveMembership(
   req: AuthedRequest,
   res: Response,
@@ -117,6 +147,7 @@ async function requireActiveMembership(
     select: {
       role: true,
       status: true,
+      securityLevel: true,
     },
   })
 
@@ -126,6 +157,56 @@ async function requireActiveMembership(
   }
 
   return membership
+}
+
+function canManageContactServices(membership: {
+  role: string
+  securityLevel: "LOW" | "MEDIUM" | "MAX"
+}) {
+  return membership.role === "TENANT_ADMIN" || membership.securityLevel !== "LOW"
+}
+
+async function summarizeContactServicePayments(
+  prismaTx: any,
+  tenantId: string,
+  contactServiceId: string,
+) {
+  const [contactService, payments] = await Promise.all([
+    prismaTx.contactService.findFirst({
+      where: {
+        id: contactServiceId,
+        tenantId,
+      },
+      select: {
+        id: true,
+        totalPriceCents: true,
+      },
+    }),
+    prismaTx.contactServicePayment.findMany({
+      where: {
+        tenantId,
+        contactServiceId,
+      },
+      select: {
+        amountCents: true,
+      },
+    }),
+  ])
+
+  if (!contactService) {
+    return null
+  }
+
+  const paidCents = payments.reduce(
+    (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
+    0,
+  )
+
+  return {
+    totalPriceCents: contactService.totalPriceCents,
+    paidCents,
+    remainingCents: Math.max(0, contactService.totalPriceCents - paidCents),
+  }
 }
 
 router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) => {
@@ -174,6 +255,24 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               name: true,
+              description: true,
+              basePriceCents: true,
+              checklistItems: {
+                select: {
+                  id: true,
+                  label: true,
+                  description: true,
+                  isRequired: true,
+                  sortOrder: true,
+                },
+                orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+              },
+            },
+          },
+          followUpTemplate: {
+            select: {
+              id: true,
+              name: true,
             },
           },
           payments: {
@@ -196,13 +295,34 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           },
+          checklistItems: {
+            select: {
+              id: true,
+              checklistItemId: true,
+              completedAt: true,
+              checklistItem: {
+                select: {
+                  id: true,
+                  label: true,
+                  description: true,
+                  isRequired: true,
+                  sortOrder: true,
+                },
+              },
+            },
+            orderBy: [
+              { checklistItem: { sortOrder: "asc" } },
+              { createdAt: "asc" },
+            ],
+          },
         },
       }),
     ])
 
-    const activatedStepIds = await prisma.$transaction(async (tx) => {
+    const syncResults = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any
       const activatedIds: string[] = []
+      let checklistBackfilled = false
       for (const item of items) {
         const activatedId = await syncContactServiceActiveStep({
           prismaTx,
@@ -210,11 +330,35 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           contactServiceId: item.id,
         })
         if (activatedId) activatedIds.push(activatedId)
+
+        const serviceChecklistItemIds = (item.service?.checklistItems ?? []).map(
+          (checklistItem: { id: string }) => checklistItem.id,
+        )
+        const existingChecklistItemIds = new Set(
+          (item.checklistItems ?? []).map(
+            (checklistItem: { checklistItemId: string }) => checklistItem.checklistItemId,
+          ),
+        )
+        const missingChecklistItemIds = serviceChecklistItemIds.filter(
+          (checklistItemId: string) => !existingChecklistItemIds.has(checklistItemId),
+        )
+
+        if (missingChecklistItemIds.length) {
+          await prismaTx.contactServiceChecklistItem.createMany({
+            data: missingChecklistItemIds.map((checklistItemId: string) => ({
+              tenantId,
+              contactServiceId: item.id,
+              checklistItemId,
+            })),
+            skipDuplicates: true,
+          })
+          checklistBackfilled = true
+        }
       }
-      return activatedIds
+      return { activatedIds, checklistBackfilled }
     })
 
-    if (activatedStepIds.length > 0) {
+    if (syncResults.activatedIds.length > 0 || syncResults.checklistBackfilled) {
       items = await prismaWithServices.contactService.findMany({
         where,
         orderBy: [{ createdAt: "desc" }],
@@ -242,6 +386,24 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               name: true,
+              description: true,
+              basePriceCents: true,
+              checklistItems: {
+                select: {
+                  id: true,
+                  label: true,
+                  description: true,
+                  isRequired: true,
+                  sortOrder: true,
+                },
+                orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+              },
+            },
+          },
+          followUpTemplate: {
+            select: {
+              id: true,
+              name: true,
             },
           },
           payments: {
@@ -263,6 +425,26 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               sortOrder: true,
             },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          },
+          checklistItems: {
+            select: {
+              id: true,
+              checklistItemId: true,
+              completedAt: true,
+              checklistItem: {
+                select: {
+                  id: true,
+                  label: true,
+                  description: true,
+                  isRequired: true,
+                  sortOrder: true,
+                },
+              },
+            },
+            orderBy: [
+              { checklistItem: { sortOrder: "asc" } },
+              { createdAt: "asc" },
+            ],
           },
         },
       })
@@ -295,7 +477,17 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             .filter(Boolean)
             .join(" "),
           service: item.service,
+          followUpTemplate: item.followUpTemplate,
           followUpSteps: item.followUpSteps,
+          checklistItems: item.checklistItems.map((checklistItem: any) => ({
+            id: checklistItem.id,
+            checklistItemId: checklistItem.checklistItemId,
+            completedAt: checklistItem.completedAt,
+            label: checklistItem.checklistItem?.label ?? "",
+            description: checklistItem.checklistItem?.description ?? null,
+            isRequired: Boolean(checklistItem.checklistItem?.isRequired),
+            sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
+          })),
         }
       }),
       pagination: {
@@ -337,6 +529,10 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           basePriceCents: true,
           currency: true,
           allowPartialPayments: true,
+          checklistItems: {
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: { id: true },
+          },
           followUpTemplates: {
             where: { isPublished: true },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
@@ -392,7 +588,16 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
 
     const purchasedAt = payload.purchasedAt ? new Date(payload.purchasedAt) : new Date()
     const startedAt = payload.startedAt ? new Date(payload.startedAt) : new Date()
-    const totalPriceCents = payload.totalPriceCents ?? service.basePriceCents
+    const totalPriceCents = service.basePriceCents
+    const initialPaymentCents = payload.initialPaymentCents ?? 0
+
+    if (initialPaymentCents < 0 || initialPaymentCents > totalPriceCents) {
+      return res.status(400).json({ error: "INVALID_INITIAL_PAYMENT" })
+    }
+
+    if (initialPaymentCents > 0 && initialPaymentCents < totalPriceCents && !service.allowPartialPayments) {
+      return res.status(400).json({ error: "SERVICE_DOES_NOT_ALLOW_PARTIAL_PAYMENTS" })
+    }
     const sanitizedServiceNotes =
       payload.notes && payload.notes.trim().length
         ? sanitizeMultilineText(payload.notes)
@@ -420,17 +625,27 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         },
       })
 
-      if (payload.initialPaymentCents && payload.initialPaymentCents > 0) {
+      if (initialPaymentCents > 0) {
         await prismaTx.contactServicePayment.create({
           data: {
             tenantId,
             contactServiceId: contactService.id,
-            amountCents: payload.initialPaymentCents,
+            amountCents: initialPaymentCents,
             paidAt: purchasedAt,
             paymentMethod: null,
             note: "Initial payment",
             recordedById: authed.user.id,
           },
+        })
+      }
+
+      if (service.checklistItems.length) {
+        await prismaTx.contactServiceChecklistItem.createMany({
+          data: service.checklistItems.map((item: { id: string }) => ({
+            tenantId,
+            contactServiceId: contactService.id,
+            checklistItemId: item.id,
+          })),
         })
       }
 
@@ -477,6 +692,292 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
   }
 })
 
+router.get(
+  "/:tenantId/contact-services/:contactServiceId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const fetchItem = async () =>
+        prismaWithServices.contactService.findFirst({
+          where: {
+            id: contactServiceId,
+            tenantId,
+          },
+          select: {
+            id: true,
+            contactId: true,
+            status: true,
+            startedAt: true,
+            purchasedAt: true,
+            completedAt: true,
+            canceledAt: true,
+            totalPriceCents: true,
+            currency: true,
+            allowPartialPayments: true,
+            notes: true,
+            contact: {
+              select: {
+                firstName: true,
+                middleName: true,
+                lastName: true,
+              },
+            },
+            service: {
+              select: {
+                id: true,
+                name: true,
+                description: true,
+                basePriceCents: true,
+                checklistItems: {
+                  select: {
+                    id: true,
+                    label: true,
+                    description: true,
+                    isRequired: true,
+                    sortOrder: true,
+                  },
+                  orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+                },
+              },
+            },
+            followUpTemplate: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            payments: {
+              select: {
+                id: true,
+                amountCents: true,
+                paidAt: true,
+                paymentMethod: true,
+                note: true,
+                recordedBy: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+              },
+              orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
+            },
+            serviceNotes: {
+              select: {
+                id: true,
+                title: true,
+                body: true,
+                createdAt: true,
+                createdBy: {
+                  select: {
+                    id: true,
+                    name: true,
+                    image: true,
+                  },
+                },
+              },
+              orderBy: [{ createdAt: "desc" }],
+            },
+            followUpSteps: {
+              select: {
+                id: true,
+                title: true,
+                notesTemplate: true,
+                status: true,
+                availableAt: true,
+                dueAt: true,
+                completedAt: true,
+                assignedToUserId: true,
+                note: true,
+                sortOrder: true,
+              },
+              orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            },
+            checklistItems: {
+              select: {
+                id: true,
+                checklistItemId: true,
+                completedAt: true,
+                checklistItem: {
+                  select: {
+                    id: true,
+                    label: true,
+                    description: true,
+                    isRequired: true,
+                    sortOrder: true,
+                  },
+                },
+              },
+              orderBy: [
+                { checklistItem: { sortOrder: "asc" } },
+                { createdAt: "asc" },
+              ],
+            },
+          },
+        })
+
+      let item = await fetchItem()
+
+      if (!item) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const syncResult = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const activatedId = await syncContactServiceActiveStep({
+          prismaTx,
+          tenantId,
+          contactServiceId: item.id,
+        })
+
+        const serviceChecklistItemIds = (item.service?.checklistItems ?? []).map(
+          (checklistItem: { id: string }) => checklistItem.id,
+        )
+        const existingChecklistItemIds = new Set(
+          (item.checklistItems ?? []).map(
+            (checklistItem: { checklistItemId: string }) => checklistItem.checklistItemId,
+          ),
+        )
+        const missingChecklistItemIds = serviceChecklistItemIds.filter(
+          (checklistItemId: string) => !existingChecklistItemIds.has(checklistItemId),
+        )
+
+        if (missingChecklistItemIds.length) {
+          await prismaTx.contactServiceChecklistItem.createMany({
+            data: missingChecklistItemIds.map((checklistItemId: string) => ({
+              tenantId,
+              contactServiceId: item.id,
+              checklistItemId,
+            })),
+            skipDuplicates: true,
+          })
+        }
+
+        return {
+          activatedId,
+          checklistBackfilled: missingChecklistItemIds.length > 0,
+        }
+      })
+
+      if (syncResult.activatedId || syncResult.checklistBackfilled) {
+        item = await fetchItem()
+      }
+
+      if (!item) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const paidCents = item.payments.reduce(
+        (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
+        0,
+      )
+
+      return res.json({
+        ok: true,
+        contactService: {
+          id: item.id,
+          contactId: item.contactId,
+          status: item.status,
+          startedAt: item.startedAt,
+          purchasedAt: item.purchasedAt,
+          completedAt: item.completedAt,
+          canceledAt: item.canceledAt,
+          totalPriceCents: item.totalPriceCents,
+          paidCents,
+          remainingCents: Math.max(0, item.totalPriceCents - paidCents),
+          currency: item.currency,
+          allowPartialPayments: item.allowPartialPayments,
+          notes: item.notes,
+          contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
+            .filter(Boolean)
+            .join(" "),
+          service: item.service,
+          followUpTemplate: item.followUpTemplate,
+          payments: item.payments,
+          serviceNotes: item.serviceNotes,
+          followUpSteps: item.followUpSteps,
+          checklistItems: item.checklistItems.map((checklistItem: any) => ({
+            id: checklistItem.id,
+            checklistItemId: checklistItem.checklistItemId,
+            completedAt: checklistItem.completedAt,
+            label: checklistItem.checklistItem?.label ?? "",
+            description: checklistItem.checklistItem?.description ?? null,
+            isRequired: Boolean(checklistItem.checklistItem?.isRequired),
+            sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
+          })),
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.post(
+  "/:tenantId/contact-services/:contactServiceId/notes",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+      const payload = CreateContactServiceNoteSchema.parse(req.body)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const existing = await prismaWithServices.contactService.findFirst({
+        where: {
+          id: contactServiceId,
+          tenantId,
+        },
+        select: {
+          id: true,
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const note = await prismaWithServices.contactServiceNote.create({
+        data: {
+          tenantId,
+          contactServiceId,
+          createdById: authed.user.id,
+          title: sanitizeSingleLineText(payload.title),
+          body: sanitizeMultilineText(payload.body),
+        },
+        select: {
+          id: true,
+          title: true,
+          body: true,
+          createdAt: true,
+          createdBy: {
+            select: {
+              id: true,
+              name: true,
+              image: true,
+            },
+          },
+        },
+      })
+
+      return res.status(201).json({
+        ok: true,
+        note,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
 router.post(
   "/:tenantId/contact-services/:contactServiceId/payments",
   requireAuth,
@@ -488,6 +989,10 @@ router.post(
 
       const membership = await requireActiveMembership(authed, res, tenantId)
       if (!membership) return
+
+      if (!canManageContactServices(membership)) {
+        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+      }
 
       const contactService = await prismaWithServices.contactService.findFirst({
         where: {
@@ -530,39 +1035,152 @@ router.post(
         },
       })
 
-      const payments = await prismaWithServices.contactServicePayment.findMany({
-        where: {
-          tenantId,
-          contactServiceId,
-        },
-        select: {
-          amountCents: true,
-        },
-      })
-
-      const totalPaidCents = payments.reduce(
-        (sum: number, entry: { amountCents: number }) => sum + entry.amountCents,
-        0,
+      const summary = await summarizeContactServicePayments(
+        prismaWithServices,
+        tenantId,
+        contactServiceId,
       )
-
-      if (totalPaidCents >= contactService.totalPriceCents) {
-        await prismaWithServices.contactService.update({
-          where: { id: contactServiceId },
-          data: {
-            status: "COMPLETED",
-            completedAt: new Date(),
-          },
-        })
-      }
 
       return res.status(201).json({
         ok: true,
         payment,
-        summary: {
-          totalPriceCents: contactService.totalPriceCents,
-          paidCents: totalPaidCents,
-          remainingCents: Math.max(0, contactService.totalPriceCents - totalPaidCents),
+        summary,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.patch(
+  "/:tenantId/contact-services/:contactServiceId/payments/:paymentId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId, paymentId } =
+        TenantContactServicePaymentPathSchema.parse(req.params)
+      const payload = UpdateContactServicePaymentSchema.parse(req.body)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      if (!canManageContactServices(membership)) {
+        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+      }
+
+      if (Object.keys(payload).length === 0) {
+        return res.status(400).json({ error: "NO_CHANGES_PROVIDED" })
+      }
+
+      const existing = await prismaWithServices.contactServicePayment.findFirst({
+        where: {
+          id: paymentId,
+          tenantId,
+          contactServiceId,
         },
+        select: {
+          id: true,
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_PAYMENT_NOT_FOUND" })
+      }
+
+      const payment = await prismaWithServices.contactServicePayment.update({
+        where: { id: paymentId },
+        data: {
+          ...(payload.amountCents !== undefined ? { amountCents: payload.amountCents } : {}),
+          ...(payload.paidAt !== undefined ? { paidAt: new Date(payload.paidAt) } : {}),
+          ...(payload.paymentMethod !== undefined
+            ? {
+                paymentMethod:
+                  payload.paymentMethod && payload.paymentMethod.trim().length
+                    ? sanitizeSingleLineText(payload.paymentMethod)
+                    : null,
+              }
+            : {}),
+          ...(payload.note !== undefined
+            ? {
+                note:
+                  payload.note && payload.note.trim().length
+                    ? sanitizeMultilineText(payload.note)
+                    : null,
+              }
+            : {}),
+        },
+        select: {
+          id: true,
+          amountCents: true,
+          paidAt: true,
+          paymentMethod: true,
+          note: true,
+          recordedById: true,
+        },
+      })
+
+      const summary = await summarizeContactServicePayments(
+        prismaWithServices,
+        tenantId,
+        contactServiceId,
+      )
+
+      return res.json({
+        ok: true,
+        payment,
+        summary,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.delete(
+  "/:tenantId/contact-services/:contactServiceId/payments/:paymentId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId, paymentId } =
+        TenantContactServicePaymentPathSchema.parse(req.params)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      if (!canManageContactServices(membership)) {
+        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+      }
+
+      const existing = await prismaWithServices.contactServicePayment.findFirst({
+        where: {
+          id: paymentId,
+          tenantId,
+          contactServiceId,
+        },
+        select: {
+          id: true,
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_PAYMENT_NOT_FOUND" })
+      }
+
+      await prismaWithServices.contactServicePayment.delete({
+        where: { id: paymentId },
+      })
+
+      const summary = await summarizeContactServicePayments(
+        prismaWithServices,
+        tenantId,
+        contactServiceId,
+      )
+
+      return res.json({
+        ok: true,
+        summary,
       })
     } catch (error) {
       return next(error)
@@ -584,6 +1202,10 @@ router.patch(
 
       if (Object.keys(payload).length === 0) {
         return res.status(400).json({ error: "NO_CHANGES_PROVIDED" })
+      }
+
+      if (!canManageContactServices(membership)) {
+        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
       }
 
       const existing = await prismaWithServices.contactService.findFirst({
@@ -631,9 +1253,6 @@ router.patch(
           ...(payload.purchasedAt !== undefined
             ? { purchasedAt: payload.purchasedAt ? new Date(payload.purchasedAt) : null }
             : {}),
-          ...(payload.totalPriceCents !== undefined
-            ? { totalPriceCents: payload.totalPriceCents }
-            : {}),
           ...(payload.notes !== undefined
             ? {
                 notes:
@@ -676,6 +1295,10 @@ router.delete(
       const membership = await requireActiveMembership(authed, res, tenantId)
       if (!membership) return
 
+      if (!canManageContactServices(membership)) {
+        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+      }
+
       const existing = await prismaWithServices.contactService.findFirst({
         where: {
           id: contactServiceId,
@@ -695,6 +1318,87 @@ router.delete(
       })
 
       return res.json({ ok: true })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.patch(
+  "/:tenantId/contact-services/:contactServiceId/checklist-items/:checklistItemId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const { tenantId, contactServiceId, checklistItemId } =
+        TenantContactServiceChecklistItemPathSchema.parse(req.params)
+      const payload = UpdateContactServiceChecklistItemSchema.parse(req.body)
+
+      const membership = await requireActiveMembership(req as AuthedRequest, res, tenantId)
+      if (!membership) return
+
+      if (payload.completed === undefined) {
+        return res.status(400).json({ error: "NO_CHANGES_PROVIDED" })
+      }
+
+      const existing = await prismaWithServices.contactServiceChecklistItem.findFirst({
+        where: {
+          id: checklistItemId,
+          tenantId,
+          contactServiceId,
+        },
+        select: {
+          id: true,
+          checklistItemId: true,
+          completedAt: true,
+          checklistItem: {
+            select: {
+              id: true,
+              label: true,
+              description: true,
+              isRequired: true,
+              sortOrder: true,
+            },
+          },
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_CHECKLIST_ITEM_NOT_FOUND" })
+      }
+
+      const updated = await prismaWithServices.contactServiceChecklistItem.update({
+        where: { id: checklistItemId },
+        data: {
+          completedAt: payload.completed ? new Date() : null,
+        },
+        select: {
+          id: true,
+          checklistItemId: true,
+          completedAt: true,
+          checklistItem: {
+            select: {
+              id: true,
+              label: true,
+              description: true,
+              isRequired: true,
+              sortOrder: true,
+            },
+          },
+        },
+      })
+
+      return res.json({
+        ok: true,
+        checklistItem: {
+          id: updated.id,
+          checklistItemId: updated.checklistItemId,
+          completedAt: updated.completedAt,
+          label: updated.checklistItem?.label ?? "",
+          description: updated.checklistItem?.description ?? null,
+          isRequired: Boolean(updated.checklistItem?.isRequired),
+          sortOrder: updated.checklistItem?.sortOrder ?? 0,
+        },
+      })
     } catch (error) {
       return next(error)
     }

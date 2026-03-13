@@ -206,6 +206,7 @@ model User {
   createdTaskReminders          TaskReminder[]                    @relation("TaskReminderCreatedBy")
   reminderAssignments           TaskReminder[]                    @relation("TaskReminderRecipient")
   contactNotes                  ContactNote[]
+  contactServiceNotes           ContactServiceNote[]
   serviceProfessionals          ServiceProfessional[]
   recordedServicePayments       ContactServicePayment[]           @relation("ContactServicePaymentRecordedBy")
   assignedServiceFollowUps      ContactServiceFollowUpStep[]      @relation("ContactServiceFollowUpAssignedUser")
@@ -353,8 +354,10 @@ model Tenant {
   serviceFollowUpTemplateSteps     ServiceFollowUpTemplateStep[]
   serviceProfessionals             ServiceProfessional[]
   contactServices                  ContactService[]
+  contactServiceChecklistItems     ContactServiceChecklistItem[]
   contactServicePayments           ContactServicePayment[]
   contactServiceFollowUpSteps      ContactServiceFollowUpStep[]
+  contactServiceNotes              ContactServiceNote[]
   tenantTags                       TenantTag[]
   contactTags                      ContactTag[]
   contactCustomFields              ContactCustomField[]
@@ -426,6 +429,7 @@ model ServiceChecklistItem {
 
   tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  contactChecklistItems ContactServiceChecklistItem[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -526,6 +530,8 @@ model ContactService {
   followUpTemplate ServiceFollowUpTemplate?  @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
   payments      ContactServicePayment[]
   followUpSteps ContactServiceFollowUpStep[]
+  checklistItems ContactServiceChecklistItem[]
+  serviceNotes  ContactServiceNote[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -535,6 +541,26 @@ model ContactService {
   @@index([tenantId, serviceId, createdAt])
   @@index([tenantId, followUpTemplateId])
   @@index([tenantId, status, createdAt])
+}
+
+model ContactServiceChecklistItem {
+  id               String   @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  checklistItemId  String
+  completedAt      DateTime?
+
+  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactService ContactService       @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  checklistItem  ServiceChecklistItem @relation(fields: [checklistItemId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, contactServiceId, checklistItemId])
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, completedAt])
+  @@index([tenantId, checklistItemId])
 }
 
 model ContactServicePayment {
@@ -585,6 +611,26 @@ model ContactServiceFollowUpStep {
   @@index([tenantId, contactServiceId, status, sortOrder])
   @@index([tenantId, contactServiceId, templateNodeId])
   @@index([tenantId, assignedToUserId, dueAt])
+}
+
+model ContactServiceNote {
+  id               String @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  createdById      String
+  title            String
+  body             String
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  createdBy      User           @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, createdAt])
+  @@index([tenantId, createdById])
 }
 
 model EmailVerification {
@@ -862,6 +908,7 @@ model Notification {
   id             String           @id @default(uuid())
   tenantId       String
   userId         String
+  contactId      String?
   taskId         String?
   taskReminderId String?          @unique
   eventKey       String?          @unique
@@ -880,6 +927,7 @@ model Notification {
 
   @@index([tenantId, userId, createdAt])
   @@index([tenantId, userId, readAt, createdAt])
+  @@index([tenantId, userId, contactId, createdAt])
 }
 
 model ContactCustomFieldValue {

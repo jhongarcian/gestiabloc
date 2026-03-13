@@ -31,14 +31,14 @@ export default async function ContactOverviewPage({
   let statusOptions: Array<{ label: string; value: string }> = []
 
   try {
-    const { data } = await api.get<ContactStatusesResponse>(
+    const statusesResponse = await api.get<ContactStatusesResponse>(
       `/api/contacts/${tenantId}/statuses`,
       {
         headers: { cookie },
       },
     )
 
-    statusOptions = data.items.map((status) => ({
+    statusOptions = statusesResponse.data.items.map((status) => ({
       label: status.name,
       value: status.id,
     }))
@@ -49,7 +49,7 @@ export default async function ContactOverviewPage({
   return (
     <section className="flex flex-col gap-5">
       <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
               Contact Overview
@@ -64,7 +64,7 @@ export default async function ContactOverviewPage({
             </div>
           </div>
 
-          <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm">
+          <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm md:self-center">
             <span className="inline-flex items-center gap-2">
               <FileText className="h-4 w-4 text-slate-500" />
               <span className="font-semibold text-slate-950">

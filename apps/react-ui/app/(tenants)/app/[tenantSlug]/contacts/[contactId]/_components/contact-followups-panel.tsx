@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 import { ListTodo, NotebookPen, Plus } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { DateTimeInput } from "@/components/ui/date-time-input"
 import {
   Dialog,
   DialogContent,
@@ -38,15 +40,30 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
+import {
+  dateTimeDraftToUtcIso,
+  formatUtcIsoToDateTimeDraft,
+  isDateTimeDraftComplete,
+  isDateTimeDraftEmpty,
+  type DateTimeDraft,
+} from "@/lib/date-time"
 
 type FollowUpStep = {
   id: string
   title: string
-  status?: "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED"
+  notesTemplate?: string | null
+  status?: "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
   availableAt: string | null
   dueAt: string | null
   completedAt: string | null
+  note?: string | null
   sortOrder: number
 }
 
@@ -56,6 +73,10 @@ type ContactServiceItem = {
     id: string
     name: string
   }
+  followUpTemplate: {
+    id: string
+    name: string
+  } | null
   followUpSteps: FollowUpStep[]
 }
 
@@ -67,11 +88,13 @@ type ContactServicesResponse = {
 type FlattenedStep = FollowUpStep & {
   contactServiceId: string
   serviceName: string
+  templateName: string | null
 }
 
 type ServiceFollowUpView = {
   contactServiceId: string
   serviceName: string
+  templateName: string | null
   steps: FlattenedStep[]
   completedCount: number
   totalCount: number
@@ -88,6 +111,14 @@ type StepTimeMeta = {
   label: string
   helper: string
   badgeClassName: string
+}
+
+const isBeforeToday = (date: Date) => {
+  const candidate = new Date(date)
+  candidate.setHours(0, 0, 0, 0)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return candidate < today
 }
 
 const toInputDateTime = (value: string | null) => {
@@ -112,6 +143,13 @@ const getStepTimeMeta = (step: FlattenedStep): StepTimeMeta => {
       label: "Completed",
       helper: step.completedAt ? new Date(step.completedAt).toLocaleString() : "Marked as completed",
       badgeClassName: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
+    }
+  }
+  if (step.status === "POSTPONED") {
+    return {
+      label: "Postponed",
+      helper: step.dueAt ? `Now due ${new Date(step.dueAt).toLocaleString()}` : "Postponed",
+      badgeClassName: "bg-violet-100 text-violet-800 hover:bg-violet-100",
     }
   }
   if (!step.dueAt) {
@@ -150,6 +188,7 @@ const getStepTimeMeta = (step: FlattenedStep): StepTimeMeta => {
 }
 
 export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsPanelProps) {
+  const router = useRouter()
   const [services, setServices] = useState<ContactServiceItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
@@ -164,9 +203,11 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
   const [isNoteDialogOpen, setIsNoteDialogOpen] = useState(false)
   const [isTaskDialogOpen, setIsTaskDialogOpen] = useState(false)
   const [isStepStatusDialogOpen, setIsStepStatusDialogOpen] = useState(false)
+  const [isStepDetailsDialogOpen, setIsStepDetailsDialogOpen] = useState(false)
   const [activeStepContext, setActiveStepContext] = useState<FlattenedStep | null>(null)
   const [stepStatusValue, setStepStatusValue] = useState<FollowUpStep["status"]>("PENDING")
   const [stepStatusNote, setStepStatusNote] = useState("")
+  const [stepPostponeInput, setStepPostponeInput] = useState<DateTimeDraft>({ date: "", time: "" })
   const [isSavingStepStatus, setIsSavingStepStatus] = useState(false)
   const [stepNoteTitle, setStepNoteTitle] = useState("")
   const [stepNoteBody, setStepNoteBody] = useState("")
@@ -207,16 +248,20 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
           status: step.status ?? (step.completedAt ? "COMPLETED" : "PENDING"),
           contactServiceId: service.id,
           serviceName: service.service.name,
+          templateName: service.followUpTemplate?.name ?? null,
         }))
         .sort((a, b) => a.sortOrder - b.sortOrder)
       const totalCount = steps.length
-      const completedCount = steps.filter((step) => step.status === "COMPLETED").length
+      const completedCount = steps.filter(
+        (step) => step.status === "COMPLETED" || step.status === "SKIPPED",
+      ).length
       const remainingCount = Math.max(0, totalCount - completedCount)
       const completionPercentage = totalCount ? Math.round((completedCount / totalCount) * 100) : 0
 
       return {
         contactServiceId: service.id,
         serviceName: service.service.name,
+        templateName: service.followUpTemplate?.name ?? null,
         steps,
         completedCount,
         totalCount,
@@ -250,6 +295,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
       setCreateNotes("")
       setIsCreateOpen(false)
       await loadData()
+      router.refresh()
     } catch {
       toast.error("Could not create follow-up.")
     } finally {
@@ -261,6 +307,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
     step: FlattenedStep,
     nextStatus: FollowUpStep["status"],
     note?: string,
+    postponeTo?: string,
   ) => {
     if (!nextStatus) return
     setMutatingStepId(step.id)
@@ -270,10 +317,12 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
         {
           status: nextStatus,
           ...(note?.trim() ? { note: note.trim() } : {}),
+          ...(postponeTo ? { postponeTo, cascadeFutureSteps: true } : {}),
         },
       )
       toast.success(nextStatus === "COMPLETED" ? "Step marked as completed." : "Step status updated.")
       await loadData()
+      router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
@@ -290,17 +339,48 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
     setActiveStepContext(step)
     setStepStatusValue(step.status ?? "PENDING")
     setStepStatusNote("")
+    setStepPostponeInput(formatUtcIsoToDateTimeDraft(step.dueAt, "America/Chicago"))
     setIsStepStatusDialogOpen(true)
+  }
+
+  const openStepDetailsDialog = (step: FlattenedStep) => {
+    setActiveStepContext(step)
+    setIsStepDetailsDialogOpen(true)
   }
 
   const saveStepStatus = async () => {
     if (!activeStepContext || !stepStatusValue) return
+    if (
+      stepStatusValue === "POSTPONED" &&
+      (!isDateTimeDraftComplete(stepPostponeInput) ||
+        isDateTimeDraftEmpty(stepPostponeInput))
+    ) {
+      toast.error("Postpone date/time is required.")
+      return
+    }
+    if (
+      stepStatusValue === "POSTPONED" &&
+      !isDateTimeDraftEmpty(stepPostponeInput) &&
+      !isDateTimeDraftComplete(stepPostponeInput)
+    ) {
+      toast.error("Postpone date/time is incomplete.")
+      return
+    }
+    const postponeToIso = stepStatusValue !== "POSTPONED" || isDateTimeDraftEmpty(stepPostponeInput)
+      ? undefined
+      : dateTimeDraftToUtcIso(stepPostponeInput, "America/Chicago") ?? undefined
     setIsSavingStepStatus(true)
-    await updateStepStatus(activeStepContext, stepStatusValue, stepStatusNote)
+    await updateStepStatus(
+      activeStepContext,
+      stepStatusValue,
+      stepStatusNote,
+      postponeToIso,
+    )
     setIsSavingStepStatus(false)
     setIsStepStatusDialogOpen(false)
     setActiveStepContext(null)
     setStepStatusNote("")
+    setStepPostponeInput({ date: "", time: "" })
   }
 
   const openStepNoteDialog = (step: FlattenedStep) => {
@@ -328,6 +408,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
       setActiveStepContext(null)
       setStepNoteTitle("")
       setStepNoteBody("")
+      router.refresh()
     } catch {
       toast.error("Could not create a note for this step.")
     } finally {
@@ -367,6 +448,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
       setStepTaskName("")
       setStepTaskDescription("")
       setStepTaskDueAt("")
+      router.refresh()
     } catch {
       toast.error("Could not create task for this step.")
     } finally {
@@ -377,7 +459,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
   return (
     <section className="flex flex-col gap-5">
       <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Contact Follow-Ups</p>
             <div className="space-y-1">
@@ -385,7 +467,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
               <p className="text-sm text-slate-600">Track, edit, and complete follow-up steps after service purchase enrollment.</p>
             </div>
           </div>
-          <Button type="button" onClick={() => setIsCreateOpen(true)}>
+          <Button type="button" onClick={() => setIsCreateOpen(true)} className="cursor-pointer md:self-center">
             <Plus className="h-4 w-4" />
             Add follow-up
           </Button>
@@ -397,12 +479,16 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
           Loading follow-ups...
         </div>
       ) : servicesView.length ? (
-        <div className="space-y-4">
+        <TooltipProvider>
+          <div className="space-y-4">
           {servicesView.map((service) => (
             <section key={service.contactServiceId} className="rounded-[20px] border border-slate-200 bg-white p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="space-y-1">
                   <h3 className="text-base font-semibold text-slate-900">{service.serviceName}</h3>
+                  <p className="text-xs font-medium text-slate-600">
+                    Template: {service.templateName ?? "No template selected"}
+                  </p>
                   <p className="text-xs text-slate-500">
                     {service.completedCount} of {service.totalCount} steps completed
                   </p>
@@ -451,9 +537,18 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                     {service.steps.length ? (
                       service.steps.map((step) => {
                         const timeMeta = getStepTimeMeta(step)
+                        const isStatusLocked = (step.status ?? "PENDING") === "PENDING"
                         return (
                           <TableRow key={step.id}>
-                            <TableCell className="font-medium text-slate-900">{step.title}</TableCell>
+                            <TableCell>
+                              <button
+                                type="button"
+                                className="cursor-pointer text-left font-medium text-slate-900 transition hover:text-slate-700"
+                                onClick={() => openStepDetailsDialog(step)}
+                              >
+                                {step.title}
+                              </button>
+                            </TableCell>
                             <TableCell>
                               <div className="space-y-1">
                                 <Badge className={timeMeta.badgeClassName}>{timeMeta.label}</Badge>
@@ -461,16 +556,37 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                               </div>
                             </TableCell>
                             <TableCell>
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                className="min-w-[136px] cursor-pointer justify-center capitalize"
-                                disabled={mutatingStepId === step.id}
-                                onClick={() => openStepStatusDialog(step)}
-                              >
-                                {(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}
-                              </Button>
+                              {!isStatusLocked ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="min-w-[136px] cursor-pointer justify-center capitalize"
+                                  disabled={mutatingStepId === step.id}
+                                  onClick={() => openStepStatusDialog(step)}
+                                >
+                                  {(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}
+                                </Button>
+                              ) : (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="inline-flex">
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        className="min-w-[136px] cursor-not-allowed justify-center capitalize"
+                                        disabled
+                                      >
+                                        {(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}
+                                      </Button>
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" sideOffset={6}>
+                                    Status locked until this step becomes active.
+                                  </TooltipContent>
+                                </Tooltip>
+                              )}
                             </TableCell>
                             <TableCell className="text-right">
                               <div className="flex justify-end gap-2">
@@ -511,7 +627,8 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
               </div>
             </section>
           ))}
-        </div>
+          </div>
+        </TooltipProvider>
       ) : (
         <div className="rounded-[20px] border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
           No follow-up services enrolled yet.
@@ -572,6 +689,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
             {activeStepContext ? (
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
                 <p><span className="font-medium text-slate-900">Service:</span> {activeStepContext.serviceName}</p>
+                <p><span className="font-medium text-slate-900">Template:</span> {activeStepContext.templateName ?? "No template selected"}</p>
                 <p><span className="font-medium text-slate-900">Step:</span> {activeStepContext.title}</p>
               </div>
             ) : null}
@@ -579,7 +697,13 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
               <Label>Status</Label>
               <Select
                 value={stepStatusValue}
-                onValueChange={(value) => setStepStatusValue(value as FollowUpStep["status"])}
+                onValueChange={(value) => {
+                  const nextValue = value as FollowUpStep["status"]
+                  setStepStatusValue(nextValue)
+                  if (nextValue !== "POSTPONED") {
+                    setStepPostponeInput({ date: "", time: "" })
+                  }
+                }}
               >
                 <SelectTrigger className="cursor-pointer">
                   <SelectValue />
@@ -589,6 +713,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                   <SelectItem value="ACTIVE" className="cursor-pointer">Active</SelectItem>
                   <SelectItem value="COMPLETED" className="cursor-pointer">Completed</SelectItem>
                   <SelectItem value="SKIPPED" className="cursor-pointer">Skipped</SelectItem>
+                  <SelectItem value="POSTPONED" className="cursor-pointer">Postponed</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -601,6 +726,19 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                 onChange={(event) => setStepStatusNote(event.target.value)}
               />
             </div>
+            {stepStatusValue === "POSTPONED" ? (
+              <div className="grid gap-2">
+                <Label>Postpone to</Label>
+                <DateTimeInput
+                  value={stepPostponeInput}
+                  onValueChange={setStepPostponeInput}
+                  disabledDate={isBeforeToday}
+                />
+                <p className="text-xs text-slate-500">
+                  This step and all upcoming pending/active steps will shift to match the new timing.
+                </p>
+              </div>
+            ) : null}
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setIsStepStatusDialogOpen(false)} disabled={isSavingStepStatus}>
@@ -608,6 +746,57 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
             </Button>
             <Button type="button" onClick={() => void saveStepStatus()} disabled={isSavingStepStatus}>
               {isSavingStepStatus ? "Saving..." : "Save status"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isStepDetailsDialogOpen} onOpenChange={setIsStepDetailsDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Follow-up step details</DialogTitle>
+            <DialogDescription>
+              Review the description and current details for this follow-up step.
+            </DialogDescription>
+          </DialogHeader>
+          {activeStepContext ? (
+            <div className="space-y-4 py-1">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                <p><span className="font-medium text-slate-900">Service:</span> {activeStepContext.serviceName}</p>
+                <p><span className="font-medium text-slate-900">Template:</span> {activeStepContext.templateName ?? "No template selected"}</p>
+                <p><span className="font-medium text-slate-900">Step:</span> {activeStepContext.title}</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Status</p>
+                  <p className="mt-1 text-sm capitalize text-slate-900">
+                    {(activeStepContext.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Due</p>
+                  <p className="mt-1 text-sm text-slate-900">
+                    {activeStepContext.dueAt ? new Date(activeStepContext.dueAt).toLocaleString() : "No due date"}
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Description</p>
+                <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
+                  {activeStepContext.notesTemplate?.trim() || "No description provided for this step."}
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Latest step note</p>
+                <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
+                  {activeStepContext.note?.trim() || "No step note recorded yet."}
+                </p>
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsStepDetailsDialogOpen(false)}>
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -626,6 +815,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
               {activeStepContext ? (
                 <>
                   <p><span className="font-medium text-slate-900">Service:</span> {activeStepContext.serviceName}</p>
+                  <p><span className="font-medium text-slate-900">Template:</span> {activeStepContext.templateName ?? "No template selected"}</p>
                   <p><span className="font-medium text-slate-900">Step:</span> {activeStepContext.title}</p>
                 </>
               ) : null}
@@ -663,6 +853,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
               {activeStepContext ? (
                 <>
                   <p><span className="font-medium text-slate-900">Service:</span> {activeStepContext.serviceName}</p>
+                  <p><span className="font-medium text-slate-900">Template:</span> {activeStepContext.templateName ?? "No template selected"}</p>
                   <p><span className="font-medium text-slate-900">Step:</span> {activeStepContext.title}</p>
                 </>
               ) : null}

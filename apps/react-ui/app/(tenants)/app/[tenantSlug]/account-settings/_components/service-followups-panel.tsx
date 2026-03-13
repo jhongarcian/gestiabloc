@@ -1,14 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { isAxiosError } from "axios"
 import Link from "next/link"
-import { CheckCircle2, Clock3, Route, Users } from "lucide-react"
-import { toast } from "sonner"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
+import { isAxiosError } from "axios"
+import { CheckCircle2, Layers3, Route } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -16,32 +15,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { api } from "@/lib/api"
-
-type ServiceOptionsResponse = {
-  ok: boolean
-  items: Array<{
-    id: string
-    name: string
-    isActive: boolean
-  }>
-}
-
-type ServiceDetailsResponse = {
-  ok: boolean
-  service: {
-    id: string
-    name: string
-    followUpTemplateSteps: Array<{
-      id: string
-      title: string
-      notesTemplate: string | null
-      dueDaysFromStart: number
-      sortOrder: number
-    }>
-  }
-}
+import { cn } from "@/lib/utils"
 
 type ServiceFollowUpsPanelProps = {
   tenantId: string
@@ -49,122 +32,112 @@ type ServiceFollowUpsPanelProps = {
   initialServiceId?: string
 }
 
+type FollowUpTemplatesResponse = {
+  ok: boolean
+  items: Array<{
+    id: string
+    name: string
+    isPublished: boolean
+    serviceId: string
+    serviceName: string
+    serviceIsActive: boolean
+  }>
+  pagination: {
+    page: number
+    pageSize: number
+    total: number
+    totalPages: number
+  }
+}
+
+const PAGE_SIZE_OPTIONS = [10, 25] as const
+
+function TemplateStateBadge({
+  isPublished,
+}: {
+  isPublished: boolean
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]",
+        isPublished ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700",
+      )}
+    >
+      {isPublished ? "Published" : "Draft"}
+    </span>
+  )
+}
+
 export function ServiceFollowUpsPanel({
   tenantId,
   tenantSlug,
   initialServiceId,
 }: ServiceFollowUpsPanelProps) {
-  const [serviceOptions, setServiceOptions] = useState<ServiceOptionsResponse["items"]>([])
-  const [selectedServiceId, setSelectedServiceId] = useState(initialServiceId ?? "")
-  const [serviceName, setServiceName] = useState("")
+  const router = useRouter()
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(10)
+  const [search, setSearch] = useState("")
+  const [data, setData] = useState<FollowUpTemplatesResponse | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [isSaving, setIsSaving] = useState(false)
-  const [steps, setSteps] = useState<
-    Array<{
-      title: string
-      notesTemplate: string
-      dueDaysFromStart: string
-    }>
-  >([])
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
-  const loadServiceOptions = useCallback(async () => {
+  const load = useCallback(async () => {
+    setIsLoading(true)
+    setErrorMessage(null)
+
     try {
-      const { data } = await api.get<ServiceOptionsResponse>(
-        `/api/account-settings/${tenantId}/services/options`,
+      const { data: response } = await api.get<FollowUpTemplatesResponse>(
+        `/api/account-settings/${tenantId}/follow-up-templates`,
         {
-          params: { includeInactive: "true" },
+          params: {
+            page,
+            pageSize,
+            search: search.trim() || undefined,
+            serviceId: initialServiceId || undefined,
+          },
         },
       )
-      setServiceOptions(data.items)
-
-      if (!data.items.length) {
-        setSelectedServiceId("")
-        return
-      }
-
-      const hasSelectedService = data.items.some((service) => service.id === selectedServiceId)
-      if (!selectedServiceId || !hasSelectedService) {
-        setSelectedServiceId(data.items[0].id)
-      }
-    } catch {
-      setServiceOptions([])
-    }
-  }, [tenantId, selectedServiceId])
-
-  const loadServiceDetails = useCallback(async () => {
-    if (!selectedServiceId) return
-
-    setIsLoading(true)
-    try {
-      const { data } = await api.get<ServiceDetailsResponse>(
-        `/api/account-settings/${tenantId}/services/${selectedServiceId}`,
-      )
-
-      setServiceName(data.service.name)
-      setSteps(
-        data.service.followUpTemplateSteps.map((entry) => ({
-          title: entry.title,
-          notesTemplate: entry.notesTemplate ?? "",
-          dueDaysFromStart: String(entry.dueDaysFromStart),
-        })),
-      )
-    } catch {
-      setServiceName("")
-      setSteps([])
-    } finally {
-      setIsLoading(false)
-    }
-  }, [tenantId, selectedServiceId])
-
-  useEffect(() => {
-    void loadServiceOptions()
-  }, [loadServiceOptions])
-
-  useEffect(() => {
-    void loadServiceDetails()
-  }, [loadServiceDetails])
-
-  const selectedServiceHref = useMemo(
-    () =>
-      selectedServiceId
-        ? `/app/${tenantSlug}/account-settings/services/${selectedServiceId}`
-        : `/app/${tenantSlug}/account-settings/services`,
-    [tenantSlug, selectedServiceId],
-  )
-
-  const onSave = async () => {
-    if (!selectedServiceId) return
-
-    setIsSaving(true)
-    try {
-      await api.patch(`/api/account-settings/${tenantId}/services/${selectedServiceId}`, {
-        followUpTemplateSteps: steps
-          .filter((entry) => entry.title.trim())
-          .map((entry, index) => ({
-            title: entry.title.trim(),
-            notesTemplate: entry.notesTemplate.trim() || null,
-            dueDaysFromStart: Math.max(0, Number.parseInt(entry.dueDaysFromStart, 10) || 0),
-            sortOrder: (index + 1) * 10,
-          })),
-      })
-
-      toast.success("Follow-up template updated.")
-      await loadServiceDetails()
+      setData(response)
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
-        toast.error(
+        setErrorMessage(
           typeof backendError === "string"
             ? backendError.replace(/_/g, " ")
-            : "Could not save follow-up template.",
+            : "Could not load follow-up templates.",
         )
       } else {
-        toast.error("Could not save follow-up template.")
+        setErrorMessage("Could not load follow-up templates.")
       }
     } finally {
-      setIsSaving(false)
+      setIsLoading(false)
     }
-  }
+  }, [initialServiceId, page, pageSize, search, tenantId])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const totalTemplates = data?.pagination.total ?? 0
+  const totalPages = data?.pagination.totalPages ?? 1
+  const items = useMemo(() => data?.items ?? [], [data?.items])
+  const publishedTemplates = useMemo(
+    () => items.filter((item) => item.isPublished).length,
+    [items],
+  )
+  const servicesCount = useMemo(
+    () => new Set(items.map((item) => item.serviceId)).size,
+    [items],
+  )
+
+  const summaryLabel = useMemo(() => {
+    if (!items.length) return "No services found"
+
+    const start = (page - 1) * pageSize + 1
+    const end = start + items.length - 1
+    return `Showing ${start}-${end} of ${totalTemplates} templates`
+  }, [items.length, page, pageSize, totalTemplates])
 
   return (
     <div className="space-y-6">
@@ -173,59 +146,60 @@ export function ServiceFollowUpsPanel({
           <div className="space-y-4">
             <div className="space-y-2">
               <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
-                Follow-Up Builder
+                Follow-Ups
               </p>
               <h2 className="max-w-2xl text-2xl font-semibold tracking-tight text-slate-950">
-                Define reusable steps your team follows after a service starts.
+                See which services already have follow-up templates configured.
               </h2>
               <p className="max-w-2xl text-sm leading-6 text-slate-600">
-                Each contact gets a copy of this template and can then be managed independently.
+                This page stays focused on service coverage. Open the service detail when you need
+                to build or edit the template flow.
               </p>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-3">
               <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Services</p>
-                <p className="mt-2 text-3xl font-semibold text-slate-950">{serviceOptions.length}</p>
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                  Services
+                </p>
+                <p className="mt-2 text-3xl font-semibold text-slate-950">{servicesCount}</p>
+                <p className="mt-1 text-sm text-slate-500">{summaryLabel}</p>
               </div>
               <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Template steps</p>
-                <p className="mt-2 text-3xl font-semibold text-slate-950">{steps.length}</p>
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                  Templates
+                </p>
+                <p className="mt-2 text-3xl font-semibold text-slate-950">{totalTemplates}</p>
+                <p className="mt-1 text-sm text-slate-500">Templates in the current view.</p>
               </div>
               <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Current service</p>
-                <p className="mt-2 text-sm font-semibold text-slate-950">{serviceName || "Not selected"}</p>
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                  Published
+                </p>
+                <p className="mt-2 text-3xl font-semibold text-slate-950">{publishedTemplates}</p>
+                <p className="mt-1 text-sm text-slate-500">Ready for service enrollments.</p>
               </div>
             </div>
           </div>
 
           <div className="flex flex-col justify-between rounded-[24px] border border-slate-300/60 bg-slate-950 p-5 text-white shadow-sm">
             <div className="space-y-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-200/90">Workflow links</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-blue-200/90">
+                Coverage
+              </p>
               <p className="text-sm leading-6 text-slate-300">
-                Keep service setup aligned by moving between service detail and professionals.
+                Review template coverage across services, then open the exact service detail to
+                manage the flow builder.
               </p>
             </div>
-            <div className="mt-6 space-y-2">
-              <Button
-                asChild
-                type="button"
-                className="w-full bg-white text-slate-950 hover:bg-slate-100"
-              >
-                <Link href={selectedServiceHref}>Open service detail</Link>
-              </Button>
-              <Button
-                asChild
-                type="button"
-                variant="outline"
-                className="w-full border-white/20 bg-transparent text-white hover:bg-white/10 hover:text-white"
-              >
-                <Link href={`/app/${tenantSlug}/account-settings/professionals?serviceId=${selectedServiceId}`}>
-                  Go to professionals
-                </Link>
+
+            <div className="mt-6 space-y-3">
+              <Button asChild type="button" className="w-full bg-white text-slate-950 hover:bg-slate-100">
+                <Link href={`/app/${tenantSlug}/account-settings/services`}>Go to services</Link>
               </Button>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-sm text-slate-300">
-                Keep this service aligned by finishing follow-up templates and professional assignments.
+                Draft templates stay visible here so your team can see what still needs to be
+                published.
               </div>
             </div>
           </div>
@@ -233,22 +207,36 @@ export function ServiceFollowUpsPanel({
       </section>
 
       <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-200 px-5 py-5">
-          <div className="grid gap-2 md:max-w-md">
-            <Label>Service</Label>
+        <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-5 md:flex-row md:items-center md:justify-between">
+          <div className="space-y-1">
+            <h3 className="text-lg font-semibold text-slate-900">Follow-up templates</h3>
+            <p className="text-sm text-slate-500">Each row opens the builder for that template.</p>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Input
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value)
+                setPage(1)
+              }}
+              placeholder="Search services"
+              className="sm:w-64"
+            />
             <Select
-              value={selectedServiceId || "__none__"}
-              onValueChange={(value) => setSelectedServiceId(value === "__none__" ? "" : value)}
+              value={String(pageSize)}
+              onValueChange={(value) => {
+                setPageSize(Number(value) as (typeof PAGE_SIZE_OPTIONS)[number])
+                setPage(1)
+              }}
             >
-              <SelectTrigger>
-                <SelectValue placeholder="Select service" />
+              <SelectTrigger className="w-full cursor-pointer sm:w-[130px]">
+                <SelectValue placeholder="Page size" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__none__">Select service</SelectItem>
-                {serviceOptions.map((service) => (
-                  <SelectItem key={service.id} value={service.id}>
-                    {service.name}
-                    {service.isActive ? "" : " (inactive)"}
+                {PAGE_SIZE_OPTIONS.map((value) => (
+                  <SelectItem key={value} value={String(value)}>
+                    {value} per page
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -256,112 +244,152 @@ export function ServiceFollowUpsPanel({
           </div>
         </div>
 
-        <div className="p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-slate-900">Follow-up template steps</h3>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={!selectedServiceId}
-              onClick={() =>
-                setSteps((prev) => [
-                  ...prev,
-                  {
-                    title: "",
-                    notesTemplate: "",
-                    dueDaysFromStart: "0",
-                  },
-                ])
-              }
-            >
-              Add step
-            </Button>
-          </div>
-
-          {isLoading ? (
-            <p className="text-sm text-slate-500">Loading...</p>
-          ) : steps.length ? (
-            <div className="space-y-3">
-              {steps.map((entry, index) => (
-                <article key={`step-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                  <div className="grid gap-3">
-                    <div className="grid gap-2 md:grid-cols-2">
-                      <Input
-                        placeholder="Step title"
-                        value={entry.title}
-                        onChange={(event) =>
-                          setSteps((prev) => {
-                            const next = [...prev]
-                            next[index] = { ...next[index], title: event.target.value }
-                            return next
-                          })
-                        }
-                      />
-                      <Input
-                        type="number"
-                        min={0}
-                        placeholder="Days from service start"
-                        value={entry.dueDaysFromStart}
-                        onChange={(event) =>
-                          setSteps((prev) => {
-                            const next = [...prev]
-                            next[index] = { ...next[index], dueDaysFromStart: event.target.value }
-                            return next
-                          })
-                        }
-                      />
-                    </div>
-                    <Textarea
-                      rows={2}
-                      placeholder="Notes template"
-                      value={entry.notesTemplate}
-                      onChange={(event) =>
-                        setSteps((prev) => {
-                          const next = [...prev]
-                          next[index] = { ...next[index], notesTemplate: event.target.value }
-                          return next
-                        })
-                      }
-                    />
-                    <div className="flex justify-end">
+        <div className="min-h-0 overflow-x-auto px-5 py-4">
+          <Table>
+            <TableHeader>
+                <TableRow>
+                  <TableHead className="w-16">#</TableHead>
+                <TableHead>Service</TableHead>
+                <TableHead>Follow-Up Name</TableHead>
+                <TableHead className="w-32">Template</TableHead>
+                <TableHead className="w-28">Status</TableHead>
+                <TableHead className="w-40 text-right">Open</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="h-28 text-center text-sm text-slate-500">
+                    Loading follow-up templates...
+                  </TableCell>
+                </TableRow>
+              ) : errorMessage ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="h-28 text-center text-sm text-rose-600">
+                    {errorMessage}
+                  </TableCell>
+                </TableRow>
+              ) : items.length ? (
+                items.map((row, index) => (
+                  <TableRow
+                    key={row.id}
+                    className={cn(
+                      "cursor-pointer",
+                      row.serviceId === initialServiceId && "bg-sky-50/70",
+                    )}
+                    onClick={() =>
+                      router.push(
+                        `/app/${tenantSlug}/account-settings/services/${row.serviceId}/follow-up-templates/${row.id}`,
+                      )
+                    }
+                  >
+                    <TableCell className="font-medium text-slate-500">
+                      {(page - 1) * pageSize + index + 1}
+                    </TableCell>
+                    <TableCell>
+                      <div className="space-y-1">
+                        <p className="font-medium text-slate-900">{row.serviceName}</p>
+                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                          <Route className="h-3.5 w-3.5" />
+                          <span>Belongs to this service</span>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="space-y-1">
+                        <p className="font-medium text-slate-900">
+                          {row.name?.trim() || "Untitled template"}
+                        </p>
+                        <p className="text-xs text-slate-500">Template builder</p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <TemplateStateBadge isPublished={row.isPublished} />
+                    </TableCell>
+                    <TableCell>
+                      <span
+                        className={cn(
+                          "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold",
+                          row.serviceIsActive ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600",
+                        )}
+                      >
+                        {row.serviceIsActive ? "Active" : "Inactive"}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right">
                       <Button
+                        asChild
                         type="button"
                         size="sm"
-                        variant="destructive"
-                        onClick={() => setSteps((prev) => prev.filter((_, rowIndex) => rowIndex !== index))}
+                        variant="outline"
+                        className="cursor-pointer"
                       >
-                        Remove
+                        <Link
+                          href={`/app/${tenantSlug}/account-settings/services/${row.serviceId}`}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          Open service
+                        </Link>
                       </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell colSpan={6} className="h-28 text-center">
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-slate-900">No services found</p>
+                      <p className="text-sm text-slate-500">
+                        Create a service first, then add one or more follow-up templates to it.
+                      </p>
                     </div>
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center">
-              <p className="text-base font-medium text-slate-900">No steps yet</p>
-              <p className="mt-2 text-sm text-slate-500">Add at least one follow-up template step for this service.</p>
-            </div>
-          )}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
 
-          <div className="mt-5 flex justify-end">
-            <Button type="button" onClick={onSave} disabled={!selectedServiceId || isSaving}>
-              {isSaving ? "Saving..." : "Save follow-up template"}
+        <div className="flex flex-col gap-3 border-t border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-slate-500">{summaryLabel}</p>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="cursor-pointer"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={page <= 1}
+            >
+              Previous
+            </Button>
+            <span className="text-sm text-slate-500">
+              Page {page} of {totalPages}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="cursor-pointer"
+              onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+              disabled={page >= totalPages}
+            >
+              Next
             </Button>
           </div>
         </div>
       </section>
 
       <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex items-center gap-3 text-sm text-slate-700">
-          <Route className="h-4 w-4" />
-          <span>{steps.length > 0 ? "Template ready to materialize per-contact follow-ups." : "Add template steps so each contact service process starts with a workflow."}</span>
-        </div>
-        <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
-          <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5"><Clock3 className="h-3.5 w-3.5" /> Due offsets</span>
-          <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5"><Users className="h-3.5 w-3.5" /> Per-contact copies</span>
-          <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5"><CheckCircle2 className="h-3.5 w-3.5" /> Editable after start</span>
+        <div className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
+          <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">
+            <Layers3 className="h-3.5 w-3.5" />
+            Service coverage
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            Published visibility
+          </span>
         </div>
       </section>
     </div>

@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { isAxiosError } from "axios"
 import {
   CalendarDays,
@@ -63,11 +64,17 @@ type ContactNote = {
     canEdit: boolean
     canDelete: boolean
   }
+  source: {
+    type: "CONTACT" | "SERVICE"
+    contactServiceId?: string
+    serviceName?: string
+  }
   attachments: NoteAttachment[]
 }
 
 type ContactNotesPanelProps = {
   tenantId: string
+  tenantSlug: string
   contactId: string
   currentUserRole: string
   initialData: {
@@ -207,6 +214,7 @@ async function uploadAttachment(tenantId: string, file: File) {
 
 export function ContactNotesPanel({
   tenantId,
+  tenantSlug,
   contactId,
   initialData,
 }: ContactNotesPanelProps) {
@@ -540,10 +548,10 @@ export function ContactNotesPanel({
                   key={note.id}
                   className="relative grid gap-3 px-3 py-4 transition-colors hover:bg-slate-50/70 lg:grid-cols-[minmax(0,1fr)_auto]"
                 >
-                  <span className="absolute inset-y-3 left-0 hidden w-0.5 rounded-full bg-slate-200 lg:block" />
                   <div className="min-w-0 space-y-2">
-                    <div className="flex items-start gap-2.5">
-                      <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                    <div className="relative flex items-start gap-2.5">
+                      <span className="absolute bottom-0 left-4 top-8 hidden w-px -translate-x-1/2 rounded-full bg-slate-200 lg:block" />
+                      <span className="relative z-10 mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
                         <StickyNote className="h-3.5 w-3.5" />
                       </span>
 
@@ -557,6 +565,18 @@ export function ContactNotesPanel({
                                   {note.author.name}
                                 </span>
                               </span>
+                              {note.source.type === "SERVICE" ? (
+                                <Link
+                                  href={`/app/${tenantSlug}/contacts/${contactId}/services/${note.source.contactServiceId}`}
+                                  className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-1 text-blue-700 transition hover:bg-blue-100"
+                                >
+                                  <StickyNote className="h-3 w-3" />
+                                  From service
+                                  {note.source.serviceName
+                                    ? `: ${note.source.serviceName}`
+                                    : ""}
+                                </Link>
+                              ) : null}
                               <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2 py-1">
                                 <CalendarDays className="h-3 w-3" />
                                 {formatDateTime(note.createdAt)}
@@ -574,15 +594,21 @@ export function ContactNotesPanel({
                         </div>
 
                         <div className="rounded-2xl bg-slate-50/80 px-3 py-2.5">
-                          <button
-                            type="button"
-                            onClick={() => openEditDialog(note)}
-                            className="block w-full cursor-pointer text-left"
-                          >
-                            <h2 className="truncate text-sm font-semibold tracking-tight text-slate-950 underline-offset-4 transition hover:text-blue-950 hover:underline">
+                          {note.permissions.canEdit ? (
+                            <button
+                              type="button"
+                              onClick={() => openEditDialog(note)}
+                              className="block w-full cursor-pointer text-left"
+                            >
+                              <h2 className="truncate text-sm font-semibold tracking-tight text-slate-950 underline-offset-4 transition hover:text-blue-950 hover:underline">
+                                {note.title}
+                              </h2>
+                            </button>
+                          ) : (
+                            <h2 className="truncate text-sm font-semibold tracking-tight text-slate-950">
                               {note.title}
                             </h2>
-                          </button>
+                          )}
                           <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-[13px] leading-5 text-slate-700">
                             {note.body}
                           </p>

@@ -291,6 +291,9 @@ export function ContactRelationshipsSection({
           <span className="flex items-center gap-2">
             <ChevronDown className="h-4 w-4 text-slate-400 transition group-open:rotate-180" />
             Relationships
+            <span className="rounded-full border border-slate-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-950">
+              {relationships.length}
+            </span>
           </span>
           <button
             type="button"

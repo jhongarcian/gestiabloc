@@ -249,6 +249,10 @@ const UpdateContactAssigneeSchema = z.object({
   assignedToUserId: optionalStringField(80),
 })
 
+const UpdateContactStatusSchema = z.object({
+  statusConfigId: optionalStringField(80),
+})
+
 const CONTACT_DEFAULT_STATUSES = [
   {
     name: "Active",
@@ -498,6 +502,11 @@ function serializeContactNote(
   },
   membership: { role: string },
   userId: string,
+  source?: {
+    type: "CONTACT" | "SERVICE"
+    contactServiceId?: string
+    serviceName?: string
+  },
 ) {
   return {
     id: note.id,
@@ -513,6 +522,9 @@ function serializeContactNote(
     permissions: {
       canEdit: canManageContactNote(membership, note.createdById, userId),
       canDelete: canManageContactNote(membership, note.createdById, userId),
+    },
+    source: source ?? {
+      type: "CONTACT" as const,
     },
     attachments: note.attachments.map((attachment) => ({
       id: attachment.id,
@@ -1938,7 +1950,7 @@ router.get(
       const membership = await requireActiveMembership(authed, res, tenantId)
       if (!membership) return
       const skip = (page - 1) * pageSize
-      const where = {
+      const contactNotesWhere = {
         tenantId,
         contactId,
         ...(q
@@ -1955,24 +1967,40 @@ router.get(
             }
           : {}),
       }
-      const orderBy =
-        sort === "updated_asc"
-          ? [{ updatedAt: "asc" as const }, { createdAt: "asc" as const }]
-          : sort === "created_desc"
-            ? [{ createdAt: "desc" as const }, { updatedAt: "desc" as const }]
-            : [{ updatedAt: "desc" as const }, { createdAt: "desc" as const }]
+      const serviceNotesWhere = {
+        tenantId,
+        contactService: {
+          contactId,
+        },
+        ...(q
+          ? {
+              OR: [
+                { title: { contains: q, mode: "insensitive" as const } },
+                { body: { contains: q, mode: "insensitive" as const } },
+                {
+                  createdBy: {
+                    name: { contains: q, mode: "insensitive" as const },
+                  },
+                },
+                {
+                  contactService: {
+                    service: {
+                      name: { contains: q, mode: "insensitive" as const },
+                    },
+                  },
+                },
+              ],
+            }
+          : {}),
+      }
 
-      const [contact, total, notes] = await Promise.all([
+      const [contact, contactNotes, serviceNotes] = await Promise.all([
         prisma.contact.findFirst({
           where: { id: contactId, tenantId },
           select: { id: true },
         }),
-        prismaWithContacts.contactNote.count({ where }),
         prismaWithContacts.contactNote.findMany({
-          where,
-          orderBy,
-          skip,
-          take: pageSize,
+          where: contactNotesWhere,
           select: {
             id: true,
             title: true,
@@ -2003,17 +2031,92 @@ router.get(
             },
           },
         }),
+        prismaWithContacts.contactServiceNote.findMany({
+          where: serviceNotesWhere,
+          select: {
+            id: true,
+            title: true,
+            body: true,
+            createdById: true,
+            createdAt: true,
+            updatedAt: true,
+            createdBy: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+              },
+            },
+            contactService: {
+              select: {
+                id: true,
+                service: {
+                  select: {
+                    name: true,
+                  },
+                },
+              },
+            },
+          },
+        }),
       ])
 
       if (!contact) {
         return res.status(404).json({ error: "CONTACT_NOT_FOUND" })
       }
 
-      return res.json({
-        ok: true,
-        items: notes.map((note: any) =>
+      const mergedNotes = [
+        ...contactNotes.map((note: any) =>
           serializeContactNote(note, membership, authed.user.id),
         ),
+        ...serviceNotes.map((note: any) => ({
+          id: note.id,
+          title: note.title,
+          body: note.body,
+          createdAt: note.createdAt,
+          updatedAt: note.updatedAt,
+          author: {
+            id: note.createdBy.id,
+            name: note.createdBy.name ?? note.createdBy.email,
+            email: note.createdBy.email,
+          },
+          permissions: {
+            canEdit: false,
+            canDelete: false,
+          },
+          source: {
+            type: "SERVICE" as const,
+            contactServiceId: note.contactService.id,
+            serviceName: note.contactService.service.name,
+          },
+          attachments: [],
+        })),
+      ].sort((left, right) => {
+        const leftUpdatedAt = new Date(left.updatedAt).getTime()
+        const rightUpdatedAt = new Date(right.updatedAt).getTime()
+        const leftCreatedAt = new Date(left.createdAt).getTime()
+        const rightCreatedAt = new Date(right.createdAt).getTime()
+
+        if (sort === "updated_asc") {
+          if (leftUpdatedAt !== rightUpdatedAt) return leftUpdatedAt - rightUpdatedAt
+          return leftCreatedAt - rightCreatedAt
+        }
+
+        if (sort === "created_desc") {
+          if (leftCreatedAt !== rightCreatedAt) return rightCreatedAt - leftCreatedAt
+          return rightUpdatedAt - leftUpdatedAt
+        }
+
+        if (leftUpdatedAt !== rightUpdatedAt) return rightUpdatedAt - leftUpdatedAt
+        return rightCreatedAt - leftCreatedAt
+      })
+
+      const total = mergedNotes.length
+      const paginatedNotes = mergedNotes.slice(skip, skip + pageSize)
+
+      return res.json({
+        ok: true,
+        items: paginatedNotes,
         pagination: {
           page,
           pageSize,
@@ -2817,6 +2920,80 @@ router.patch("/:tenantId/:contactId/assignee", requireAuth, async (req, res, nex
               image: updatedContact.assignedToMembership.user.image ?? null,
             }
           : null,
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.patch("/:tenantId/:contactId/status", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+
+    const authed = req as AuthedRequest
+    const { tenantId, contactId } = TenantContactPathSchema.parse(req.params)
+    const payload = UpdateContactStatusSchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const existing = await prisma.contact.findFirst({
+      where: {
+        id: contactId,
+        tenantId,
+      },
+      select: {
+        id: true,
+      },
+    })
+
+    if (!existing) {
+      return res.status(404).json({ error: "CONTACT_NOT_FOUND" })
+    }
+
+    const resolvedStatusConfigId = payload.statusConfigId ?? null
+    if (resolvedStatusConfigId) {
+      const selectedStatus = await prismaWithContacts.contactStatusConfig.findUnique({
+        where: { id: resolvedStatusConfigId },
+        select: {
+          id: true,
+          tenantId: true,
+          isActive: true,
+        },
+      })
+
+      if (!selectedStatus || selectedStatus.tenantId !== tenantId || !selectedStatus.isActive) {
+        return res.status(400).json({ error: "INVALID_STATUS_CONFIG" })
+      }
+    }
+
+    const updatedContact = await prisma.contact.update({
+      where: { id: contactId },
+      data: {
+        statusConfigId: resolvedStatusConfigId,
+      },
+      select: {
+        id: true,
+        statusConfig: {
+          select: {
+            id: true,
+            name: true,
+            bgColor: true,
+            textColor: true,
+          },
+        },
+      },
+    })
+
+    return res.json({
+      ok: true,
+      contact: {
+        id: updatedContact.id,
+        status: updatedContact.statusConfig?.name ?? "Unassigned",
+        statusConfigId: updatedContact.statusConfig?.id ?? null,
+        statusBgColor: updatedContact.statusConfig?.bgColor ?? null,
+        statusTextColor: updatedContact.statusConfig?.textColor ?? null,
       },
     })
   } catch (error) {

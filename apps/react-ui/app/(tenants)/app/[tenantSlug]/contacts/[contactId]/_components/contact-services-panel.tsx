@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 import { Plus, Settings2 } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAxis } from "recharts"
 import { toast } from "sonner"
 
@@ -54,10 +55,32 @@ type ContactServiceItem = {
   service: {
     id: string
     name: string
+    description?: string | null
+    basePriceCents?: number
+    checklistItems?: Array<{
+      id: string
+      label: string
+      description: string | null
+      isRequired: boolean
+      sortOrder: number
+    }>
   }
+  followUpTemplate?: {
+    id: string
+    name: string
+  } | null
+  checklistItems: Array<{
+    id: string
+    checklistItemId: string
+    completedAt: string | null
+    label: string
+    description: string | null
+    isRequired: boolean
+    sortOrder: number
+  }>
   followUpSteps: Array<{
     id: string
-    status?: "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED"
+    status?: "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
     completedAt?: string | null
   }>
 }
@@ -112,7 +135,9 @@ type ServiceDetailsResponse = {
 
 type ContactServicesPanelProps = {
   tenantId: string
+  tenantSlug: string
   contactId: string
+  membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
 }
 
 const currencyFormatter = (valueCents: number, currency: string) =>
@@ -156,29 +181,27 @@ const statusChartConfig = {
   value: { label: "Services", color: "#64748b" },
 } satisfies ChartConfig
 
-export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPanelProps) {
+export function ContactServicesPanel({
+  tenantId,
+  tenantSlug,
+  contactId,
+  membershipSecurityLevel,
+}: ContactServicesPanelProps) {
+  const router = useRouter()
+  const canManageSensitiveServiceActions = membershipSecurityLevel !== "LOW"
   const [items, setItems] = useState<ContactServiceItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
-  const [isEditOpen, setIsEditOpen] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
-  const [isDeleting, setIsDeleting] = useState(false)
   const [serviceOptions, setServiceOptions] = useState<Array<{ id: string; name: string }>>([])
   const [templateOptions, setTemplateOptions] = useState<Array<{ id: string; name: string }>>([])
   const [createServiceDetails, setCreateServiceDetails] = useState<ServiceDetailsResponse["service"] | null>(null)
 
-  const [selectedItem, setSelectedItem] = useState<ContactServiceItem | null>(null)
-
   const [createServiceId, setCreateServiceId] = useState("")
   const [createTemplateId, setCreateTemplateId] = useState("")
-  const [createPaymentMode, setCreatePaymentMode] = useState<"FULL" | "PARTIAL">("FULL")
-  const [createTotalAmountUsd, setCreateTotalAmountUsd] = useState("")
+  const [createPaymentMode, setCreatePaymentMode] = useState<"FULL" | "PARTIAL" | "LATER">("FULL")
   const [createInitialPaymentUsd, setCreateInitialPaymentUsd] = useState("")
   const [createNotes, setCreateNotes] = useState("")
-
-  const [editStatus, setEditStatus] = useState<ContactServiceItem["status"]>("IN_PROGRESS")
-  const [editTotalAmountUsd, setEditTotalAmountUsd] = useState("")
-  const [editNotes, setEditNotes] = useState("")
 
   const hasItems = items.length > 0
 
@@ -186,7 +209,6 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
     setCreateServiceId("")
     setCreateTemplateId("")
     setCreatePaymentMode("FULL")
-    setCreateTotalAmountUsd("")
     setCreateInitialPaymentUsd("")
     setCreateNotes("")
     setTemplateOptions([])
@@ -248,8 +270,12 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
     try {
       const { data } = await api.get<ServiceDetailsResponse>(`/api/account-settings/${tenantId}/services/${serviceId}`)
       setCreateServiceDetails(data.service)
-      setCreatePaymentMode((prev) => (data.service.allowPartialPayments ? prev : "FULL"))
-      setCreateTotalAmountUsd((prev) => (prev.trim() ? prev : centsToUsdInput(data.service.basePriceCents)))
+      setCreatePaymentMode((prev) => {
+        if (prev === "PARTIAL" && !data.service.allowPartialPayments) {
+          return "FULL"
+        }
+        return prev
+      })
     } catch {
       setCreateServiceDetails(null)
     }
@@ -307,7 +333,10 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
   const getServiceProgress = (item: ContactServiceItem) => {
     const total = item.followUpSteps.length
     const completed = item.followUpSteps.filter(
-      (step) => step.status === "COMPLETED" || Boolean(step.completedAt),
+      (step) =>
+        step.status === "COMPLETED" ||
+        step.status === "SKIPPED" ||
+        Boolean(step.completedAt),
     ).length
     const remaining = Math.max(0, total - completed)
     const percentage = total > 0 ? Math.round((completed / total) * 100) : 0
@@ -319,9 +348,9 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
       toast.error("Select a service.")
       return
     }
-    const totalPriceCents = parseUsdToCents(createTotalAmountUsd)
+    const totalPriceCents = createServiceDetails?.basePriceCents ?? null
     if (totalPriceCents === null) {
-      toast.error("Enter a valid total amount in USD.")
+      toast.error("Select a valid service.")
       return
     }
     if (createPaymentMode === "PARTIAL" && !createServiceDetails?.allowPartialPayments) {
@@ -330,7 +359,11 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
     }
 
     const initialPaymentCents =
-      createPaymentMode === "FULL" ? totalPriceCents : parseUsdToCents(createInitialPaymentUsd)
+      createPaymentMode === "FULL"
+        ? totalPriceCents
+        : createPaymentMode === "LATER"
+          ? 0
+          : parseUsdToCents(createInitialPaymentUsd)
 
     if (createPaymentMode === "PARTIAL") {
       if (initialPaymentCents === null || initialPaymentCents <= 0) {
@@ -357,7 +390,6 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
         contactId,
         serviceId: createServiceId,
         ...(createTemplateId ? { followUpTemplateId: createTemplateId } : {}),
-        totalPriceCents,
         ...(initialPaymentCents !== null ? { initialPaymentCents } : {}),
         ...(createNotes.trim() ? { notes: createNotes.trim() } : {}),
       })
@@ -365,6 +397,7 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
       setIsCreateOpen(false)
       resetCreate()
       await loadServices()
+      router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
@@ -377,66 +410,10 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
     }
   }
 
-  const openEdit = (item: ContactServiceItem) => {
-    setSelectedItem(item)
-    setEditStatus(item.status)
-    setEditTotalAmountUsd(centsToUsdInput(item.totalPriceCents))
-    setEditNotes(item.notes ?? "")
-    setIsEditOpen(true)
-  }
-
-  const onUpdate = async () => {
-    if (!selectedItem) return
-    const totalPriceCents = parseUsdToCents(editTotalAmountUsd)
-    if (totalPriceCents === null) {
-      toast.error("Enter a valid total amount in USD.")
-      return
-    }
-
-    setIsSaving(true)
-    try {
-      await api.patch(`/api/services/${tenantId}/contact-services/${selectedItem.id}`, {
-        status: editStatus,
-        totalPriceCents,
-        notes: editNotes.trim() || null,
-      })
-      toast.success("Service updated.")
-      setIsEditOpen(false)
-      setSelectedItem(null)
-      await loadServices()
-    } catch (error) {
-      if (isAxiosError(error)) {
-        const backendError = error.response?.data?.error
-        toast.error(typeof backendError === "string" ? backendError.replace(/_/g, " ") : "Could not update service.")
-      } else {
-        toast.error("Could not update service.")
-      }
-    } finally {
-      setIsSaving(false)
-    }
-  }
-
-  const onDelete = async () => {
-    if (!selectedItem) return
-
-    setIsDeleting(true)
-    try {
-      await api.delete(`/api/services/${tenantId}/contact-services/${selectedItem.id}`)
-      toast.success("Service removed.")
-      setIsEditOpen(false)
-      setSelectedItem(null)
-      await loadServices()
-    } catch {
-      toast.error("Could not remove service.")
-    } finally {
-      setIsDeleting(false)
-    }
-  }
-
   return (
     <section className="flex flex-col gap-5">
       <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Contact Services</p>
             <div className="space-y-1">
@@ -444,8 +421,8 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
               <p className="text-sm text-slate-600">Enroll purchased services and manage their follow-up enrollment records.</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Button type="button" onClick={() => setIsCreateOpen(true)}>
+          <div className="flex items-center gap-2 md:self-center">
+            <Button type="button" onClick={() => setIsCreateOpen(true)} className="cursor-pointer">
               <Plus className="h-4 w-4" />
               Purchase service
             </Button>
@@ -454,21 +431,21 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Enrolled Services</p>
-          <p className="mt-2 text-2xl font-medium text-slate-900">{totals.enrolled}</p>
+          <p className="mt-3 text-2xl font-semibold tracking-tight text-slate-900">{totals.enrolled}</p>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Completed Services</p>
-          <p className="mt-2 text-2xl font-medium text-emerald-700">{totals.completed}</p>
+          <p className="mt-3 text-2xl font-semibold tracking-tight text-emerald-700">{totals.completed}</p>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Current Spending</p>
-          <p className="mt-2 text-2xl font-medium text-slate-900">{currencyFormatter(totals.totalPaidCents, "USD")}</p>
+          <p className="mt-3 text-2xl font-semibold tracking-tight text-slate-900">{currencyFormatter(totals.totalPaidCents, "USD")}</p>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Remaining Balance</p>
-          <p className="mt-2 text-2xl font-medium text-amber-700">{currencyFormatter(totals.totalRemainingCents, "USD")}</p>
+          <p className="mt-3 text-2xl font-semibold tracking-tight text-amber-700">{currencyFormatter(totals.totalRemainingCents, "USD")}</p>
         </div>
       </div>
 
@@ -533,7 +510,13 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
               </TableRow>
             ) : hasItems ? (
               items.map((item) => (
-                <TableRow key={item.id} className="cursor-pointer" onClick={() => openEdit(item)}>
+                <TableRow
+                  key={item.id}
+                  className="cursor-pointer"
+                  onClick={() =>
+                    router.push(`/app/${tenantSlug}/contacts/${contactId}/services/${item.id}`)
+                  }
+                >
                   <TableCell className="font-medium text-slate-900">{item.service.name}</TableCell>
                   <TableCell>
                     <Badge className={`capitalize ${SERVICE_STATUS_STYLES[item.status]}`}>
@@ -646,7 +629,7 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
                   <Label>Payment Type</Label>
                   <Select
                     value={createPaymentMode}
-                    onValueChange={(value) => setCreatePaymentMode(value as "FULL" | "PARTIAL")}
+                    onValueChange={(value) => setCreatePaymentMode(value as "FULL" | "PARTIAL" | "LATER")}
                   >
                     <SelectTrigger className="cursor-pointer">
                       <SelectValue />
@@ -660,20 +643,26 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
                       >
                         Partial Payment
                       </SelectItem>
+                      <SelectItem value="LATER" className="cursor-pointer">Pay Later</SelectItem>
                     </SelectContent>
                   </Select>
                   {!createServiceDetails?.allowPartialPayments ? (
-                    <p className="text-xs text-slate-500">This service only supports full payment.</p>
+                    <p className="text-xs text-slate-500">This service supports full payment or pay later.</p>
+                  ) : createPaymentMode === "LATER" && !canManageSensitiveServiceActions ? (
+                    <p className="text-xs text-slate-500">You can start the service now and record payment later.</p>
                   ) : null}
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-2">
-                    <Label>Total Amount (USD)</Label>
+                    <Label>Service Cost (USD)</Label>
                     <Input
-                      value={createTotalAmountUsd}
-                      onChange={(event) => setCreateTotalAmountUsd(event.target.value)}
-                      inputMode="decimal"
-                      placeholder="0.00"
+                      value={
+                        createServiceDetails
+                          ? centsToUsdInput(createServiceDetails.basePriceCents)
+                          : ""
+                      }
+                      readOnly
+                      className="bg-slate-50 text-slate-600"
                     />
                   </div>
                   {createPaymentMode === "PARTIAL" ? (
@@ -688,9 +677,15 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
                     </div>
                   ) : (
                     <div className="grid gap-2">
-                      <Label>Payment Now (USD)</Label>
+                      <Label>{createPaymentMode === "LATER" ? "Payment Now (USD)" : "Payment Now (USD)"}</Label>
                       <Input
-                        value={createTotalAmountUsd}
+                        value={
+                          createPaymentMode === "LATER"
+                            ? "0.00"
+                            : createServiceDetails
+                              ? centsToUsdInput(createServiceDetails.basePriceCents)
+                              : ""
+                        }
                         readOnly
                         className="bg-slate-50 text-slate-600"
                       />
@@ -766,68 +761,10 @@ export function ContactServicesPanel({ tenantId, contactId }: ContactServicesPan
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isEditOpen} onOpenChange={(open) => {
-        setIsEditOpen(open)
-        if (!open) setSelectedItem(null)
-      }}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Edit service enrollment</DialogTitle>
-            <DialogDescription>Update status, price, or notes for this enrolled service.</DialogDescription>
-          </DialogHeader>
-          {selectedItem ? (
-            <div className="grid gap-4 py-1">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                <span className="font-medium text-slate-900">{selectedItem.service.name}</span>
-              </div>
-              <div className="grid gap-2">
-                <Label>Status</Label>
-                <Select value={editStatus} onValueChange={(value) => setEditStatus(value as ContactServiceItem["status"])}>
-                  <SelectTrigger className="cursor-pointer">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELED"] as const).map((status) => (
-                      <SelectItem key={status} value={status} className="cursor-pointer capitalize">
-                        {toSentence(status)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid gap-2">
-                <Label>Total Amount (USD)</Label>
-                <Input
-                  value={editTotalAmountUsd}
-                  onChange={(event) => setEditTotalAmountUsd(event.target.value)}
-                  inputMode="decimal"
-                  placeholder="0.00"
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>Notes</Label>
-                <Textarea value={editNotes} onChange={(event) => setEditNotes(event.target.value)} rows={3} />
-              </div>
-            </div>
-          ) : null}
-          <DialogFooter className="flex items-center justify-between">
-            <Button type="button" variant="destructive" onClick={() => void onDelete()} disabled={isDeleting || isSaving}>
-              {isDeleting ? "Deleting..." : "Delete"}
-            </Button>
-            <div className="flex items-center gap-2">
-              <Button type="button" variant="outline" onClick={() => setIsEditOpen(false)} disabled={isSaving}>Cancel</Button>
-              <Button type="button" onClick={() => void onUpdate()} disabled={isSaving}>
-                {isSaving ? "Saving..." : "Save"}
-              </Button>
-            </div>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
         <span className="inline-flex items-center gap-2">
           <Settings2 className="h-3.5 w-3.5" />
-          Click any enrolled service row to edit or delete it.
+          Click any enrolled service row to review the service details and mark checklist items as received.
         </span>
       </div>
     </section>

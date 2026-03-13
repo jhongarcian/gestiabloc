@@ -37,10 +37,10 @@ export function ContactDetailTabs({
               href={href}
               aria-current={isActive ? "page" : undefined}
               className={cn(
-                "inline-flex h-8 items-center rounded-md px-2.5 text-sm font-medium transition",
-                "text-slate-600 hover:bg-blue-900/10 hover:text-slate-900",
+                "inline-flex h-10 items-center rounded-xl border px-3.5 text-sm font-medium transition",
+                "border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900",
                 isActive &&
-                  "bg-blue-950 text-white hover:bg-blue-950/90 hover:text-white",
+                  "border-blue-950 bg-blue-950 text-white shadow-sm hover:border-blue-950 hover:bg-blue-950/90 hover:text-white",
               )}
             >
               {tab.label}

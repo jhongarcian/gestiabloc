@@ -89,6 +89,7 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
           id: true,
           tenantId: true,
           userId: true,
+          contactId: true,
           type: true,
           title: true,
           body: true,
@@ -118,6 +119,7 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
           body: item.body,
           readAt: item.readAt,
           createdAt: item.createdAt,
+          contactId: item.contactId,
           taskId: item.taskId,
           taskReminderId: item.taskReminderId,
         }

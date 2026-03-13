@@ -3002,6 +3002,43 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}:
+    get:
+      tags: [Services]
+      summary: Get a single contact service process
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Contact service process returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactServiceDetailResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     patch:
       tags: [Services]
       summary: Update a contact service process
@@ -3047,6 +3084,111 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/notes:
+    post:
+      tags: [Services]
+      summary: Add a note to a contact service process
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateContactServiceNoteRequest"
+      responses:
+        "201":
+          description: Service note created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateContactServiceNoteResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/checklist-items/{checklistItemId}:
+    patch:
+      tags: [Services]
+      summary: Update a contact service checklist item
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: checklistItemId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContactServiceChecklistItemRequest"
+      responses:
+        "200":
+          description: Checklist item updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactServiceChecklistItemMutationResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Checklist item not found
           content:
             application/json:
               schema:
@@ -3134,6 +3276,103 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/payments/{paymentId}:
+    patch:
+      tags: [Services]
+      summary: Update a payment for a contact service process
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: paymentId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContactServicePaymentRequest"
+      responses:
+        "200":
+          description: Payment updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateContactServicePaymentResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Payment not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Services]
+      summary: Delete a payment from a contact service process
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: paymentId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Payment deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteContactServicePaymentResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Payment not found
           content:
             application/json:
               schema:
@@ -5660,10 +5899,112 @@ components:
               type: string
             name:
               type: string
+            description:
+              type: string
+              nullable: true
+            basePriceCents:
+              type: integer
+            checklistItems:
+              type: array
+              items:
+                $ref: "#/components/schemas/ContactServiceChecklistTemplateItem"
+        followUpTemplate:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        checklistItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactServiceChecklistItem"
         followUpSteps:
           type: array
           items:
             $ref: "#/components/schemas/ContactServiceFollowUpStepItem"
+    ContactServiceChecklistTemplateItem:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+          nullable: true
+        isRequired:
+          type: boolean
+        sortOrder:
+          type: integer
+    ContactServiceChecklistItem:
+      type: object
+      properties:
+        id:
+          type: string
+        checklistItemId:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+          nullable: true
+        isRequired:
+          type: boolean
+        sortOrder:
+          type: integer
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+    ContactServicePaymentItem:
+      type: object
+      properties:
+        id:
+          type: string
+        amountCents:
+          type: integer
+        paidAt:
+          type: string
+          format: date-time
+        paymentMethod:
+          type: string
+          nullable: true
+        note:
+          type: string
+          nullable: true
+        recordedBy:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+    ContactServiceNoteItem:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        body:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            image:
+              type: string
+              nullable: true
     ContactServicesListResponse:
       type: object
       properties:
@@ -5703,9 +6044,6 @@ components:
           type: string
           format: date-time
           nullable: true
-        totalPriceCents:
-          type: integer
-          minimum: 0
         notes:
           type: string
           nullable: true
@@ -5724,6 +6062,29 @@ components:
           properties:
             id:
               type: string
+    ContactServiceDetailResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        contactService:
+          allOf:
+            - $ref: "#/components/schemas/ContactServiceListItem"
+            - type: object
+              properties:
+                contactId:
+                  type: string
+                contactName:
+                  type: string
+                payments:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/ContactServicePaymentItem"
+                serviceNotes:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/ContactServiceNoteItem"
     UpdateContactServiceRequest:
       type: object
       properties:
@@ -5746,9 +6107,6 @@ components:
           type: string
           format: date-time
           nullable: true
-        totalPriceCents:
-          type: integer
-          minimum: 0
         notes:
           type: string
           nullable: true
@@ -5788,9 +6146,37 @@ components:
             notes:
               type: string
               nullable: true
+    UpdateContactServiceChecklistItemRequest:
+      type: object
+      properties:
+        completed:
+          type: boolean
+    ContactServiceChecklistItemMutationResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        checklistItem:
+          $ref: "#/components/schemas/ContactServiceChecklistItem"
     CreateContactServicePaymentRequest:
       type: object
       required: [amountCents]
+      properties:
+        amountCents:
+          type: integer
+          minimum: 1
+        paidAt:
+          type: string
+          format: date-time
+        paymentMethod:
+          type: string
+          nullable: true
+        note:
+          type: string
+          nullable: true
+    UpdateContactServicePaymentRequest:
+      type: object
       properties:
         amountCents:
           type: integer
@@ -5829,6 +6215,39 @@ components:
             recordedById:
               type: string
               nullable: true
+        summary:
+          type: object
+          properties:
+            totalPriceCents:
+              type: integer
+            paidCents:
+              type: integer
+            remainingCents:
+              type: integer
+    CreateContactServiceNoteRequest:
+      type: object
+      required: [title, body]
+      properties:
+        title:
+          type: string
+          maxLength: 160
+        body:
+          type: string
+          maxLength: 8000
+    CreateContactServiceNoteResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        note:
+          $ref: "#/components/schemas/ContactServiceNoteItem"
+    DeleteContactServicePaymentResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
         summary:
           type: object
           properties:

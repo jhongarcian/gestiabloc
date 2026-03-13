@@ -67,6 +67,7 @@ type NotificationItem = {
   body: string | null
   readAt: string | null
   createdAt: string
+  contactId: string | null
   taskId: string | null
   taskReminderId: string | null
 }
@@ -261,6 +262,11 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
         segments[0] === "account-settings" &&
         segments[1] === "services" &&
         index === 2
+      const isServiceFollowUpsSegment =
+        segments[0] === "account-settings" &&
+        segments[1] === "services" &&
+        index === 3 &&
+        segment === "follow-up-templates"
 
       if (isContactIdSegment && !contactCrumbLabel) {
         return
@@ -275,7 +281,9 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
           : isServiceIdSegment
             ? (serviceCrumbLabel ?? "")
             : formatSegment(segment),
-        href: acc,
+        href: isServiceFollowUpsSegment
+          ? `${basePath}/account-settings/follow-ups?serviceId=${segments[2]}`
+          : acc,
       })
     })
     return items
@@ -490,6 +498,11 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
 
       setNotificationsOpen(false)
 
+      if (notification.contactId) {
+        router.push(`${basePath}/contacts/${notification.contactId}`)
+        return
+      }
+
       if (notification.taskId) {
         router.push(`${basePath}/tasks/${notification.taskId}`)
         return
@@ -634,6 +647,7 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
               body: payload.body,
               readAt: payload.readAt,
               createdAt: payload.createdAt,
+              contactId: payload.contactId,
               taskId: payload.taskId,
               taskReminderId: payload.taskReminderId,
             }

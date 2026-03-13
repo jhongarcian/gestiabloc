@@ -28,6 +28,7 @@ type FlowNode = {
     assigneeUserId?: string | null
     removeTarget?: "specific_user" | "all_assigned_users" | null
     tagName?: string | null
+    tagNames?: string[] | null
     statusValue?: string | null
     fieldKey?: string | null
     fieldValue?: string | null
@@ -214,6 +215,22 @@ async function ensureTenantTag(
   })
 }
 
+function getNodeTagNames(node: FlowNode) {
+  const namesFromArray = Array.isArray(node.data?.tagNames)
+    ? node.data?.tagNames.filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+      )
+    : []
+  const names =
+    namesFromArray.length > 0
+      ? namesFromArray
+      : typeof node.data?.tagName === "string" && node.data.tagName.trim().length > 0
+        ? [node.data.tagName]
+        : []
+
+  return [...new Set(names.map((name) => normalizeTenantTagName(name)).filter(Boolean))]
+}
+
 async function applyContactFieldUpdate(
   prismaTx: PrismaTx,
   tenantId: string,
@@ -287,6 +304,7 @@ async function executeActionNode(params: {
     id: string
     contactId: string
     serviceName: string
+    contactName: string
   }
   node: FlowNode
   customFieldByKey: Map<string, { id: string; value?: unknown }>
@@ -362,41 +380,51 @@ async function executeActionNode(params: {
     return
   }
 
-  if (kind === "tagAdd" && node.data?.tagName?.trim()) {
-    const tag = await ensureTenantTag(prismaTx, tenantId, node.data.tagName)
-    if (!tag) return
+  if (kind === "tagAdd") {
+    const tagNames = getNodeTagNames(node)
+    if (!tagNames.length) return
 
-    await prismaTx.contactTag.upsert({
-      where: {
-        tenantId_contactId_tagId: {
+    for (const tagName of tagNames) {
+      const tag = await ensureTenantTag(prismaTx, tenantId, tagName)
+      if (!tag) continue
+
+      await prismaTx.contactTag.upsert({
+        where: {
+          tenantId_contactId_tagId: {
+            tenantId,
+            contactId: contactService.contactId,
+            tagId: tag.id,
+          },
+        },
+        update: {},
+        create: {
           tenantId,
           contactId: contactService.contactId,
           tagId: tag.id,
         },
-      },
-      update: {},
-      create: {
-        tenantId,
-        contactId: contactService.contactId,
-        tagId: tag.id,
-      },
-    })
+      })
+    }
     return
   }
 
-  if (kind === "tagRemove" && node.data?.tagName?.trim()) {
-    const normalizedName = normalizeTenantTagName(node.data.tagName)
-    const tag = await prismaTx.tenantTag.findFirst({
-      where: { tenantId, name: normalizedName },
+  if (kind === "tagRemove") {
+    const tagNames = getNodeTagNames(node)
+    if (!tagNames.length) return
+
+    const tags = await prismaTx.tenantTag.findMany({
+      where: {
+        tenantId,
+        name: { in: tagNames },
+      },
       select: { id: true },
     })
-    if (!tag) return
+    if (!tags.length) return
 
     await prismaTx.contactTag.deleteMany({
       where: {
         tenantId,
         contactId: contactService.contactId,
-        tagId: tag.id,
+        tagId: { in: tags.map((tag: { id: string }) => tag.id) },
       },
     })
     return
@@ -511,16 +539,20 @@ async function executeActionNode(params: {
       data: {
         tenantId,
         userId: recipientUserId,
+        contactId: contactService.contactId,
         type: "TASK_REMINDER",
-        title: node.data?.label?.trim() || `Follow-up reminder: ${contactService.serviceName}`,
+        title:
+          node.data?.label?.trim() ||
+          `Follow-up reminder: ${contactService.contactName}`,
         body:
           node.data?.notesTemplate?.trim() ||
-          `A follow-up action in ${contactService.serviceName} needs attention.`,
+          `${contactService.contactName} has a follow-up action in ${contactService.serviceName}.`,
       },
       select: {
         id: true,
         tenantId: true,
         userId: true,
+        contactId: true,
         type: true,
         title: true,
         body: true,
@@ -869,6 +901,13 @@ export async function executeFollowUpFromStep(params: {
           id: contactService.id,
           contactId: contactService.contactId,
           serviceName: contactService.service.name,
+          contactName: [
+            contactService.contact.firstName,
+            contactService.contact.middleName,
+            contactService.contact.lastName,
+          ]
+            .filter(Boolean)
+            .join(" "),
         },
         node,
         customFieldByKey,
@@ -1109,6 +1148,13 @@ export async function executeFollowUpFromStart(params: {
           id: contactService.id,
           contactId: contactService.contactId,
           serviceName: contactService.service.name,
+          contactName: [
+            contactService.contact.firstName,
+            contactService.contact.middleName,
+            contactService.contact.lastName,
+          ]
+            .filter(Boolean)
+            .join(" "),
         },
         node,
         customFieldByKey,
