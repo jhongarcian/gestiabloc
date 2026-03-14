@@ -422,7 +422,7 @@ export function ContactServicesPanel({
             </div>
           </div>
           <div className="flex items-center gap-2 md:self-center">
-            <Button type="button" onClick={() => setIsCreateOpen(true)} className="cursor-pointer">
+            <Button type="button" onClick={() => setIsCreateOpen(true)} className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90">
               <Plus className="h-4 w-4" />
               Purchase service
             </Button>
@@ -500,13 +500,12 @@ export function ContactServicesPanel({
               <TableHead>Paid</TableHead>
               <TableHead>Remaining</TableHead>
               <TableHead>Progress</TableHead>
-              <TableHead>Follow-Ups</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={7} className="h-24 text-center text-slate-500">Loading services...</TableCell>
+                <TableCell colSpan={6} className="h-24 text-center text-slate-500">Loading services...</TableCell>
               </TableRow>
             ) : hasItems ? (
               items.map((item) => (
@@ -564,12 +563,11 @@ export function ContactServicesPanel({
                       )
                     })()}
                   </TableCell>
-                  <TableCell>{item.followUpSteps.length}</TableCell>
                 </TableRow>
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={7} className="h-24 text-center text-slate-500">No services enrolled yet.</TableCell>
+                <TableCell colSpan={6} className="h-24 text-center text-slate-500">No services enrolled yet.</TableCell>
               </TableRow>
             )}
           </TableBody>
@@ -753,8 +751,8 @@ export function ContactServicesPanel({
             </Tabs>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setIsCreateOpen(false)} disabled={isSaving}>Cancel</Button>
-            <Button type="button" onClick={() => void onCreate()} disabled={isSaving}>
+            <Button type="button" variant="outline" onClick={() => setIsCreateOpen(false)} disabled={isSaving} className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50">Cancel</Button>
+            <Button type="button" onClick={() => void onCreate()} disabled={isSaving} className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90">
               {isSaving ? "Purchasing..." : "Purchase service"}
             </Button>
           </DialogFooter>

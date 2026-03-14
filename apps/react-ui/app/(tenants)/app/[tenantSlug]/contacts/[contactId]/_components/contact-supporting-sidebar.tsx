@@ -3,11 +3,11 @@
 import Link from "next/link"
 import {
   ChevronDown,
-  ClipboardPlus,
   Clock3,
+  ListTodo,
+  NotebookPen,
   PanelRightClose,
   PanelRightOpen,
-  StickyNote,
   Tags,
   Users,
 } from "lucide-react"
@@ -117,7 +117,7 @@ const COLLAPSED_SHORTCUTS = [
   {
     key: "task",
     label: "Add Task",
-    icon: ClipboardPlus,
+    icon: ListTodo,
     href: "tasks",
     className:
       "border-cyan-200 bg-cyan-50 text-cyan-700 hover:border-cyan-300 hover:bg-cyan-100 hover:text-cyan-800",
@@ -125,7 +125,7 @@ const COLLAPSED_SHORTCUTS = [
   {
     key: "note",
     label: "Add Note",
-    icon: StickyNote,
+    icon: NotebookPen,
     href: "notes",
     className:
       "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 hover:border-fuchsia-300 hover:bg-fuchsia-100 hover:text-fuchsia-800",
@@ -271,14 +271,14 @@ export function ContactSupportingSidebar({
               href={`/app/${tenantSlug}/contacts/${contactId}/tasks`}
               className="inline-flex h-10 items-center gap-2 rounded-xl border border-white/60 bg-white/40 px-3 text-sm font-medium text-slate-700 shadow-sm backdrop-blur-md transition hover:bg-white/60 hover:text-slate-900"
             >
-              <ClipboardPlus className="h-4 w-4" />
+              <ListTodo className="h-4 w-4" />
               Add Task
             </Link>
             <Link
               href={`/app/${tenantSlug}/contacts/${contactId}/notes`}
               className="inline-flex h-10 items-center gap-2 rounded-xl border border-white/60 bg-white/40 px-3 text-sm font-medium text-slate-700 shadow-sm backdrop-blur-md transition hover:bg-white/60 hover:text-slate-900"
             >
-              <StickyNote className="h-4 w-4" />
+              <NotebookPen className="h-4 w-4" />
               Add Note
             </Link>
           </div>

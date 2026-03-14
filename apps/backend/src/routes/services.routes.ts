@@ -209,6 +209,85 @@ async function summarizeContactServicePayments(
   }
 }
 
+async function reconcileContactServiceCompletionFromFollowUps(
+  prismaTx: any,
+  tenantId: string,
+  contactServiceId: string,
+) {
+  const contactService = await prismaTx.contactService.findFirst({
+    where: {
+      id: contactServiceId,
+      tenantId,
+    },
+    select: {
+      id: true,
+      status: true,
+      completedAt: true,
+    },
+  })
+
+  if (!contactService || contactService.status === "CANCELED") {
+    return contactService
+  }
+
+  const followUpSteps = await prismaTx.contactServiceFollowUpStep.findMany({
+    where: {
+      tenantId,
+      contactServiceId,
+    },
+    select: {
+      status: true,
+      completedAt: true,
+    },
+  })
+
+  const hasSteps = followUpSteps.length > 0
+  const allStepsCompleted = hasSteps
+    ? followUpSteps.every(
+        (step: { status: string | null; completedAt: Date | null }) =>
+          step.status === "COMPLETED" ||
+          step.status === "SKIPPED" ||
+          Boolean(step.completedAt),
+      )
+    : false
+
+  if (allStepsCompleted) {
+    if (contactService.status !== "COMPLETED") {
+      return prismaTx.contactService.update({
+        where: { id: contactServiceId },
+        data: {
+          status: "COMPLETED",
+          completedAt: contactService.completedAt ?? new Date(),
+        },
+        select: {
+          id: true,
+          status: true,
+          completedAt: true,
+        },
+      })
+    }
+
+    return contactService
+  }
+
+  if (contactService.status === "COMPLETED") {
+    return prismaTx.contactService.update({
+      where: { id: contactServiceId },
+      data: {
+        status: "IN_PROGRESS",
+        completedAt: null,
+      },
+      select: {
+        id: true,
+        status: true,
+        completedAt: true,
+      },
+    })
+  }
+
+  return contactService
+}
+
 router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
@@ -1009,6 +1088,25 @@ router.post(
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
 
+      const existingPayments = await prismaWithServices.contactServicePayment.findMany({
+        where: {
+          tenantId,
+          contactServiceId,
+        },
+        select: {
+          amountCents: true,
+        },
+      })
+
+      const currentPaidCents = existingPayments.reduce(
+        (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
+        0,
+      )
+
+      if (currentPaidCents + payload.amountCents > contactService.totalPriceCents) {
+        return res.status(400).json({ error: "PAYMENT_EXCEEDS_SERVICE_TOTAL" })
+      }
+
       const payment = await prismaWithServices.contactServicePayment.create({
         data: {
           tenantId,
@@ -1036,6 +1134,11 @@ router.post(
       })
 
       const summary = await summarizeContactServicePayments(
+        prismaWithServices,
+        tenantId,
+        contactServiceId,
+      )
+      await reconcileContactServiceCompletionFromFollowUps(
         prismaWithServices,
         tenantId,
         contactServiceId,
@@ -1081,11 +1184,47 @@ router.patch(
         },
         select: {
           id: true,
+          amountCents: true,
         },
       })
 
       if (!existing) {
         return res.status(404).json({ error: "CONTACT_SERVICE_PAYMENT_NOT_FOUND" })
+      }
+
+      const contactService = await prismaWithServices.contactService.findFirst({
+        where: {
+          id: contactServiceId,
+          tenantId,
+        },
+        select: {
+          totalPriceCents: true,
+        },
+      })
+
+      if (!contactService) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const otherPayments = await prismaWithServices.contactServicePayment.findMany({
+        where: {
+          tenantId,
+          contactServiceId,
+          id: { not: paymentId },
+        },
+        select: {
+          amountCents: true,
+        },
+      })
+
+      const otherPaidCents = otherPayments.reduce(
+        (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
+        0,
+      )
+      const nextAmountCents = payload.amountCents ?? existing.amountCents
+
+      if (otherPaidCents + nextAmountCents > contactService.totalPriceCents) {
+        return res.status(400).json({ error: "PAYMENT_EXCEEDS_SERVICE_TOTAL" })
       }
 
       const payment = await prismaWithServices.contactServicePayment.update({
@@ -1121,6 +1260,11 @@ router.patch(
       })
 
       const summary = await summarizeContactServicePayments(
+        prismaWithServices,
+        tenantId,
+        contactServiceId,
+      )
+      await reconcileContactServiceCompletionFromFollowUps(
         prismaWithServices,
         tenantId,
         contactServiceId,
@@ -1173,6 +1317,11 @@ router.delete(
       })
 
       const summary = await summarizeContactServicePayments(
+        prismaWithServices,
+        tenantId,
+        contactServiceId,
+      )
+      await reconcileContactServiceCompletionFromFollowUps(
         prismaWithServices,
         tenantId,
         contactServiceId,
@@ -1458,7 +1607,7 @@ router.patch(
         return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
       }
       if (
-        existing.status === "PENDING" &&
+        existing.status !== "ACTIVE" &&
         (payload.status !== undefined || payload.postponeTo !== undefined)
       ) {
         return res.status(409).json({ error: "STEP_STATUS_LOCKED_UNTIL_ACTIVE" })

@@ -13,6 +13,7 @@ import {
   CircleDashed,
   Clock3,
   CreditCard,
+  ListTodo,
   Loader2,
   NotebookPen,
   Plus,
@@ -38,6 +39,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { DateTimeInput } from "@/components/ui/date-time-input"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -49,10 +51,24 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
+import {
+  dateTimeDraftToUtcIso,
+  formatUtcIsoToDateTimeDraft,
+  isDateTimeDraftComplete,
+  isDateTimeDraftEmpty,
+  type DateTimeDraft,
+} from "@/lib/date-time"
 import { cn } from "@/lib/utils"
 
 type ContactServiceStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED" | "CANCELED"
+type FollowUpStepStatus = "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
 
 type ContactServiceDetails = {
   id: string
@@ -79,6 +95,17 @@ type ContactServiceDetails = {
     id: string
     name: string
   } | null
+  followUpSteps: Array<{
+    id: string
+    title: string
+    notesTemplate?: string | null
+    status?: FollowUpStepStatus
+    availableAt: string | null
+    dueAt: string | null
+    completedAt: string | null
+    note?: string | null
+    sortOrder: number
+  }>
   payments: Array<{
     id: string
     amountCents: number
@@ -141,6 +168,12 @@ type ActivityItem = {
   icon: "payment" | "checklist" | "note" | "status"
 }
 
+type StepTimeMeta = {
+  label: string
+  helper: string
+  badgeClassName: string
+}
+
 const currencyFormatter = (valueCents: number, currency: string) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -168,6 +201,8 @@ const PAYMENT_METHOD_OPTIONS = [
   { value: "TRANSFER", label: "Transfer" },
   { value: "ACH", label: "ACH" },
 ] as const
+
+const PAYMENTS_PAGE_SIZE = 5
 
 const formatPaymentMethod = (value: string | null | undefined) => {
   if (!value) return null
@@ -211,6 +246,64 @@ const formatDateTime = (value: string | null | undefined) => {
   return new Date(value).toLocaleString()
 }
 
+const isBeforeToday = (date: Date) => {
+  const candidate = new Date(date)
+  candidate.setHours(0, 0, 0, 0)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return candidate < today
+}
+
+const getStepTimeMeta = (step: ContactServiceDetails["followUpSteps"][number]): StepTimeMeta => {
+  if (step.status === "COMPLETED") {
+    return {
+      label: "Completed",
+      helper: step.completedAt ? new Date(step.completedAt).toLocaleString() : "Marked as completed",
+      badgeClassName: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
+    }
+  }
+  if (step.status === "POSTPONED") {
+    return {
+      label: "Postponed",
+      helper: step.dueAt ? `Now due ${new Date(step.dueAt).toLocaleString()}` : "Postponed",
+      badgeClassName: "bg-violet-100 text-violet-800 hover:bg-violet-100",
+    }
+  }
+  if (!step.dueAt) {
+    return {
+      label: "No due date",
+      helper: "No due date configured",
+      badgeClassName: "bg-slate-100 text-slate-700 hover:bg-slate-100",
+    }
+  }
+
+  const dueDate = new Date(step.dueAt)
+  const diffMs = dueDate.getTime() - Date.now()
+  const diffHours = Math.round(diffMs / (1000 * 60 * 60))
+
+  if (diffMs < 0) {
+    return {
+      label: "Overdue",
+      helper: `Due ${dueDate.toLocaleString()}`,
+      badgeClassName: "bg-rose-100 text-rose-800 hover:bg-rose-100",
+    }
+  }
+
+  if (diffHours <= 24) {
+    return {
+      label: "Due soon",
+      helper: `Due ${dueDate.toLocaleString()}`,
+      badgeClassName: "bg-amber-100 text-amber-800 hover:bg-amber-100",
+    }
+  }
+
+  return {
+    label: "Upcoming",
+    helper: `Due ${dueDate.toLocaleString()}`,
+    badgeClassName: "bg-sky-100 text-sky-800 hover:bg-sky-100",
+  }
+}
+
 const getInitials = (value: string | null | undefined) =>
   (value ?? "")
     .split(" ")
@@ -233,6 +326,7 @@ export function ContactServiceDetailsPanel({
   const [isChecklistSavingId, setIsChecklistSavingId] = useState<string | null>(null)
   const [statusOpen, setStatusOpen] = useState(false)
   const [isStatusSaving, setIsStatusSaving] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [isPaymentOpen, setIsPaymentOpen] = useState(false)
   const [isPaymentSaving, setIsPaymentSaving] = useState(false)
   const [isPaymentEditOpen, setIsPaymentEditOpen] = useState(false)
@@ -248,6 +342,26 @@ export function ContactServiceDetailsPanel({
   const [editPaymentNote, setEditPaymentNote] = useState("")
   const [serviceNoteTitle, setServiceNoteTitle] = useState("")
   const [serviceNoteBody, setServiceNoteBody] = useState("")
+  const [visiblePaymentsCount, setVisiblePaymentsCount] = useState(PAYMENTS_PAGE_SIZE)
+  const [isStepStatusDialogOpen, setIsStepStatusDialogOpen] = useState(false)
+  const [isStepDetailsDialogOpen, setIsStepDetailsDialogOpen] = useState(false)
+  const [isStepNoteDialogOpen, setIsStepNoteDialogOpen] = useState(false)
+  const [isStepTaskDialogOpen, setIsStepTaskDialogOpen] = useState(false)
+  const [activeStep, setActiveStep] = useState<ContactServiceDetails["followUpSteps"][number] | null>(
+    null,
+  )
+  const [mutatingStepId, setMutatingStepId] = useState<string | null>(null)
+  const [stepStatusValue, setStepStatusValue] = useState<FollowUpStepStatus>("PENDING")
+  const [stepStatusNote, setStepStatusNote] = useState("")
+  const [stepPostponeInput, setStepPostponeInput] = useState<DateTimeDraft>({ date: "", time: "" })
+  const [isSavingStepStatus, setIsSavingStepStatus] = useState(false)
+  const [stepNoteTitle, setStepNoteTitle] = useState("")
+  const [stepNoteBody, setStepNoteBody] = useState("")
+  const [isSavingStepNote, setIsSavingStepNote] = useState(false)
+  const [stepTaskName, setStepTaskName] = useState("")
+  const [stepTaskDescription, setStepTaskDescription] = useState("")
+  const [stepTaskDueAt, setStepTaskDueAt] = useState<DateTimeDraft>({ date: "", time: "" })
+  const [isSavingStepTask, setIsSavingStepTask] = useState(false)
 
   const backHref = `/app/${tenantSlug}/contacts/${contactId}/services`
 
@@ -269,6 +383,10 @@ export function ContactServiceDetailsPanel({
   useEffect(() => {
     void loadItem()
   }, [loadItem])
+
+  useEffect(() => {
+    setVisiblePaymentsCount(PAYMENTS_PAGE_SIZE)
+  }, [item?.id, item?.payments?.length])
 
   const resetPaymentForm = () => {
     setPaymentAmountUsd("")
@@ -357,6 +475,31 @@ export function ContactServiceDetailsPanel({
       }
     } finally {
       setIsPaymentSaving(false)
+    }
+  }
+
+  const onDeleteService = async () => {
+    if (!item) return
+
+    setIsDeleting(true)
+    try {
+      await api.delete(`/api/services/${tenantId}/contact-services/${item.id}`)
+      toast.success("Service removed.")
+      router.push(backHref)
+      router.refresh()
+    } catch (error) {
+      if (isAxiosError(error)) {
+        const backendError = error.response?.data?.error
+        toast.error(
+          typeof backendError === "string"
+            ? backendError.replace(/_/g, " ")
+            : "Could not remove service.",
+        )
+      } else {
+        toast.error("Could not remove service.")
+      }
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -505,14 +648,191 @@ export function ContactServiceDetailsPanel({
   }
 
   const payments = useMemo(() => item?.payments ?? [], [item?.payments])
+  const visiblePayments = useMemo(
+    () => payments.slice(0, visiblePaymentsCount),
+    [payments, visiblePaymentsCount],
+  )
   const serviceNotes = useMemo(() => item?.serviceNotes ?? [], [item?.serviceNotes])
   const checklistItems = useMemo(() => item?.checklistItems ?? [], [item?.checklistItems])
+  const followUpSteps = useMemo(
+    () =>
+      [...(item?.followUpSteps ?? [])]
+        .map((step) => ({
+          ...step,
+          status: step.status ?? (step.completedAt ? "COMPLETED" : "PENDING"),
+        }))
+        .sort((a, b) => a.sortOrder - b.sortOrder),
+    [item?.followUpSteps],
+  )
   const checklistCompletedCount = useMemo(
     () => checklistItems.filter((entry) => Boolean(entry.completedAt)).length,
     [checklistItems],
   )
+  const followUpCompletedCount = useMemo(
+    () =>
+      followUpSteps.filter((step) => step.status === "COMPLETED" || step.status === "SKIPPED").length,
+    [followUpSteps],
+  )
+  const followUpCompletionPercentage = useMemo(
+    () => (followUpSteps.length ? Math.round((followUpCompletedCount / followUpSteps.length) * 100) : 0),
+    [followUpCompletedCount, followUpSteps.length],
+  )
   const canAddPayments = Boolean(item && item.remainingCents > 0)
   const currentStatusOption = item ? STATUS_OPTION_BY_VALUE[item.status] : null
+
+  const openStepStatusDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
+    setActiveStep(step)
+    setStepStatusValue(step.status ?? "PENDING")
+    setStepStatusNote("")
+    setStepPostponeInput(formatUtcIsoToDateTimeDraft(step.dueAt, "America/Chicago"))
+    setIsStepStatusDialogOpen(true)
+  }
+
+  const openStepDetailsDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
+    setActiveStep(step)
+    setIsStepDetailsDialogOpen(true)
+  }
+
+  const updateStepStatus = async (
+    step: ContactServiceDetails["followUpSteps"][number],
+    nextStatus: FollowUpStepStatus,
+    note?: string,
+    postponeTo?: string,
+  ) => {
+    if (!item || !nextStatus) return
+    setMutatingStepId(step.id)
+    try {
+      await api.patch(
+        `/api/services/${tenantId}/contact-services/${item.id}/follow-up-steps/${step.id}`,
+        {
+          status: nextStatus,
+          ...(note?.trim() ? { note: note.trim() } : {}),
+          ...(postponeTo ? { postponeTo, cascadeFutureSteps: true } : {}),
+        },
+      )
+      toast.success(nextStatus === "COMPLETED" ? "Step marked as completed." : "Step status updated.")
+      await loadItem()
+      router.refresh()
+    } catch (error) {
+      if (isAxiosError(error)) {
+        const backendError = error.response?.data?.error
+        toast.error(
+          typeof backendError === "string"
+            ? backendError.replace(/_/g, " ")
+            : "Could not update this follow-up step.",
+        )
+      } else {
+        toast.error("Could not update this follow-up step.")
+      }
+    } finally {
+      setMutatingStepId(null)
+    }
+  }
+
+  const saveStepStatus = async () => {
+    if (!activeStep || !stepStatusValue) return
+    if (
+      stepStatusValue === "POSTPONED" &&
+      (!isDateTimeDraftComplete(stepPostponeInput) || isDateTimeDraftEmpty(stepPostponeInput))
+    ) {
+      toast.error("Postpone date/time is required.")
+      return
+    }
+    if (
+      stepStatusValue === "POSTPONED" &&
+      !isDateTimeDraftEmpty(stepPostponeInput) &&
+      !isDateTimeDraftComplete(stepPostponeInput)
+    ) {
+      toast.error("Postpone date/time is incomplete.")
+      return
+    }
+    const postponeToIso =
+      stepStatusValue !== "POSTPONED" || isDateTimeDraftEmpty(stepPostponeInput)
+        ? undefined
+        : dateTimeDraftToUtcIso(stepPostponeInput, "America/Chicago") ?? undefined
+    setIsSavingStepStatus(true)
+    await updateStepStatus(activeStep, stepStatusValue, stepStatusNote, postponeToIso)
+    setIsSavingStepStatus(false)
+    setIsStepStatusDialogOpen(false)
+    setActiveStep(null)
+    setStepStatusNote("")
+    setStepPostponeInput({ date: "", time: "" })
+  }
+
+  const openStepNoteDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
+    setActiveStep(step)
+    setStepNoteTitle(`${item?.service.name ?? "Service"} - ${step.title}`)
+    setStepNoteBody("")
+    setIsStepNoteDialogOpen(true)
+  }
+
+  const saveStepNote = async () => {
+    if (!item || !activeStep) return
+    if (!stepNoteTitle.trim() || !stepNoteBody.trim()) {
+      toast.error("Title and note body are required.")
+      return
+    }
+
+    setIsSavingStepNote(true)
+    try {
+      await api.post(`/api/contacts/${tenantId}/${contactId}/notes`, {
+        title: stepNoteTitle.trim(),
+        body: `Service: ${item.service.name}\nTemplate: ${item.followUpTemplate?.name ?? "No template selected"}\nStep: ${activeStep.title}\n\n${stepNoteBody.trim()}`,
+      })
+      toast.success("Step note created.")
+      setIsStepNoteDialogOpen(false)
+      setActiveStep(null)
+      setStepNoteTitle("")
+      setStepNoteBody("")
+      router.refresh()
+    } catch {
+      toast.error("Could not create a note for this step.")
+    } finally {
+      setIsSavingStepNote(false)
+    }
+  }
+
+  const openStepTaskDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
+    setActiveStep(step)
+    setStepTaskName(`Follow-up: ${step.title}`)
+    setStepTaskDescription(`Service: ${item?.service.name ?? ""}\nStep: ${step.title}`)
+    setStepTaskDueAt(formatUtcIsoToDateTimeDraft(step.dueAt, "America/Chicago"))
+    setIsStepTaskDialogOpen(true)
+  }
+
+  const saveStepTask = async () => {
+    if (!item || !activeStep) return
+    if (!stepTaskName.trim()) {
+      toast.error("Task title is required.")
+      return
+    }
+
+    setIsSavingStepTask(true)
+    try {
+      await api.post(`/api/tasks/${tenantId}`, {
+        name: stepTaskName.trim(),
+        contactId,
+        description: stepTaskDescription.trim() || null,
+        linkedEntityName: `${item.service.name} - ${activeStep.title}`,
+        linkedEntityType: "SERVICE",
+        dueDate: isDateTimeDraftComplete(stepTaskDueAt)
+          ? dateTimeDraftToUtcIso(stepTaskDueAt, "America/Chicago")
+          : null,
+        startedAt: new Date().toISOString(),
+      })
+      toast.success("Task created for follow-up step.")
+      setIsStepTaskDialogOpen(false)
+      setActiveStep(null)
+      setStepTaskName("")
+      setStepTaskDescription("")
+      setStepTaskDueAt({ date: "", time: "" })
+      router.refresh()
+    } catch {
+      toast.error("Could not create task for this step.")
+    } finally {
+      setIsSavingStepTask(false)
+    }
+  }
 
   const historyItems = useMemo<ActivityItem[]>(() => {
     if (!item) return []
@@ -613,7 +933,8 @@ export function ContactServiceDetailsPanel({
   }
 
   return (
-    <section className="flex flex-col gap-5">
+    <TooltipProvider>
+      <section className="flex flex-col gap-5">
       <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="space-y-3">
@@ -647,6 +968,17 @@ export function ContactServiceDetailsPanel({
             </div>
           </div>
           <div className="flex items-center gap-2 self-center md:self-center">
+            {canManageSensitiveServiceActions ? (
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-8 cursor-pointer rounded-full border border-rose-100 bg-rose-50/60 px-3 py-1 text-xs font-semibold text-rose-600 shadow-sm backdrop-blur hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                onClick={() => void onDeleteService()}
+                disabled={isDeleting || isStatusSaving}
+              >
+                {isDeleting ? "Deleting..." : "Delete"}
+              </Button>
+            ) : null}
             <Popover
               open={canManageSensitiveServiceActions ? statusOpen : false}
               onOpenChange={(open) => {
@@ -842,11 +1174,11 @@ export function ContactServiceDetailsPanel({
             {canAddPayments && canManageSensitiveServiceActions ? (
               <Button
                 type="button"
-                size="sm"
-                className="cursor-pointer"
+                variant="ghost"
+                className="h-8 cursor-pointer rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300 hover:bg-white hover:text-slate-950"
                 onClick={() => setIsPaymentOpen(true)}
               >
-                <Plus className="h-4 w-4" />
+                <Plus className="h-3.5 w-3.5" />
                 Add payment
               </Button>
             ) : (
@@ -857,7 +1189,17 @@ export function ContactServiceDetailsPanel({
           </div>
           {payments.length ? (
             <div className="space-y-3">
-              {payments.map((payment, index) => (
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-slate-500">
+                  Showing {Math.min(visiblePaymentsCount, payments.length)} of {payments.length} payments
+                </p>
+                {payments.length > PAYMENTS_PAGE_SIZE ? (
+                  <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-600">
+                    {payments.length - Math.min(visiblePaymentsCount, payments.length)} more
+                  </Badge>
+                ) : null}
+              </div>
+              {visiblePayments.map((payment, index) => (
                 <button
                   key={payment.id ?? `${payment.paidAt}-${payment.amountCents}-${index}`}
                   type="button"
@@ -893,6 +1235,33 @@ export function ContactServiceDetailsPanel({
                   ) : null}
                 </button>
               ))}
+              {payments.length > visiblePaymentsCount ? (
+                <div className="flex justify-center pt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    onClick={() =>
+                      setVisiblePaymentsCount((current) =>
+                        Math.min(current + PAYMENTS_PAGE_SIZE, payments.length),
+                      )
+                    }
+                  >
+                    Load more payments
+                  </Button>
+                </div>
+              ) : payments.length > PAYMENTS_PAGE_SIZE ? (
+                <div className="flex justify-center pt-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="cursor-pointer rounded-full border border-slate-200 bg-slate-50 text-slate-700 hover:bg-white hover:text-slate-950"
+                    onClick={() => setVisiblePaymentsCount(PAYMENTS_PAGE_SIZE)}
+                  >
+                    Show less
+                  </Button>
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
@@ -905,13 +1274,200 @@ export function ContactServiceDetailsPanel({
       <section className="rounded-[24px] border border-slate-200 bg-white p-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service Follow-Up</p>
+            <p className="mt-1 text-sm text-slate-600">
+              Review the enrolled follow-up path for this service and move each step forward when it becomes active.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
+              {followUpCompletionPercentage}% complete
+            </Badge>
+            <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+              {followUpCompletedCount}/{followUpSteps.length} steps
+            </Badge>
+          </div>
+        </div>
+        {followUpSteps.length ? (
+          <div className="space-y-4">
+            <div className="overflow-hidden rounded-full bg-slate-200">
+              <div
+                className="h-2.5 rounded-full bg-emerald-500 transition-all"
+                style={{ width: `${followUpCompletionPercentage}%` }}
+              />
+            </div>
+            <div className="space-y-3">
+              {followUpSteps.map((step, index) => {
+                const timeMeta = getStepTimeMeta(step)
+                const isStatusLocked = (step.status ?? "PENDING") !== "ACTIVE"
+                const isActive = (step.status ?? "PENDING") === "ACTIVE"
+                const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"
+
+                return (
+                  <div key={step.id} className="flex gap-3">
+                    <div className="flex w-8 shrink-0 flex-col items-center pt-2">
+                      <span
+                        className={cn(
+                          "inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold",
+                          isDone
+                            ? "border-emerald-200 bg-emerald-100 text-emerald-800"
+                            : isActive
+                              ? "border-blue-200 bg-blue-50 text-blue-900"
+                              : "border-slate-200 bg-slate-50 text-slate-600",
+                        )}
+                      >
+                        {index + 1}
+                      </span>
+                      {index < followUpSteps.length - 1 ? (
+                        <span className="mt-2 h-full min-h-8 w-px bg-slate-200" />
+                      ) : null}
+                    </div>
+                    <article
+                      className={cn(
+                        "flex-1 rounded-[22px] border px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]",
+                        isDone
+                          ? "border-emerald-200 bg-emerald-50/50"
+                          : isActive
+                            ? "border-blue-200 bg-blue-50/40"
+                            : "border-slate-200 bg-white",
+                      )}
+                    >
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 flex-1 space-y-3">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1 space-y-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge
+                                  variant="outline"
+                                  className="border-slate-200 bg-white text-slate-600"
+                                >
+                                  Step {index + 1}
+                                </Badge>
+                                <Badge className={timeMeta.badgeClassName}>{timeMeta.label}</Badge>
+                                {isActive ? (
+                                  <Badge className="bg-blue-100 text-blue-900 hover:bg-blue-100">
+                                    Current step
+                                  </Badge>
+                                ) : null}
+                              </div>
+                              <button
+                                type="button"
+                                className="cursor-pointer text-left text-base font-semibold tracking-tight text-slate-950 transition hover:text-slate-700"
+                                onClick={() => openStepDetailsDialog(step)}
+                              >
+                                {step.title}
+                              </button>
+                              <p className="text-xs font-medium text-slate-500">{timeMeta.helper}</p>
+                            </div>
+                          </div>
+                          <p className="max-w-3xl text-sm leading-6 text-slate-600">
+                            {step.notesTemplate?.trim() || "No description provided for this step."}
+                          </p>
+                          {step.note?.trim() ? (
+                            <div className="rounded-2xl bg-slate-50 px-3 py-2.5">
+                              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                                Latest Step Note
+                              </p>
+                              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-700">{step.note}</p>
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="flex w-full items-center gap-2 lg:w-auto lg:min-w-[320px] lg:justify-end">
+                          {!isStatusLocked ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-10 min-w-[150px] cursor-pointer justify-between rounded-full border-slate-200 bg-white text-sm capitalize shadow-sm"
+                              disabled={mutatingStepId === step.id}
+                              onClick={() => openStepStatusDialog(step)}
+                            >
+                              <span>{(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}</span>
+                              {mutatingStepId === step.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <ChevronDown className="h-4 w-4" />
+                              )}
+                            </Button>
+                          ) : (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="inline-flex">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    className="h-10 min-w-[150px] cursor-not-allowed justify-between rounded-full border-slate-200 bg-white text-sm capitalize shadow-sm"
+                                    disabled
+                                  >
+                                    <span>{(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}</span>
+                                    <ChevronDown className="h-4 w-4" />
+                                  </Button>
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" sideOffset={6}>
+                                Only the current active step can be updated.
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="icon"
+                                className="h-10 w-10 cursor-pointer rounded-xl border-slate-200 bg-white text-fuchsia-700 hover:border-fuchsia-200 hover:bg-white hover:text-fuchsia-800"
+                                onClick={() => openStepNoteDialog(step)}
+                                aria-label={`Add note for ${step.title}`}
+                              >
+                                <NotebookPen className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" sideOffset={6}>Add note</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="icon"
+                                className="h-10 w-10 cursor-pointer rounded-xl border-slate-200 bg-white text-cyan-700 hover:border-cyan-200 hover:bg-white hover:text-cyan-800"
+                                onClick={() => openStepTaskDialog(step)}
+                                aria-label={`Create task for ${step.title}`}
+                              >
+                                <ListTodo className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" sideOffset={6}>Create task</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </div>
+                    </article>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+            No follow-up steps are enrolled for this service yet.
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-[24px] border border-slate-200 bg-white p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service Notes</p>
             <p className="mt-1 text-sm text-slate-600">
               Keep service-specific notes separate from general contact notes.
             </p>
           </div>
-          <Button type="button" size="sm" className="cursor-pointer" onClick={() => setIsNoteOpen(true)}>
-            <Plus className="h-4 w-4" />
+          <Button
+            type="button"
+            variant="ghost"
+            className="h-8 cursor-pointer rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300 hover:bg-white hover:text-slate-950"
+            onClick={() => setIsNoteOpen(true)}
+          >
+            <Plus className="h-3.5 w-3.5" />
             Add note
           </Button>
         </div>
@@ -1208,6 +1764,256 @@ export function ContactServiceDetailsPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </section>
+
+      <Dialog open={isStepStatusDialogOpen} onOpenChange={setIsStepStatusDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Update step status</DialogTitle>
+            <DialogDescription>
+              Change follow-up step status and add an optional note for completed, skipped, or postponed steps.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-1">
+            {activeStep ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                <p><span className="font-medium text-slate-900">Service:</span> {item.service.name}</p>
+                <p><span className="font-medium text-slate-900">Template:</span> {item.followUpTemplate?.name ?? "No template selected"}</p>
+                <p><span className="font-medium text-slate-900">Step:</span> {activeStep.title}</p>
+              </div>
+            ) : null}
+            <div className="grid gap-2">
+              <Label>Status</Label>
+              <Select
+                value={stepStatusValue}
+                onValueChange={(value) => {
+                  const nextValue = value as FollowUpStepStatus
+                  setStepStatusValue(nextValue)
+                  if (nextValue !== "POSTPONED") {
+                    setStepPostponeInput({ date: "", time: "" })
+                  }
+                }}
+              >
+                <SelectTrigger className="cursor-pointer">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="PENDING" className="cursor-pointer">Pending</SelectItem>
+                  <SelectItem value="ACTIVE" className="cursor-pointer">Active</SelectItem>
+                  <SelectItem value="COMPLETED" className="cursor-pointer">Completed</SelectItem>
+                  <SelectItem value="SKIPPED" className="cursor-pointer">Skipped</SelectItem>
+                  <SelectItem value="POSTPONED" className="cursor-pointer">Postponed</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-2">
+              <Label>Step note (optional)</Label>
+              <Textarea
+                rows={4}
+                placeholder="Add context about why this step was completed, skipped, or updated..."
+                value={stepStatusNote}
+                onChange={(event) => setStepStatusNote(event.target.value)}
+              />
+            </div>
+            {stepStatusValue === "POSTPONED" ? (
+              <div className="grid gap-2">
+                <Label>Postpone to</Label>
+                <DateTimeInput
+                  value={stepPostponeInput}
+                  onValueChange={setStepPostponeInput}
+                  disabledDate={isBeforeToday}
+                />
+                <p className="text-xs text-slate-500">
+                  This step and all upcoming pending or active steps will shift to match the new timing.
+                </p>
+              </div>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsStepStatusDialogOpen(false)}
+              disabled={isSavingStepStatus}
+              className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void saveStepStatus()}
+              disabled={isSavingStepStatus}
+              className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+            >
+              {isSavingStepStatus ? "Saving..." : "Save status"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isStepDetailsDialogOpen} onOpenChange={setIsStepDetailsDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Follow-up step details</DialogTitle>
+            <DialogDescription>
+              Review the description and current details for this follow-up step.
+            </DialogDescription>
+          </DialogHeader>
+          {activeStep ? (
+            <div className="space-y-4 py-1">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                <p><span className="font-medium text-slate-900">Service:</span> {item.service.name}</p>
+                <p><span className="font-medium text-slate-900">Template:</span> {item.followUpTemplate?.name ?? "No template selected"}</p>
+                <p><span className="font-medium text-slate-900">Step:</span> {activeStep.title}</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Status</p>
+                  <p className="mt-1 text-sm capitalize text-slate-900">
+                    {(activeStep.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Due</p>
+                  <p className="mt-1 text-sm text-slate-900">
+                    {activeStep.dueAt ? new Date(activeStep.dueAt).toLocaleString() : "No due date"}
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Description</p>
+                <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
+                  {activeStep.notesTemplate?.trim() || "No description provided for this step."}
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Latest step note</p>
+                <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
+                  {activeStep.note?.trim() || "No step note recorded yet."}
+                </p>
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsStepDetailsDialogOpen(false)}
+              className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
+            >
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isStepNoteDialogOpen} onOpenChange={setIsStepNoteDialogOpen}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Add step note</DialogTitle>
+            <DialogDescription>
+              This note will be saved in the contact note section with service and step reference.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-1">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+              {activeStep ? (
+                <>
+                  <p><span className="font-medium text-slate-900">Service:</span> {item.service.name}</p>
+                  <p><span className="font-medium text-slate-900">Template:</span> {item.followUpTemplate?.name ?? "No template selected"}</p>
+                  <p><span className="font-medium text-slate-900">Step:</span> {activeStep.title}</p>
+                </>
+              ) : null}
+            </div>
+            <div className="grid gap-2">
+              <Label>Note title</Label>
+              <Input value={stepNoteTitle} onChange={(event) => setStepNoteTitle(event.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label>Note body</Label>
+              <Textarea value={stepNoteBody} onChange={(event) => setStepNoteBody(event.target.value)} rows={5} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsStepNoteDialogOpen(false)}
+              disabled={isSavingStepNote}
+              className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void saveStepNote()}
+              disabled={isSavingStepNote}
+              className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+            >
+              {isSavingStepNote ? "Saving..." : "Save note"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isStepTaskDialogOpen} onOpenChange={setIsStepTaskDialogOpen}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Create step task</DialogTitle>
+            <DialogDescription>Create a task linked to this service follow-up step.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-1">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+              {activeStep ? (
+                <>
+                  <p><span className="font-medium text-slate-900">Service:</span> {item.service.name}</p>
+                  <p><span className="font-medium text-slate-900">Template:</span> {item.followUpTemplate?.name ?? "No template selected"}</p>
+                  <p><span className="font-medium text-slate-900">Step:</span> {activeStep.title}</p>
+                </>
+              ) : null}
+            </div>
+            <div className="grid gap-2">
+              <Label>Task title</Label>
+              <Input value={stepTaskName} onChange={(event) => setStepTaskName(event.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label>Description</Label>
+              <Textarea
+                value={stepTaskDescription}
+                onChange={(event) => setStepTaskDescription(event.target.value)}
+                rows={4}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label>Due date (optional)</Label>
+              <DateTimeInput
+                value={stepTaskDueAt}
+                onValueChange={setStepTaskDueAt}
+                disabledDate={isBeforeToday}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsStepTaskDialogOpen(false)}
+              disabled={isSavingStepTask}
+              className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void saveStepTask()}
+              disabled={isSavingStepTask}
+              className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+            >
+              {isSavingStepTask ? "Saving..." : "Create task"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      </section>
+    </TooltipProvider>
   )
 }

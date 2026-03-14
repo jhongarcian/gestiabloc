@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
-import { ListTodo, NotebookPen, Plus } from "lucide-react"
+import { ChevronDown, ListTodo, Loader2, NotebookPen, Plus } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
@@ -31,14 +31,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Tooltip,
@@ -47,6 +39,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
+import { cn } from "@/lib/utils"
 import {
   dateTimeDraftToUtcIso,
   formatUtcIsoToDateTimeDraft,
@@ -467,7 +460,11 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
               <p className="text-sm text-slate-600">Track, edit, and complete follow-up steps after service purchase enrollment.</p>
             </div>
           </div>
-          <Button type="button" onClick={() => setIsCreateOpen(true)} className="cursor-pointer md:self-center">
+          <Button
+            type="button"
+            onClick={() => setIsCreateOpen(true)}
+            className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90 md:self-center"
+          >
             <Plus className="h-4 w-4" />
             Add follow-up
           </Button>
@@ -523,49 +520,100 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                 </div>
               </div>
 
-              <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Step</TableHead>
-                      <TableHead>Time</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="w-[260px] text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {service.steps.length ? (
-                      service.steps.map((step) => {
-                        const timeMeta = getStepTimeMeta(step)
-                        const isStatusLocked = (step.status ?? "PENDING") === "PENDING"
-                        return (
-                          <TableRow key={step.id}>
-                            <TableCell>
-                              <button
-                                type="button"
-                                className="cursor-pointer text-left font-medium text-slate-900 transition hover:text-slate-700"
-                                onClick={() => openStepDetailsDialog(step)}
-                              >
-                                {step.title}
-                              </button>
-                            </TableCell>
-                            <TableCell>
-                              <div className="space-y-1">
-                                <Badge className={timeMeta.badgeClassName}>{timeMeta.label}</Badge>
-                                <p className="text-xs text-slate-500">{timeMeta.helper}</p>
+              <div className="mt-4 space-y-3">
+                {service.steps.length ? (
+                  service.steps.map((step, index) => {
+                    const timeMeta = getStepTimeMeta(step)
+                    const isStatusLocked = (step.status ?? "PENDING") !== "ACTIVE"
+                    const isActive = (step.status ?? "PENDING") === "ACTIVE"
+                    const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"
+
+                    return (
+                      <div key={step.id} className="flex gap-3">
+                        <div className="flex w-8 shrink-0 flex-col items-center pt-2">
+                          <span
+                            className={cn(
+                              "inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold",
+                              isDone
+                                ? "border-emerald-200 bg-emerald-100 text-emerald-800"
+                                : isActive
+                                  ? "border-blue-200 bg-blue-50 text-blue-900"
+                                  : "border-slate-200 bg-slate-50 text-slate-600",
+                            )}
+                          >
+                            {index + 1}
+                          </span>
+                          {index < service.steps.length - 1 ? (
+                            <span className="mt-2 h-full min-h-8 w-px bg-slate-200" />
+                          ) : null}
+                        </div>
+                        <article
+                          className={cn(
+                            "flex-1 rounded-[22px] border px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]",
+                            isDone
+                              ? "border-emerald-200 bg-emerald-50/50"
+                              : isActive
+                                ? "border-blue-200 bg-blue-50/40"
+                                : "border-slate-200 bg-white",
+                          )}
+                        >
+                          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                            <div className="min-w-0 flex-1 space-y-3">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1 space-y-2">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge
+                                      variant="outline"
+                                      className="border-slate-200 bg-white text-slate-600"
+                                    >
+                                      Step {index + 1}
+                                    </Badge>
+                                    <Badge className={timeMeta.badgeClassName}>{timeMeta.label}</Badge>
+                                    {isActive ? (
+                                      <Badge className="bg-blue-100 text-blue-900 hover:bg-blue-100">
+                                        Current step
+                                      </Badge>
+                                    ) : null}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="cursor-pointer text-left text-base font-semibold tracking-tight text-slate-950 transition hover:text-slate-700"
+                                    onClick={() => openStepDetailsDialog(step)}
+                                  >
+                                    {step.title}
+                                  </button>
+                                  <p className="text-xs font-medium text-slate-500">{timeMeta.helper}</p>
+                                </div>
                               </div>
-                            </TableCell>
-                            <TableCell>
+                              <p className="max-w-3xl text-sm leading-6 text-slate-600">
+                                {step.notesTemplate?.trim() || "No description provided for this step."}
+                              </p>
+                              {step.note?.trim() ? (
+                                <div className="rounded-2xl bg-slate-50 px-3 py-2.5">
+                                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                                    Latest Step Note
+                                  </p>
+                                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                                    {step.note}
+                                  </p>
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="flex w-full items-center gap-2 lg:w-auto lg:min-w-[320px] lg:justify-end">
                               {!isStatusLocked ? (
                                 <Button
                                   type="button"
-                                  size="sm"
                                   variant="outline"
-                                  className="min-w-[136px] cursor-pointer justify-center capitalize"
+                                  className="h-10 min-w-[150px] cursor-pointer justify-between rounded-full border-slate-200 bg-white text-sm capitalize shadow-sm"
                                   disabled={mutatingStepId === step.id}
                                   onClick={() => openStepStatusDialog(step)}
                                 >
-                                  {(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}
+                                  <span>{(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}</span>
+                                  {mutatingStepId === step.id ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <ChevronDown className="h-4 w-4" />
+                                  )}
                                 </Button>
                               ) : (
                                 <Tooltip>
@@ -573,57 +621,61 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                                     <span className="inline-flex">
                                       <Button
                                         type="button"
-                                        size="sm"
                                         variant="outline"
-                                        className="min-w-[136px] cursor-not-allowed justify-center capitalize"
+                                        className="h-10 min-w-[150px] cursor-not-allowed justify-between rounded-full border-slate-200 bg-white text-sm capitalize shadow-sm"
                                         disabled
                                       >
-                                        {(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}
+                                        <span>{(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}</span>
+                                        <ChevronDown className="h-4 w-4" />
                                       </Button>
                                     </span>
                                   </TooltipTrigger>
                                   <TooltipContent side="top" sideOffset={6}>
-                                    Status locked until this step becomes active.
+                                    Only the current active step can be updated.
                                   </TooltipContent>
                                 </Tooltip>
                               )}
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex justify-end gap-2">
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  className="cursor-pointer"
-                                  onClick={() => openStepNoteDialog(step)}
-                                >
-                                  <NotebookPen className="h-3.5 w-3.5" />
-                                  Add note
-                                </Button>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  className="cursor-pointer"
-                                  onClick={() => openStepTaskDialog(step)}
-                                >
-                                  <ListTodo className="h-3.5 w-3.5" />
-                                  Create task
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        )
-                      })
-                    ) : (
-                      <TableRow>
-                        <TableCell colSpan={4} className="h-16 text-center text-slate-500">
-                          No follow-up steps configured for this service yet.
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="icon"
+                                    className="h-10 w-10 cursor-pointer rounded-xl border-slate-200 bg-white text-fuchsia-700 hover:border-fuchsia-200 hover:bg-white hover:text-fuchsia-800"
+                                    onClick={() => openStepNoteDialog(step)}
+                                    aria-label={`Add note for ${step.title}`}
+                                  >
+                                    <NotebookPen className="h-4 w-4" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" sideOffset={6}>Add note</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="icon"
+                                    className="h-10 w-10 cursor-pointer rounded-xl border-slate-200 bg-white text-cyan-700 hover:border-cyan-200 hover:bg-white hover:text-cyan-800"
+                                    onClick={() => openStepTaskDialog(step)}
+                                    aria-label={`Create task for ${step.title}`}
+                                  >
+                                    <ListTodo className="h-4 w-4" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" sideOffset={6}>Create task</TooltipContent>
+                              </Tooltip>
+                            </div>
+                          </div>
+                        </article>
+                      </div>
+                    )
+                  })
+                ) : (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                    No follow-up steps configured for this service yet.
+                  </div>
+                )}
               </div>
             </section>
           ))}
@@ -671,8 +723,8 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setIsCreateOpen(false)} disabled={isSaving}>Cancel</Button>
-            <Button type="button" onClick={() => void onCreate()} disabled={isSaving}>{isSaving ? "Saving..." : "Create"}</Button>
+            <Button type="button" variant="outline" onClick={() => setIsCreateOpen(false)} disabled={isSaving} className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50">Cancel</Button>
+            <Button type="button" onClick={() => void onCreate()} disabled={isSaving} className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90">{isSaving ? "Saving..." : "Create"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -741,10 +793,10 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
             ) : null}
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setIsStepStatusDialogOpen(false)} disabled={isSavingStepStatus}>
+            <Button type="button" variant="outline" onClick={() => setIsStepStatusDialogOpen(false)} disabled={isSavingStepStatus} className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50">
               Cancel
             </Button>
-            <Button type="button" onClick={() => void saveStepStatus()} disabled={isSavingStepStatus}>
+            <Button type="button" onClick={() => void saveStepStatus()} disabled={isSavingStepStatus} className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90">
               {isSavingStepStatus ? "Saving..." : "Save status"}
             </Button>
           </DialogFooter>
@@ -795,7 +847,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
             </div>
           ) : null}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setIsStepDetailsDialogOpen(false)}>
+            <Button type="button" variant="outline" onClick={() => setIsStepDetailsDialogOpen(false)} className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50">
               Close
             </Button>
           </DialogFooter>
@@ -830,10 +882,10 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setIsNoteDialogOpen(false)} disabled={isSavingStepNote}>
+            <Button type="button" variant="outline" onClick={() => setIsNoteDialogOpen(false)} disabled={isSavingStepNote} className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50">
               Cancel
             </Button>
-            <Button type="button" onClick={() => void saveStepNote()} disabled={isSavingStepNote}>
+            <Button type="button" onClick={() => void saveStepNote()} disabled={isSavingStepNote} className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90">
               {isSavingStepNote ? "Saving..." : "Save note"}
             </Button>
           </DialogFooter>
@@ -876,10 +928,10 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setIsTaskDialogOpen(false)} disabled={isSavingStepTask}>
+            <Button type="button" variant="outline" onClick={() => setIsTaskDialogOpen(false)} disabled={isSavingStepTask} className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50">
               Cancel
             </Button>
-            <Button type="button" onClick={() => void saveStepTask()} disabled={isSavingStepTask}>
+            <Button type="button" onClick={() => void saveStepTask()} disabled={isSavingStepTask} className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90">
               {isSavingStepTask ? "Saving..." : "Create task"}
             </Button>
           </DialogFooter>

@@ -951,7 +951,7 @@ export function ContactNotesPanel({
               variant="outline"
               onClick={() => setDialogOpen(false)}
               disabled={isSaving}
-              className="cursor-pointer"
+              className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
             >
               Cancel
             </Button>

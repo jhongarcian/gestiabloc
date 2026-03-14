@@ -1,3 +1,4 @@
+import { encryptCustomFieldValue } from "./contact-custom-field-encryption.js"
 import { normalizeTenantTagName } from "./tag-utils.js"
 import { createTaskActivity } from "./task-activity.js"
 import { emitNotificationCreated } from "./realtime.js"
@@ -45,6 +46,27 @@ type FlowNode = {
 type FlowEdge = {
   source?: string
   target?: string
+}
+
+type ContactCustomFieldType =
+  | "TEXT"
+  | "NUMBER"
+  | "PHONE"
+  | "CURRENCY"
+  | "DATE"
+  | "SELECT"
+  | "MULTI_SELECT"
+  | "RADIO"
+  | "TEXTAREA"
+  | "CHECKBOX"
+
+type CustomFieldMetadata = {
+  id: string
+  key: string
+  fieldType: ContactCustomFieldType
+  options: string[]
+  isEncrypted: boolean
+  value?: unknown
 }
 
 const WAIT_UNIT_TO_MS = {
@@ -133,6 +155,159 @@ function toComparableString(value: unknown) {
     return String(value)
   if (value instanceof Date) return value.toISOString()
   return ""
+}
+
+function normalizeCustomFieldOptions(value: unknown) {
+  return Array.isArray(value)
+    ? [
+        ...new Set(
+          value
+            .filter((item): item is string => typeof item === "string")
+            .map((item) => item.trim())
+            .filter(Boolean),
+        ),
+      ]
+    : []
+}
+
+function normalizeContactFieldUpdateValue(fieldKey: string, rawValue: unknown) {
+  const textValue =
+    typeof rawValue === "string" && rawValue.trim().length > 0
+      ? rawValue.trim()
+      : null
+
+  if (fieldKey === "dateOfBirth") {
+    if (!textValue) return { ok: true as const, value: null }
+    const parsedDate = new Date(textValue)
+    if (Number.isNaN(parsedDate.getTime())) return { ok: false as const }
+    return { ok: true as const, value: parsedDate }
+  }
+
+  if (fieldKey === "gender") {
+    if (!textValue) return { ok: true as const, value: null }
+    const allowedValues = new Set(["FEMALE", "MALE", "NON_BINARY", "OTHER", "UNKNOWN"])
+    return allowedValues.has(textValue)
+      ? { ok: true as const, value: textValue }
+      : { ok: false as const }
+  }
+
+  if (fieldKey === "smokerStatus") {
+    if (!textValue) return { ok: true as const, value: null }
+    const allowedValues = new Set(["UNKNOWN", "NEVER", "CURRENT", "FORMER"])
+    return allowedValues.has(textValue)
+      ? { ok: true as const, value: textValue }
+      : { ok: false as const }
+  }
+
+  return { ok: true as const, value: textValue }
+}
+
+function normalizeCustomFieldUpdateValue(field: CustomFieldMetadata, rawValue: unknown) {
+  if (field.fieldType === "CHECKBOX") {
+    if (typeof rawValue === "boolean") return { ok: true as const, value: rawValue }
+    if (typeof rawValue === "string") {
+      const normalized = rawValue.trim().toLowerCase()
+      if (normalized === "true") return { ok: true as const, value: true }
+      if (normalized === "false") return { ok: true as const, value: false }
+    }
+    return { ok: false as const }
+  }
+
+  if (field.fieldType === "MULTI_SELECT") {
+    const values = Array.isArray(rawValue)
+      ? rawValue.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+      : typeof rawValue === "string"
+        ? rawValue.split(",").map((item) => item.trim()).filter(Boolean)
+        : []
+
+    if (values.some((item) => !field.options.includes(item))) {
+      return { ok: false as const }
+    }
+
+    return { ok: true as const, value: values.length ? [...new Set(values)] : null }
+  }
+
+  if (field.fieldType === "NUMBER" || field.fieldType === "CURRENCY") {
+    if (rawValue === null || rawValue === undefined || rawValue === "") {
+      return { ok: true as const, value: null }
+    }
+
+    const numericValue =
+      typeof rawValue === "number"
+        ? rawValue
+        : typeof rawValue === "string"
+          ? Number(rawValue.trim())
+          : Number.NaN
+
+    return Number.isFinite(numericValue)
+      ? { ok: true as const, value: numericValue }
+      : { ok: false as const }
+  }
+
+  if (field.fieldType === "DATE") {
+    const textValue =
+      typeof rawValue === "string" && rawValue.trim().length > 0 ? rawValue.trim() : null
+    if (!textValue) return { ok: true as const, value: null }
+    const parsedDate = new Date(textValue)
+    return Number.isNaN(parsedDate.getTime())
+      ? { ok: false as const }
+      : { ok: true as const, value: parsedDate.toISOString() }
+  }
+
+  if (field.fieldType === "PHONE") {
+    const textValue =
+      typeof rawValue === "string" && rawValue.trim().length > 0 ? rawValue.trim() : null
+    if (!textValue) return { ok: true as const, value: null }
+    return /^\+[1-9]\d{7,14}$/.test(textValue)
+      ? { ok: true as const, value: textValue }
+      : { ok: false as const }
+  }
+
+  const textValue =
+    typeof rawValue === "string" && rawValue.trim().length > 0 ? rawValue.trim() : null
+
+  if ((field.fieldType === "SELECT" || field.fieldType === "RADIO") && textValue) {
+    if (!field.options.includes(textValue)) {
+      return { ok: false as const }
+    }
+  }
+
+  return { ok: true as const, value: textValue }
+}
+
+async function buildCustomFieldByKey(
+  prismaTx: PrismaTx,
+  tenantId: string,
+  storedValues: Array<{ field: { id: string; key: string }; value: unknown }>,
+) {
+  const customFields = await prismaTx.contactCustomField.findMany({
+    where: { tenantId },
+    select: {
+      id: true,
+      key: true,
+      fieldType: true,
+      options: true,
+      isEncrypted: true,
+    },
+  })
+
+  const storedValueByKey = new Map(
+    storedValues.map((item) => [item.field.key, item.value] as const),
+  )
+
+  return new Map<string, CustomFieldMetadata>(
+    customFields.map((field: any) => [
+      field.key,
+      {
+        id: field.id,
+        key: field.key,
+        fieldType: field.fieldType as ContactCustomFieldType,
+        options: normalizeCustomFieldOptions(field.options),
+        isEncrypted: Boolean(field.isEncrypted),
+        value: storedValueByKey.get(field.key),
+      },
+    ]),
+  )
 }
 
 function evaluateOperator(
@@ -236,23 +411,28 @@ async function applyContactFieldUpdate(
   tenantId: string,
   contactId: string,
   node: FlowNode,
-  customFieldByKey: Map<string, { id: string }>,
+  customFieldByKey: Map<string, CustomFieldMetadata>,
 ) {
   const fieldSource = node.data?.fieldSource
   const fieldKey = node.data?.fieldKey?.trim()
   const fieldOperation = node.data?.fieldOperation
-  const fieldValue = node.data?.fieldValue?.trim() ?? ""
+  const fieldValue = node.data?.fieldValue ?? ""
 
   if (!fieldSource || !fieldKey) return
 
   if (fieldSource === "contact") {
     const contactField = CONTACT_FIELD_MAP[fieldKey]
     if (!contactField) return
+    const normalizedValue =
+      fieldOperation === "clear"
+        ? { ok: true as const, value: null }
+        : normalizeContactFieldUpdateValue(fieldKey, fieldValue)
+    if (!normalizedValue.ok) return
 
     await prismaTx.contact.update({
       where: { id: contactId },
       data: {
-        [contactField]: fieldOperation === "clear" ? null : fieldValue || null,
+        [contactField]: normalizedValue.value,
       },
     })
     return
@@ -272,6 +452,33 @@ async function applyContactFieldUpdate(
     return
   }
 
+  const normalizedValue = normalizeCustomFieldUpdateValue(customField, fieldValue)
+  if (!normalizedValue.ok) return
+
+  if (normalizedValue.value === null) {
+    await prismaTx.contactCustomFieldValue.deleteMany({
+      where: {
+        tenantId,
+        contactId,
+        fieldId: customField.id,
+      },
+    })
+    return
+  }
+
+  const persistenceData = customField.isEncrypted
+    ? {
+        value: null,
+        ...encryptCustomFieldValue(normalizedValue.value),
+      }
+    : {
+        value: normalizedValue.value,
+        valueCiphertext: null,
+        valueIv: null,
+        valueAuthTag: null,
+        valueKeyVersion: null,
+      }
+
   await prismaTx.contactCustomFieldValue.upsert({
     where: {
       tenantId_contactId_fieldId: {
@@ -280,18 +487,12 @@ async function applyContactFieldUpdate(
         fieldId: customField.id,
       },
     },
-    update: {
-      value: fieldValue,
-      valueCiphertext: null,
-      valueIv: null,
-      valueAuthTag: null,
-      valueKeyVersion: null,
-    },
+    update: persistenceData,
     create: {
       tenantId,
       contactId,
       fieldId: customField.id,
-      value: fieldValue,
+      ...persistenceData,
     },
   })
 }
@@ -307,7 +508,7 @@ async function executeActionNode(params: {
     contactName: string
   }
   node: FlowNode
-  customFieldByKey: Map<string, { id: string; value?: unknown }>
+  customFieldByKey: Map<string, CustomFieldMetadata>
 }) {
   const {
     prismaTx,
@@ -535,18 +736,22 @@ async function executeActionNode(params: {
 
     if (!recipientUserId) return
 
+    const contactName = contactService.contactName.trim() || "Contact"
+    const reminderLabel = node.data?.label?.trim()
+    const reminderTitle = reminderLabel
+      ? `${reminderLabel}: ${contactName}`
+      : `Follow-up reminder: ${contactName}`
+
     const notification = await prismaTx.notification.create({
       data: {
         tenantId,
         userId: recipientUserId,
         contactId: contactService.contactId,
         type: "TASK_REMINDER",
-        title:
-          node.data?.label?.trim() ||
-          `Follow-up reminder: ${contactService.contactName}`,
+        title: reminderTitle,
         body:
           node.data?.notesTemplate?.trim() ||
-          `${contactService.contactName} has a follow-up action in ${contactService.serviceName}.`,
+          `${contactName} has a follow-up action in ${contactService.serviceName}.`,
       },
       select: {
         id: true,
@@ -751,13 +956,10 @@ export async function executeFollowUpFromStep(params: {
     return fallbackNextStep()
   }
 
-  const customFieldByKey = new Map<string, { id: string; value?: unknown }>(
-    contactService.contact.customFieldValues.map(
-      (item: { field: { id: string; key: string }; value: unknown }) => [
-        item.field.key,
-        { id: item.field.id, value: item.value },
-      ],
-    ),
+  const customFieldByKey = await buildCustomFieldByKey(
+    prismaTx,
+    tenantId,
+    contactService.contact.customFieldValues,
   )
 
   const enrolledStepByTemplateNodeId = new Map(
@@ -1007,13 +1209,10 @@ export async function executeFollowUpFromStart(params: {
   }
 
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
-  const customFieldByKey = new Map<string, { id: string; value?: unknown }>(
-    contactService.contact.customFieldValues.map(
-      (item: { field: { id: string; key: string }; value: unknown }) => [
-        item.field.key,
-        { id: item.field.id, value: item.value },
-      ],
-    ),
+  const customFieldByKey = await buildCustomFieldByKey(
+    prismaTx,
+    tenantId,
+    contactService.contact.customFieldValues,
   )
   const enrolledStepByTemplateNodeId = new Map(
     contactService.followUpSteps

@@ -117,6 +117,17 @@ type NumberGroupingStyle =
   | "spaceComma"
   | "spacePeriod"
 type NumberCurrencyCode = string
+type ContactCustomFieldType =
+  | "TEXT"
+  | "NUMBER"
+  | "PHONE"
+  | "CURRENCY"
+  | "DATE"
+  | "SELECT"
+  | "MULTI_SELECT"
+  | "RADIO"
+  | "TEXTAREA"
+  | "CHECKBOX"
 type DateTimeFormatOption = {
   value: string
   label: string
@@ -129,6 +140,12 @@ type MathFieldOption = {
   label: string
   source: FieldSource
   valueType: MathFieldValueType
+}
+type CustomFieldOption = {
+  key: string
+  label: string
+  fieldType: ContactCustomFieldType
+  options: string[]
 }
 type IfElseBranchSource = "dateTime" | "contactInfo" | "customField"
 type IfElseValueType = "string" | "number" | "dateTime"
@@ -531,6 +548,67 @@ const toIfElseValueTypeFromCustomFieldType = (fieldType: string): IfElseValueTyp
   return "string"
 }
 
+const supportsChoiceOptions = (fieldType: string | null | undefined) => {
+  const normalized = fieldType?.trim().toUpperCase()
+  return normalized === "SELECT" || normalized === "MULTI_SELECT" || normalized === "RADIO"
+}
+
+const normalizeCustomFieldOptions = (value: unknown) =>
+  Array.isArray(value)
+    ? [...new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean))]
+    : []
+
+const normalizeCustomFieldValueInput = (
+  field: CustomFieldOption | null | undefined,
+  value: string,
+) => {
+  const nextValue = value.trim()
+  if (!field) return nextValue
+
+  if (field.fieldType === "SELECT" || field.fieldType === "RADIO") {
+    return field.options.includes(nextValue) ? nextValue : ""
+  }
+
+  if (field.fieldType === "CHECKBOX") {
+    if (nextValue === "true" || nextValue === "false") return nextValue
+    return ""
+  }
+
+  return nextValue
+}
+
+const getContactFieldUpdateValidationMessage = (
+  fieldSource: FieldSource,
+  fieldKey: string,
+  fieldValue: string,
+  customFieldByKey: Map<string, CustomFieldOption>,
+) => {
+  const nextValue = fieldValue.trim()
+  if (!nextValue) return "Field value is required for update."
+  if (fieldSource !== "custom") return null
+
+  const field = customFieldByKey.get(fieldKey)
+  if (!field) return "Selected custom field is no longer available."
+
+  if ((field.fieldType === "SELECT" || field.fieldType === "RADIO") && !field.options.includes(nextValue)) {
+    return "Select a valid option."
+  }
+
+  if ((field.fieldType === "NUMBER" || field.fieldType === "CURRENCY") && !Number.isFinite(Number(nextValue))) {
+    return field.fieldType === "NUMBER" ? "Enter a valid number." : "Enter a valid amount."
+  }
+
+  if (field.fieldType === "CHECKBOX" && nextValue !== "true" && nextValue !== "false") {
+    return "Select a valid checkbox value."
+  }
+
+  if (field.fieldType === "DATE" && Number.isNaN(new Date(nextValue).getTime())) {
+    return "Enter a valid date."
+  }
+
+  return null
+}
+
 const makeIfElseBranch = (index: number): IfElseBranch => ({
   id: `branch-${Date.now()}-${index}-${Math.round(Math.random() * 1000)}`,
   name: `Branch ${index}`,
@@ -574,6 +652,8 @@ type StepNodeData = {
   tagNames?: string[]
   fieldKey?: string | null
   fieldValue?: string | null
+  fieldType?: ContactCustomFieldType | null
+  fieldOptions?: string[]
   statusValue?: string | null
   taskTitle?: string | null
   reminderTarget?: ReminderTarget | null
@@ -628,6 +708,8 @@ type CanvasNodeData = {
   tagNames?: string[]
   fieldKey?: string | null
   fieldValue?: string | null
+  fieldType?: ContactCustomFieldType | null
+  fieldOptions?: string[]
   statusValue?: string | null
   taskTitle?: string | null
   reminderTarget?: ReminderTarget | null
@@ -831,8 +913,9 @@ type TenantCustomFieldsResponse = {
     id: string
     key: string
     label: string
-    fieldType: string
+    fieldType: ContactCustomFieldType
     isActive: boolean
+    options: string[]
   }>
 }
 
@@ -1120,6 +1203,9 @@ function toSafeNodes(raw: unknown[], templateId: string, templateName: string): 
             : [],
         fieldKey: typeof data.fieldKey === "string" ? data.fieldKey : null,
         fieldValue: typeof data.fieldValue === "string" ? data.fieldValue : null,
+        fieldType:
+          typeof data.fieldType === "string" ? (data.fieldType as ContactCustomFieldType) : null,
+        fieldOptions: normalizeCustomFieldOptions(data.fieldOptions),
         statusValue: typeof data.statusValue === "string" ? data.statusValue : null,
         taskTitle: typeof data.taskTitle === "string" ? data.taskTitle : null,
         reminderTarget,
@@ -1465,9 +1551,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const [tenantContactStatuses, setTenantContactStatuses] = useState<
     Array<{ id: string; name: string; bgColor: string; textColor: string }>
   >([])
-  const [customFieldOptions, setCustomFieldOptions] = useState<
-    Array<{ key: string; label: string; fieldType: string }>
-  >([])
+  const [customFieldOptions, setCustomFieldOptions] = useState<CustomFieldOption[]>([])
   const [isCustomFieldsLoading, setIsCustomFieldsLoading] = useState(false)
   const [hasLoadedCustomFields, setHasLoadedCustomFields] = useState(false)
   const [isContactInfoSectionOpen, setIsContactInfoSectionOpen] = useState(false)
@@ -1556,7 +1640,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
       if (!(target instanceof Element)) return
 
       const anchor = target.closest("a[href]")
-      if (!anchor) return
+      if (!(anchor instanceof HTMLAnchorElement)) return
       if (anchor.target === "_blank" || anchor.hasAttribute("download")) return
 
       const nextUrl = new URL(anchor.href, window.location.href)
@@ -1610,6 +1694,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
     () => new Map(customFieldOptions.map((field) => [field.key, field])),
     [customFieldOptions],
   )
+  const selectedDraftCustomField =
+    newStepDraft.fieldSource === "custom" ? customFieldByKey.get(newStepDraft.fieldKey) : null
 
   const customMathFields = useMemo<MathFieldOption[]>(
     () =>
@@ -1838,9 +1924,21 @@ export function ServiceFollowUpTemplateFlowBuilder({
     if (
       newStepDraft.kind === "contactFieldUpdate" &&
       newStepDraft.fieldOperation === "update" &&
-      !newStepDraft.fieldValue.trim()
+      getContactFieldUpdateValidationMessage(
+        newStepDraft.fieldSource,
+        newStepDraft.fieldKey.trim(),
+        newStepDraft.fieldValue,
+        customFieldByKey,
+      )
     ) {
-      toast.error("Field value is required for update.")
+      toast.error(
+        getContactFieldUpdateValidationMessage(
+          newStepDraft.fieldSource,
+          newStepDraft.fieldKey.trim(),
+          newStepDraft.fieldValue,
+          customFieldByKey,
+        ) ?? "Field value is required for update.",
+      )
       return
     }
     if (newStepDraft.kind === "statusUpdate" && !newStepDraft.statusValue.trim()) {
@@ -2011,6 +2109,15 @@ export function ServiceFollowUpTemplateFlowBuilder({
           })()
         : { x: sourceNode.position.x, y: sourceNode.position.y + NODE_VERTICAL_STEP },
       data: {
+        ...(newStepDraft.kind === "contactFieldUpdate" &&
+        newStepDraft.fieldSource === "custom" &&
+        newStepDraft.fieldKey.trim()
+          ? {
+              fieldType: customFieldByKey.get(newStepDraft.fieldKey.trim())?.fieldType ?? null,
+              fieldOptions:
+                customFieldByKey.get(newStepDraft.fieldKey.trim())?.options ?? [],
+            }
+          : {}),
         kind: newStepDraft.kind,
         label:
           newStepDraft.label.trim() ||
@@ -2067,7 +2174,10 @@ export function ServiceFollowUpTemplateFlowBuilder({
         fieldKey: newStepDraft.kind === "contactFieldUpdate" ? newStepDraft.fieldKey.trim() : null,
         fieldValue:
           newStepDraft.kind === "contactFieldUpdate" && newStepDraft.fieldOperation === "update"
-            ? newStepDraft.fieldValue.trim()
+            ? normalizeCustomFieldValueInput(
+                newStepDraft.fieldSource === "custom" ? selectedDraftCustomField : null,
+                newStepDraft.fieldValue,
+              )
             : null,
         statusValue: newStepDraft.kind === "statusUpdate" ? newStepDraft.statusValue.trim() : null,
         taskTitle: newStepDraft.kind === "addTask" ? newStepDraft.taskTitle.trim() : null,
@@ -2946,7 +3056,12 @@ export function ServiceFollowUpTemplateFlowBuilder({
         setCustomFieldOptions(
           data.customFields
             .filter((field) => field.isActive)
-            .map((field) => ({ key: field.key, label: field.label, fieldType: field.fieldType })),
+            .map((field) => ({
+              key: field.key,
+              label: field.label,
+              fieldType: field.fieldType,
+              options: normalizeCustomFieldOptions(field.options),
+            })),
         )
       } catch {
         setCustomFieldOptions([])
@@ -2971,7 +3086,12 @@ export function ServiceFollowUpTemplateFlowBuilder({
         setCustomFieldOptions(
           data.customFields
             .filter((field) => field.isActive)
-            .map((field) => ({ key: field.key, label: field.label, fieldType: field.fieldType })),
+            .map((field) => ({
+              key: field.key,
+              label: field.label,
+              fieldType: field.fieldType,
+              options: normalizeCustomFieldOptions(field.options),
+            })),
         )
       } catch {
         setCustomFieldOptions([])
@@ -3382,6 +3502,28 @@ export function ServiceFollowUpTemplateFlowBuilder({
       }
     }
     for (const node of nodes) {
+      if (node.data.kind !== "contactFieldUpdate") continue
+      if ((node.data.fieldOperation ?? "update") !== "update") continue
+
+      const fieldKey = node.data.fieldKey?.trim() ?? ""
+      if (!fieldKey) {
+        toast.error("Update field action requires selecting a field.")
+        return
+      }
+
+      const errorMessage = getContactFieldUpdateValidationMessage(
+        node.data.fieldSource ?? "contact",
+        fieldKey,
+        node.data.fieldValue ?? "",
+        customFieldByKey,
+      )
+      if (errorMessage) {
+        toast.error(errorMessage)
+        return
+      }
+    }
+
+    for (const node of nodes) {
       if (node.data.kind !== "numberFormatter") continue
       const mode = node.data.numberFormatterMode ?? "formatNumber"
       if (mode === "formatPhoneNumber") {
@@ -3728,6 +3870,10 @@ export function ServiceFollowUpTemplateFlowBuilder({
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
   )
+  const selectedNodeCustomField =
+    selectedNode?.data.fieldSource === "custom"
+      ? customFieldByKey.get(selectedNode.data.fieldKey ?? "")
+      : null
   const selectedNodeTagNames = useMemo(
     () => (selectedNode ? getNodeTagNames(selectedNode.data) : []),
     [getNodeTagNames, selectedNode],
@@ -5250,14 +5396,15 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                       ? "border border-blue-200 bg-blue-50 text-blue-900"
                                       : "text-slate-700 hover:bg-slate-50"
                                   }`}
-                                  onClick={() => {
-                                    setNewStepDraft((prev) => ({
-                                      ...prev,
-                                      fieldSource: "contact",
-                                      fieldKey: field.key,
-                                    }))
-                                    setIsContactInfoSectionOpen(false)
-                                  }}
+                                    onClick={() => {
+                                      setNewStepDraft((prev) => ({
+                                        ...prev,
+                                        fieldSource: "contact",
+                                        fieldKey: field.key,
+                                        fieldValue: prev.fieldSource === "contact" ? prev.fieldValue : "",
+                                      }))
+                                      setIsContactInfoSectionOpen(false)
+                                    }}
                                 >
                                   <span>{field.label}</span>
                                   <span className="text-[11px] text-slate-400 capitalize">
@@ -5299,6 +5446,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                         ...prev,
                                         fieldSource: "custom",
                                         fieldKey: field.key,
+                                        fieldValue: normalizeCustomFieldValueInput(field, prev.fieldValue),
                                       }))
                                       setIsCustomFieldsSectionOpen(false)
                                     }}
@@ -5331,17 +5479,105 @@ export function ServiceFollowUpTemplateFlowBuilder({
                         {newStepDraft.fieldOperation === "update" ? (
                           <div className="grid gap-2">
                             <Label>New value</Label>
-                            <Input
-                              placeholder="Enter value"
-                              value={newStepDraft.fieldValue}
-                              onChange={(event) =>
-                                setNewStepDraft((prev) => ({
-                                  ...prev,
-                                  fieldValue: event.target.value,
-                                }))
-                              }
-                            />
+                            {selectedDraftCustomField &&
+                            (selectedDraftCustomField.fieldType === "SELECT" ||
+                              selectedDraftCustomField.fieldType === "RADIO") ? (
+                              <Select
+                                value={newStepDraft.fieldValue}
+                                onValueChange={(value) =>
+                                  setNewStepDraft((prev) => ({
+                                    ...prev,
+                                    fieldValue: normalizeCustomFieldValueInput(
+                                      selectedDraftCustomField,
+                                      value,
+                                    ),
+                                  }))
+                                }
+                              >
+                                <SelectTrigger className="h-9 bg-white">
+                                  <SelectValue placeholder="Select an option" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {selectedDraftCustomField.options.map((option) => (
+                                    <SelectItem key={option} value={option} className="cursor-pointer">
+                                      {option}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ) : selectedDraftCustomField?.fieldType === "CHECKBOX" ? (
+                              <Select
+                                value={newStepDraft.fieldValue}
+                                onValueChange={(value) =>
+                                  setNewStepDraft((prev) => ({
+                                    ...prev,
+                                    fieldValue: normalizeCustomFieldValueInput(
+                                      selectedDraftCustomField,
+                                      value,
+                                    ),
+                                  }))
+                                }
+                              >
+                                <SelectTrigger className="h-9 bg-white">
+                                  <SelectValue placeholder="Select a value" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="true" className="cursor-pointer">
+                                    True
+                                  </SelectItem>
+                                  <SelectItem value="false" className="cursor-pointer">
+                                    False
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <Input
+                                type={
+                                  selectedDraftCustomField?.fieldType === "NUMBER" ||
+                                  selectedDraftCustomField?.fieldType === "CURRENCY"
+                                    ? "number"
+                                    : selectedDraftCustomField?.fieldType === "DATE"
+                                      ? "date"
+                                      : "text"
+                                }
+                                inputMode={
+                                  selectedDraftCustomField?.fieldType === "NUMBER" ||
+                                  selectedDraftCustomField?.fieldType === "CURRENCY"
+                                    ? "decimal"
+                                    : undefined
+                                }
+                                step={
+                                  selectedDraftCustomField?.fieldType === "NUMBER" ||
+                                  selectedDraftCustomField?.fieldType === "CURRENCY"
+                                    ? "any"
+                                    : undefined
+                                }
+                                placeholder={
+                                  selectedDraftCustomField?.fieldType === "CURRENCY"
+                                    ? "Enter amount"
+                                    : "Enter value"
+                                }
+                                value={newStepDraft.fieldValue}
+                                onChange={(event) =>
+                                  setNewStepDraft((prev) => ({
+                                    ...prev,
+                                    fieldValue:
+                                      selectedDraftCustomField?.fieldType === "NUMBER" ||
+                                      selectedDraftCustomField?.fieldType === "CURRENCY"
+                                        ? event.target.value.replace(/[^\d.-]/g, "")
+                                        : event.target.value,
+                                  }))
+                                }
+                              />
+                            )}
                           </div>
+                        ) : null}
+                        {selectedDraftCustomField &&
+                        supportsChoiceOptions(selectedDraftCustomField.fieldType) &&
+                        selectedDraftCustomField.options.length ? (
+                          <p className="text-xs text-slate-500">
+                            Allowed options: {selectedDraftCustomField.options.join(", ")}
+                          </p>
                         ) : null}
                         {newStepDraft.fieldOperation === "clear" ? (
                           <p className="text-xs text-amber-700">
@@ -6857,6 +7093,12 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                         ...data,
                                         fieldSource: "contact",
                                         fieldKey: field.key,
+                                        fieldType: null,
+                                        fieldOptions: [],
+                                        fieldValue:
+                                          (data.fieldSource ?? "contact") === "contact"
+                                            ? data.fieldValue
+                                            : "",
                                       }))
                                       setIsContactInfoSectionOpen(false)
                                     }}
@@ -6901,6 +7143,12 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                           ...data,
                                           fieldSource: "custom",
                                           fieldKey: field.key,
+                                          fieldType: field.fieldType,
+                                          fieldOptions: field.options,
+                                          fieldValue: normalizeCustomFieldValueInput(
+                                            field,
+                                            data.fieldValue ?? "",
+                                          ),
                                         }))
                                         setIsCustomFieldsSectionOpen(false)
                                       }}
@@ -6935,16 +7183,104 @@ export function ServiceFollowUpTemplateFlowBuilder({
                           {(selectedNode.data.fieldOperation ?? "update") === "update" ? (
                             <div className="grid gap-2">
                               <Label>New value</Label>
-                              <Input
-                                value={selectedNode.data.fieldValue ?? ""}
-                                onChange={(event) =>
-                                  updateSelectedNode((data) => ({
-                                    ...data,
-                                    fieldValue: event.target.value,
-                                  }))
-                                }
-                              />
+                              {selectedNodeCustomField &&
+                              (selectedNodeCustomField.fieldType === "SELECT" ||
+                                selectedNodeCustomField.fieldType === "RADIO") ? (
+                                <Select
+                                  value={selectedNode.data.fieldValue ?? ""}
+                                  onValueChange={(value) =>
+                                    updateSelectedNode((data) => ({
+                                      ...data,
+                                      fieldValue: normalizeCustomFieldValueInput(
+                                        selectedNodeCustomField,
+                                        value,
+                                      ),
+                                    }))
+                                  }
+                                >
+                                  <SelectTrigger className="h-9 bg-white">
+                                    <SelectValue placeholder="Select an option" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {selectedNodeCustomField.options.map((option) => (
+                                      <SelectItem
+                                        key={option}
+                                        value={option}
+                                        className="cursor-pointer"
+                                      >
+                                        {option}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              ) : selectedNodeCustomField?.fieldType === "CHECKBOX" ? (
+                                <Select
+                                  value={selectedNode.data.fieldValue ?? ""}
+                                  onValueChange={(value) =>
+                                    updateSelectedNode((data) => ({
+                                      ...data,
+                                      fieldValue: normalizeCustomFieldValueInput(
+                                        selectedNodeCustomField,
+                                        value,
+                                      ),
+                                    }))
+                                  }
+                                >
+                                  <SelectTrigger className="h-9 bg-white">
+                                    <SelectValue placeholder="Select a value" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="true" className="cursor-pointer">
+                                      True
+                                    </SelectItem>
+                                    <SelectItem value="false" className="cursor-pointer">
+                                      False
+                                    </SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              ) : (
+                                <Input
+                                  type={
+                                    selectedNodeCustomField?.fieldType === "NUMBER" ||
+                                    selectedNodeCustomField?.fieldType === "CURRENCY"
+                                      ? "number"
+                                      : selectedNodeCustomField?.fieldType === "DATE"
+                                        ? "date"
+                                        : "text"
+                                  }
+                                  inputMode={
+                                    selectedNodeCustomField?.fieldType === "NUMBER" ||
+                                    selectedNodeCustomField?.fieldType === "CURRENCY"
+                                      ? "decimal"
+                                      : undefined
+                                  }
+                                  step={
+                                    selectedNodeCustomField?.fieldType === "NUMBER" ||
+                                    selectedNodeCustomField?.fieldType === "CURRENCY"
+                                      ? "any"
+                                      : undefined
+                                  }
+                                  value={selectedNode.data.fieldValue ?? ""}
+                                  onChange={(event) =>
+                                    updateSelectedNode((data) => ({
+                                      ...data,
+                                      fieldValue:
+                                        selectedNodeCustomField?.fieldType === "NUMBER" ||
+                                        selectedNodeCustomField?.fieldType === "CURRENCY"
+                                          ? event.target.value.replace(/[^\d.-]/g, "")
+                                          : event.target.value,
+                                    }))
+                                  }
+                                />
+                              )}
                             </div>
+                          ) : null}
+                          {selectedNodeCustomField &&
+                          supportsChoiceOptions(selectedNodeCustomField.fieldType) &&
+                          selectedNodeCustomField.options.length ? (
+                            <p className="text-xs text-slate-500">
+                              Allowed options: {selectedNodeCustomField.options.join(", ")}
+                            </p>
                           ) : null}
                           {(selectedNode.data.fieldOperation ?? "update") === "clear" ? (
                             <p className="text-xs text-amber-700">
