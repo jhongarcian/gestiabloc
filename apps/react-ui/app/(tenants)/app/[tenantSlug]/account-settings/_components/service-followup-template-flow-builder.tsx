@@ -929,6 +929,41 @@ type ContactStatusesResponse = {
   }>
 }
 
+type ExecutionLogItem = {
+  id: string
+  eventType: string
+  title: string
+  details: string | null
+  flowNodeId: string | null
+  stepId: string | null
+  payload: Record<string, unknown> | null
+  createdAt: string
+  actor: {
+    id: string
+    name: string
+  } | null
+  contact: {
+    id: string
+    name: string
+  }
+  contactService: {
+    id: string
+    service: {
+      id: string
+      name: string
+    }
+  }
+}
+
+type ExecutionLogsResponse = {
+  ok: boolean
+  items: ExecutionLogItem[]
+  page: number
+  pageSize: number
+  totalCount: number
+  totalPages: number
+}
+
 function StepFlowNode({ data, selected }: NodeProps<CanvasNode>) {
   const hiddenHandleClass = "!h-0 !w-0 !border-0 !bg-transparent !opacity-0 !pointer-events-none"
   const isStart = data.kind === "start"
@@ -1554,11 +1589,17 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const [customFieldOptions, setCustomFieldOptions] = useState<CustomFieldOption[]>([])
   const [isCustomFieldsLoading, setIsCustomFieldsLoading] = useState(false)
   const [hasLoadedCustomFields, setHasLoadedCustomFields] = useState(false)
+  const [activeTab, setActiveTab] = useState<"builder" | "logs">("builder")
   const [isContactInfoSectionOpen, setIsContactInfoSectionOpen] = useState(false)
   const [isCustomFieldsSectionOpen, setIsCustomFieldsSectionOpen] = useState(false)
   const [isCreatingTag, setIsCreatingTag] = useState(false)
   const [isTagsLoading, setIsTagsLoading] = useState(false)
   const [selectedNodeTagQuery, setSelectedNodeTagQuery] = useState("")
+  const [executionLogs, setExecutionLogs] = useState<ExecutionLogItem[]>([])
+  const [isExecutionLogsLoading, setIsExecutionLogsLoading] = useState(false)
+  const [executionLogsPage, setExecutionLogsPage] = useState(1)
+  const [executionLogsTotalPages, setExecutionLogsTotalPages] = useState(1)
+  const [executionLogsTotalCount, setExecutionLogsTotalCount] = useState(0)
   const [isUploadingNoteAttachment, setIsUploadingNoteAttachment] = useState(false)
   const [noteAttachmentTarget, setNoteAttachmentTarget] =
     useState<NoteAttachmentTarget>("create")
@@ -1605,6 +1646,38 @@ export function ServiceFollowUpTemplateFlowBuilder({
     },
     [confirmLeaveWithUnsavedChanges, router],
   )
+
+  const loadExecutionLogs = useCallback(
+    async (page: number) => {
+      setIsExecutionLogsLoading(true)
+      try {
+        const { data } = await api.get<ExecutionLogsResponse>(
+          `/api/account-settings/${tenantId}/services/${serviceId}/follow-up-templates/${template.id}/execution-logs`,
+          {
+            params: {
+              page,
+              pageSize: 20,
+            },
+          },
+        )
+        setExecutionLogs(data.items)
+        setExecutionLogsPage(data.page)
+        setExecutionLogsTotalPages(data.totalPages)
+        setExecutionLogsTotalCount(data.totalCount)
+      } catch {
+        setExecutionLogs([])
+        toast.error("Could not load execution logs.")
+      } finally {
+        setIsExecutionLogsLoading(false)
+      }
+    },
+    [serviceId, template.id, tenantId],
+  )
+
+  useEffect(() => {
+    if (activeTab !== "logs") return
+    void loadExecutionLogs(executionLogsPage)
+  }, [activeTab, executionLogsPage, loadExecutionLogs])
 
   useEffect(() => {
     if (!hasUnsavedChanges) return
@@ -4069,6 +4142,37 @@ export function ServiceFollowUpTemplateFlowBuilder({
         </div>
       </section>
 
+      <div className="flex items-center gap-2 px-1">
+        <button
+          type="button"
+          className={`inline-flex h-9 cursor-pointer items-center rounded-full border px-4 text-sm font-medium transition ${
+            activeTab === "builder"
+              ? "border-slate-900 bg-slate-900 text-white"
+              : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+          }`}
+          onClick={() => setActiveTab("builder")}
+        >
+          Builder
+        </button>
+        <button
+          type="button"
+          className={`inline-flex h-9 cursor-pointer items-center rounded-full border px-4 text-sm font-medium transition ${
+            activeTab === "logs"
+              ? "border-slate-900 bg-slate-900 text-white"
+              : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+          }`}
+          onClick={() => setActiveTab("logs")}
+        >
+          Execution Logs
+        </button>
+        {activeTab === "logs" ? (
+          <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-600">
+            {executionLogsTotalCount} total
+          </Badge>
+        ) : null}
+      </div>
+
+      {activeTab === "builder" ? (
       <section className="flex min-h-0 flex-1 gap-3">
         <div className="relative h-full min-h-0 flex-1 overflow-hidden rounded-[20px] border border-slate-200 bg-white">
           {pendingMoveNodeId ? (
@@ -7558,6 +7662,106 @@ export function ServiceFollowUpTemplateFlowBuilder({
           </aside>
         ) : null}
       </section>
+      ) : (
+        <section className="min-h-0 flex-1 rounded-[20px] border border-slate-200 bg-white p-5">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-slate-900">Execution logs</p>
+              <p className="text-xs text-slate-500">
+                Review runtime activity for this template across enrolled services.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="cursor-pointer"
+              onClick={() => void loadExecutionLogs(executionLogsPage)}
+              disabled={isExecutionLogsLoading}
+            >
+              {isExecutionLogsLoading ? "Refreshing..." : "Refresh"}
+            </Button>
+          </div>
+
+          {isExecutionLogsLoading ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+              Loading execution logs...
+            </div>
+          ) : executionLogs.length ? (
+            <div className="space-y-3">
+              {executionLogs.map((log) => (
+                <article key={log.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-semibold text-slate-900">{log.title}</p>
+                        <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
+                          {log.eventType.toLowerCase().replace(/_/g, " ")}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        {log.contact.name || "Contact"} / {log.contactService.service.name}
+                        {log.actor?.name ? ` / ${log.actor.name}` : ""}
+                      </p>
+                    </div>
+                    <p className="text-xs text-slate-500">{new Date(log.createdAt).toLocaleString()}</p>
+                  </div>
+                  {log.details ? (
+                    <p className="mt-2 text-sm leading-6 text-slate-600">{log.details}</p>
+                  ) : null}
+                  {(log.flowNodeId || log.stepId) ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {log.flowNodeId ? (
+                        <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
+                          Node {log.flowNodeId}
+                        </Badge>
+                      ) : null}
+                      {log.stepId ? (
+                        <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
+                          Step {log.stepId}
+                        </Badge>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </article>
+              ))}
+
+              <div className="flex items-center justify-between gap-3 pt-2">
+                <p className="text-xs text-slate-500">
+                  Page {executionLogsPage} of {executionLogsTotalPages}
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="cursor-pointer"
+                    disabled={executionLogsPage <= 1 || isExecutionLogsLoading}
+                    onClick={() => setExecutionLogsPage((current) => Math.max(1, current - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="cursor-pointer"
+                    disabled={executionLogsPage >= executionLogsTotalPages || isExecutionLogsLoading}
+                    onClick={() =>
+                      setExecutionLogsPage((current) =>
+                        Math.min(executionLogsTotalPages, current + 1),
+                      )
+                    }
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+              No execution logs exist for this template yet.
+            </div>
+          )}
+        </section>
+      )}
       <input
         ref={noteAttachmentInputRef}
         type="file"

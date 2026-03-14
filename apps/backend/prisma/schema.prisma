@@ -210,6 +210,7 @@ model User {
   serviceProfessionals          ServiceProfessional[]
   recordedServicePayments       ContactServicePayment[]           @relation("ContactServicePaymentRecordedBy")
   assignedServiceFollowUps      ContactServiceFollowUpStep[]      @relation("ContactServiceFollowUpAssignedUser")
+  serviceFollowUpExecutionLogs  ServiceFollowUpExecutionLog[]     @relation("ServiceFollowUpExecutionLogActor")
   loginChallenges               LoginChallenge[]
   emailVerifications            EmailVerification[]
   passwordResetTokens           PasswordResetToken[]
@@ -358,6 +359,7 @@ model Tenant {
   contactServicePayments           ContactServicePayment[]
   contactServiceFollowUpSteps      ContactServiceFollowUpStep[]
   contactServiceNotes              ContactServiceNote[]
+  serviceFollowUpExecutionLogs     ServiceFollowUpExecutionLog[]
   tenantTags                       TenantTag[]
   contactTags                      ContactTag[]
   contactCustomFields              ContactCustomField[]
@@ -453,6 +455,7 @@ model ServiceFollowUpTemplate {
   service Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   steps   ServiceFollowUpTemplateStep[]
   contactServices ContactService[]
+  executionLogs ServiceFollowUpExecutionLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -532,6 +535,7 @@ model ContactService {
   followUpSteps ContactServiceFollowUpStep[]
   checklistItems ContactServiceChecklistItem[]
   serviceNotes  ContactServiceNote[]
+  executionLogs ServiceFollowUpExecutionLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -631,6 +635,35 @@ model ContactServiceNote {
   @@unique([tenantId, id])
   @@index([tenantId, contactServiceId, createdAt])
   @@index([tenantId, createdById])
+}
+
+model ServiceFollowUpExecutionLog {
+  id               String @id @default(uuid())
+  tenantId         String
+  templateId       String
+  contactServiceId String
+  contactId        String
+  actorUserId      String?
+  flowNodeId       String?
+  stepId           String?
+  eventType        String
+  title            String
+  details          String?
+  payload          Json?
+
+  tenant         Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template       ServiceFollowUpTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  contactService ContactService          @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  contact        Contact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  actor          User?                   @relation("ServiceFollowUpExecutionLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@index([tenantId, templateId, createdAt])
+  @@index([tenantId, contactServiceId, createdAt])
+  @@index([tenantId, contactId, createdAt])
+  @@index([tenantId, actorUserId, createdAt])
 }
 
 model EmailVerification {
@@ -1022,6 +1055,7 @@ model Contact {
   notes                     ContactNote[]
   tasks                     Task[]
   serviceProcesses          ContactService[]
+  serviceFollowUpExecutionLogs ServiceFollowUpExecutionLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

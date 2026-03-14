@@ -2073,6 +2073,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
+  /api/account-settings/{tenantId}/services/{recordId}/follow-up-templates/{templateId}/execution-logs:
+    get:
+      tags: [Account Settings]
+      summary: List execution logs for a follow-up template
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Execution logs returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateExecutionLogsResponse"
   /api/account-settings/{tenantId}/services/{recordId}:
     patch:
       tags: [Account Settings]
@@ -5751,6 +5782,74 @@ components:
             flowEdges:
               type: array
               items: {}
+    AccountSettingsServiceFollowUpTemplateExecutionLogItem:
+      type: object
+      properties:
+        id:
+          type: string
+        eventType:
+          type: string
+        title:
+          type: string
+        details:
+          type: string
+          nullable: true
+        flowNodeId:
+          type: string
+          nullable: true
+        stepId:
+          type: string
+          nullable: true
+        payload:
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        actor:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        contact:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        contactService:
+          type: object
+          properties:
+            id:
+              type: string
+            service:
+              type: object
+              properties:
+                id:
+                  type: string
+                name:
+                  type: string
+    AccountSettingsServiceFollowUpTemplateExecutionLogsResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateExecutionLogItem"
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        totalCount:
+          type: integer
+        totalPages:
+          type: integer
     AccountSettingsServiceFollowUpTemplatesResponse:
       type: object
       properties:

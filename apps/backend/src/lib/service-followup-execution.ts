@@ -130,6 +130,52 @@ function getOutgoingTargets(edges: FlowEdge[], sourceId: string) {
     .map((edge) => edge.target as string)
 }
 
+async function createExecutionLog(params: {
+  prismaTx: PrismaTx
+  tenantId: string
+  templateId: string
+  contactServiceId: string
+  contactId: string
+  actorUserId?: string | null
+  flowNodeId?: string | null
+  stepId?: string | null
+  eventType: string
+  title: string
+  details?: string | null
+  payload?: Record<string, unknown> | null
+}) {
+  const {
+    prismaTx,
+    tenantId,
+    templateId,
+    contactServiceId,
+    contactId,
+    actorUserId,
+    flowNodeId,
+    stepId,
+    eventType,
+    title,
+    details,
+    payload,
+  } = params
+
+  await prismaTx.serviceFollowUpExecutionLog.create({
+    data: {
+      tenantId,
+      templateId,
+      contactServiceId,
+      contactId,
+      actorUserId: actorUserId ?? null,
+      flowNodeId: flowNodeId ?? null,
+      stepId: stepId ?? null,
+      eventType,
+      title,
+      details: details ?? null,
+      payload: payload ?? null,
+    },
+  })
+}
+
 function toComparableNumber(value: unknown) {
   if (typeof value === "number") return value
   if (typeof value === "string") {
@@ -500,6 +546,7 @@ async function applyContactFieldUpdate(
 async function executeActionNode(params: {
   prismaTx: PrismaTx
   tenantId: string
+  templateId: string
   actorUserId: string
   contactService: {
     id: string
@@ -513,6 +560,7 @@ async function executeActionNode(params: {
   const {
     prismaTx,
     tenantId,
+    templateId,
     actorUserId,
     contactService,
     node,
@@ -524,6 +572,19 @@ async function executeActionNode(params: {
     await prismaTx.contact.update({
       where: { id: contactService.contactId },
       data: { assignedToUserId: node.data.assigneeUserId },
+    })
+    await createExecutionLog({
+      prismaTx,
+      tenantId,
+      templateId,
+      contactServiceId: contactService.id,
+      contactId: contactService.contactId,
+      actorUserId,
+      flowNodeId: node.id,
+      eventType: "ACTION_EXECUTED",
+      title: node.data?.label?.trim() || "Assigned contact owner",
+      details: "Assigned the contact to a user from the follow-up workflow.",
+      payload: { kind, assigneeUserId: node.data.assigneeUserId },
     })
     return
   }
@@ -545,6 +606,19 @@ async function executeActionNode(params: {
           servicingAgentUserId: null,
           additionalAgentUserId: null,
         },
+      })
+      await createExecutionLog({
+        prismaTx,
+        tenantId,
+        templateId,
+        contactServiceId: contactService.id,
+        contactId: contactService.contactId,
+        actorUserId,
+        flowNodeId: node.id,
+        eventType: "ACTION_EXECUTED",
+        title: node.data?.label?.trim() || "Removed assigned users",
+        details: "Cleared all assigned users from the contact.",
+        payload: { kind, removeTarget },
       })
       return
     }
@@ -578,6 +652,19 @@ async function executeActionNode(params: {
             : undefined,
       },
     })
+    await createExecutionLog({
+      prismaTx,
+      tenantId,
+      templateId,
+      contactServiceId: contactService.id,
+      contactId: contactService.contactId,
+      actorUserId,
+      flowNodeId: node.id,
+      eventType: "ACTION_EXECUTED",
+      title: node.data?.label?.trim() || "Removed assigned user",
+      details: "Removed a specific assigned user from the contact.",
+      payload: { kind, removeTarget, assigneeUserId: node.data.assigneeUserId },
+    })
     return
   }
 
@@ -605,6 +692,19 @@ async function executeActionNode(params: {
         },
       })
     }
+    await createExecutionLog({
+      prismaTx,
+      tenantId,
+      templateId,
+      contactServiceId: contactService.id,
+      contactId: contactService.contactId,
+      actorUserId,
+      flowNodeId: node.id,
+      eventType: "ACTION_EXECUTED",
+      title: node.data?.label?.trim() || "Added contact tags",
+      details: `Added ${tagNames.length} tag${tagNames.length === 1 ? "" : "s"} to the contact.`,
+      payload: { kind, tagNames },
+    })
     return
   }
 
@@ -628,6 +728,19 @@ async function executeActionNode(params: {
         tagId: { in: tags.map((tag: { id: string }) => tag.id) },
       },
     })
+    await createExecutionLog({
+      prismaTx,
+      tenantId,
+      templateId,
+      contactServiceId: contactService.id,
+      contactId: contactService.contactId,
+      actorUserId,
+      flowNodeId: node.id,
+      eventType: "ACTION_EXECUTED",
+      title: node.data?.label?.trim() || "Removed contact tags",
+      details: `Removed ${tagNames.length} tag${tagNames.length === 1 ? "" : "s"} from the contact.`,
+      payload: { kind, tagNames },
+    })
     return
   }
 
@@ -635,6 +748,19 @@ async function executeActionNode(params: {
     await prismaTx.contact.update({
       where: { id: contactService.contactId },
       data: { statusConfigId: node.data.statusValue },
+    })
+    await createExecutionLog({
+      prismaTx,
+      tenantId,
+      templateId,
+      contactServiceId: contactService.id,
+      contactId: contactService.contactId,
+      actorUserId,
+      flowNodeId: node.id,
+      eventType: "ACTION_EXECUTED",
+      title: node.data?.label?.trim() || "Updated contact status",
+      details: "Updated the contact status from the follow-up workflow.",
+      payload: { kind, statusValue: node.data.statusValue },
     })
     return
   }
@@ -647,6 +773,24 @@ async function executeActionNode(params: {
       node,
       customFieldByKey,
     )
+    await createExecutionLog({
+      prismaTx,
+      tenantId,
+      templateId,
+      contactServiceId: contactService.id,
+      contactId: contactService.contactId,
+      actorUserId,
+      flowNodeId: node.id,
+      eventType: "ACTION_EXECUTED",
+      title: node.data?.label?.trim() || "Updated contact field",
+      details: "Updated a contact field from the follow-up workflow.",
+      payload: {
+        kind,
+        fieldKey: node.data?.fieldKey ?? null,
+        fieldSource: node.data?.fieldSource ?? null,
+        fieldOperation: node.data?.fieldOperation ?? null,
+      },
+    })
     return
   }
 
@@ -678,6 +822,19 @@ async function executeActionNode(params: {
             }
           : undefined,
       },
+    })
+    await createExecutionLog({
+      prismaTx,
+      tenantId,
+      templateId,
+      contactServiceId: contactService.id,
+      contactId: contactService.contactId,
+      actorUserId,
+      flowNodeId: node.id,
+      eventType: "ACTION_EXECUTED",
+      title,
+      details: "Created a contact note from the follow-up workflow.",
+      payload: { kind, attachmentCount: validAttachments.length },
     })
     return
   }
@@ -714,6 +871,19 @@ async function executeActionNode(params: {
       actorUserId,
       type: "CREATED",
       title: "Task created by follow-up workflow",
+    })
+    await createExecutionLog({
+      prismaTx,
+      tenantId,
+      templateId,
+      contactServiceId: contactService.id,
+      contactId: contactService.contactId,
+      actorUserId,
+      flowNodeId: node.id,
+      eventType: "ACTION_EXECUTED",
+      title: node.data?.taskTitle?.trim() || node.data?.label?.trim() || "Created follow-up task",
+      details: "Created a task from the follow-up workflow.",
+      payload: { kind, taskId: task.id },
     })
     return
   }
@@ -770,6 +940,19 @@ async function executeActionNode(params: {
 
     const serialized = serializeNotification(notification)
     emitNotificationCreated(serialized.userId, serialized)
+    await createExecutionLog({
+      prismaTx,
+      tenantId,
+      templateId,
+      contactServiceId: contactService.id,
+      contactId: contactService.contactId,
+      actorUserId,
+      flowNodeId: node.id,
+      eventType: "ACTION_EXECUTED",
+      title: reminderTitle,
+      details: "Sent a reminder notification from the follow-up workflow.",
+      payload: { kind, notificationId: notification.id, recipientUserId },
+    })
   }
 }
 
@@ -984,6 +1167,21 @@ export async function executeFollowUpFromStep(params: {
   )
   let delayMs = 0
 
+  await createExecutionLog({
+    prismaTx,
+    tenantId,
+    templateId: contactService.followUpTemplate.id,
+    contactServiceId: contactService.id,
+    contactId: contactService.contactId,
+    actorUserId,
+    flowNodeId: resolvedCompletedStepTemplateNodeId,
+    stepId: completedStepId,
+    eventType: "FLOW_CONTINUED",
+    title: "Continued follow-up flow from completed step",
+    details: "Resumed execution from the current step to evaluate the next actions.",
+    payload: { ignoreWaitNodes },
+  })
+
   while (pendingTargets.length) {
     const currentTargetId = pendingTargets.shift()
     if (!currentTargetId || visitedNodeIds.has(currentTargetId)) continue
@@ -1069,6 +1267,24 @@ export async function executeFollowUpFromStep(params: {
         },
       })
 
+      await createExecutionLog({
+        prismaTx,
+        tenantId,
+        templateId: contactService.followUpTemplate.id,
+        contactServiceId: contactService.id,
+        contactId: contactService.contactId,
+        actorUserId,
+        flowNodeId: node.id,
+        stepId: enrolledStep.id,
+        eventType: "STEP_ACTIVATED",
+        title: `Activated step: ${node.data?.label?.trim() || "Next step"}`,
+        details:
+          nextStatus === "ACTIVE"
+            ? "The next follow-up step became active immediately."
+            : "The next follow-up step is scheduled and pending.",
+        payload: { nextStatus, delayMs },
+      })
+
       if (nextStatus === "ACTIVE") {
         await prismaTx.contactServiceFollowUpStep.updateMany({
           where: {
@@ -1098,6 +1314,7 @@ export async function executeFollowUpFromStep(params: {
       await executeActionNode({
         prismaTx,
         tenantId,
+        templateId: contactService.followUpTemplate.id,
         actorUserId,
         contactService: {
           id: contactService.id,
@@ -1118,6 +1335,21 @@ export async function executeFollowUpFromStep(params: {
 
     pendingTargets = [...getOutgoingTargets(edges, node.id), ...pendingTargets]
   }
+
+  await createExecutionLog({
+    prismaTx,
+    tenantId,
+    templateId: contactService.followUpTemplate.id,
+    contactServiceId: contactService.id,
+    contactId: contactService.contactId,
+    actorUserId,
+    flowNodeId: resolvedCompletedStepTemplateNodeId,
+    stepId: completedStepId,
+    eventType: "FLOW_COMPLETED",
+    title: "Reached end of follow-up flow",
+    details: "No additional follow-up steps were activated after this execution.",
+    payload: null,
+  })
 
   return { activatedStepId: null, usedFlowExecution: true }
 }
@@ -1233,6 +1465,20 @@ export async function executeFollowUpFromStart(params: {
   let pendingTargets = getOutgoingTargets(edges, startNode.id)
   let delayMs = 0
 
+  await createExecutionLog({
+    prismaTx,
+    tenantId,
+    templateId: contactService.followUpTemplate.id,
+    contactServiceId: contactService.id,
+    contactId: contactService.contactId,
+    actorUserId,
+    flowNodeId: startNode.id,
+    eventType: "FLOW_STARTED",
+    title: "Started follow-up flow from template",
+    details: "Executed the template start path for this service enrollment.",
+    payload: { ignoreWaitNodes },
+  })
+
   while (pendingTargets.length) {
     const currentTargetId = pendingTargets.shift()
     if (!currentTargetId || visitedNodeIds.has(currentTargetId)) continue
@@ -1313,6 +1559,24 @@ export async function executeFollowUpFromStart(params: {
         },
       })
 
+      await createExecutionLog({
+        prismaTx,
+        tenantId,
+        templateId: contactService.followUpTemplate.id,
+        contactServiceId: contactService.id,
+        contactId: contactService.contactId,
+        actorUserId,
+        flowNodeId: node.id,
+        stepId: enrolledStep.id,
+        eventType: "STEP_ACTIVATED",
+        title: `Activated step: ${node.data?.label?.trim() || "First step"}`,
+        details:
+          nextStatus === "ACTIVE"
+            ? "The first follow-up step became active."
+            : "The first follow-up step is scheduled and pending.",
+        payload: { nextStatus, delayMs },
+      })
+
       if (nextStatus === "ACTIVE") {
         await prismaTx.contactServiceFollowUpStep.updateMany({
           where: {
@@ -1342,6 +1606,7 @@ export async function executeFollowUpFromStart(params: {
       await executeActionNode({
         prismaTx,
         tenantId,
+        templateId: contactService.followUpTemplate.id,
         actorUserId,
         contactService: {
           id: contactService.id,
@@ -1362,6 +1627,20 @@ export async function executeFollowUpFromStart(params: {
 
     pendingTargets = [...getOutgoingTargets(edges, node.id), ...pendingTargets]
   }
+
+  await createExecutionLog({
+    prismaTx,
+    tenantId,
+    templateId: contactService.followUpTemplate.id,
+    contactServiceId: contactService.id,
+    contactId: contactService.contactId,
+    actorUserId,
+    flowNodeId: startNode.id,
+    eventType: "FLOW_COMPLETED",
+    title: "Reached end of follow-up flow",
+    details: "The flow finished without activating another step.",
+    payload: null,
+  })
 
   return { activatedStepId: null, usedFlowExecution: true }
 }

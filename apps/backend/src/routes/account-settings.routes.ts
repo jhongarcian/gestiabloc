@@ -2123,6 +2123,112 @@ router.get(
   },
 );
 
+router.get(
+  "/:tenantId/services/:recordId/follow-up-templates/:templateId/execution-logs",
+  ...readMiddlewares,
+  async (req, res, next) => {
+    try {
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      const templateId = z.string().trim().min(1).parse(req.params.templateId);
+      const page = Math.max(1, Number.parseInt(String(req.query.page ?? "1"), 10) || 1);
+      const pageSize = Math.min(
+        50,
+        Math.max(5, Number.parseInt(String(req.query.pageSize ?? "20"), 10) || 20),
+      );
+
+      const template = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
+        where: { id: templateId },
+        select: { id: true, tenantId: true, serviceId: true },
+      });
+
+      if (!template || template.tenantId !== tenantId || template.serviceId !== recordId) {
+        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
+      }
+
+      const where = {
+        tenantId,
+        templateId,
+      };
+
+      const [totalCount, items] = await Promise.all([
+        prismaWithContacts.serviceFollowUpExecutionLog.count({ where }),
+        prismaWithContacts.serviceFollowUpExecutionLog.findMany({
+          where,
+          orderBy: [{ createdAt: "desc" }],
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+          select: {
+            id: true,
+            eventType: true,
+            title: true,
+            details: true,
+            flowNodeId: true,
+            stepId: true,
+            payload: true,
+            createdAt: true,
+            actor: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            contact: {
+              select: {
+                id: true,
+                firstName: true,
+                middleName: true,
+                lastName: true,
+              },
+            },
+            contactService: {
+              select: {
+                id: true,
+                service: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+              },
+            },
+          },
+        }),
+      ]);
+
+      return res.json({
+        ok: true,
+        items: items.map((item: any) => ({
+          id: item.id,
+          eventType: item.eventType,
+          title: item.title,
+          details: item.details,
+          flowNodeId: item.flowNodeId,
+          stepId: item.stepId,
+          payload: item.payload ?? null,
+          createdAt: item.createdAt,
+          actor: item.actor,
+          contact: {
+            id: item.contact.id,
+            name: [item.contact.firstName, item.contact.middleName, item.contact.lastName]
+              .filter(Boolean)
+              .join(" "),
+          },
+          contactService: {
+            id: item.contactService.id,
+            service: item.contactService.service,
+          },
+        })),
+        page,
+        pageSize,
+        totalCount,
+        totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
 router.patch(
   "/:tenantId/services/:recordId/follow-up-templates/:templateId",
   ...writeMiddlewares,

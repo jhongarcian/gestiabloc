@@ -1,0 +1,8 @@
+-- RenameIndex
+ALTER INDEX "ServiceFollowUpExecutionLog_tenantId_actorUserId_create_idx" RENAME TO "ServiceFollowUpExecutionLog_tenantId_actorUserId_createdAt_idx";
+
+-- RenameIndex
+ALTER INDEX "ServiceFollowUpExecutionLog_tenantId_contactServiceId_cre_idx" RENAME TO "ServiceFollowUpExecutionLog_tenantId_contactServiceId_creat_idx";
+
+-- RenameIndex
+ALTER INDEX "ServiceFollowUpExecutionLog_tenantId_templateId_createdA_idx" RENAME TO "ServiceFollowUpExecutionLog_tenantId_templateId_createdAt_idx";

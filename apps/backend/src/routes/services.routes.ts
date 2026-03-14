@@ -1695,6 +1695,40 @@ router.patch(
           },
         })
 
+        const contactServiceRecord = await prismaTx.contactService.findUnique({
+          where: { id: contactServiceId },
+          select: {
+            contactId: true,
+            followUpTemplateId: true,
+          },
+        })
+
+        if (
+          contactServiceRecord?.followUpTemplateId &&
+          (payload.status !== undefined || payload.completedAt !== undefined || payload.postponeTo !== undefined)
+        ) {
+          await prismaTx.serviceFollowUpExecutionLog.create({
+            data: {
+              tenantId,
+              templateId: contactServiceRecord.followUpTemplateId,
+              contactServiceId,
+              contactId: contactServiceRecord.contactId,
+              actorUserId: authed.user.id,
+              flowNodeId: updated.templateNodeId ?? null,
+              stepId: updated.id,
+              eventType: "STEP_STATUS_UPDATED",
+              title: `Updated step status: ${updated.title}`,
+              details: `Step moved to ${updated.status.toLowerCase().replace(/_/g, " ")}.`,
+              payload: {
+                status: updated.status,
+                dueAt: updated.dueAt,
+                completedAt: updated.completedAt,
+                postponeTo: payload.postponeTo ?? null,
+              },
+            },
+          })
+        }
+
         if (updated.status === "ACTIVE") {
           await prismaTx.contactServiceFollowUpStep.updateMany({
             where: {
