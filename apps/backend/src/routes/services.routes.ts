@@ -57,6 +57,24 @@ const ContactServicesListQuerySchema = z.object({
   status: z.enum(["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELED"]).optional(),
 })
 
+const FollowUpsListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce
+    .number()
+    .int()
+    .refine((value) => value === 10 || value === 25, {
+      message: "pageSize must be 10 or 25",
+    })
+    .default(10),
+  search: z.string().trim().max(200).optional(),
+  status: z
+    .enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED", "POSTPONED"])
+    .optional(),
+  dueDatePreset: z
+    .enum(["OVERDUE", "TODAY", "NEXT_7_DAYS", "NO_DUE_DATE"])
+    .optional(),
+})
+
 const CreateContactServiceSchema = z.object({
   contactId: z.string().min(1),
   serviceId: z.string().min(1),
@@ -164,6 +182,82 @@ function canManageContactServices(membership: {
   securityLevel: "LOW" | "MEDIUM" | "MAX"
 }) {
   return membership.role === "TENANT_ADMIN" || membership.securityLevel !== "LOW"
+}
+
+const DEFAULT_TIMEZONE = "America/Chicago"
+
+function getSafeTimezone(timezone?: string | null) {
+  return timezone?.trim() || DEFAULT_TIMEZONE
+}
+
+function parseOffsetMinutes(label: string) {
+  if (label === "GMT" || label === "UTC") return 0
+
+  const normalized = label.replace("UTC", "GMT")
+  const match = normalized.match(/^GMT([+-])(\d{1,2})(?::?(\d{2}))?$/)
+  if (!match) return 0
+
+  const [, sign, hours, minutes] = match
+  const total = Number(hours) * 60 + Number(minutes ?? "0")
+  return sign === "-" ? -total : total
+}
+
+function getOffsetMinutes(timezone: string, date: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: getSafeTimezone(timezone),
+    timeZoneName: "shortOffset",
+    hour: "2-digit",
+  }).formatToParts(date)
+
+  const label = parts.find((part) => part.type === "timeZoneName")?.value ?? "GMT"
+  return parseOffsetMinutes(label)
+}
+
+function getTimezoneDayParts(date: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: getSafeTimezone(timezone),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date)
+
+  const getPart = (type: string, fallback = "") =>
+    parts.find((part) => part.type === type)?.value ?? fallback
+
+  return {
+    year: Number(getPart("year", "0")),
+    month: Number(getPart("month", "1")),
+    day: Number(getPart("day", "1")),
+  }
+}
+
+function zonedDateTimeToUtc(
+  timezone: string,
+  year: number,
+  month: number,
+  day: number,
+  hour = 0,
+  minute = 0,
+  second = 0,
+) {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second, 0)
+  let utcMs = utcGuess
+
+  for (let index = 0; index < 3; index += 1) {
+    const offsetMinutes = getOffsetMinutes(timezone, new Date(utcMs))
+    const adjusted = utcGuess - offsetMinutes * 60_000
+    if (adjusted === utcMs) break
+    utcMs = adjusted
+  }
+
+  return new Date(utcMs)
+}
+
+function getTodayRange(timezone: string) {
+  const today = getTimezoneDayParts(new Date(), timezone)
+  const start = zonedDateTimeToUtc(timezone, today.year, today.month, today.day, 0, 0, 0)
+  const end = zonedDateTimeToUtc(timezone, today.year, today.month, today.day + 1, 0, 0, 0)
+  return { start, end }
 }
 
 async function summarizeContactServicePayments(
@@ -287,6 +381,316 @@ async function reconcileContactServiceCompletionFromFollowUps(
 
   return contactService
 }
+
+router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const { page, pageSize, search, status, dueDatePreset } = FollowUpsListQuerySchema.parse(
+      req.query,
+    )
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { timezone: true },
+    })
+
+    const tenantTimezone = getSafeTimezone(tenant?.timezone)
+    const now = new Date()
+    const todayRange = getTodayRange(tenantTimezone)
+    const nextSevenDaysEnd = new Date(todayRange.end.getTime() + 6 * 24 * 60 * 60 * 1000)
+    const skip = (page - 1) * pageSize
+
+    const preferredCurrentStepStatuses = status
+      ? [status]
+      : ["ACTIVE", "POSTPONED", "PENDING", "COMPLETED", "SKIPPED"]
+    const searchableValue = search?.trim()
+    const currentStepStatusClause = status
+      ? { status }
+      : { status: { in: preferredCurrentStepStatuses } }
+
+    const currentStepWhere =
+      dueDatePreset === "OVERDUE"
+        ? {
+            ...currentStepStatusClause,
+            dueAt: { lt: now },
+          }
+        : dueDatePreset === "TODAY"
+          ? {
+              ...currentStepStatusClause,
+              dueAt: { gte: todayRange.start, lt: todayRange.end },
+            }
+          : dueDatePreset === "NEXT_7_DAYS"
+            ? {
+                ...currentStepStatusClause,
+                dueAt: { gte: todayRange.start, lt: nextSevenDaysEnd },
+              }
+            : dueDatePreset === "NO_DUE_DATE"
+              ? {
+                  ...currentStepStatusClause,
+                  dueAt: null,
+                }
+              : {
+                  ...currentStepStatusClause,
+                }
+
+    const where = {
+      tenantId,
+      status: {
+        in: ["PENDING", "IN_PROGRESS"] as const,
+      },
+      followUpSteps: {
+        some: {
+          ...currentStepWhere,
+          ...(searchableValue
+            ? {
+                OR: [
+                  { title: { contains: searchableValue, mode: "insensitive" as const } },
+                  { note: { contains: searchableValue, mode: "insensitive" as const } },
+                ],
+              }
+            : {}),
+        },
+      },
+      ...(searchableValue
+        ? {
+            OR: [
+              { service: { name: { contains: searchableValue, mode: "insensitive" as const } } },
+              {
+                contact: {
+                  OR: [
+                    { firstName: { contains: searchableValue, mode: "insensitive" as const } },
+                    { middleName: { contains: searchableValue, mode: "insensitive" as const } },
+                    { lastName: { contains: searchableValue, mode: "insensitive" as const } },
+                    { phone: { contains: searchableValue, mode: "insensitive" as const } },
+                  ],
+                },
+              },
+            ],
+          }
+        : {}),
+    }
+
+    const [total, services] = await prisma.$transaction([
+      prismaWithServices.contactService.count({ where }),
+      prismaWithServices.contactService.findMany({
+        where,
+        orderBy: [{ updatedAt: "desc" }],
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          status: true,
+          service: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          contact: {
+            select: {
+              id: true,
+              firstName: true,
+              middleName: true,
+              lastName: true,
+              phone: true,
+            },
+          },
+          followUpTemplate: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          followUpSteps: {
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: {
+              id: true,
+              title: true,
+              status: true,
+              availableAt: true,
+              dueAt: true,
+              completedAt: true,
+              assignedToUserId: true,
+              note: true,
+              sortOrder: true,
+              assignedTo: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+    ])
+
+    const summaryServices = await prismaWithServices.contactService.findMany({
+      where: {
+        tenantId,
+        status: {
+          in: ["PENDING", "IN_PROGRESS"] as const,
+        },
+        followUpSteps: {
+          some: {
+            status: "ACTIVE",
+          },
+        },
+      },
+      select: {
+        id: true,
+        followUpSteps: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            status: true,
+            dueAt: true,
+            completedAt: true,
+          },
+        },
+      },
+    })
+
+    const [servicesInProgress, overdueEnrollments, dueToday] = await Promise.all([
+      prismaWithServices.contactService.findMany({
+        where: {
+          tenantId,
+          status: {
+            in: ["PENDING", "IN_PROGRESS"] as const,
+          },
+          followUpSteps: {
+            some: {
+              status: "ACTIVE",
+            },
+          },
+        },
+        select: {
+          id: true,
+        },
+      }),
+      prismaWithServices.contactServiceFollowUpStep.count({
+        where: {
+          tenantId,
+          dueAt: { lt: now },
+          status: "ACTIVE",
+          contactService: {
+            tenantId,
+            status: {
+              in: ["PENDING", "IN_PROGRESS"] as const,
+            },
+          },
+        },
+      }),
+      prismaWithServices.contactServiceFollowUpStep.count({
+        where: {
+          tenantId,
+          dueAt: { gte: todayRange.start, lt: todayRange.end },
+          status: "ACTIVE",
+          contactService: {
+            tenantId,
+            status: {
+              in: ["PENDING", "IN_PROGRESS"] as const,
+            },
+          },
+        },
+      }),
+    ])
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+    const averageProgress = summaryServices.length
+      ? Math.round(
+          summaryServices.reduce((sum: number, service: any) => {
+            const totalSteps = service.followUpSteps.length
+            if (!totalSteps) return sum
+
+            const completedSteps = service.followUpSteps.filter(
+              (step: any) => step.status === "COMPLETED" || step.status === "SKIPPED",
+            ).length
+
+            return sum + Math.round((completedSteps / totalSteps) * 100)
+          }, 0) / summaryServices.length,
+        )
+      : 0
+
+    return res.json({
+      ok: true,
+      items: services.map((service: any) => {
+        const currentStep =
+          preferredCurrentStepStatuses
+            .map(
+              (currentStatus) =>
+                service.followUpSteps.find((step: any) => step.status === currentStatus) ?? null,
+            )
+            .find(Boolean) ?? null
+        const totalSteps = service.followUpSteps.length
+        const completedSteps = service.followUpSteps.filter(
+          (step: any) => step.status === "COMPLETED" || step.status === "SKIPPED",
+        ).length
+        const remainingSteps = Math.max(0, totalSteps - completedSteps)
+
+        return {
+          id: service.id,
+          status: service.status,
+          contactId: service.contact.id,
+          contactName: [service.contact.firstName, service.contact.middleName, service.contact.lastName]
+            .filter(Boolean)
+            .join(" "),
+          phoneNumber: service.contact.phone ?? null,
+          serviceId: service.service.id,
+          serviceName: service.service.name,
+          followUpTemplateId: service.followUpTemplate?.id ?? null,
+          followUpTemplateName: service.followUpTemplate?.name ?? null,
+          currentStep: currentStep
+            ? {
+                id: currentStep.id,
+                title: currentStep.title,
+                status: currentStep.status,
+                availableAt: currentStep.availableAt,
+                dueAt: currentStep.dueAt,
+                completedAt: currentStep.completedAt,
+                assignedToUserId: currentStep.assignedToUserId,
+                assignedToName:
+                  currentStep.assignedTo?.name?.trim() || currentStep.assignedTo?.email || null,
+                note: currentStep.note,
+                sortOrder: currentStep.sortOrder,
+              }
+            : null,
+          progress: {
+            completedCount: completedSteps,
+            totalCount: totalSteps,
+            remainingCount: remainingSteps,
+            completionPercentage: totalSteps
+              ? Math.round((completedSteps / totalSteps) * 100)
+              : 0,
+          },
+          overdue:
+            Boolean(currentStep?.dueAt) &&
+            currentStep.status === "ACTIVE" &&
+            new Date(currentStep.dueAt).getTime() < now.getTime(),
+        }
+      }),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+      summary: {
+        servicesInProgress: servicesInProgress.length,
+        overdueEnrollments,
+        dueToday,
+        averageProgress,
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
 
 router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) => {
   try {

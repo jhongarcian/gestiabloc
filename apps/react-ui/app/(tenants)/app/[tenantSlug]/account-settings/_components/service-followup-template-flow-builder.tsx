@@ -22,7 +22,9 @@ import {
 import {
   BellRing,
   Calculator,
+  Check,
   CheckSquare,
+  ChevronDown,
   Clock3,
   FileEdit,
   FileText,
@@ -49,6 +51,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import {
   Command,
+  CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
@@ -56,6 +59,7 @@ import {
 } from "@/components/ui/command"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -65,6 +69,7 @@ import {
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
 type PersistedNodeKind =
   | "start"
@@ -945,6 +950,7 @@ type ExecutionLogItem = {
   contact: {
     id: string
     name: string
+    phoneNumber: string | null
   }
   contactService: {
     id: string
@@ -952,12 +958,52 @@ type ExecutionLogItem = {
       id: string
       name: string
     }
+    steps: Array<{
+      id: string
+      title: string
+    }>
   }
+}
+
+type ExecutionLogEnrollment = {
+  id: string
+  status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "CANCELED"
+  createdAt: string
+  purchasedAt: string | null
+  startedAt: string | null
+  completedAt: string | null
+  contact: {
+    id: string
+    name: string
+  }
+  service: {
+    id: string
+    name: string
+  }
+  currentStep: {
+    id: string
+    title: string
+    status: string
+    dueAt: string | null
+  } | null
+  completedCount: number
+  totalCount: number
+  lastExecution: {
+    createdAt: string
+    title: string
+  } | null
 }
 
 type ExecutionLogsResponse = {
   ok: boolean
+  enrollments: ExecutionLogEnrollment[]
   items: ExecutionLogItem[]
+  selectedContactServiceId: string | null
+  search: string
+  enrollmentsPage: number
+  enrollmentsPageSize: number
+  enrollmentsTotalCount: number
+  enrollmentsTotalPages: number
   page: number
   pageSize: number
   totalCount: number
@@ -1596,10 +1642,18 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const [isTagsLoading, setIsTagsLoading] = useState(false)
   const [selectedNodeTagQuery, setSelectedNodeTagQuery] = useState("")
   const [executionLogs, setExecutionLogs] = useState<ExecutionLogItem[]>([])
+  const [executionLogEnrollments, setExecutionLogEnrollments] = useState<ExecutionLogEnrollment[]>([])
   const [isExecutionLogsLoading, setIsExecutionLogsLoading] = useState(false)
+  const [executionEnrollmentSearchInput, setExecutionEnrollmentSearchInput] = useState("")
+  const [executionEnrollmentSearch, setExecutionEnrollmentSearch] = useState("")
+  const [executionEnrollmentPickerOpen, setExecutionEnrollmentPickerOpen] = useState(false)
+  const [executionEnrollmentsPage, setExecutionEnrollmentsPage] = useState(1)
+  const [executionEnrollmentsTotalPages, setExecutionEnrollmentsTotalPages] = useState(1)
+  const [executionEnrollmentsTotalCount, setExecutionEnrollmentsTotalCount] = useState(0)
   const [executionLogsPage, setExecutionLogsPage] = useState(1)
   const [executionLogsTotalPages, setExecutionLogsTotalPages] = useState(1)
   const [executionLogsTotalCount, setExecutionLogsTotalCount] = useState(0)
+  const [selectedExecutionContactServiceId, setSelectedExecutionContactServiceId] = useState<string | null>(null)
   const [isUploadingNoteAttachment, setIsUploadingNoteAttachment] = useState(false)
   const [noteAttachmentTarget, setNoteAttachmentTarget] =
     useState<NoteAttachmentTarget>("create")
@@ -1620,6 +1674,14 @@ export function ServiceFollowUpTemplateFlowBuilder({
   useEffect(() => {
     setLastSavedBuilderSnapshot(initialBuilderSnapshot)
   }, [initialBuilderSnapshot])
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setExecutionEnrollmentSearch(executionEnrollmentSearchInput.trim())
+    }, 300)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [executionEnrollmentSearchInput])
 
   const orderedNodes = useMemo(
     () => [...nodes].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x),
@@ -1655,29 +1717,64 @@ export function ServiceFollowUpTemplateFlowBuilder({
           `/api/account-settings/${tenantId}/services/${serviceId}/follow-up-templates/${template.id}/execution-logs`,
           {
             params: {
+              search: executionEnrollmentSearch || undefined,
+              enrollmentsPage: executionEnrollmentsPage,
+              enrollmentsPageSize: 5,
               page,
               pageSize: 20,
+              ...(selectedExecutionContactServiceId
+                ? { contactServiceId: selectedExecutionContactServiceId }
+                : {}),
             },
           },
         )
+        setExecutionLogEnrollments(data.enrollments)
         setExecutionLogs(data.items)
+        setExecutionEnrollmentsPage(data.enrollmentsPage)
+        setExecutionEnrollmentsTotalPages(data.enrollmentsTotalPages)
+        setExecutionEnrollmentsTotalCount(data.enrollmentsTotalCount)
         setExecutionLogsPage(data.page)
         setExecutionLogsTotalPages(data.totalPages)
         setExecutionLogsTotalCount(data.totalCount)
+        setSelectedExecutionContactServiceId(data.selectedContactServiceId)
       } catch {
+        setExecutionLogEnrollments([])
         setExecutionLogs([])
+        setExecutionEnrollmentsTotalPages(1)
+        setExecutionEnrollmentsTotalCount(0)
         toast.error("Could not load execution logs.")
       } finally {
         setIsExecutionLogsLoading(false)
       }
     },
-    [serviceId, template.id, tenantId],
+    [
+      executionEnrollmentSearch,
+      executionEnrollmentsPage,
+      selectedExecutionContactServiceId,
+      serviceId,
+      template.id,
+      tenantId,
+    ],
   )
 
   useEffect(() => {
     if (activeTab !== "logs") return
     void loadExecutionLogs(executionLogsPage)
-  }, [activeTab, executionLogsPage, loadExecutionLogs])
+  }, [activeTab, executionEnrollmentSearch, executionEnrollmentsPage, executionLogsPage, loadExecutionLogs])
+
+  useEffect(() => {
+    if (!selectedExecutionContactServiceId) return
+    if (executionLogEnrollments.some((item) => item.id === selectedExecutionContactServiceId)) return
+    setSelectedExecutionContactServiceId(null)
+    setExecutionLogsPage(1)
+  }, [executionLogEnrollments, selectedExecutionContactServiceId])
+
+  const selectedExecutionEnrollment = useMemo(
+    () =>
+      executionLogEnrollments.find((item) => item.id === selectedExecutionContactServiceId) ??
+      null,
+    [executionLogEnrollments, selectedExecutionContactServiceId],
+  )
 
   useEffect(() => {
     if (!hasUnsavedChanges) return
@@ -7668,7 +7765,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
             <div>
               <p className="text-sm font-semibold text-slate-900">Execution logs</p>
               <p className="text-xs text-slate-500">
-                Review runtime activity for this template across enrolled services.
+                Review which contacts are enrolled in this template, then inspect their execution timeline.
               </p>
             </div>
             <Button
@@ -7682,84 +7779,353 @@ export function ServiceFollowUpTemplateFlowBuilder({
             </Button>
           </div>
 
-          {isExecutionLogsLoading ? (
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-              Loading execution logs...
-            </div>
-          ) : executionLogs.length ? (
-            <div className="space-y-3">
-              {executionLogs.map((log) => (
-                <article key={log.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-semibold text-slate-900">{log.title}</p>
-                        <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
-                          {log.eventType.toLowerCase().replace(/_/g, " ")}
-                        </Badge>
-                      </div>
-                      <p className="text-xs text-slate-500">
-                        {log.contact.name || "Contact"} / {log.contactService.service.name}
-                        {log.actor?.name ? ` / ${log.actor.name}` : ""}
-                      </p>
-                    </div>
-                    <p className="text-xs text-slate-500">{new Date(log.createdAt).toLocaleString()}</p>
+          <div className="min-h-0 space-y-4">
+            <div className="rounded-[18px] border border-slate-200 bg-slate-50/70 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold text-slate-900">Contact Filter</p>
+                    <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
+                      {executionEnrollmentsTotalCount}
+                    </Badge>
                   </div>
-                  {log.details ? (
-                    <p className="mt-2 text-sm leading-6 text-slate-600">{log.details}</p>
-                  ) : null}
-                  {(log.flowNodeId || log.stepId) ? (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {log.flowNodeId ? (
-                        <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
-                          Node {log.flowNodeId}
-                        </Badge>
-                      ) : null}
-                      {log.stepId ? (
-                        <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
-                          Step {log.stepId}
-                        </Badge>
-                      ) : null}
+                  <p className="text-xs text-slate-500">
+                    Default view shows all execution logs. Pick a contact when you need one enrollment only.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 lg:min-w-[380px]">
+                  <Popover open={executionEnrollmentPickerOpen} onOpenChange={setExecutionEnrollmentPickerOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        role="combobox"
+                        className="h-10 w-full cursor-pointer justify-between bg-white text-left font-normal"
+                      >
+                        <span className="truncate">
+                          {selectedExecutionEnrollment
+                            ? `${selectedExecutionEnrollment.contact.name || "Contact"}${selectedExecutionEnrollment.contact.phoneNumber ? ` · ${selectedExecutionEnrollment.contact.phoneNumber}` : ""}`
+                            : "All enrolled contacts"}
+                        </span>
+                        <ChevronDown className="h-4 w-4 shrink-0 opacity-60" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[380px] p-0" align="end">
+                      <Command shouldFilter={false}>
+                        <CommandInput
+                          value={executionEnrollmentSearchInput}
+                          onValueChange={(value) => {
+                            setExecutionEnrollmentSearchInput(value)
+                            setExecutionEnrollmentsPage(1)
+                          }}
+                          placeholder="Search by contact or phone"
+                        />
+                        <CommandList>
+                          <CommandItem
+                            value="all-enrollments"
+                            className="cursor-pointer"
+                            onSelect={() => {
+                              setSelectedExecutionContactServiceId(null)
+                              setExecutionLogsPage(1)
+                              setExecutionEnrollmentPickerOpen(false)
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                selectedExecutionContactServiceId ? "opacity-0" : "opacity-100",
+                              )}
+                            />
+                            <div className="flex flex-col">
+                              <span>All enrolled contacts</span>
+                              <span className="text-xs text-slate-500">
+                                Show execution activity for the entire template.
+                              </span>
+                            </div>
+                          </CommandItem>
+                          {executionLogEnrollments.length ? (
+                            <CommandGroup heading="Contacts">
+                              {executionLogEnrollments.map((enrollment) => (
+                                <CommandItem
+                                  key={enrollment.id}
+                                  value={`${enrollment.contact.name} ${enrollment.contact.phoneNumber ?? ""}`}
+                                  className="cursor-pointer"
+                                  onSelect={() => {
+                                    setSelectedExecutionContactServiceId(enrollment.id)
+                                    setExecutionLogsPage(1)
+                                    setExecutionEnrollmentPickerOpen(false)
+                                  }}
+                                >
+                                  <Check
+                                    className={cn(
+                                      "mr-2 h-4 w-4",
+                                      selectedExecutionContactServiceId === enrollment.id ? "opacity-100" : "opacity-0",
+                                    )}
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-sm font-medium text-slate-900">
+                                      {enrollment.contact.name || "Contact"}
+                                    </p>
+                                    <p className="truncate text-xs text-slate-500">
+                                      {enrollment.contact.phoneNumber || "No phone"} · {enrollment.service.name}
+                                    </p>
+                                  </div>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          ) : (
+                            <CommandEmpty>No contacts match this search.</CommandEmpty>
+                          )}
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs text-slate-500">
+                      {executionEnrollmentsTotalCount
+                        ? `Showing ${executionLogEnrollments.length} of ${executionEnrollmentsTotalCount} contacts`
+                        : "No enrolled contacts available."}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="cursor-pointer"
+                        onClick={() => setExecutionEnrollmentsPage((current) => Math.max(1, current - 1))}
+                        disabled={executionEnrollmentsPage <= 1 || isExecutionLogsLoading}
+                      >
+                        Previous
+                      </Button>
+                      <p className="text-xs text-slate-500">
+                        Page {executionEnrollmentsPage} of {executionEnrollmentsTotalPages}
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="cursor-pointer"
+                        onClick={() =>
+                          setExecutionEnrollmentsPage((current) =>
+                            Math.min(executionEnrollmentsTotalPages, current + 1),
+                          )
+                        }
+                        disabled={executionEnrollmentsPage >= executionEnrollmentsTotalPages || isExecutionLogsLoading}
+                      >
+                        Next
+                      </Button>
                     </div>
-                  ) : null}
-                </article>
-              ))}
-
-              <div className="flex items-center justify-between gap-3 pt-2">
-                <p className="text-xs text-slate-500">
-                  Page {executionLogsPage} of {executionLogsTotalPages}
-                </p>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="cursor-pointer"
-                    disabled={executionLogsPage <= 1 || isExecutionLogsLoading}
-                    onClick={() => setExecutionLogsPage((current) => Math.max(1, current - 1))}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="cursor-pointer"
-                    disabled={executionLogsPage >= executionLogsTotalPages || isExecutionLogsLoading}
-                    onClick={() =>
-                      setExecutionLogsPage((current) =>
-                        Math.min(executionLogsTotalPages, current + 1),
-                      )
-                    }
-                  >
-                    Next
-                  </Button>
+                  </div>
                 </div>
               </div>
             </div>
-          ) : (
-            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-              No execution logs exist for this template yet.
+
+            <div className="min-h-0 rounded-[18px] border border-slate-200 bg-white p-4">
+              <div className="mx-auto w-full max-w-5xl">
+              {selectedExecutionEnrollment ? (
+                <>
+                  <div className="mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-4">
+                    <div className="space-y-1">
+                      <p className="text-lg font-semibold text-slate-950">
+                        {selectedExecutionEnrollment.contact.name || "Contact"}
+                      </p>
+                      <p className="text-sm text-slate-500">
+                        {selectedExecutionEnrollment.service.name}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Current step: {selectedExecutionEnrollment.currentStep?.title ?? "No active step"}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedExecutionEnrollment.currentStep?.status ? (
+                        <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+                          {selectedExecutionEnrollment.currentStep.status.toLowerCase().replace(/_/g, " ")}
+                        </Badge>
+                      ) : null}
+                      {selectedExecutionEnrollment.currentStep?.dueAt ? (
+                        <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+                          Due {new Date(selectedExecutionEnrollment.currentStep.dueAt).toLocaleDateString()}
+                        </Badge>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {isExecutionLogsLoading ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                      Loading execution history...
+                    </div>
+                  ) : executionLogs.length ? (
+                    <div className="space-y-4">
+                      {executionLogs.map((log, index) => {
+                        const stepTitle =
+                          log.contactService.steps.find((step) => step.id === log.stepId)?.title ?? null
+                        return (
+                          <div key={log.id} className="flex gap-3">
+                            <div className="flex w-6 shrink-0 flex-col items-center pt-1">
+                              <span className="inline-flex h-3 w-3 rounded-full bg-slate-300" />
+                              {index < executionLogs.length - 1 ? (
+                                <span className="mt-2 h-full min-h-10 w-px bg-slate-200" />
+                              ) : null}
+                            </div>
+                            <article className="flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="space-y-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-semibold text-slate-900">{log.title}</p>
+                                    <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
+                                      {log.eventType.toLowerCase().replace(/_/g, " ")}
+                                    </Badge>
+                                  </div>
+                                  <p className="text-xs text-slate-500">
+                                    {stepTitle ? `Step: ${stepTitle}` : "Template action"}
+                                    {log.actor?.name ? ` / ${log.actor.name}` : ""}
+                                  </p>
+                                </div>
+                                <p className="text-xs text-slate-500">
+                                  {new Date(log.createdAt).toLocaleString()}
+                                </p>
+                              </div>
+                              {log.details ? (
+                                <p className="mt-2 text-sm leading-6 text-slate-600">{log.details}</p>
+                              ) : null}
+                            </article>
+                          </div>
+                        )
+                      })}
+
+                      <div className="flex items-center justify-between gap-3 pt-2">
+                        <p className="text-xs text-slate-500">
+                          Page {executionLogsPage} of {executionLogsTotalPages}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="cursor-pointer"
+                            disabled={executionLogsPage <= 1 || isExecutionLogsLoading}
+                            onClick={() => setExecutionLogsPage((current) => Math.max(1, current - 1))}
+                          >
+                            Previous
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="cursor-pointer"
+                            disabled={executionLogsPage >= executionLogsTotalPages || isExecutionLogsLoading}
+                            onClick={() =>
+                              setExecutionLogsPage((current) =>
+                                Math.min(executionLogsTotalPages, current + 1),
+                              )
+                            }
+                          >
+                            Next
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                      No execution history exists for this enrollment yet.
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-4">
+                    <div className="space-y-1">
+                      <p className="text-lg font-semibold text-slate-950">All executions</p>
+                      <p className="text-sm text-slate-500">
+                        Showing activity across every contact enrolled in this template.
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+                      {executionLogsTotalCount} log entries
+                    </Badge>
+                  </div>
+                  {isExecutionLogsLoading ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                      Loading execution history...
+                    </div>
+                  ) : executionLogs.length ? (
+                    <div className="space-y-4">
+                      {executionLogs.map((log, index) => {
+                        const stepTitle =
+                          log.contactService.steps.find((step) => step.id === log.stepId)?.title ?? null
+                        return (
+                          <div key={log.id} className="flex gap-3">
+                            <div className="flex w-6 shrink-0 flex-col items-center pt-1">
+                              <span className="inline-flex h-3 w-3 rounded-full bg-slate-300" />
+                              {index < executionLogs.length - 1 ? (
+                                <span className="mt-2 h-full min-h-10 w-px bg-slate-200" />
+                              ) : null}
+                            </div>
+                            <article className="flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="space-y-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-semibold text-slate-900">{log.title}</p>
+                                    <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
+                                      {log.eventType.toLowerCase().replace(/_/g, " ")}
+                                    </Badge>
+                                  </div>
+                                  <p className="text-xs text-slate-500">
+                                    {log.contact.name || "Contact"} / {log.contactService.service.name}
+                                    {stepTitle ? ` / ${stepTitle}` : ""}
+                                    {log.actor?.name ? ` / ${log.actor.name}` : ""}
+                                  </p>
+                                </div>
+                                <p className="text-xs text-slate-500">
+                                  {new Date(log.createdAt).toLocaleString()}
+                                </p>
+                              </div>
+                              {log.details ? (
+                                <p className="mt-2 text-sm leading-6 text-slate-600">{log.details}</p>
+                              ) : null}
+                            </article>
+                          </div>
+                        )
+                      })}
+
+                      <div className="flex items-center justify-between gap-3 pt-2">
+                        <p className="text-xs text-slate-500">
+                          Page {executionLogsPage} of {executionLogsTotalPages}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="cursor-pointer"
+                            disabled={executionLogsPage <= 1 || isExecutionLogsLoading}
+                            onClick={() => setExecutionLogsPage((current) => Math.max(1, current - 1))}
+                          >
+                            Previous
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="cursor-pointer"
+                            disabled={executionLogsPage >= executionLogsTotalPages || isExecutionLogsLoading}
+                            onClick={() =>
+                              setExecutionLogsPage((current) =>
+                                Math.min(executionLogsTotalPages, current + 1),
+                              )
+                            }
+                          >
+                            Next
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                      No execution activity has been recorded for this template yet.
+                    </div>
+                  )}
+                </>
+              )}
+              </div>
             </div>
-          )}
+          </div>
         </section>
       )}
       <input
