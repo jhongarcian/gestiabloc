@@ -1,0 +1,8 @@
+-- RenameIndex
+ALTER INDEX "ContactCustomFieldAccessRequest_tenantId_fieldId_requesterUserI" RENAME TO "ContactCustomFieldAccessRequest_tenantId_fieldId_requesterU_idx";
+
+-- RenameIndex
+ALTER INDEX "ContactCustomFieldAccessRequest_tenantId_requesterUserId_status" RENAME TO "ContactCustomFieldAccessRequest_tenantId_requesterUserId_st_idx";
+
+-- RenameIndex
+ALTER INDEX "ContactServiceFollowUpStep_tenantId_contactServiceId_sortOrder_" RENAME TO "ContactServiceFollowUpStep_tenantId_contactServiceId_sortOr_idx";

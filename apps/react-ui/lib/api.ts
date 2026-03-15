@@ -76,12 +76,14 @@ export type MeResponse = {
     image?: string | null
     platformRole: string
     emailVerified: boolean
+    lastLoginAt?: string | null
     createdAt?: string
     updatedAt?: string
     memberships: Array<{
       role: string
       status: string
-      tenant: { id: string; slug: string; name: string }
+      securityLevel: "LOW" | "MEDIUM" | "MAX"
+      tenant: { id: string; slug: string; name: string; timezone?: string | null }
     }>
   }
 }

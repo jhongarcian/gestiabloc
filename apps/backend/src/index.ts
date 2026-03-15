@@ -5,8 +5,22 @@ import cors, { type CorsOptions } from "cors"
 import cookieParser from "cookie-parser"
 import { prisma } from "./lib/prisma"
 import { Server } from "socket.io"
+import { SESSION_COOKIE_NAME } from "./lib/cookies"
+import { sha256 } from "./lib/crypto"
 import authRoutes from "./routes/auth.routes"
 import filesRoutes from "./routes/files.routes"
+import accountSettingsRoutes from "./routes/account-settings.routes"
+import contactsRoutes from "./routes/contacts.routes"
+import notificationsRoutes from "./routes/notifications.routes"
+import tasksRoutes from "./routes/tasks.routes"
+import servicesProductsRoutes from "./routes/services-products.routes"
+import servicesRoutes from "./routes/services.routes"
+import { getUserRoom, setRealtimeServer } from "./lib/realtime"
+import {
+  getNextPriorityRefreshSchedule,
+  refreshTaskPrioritiesForTenants,
+} from "./lib/task-priority"
+import { materializeTaskNotifications } from "./lib/task-notifications"
 import { ZodError } from "zod"
 import swaggerUi from "swagger-ui-express"
 import { readFileSync } from "fs"
@@ -21,9 +35,27 @@ const env = {
 
 const app = express()
 
+function hasNumericStatus(error: unknown): error is { status: number } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof error.status === "number"
+  )
+}
+
+function hasStringCode(error: unknown): error is { code: string } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+  )
+}
+
 const corsOptions: CorsOptions = {
   origin: env.webOrigin,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   credentials: true,
 }
 
@@ -42,6 +74,12 @@ app.use("/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec))
 
 app.use("/api/auth", authRoutes)
 app.use("/api/files", filesRoutes);
+app.use("/api/account-settings", accountSettingsRoutes);
+app.use("/api/contacts", contactsRoutes);
+app.use("/api/notifications", notificationsRoutes);
+app.use("/api/tasks", tasksRoutes);
+app.use("/api/services-products", servicesProductsRoutes);
+app.use("/api/services", servicesRoutes);
 
 app.use(
   (
@@ -62,9 +100,9 @@ app.use(
 
     console.error("API error:", err)
 
-    const status = typeof (err as any)?.status === "number" ? (err as any).status : 500
+    const status = hasNumericStatus(err) ? err.status : 500
 
-    const prismaCode = (err as any)?.code
+    const prismaCode = hasStringCode(err) ? err.code : null
     if (prismaCode === "P2002") {
       return res.status(409).json({ error: "UNIQUE_CONSTRAINT" })
     }
@@ -89,7 +127,57 @@ const io = new Server(server, {
     : false,
 })
 
+function parseCookieHeader(header: string | undefined) {
+  if (!header) return new Map<string, string>()
+
+  return new Map(
+    header
+      .split(";")
+      .map((segment) => segment.trim())
+      .filter(Boolean)
+      .map((segment) => {
+        const separatorIndex = segment.indexOf("=")
+        if (separatorIndex === -1) return [segment, ""]
+        return [
+          decodeURIComponent(segment.slice(0, separatorIndex)),
+          decodeURIComponent(segment.slice(separatorIndex + 1)),
+        ]
+      }),
+  )
+}
+
+io.use(async (socket, next) => {
+  try {
+    const cookies = parseCookieHeader(socket.handshake.headers.cookie)
+    const token = cookies.get(SESSION_COOKIE_NAME)
+
+    if (!token) {
+      return next(new Error("UNAUTHENTICATED"))
+    }
+
+    const session = await prisma.session.findUnique({
+      where: { tokenHash: sha256(token) },
+      include: { user: true },
+    })
+
+    if (!session || session.expiresAt.getTime() < Date.now()) {
+      return next(new Error("UNAUTHENTICATED"))
+    }
+
+    socket.data.userId = session.user.id
+    return next()
+  } catch (error) {
+    return next(error as Error)
+  }
+})
+
 io.on("connection", (socket) => {
+  const userId = socket.data.userId as string | undefined
+
+  if (userId) {
+    void socket.join(getUserRoom(userId))
+  }
+
   console.log("socket connected", socket.id)
 
   socket.on("disconnect", (reason) => {
@@ -99,6 +187,55 @@ io.on("connection", (socket) => {
 
 const start = async () => {
   await prisma.$connect()
+  setRealtimeServer(io)
+
+  await refreshTaskPrioritiesForTenants().catch((error) => {
+    console.error("Failed to refresh task priorities on startup:", error)
+  })
+
+  const scheduleTaskPriorityRefresh = () => {
+    void getNextPriorityRefreshSchedule()
+      .then((schedule) => {
+        if (!schedule) {
+          const retryTimeout = setTimeout(scheduleTaskPriorityRefresh, 60 * 60 * 1000)
+          retryTimeout.unref?.()
+          return
+        }
+
+        const timeout = setTimeout(() => {
+          void refreshTaskPrioritiesForTenants(
+            schedule.tenantIds.map((tenantId) => ({
+              tenantId,
+              timezone: schedule.timezone,
+            })),
+          )
+            .catch((error) => {
+              console.error("Failed to refresh task priorities:", error)
+            })
+            .finally(() => {
+              scheduleTaskPriorityRefresh()
+            })
+        }, schedule.delayMs)
+
+        timeout.unref?.()
+      })
+      .catch((error) => {
+        console.error("Failed to schedule task priority refresh:", error)
+        const retryTimeout = setTimeout(scheduleTaskPriorityRefresh, 15 * 60 * 1000)
+        retryTimeout.unref?.()
+      })
+  }
+
+  scheduleTaskPriorityRefresh()
+
+  const reminderInterval = setInterval(() => {
+    void materializeTaskNotifications().catch((error) => {
+      console.error("Failed to materialize task notifications:", error)
+    })
+  }, 15_000)
+
+  reminderInterval.unref?.()
+
   server.listen(env.port, () => {
     console.log(`Backend listening on http://localhost:${env.port}`)
     console.log(`CORS origin: ${env.webOrigin}`)

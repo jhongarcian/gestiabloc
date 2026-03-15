@@ -1,0 +1,5 @@
+-- RenameIndex
+ALTER INDEX "ContactServiceChecklistItem_tenantId_contactServiceId_checklist" RENAME TO "ContactServiceChecklistItem_tenantId_contactServiceId_check_key";
+
+-- RenameIndex
+ALTER INDEX "ContactServiceChecklistItem_tenantId_contactServiceId_completed" RENAME TO "ContactServiceChecklistItem_tenantId_contactServiceId_compl_idx";

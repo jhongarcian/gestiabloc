@@ -1,0 +1,5 @@
+-- RenameIndex
+ALTER INDEX "ContactServiceFollowUpStep_tenantId_contactServiceId_templateN_" RENAME TO "ContactServiceFollowUpStep_tenantId_contactServiceId_templa_idx";
+
+-- RenameIndex
+ALTER INDEX "ServiceFollowUpTemplateStep_tenantId_templateId_templateNodeId_" RENAME TO "ServiceFollowUpTemplateStep_tenantId_templateId_templateNod_idx";

@@ -1,0 +1,3 @@
+-- No-op migration.
+-- The previous SQL attempted to rename a non-existent index and fails on shadow DB creation.
+-- Keep this migration intentionally empty so historical ordering remains stable.

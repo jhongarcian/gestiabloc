@@ -64,12 +64,24 @@ const ResetPasswordSchema = z.object({
   newPassword: passwordSchema.max(200),
 })
 
+const UpdateMeSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  email: z.email().max(255),
+})
+
+const UpdatePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(200),
+  newPassword: passwordSchema.max(200),
+})
+
 // helper: create session + cookie
 async function issueSession(opts: {
   userId: string
   ipAddress?: string | null
   userAgent?: string | null
 }) {
+  const loginAt = new Date()
+
   // enforce single-session: delete old session first
   await prisma.session.deleteMany({ where: { userId: opts.userId } })
 
@@ -78,15 +90,21 @@ async function issueSession(opts: {
 
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
 
-  await prisma.session.create({
-    data: {
-      userId: opts.userId,
-      tokenHash,
-      expiresAt,
-      ipAddress: opts.ipAddress ?? undefined,
-      userAgent: opts.userAgent ?? undefined,
-    },
-  })
+  await prisma.$transaction([
+    prisma.session.create({
+      data: {
+        userId: opts.userId,
+        tokenHash,
+        expiresAt,
+        ipAddress: opts.ipAddress ?? undefined,
+        userAgent: opts.userAgent ?? undefined,
+      },
+    }),
+    prisma.user.update({
+      where: { id: opts.userId },
+      data: { lastLoginAt: loginAt },
+    }),
+  ])
 
   return { token: raw, expiresAt }
 }
@@ -237,6 +255,7 @@ router.post("/tenant/signup", async (req, res, next) => {
           tenantId: tenant.id,
           userId: user.id,
           role: "TENANT_ADMIN",
+          securityLevel: "MAX",
         },
       })
 
@@ -450,18 +469,123 @@ router.get("/me", requireAuth, async (req, res) => {
       image: true,
       platformRole: true,
       emailVerified: true,
+      lastLoginAt: true,
       createdAt: true,
       updatedAt: true,
       memberships: {
         select: {
           role: true,
           status: true,
-          tenant: { select: { id: true, slug: true, name: true } },
+          securityLevel: true,
+          tenant: { select: { id: true, slug: true, name: true, timezone: true } },
         },
       },
     },
   })
   return res.json({ ok: true, user })
+})
+
+/**
+ * PATCH /api/auth/me
+ * Update profile basic fields.
+ */
+router.patch("/me", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = (req as AuthedRequest).user
+    const { name, email } = UpdateMeSchema.parse(req.body)
+
+    const current = await prisma.user.findUnique({
+      where: { id: authed.id },
+      select: { id: true, email: true },
+    })
+    if (!current) return res.status(404).json({ error: "USER_NOT_FOUND" })
+
+    if (email !== current.email) {
+      const existing = await prisma.user.findUnique({
+        where: { email },
+        select: { id: true },
+      })
+      if (existing && existing.id !== authed.id) {
+        return res.status(409).json({ error: "EMAIL_IN_USE" })
+      }
+    }
+
+    const user = await prisma.user.update({
+      where: { id: authed.id },
+      data: {
+        name,
+        email,
+        emailVerified: email === current.email ? undefined : false,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        image: true,
+        platformRole: true,
+        emailVerified: true,
+        lastLoginAt: true,
+        createdAt: true,
+        updatedAt: true,
+        memberships: {
+          select: {
+            role: true,
+            status: true,
+            securityLevel: true,
+            tenant: { select: { id: true, slug: true, name: true, timezone: true } },
+          },
+        },
+      },
+    })
+
+    return res.json({ ok: true, user })
+  } catch (e) {
+    return next(e)
+  }
+})
+
+/**
+ * PATCH /api/auth/me/password
+ * Update password for authenticated user.
+ */
+router.patch("/me/password", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = (req as AuthedRequest).user
+    const { currentPassword, newPassword } = UpdatePasswordSchema.parse(req.body)
+
+    const user = await prisma.user.findUnique({
+      where: { id: authed.id },
+      select: { id: true, passwordHash: true },
+    })
+
+    if (!user) return res.status(404).json({ error: "USER_NOT_FOUND" })
+    if (!user.passwordHash) return res.status(400).json({ error: "PASSWORD_NOT_SET" })
+
+    const currentMatches = await argon2.verify(user.passwordHash, currentPassword)
+    if (!currentMatches) {
+      return res.status(400).json({ error: "INVALID_CURRENT_PASSWORD" })
+    }
+
+    const sameAsCurrent = await argon2.verify(user.passwordHash, newPassword)
+    if (sameAsCurrent) {
+      return res.status(400).json({ error: "NEW_PASSWORD_SAME_AS_CURRENT" })
+    }
+
+    const passwordHash = await argon2.hash(newPassword, {
+      type: argon2.argon2id,
+    })
+
+    await prisma.user.update({
+      where: { id: authed.id },
+      data: { passwordHash },
+    })
+
+    return res.json({ ok: true })
+  } catch (e) {
+    return next(e)
+  }
 })
 
 /**
