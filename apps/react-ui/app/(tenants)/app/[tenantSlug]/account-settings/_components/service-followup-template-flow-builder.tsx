@@ -975,6 +975,7 @@ type ExecutionLogEnrollment = {
   contact: {
     id: string
     name: string
+    phoneNumber: string | null
   }
   service: {
     id: string

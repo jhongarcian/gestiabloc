@@ -46,7 +46,7 @@ import { cn } from "@/lib/utils"
 
 type ContactStatusConfigPanelProps = {
   tenantId: string
-  configKey: "contacts" | "tasks"
+  configKey: "contacts" | "tasks" | "services"
 }
 
 type ContactStatus = {
@@ -61,7 +61,7 @@ type ContactStatus = {
 
 type StatusConfigResponse = {
   ok: boolean
-  configKey: "contacts" | "tasks"
+  configKey: "contacts" | "tasks" | "services"
   statuses: ContactStatus[]
 }
 

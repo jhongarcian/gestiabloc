@@ -18,6 +18,7 @@ type DateTimeInputProps = {
   disabled?: boolean
   ariaInvalid?: boolean
   className?: string
+  timezone?: string | null
   disabledDate?: (date: Date) => boolean
 }
 

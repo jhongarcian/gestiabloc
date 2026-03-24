@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
-import { ArrowRight, Layers2, ListChecks, Users } from "lucide-react"
+import { ArrowRight, ListChecks, Users } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { api } from "@/lib/api"
@@ -52,13 +52,6 @@ const CONFIG_CARDS: ConfigCard[] = [
     href: "tasks",
     icon: ListChecks,
     alwaysAvailable: true,
-  },
-  {
-    key: "services",
-    label: "Service Statuses",
-    description: "Configure service-specific status options and visibility.",
-    href: "services",
-    icon: Layers2,
   },
 ]
 
