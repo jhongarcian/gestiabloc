@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation"
 
 import { getTenantMembershipContext } from "../_lib/tenant-session"
-import { ServicesProductsPanel } from "./_components/services-products-panel"
+import { ServicesRegistryPanel } from "./_components/services-registry-panel"
 
 export default async function ServicesPage({
   params,
@@ -17,7 +17,14 @@ export default async function ServicesPage({
 
   return (
     <section className="flex h-full min-h-0 flex-col gap-4">
-      <ServicesProductsPanel tenantId={membership.tenant.id} />
+      <div className="flex min-h-0 flex-1 rounded-xl bg-white p-2 md:p-4">
+        <div className="flex h-full w-full min-h-0 flex-col">
+          <ServicesRegistryPanel
+            tenantId={membership.tenant.id}
+            tenantSlug={tenantSlug}
+          />
+        </div>
+      </div>
     </section>
   )
 }
