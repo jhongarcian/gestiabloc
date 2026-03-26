@@ -122,6 +122,20 @@ const optionalUrlField = () =>
     z.string().url().max(255).nullable().optional(),
   );
 
+const optionalPercentageField = () =>
+  z.preprocess(
+    (value) => {
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) return null;
+        return Number(trimmed);
+      }
+
+      return value;
+    },
+    z.number().min(0).max(100).nullable().optional(),
+  );
+
 const UpdateTenantInfoSchema = z.object({
   name: z.string().trim().min(1).max(120),
   email: optionalEmailField(),
@@ -134,6 +148,17 @@ const UpdateTenantInfoSchema = z.object({
   country: optionalStringField(120),
   timezone: optionalStringField(100),
   website: optionalUrlField(),
+  taxEnabled: z.boolean().optional().default(false),
+  taxLabel: optionalStringField(60),
+  defaultTaxRatePercent: optionalPercentageField(),
+}).superRefine((value, ctx) => {
+  if (value.taxEnabled && value.defaultTaxRatePercent === null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["defaultTaxRatePercent"],
+      message: "Tax rate is required when taxes are enabled.",
+    });
+  }
 });
 
 const UpdateMemberSecurityLevelSchema = z.object({
@@ -1425,6 +1450,9 @@ router.get("/:tenantId/account", ...readMiddlewares, async (req, res, next) => {
         country: true,
         timezone: true,
         website: true,
+        taxEnabled: true,
+        taxLabel: true,
+        defaultTaxRateBps: true,
         emailVerified: true,
         createdAt: true,
         updatedAt: true,
@@ -1437,7 +1465,13 @@ router.get("/:tenantId/account", ...readMiddlewares, async (req, res, next) => {
 
     return res.json({
       ok: true,
-      tenant,
+      tenant: {
+        ...tenant,
+        defaultTaxRatePercent:
+          tenant.defaultTaxRateBps !== null && tenant.defaultTaxRateBps !== undefined
+            ? tenant.defaultTaxRateBps / 100
+            : null,
+      },
     });
   } catch (error) {
     return next(error);
@@ -1463,6 +1497,14 @@ router.patch("/:tenantId/account", ...writeMiddlewares, async (req, res, next) =
         country: payload.country ?? null,
         timezone: payload.timezone ?? null,
         website: payload.website ?? null,
+        taxEnabled: payload.taxEnabled,
+        taxLabel: payload.taxEnabled ? payload.taxLabel ?? null : null,
+        defaultTaxRateBps:
+          payload.taxEnabled &&
+          payload.defaultTaxRatePercent !== null &&
+          payload.defaultTaxRatePercent !== undefined
+            ? Math.round(payload.defaultTaxRatePercent * 100)
+            : null,
       },
       select: {
         id: true,
@@ -1477,6 +1519,9 @@ router.patch("/:tenantId/account", ...writeMiddlewares, async (req, res, next) =
         country: true,
         timezone: true,
         website: true,
+        taxEnabled: true,
+        taxLabel: true,
+        defaultTaxRateBps: true,
         emailVerified: true,
         createdAt: true,
         updatedAt: true,
@@ -1485,7 +1530,13 @@ router.patch("/:tenantId/account", ...writeMiddlewares, async (req, res, next) =
 
     return res.json({
       ok: true,
-      tenant,
+      tenant: {
+        ...tenant,
+        defaultTaxRatePercent:
+          tenant.defaultTaxRateBps !== null && tenant.defaultTaxRateBps !== undefined
+            ? tenant.defaultTaxRateBps / 100
+            : null,
+      },
     });
   } catch (error) {
     return next(error);

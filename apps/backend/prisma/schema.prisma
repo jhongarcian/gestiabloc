@@ -335,6 +335,9 @@ model Tenant {
   country       String?
   timezone      String?
   website       String?
+  taxEnabled    Boolean @default(false)
+  taxLabel      String?
+  defaultTaxRateBps Int?
   emailVerified Boolean @default(false)
 
   members                          Membership[]

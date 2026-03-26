@@ -5,6 +5,7 @@ import { isAxiosError } from "axios"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { AppPhoneInput } from "@/components/ui/phone-input"
@@ -36,6 +37,9 @@ type TenantInfo = {
   country: string | null
   timezone: string | null
   website: string | null
+  taxEnabled: boolean
+  taxLabel: string | null
+  defaultTaxRatePercent: number | null
   emailVerified: boolean
   createdAt: string
   updatedAt: string
@@ -58,6 +62,9 @@ type TenantInfoPayload = {
   country: string
   timezone: string
   website: string
+  taxEnabled: boolean
+  taxLabel: string
+  defaultTaxRatePercent: string
 }
 
 const INITIAL_PAYLOAD: TenantInfoPayload = {
@@ -72,6 +79,9 @@ const INITIAL_PAYLOAD: TenantInfoPayload = {
   country: "",
   timezone: "",
   website: "",
+  taxEnabled: false,
+  taxLabel: "",
+  defaultTaxRatePercent: "",
 }
 
 const normalizeString = (value: string | null) => value ?? ""
@@ -205,6 +215,13 @@ export function TenantInfoForm({ tenantId }: TenantInfoFormProps) {
         country: normalizeString(tenant.country),
         timezone: normalizeString(tenant.timezone),
         website: normalizeString(tenant.website),
+        taxEnabled: tenant.taxEnabled,
+        taxLabel: normalizeString(tenant.taxLabel),
+        defaultTaxRatePercent:
+          tenant.defaultTaxRatePercent !== null &&
+          tenant.defaultTaxRatePercent !== undefined
+            ? tenant.defaultTaxRatePercent.toFixed(2).replace(/\.00$/, "")
+            : "",
       })
     } catch {
       setErrorMessage("Could not load tenant information.")
@@ -250,6 +267,13 @@ export function TenantInfoForm({ tenantId }: TenantInfoFormProps) {
         country: normalizeString(tenant.country),
         timezone: normalizeString(tenant.timezone),
         website: normalizeString(tenant.website),
+        taxEnabled: tenant.taxEnabled,
+        taxLabel: normalizeString(tenant.taxLabel),
+        defaultTaxRatePercent:
+          tenant.defaultTaxRatePercent !== null &&
+          tenant.defaultTaxRatePercent !== undefined
+            ? tenant.defaultTaxRatePercent.toFixed(2).replace(/\.00$/, "")
+            : "",
       })
 
       toast.success("Tenant information updated.")
@@ -285,7 +309,7 @@ export function TenantInfoForm({ tenantId }: TenantInfoFormProps) {
           Tenant Information
         </h2>
         <p className="text-sm text-slate-500">
-          Update your tenant profile, contact details, and location settings.
+          Update your tenant profile, contact details, location settings, and billing tax defaults.
         </p>
       </div>
 
@@ -458,6 +482,78 @@ export function TenantInfoForm({ tenantId }: TenantInfoFormProps) {
           />
         </div>
       </div>
+
+      <section className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+        <div className="space-y-1">
+          <h3 className="text-base font-semibold text-slate-900">
+            Billing & Taxes
+          </h3>
+          <p className="text-sm text-slate-500">
+            Configure the tenant-wide tax default used by service billing. Services can still be marked tax exempt individually.
+          </p>
+        </div>
+
+        <div className="mt-4 grid gap-4">
+          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+            <Checkbox
+              checked={payload.taxEnabled}
+              onCheckedChange={(checked) =>
+                setPayload((prev) => ({
+                  ...prev,
+                  taxEnabled: checked === true,
+                }))
+              }
+            />
+            Enable taxes for this account
+          </label>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="tenant-tax-rate">Tax Rate (%)</Label>
+              <Input
+                id="tenant-tax-rate"
+                type="number"
+                min={0}
+                max={100}
+                step="0.01"
+                disabled={!payload.taxEnabled}
+                value={payload.defaultTaxRatePercent}
+                onChange={(event) =>
+                  setPayload((prev) => ({
+                    ...prev,
+                    defaultTaxRatePercent: event.target.value,
+                  }))
+                }
+                placeholder="8.25"
+              />
+              <p className="text-xs text-slate-500">
+                {payload.taxEnabled
+                  ? "Default percentage applied to taxable services."
+                  : "Taxes are off for this tenant. Taxable services will resolve to no tax."}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="tenant-tax-label">Tax Label</Label>
+              <Input
+                id="tenant-tax-label"
+                disabled={!payload.taxEnabled}
+                value={payload.taxLabel}
+                onChange={(event) =>
+                  setPayload((prev) => ({
+                    ...prev,
+                    taxLabel: event.target.value,
+                  }))
+                }
+                placeholder="Sales Tax"
+              />
+              <p className="text-xs text-slate-500">
+                Optional label shown anywhere the tenant tax is displayed.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {errorMessage ? (
         <p className="text-sm text-rose-600">{errorMessage}</p>
