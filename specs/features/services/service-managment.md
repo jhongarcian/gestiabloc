@@ -90,13 +90,12 @@ Current UI includes:
 - Search input
 - Table
 - Pagination
-- Create dialog
-- Edit dialog
-- Delete action
+- Create transaction dialog
+- Row click navigation into the related service configuration route
 
-There is no standalone route today for:
+Current row navigation target:
 
-- `/app/{slug}/services/{id}`
+- `/app/{slug}/account-settings/services/{serviceId}`
 
 ### `/app/{slug}/contacts/{contactId}/services`
 
@@ -157,17 +156,19 @@ In practice:
 
 Backend endpoint:
 
-- `GET /api/services-products/{tenantId}`
+- `GET /api/account-settings/{tenantId}/services`
 
 Backed by:
 
-- `TenantLinkedEntity`
+- `Service`
+- `ServiceChecklistItem`
+- `ServiceFollowUpTemplate`
+- `ServiceProfessional`
 
 Supported query behavior:
 
 - Pagination
 - Search by `name`
-- Only `type = SERVICE`
 - Only `isActive = true`
 
 ### Table columns
@@ -177,39 +178,54 @@ Current columns:
 - `Name`
 - `Cost`
 - `Min Partial Payment`
-- `Has Checklist`
-- `# of Professionals`
-- `# Template Available`
+- `Checklists`
+- `Professionals`
+- `Follow-Up Templates`
 
 ### Column details
 
 #### Service Name
 
-- Display the name of the service
+- Display only the name of the service
+- Do not display the service description in this table cell
 
 #### Cost
 
 - Display the service cost
+- The cost cell should stay vertically centered with the rest of the row content
 
 #### Minimum Partial Payment
 
 - Display the minimum partial payment amount allowed for the service
+- The value may show `Full only` when partial payments are not allowed
+- The cell should stay vertically centered with the rest of the row content
 
-#### Has Checklist
+#### Checklists
 
 - Display whether the service includes a checklist
 - This may be shown as a boolean badge, chip, or icon
+- The badge should stay vertically centered with the rest of the row content
 
 #### Professionals
 
 - Display the professionals related to the service
-- Professionals should be shown using chips
-- The UI should show the number of professionals associated with the service
-- If names are shown, they should be rendered as chips
+- Professionals should be shown as overlapping avatars
+- A professional may be an internal user or an external named professional
+- Internal users should use their avatar image when available
+- Internal professional avatars should use a light blue visual treatment
+- External professionals should render an initials fallback avatar
+- External professional avatars should use a light orange visual treatment
+- Hovering an avatar should elevate it visually so the full avatar is visible
+- Hovering an avatar should create extra space so adjacent avatars move apart slightly
+- Hovering an avatar should show a tooltip with the professional name
+- If there are more professionals than visible avatars, the overflow should be represented with a `+n` avatar and tooltip
+- The avatar stack should stay vertically centered with the rest of the row content
 
-#### Templates Available
+#### Follow-Up Templates
 
-- Display the number of templates associated with the service
+- Display the number of published follow-up templates associated with the service
+- The count should be rendered as a badge/chip rather than plain text
+- The badge should stay vertically centered with the rest of the row content
 
 ---
 
@@ -224,12 +240,26 @@ The services page must include a button that allows the user to create a service
 
 ### Transaction flow requirements
 
-When creating a transaction, the user must be able to:
+The implemented transaction creation flow is a multi-step dialog.
 
-- Pick a service
-- Pick a contact related to that service purchase
+Current step order:
+
+- `Contact`
+- `Service`
+- `Follow up`
+- `Checklist`
+- `Payment`
+
+The user must be able to:
+
+- Pick the contact first
+- Pick the service second
+- Optionally assign a configured service professional to the transaction
+- Pick the follow-up template after service selection
+- Optionally assign a tenant user to own the enrolled follow-up work
+- Review the checklist items that will be created for the contact
 - Create a transaction representing that purchase
-- Select a follow-up template for the service
+- Review and confirm payment details at the end of the flow
 
 ### Business context
 
@@ -238,9 +268,23 @@ Services are treated as products or services that can be purchased by contacts.
 Because of this:
 
 - A purchased service should be linked to a contact
+- A purchased service may be assigned to one configured service professional
 - A purchased service should generate or register a transaction
 - A service may have multiple follow-up templates
 - Once the service is purchased, the user must choose one of the available follow-up templates
+
+### Assigned professional rules
+
+- Professional choices should come from the professionals configured on the selected service
+- Internal and external professionals may both be assignable
+- Assigning a professional during transaction creation is optional
+- The selected professional should be stored on the created contact service enrollment
+- The field should be phrased as an optional question such as `Assign a professional?`
+- The picker should use the same avatar-led popover command interaction style used elsewhere in the product
+- The picker trigger should show the selected avatar and name when assigned
+- The picker should allow an explicit unassigned state
+- Internal professionals should use light blue avatar styling
+- External professionals should use light orange avatar styling
 
 ### Follow-up template rules
 
@@ -248,6 +292,95 @@ Because of this:
 - Only templates related to the selected service should be available for selection
 - If no templates exist, the UI should handle this clearly
 - The selected follow-up template should be attached to the created transaction or post-purchase workflow
+- Leaving the field on the default option should use the default published template behavior for the service
+
+### Follow-up ownership rules
+
+- The transaction flow should allow the user to choose a tenant user who will be in charge of the enrolled follow-up work
+- The follow-up owner is selected in the dedicated `Follow up` step
+- Follow-up owner choices should come from active tenant users
+- Assigning a follow-up owner during transaction creation is optional
+- If selected, the chosen user should be stamped onto the enrolled `ContactServiceFollowUpStep` records as `assignedToUserId`
+- If not selected, the enrolled follow-up steps should remain unassigned
+- The follow-up owner picker should use the same compact popover-command interaction style used by other assignee pickers in the product
+
+### Detailed step behavior
+
+#### Step 1. Contact
+
+- The dialog begins with contact selection
+- The user searches contacts by name, email, or phone
+- A selected contact is shown in a compact summary card with a `Change` action
+- The user cannot continue until a contact is selected
+
+#### Step 2. Service
+
+- The service step is focused only on choosing what the transaction will start
+- The user selects the service first
+- Once the service is selected, the dialog loads:
+  - service professionals
+  - checklist definition
+- The user may then:
+  - optionally assign a professional
+- This step should not include a wide preview panel
+- The dialog should remain narrow enough to avoid unnecessary horizontal expansion
+
+Current service step inputs:
+
+- `Service`
+- `Professional`
+
+#### Step 3. Follow up
+
+- The follow-up step comes after service selection and before checklist review
+- The purpose of this step is to define the workflow that will start after purchase
+
+Current follow-up step inputs:
+
+- `Follow-Up Template`
+- `Follow-Up Owner`
+
+Follow-up step rules:
+
+- The follow-up template list is unlocked by the selected service
+- The follow-up owner list should come from active tenant users
+- The follow-up owner assignment is optional
+- The selected follow-up owner should apply to the follow-up steps enrolled for the new contact service
+- If no follow-up owner is selected, the enrolled follow-up steps remain unassigned
+- The step should clearly communicate that the selected user is the person in charge of the follow-up work created by the transaction
+
+#### Step 4. Checklist
+
+- The checklist has its own step between service selection and payment
+- The purpose of this step is to show the checklist requirements that will be created for the contact
+- The checklist should be displayed as a table
+- The checklist table should remain compact and focused
+
+Current checklist table columns:
+
+- `#`
+- `Checklist Item`
+- `Requirement`
+
+Checklist step rules:
+
+- Do not show summary cards for total, required, or optional items
+- Do not show per-item description or notes columns in the checklist step table
+- Required items should be labeled with a visual badge
+- Optional items should be labeled with a visual badge
+- If the service has no checklist items, the step should clearly communicate that no checklist requirements will be created
+
+#### Step 5. Payment
+
+- Payment is the final confirmation step
+- The user chooses payment mode:
+  - `FULL`
+  - `PARTIAL`
+  - `LATER`
+- The user reviews service cost
+- The user enters partial payment amount when partial payment is chosen
+- The user can add notes
+- The transaction is created from this final step
 
 ---
 
@@ -258,7 +391,39 @@ Because of this:
 - Only active services should be listed
 - Products should never be listed
 - Empty state should describe missing active services
-- This screen is editable in-place; rows are not clickable and do not navigate to a detail screen
+- Table rows should be clickable and keyboard accessible
+- Clicking a row should navigate to `/app/{slug}/account-settings/services/{serviceId}`
+- Data cells should remain vertically centered so rows stay aligned even when the professionals column uses avatar stacks
+- The transaction dialog should stay within the viewport and use an internal scroll area when step content exceeds the visible height
+- The dialog footer should remain reachable without forcing the entire browser page to scroll
+
+### Contact search behavior in the transaction dialog
+
+Backend endpoint:
+
+- `GET /api/contacts/{tenantId}/search`
+
+Current search expectations:
+
+- Search is tenant scoped
+- Search is debounced from the client at `350ms`
+- Contact search should not rely only on exact literal substring matches
+- Multi-part queries should behave like person-name search, not surname-only search
+
+Name-search rules:
+
+- If the user enters multiple name parts such as `Sophie Garcia`, the backend should strongly prefer contacts that match both the first-name side and the last-name side
+- Surname-only matches should not survive as candidate results for a multi-part name query when the given-name side does not also match
+- Middle-name matches should get more ranking presence
+- If the query includes a middle token, a contact whose middle name matches should rank above a contact with the same first and last name but no matching middle name
+- Query tokens should be compared across first name, middle name, and last name rather than only as one full raw string
+- Small character mistakes should still be tolerated for name matching, including simple transposition mistakes such as `John` vs `Jonh`
+
+Performance intent:
+
+- The backend should narrow candidate rows in the database before applying in-memory ranking
+- Multi-token name searches should constrain first-name and last-name structure at the database filter level
+- Broad ranking should run only over a small bounded candidate set, not the entire tenant contact list
 
 ## 6. Contact Service Enrollment List
 
@@ -326,10 +491,20 @@ The modal currently allows the user to:
 
 - choose a service from the admin-configured service catalog
 - optionally choose a published follow-up template for that service
+- optionally assign a configured professional from the selected service
+- optionally assign a tenant user to own the enrolled follow-up steps
 - review billing rules
 - review checklist requirements
 - choose payment mode: `FULL`, `PARTIAL`, or `LATER`
 - optionally enter notes
+
+Current modal flow order:
+
+- contact
+- service
+- follow up
+- checklist
+- payment
 
 Current purchase behavior:
 

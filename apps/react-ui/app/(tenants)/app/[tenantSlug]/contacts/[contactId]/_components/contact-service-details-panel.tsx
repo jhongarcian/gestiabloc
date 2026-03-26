@@ -95,6 +95,18 @@ type ContactServiceDetails = {
     id: string
     name: string
   } | null
+  assignedProfessional?: {
+    id: string
+    kind: "INTERNAL_USER" | "EXTERNAL"
+    userId: string | null
+    externalProfessionalName: string | null
+    externalContact: string | null
+    user?: {
+      name: string | null
+      email: string | null
+      image?: string | null
+    } | null
+  } | null
   followUpSteps: Array<{
     id: string
     title: string
@@ -193,6 +205,20 @@ const parseUsdToCents = (value: string) => {
 }
 
 const toSentence = (value: string) => value.toLowerCase().replace(/_/g, " ")
+
+const getAssignedProfessionalLabel = (
+  professional: ContactServiceDetails["assignedProfessional"],
+) => {
+  if (!professional) return "No assigned professional"
+
+  return (
+    professional.externalProfessionalName?.trim() ||
+    professional.user?.name?.trim() ||
+    professional.user?.email?.trim() ||
+    professional.externalContact?.trim() ||
+    "Assigned professional"
+  )
+}
 
 const PAYMENT_METHOD_OPTIONS = [
   { value: "CASH", label: "Cash" },
@@ -959,6 +985,9 @@ export function ContactServiceDetailsPanel({
                 <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
                   {item.service.name}
                 </h1>
+                <p className="text-sm text-slate-500">
+                  Professional: {getAssignedProfessionalLabel(item.assignedProfessional)}
+                </p>
                 {item.service.description ? (
                   <p className="max-w-3xl text-sm leading-6 text-slate-600">
                     {item.service.description}

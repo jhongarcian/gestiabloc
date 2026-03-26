@@ -33,7 +33,7 @@ const ACCOUNT_SETTINGS_SECTIONS = [
 type AccountSettingsSection = (typeof ACCOUNT_SETTINGS_SECTIONS)[number];
 
 const TenantPathSchema = z.object({
-  tenantId: z.string().min(1),
+  tenantId: z.string().trim().min(1),
 });
 
 const StatusConfigKeySchema = z.enum(["contacts", "tasks"]);
@@ -43,18 +43,18 @@ const TenantStatusConfigPathSchema = TenantPathSchema.extend({
 });
 
 const TenantRecordPathSchema = TenantPathSchema.extend({
-  recordId: z.string().min(1),
+  recordId: z.string().trim().min(1),
 });
 const TenantStatusConfigRecordPathSchema = TenantStatusConfigPathSchema.extend({
-  recordId: z.string().min(1),
+  recordId: z.string().trim().min(1),
 });
 const TenantUserPathSchema = TenantPathSchema.extend({
-  userId: z.string().min(1),
+  userId: z.string().trim().min(1),
 });
 
 const TenantScopedMutationSchema = z
   .object({
-    tenantId: z.string().min(1).optional(),
+    tenantId: z.string().trim().min(1).optional(),
   })
   .passthrough();
 
@@ -1833,6 +1833,7 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
                 select: {
                   name: true,
                   email: true,
+                  image: true,
                 },
               },
             },
@@ -2511,6 +2512,7 @@ router.get("/:tenantId/service-professionals", ...readMiddlewares, async (req, r
               select: {
                 name: true,
                 email: true,
+                image: true,
               },
             },
           },
@@ -2603,6 +2605,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
               select: {
                 name: true,
                 email: true,
+                image: true,
               },
             },
           },

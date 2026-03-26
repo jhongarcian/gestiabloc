@@ -25,23 +25,23 @@ const sanitizeMultilineText = (value: string) =>
     .trim()
 
 const TenantPathSchema = z.object({
-  tenantId: z.string().min(1),
+  tenantId: z.string().trim().min(1),
 })
 
 const TenantContactServicePathSchema = TenantPathSchema.extend({
-  contactServiceId: z.string().min(1),
+  contactServiceId: z.string().trim().min(1),
 })
 
 const TenantContactServicePaymentPathSchema = TenantContactServicePathSchema.extend({
-  paymentId: z.string().min(1),
+  paymentId: z.string().trim().min(1),
 })
 
 const TenantFollowUpStepPathSchema = TenantContactServicePathSchema.extend({
-  followUpStepId: z.string().min(1),
+  followUpStepId: z.string().trim().min(1),
 })
 
 const TenantContactServiceChecklistItemPathSchema = TenantContactServicePathSchema.extend({
-  checklistItemId: z.string().min(1),
+  checklistItemId: z.string().trim().min(1),
 })
 
 const ContactServicesListQuerySchema = z.object({
@@ -76,9 +76,11 @@ const FollowUpsListQuerySchema = z.object({
 })
 
 const CreateContactServiceSchema = z.object({
-  contactId: z.string().min(1),
-  serviceId: z.string().min(1),
-  followUpTemplateId: z.string().min(1).optional(),
+  contactId: z.string().trim().min(1),
+  serviceId: z.string().trim().min(1),
+  followUpTemplateId: z.string().trim().min(1).optional(),
+  followUpAssignedToUserId: z.string().trim().min(1).optional(),
+  assignedProfessionalId: z.string().trim().min(1).optional(),
   purchasedAt: z.string().datetime().nullable().optional(),
   startedAt: z.string().datetime().nullable().optional(),
   totalPriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
@@ -727,6 +729,22 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           currency: true,
           allowPartialPayments: true,
           notes: true,
+          assignedProfessional: {
+            select: {
+              id: true,
+              kind: true,
+              userId: true,
+              externalProfessionalName: true,
+              externalContact: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+            },
+          },
           contact: {
             select: {
               firstName: true,
@@ -858,6 +876,22 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           currency: true,
           allowPartialPayments: true,
           notes: true,
+          assignedProfessional: {
+            select: {
+              id: true,
+              kind: true,
+              userId: true,
+              externalProfessionalName: true,
+              externalContact: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+            },
+          },
           contact: {
             select: {
               firstName: true,
@@ -956,6 +990,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           currency: item.currency,
           allowPartialPayments: item.allowPartialPayments,
           notes: item.notes,
+          assignedProfessional: item.assignedProfessional,
           contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
             .filter(Boolean)
             .join(" "),
@@ -1012,6 +1047,11 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           basePriceCents: true,
           currency: true,
           allowPartialPayments: true,
+          professionals: {
+            select: {
+              id: true,
+            },
+          },
           checklistItems: {
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: { id: true },
@@ -1069,6 +1109,34 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       return res.status(400).json({ error: "FOLLOW_UP_TEMPLATE_HAS_NO_STEPS" })
     }
 
+    const selectedAssignedProfessional = payload.assignedProfessionalId
+      ? service.professionals.find(
+          (item: { id: string }) => item.id === payload.assignedProfessionalId,
+        ) ?? null
+      : null
+
+    if (payload.assignedProfessionalId && !selectedAssignedProfessional) {
+      return res.status(400).json({ error: "INVALID_ASSIGNED_SERVICE_PROFESSIONAL" })
+    }
+
+    if (payload.followUpAssignedToUserId) {
+      const assigneeMembership = await prisma.membership.findUnique({
+        where: {
+          userId_tenantId: {
+            userId: payload.followUpAssignedToUserId,
+            tenantId,
+          },
+        },
+        select: {
+          status: true,
+        },
+      })
+
+      if (!assigneeMembership || assigneeMembership.status !== "ACTIVE") {
+        return res.status(400).json({ error: "INVALID_FOLLOW_UP_ASSIGNEE" })
+      }
+    }
+
     const purchasedAt = payload.purchasedAt ? new Date(payload.purchasedAt) : new Date()
     const startedAt = payload.startedAt ? new Date(payload.startedAt) : new Date()
     const totalPriceCents = service.basePriceCents
@@ -1095,6 +1163,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           contactId: payload.contactId,
           serviceId: payload.serviceId,
           followUpTemplateId: selectedPublishedTemplate?.id ?? null,
+          assignedProfessionalId: selectedAssignedProfessional?.id ?? null,
           status: "IN_PROGRESS",
           startedAt,
           purchasedAt,
@@ -1147,6 +1216,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
               status: index === 0 ? "ACTIVE" : "PENDING",
               availableAt: index === 0 ? startedAt : dueAt,
               dueAt,
+              assignedToUserId: payload.followUpAssignedToUserId ?? null,
               sortOrder: step.sortOrder,
             }
           }),
@@ -1204,6 +1274,22 @@ router.get(
             currency: true,
             allowPartialPayments: true,
             notes: true,
+            assignedProfessional: {
+              select: {
+                id: true,
+                kind: true,
+                userId: true,
+                externalProfessionalName: true,
+                externalContact: true,
+                user: {
+                  select: {
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+              },
+            },
             contact: {
               select: {
                 firstName: true,
@@ -1377,6 +1463,7 @@ router.get(
           currency: item.currency,
           allowPartialPayments: item.allowPartialPayments,
           notes: item.notes,
+          assignedProfessional: item.assignedProfessional,
           contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
             .filter(Boolean)
             .join(" "),
