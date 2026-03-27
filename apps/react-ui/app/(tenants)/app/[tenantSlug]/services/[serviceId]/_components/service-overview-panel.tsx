@@ -1,10 +1,12 @@
 "use client"
 
+import { format } from "date-fns"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { isAxiosError } from "axios"
 import {
   ArrowLeft,
+  CalendarDays,
   Check,
   ChevronDown,
   ClipboardList,
@@ -13,9 +15,12 @@ import {
   ShieldCheck,
   UserRound,
   Users,
+  Wallet,
 } from "lucide-react"
 import { type ReactNode, useEffect, useMemo, useState } from "react"
+import { type DateRange } from "react-day-picker"
 import { toast } from "sonner"
+import { z } from "zod"
 
 import {
   StackedAvatarGroup,
@@ -24,6 +29,8 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
+import { Card, CardContent } from "@/components/ui/card"
 import {
   Command,
   CommandEmpty,
@@ -38,7 +45,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -50,6 +56,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
   TableBody,
@@ -68,7 +76,6 @@ type ServiceProfessional = {
   userId: string | null
   externalProfessionalName: string | null
   externalContact: string | null
-  notes: string | null
   sortOrder: number
   user: {
     name: string | null
@@ -90,8 +97,8 @@ type ServiceFollowUpTemplate = {
   name: string
   isPublished: boolean
   sortOrder: number
-  flowNodes: unknown[] | null
-  flowEdges: unknown[] | null
+  flowNodeCount: number
+  flowEdgeCount: number
 }
 
 export type ServiceOverviewPanelProps = {
@@ -118,6 +125,7 @@ export type ServiceOverviewPanelProps = {
       defaultTaxRatePercent: number | null
     }
   }
+  initialSummary?: ServiceSummaryResponse["summary"] | null
 }
 
 type ContactSearchResult = {
@@ -151,11 +159,47 @@ type CreateContactServiceResponse = {
   }
 }
 
+type TransactionFormState = {
+  contactId: string
+  templateId: string
+  assignedProfessionalId: string
+  followUpAssignedToUserId: string
+  paymentMode: "FULL" | "PARTIAL" | "LATER"
+  initialPaymentUsd: string
+  notes: string
+}
+
+type TransactionFormErrors = Partial<Record<keyof TransactionFormState, string>>
+
+type DateRangePreset = "THIS_MONTH" | "LAST_MONTH" | "LAST_3_MONTHS" | "CUSTOM"
+
+type ServiceSummaryResponse = {
+  ok: boolean
+  summary: {
+    grossSalesCents: number
+    servicesSold: number
+    activeFollowUpServices: number
+    remainingBalanceCents: number
+    range: {
+      preset: DateRangePreset
+      from: string
+      to: string
+    }
+  }
+}
+
 const INSTALLMENT_FREQUENCY_LABELS = {
   WEEKLY: "Weekly",
   BIWEEKLY: "Biweekly",
   MONTHLY: "Monthly",
 } as const
+
+const DATE_RANGE_PRESET_OPTIONS: Array<{ value: DateRangePreset; label: string }> = [
+  { value: "THIS_MONTH", label: "This month" },
+  { value: "LAST_MONTH", label: "Last month" },
+  { value: "LAST_3_MONTHS", label: "Last 3 months" },
+  { value: "CUSTOM", label: "Custom range" },
+]
 
 const PROFESSIONAL_TONE_STYLES = {
   internal: {
@@ -167,6 +211,15 @@ const PROFESSIONAL_TONE_STYLES = {
     fallbackClassName: "bg-orange-100 text-orange-900",
   },
 } as const
+
+const optionalStringIdSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value
+    const trimmed = value.trim()
+    return trimmed.length ? trimmed : undefined
+  },
+  z.string().trim().min(1).optional(),
+)
 
 function formatCurrency(valueCents: number, currency: string) {
   return new Intl.NumberFormat("en-US", {
@@ -189,6 +242,45 @@ function parseUsdToCents(value: string) {
   if (!Number.isFinite(parsed) || parsed < 0) return null
 
   return Math.round(parsed * 100)
+}
+
+function formatDateOnly(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+function parseDateOnlyToLocalDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined
+  const [year, month, day] = value.split("-").map(Number)
+  const date = new Date(year, month - 1, day)
+  return Number.isNaN(date.getTime()) ? undefined : date
+}
+
+function getDefaultCustomDateRange() {
+  const today = new Date()
+  const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1)
+
+  return {
+    from: formatDateOnly(startOfMonth),
+    to: formatDateOnly(today),
+  }
+}
+
+function formatCalendarRangeLabel(range?: DateRange) {
+  if (!range?.from) return "Pick a custom range"
+  if (!range.to) return format(range.from, "MMM d, yyyy")
+  return `${format(range.from, "MMM d, yyyy")} - ${format(range.to, "MMM d, yyyy")}`
+}
+
+function formatSummaryRangeLabel(range: ServiceSummaryResponse["summary"]["range"]) {
+  const presetLabel =
+    DATE_RANGE_PRESET_OPTIONS.find((option) => option.value === range.preset)?.label ?? "This month"
+
+  if (range.preset !== "CUSTOM") return presetLabel
+
+  return `${range.from} to ${range.to}`
 }
 
 function getInitials(value: string) {
@@ -556,13 +648,16 @@ function CreateTransactionDialog({
   tenantId,
   tenantSlug,
   service,
+  open,
+  onOpenChange,
 }: {
   tenantId: string
   tenantSlug: string
   service: ServiceOverviewPanelProps["service"]
+  open: boolean
+  onOpenChange: (open: boolean) => void
 }) {
   const router = useRouter()
-  const [open, setOpen] = useState(false)
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1)
   const [isSaving, setIsSaving] = useState(false)
   const [isLoadingAssignees, setIsLoadingAssignees] = useState(false)
@@ -580,6 +675,210 @@ function CreateTransactionDialog({
   const [paymentMode, setPaymentMode] = useState<"FULL" | "PARTIAL" | "LATER">("FULL")
   const [initialPaymentUsd, setInitialPaymentUsd] = useState("")
   const [notes, setNotes] = useState("")
+  const [errors, setErrors] = useState<TransactionFormErrors>({})
+
+  const contactStepSchema = useMemo(
+    () =>
+      z.object({
+        contactId: z.string().trim().min(1, "Select a contact."),
+      }),
+    [],
+  )
+
+  const followUpStepSchema = useMemo(
+    () =>
+      z
+        .object({
+          templateId: optionalStringIdSchema,
+          assignedProfessionalId: optionalStringIdSchema,
+          followUpAssignedToUserId: optionalStringIdSchema,
+        })
+        .superRefine((value, ctx) => {
+          if (
+            value.templateId &&
+            !service.followUpTemplates.some((template) => template.id === value.templateId)
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["templateId"],
+              message: "Select a valid follow-up template.",
+            })
+          }
+
+          if (
+            value.assignedProfessionalId &&
+            !service.professionals.some(
+              (professional) => professional.id === value.assignedProfessionalId,
+            )
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["assignedProfessionalId"],
+              message: "Select a valid professional.",
+            })
+          }
+
+          if (
+            value.followUpAssignedToUserId &&
+            !followUpAssigneeOptions.some(
+              (assignee) => assignee.value === value.followUpAssignedToUserId,
+            )
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["followUpAssignedToUserId"],
+              message: "Select a valid follow-up owner.",
+            })
+          }
+        }),
+    [followUpAssigneeOptions, service.followUpTemplates, service.professionals],
+  )
+
+  const paymentStepSchema = useMemo(
+    () =>
+      z
+        .object({
+          paymentMode: z.enum(["FULL", "PARTIAL", "LATER"]),
+          initialPaymentUsd: z.string(),
+          notes: z.string().trim().max(4000, "Notes must be 4,000 characters or less."),
+        })
+        .superRefine((value, ctx) => {
+          if (value.paymentMode === "PARTIAL" && !service.allowPartialPayments) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["paymentMode"],
+              message: "This service does not allow partial payments.",
+            })
+          }
+
+          if (value.paymentMode !== "PARTIAL") {
+            return
+          }
+
+          const initialPaymentCents = parseUsdToCents(value.initialPaymentUsd)
+
+          if (initialPaymentCents === null || initialPaymentCents <= 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["initialPaymentUsd"],
+              message: "Enter a valid partial payment amount in USD.",
+            })
+            return
+          }
+
+          if (initialPaymentCents > service.basePriceCents) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["initialPaymentUsd"],
+              message: "Partial payment cannot be greater than total amount.",
+            })
+          }
+
+          if (
+            service.minimumPartialPaymentCents !== null &&
+            service.minimumPartialPaymentCents !== undefined &&
+            initialPaymentCents < service.minimumPartialPaymentCents
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["initialPaymentUsd"],
+              message: "Partial payment is below the minimum allowed for this service.",
+            })
+          }
+        }),
+    [service.allowPartialPayments, service.basePriceCents, service.minimumPartialPaymentCents],
+  )
+
+  const clearFieldError = (field: keyof TransactionFormErrors) => {
+    setErrors((current) => {
+      if (!current[field]) return current
+      const next = { ...current }
+      delete next[field]
+      return next
+    })
+  }
+
+  const applySchemaErrors = <T extends keyof TransactionFormState>(
+    result: { error: z.ZodError },
+    fields: T[],
+  ) => {
+    const nextFieldErrors: TransactionFormErrors = {}
+
+    for (const field of fields) {
+      const issue = result.error.issues.find(
+        (entry: z.ZodIssue) => entry.path[0] === field,
+      )
+      if (issue?.message) {
+        nextFieldErrors[field] = issue.message
+      }
+    }
+
+    setErrors((current) => ({
+      ...current,
+      ...Object.fromEntries(fields.map((field) => [field, undefined])),
+      ...nextFieldErrors,
+    }))
+  }
+
+  const validateContactStep = () => {
+    const result = contactStepSchema.safeParse({
+      contactId: selectedContact?.id ?? "",
+    })
+
+    if (result.success) {
+      clearFieldError("contactId")
+      return true
+    }
+
+    applySchemaErrors(result, ["contactId"])
+    return false
+  }
+
+  const validateFollowUpStep = () => {
+    const result = followUpStepSchema.safeParse({
+      templateId,
+      assignedProfessionalId,
+      followUpAssignedToUserId,
+    })
+
+    if (result.success) {
+      setErrors((current) => ({
+        ...current,
+        templateId: undefined,
+        assignedProfessionalId: undefined,
+        followUpAssignedToUserId: undefined,
+      }))
+      return true
+    }
+
+    applySchemaErrors(result, [
+      "templateId",
+      "assignedProfessionalId",
+      "followUpAssignedToUserId",
+    ])
+    return false
+  }
+
+  const validatePaymentStep = () => {
+    const result = paymentStepSchema.safeParse({
+      paymentMode,
+      initialPaymentUsd,
+      notes,
+    })
+
+    if (result.success) {
+      setErrors((current) => ({
+        ...current,
+        paymentMode: undefined,
+        initialPaymentUsd: undefined,
+        notes: undefined,
+      }))
+      return true
+    }
+
+    applySchemaErrors(result, ["paymentMode", "initialPaymentUsd", "notes"])
+    return false
+  }
 
   const resetForm = () => {
     setStep(1)
@@ -594,6 +893,7 @@ function CreateTransactionDialog({
     setPaymentMode("FULL")
     setInitialPaymentUsd("")
     setNotes("")
+    setErrors({})
   }
 
   useEffect(() => {
@@ -605,7 +905,7 @@ function CreateTransactionDialog({
 
       try {
         const { data } = await api.get<TenantAssigneesResponse>(
-          `/api/tasks/${tenantId}/assignees`,
+          `/api/tasks/${encodeURIComponent(tenantId)}/assignees`,
         )
         setFollowUpAssigneeOptions(data.items ?? [])
       } catch {
@@ -647,7 +947,7 @@ function CreateTransactionDialog({
 
       try {
         const { data } = await api.get<ContactSearchResponse>(
-          `/api/contacts/${tenantId}/search`,
+          `/api/contacts/${encodeURIComponent(tenantId)}/search`,
           {
             params: {
               q: debouncedContactSearchQuery,
@@ -675,7 +975,7 @@ function CreateTransactionDialog({
 
   const goToNextStep = () => {
     if (step === 1) {
-      if (!selectedContact) {
+      if (!validateContactStep()) {
         toast.error("Select a contact.")
         return
       }
@@ -685,7 +985,17 @@ function CreateTransactionDialog({
     }
 
     if (step === 2) {
+      if (!validateFollowUpStep()) {
+        toast.error("Review the follow-up selections.")
+        return
+      }
+
       setStep(3)
+      return
+    }
+
+    if (!validatePaymentStep()) {
+      toast.error("Review the payment details.")
       return
     }
 
@@ -697,17 +1007,31 @@ function CreateTransactionDialog({
   }
 
   const onSubmit = async () => {
+    if (!validateContactStep()) {
+      setStep(1)
+      toast.error("Select a contact.")
+      return
+    }
+
+    if (!validateFollowUpStep()) {
+      setStep(2)
+      toast.error("Review the follow-up selections.")
+      return
+    }
+
+    if (!validatePaymentStep()) {
+      setStep(4)
+      toast.error("Review the payment details.")
+      return
+    }
+
     if (!selectedContact) {
+      setStep(1)
       toast.error("Select a contact.")
       return
     }
 
     const totalPriceCents = service.basePriceCents
-
-    if (paymentMode === "PARTIAL" && !service.allowPartialPayments) {
-      toast.error("This service does not allow partial payments.")
-      return
-    }
 
     const initialPaymentCents =
       paymentMode === "FULL"
@@ -716,32 +1040,11 @@ function CreateTransactionDialog({
           ? 0
           : parseUsdToCents(initialPaymentUsd)
 
-    if (paymentMode === "PARTIAL") {
-      if (initialPaymentCents === null || initialPaymentCents <= 0) {
-        toast.error("Enter a valid partial payment amount in USD.")
-        return
-      }
-
-      if (initialPaymentCents > totalPriceCents) {
-        toast.error("Partial payment cannot be greater than total amount.")
-        return
-      }
-
-      if (
-        service.minimumPartialPaymentCents !== null &&
-        service.minimumPartialPaymentCents !== undefined &&
-        initialPaymentCents < service.minimumPartialPaymentCents
-      ) {
-        toast.error("Partial payment is below the minimum allowed for this service.")
-        return
-      }
-    }
-
     setIsSaving(true)
 
     try {
       const { data } = await api.post<CreateContactServiceResponse>(
-        `/api/services/${tenantId}/contact-services`,
+        `/api/services/${encodeURIComponent(tenantId)}/contact-services`,
         {
           contactId: selectedContact.id,
           serviceId: service.id,
@@ -754,7 +1057,7 @@ function CreateTransactionDialog({
       )
 
       toast.success("Service transaction created.")
-      setOpen(false)
+      onOpenChange(false)
       resetForm()
       router.push(
         `/app/${tenantSlug}/contacts/${selectedContact.id}/services/${data.contactService.id}`,
@@ -780,15 +1083,10 @@ function CreateTransactionDialog({
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
-        setOpen(nextOpen)
+        onOpenChange(nextOpen)
         if (!nextOpen) resetForm()
       }}
     >
-      <DialogTrigger asChild>
-        <Button type="button" className="bg-blue-950 text-white hover:bg-blue-900">
-          Create transaction
-        </Button>
-      </DialogTrigger>
       <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-3xl">
         <DialogHeader className="shrink-0">
           <DialogTitle>Create service transaction</DialogTitle>
@@ -882,7 +1180,10 @@ function CreateTransactionDialog({
                     <Input
                       id="service-transaction-contact-search"
                       value={contactSearchQuery}
-                      onChange={(event) => setContactSearchQuery(event.target.value)}
+                      onChange={(event) => {
+                        clearFieldError("contactId")
+                        setContactSearchQuery(event.target.value)
+                      }}
                       placeholder="Search contacts by name, email, or phone"
                     />
                     <div className="rounded-xl border border-slate-200 bg-white">
@@ -899,10 +1200,11 @@ function CreateTransactionDialog({
                               key={contact.id}
                               type="button"
                               className="flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors hover:bg-slate-50"
-                              onClick={() => {
-                                setSelectedContact(contact)
-                                setContactResults([])
-                              }}
+                            onClick={() => {
+                              clearFieldError("contactId")
+                              setSelectedContact(contact)
+                              setContactResults([])
+                            }}
                             >
                               <span className="text-sm font-medium text-slate-900">
                                 {contact.fullName}
@@ -919,6 +1221,9 @@ function CreateTransactionDialog({
                     </div>
                   </div>
                 )}
+                {errors.contactId ? (
+                  <p className="text-xs text-rose-600">{errors.contactId}</p>
+                ) : null}
               </div>
             </section>
           ) : null}
@@ -943,9 +1248,10 @@ function CreateTransactionDialog({
                   <Label htmlFor="service-transaction-template">Follow-Up Template</Label>
                   <Select
                     value={templateId || "default"}
-                    onValueChange={(value) =>
+                    onValueChange={(value) => {
+                      clearFieldError("templateId")
                       setTemplateId(value === "default" ? "" : value)
-                    }
+                    }}
                   >
                     <SelectTrigger id="service-transaction-template">
                       <SelectValue placeholder="Use default template selection" />
@@ -968,6 +1274,9 @@ function CreateTransactionDialog({
                       Leaving this on default uses the service&apos;s standard published template.
                     </p>
                   )}
+                  {errors.templateId ? (
+                    <p className="text-xs text-rose-600">{errors.templateId}</p>
+                  ) : null}
                 </div>
               </FlowStepCard>
 
@@ -980,7 +1289,10 @@ function CreateTransactionDialog({
                   <Label htmlFor="service-transaction-professional">Professional</Label>
                   <AssignedProfessionalPicker
                     value={assignedProfessionalId}
-                    onValueChange={setAssignedProfessionalId}
+                    onValueChange={(value) => {
+                      clearFieldError("assignedProfessionalId")
+                      setAssignedProfessionalId(value)
+                    }}
                     professionals={service.professionals}
                   />
                   {service.professionals.length === 0 ? (
@@ -992,6 +1304,9 @@ function CreateTransactionDialog({
                       You can leave this unassigned and decide later.
                     </p>
                   )}
+                  {errors.assignedProfessionalId ? (
+                    <p className="text-xs text-rose-600">{errors.assignedProfessionalId}</p>
+                  ) : null}
                 </div>
               </FlowStepCard>
 
@@ -1005,7 +1320,10 @@ function CreateTransactionDialog({
                   <FollowUpAssigneePicker
                     assignees={followUpAssigneeOptions}
                     value={followUpAssignedToUserId}
-                    onValueChange={setFollowUpAssignedToUserId}
+                    onValueChange={(value) => {
+                      clearFieldError("followUpAssignedToUserId")
+                      setFollowUpAssignedToUserId(value)
+                    }}
                     disabled={isLoadingAssignees}
                   />
                   {isLoadingAssignees ? (
@@ -1015,6 +1333,11 @@ function CreateTransactionDialog({
                       You can leave this unassigned and route follow-up later.
                     </p>
                   )}
+                  {errors.followUpAssignedToUserId ? (
+                    <p className="text-xs text-rose-600">
+                      {errors.followUpAssignedToUserId}
+                    </p>
+                  ) : null}
                 </div>
               </FlowStepCard>
             </section>
@@ -1104,9 +1427,11 @@ function CreateTransactionDialog({
                   <Label htmlFor="service-transaction-payment-type">Payment Type</Label>
                   <Select
                     value={paymentMode}
-                    onValueChange={(value) =>
+                    onValueChange={(value) => {
+                      clearFieldError("paymentMode")
+                      clearFieldError("initialPaymentUsd")
                       setPaymentMode(value as "FULL" | "PARTIAL" | "LATER")
-                    }
+                    }}
                   >
                     <SelectTrigger id="service-transaction-payment-type">
                       <SelectValue />
@@ -1123,6 +1448,9 @@ function CreateTransactionDialog({
                     <p className="text-xs text-slate-500">
                       This service supports full payment or pay later only.
                     </p>
+                  ) : null}
+                  {errors.paymentMode ? (
+                    <p className="text-xs text-rose-600">{errors.paymentMode}</p>
                   ) : null}
                 </div>
 
@@ -1171,7 +1499,10 @@ function CreateTransactionDialog({
                           ? "0.00"
                           : centsToUsdInput(service.basePriceCents)
                     }
-                    onChange={(event) => setInitialPaymentUsd(event.target.value)}
+                    onChange={(event) => {
+                      clearFieldError("initialPaymentUsd")
+                      setInitialPaymentUsd(event.target.value)
+                    }}
                     readOnly={paymentMode !== "PARTIAL"}
                     inputMode="decimal"
                     placeholder="0.00"
@@ -1183,6 +1514,9 @@ function CreateTransactionDialog({
                       {formatCurrency(service.minimumPartialPaymentCents, service.currency)}
                     </p>
                   ) : null}
+                  {errors.initialPaymentUsd ? (
+                    <p className="text-xs text-rose-600">{errors.initialPaymentUsd}</p>
+                  ) : null}
                 </div>
 
                 <div className="grid gap-2">
@@ -1191,9 +1525,15 @@ function CreateTransactionDialog({
                     id="service-transaction-notes"
                     rows={4}
                     value={notes}
-                    onChange={(event) => setNotes(event.target.value)}
+                    onChange={(event) => {
+                      clearFieldError("notes")
+                      setNotes(event.target.value)
+                    }}
                     placeholder="Add any notes about this service transaction"
                   />
+                  {errors.notes ? (
+                    <p className="text-xs text-rose-600">{errors.notes}</p>
+                  ) : null}
                 </div>
               </div>
             </section>
@@ -1240,7 +1580,21 @@ export function ServiceOverviewPanel({
   tenantId,
   tenantSlug,
   service,
+  initialSummary = null,
 }: ServiceOverviewPanelProps) {
+  const [isTransactionDialogOpen, setIsTransactionDialogOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState<
+    "overview" | "checklist" | "follow-up-templates" | "professionals"
+  >("overview")
+  const [rangePreset, setRangePreset] = useState<DateRangePreset>("THIS_MONTH")
+  const defaultCustomRange = getDefaultCustomDateRange()
+  const [customFrom, setCustomFrom] = useState(defaultCustomRange.from)
+  const [customTo, setCustomTo] = useState(defaultCustomRange.to)
+  const [summary, setSummary] = useState<ServiceSummaryResponse["summary"] | null>(
+    initialSummary,
+  )
+  const [isSummaryLoading, setIsSummaryLoading] = useState(false)
+  const [summaryErrorMessage, setSummaryErrorMessage] = useState<string | null>(null)
   const taxApplies =
     service.tenantBilling.taxEnabled &&
     !service.isTaxExempt &&
@@ -1256,13 +1610,17 @@ export function ServiceOverviewPanel({
     (item) => item.kind === "INTERNAL_USER",
   ).length
   const totalTemplateNodes = service.followUpTemplates.reduce(
-    (total, template) => total + (Array.isArray(template.flowNodes) ? template.flowNodes.length : 0),
+    (total, template) => total + template.flowNodeCount,
     0,
   )
-  const totalTemplateEdges = service.followUpTemplates.reduce(
-    (total, template) => total + (Array.isArray(template.flowEdges) ? template.flowEdges.length : 0),
-    0,
+  const customDateRange = useMemo<DateRange | undefined>(
+    () => ({
+      from: parseDateOnlyToLocalDate(customFrom),
+      to: parseDateOnlyToLocalDate(customTo),
+    }),
+    [customFrom, customTo],
   )
+  const summaryRangeLabel = summary ? formatSummaryRangeLabel(summary.range) : ""
 
   const paymentSummary = service.allowPartialPayments
     ? service.installmentCount && service.installmentFrequency
@@ -1270,494 +1628,786 @@ export function ServiceOverviewPanel({
       : "Partial payments allowed"
     : "Full payment only"
 
+  useEffect(() => {
+    if (rangePreset === "CUSTOM") {
+      if (!customFrom || !customTo) {
+        setSummary(null)
+        setSummaryErrorMessage("Select a start and end date for the custom range.")
+        return
+      }
+
+      if (customFrom > customTo) {
+        setSummary(null)
+        setSummaryErrorMessage("End date must be the same day or after start date.")
+        return
+      }
+    }
+
+    const matchesInitialSummary =
+      initialSummary &&
+      initialSummary.range.preset === rangePreset &&
+      (rangePreset !== "CUSTOM" ||
+        (initialSummary.range.from === customFrom && initialSummary.range.to === customTo))
+
+    if (matchesInitialSummary) {
+      setSummary(initialSummary)
+      setIsSummaryLoading(false)
+      setSummaryErrorMessage(null)
+      return
+    }
+
+    let cancelled = false
+
+    const loadSummary = async () => {
+      setIsSummaryLoading(true)
+      setSummaryErrorMessage(null)
+
+      try {
+        const { data } = await api.get<ServiceSummaryResponse>(
+          `/api/services/${encodeURIComponent(tenantId)}/catalog/${encodeURIComponent(service.id)}/summary`,
+          {
+            params: {
+              preset: rangePreset,
+              ...(rangePreset === "CUSTOM"
+                ? {
+                    from: customFrom,
+                    to: customTo,
+                  }
+                : {}),
+            },
+          },
+        )
+
+        if (cancelled) return
+        setSummary(data.summary)
+      } catch (error) {
+        if (cancelled) return
+        setSummary(null)
+        if (isAxiosError(error)) {
+          const backendError = error.response?.data?.error
+          setSummaryErrorMessage(
+            typeof backendError === "string"
+              ? backendError.replace(/_/g, " ")
+              : "Could not load service summary.",
+          )
+        } else {
+          setSummaryErrorMessage("Could not load service summary.")
+        }
+      } finally {
+        if (cancelled) return
+        setIsSummaryLoading(false)
+      }
+    }
+
+    void loadSummary()
+
+    return () => {
+      cancelled = true
+    }
+  }, [customFrom, customTo, initialSummary, rangePreset, service.id, tenantId])
+
+  useEffect(() => {
+    window.__tenantShellServiceBreadcrumbLabel = service.name
+    window.dispatchEvent(
+      new CustomEvent("service-breadcrumb-updated", {
+        detail: { label: service.name },
+      }),
+    )
+
+    return () => {
+      window.__tenantShellServiceBreadcrumbLabel = null
+      window.dispatchEvent(
+        new CustomEvent("service-breadcrumb-updated", {
+          detail: { label: null },
+        }),
+      )
+    }
+  }, [service.name])
+
   return (
     <div className="space-y-6">
       <section className="overflow-hidden rounded-[28px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)]">
-        <div className="grid gap-6 p-5 lg:grid-cols-[minmax(0,1.2fr)_360px] lg:p-7">
-          <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <Button
-                asChild
-                type="button"
-                variant="outline"
-                size="sm"
-                className="border-white/70 bg-white/80 text-slate-700 hover:bg-white"
-              >
-                <Link href={`/app/${tenantSlug}/services`}>
-                  <ArrowLeft className="h-4 w-4" />
-                  Back to services
-                </Link>
-              </Button>
-              <Badge
-                variant="secondary"
-                className={cn(
-                  "border",
-                  service.isActive
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                    : "border-slate-200 bg-slate-100 text-slate-600",
-                )}
-              >
-                {service.isActive ? "Available" : "Unavailable"}
-              </Badge>
-            </div>
-
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
-                Service Overview
-              </p>
-              <h1 className="max-w-3xl text-3xl font-semibold tracking-tight text-slate-950">
-                {service.name}
-              </h1>
-              <p className="max-w-3xl text-sm leading-6 text-slate-600">
-                {service.description?.trim() || "This service is ready to review and enroll."}
-              </p>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                  Base Price
-                </p>
-                <p className="mt-2 text-3xl font-semibold text-slate-950">
-                  {formatCurrency(service.basePriceCents, service.currency)}
-                </p>
-                <p className="mt-1 text-sm text-slate-500">{paymentSummary}</p>
+        <div className="space-y-5 p-5 lg:p-7">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  asChild
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="border-white/70 bg-white/80 text-slate-700 hover:bg-white"
+                >
+                  <Link href={`/app/${tenantSlug}/services`}>
+                    <ArrowLeft className="h-4 w-4" />
+                    Back to services
+                  </Link>
+                </Button>
+                <Badge
+                  variant="secondary"
+                  className={cn(
+                    "border",
+                    service.isActive
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "border-slate-200 bg-slate-100 text-slate-600",
+                  )}
+                >
+                  {service.isActive ? "Available" : "Unavailable"}
+                </Badge>
               </div>
-              <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                  Total With Tax
+
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
+                  Service Overview
                 </p>
-                <p className="mt-2 text-3xl font-semibold text-slate-950">
-                  {formatCurrency(totalWithTaxCents, service.currency)}
-                </p>
-                <p className="mt-1 text-sm text-slate-500">
-                  {taxApplies
-                    ? `${service.tenantBilling.taxLabel || "Tax"} ${(service.tenantBilling.defaultTaxRatePercent ?? 0).toFixed(2).replace(/\.00$/, "")}% applies`
-                    : service.isTaxExempt
-                      ? "This service is tax exempt"
-                      : "No tax applies"}
-                </p>
-              </div>
-              <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                  Professionals
-                </p>
-                <p className="mt-2 text-3xl font-semibold text-slate-950">
-                  {service.professionals.length}
-                </p>
-                <p className="mt-1 text-sm text-slate-500">
-                  {internalProfessionalsCount} internal · {service.professionals.length - internalProfessionalsCount} external
+                <h1 className="max-w-3xl text-3xl font-semibold tracking-tight text-slate-950">
+                  {service.name}
+                </h1>
+                <p className="max-w-3xl text-sm leading-6 text-slate-600">
+                  {service.description?.trim() || "Review the service details, checklist, follow-up setup, and payment rules before you create a transaction."}
                 </p>
               </div>
             </div>
+
+            <Button
+              type="button"
+              className="bg-blue-950 text-white hover:bg-blue-900 lg:self-start"
+              onClick={() => setIsTransactionDialogOpen(true)}
+            >
+              Create transaction
+            </Button>
           </div>
 
-          <div className="flex flex-col justify-between rounded-[24px] border border-slate-300/60 bg-slate-950 p-5 text-white shadow-sm">
-            <div className="space-y-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-blue-200/90">
-                Ready To Enroll
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                Base Price
               </p>
-              <p className="text-sm leading-6 text-slate-300">
-                Review the service details, confirm the checklist and follow-up coverage, then start the transaction with this service already selected.
+              <p className="mt-2 text-3xl font-semibold text-slate-950">
+                {formatCurrency(service.basePriceCents, service.currency)}
               </p>
+              <p className="mt-1 text-sm text-slate-500">{paymentSummary}</p>
             </div>
-
-            <div className="mt-6 space-y-3">
-              <CreateTransactionDialog
-                tenantId={tenantId}
-                tenantSlug={tenantSlug}
-                service={service}
-              />
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-sm text-slate-300">
-                The transaction flow will ask for the contact, follow-up setup, checklist review, and payment details.
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        <article className="rounded-2xl border border-slate-200 bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Price</p>
-          <p className="mt-2 text-2xl font-semibold text-slate-950">
-            {formatCurrency(service.basePriceCents, service.currency)}
-          </p>
-          <p className="mt-1 text-sm text-slate-500">Service base price before tax.</p>
-        </article>
-        <article className="rounded-2xl border border-slate-200 bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Payment</p>
-          <p className="mt-2 text-lg font-semibold text-slate-950">{paymentSummary}</p>
-          <p className="mt-1 text-sm text-slate-500">
-            Contacts can still pay the full amount any time.
-          </p>
-        </article>
-        <article className="rounded-2xl border border-slate-200 bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Tax</p>
-          <p className="mt-2 text-lg font-semibold text-slate-950">
-            {service.tenantBilling.taxEnabled
-              ? service.isTaxExempt
-                ? "Tax exempt"
-                : service.tenantBilling.defaultTaxRatePercent !== null
-                  ? `${service.tenantBilling.taxLabel || "Tax"} ${(service.tenantBilling.defaultTaxRatePercent).toFixed(2).replace(/\.00$/, "")}%`
-                  : "Tax settings incomplete"
-              : "No tax"}
-          </p>
-          <p className="mt-1 text-sm text-slate-500">
-            {taxApplies
-              ? `Estimated tax: ${formatCurrency(estimatedTaxCents, service.currency)}`
-              : "This service does not add tax to the total."}
-          </p>
-        </article>
-        <article className="rounded-2xl border border-slate-200 bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Professionals</p>
-          <p className="mt-2 text-2xl font-semibold text-slate-950">{service.professionals.length}</p>
-          <p className="mt-1 text-sm text-slate-500">People who can deliver or own this service.</p>
-        </article>
-        <article className="rounded-2xl border border-slate-200 bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Follow-Up Templates</p>
-          <p className="mt-2 text-2xl font-semibold text-slate-950">{service.followUpTemplates.length}</p>
-          <p className="mt-1 text-sm text-slate-500">{totalTemplateNodes} nodes · {totalTemplateEdges} connections</p>
-        </article>
-        <article className="rounded-2xl border border-slate-200 bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Checklist</p>
-          <p className="mt-2 text-2xl font-semibold text-slate-950">{service.checklistItems.length}</p>
-          <p className="mt-1 text-sm text-slate-500">{requiredChecklistCount} required · {optionalChecklistCount} optional</p>
-        </article>
-      </section>
-
-      <section className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-        <article className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="space-y-1">
-            <h2 className="text-xl font-semibold text-slate-950">About this service</h2>
-            <p className="text-sm text-slate-500">
-              A clear overview of what the service includes before you create a transaction.
-            </p>
-          </div>
-          <div className="mt-4 grid gap-4">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-              <p className="text-sm font-medium text-slate-900">Description</p>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
-                {service.description?.trim() || "No description is configured for this service yet."}
+            <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                Total With Tax
+              </p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">
+                {formatCurrency(totalWithTaxCents, service.currency)}
+              </p>
+              <p className="mt-1 text-sm text-slate-500">
+                {taxApplies
+                  ? `${service.tenantBilling.taxLabel || "Tax"} ${(service.tenantBilling.defaultTaxRatePercent ?? 0).toFixed(2).replace(/\.00$/, "")}% applies`
+                  : service.isTaxExempt
+                    ? "This service is tax exempt"
+                    : "No tax applies"}
               </p>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-              <p className="text-sm font-medium text-slate-900">What to expect</p>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
-                This service has {service.checklistItems.length} checklist item{service.checklistItems.length === 1 ? "" : "s"}, {service.followUpTemplates.length} published follow-up template{service.followUpTemplates.length === 1 ? "" : "s"}, and {service.professionals.length} available professional{service.professionals.length === 1 ? "" : "s"}.
+            <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                Checklist
+              </p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">
+                {service.checklistItems.length}
+              </p>
+              <p className="mt-1 text-sm text-slate-500">
+                {requiredChecklistCount} required · {optionalChecklistCount} optional
               </p>
             </div>
-          </div>
-        </article>
-
-        <article className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="space-y-1">
-            <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
-              <CreditCard className="h-5 w-5 text-blue-700" />
-              Pricing & Payment
-            </h2>
-            <p className="text-sm text-slate-500">
-              Billing expectations for this service based on its configured rules.
-            </p>
-          </div>
-
-          <div className="mt-4 grid gap-4">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-              <p className="text-sm font-medium text-slate-900">Payment summary</p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Base price</p>
-                  <p className="mt-1 text-sm font-medium text-slate-900">
-                    {formatCurrency(service.basePriceCents, service.currency)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Payment mode</p>
-                  <p className="mt-1 text-sm font-medium text-slate-900">
-                    {service.allowPartialPayments ? "Partial payments allowed" : "Full payment only"}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Minimum deposit</p>
-                  <p className="mt-1 text-sm font-medium text-slate-900">
-                    {service.minimumPartialPaymentCents !== null
-                      ? formatCurrency(service.minimumPartialPaymentCents, service.currency)
-                      : "Not applicable"}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Installments</p>
-                  <p className="mt-1 text-sm font-medium text-slate-900">
-                    {service.installmentCount && service.installmentFrequency
-                      ? `${service.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[service.installmentFrequency].toLowerCase()}`
-                      : "Not configured"}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-              <p className="text-sm font-medium text-slate-900">Tax</p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Tax status</p>
-                  <p className="mt-1 text-sm font-medium text-slate-900">
-                    {service.tenantBilling.taxEnabled
-                      ? service.isTaxExempt
-                        ? "Tax exempt"
-                        : "Taxable"
-                      : "No tax"}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Rate</p>
-                  <p className="mt-1 text-sm font-medium text-slate-900">
-                    {taxApplies
-                      ? `${service.tenantBilling.taxLabel || "Tax"} ${(service.tenantBilling.defaultTaxRatePercent ?? 0).toFixed(2).replace(/\.00$/, "")}%`
-                      : "Not applied"}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Estimated tax</p>
-                  <p className="mt-1 text-sm font-medium text-slate-900">
-                    {formatCurrency(estimatedTaxCents, service.currency)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Estimated total</p>
-                  <p className="mt-1 text-sm font-medium text-slate-900">
-                    {formatCurrency(totalWithTaxCents, service.currency)}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </article>
-      </section>
-
-      <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-200 px-5 py-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="space-y-1">
-              <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
-                <Users className="h-5 w-5 text-blue-700" />
+            <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
                 Professionals
-              </h2>
-              <p className="text-sm text-slate-500">
-                People who can own or deliver this service.
+              </p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">
+                {service.professionals.length}
+              </p>
+              <p className="mt-1 text-sm text-slate-500">
+                {internalProfessionalsCount} internal · {service.professionals.length - internalProfessionalsCount} external
               </p>
             </div>
-            {service.professionals.length ? (
-              <StackedAvatarGroup items={service.professionals.map(toProfessionalAvatarItem)} />
-            ) : null}
           </div>
         </div>
+      </section>
 
-        <div className="p-5">
-          {service.professionals.length ? (
-            <div className="overflow-auto rounded-2xl border border-slate-200">
-              <Table className="[&_td]:py-3 [&_th]:h-10">
-                <TableHeader className="bg-slate-50/80">
-                  <TableRow>
-                    <TableHead className="min-w-14 text-xs">#</TableHead>
-                    <TableHead className="min-w-36 text-xs">Type</TableHead>
-                    <TableHead className="min-w-48 text-xs">Name</TableHead>
-                    <TableHead className="min-w-40 text-xs">Contact</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {service.professionals.map((professional, index) => (
-                    <TableRow key={professional.id} className="hover:bg-blue-50/40">
-                      <TableCell>
+      <section className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+            <div className="space-y-1">
+              <h2 className="text-xl font-semibold tracking-tight text-slate-950">
+                Service performance
+              </h2>
+              <p className="text-sm text-slate-600">
+                Review booked sales, open follow-up workload, and remaining balance for this service.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2 xl:items-end">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                {rangePreset === "CUSTOM" ? (
+                  <div className="grid gap-1">
+                    <Label htmlFor="service-summary-calendar" className="text-xs text-slate-500">
+                      Date range
+                    </Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          id="service-summary-calendar"
+                          type="button"
+                          variant="outline"
+                          className="min-w-[260px] justify-start border-white/80 bg-white/80 text-left font-normal text-blue-950 shadow-sm hover:bg-white"
+                        >
+                          <CalendarDays className="mr-2 h-4 w-4 shrink-0 text-blue-700" />
+                          <span className="truncate">{formatCalendarRangeLabel(customDateRange)}</span>
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        align="end"
+                        className="w-auto border-none bg-transparent p-0 shadow-none"
+                      >
+                        <Card className="w-fit gap-0 rounded-2xl border-slate-200 p-0 shadow-xl">
+                          <CardContent className="p-0">
+                            <Calendar
+                              mode="range"
+                              defaultMonth={customDateRange?.from}
+                              selected={customDateRange}
+                              onSelect={(nextRange) => {
+                                const nextFrom = nextRange?.from
+                                const nextTo = nextRange?.to
+                                setCustomFrom(nextFrom ? formatDateOnly(nextFrom) : "")
+                                setCustomTo(nextTo ? formatDateOnly(nextTo) : "")
+                              }}
+                              numberOfMonths={2}
+                              disabled={(date) =>
+                                date > new Date() || date < new Date("1900-01-01")
+                              }
+                            />
+                          </CardContent>
+                        </Card>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                ) : null}
+
+                <div className="grid gap-1">
+                  <Label htmlFor="service-summary-range" className="text-xs text-slate-500">
+                    Summary range
+                  </Label>
+                  <Select
+                    value={rangePreset}
+                    onValueChange={(value) => {
+                      const nextPreset = value as DateRangePreset
+                      setRangePreset(nextPreset)
+
+                      if (nextPreset === "CUSTOM" && (!customFrom || !customTo)) {
+                        const nextRange = getDefaultCustomDateRange()
+                        setCustomFrom(nextRange.from)
+                        setCustomTo(nextRange.to)
+                      }
+                    }}
+                  >
+                    <SelectTrigger
+                      id="service-summary-range"
+                      className="w-full min-w-[180px] border-white/80 bg-white/80 text-blue-950 shadow-sm sm:w-[180px]"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DATE_RANGE_PRESET_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {summaryErrorMessage ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              {summaryErrorMessage}
+            </div>
+          ) : null}
+
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
+              <div className="flex items-center gap-2 text-slate-400">
+                <Wallet className="h-4 w-4 text-emerald-600" />
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Gross Sales</p>
+              </div>
+              {isSummaryLoading && !summary ? (
+                <div className="mt-3 space-y-2">
+                  <Skeleton className="h-8 w-28 rounded-lg" />
+                  <Skeleton className="h-4 w-40 rounded-md" />
+                </div>
+              ) : (
+                <>
+                  <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
+                    {formatCurrency(summary?.grossSalesCents ?? 0, service.currency)}
+                  </p>
+                  <p className="mt-2 text-sm text-slate-500">
+                    {summary ? summaryRangeLabel : "Sales booked in the selected range."}
+                  </p>
+                </>
+              )}
+            </article>
+
+            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
+              <div className="flex items-center gap-2 text-slate-400">
+                <CalendarDays className="h-4 w-4 text-blue-600" />
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Services Sold</p>
+              </div>
+              {isSummaryLoading && !summary ? (
+                <div className="mt-3 space-y-2">
+                  <Skeleton className="h-8 w-16 rounded-lg" />
+                  <Skeleton className="h-4 w-44 rounded-md" />
+                </div>
+              ) : (
+                <>
+                  <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
+                    {summary?.servicesSold ?? 0}
+                  </p>
+                  <p className="mt-2 text-sm text-slate-500">
+                    Transactions created in the selected range.
+                  </p>
+                </>
+              )}
+            </article>
+
+            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
+              <div className="flex items-center gap-2 text-slate-400">
+                <Route className="h-4 w-4 text-amber-600" />
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Active Follow-Ups</p>
+              </div>
+              {isSummaryLoading && !summary ? (
+                <div className="mt-3 flex flex-col items-start gap-2">
+                  <Skeleton className="h-8 w-16 rounded-lg" />
+                  <Skeleton className="h-6 w-12 rounded-full" />
+                </div>
+              ) : (
+                <div className="mt-3 flex flex-col items-start gap-2">
+                  <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
+                    {summary?.activeFollowUpServices ?? 0}
+                  </p>
+                  <Badge
+                    variant="secondary"
+                    className="border border-amber-200 bg-amber-50 text-amber-700"
+                  >
+                    Live
+                  </Badge>
+                </div>
+              )}
+            </article>
+
+            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
+              <div className="flex items-center gap-2 text-slate-400">
+                <Wallet className="h-4 w-4 text-violet-600" />
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Remaining Balance</p>
+              </div>
+              {isSummaryLoading && !summary ? (
+                <div className="mt-3 flex flex-col items-start gap-2">
+                  <Skeleton className="h-8 w-28 rounded-lg" />
+                  <Skeleton className="h-6 w-12 rounded-full" />
+                </div>
+              ) : (
+                <div className="mt-3 flex flex-col items-start gap-2">
+                  <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
+                    {formatCurrency(summary?.remainingBalanceCents ?? 0, service.currency)}
+                  </p>
+                  <Badge
+                    variant="secondary"
+                    className="border border-violet-200 bg-violet-50 text-violet-700"
+                  >
+                    Live
+                  </Badge>
+                </div>
+              )}
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-sm">
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) =>
+            setActiveTab(
+              value as "overview" | "checklist" | "follow-up-templates" | "professionals",
+            )
+          }
+          className="space-y-5"
+        >
+          <div className="overflow-x-auto">
+            <TabsList className="inline-flex h-auto min-w-max items-center gap-2 rounded-none bg-transparent p-0">
+              <TabsTrigger
+                value="overview"
+                className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
+              >
+                Overview
+              </TabsTrigger>
+              <TabsTrigger
+                value="checklist"
+                className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
+              >
+                Checklist
+              </TabsTrigger>
+              <TabsTrigger
+                value="follow-up-templates"
+                className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
+              >
+                Follow-Up Templates
+              </TabsTrigger>
+              <TabsTrigger
+                value="professionals"
+                className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
+              >
+                Professionals
+              </TabsTrigger>
+            </TabsList>
+          </div>
+
+          <TabsContent value="overview" className="mt-0 space-y-5">
+            <section className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+              <article className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="space-y-1">
+                <h2 className="text-xl font-semibold text-slate-950">About this service</h2>
+                <p className="text-sm text-slate-500">
+                  A clear overview of what the service includes before you create a transaction.
+                </p>
+              </div>
+              <div className="mt-4 grid gap-4">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                  <p className="text-sm font-medium text-slate-900">Description</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    {service.description?.trim() || "No description is configured for this service yet."}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                  <p className="text-sm font-medium text-slate-900">What to expect</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    This service has {service.checklistItems.length} checklist item{service.checklistItems.length === 1 ? "" : "s"}, {service.followUpTemplates.length} published follow-up template{service.followUpTemplates.length === 1 ? "" : "s"}, and {service.professionals.length} available professional{service.professionals.length === 1 ? "" : "s"}.
+                  </p>
+                </div>
+              </div>
+              </article>
+
+              <article className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="space-y-1">
+                <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
+                  <CreditCard className="h-5 w-5 text-blue-700" />
+                  Pricing & Payment
+                </h2>
+                <p className="text-sm text-slate-500">
+                  Billing expectations for this service based on its configured rules.
+                </p>
+              </div>
+
+              <div className="mt-4 grid gap-4">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                  <p className="text-sm font-medium text-slate-900">Payment summary</p>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Base price</p>
+                      <p className="mt-1 text-sm font-medium text-slate-900">
+                        {formatCurrency(service.basePriceCents, service.currency)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Payment mode</p>
+                      <p className="mt-1 text-sm font-medium text-slate-900">
+                        {service.allowPartialPayments ? "Partial payments allowed" : "Full payment only"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Minimum deposit</p>
+                      <p className="mt-1 text-sm font-medium text-slate-900">
+                        {service.minimumPartialPaymentCents !== null
+                          ? formatCurrency(service.minimumPartialPaymentCents, service.currency)
+                          : "Not applicable"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Installments</p>
+                      <p className="mt-1 text-sm font-medium text-slate-900">
+                        {service.installmentCount && service.installmentFrequency
+                          ? `${service.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[service.installmentFrequency].toLowerCase()}`
+                          : "Not configured"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                  <p className="text-sm font-medium text-slate-900">Tax</p>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Tax status</p>
+                      <p className="mt-1 text-sm font-medium text-slate-900">
+                        {service.tenantBilling.taxEnabled
+                          ? service.isTaxExempt
+                            ? "Tax exempt"
+                            : "Taxable"
+                          : "No tax"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Rate</p>
+                      <p className="mt-1 text-sm font-medium text-slate-900">
+                        {taxApplies
+                          ? `${service.tenantBilling.taxLabel || "Tax"} ${(service.tenantBilling.defaultTaxRatePercent ?? 0).toFixed(2).replace(/\.00$/, "")}%`
+                          : "Not applied"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Estimated tax</p>
+                      <p className="mt-1 text-sm font-medium text-slate-900">
+                        {formatCurrency(estimatedTaxCents, service.currency)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Estimated total</p>
+                      <p className="mt-1 text-sm font-medium text-slate-900">
+                        {formatCurrency(totalWithTaxCents, service.currency)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              </article>
+            </section>
+          </TabsContent>
+
+          <TabsContent value="checklist" className="mt-0">
+            <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
+                    <ClipboardList className="h-5 w-5 text-blue-700" />
+                    Checklist
+                  </h2>
+                  <p className="text-sm text-slate-500">
+                    Requirements that may be created with the service enrollment.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge className="border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-50">
+                    {requiredChecklistCount} required
+                  </Badge>
+                  <Badge variant="secondary" className="border-slate-200 bg-slate-100 text-slate-700">
+                    {optionalChecklistCount} optional
+                  </Badge>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5">
+              {service.checklistItems.length ? (
+                <div className="space-y-3">
+                  {service.checklistItems.map((item, index) => (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                    >
+                      <div className="flex items-start gap-3">
                         <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
                           {index + 1}
                         </span>
-                      </TableCell>
-                      <TableCell>
-                        <span
-                          className={cn(
-                            "rounded-full border px-2.5 py-1 text-xs font-medium",
-                            professional.kind === "INTERNAL_USER"
-                              ? "border-blue-200 bg-blue-50 text-blue-700"
-                              : "border-orange-200 bg-orange-50 text-orange-700",
-                          )}
-                        >
-                          {professional.kind === "INTERNAL_USER" ? "Internal user" : "External professional"}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <div className="space-y-0.5">
-                          <p className="font-medium text-slate-900">
-                            {getProfessionalLabel(professional)}
-                          </p>
-                          <p className="text-sm text-slate-500">{getProfessionalMeta(professional)}</p>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-slate-600">
-                        {professional.kind === "EXTERNAL"
-                          ? professional.externalContact || "No contact added"
-                          : professional.user?.email || "Internal user"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          ) : (
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
-              <p className="text-base font-medium text-slate-900">No professionals listed yet</p>
-              <p className="mt-2 text-sm text-slate-500">
-                This service can still be reviewed, but no professionals are currently shown for it.
-              </p>
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        <article className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-5 py-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="space-y-1">
-                <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
-                  <Route className="h-5 w-5 text-blue-700" />
-                  Follow-Up Templates
-                </h2>
-                <p className="text-sm text-slate-500">
-                  Published templates available for this service.
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge className="border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-50">
-                  {service.followUpTemplates.length} templates
-                </Badge>
-                <Badge variant="secondary" className="border-slate-200 bg-slate-100 text-slate-700">
-                  {totalTemplateNodes} nodes
-                </Badge>
-              </div>
-            </div>
-          </div>
-
-          <div className="p-5">
-            {service.followUpTemplates.length ? (
-              <div className="overflow-auto rounded-2xl border border-slate-200">
-                <Table className="[&_td]:py-3 [&_th]:h-10">
-                  <TableHeader className="bg-slate-50/80">
-                    <TableRow>
-                      <TableHead className="min-w-14 text-xs">#</TableHead>
-                      <TableHead className="min-w-56 text-xs">Template</TableHead>
-                      <TableHead className="min-w-28 text-xs">Nodes</TableHead>
-                      <TableHead className="min-w-28 text-xs">Connections</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {service.followUpTemplates.map((template, index) => (
-                      <TableRow key={template.id} className="hover:bg-blue-50/40">
-                        <TableCell>
-                          <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
-                            {index + 1}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <div className="space-y-0.5">
-                            <p className="font-medium text-slate-900">{template.name}</p>
-                            <p className="text-sm text-slate-500">Published follow-up path</p>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-medium text-slate-900">{item.label}</p>
+                            <Badge
+                              variant="secondary"
+                              className={
+                                item.isRequired
+                                  ? "border border-rose-200 bg-rose-50 text-rose-700"
+                                  : "border border-slate-200 bg-slate-100 text-slate-600"
+                              }
+                            >
+                              {item.isRequired ? "Required" : "Optional"}
+                            </Badge>
                           </div>
-                        </TableCell>
-                        <TableCell>
-                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                            {Array.isArray(template.flowNodes) ? template.flowNodes.length : 0}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                            {Array.isArray(template.flowEdges) ? template.flowEdges.length : 0}
-                          </span>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            ) : (
-              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
-                <p className="text-base font-medium text-slate-900">No follow-up templates available</p>
-                <p className="mt-2 text-sm text-slate-500">
-                  This service does not currently expose any published follow-up templates.
-                </p>
-              </div>
-            )}
-          </div>
-        </article>
-
-        <article className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-5 py-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="space-y-1">
-                <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
-                  <ClipboardList className="h-5 w-5 text-blue-700" />
-                  Checklist
-                </h2>
-                <p className="text-sm text-slate-500">
-                  Requirements that may be created with the service enrollment.
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge className="border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-50">
-                  {requiredChecklistCount} required
-                </Badge>
-                <Badge variant="secondary" className="border-slate-200 bg-slate-100 text-slate-700">
-                  {optionalChecklistCount} optional
-                </Badge>
-              </div>
-            </div>
-          </div>
-
-          <div className="p-5">
-            {service.checklistItems.length ? (
-              <div className="space-y-3">
-                {service.checklistItems.map((item, index) => (
-                  <div
-                    key={item.id}
-                    className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
-                  >
-                    <div className="flex items-start gap-3">
-                      <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
-                        {index + 1}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-sm font-medium text-slate-900">{item.label}</p>
-                          <Badge
-                            variant="secondary"
-                            className={
-                              item.isRequired
-                                ? "border border-rose-200 bg-rose-50 text-rose-700"
-                                : "border border-slate-200 bg-slate-100 text-slate-600"
-                            }
-                          >
-                            {item.isRequired ? "Required" : "Optional"}
-                          </Badge>
+                          {item.description ? (
+                            <p className="mt-2 text-sm leading-6 text-slate-500">{item.description}</p>
+                          ) : (
+                            <p className="mt-2 text-sm text-slate-400">No description added</p>
+                          )}
                         </div>
-                        {item.description ? (
-                          <p className="mt-2 text-sm leading-6 text-slate-500">{item.description}</p>
-                        ) : (
-                          <p className="mt-2 text-sm text-slate-400">No description added</p>
-                        )}
                       </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
+                  <p className="text-base font-medium text-slate-900">No checklist items required</p>
+                  <p className="mt-2 text-sm text-slate-500">
+                    This service does not currently define any checklist requirements.
+                  </p>
+                </div>
+              )}
+            </div>
+            </section>
+          </TabsContent>
+
+          <TabsContent value="follow-up-templates" className="mt-0">
+            <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
+                    <Route className="h-5 w-5 text-blue-700" />
+                    Follow-Up Templates
+                  </h2>
+                  <p className="text-sm text-slate-500">
+                    Published templates available for this service.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge className="border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-50">
+                    {service.followUpTemplates.length} templates
+                  </Badge>
+                  <Badge variant="secondary" className="border-slate-200 bg-slate-100 text-slate-700">
+                    {totalTemplateNodes} nodes
+                  </Badge>
+                </div>
               </div>
-            ) : (
-              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
-                <p className="text-base font-medium text-slate-900">No checklist items required</p>
-                <p className="mt-2 text-sm text-slate-500">
-                  This service does not currently define any checklist requirements.
-                </p>
+            </div>
+
+            <div className="p-5">
+              {service.followUpTemplates.length ? (
+                <div className="overflow-auto rounded-2xl border border-slate-200">
+                  <Table className="[&_td]:py-3 [&_th]:h-10">
+                    <TableHeader className="bg-slate-50/80">
+                      <TableRow>
+                        <TableHead className="min-w-14 text-xs">#</TableHead>
+                        <TableHead className="min-w-56 text-xs">Template</TableHead>
+                        <TableHead className="min-w-28 text-xs">Nodes</TableHead>
+                        <TableHead className="min-w-28 text-xs">Connections</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {service.followUpTemplates.map((template, index) => (
+                        <TableRow key={template.id} className="hover:bg-blue-50/40">
+                          <TableCell>
+                            <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
+                              {index + 1}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <div className="space-y-0.5">
+                              <p className="font-medium text-slate-900">{template.name}</p>
+                              <p className="text-sm text-slate-500">Published follow-up path</p>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
+                              {template.flowNodeCount}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
+                              {template.flowEdgeCount}
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
+                  <p className="text-base font-medium text-slate-900">No follow-up templates available</p>
+                  <p className="mt-2 text-sm text-slate-500">
+                    This service does not currently expose any published follow-up templates.
+                  </p>
+                </div>
+              )}
+            </div>
+            </section>
+          </TabsContent>
+
+          <TabsContent value="professionals" className="mt-0">
+            <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
+                    <Users className="h-5 w-5 text-blue-700" />
+                    Professionals
+                  </h2>
+                  <p className="text-sm text-slate-500">
+                    People who can own or deliver this service.
+                  </p>
+                </div>
+                {service.professionals.length ? (
+                  <StackedAvatarGroup items={service.professionals.map(toProfessionalAvatarItem)} />
+                ) : null}
               </div>
-            )}
-          </div>
-        </article>
+            </div>
+
+            <div className="p-5">
+              {service.professionals.length ? (
+                <div className="overflow-auto rounded-2xl border border-slate-200">
+                  <Table className="[&_td]:py-3 [&_th]:h-10">
+                    <TableHeader className="bg-slate-50/80">
+                      <TableRow>
+                        <TableHead className="min-w-14 text-xs">#</TableHead>
+                        <TableHead className="min-w-36 text-xs">Type</TableHead>
+                        <TableHead className="min-w-48 text-xs">Name</TableHead>
+                        <TableHead className="min-w-40 text-xs">Contact</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {service.professionals.map((professional, index) => (
+                        <TableRow key={professional.id} className="hover:bg-blue-50/40">
+                          <TableCell>
+                            <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
+                              {index + 1}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <span
+                              className={cn(
+                                "rounded-full border px-2.5 py-1 text-xs font-medium",
+                                professional.kind === "INTERNAL_USER"
+                                  ? "border-blue-200 bg-blue-50 text-blue-700"
+                                  : "border-orange-200 bg-orange-50 text-orange-700",
+                              )}
+                            >
+                              {professional.kind === "INTERNAL_USER" ? "Internal user" : "External professional"}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <div className="space-y-0.5">
+                              <p className="font-medium text-slate-900">
+                                {getProfessionalLabel(professional)}
+                              </p>
+                              <p className="text-sm text-slate-500">{getProfessionalMeta(professional)}</p>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-slate-600">
+                            {professional.kind === "EXTERNAL"
+                              ? professional.externalContact || "No contact added"
+                              : professional.user?.email || "Internal user"}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
+                  <p className="text-base font-medium text-slate-900">No professionals listed yet</p>
+                  <p className="mt-2 text-sm text-slate-500">
+                    This service can still be reviewed, but no professionals are currently shown for it.
+                  </p>
+                </div>
+              )}
+            </div>
+            </section>
+          </TabsContent>
+        </Tabs>
       </section>
 
       <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
@@ -1771,13 +2421,24 @@ export function ServiceOverviewPanel({
               Start the same transaction flow used in services, with this service already selected.
             </p>
           </div>
-          <CreateTransactionDialog
-            tenantId={tenantId}
-            tenantSlug={tenantSlug}
-            service={service}
-          />
+          <Button
+            type="button"
+            className="bg-blue-950 text-white hover:bg-blue-900"
+            onClick={() => setIsTransactionDialogOpen(true)}
+          >
+            Create transaction
+          </Button>
         </div>
       </section>
+      {isTransactionDialogOpen ? (
+        <CreateTransactionDialog
+          tenantId={tenantId}
+          tenantSlug={tenantSlug}
+          service={service}
+          open={isTransactionDialogOpen}
+          onOpenChange={setIsTransactionDialogOpen}
+        />
+      ) : null}
     </div>
   )
 }

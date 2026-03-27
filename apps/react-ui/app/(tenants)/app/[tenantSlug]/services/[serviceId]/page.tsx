@@ -32,8 +32,8 @@ type ServiceOverviewResponse = {
       name: string
       isPublished: boolean
       sortOrder: number
-      flowNodes: unknown[] | null
-      flowEdges: unknown[] | null
+      flowNodeCount: number
+      flowEdgeCount: number
     }>
     professionals: Array<{
       id: string
@@ -41,7 +41,6 @@ type ServiceOverviewResponse = {
       userId: string | null
       externalProfessionalName: string | null
       externalContact: string | null
-      notes: string | null
       sortOrder: number
       user: {
         name: string | null
@@ -53,6 +52,21 @@ type ServiceOverviewResponse = {
       taxEnabled: boolean
       taxLabel: string | null
       defaultTaxRatePercent: number | null
+    }
+  }
+}
+
+type ServiceSummaryResponse = {
+  ok: boolean
+  summary: {
+    grossSalesCents: number
+    servicesSold: number
+    activeFollowUpServices: number
+    remainingBalanceCents: number
+    range: {
+      preset: "THIS_MONTH" | "LAST_MONTH" | "LAST_3_MONTHS" | "CUSTOM"
+      from: string
+      to: string
     }
   }
 }
@@ -70,15 +84,43 @@ export default async function ServiceOverviewPage({
   }
 
   let data: ServiceOverviewResponse | null = null
+  let initialSummary: ServiceSummaryResponse["summary"] | null = null
 
   try {
-    const response = await api.get<ServiceOverviewResponse>(
-      `/api/services/${membership.tenant.id}/catalog/${serviceId}`,
-      {
-        headers: { cookie },
-      },
-    )
-    data = response.data
+    const encodedTenantId = encodeURIComponent(membership.tenant.id)
+    const encodedServiceId = encodeURIComponent(serviceId)
+    const [serviceResponse, summaryResponse] = await Promise.allSettled([
+      api.get<ServiceOverviewResponse>(
+        `/api/services/${encodedTenantId}/catalog/${encodedServiceId}`,
+        {
+          headers: { cookie },
+        },
+      ),
+      api.get<ServiceSummaryResponse>(
+        `/api/services/${encodedTenantId}/catalog/${encodedServiceId}/summary`,
+        {
+          headers: { cookie },
+          params: {
+            preset: "THIS_MONTH",
+          },
+        },
+      ),
+    ])
+
+    if (serviceResponse.status === "fulfilled") {
+      data = serviceResponse.value.data
+    } else {
+      const error = serviceResponse.reason
+      if (isAxiosError(error) && error.response?.status === 404) {
+        redirect(`/app/${tenantSlug}/services`)
+      }
+
+      redirect(`/app/${tenantSlug}/services`)
+    }
+
+    if (summaryResponse.status === "fulfilled") {
+      initialSummary = summaryResponse.value.data.summary
+    }
   } catch (error) {
     if (isAxiosError(error) && error.response?.status === 404) {
       redirect(`/app/${tenantSlug}/services`)
@@ -92,6 +134,7 @@ export default async function ServiceOverviewPage({
       tenantId={membership.tenant.id}
       tenantSlug={tenantSlug}
       service={data.service}
+      initialSummary={initialSummary}
     />
   )
 }

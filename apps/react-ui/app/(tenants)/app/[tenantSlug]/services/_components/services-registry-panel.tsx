@@ -1,8 +1,16 @@
 "use client"
 
+import { format } from "date-fns"
 import Link from "next/link"
 import { isAxiosError } from "axios"
-import { Check, ChevronDown, UserRound } from "lucide-react"
+import {
+  CalendarDays,
+  Check,
+  ChevronDown,
+  Route,
+  UserRound,
+  Wallet,
+} from "lucide-react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
   startTransition,
@@ -12,6 +20,7 @@ import {
   useMemo,
   useState,
 } from "react"
+import { type DateRange } from "react-day-picker"
 import { toast } from "sonner"
 
 import {
@@ -21,6 +30,8 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
+import { Card, CardContent } from "@/components/ui/card"
 import {
   Command,
   CommandEmpty,
@@ -39,7 +50,11 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -47,6 +62,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
   TableBody,
@@ -182,12 +198,93 @@ type ServicesRegistryPanelProps = {
   tenantSlug: string
 }
 
+type DateRangePreset = "THIS_MONTH" | "LAST_MONTH" | "LAST_3_MONTHS" | "CUSTOM"
+
+type ServicesCatalogSummaryResponse = {
+  ok: boolean
+  summary: {
+    grossSalesCents: number
+    servicesSold: number
+    activeFollowUpServices: number
+    remainingBalanceCents: number
+    range: {
+      preset: DateRangePreset
+      from: string
+      to: string
+    }
+  }
+}
+
 const PAGE_SIZE_OPTIONS = [10, 25] as const
+const DATE_RANGE_PRESET_OPTIONS: Array<{
+  value: DateRangePreset
+  label: string
+}> = [
+  { value: "THIS_MONTH", label: "This month" },
+  { value: "LAST_MONTH", label: "Last month" },
+  { value: "LAST_3_MONTHS", label: "Last 3 months" },
+  { value: "CUSTOM", label: "Custom range" },
+]
 
 function parsePositiveInt(value: string | null, fallback: number) {
   const parsed = Number(value)
   if (!Number.isInteger(parsed) || parsed < 1) return fallback
   return parsed
+}
+
+function parseDateRangePreset(value: string | null): DateRangePreset {
+  return DATE_RANGE_PRESET_OPTIONS.some((option) => option.value === value)
+    ? (value as DateRangePreset)
+    : "THIS_MONTH"
+}
+
+function sanitizeDateOnly(value: string | null) {
+  if (!value) return ""
+  return /^\d{4}-\d{2}-\d{2}$/.test(value.trim()) ? value.trim() : ""
+}
+
+function formatDateOnly(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+function getDefaultCustomDateRange() {
+  const today = new Date()
+  const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1)
+
+  return {
+    from: formatDateOnly(startOfMonth),
+    to: formatDateOnly(today),
+  }
+}
+
+function parseDateOnlyToLocalDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined
+
+  const [year, month, day] = value.split("-").map(Number)
+  const date = new Date(year, month - 1, day)
+  if (Number.isNaN(date.getTime())) return undefined
+  return date
+}
+
+function formatCalendarRangeLabel(range?: DateRange) {
+  if (!range?.from) return "Pick a custom range"
+  if (!range.to) return format(range.from, "MMM d, yyyy")
+  return `${format(range.from, "MMM d, yyyy")} - ${format(range.to, "MMM d, yyyy")}`
+}
+
+function formatSummaryRangeLabel(
+  range: ServicesCatalogSummaryResponse["summary"]["range"],
+) {
+  const presetLabel =
+    DATE_RANGE_PRESET_OPTIONS.find((option) => option.value === range.preset)
+      ?.label ?? "This month"
+
+  if (range.preset !== "CUSTOM") return presetLabel
+
+  return `${range.from} to ${range.to}`
 }
 
 function formatCurrency(valueCents: number, currency: string) {
@@ -258,11 +355,7 @@ function getProfessionalMeta(professional: ServiceProfessional) {
 }
 
 function getInitials(value: string) {
-  const parts = value
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
+  const parts = value.trim().split(/\s+/).filter(Boolean).slice(0, 2)
 
   if (parts.length === 0) return "?"
 
@@ -283,7 +376,8 @@ function AssignedProfessionalPicker({
   const [open, setOpen] = useState(false)
 
   const selectedProfessional = useMemo(
-    () => professionals.find((professional) => professional.id === value) ?? null,
+    () =>
+      professionals.find((professional) => professional.id === value) ?? null,
     [professionals, value],
   )
 
@@ -315,8 +409,9 @@ function AssignedProfessionalPicker({
                   <AvatarFallback
                     className={cn(
                       "text-[11px] font-semibold",
-                      PROFESSIONAL_TONE_STYLES[getProfessionalTone(selectedProfessional)]
-                        .fallbackClassName,
+                      PROFESSIONAL_TONE_STYLES[
+                        getProfessionalTone(selectedProfessional)
+                      ].fallbackClassName,
                     )}
                   >
                     {getInitials(selectedLabel)}
@@ -401,7 +496,10 @@ function AssignedProfessionalPicker({
                       />
                     ) : null}
                     <AvatarFallback
-                      className={cn("text-xs font-semibold", toneStyles.fallbackClassName)}
+                      className={cn(
+                        "text-xs font-semibold",
+                        toneStyles.fallbackClassName,
+                      )}
                     >
                       {getInitials(label)}
                     </AvatarFallback>
@@ -410,7 +508,9 @@ function AssignedProfessionalPicker({
                     <p className="truncate text-[13px] font-medium text-slate-900">
                       {label}
                     </p>
-                    <p className="truncate text-[11px] text-slate-500">{meta}</p>
+                    <p className="truncate text-[11px] text-slate-500">
+                      {meta}
+                    </p>
                   </div>
                   <Check
                     className={cn(
@@ -548,7 +648,9 @@ function FollowUpAssigneePicker({
                   <p className="truncate text-[13px] font-medium text-slate-900">
                     {assignee.label}
                   </p>
-                  <p className="truncate text-[11px] text-slate-500">{assignee.email}</p>
+                  <p className="truncate text-[11px] text-slate-500">
+                    {assignee.email}
+                  </p>
                 </div>
                 <Check
                   className={cn(
@@ -584,16 +686,16 @@ function FlowStepCard({
     <div
       className={cn(
         "rounded-2xl border p-3.5 transition-colors",
-        disabled ? "border-slate-200 bg-slate-50/70" : "border-slate-200 bg-white",
+        disabled
+          ? "border-slate-200 bg-slate-50/70"
+          : "border-slate-200 bg-white",
       )}
     >
       <div className="mb-2.5 flex items-start gap-3">
         <div
           className={cn(
             "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
-            disabled
-              ? "bg-slate-200 text-slate-500"
-              : "bg-blue-950 text-white",
+            disabled ? "bg-slate-200 text-slate-500" : "bg-blue-950 text-white",
           )}
         >
           {stepNumber}
@@ -806,7 +908,11 @@ function PurchaseTransactionDialog({
       return
     }
 
-    if (!serviceDetails.professionals.some((item) => item.id === assignedProfessionalId)) {
+    if (
+      !serviceDetails.professionals.some(
+        (item) => item.id === assignedProfessionalId,
+      )
+    ) {
       setAssignedProfessionalId("")
     }
   }, [assignedProfessionalId, serviceDetails])
@@ -913,7 +1019,9 @@ function PurchaseTransactionDialog({
   }
 
   const goToPreviousStep = () => {
-    setStep((current) => (current === 1 ? 1 : ((current - 1) as 1 | 2 | 3 | 4 | 5)))
+    setStep((current) =>
+      current === 1 ? 1 : ((current - 1) as 1 | 2 | 3 | 4 | 5),
+    )
   }
 
   const onSubmit = async () => {
@@ -977,12 +1085,8 @@ function PurchaseTransactionDialog({
           contactId: selectedContact.id,
           serviceId,
           ...(templateId ? { followUpTemplateId: templateId } : {}),
-          ...(followUpAssignedToUserId
-            ? { followUpAssignedToUserId }
-            : {}),
-          ...(assignedProfessionalId
-            ? { assignedProfessionalId }
-            : {}),
+          ...(followUpAssignedToUserId ? { followUpAssignedToUserId } : {}),
+          ...(assignedProfessionalId ? { assignedProfessionalId } : {}),
           ...(initialPaymentCents !== null ? { initialPaymentCents } : {}),
           ...(notes.trim() ? { notes: notes.trim() } : {}),
         },
@@ -1102,7 +1206,9 @@ function PurchaseTransactionDialog({
           {step === 1 ? (
             <section className="grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="service-transaction-contact-search">Contact</Label>
+                <Label htmlFor="service-transaction-contact-search">
+                  Contact
+                </Label>
                 {selectedContact ? (
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                     <div className="flex items-start justify-between gap-3">
@@ -1136,7 +1242,9 @@ function PurchaseTransactionDialog({
                     <Input
                       id="service-transaction-contact-search"
                       value={contactSearchQuery}
-                      onChange={(event) => setContactSearchQuery(event.target.value)}
+                      onChange={(event) =>
+                        setContactSearchQuery(event.target.value)
+                      }
                       placeholder="Search contacts by name, email, or phone"
                     />
                     <div className="rounded-xl border border-slate-200 bg-white">
@@ -1251,10 +1359,11 @@ function PurchaseTransactionDialog({
                   />
                   {!serviceId ? (
                     <p className="text-xs text-slate-500">
-                      Choose a service first to load the professionals linked
-                      to it.
+                      Choose a service first to load the professionals linked to
+                      it.
                     </p>
-                  ) : serviceDetails && serviceDetails.professionals.length === 0 ? (
+                  ) : serviceDetails &&
+                    serviceDetails.professionals.length === 0 ? (
                     <p className="text-xs text-slate-500">
                       This service does not have professionals configured yet.
                     </p>
@@ -1318,9 +1427,9 @@ function PurchaseTransactionDialog({
                     </p>
                   ) : templateOptions.length === 0 ? (
                     <p className="text-xs text-slate-500">
-                      No published templates are available for this service.
-                      The transaction can still proceed if the service has
-                      default follow-up steps.
+                      No published templates are available for this service. The
+                      transaction can still proceed if the service has default
+                      follow-up steps.
                     </p>
                   ) : (
                     <p className="text-xs text-slate-500">
@@ -1349,7 +1458,8 @@ function PurchaseTransactionDialog({
                   />
                   {!serviceId ? (
                     <p className="text-xs text-slate-500">
-                      Choose a service first before assigning follow-up ownership.
+                      Choose a service first before assigning follow-up
+                      ownership.
                     </p>
                   ) : isLoadingAssignees ? (
                     <p className="text-xs text-slate-500">
@@ -1375,8 +1485,8 @@ function PurchaseTransactionDialog({
                   These checklist items will be attached to{" "}
                   <span className="font-medium text-emerald-950">
                     {selectedContact?.fullName}
-                  </span>
-                  {" "}when the transaction is created.
+                  </span>{" "}
+                  when the transaction is created.
                 </p>
               </div>
 
@@ -1543,7 +1653,9 @@ function PurchaseTransactionDialog({
                             ? centsToUsdInput(serviceDetails.basePriceCents)
                             : ""
                     }
-                    onChange={(event) => setInitialPaymentUsd(event.target.value)}
+                    onChange={(event) =>
+                      setInitialPaymentUsd(event.target.value)
+                    }
                     readOnly={paymentMode !== "PARTIAL"}
                     inputMode="decimal"
                     placeholder="0.00"
@@ -1625,6 +1737,10 @@ export function ServicesRegistryPanel({
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  const initialRangePreset = parseDateRangePreset(
+    searchParams.get("rangePreset"),
+  )
+  const initialCustomRange = getDefaultCustomDateRange()
   const [query, setQuery] = useState(() => searchParams.get("search") ?? "")
   const [debouncedQuery, setDebouncedQuery] = useState(() =>
     (searchParams.get("search") ?? "").trim(),
@@ -1641,6 +1757,33 @@ export function ServicesRegistryPanel({
   const [isLoading, setIsLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [data, setData] = useState<ServicesResponse | null>(null)
+  const [rangePreset, setRangePreset] =
+    useState<DateRangePreset>(initialRangePreset)
+  const [customFrom, setCustomFrom] = useState(() =>
+    initialRangePreset === "CUSTOM"
+      ? sanitizeDateOnly(searchParams.get("from")) || initialCustomRange.from
+      : "",
+  )
+  const [customTo, setCustomTo] = useState(() =>
+    initialRangePreset === "CUSTOM"
+      ? sanitizeDateOnly(searchParams.get("to")) || initialCustomRange.to
+      : "",
+  )
+  const [summary, setSummary] = useState<
+    ServicesCatalogSummaryResponse["summary"] | null
+  >(null)
+  const [isSummaryLoading, setIsSummaryLoading] = useState(false)
+  const [summaryErrorMessage, setSummaryErrorMessage] = useState<string | null>(
+    null,
+  )
+  const customDateRange = useMemo<DateRange | undefined>(() => {
+    if (!customFrom && !customTo) return undefined
+
+    return {
+      from: customFrom ? parseDateOnlyToLocalDate(customFrom) : undefined,
+      to: customTo ? parseDateOnlyToLocalDate(customTo) : undefined,
+    }
+  }, [customFrom, customTo])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -1659,6 +1802,11 @@ export function ServicesRegistryPanel({
     if (debouncedQuery) nextParams.set("search", debouncedQuery)
     if (page > 1) nextParams.set("page", String(page))
     if (pageSize !== 10) nextParams.set("pageSize", String(pageSize))
+    if (rangePreset !== "THIS_MONTH") nextParams.set("rangePreset", rangePreset)
+    if (rangePreset === "CUSTOM") {
+      if (customFrom) nextParams.set("from", customFrom)
+      if (customTo) nextParams.set("to", customTo)
+    }
 
     const nextQuery = nextParams.toString()
     const currentQuery = searchParams.toString()
@@ -1669,7 +1817,17 @@ export function ServicesRegistryPanel({
         scroll: false,
       })
     })
-  }, [debouncedQuery, page, pageSize, pathname, router, searchParams])
+  }, [
+    customFrom,
+    customTo,
+    debouncedQuery,
+    page,
+    pageSize,
+    pathname,
+    rangePreset,
+    router,
+    searchParams,
+  ])
 
   const loadServices = useCallback(async () => {
     setIsLoading(true)
@@ -1710,9 +1868,70 @@ export function ServicesRegistryPanel({
     }
   }, [debouncedQuery, page, pageSize, tenantId])
 
+  const loadSummary = useCallback(async () => {
+    if (rangePreset === "CUSTOM") {
+      if (!customFrom || !customTo) {
+        setSummary(null)
+        setSummaryErrorMessage(
+          "Select a start and end date for the custom range.",
+        )
+        return
+      }
+
+      if (customFrom > customTo) {
+        setSummary(null)
+        setSummaryErrorMessage(
+          "End date must be the same day or after start date.",
+        )
+        return
+      }
+    }
+
+    setIsSummaryLoading(true)
+    setSummaryErrorMessage(null)
+
+    try {
+      const { data: response } = await api.get<ServicesCatalogSummaryResponse>(
+        `/api/services/${tenantId}/catalog-summary`,
+        {
+          params: {
+            preset: rangePreset,
+            ...(rangePreset === "CUSTOM"
+              ? {
+                  from: customFrom,
+                  to: customTo,
+                }
+              : {}),
+          },
+        },
+      )
+
+      setSummary(response.summary)
+    } catch (error) {
+      setSummary(null)
+
+      if (isAxiosError(error)) {
+        const backendError = error.response?.data?.error
+        setSummaryErrorMessage(
+          typeof backendError === "string"
+            ? backendError.replace(/_/g, " ")
+            : "Could not load service summary.",
+        )
+      } else {
+        setSummaryErrorMessage("Could not load service summary.")
+      }
+    } finally {
+      setIsSummaryLoading(false)
+    }
+  }, [customFrom, customTo, rangePreset, tenantId])
+
   useEffect(() => {
     void loadServices()
   }, [loadServices])
+
+  useEffect(() => {
+    void loadSummary()
+  }, [loadSummary])
 
   const services = data?.items ?? []
   const total = data?.pagination.total ?? 0
@@ -1720,6 +1939,9 @@ export function ServicesRegistryPanel({
   const startIndex = (page - 1) * pageSize
   const canGoPrevious = page > 1
   const canGoNext = page < totalPages
+  const summaryRangeLabel = summary
+    ? formatSummaryRangeLabel(summary.range)
+    : ""
 
   const summaryLabel = useMemo(() => {
     if (!total) return "No active services found"
@@ -1730,60 +1952,281 @@ export function ServicesRegistryPanel({
 
   return (
     <div className="flex h-full w-full min-h-0 flex-col gap-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900">Services</h2>
-          <p className="text-sm text-slate-500">{summaryLabel}</p>
-        </div>
+      <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+            <div className="space-y-2">
+              <div className="space-y-1">
+                <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
+                  Service overview
+                </h1>
+                <p className="text-sm text-slate-600">
+                  Track booked sales, open follow-up workload, and remaining
+                  balance in one place.
+                </p>
+              </div>
+            </div>
 
-        <PurchaseTransactionDialog
-          tenantId={tenantId}
-          tenantSlug={tenantSlug}
-        />
+            <div className="flex flex-col gap-2 xl:items-end">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                {rangePreset === "CUSTOM" ? (
+                  <div className="grid gap-1">
+                    <Label
+                      htmlFor="services-summary-calendar"
+                      className="text-xs text-slate-500"
+                    >
+                      Date range
+                    </Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          id="services-summary-calendar"
+                          type="button"
+                          variant="outline"
+                          className="min-w-[260px] justify-start border-white/80 bg-white/80 text-left font-normal text-blue-950 shadow-sm hover:bg-white"
+                        >
+                          <CalendarDays className="mr-2 h-4 w-4 shrink-0 text-blue-700" />
+                          <span className="truncate">
+                            {formatCalendarRangeLabel(customDateRange)}
+                          </span>
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        align="end"
+                        className="w-auto border-none bg-transparent p-0 shadow-none"
+                      >
+                        <Card className="w-fit gap-0 rounded-2xl border-slate-200 p-0 shadow-xl">
+                          <CardContent className="p-0">
+                            <Calendar
+                              mode="range"
+                              defaultMonth={customDateRange?.from}
+                              selected={customDateRange}
+                              onSelect={(nextRange) => {
+                                const nextFrom = nextRange?.from
+                                const nextTo = nextRange?.to
+                                setCustomFrom(
+                                  nextFrom ? formatDateOnly(nextFrom) : "",
+                                )
+                                setCustomTo(
+                                  nextTo ? formatDateOnly(nextTo) : "",
+                                )
+                              }}
+                              numberOfMonths={2}
+                              disabled={(date) =>
+                                date > new Date() ||
+                                date < new Date("1900-01-01")
+                              }
+                            />
+                          </CardContent>
+                        </Card>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                ) : null}
+
+                <div className="grid gap-1">
+                  <Label
+                    htmlFor="services-summary-range"
+                    className="text-xs text-slate-500"
+                  >
+                    Summary range
+                  </Label>
+                  <Select
+                    value={rangePreset}
+                    onValueChange={(value) => {
+                      const nextPreset = value as DateRangePreset
+                      setRangePreset(nextPreset)
+
+                      if (
+                        nextPreset === "CUSTOM" &&
+                        (!customFrom || !customTo)
+                      ) {
+                        const nextRange = getDefaultCustomDateRange()
+                        setCustomFrom(nextRange.from)
+                        setCustomTo(nextRange.to)
+                      }
+                    }}
+                  >
+                    <SelectTrigger
+                      id="services-summary-range"
+                      className="w-full min-w-[180px] border-white/80 bg-white/80 text-blue-950 shadow-sm sm:w-[180px]"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DATE_RANGE_PRESET_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {summaryErrorMessage ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              {summaryErrorMessage}
+            </div>
+          ) : null}
+
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
+              <div className="flex items-center gap-2 text-slate-400">
+                <Wallet className="h-4 w-4 text-emerald-600" />
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                  Gross Sales
+                </p>
+              </div>
+              {isSummaryLoading && !summary ? (
+                <div className="mt-3 space-y-2">
+                  <Skeleton className="h-8 w-28 rounded-lg" />
+                  <Skeleton className="h-4 w-40 rounded-md" />
+                </div>
+              ) : (
+                <>
+                  <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
+                    {formatCurrency(summary?.grossSalesCents ?? 0, "USD")}
+                  </p>
+                  <p className="mt-2 text-sm text-slate-500">
+                    {summary
+                      ? summaryRangeLabel
+                      : "Sales booked in the selected range."}
+                  </p>
+                </>
+              )}
+            </article>
+
+            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
+              <div className="flex items-center gap-2 text-slate-400">
+                <CalendarDays className="h-4 w-4 text-blue-600" />
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                  Services Sold
+                </p>
+              </div>
+              {isSummaryLoading && !summary ? (
+                <div className="mt-3 space-y-2">
+                  <Skeleton className="h-8 w-16 rounded-lg" />
+                  <Skeleton className="h-4 w-44 rounded-md" />
+                </div>
+              ) : (
+                <>
+                  <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
+                    {summary?.servicesSold ?? 0}
+                  </p>
+                  <p className="mt-2 text-sm text-slate-500">
+                    {summary
+                      ? summaryRangeLabel
+                      : "Transactions created in the selected range."}
+                  </p>
+                </>
+              )}
+            </article>
+
+            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
+              <div className="flex items-center gap-2 text-slate-400">
+                <Route className="h-4 w-4 text-amber-600" />
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                  Active Follow-Ups
+                </p>
+              </div>
+              {isSummaryLoading && !summary ? (
+                <div className="mt-3 flex flex-col items-start gap-2">
+                  <Skeleton className="h-8 w-16 rounded-lg" />
+                  <Skeleton className="h-6 w-12 rounded-full" />
+                </div>
+              ) : (
+                <div className="mt-3 flex flex-col items-start gap-2">
+                  <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
+                    {summary?.activeFollowUpServices ?? 0}
+                  </p>
+                  <Badge
+                    variant="secondary"
+                    className="border border-amber-200 bg-amber-50 text-amber-700"
+                  >
+                    Live
+                  </Badge>
+                </div>
+              )}
+            </article>
+
+            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
+              <div className="flex items-center gap-2 text-slate-400">
+                <Wallet className="h-4 w-4 text-violet-600" />
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                  Remaining Balance
+                </p>
+              </div>
+              {isSummaryLoading && !summary ? (
+                <div className="mt-3 flex flex-col items-start gap-2">
+                  <Skeleton className="h-8 w-28 rounded-lg" />
+                  <Skeleton className="h-6 w-12 rounded-full" />
+                </div>
+              ) : (
+                <div className="mt-3 flex flex-col items-start gap-2">
+                  <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
+                    {formatCurrency(summary?.remainingBalanceCents ?? 0, "USD")}
+                  </p>
+                  <Badge
+                    variant="secondary"
+                    className="border border-violet-200 bg-violet-50 text-violet-700"
+                  >
+                    Live
+                  </Badge>
+                </div>
+              )}
+            </article>
+          </div>
+        </div>
       </div>
 
-      <div className="flex flex-col gap-2">
-        <div className="grid gap-2 md:grid-cols-[minmax(320px,1fr)_auto]">
-          <Input
-            placeholder="Search by service name"
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value)
-              setPage(1)
-            }}
-          />
-          <Button
-            type="button"
-            variant="outline"
-            className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-            onClick={() => {
-              setQuery("")
-              setDebouncedQuery("")
-              setPage(1)
-            }}
-          >
-            Clear Filters
-          </Button>
+      <div className="flex min-h-[680px] w-full flex-1 flex-col rounded-lg bg-white">
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-4 py-4 md:px-5">
+          <div>
+            <p className="text-sm text-slate-500">{summaryLabel}</p>
+          </div>
+          <div className="grid gap-2 md:grid-cols-[minmax(320px,1fr)_auto_auto]">
+            <Input
+              placeholder="Search by service name"
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value)
+                setPage(1)
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+              onClick={() => {
+                setQuery("")
+                setDebouncedQuery("")
+                setPage(1)
+              }}
+            >
+              Clear Search
+            </Button>
+            <PurchaseTransactionDialog
+              tenantId={tenantId}
+              tenantSlug={tenantSlug}
+            />
+          </div>
         </div>
-      </div>
 
-      <div className="flex min-h-0 w-full flex-1 flex-col rounded-lg bg-white">
-        <div className="min-h-0 flex-1 overflow-auto">
-          <Table className="[&_td]:py-3 [&_th]:h-8">
+        <div className="min-h-[520px] flex-1 overflow-auto">
+          <Table className="min-w-[1080px] w-full table-fixed [&_td]:px-3 [&_td]:py-3 [&_td:first-child]:pl-4 [&_td:last-child]:pr-4 [&_th]:px-3 [&_th]:h-8 [&_th:first-child]:pl-4 [&_th:last-child]:pr-4 md:[&_td:first-child]:pl-5 md:[&_td:last-child]:pr-5 md:[&_th:first-child]:pl-5 md:[&_th:last-child]:pr-5">
             <TableHeader>
               <TableRow>
-                <TableHead className="min-w-56 text-xs">Name</TableHead>
-                <TableHead className="min-w-28 text-xs">Cost</TableHead>
-                <TableHead className="min-w-36 text-xs">
+                <TableHead className="w-[24%] text-xs">Name</TableHead>
+                <TableHead className="w-[12%] text-xs">Cost</TableHead>
+                <TableHead className="w-[16%] text-xs">
                   Min Partial Payment
                 </TableHead>
-                <TableHead className="min-w-28 text-xs">
-                  Checklists
-                </TableHead>
-                <TableHead className="min-w-72 text-xs">
-                  Professionals
-                </TableHead>
-                <TableHead className="min-w-32 text-xs">
+                <TableHead className="w-[12%] text-xs">Checklists</TableHead>
+                <TableHead className="w-[22%] text-xs">Professionals</TableHead>
+                <TableHead className="w-[14%] text-xs">
                   Follow-Up Templates
                 </TableHead>
               </TableRow>
@@ -1822,12 +2265,18 @@ export function ServicesRegistryPanel({
                       className="transition-colors hover:bg-slate-50"
                     >
                       <TableCell className="align-middle font-medium text-slate-900">
-                        <Link href={serviceHref} className="block text-slate-900 hover:text-slate-900">
+                        <Link
+                          href={serviceHref}
+                          className="block truncate text-slate-900 hover:text-slate-900"
+                        >
                           {service.name}
                         </Link>
                       </TableCell>
                       <TableCell className="align-middle text-slate-700">
-                        <Link href={serviceHref} className="block text-slate-700 hover:text-slate-700">
+                        <Link
+                          href={serviceHref}
+                          className="block truncate text-slate-700 hover:text-slate-700"
+                        >
                           {formatCurrency(
                             service.basePriceCents,
                             service.currency,
@@ -1835,7 +2284,10 @@ export function ServicesRegistryPanel({
                         </Link>
                       </TableCell>
                       <TableCell className="align-middle text-slate-700">
-                        <Link href={serviceHref} className="block text-slate-700 hover:text-slate-700">
+                        <Link
+                          href={serviceHref}
+                          className="block truncate text-slate-700 hover:text-slate-700"
+                        >
                           {service.allowPartialPayments
                             ? service.minimumPartialPaymentCents !== null
                               ? formatCurrency(
@@ -1862,13 +2314,15 @@ export function ServicesRegistryPanel({
                       <TableCell className="align-middle">
                         <Link href={serviceHref} className="block">
                           <StackedAvatarGroup
-                            items={service.professionals.map(toProfessionalAvatarItem)}
+                            items={service.professionals.map(
+                              toProfessionalAvatarItem,
+                            )}
                             emptyLabel="No professionals assigned."
                           />
                         </Link>
                       </TableCell>
                       <TableCell className="align-middle">
-                        <Link href={serviceHref} className="block">
+                        <Link href={serviceHref} className="block truncate">
                           <Badge
                             variant="secondary"
                             className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-800 hover:bg-blue-50"
@@ -1894,58 +2348,58 @@ export function ServicesRegistryPanel({
             </TableBody>
           </Table>
         </div>
-      </div>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2 text-sm text-slate-600">
-          <span>Rows per page</span>
-          <Select
-            value={String(pageSize)}
-            onValueChange={(value) => {
-              const next = Number(value)
-              if (next === 10 || next === 25) {
-                setPageSize(next)
-                setPage(1)
-              }
-            }}
-          >
-            <SelectTrigger size="sm" className="w-20">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PAGE_SIZE_OPTIONS.map((size) => (
-                <SelectItem key={size} value={String(size)}>
-                  {size}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        <div className="flex flex-col gap-3 border-t border-slate-100 px-4 py-4 md:flex-row md:items-center md:justify-between md:px-5">
+          <div className="flex items-center gap-2 text-sm text-slate-600">
+            <span>Rows per page</span>
+            <Select
+              value={String(pageSize)}
+              onValueChange={(value) => {
+                const next = Number(value)
+                if (next === 10 || next === 25) {
+                  setPageSize(next)
+                  setPage(1)
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-20">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <SelectItem key={size} value={String(size)}>
+                    {size}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-        <div className="flex items-center gap-2 self-end sm:self-auto">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-            disabled={!canGoPrevious || isLoading}
-            onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-          >
-            Previous
-          </Button>
-          <span className="px-1 text-sm text-slate-600">
-            Page {page} of {totalPages}
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-            disabled={!canGoNext || isLoading}
-            onClick={() => setPage((prev) => prev + 1)}
-          >
-            Next
-          </Button>
+          <div className="flex items-center gap-2 self-end md:self-auto">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+              disabled={!canGoPrevious || isLoading}
+              onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+            >
+              Previous
+            </Button>
+            <span className="px-1 text-sm text-slate-600">
+              Page {page} of {totalPages}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+              disabled={!canGoNext || isLoading}
+              onClick={() => setPage((prev) => prev + 1)}
+            >
+              Next
+            </Button>
+          </div>
         </div>
       </div>
     </div>

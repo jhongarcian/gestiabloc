@@ -59,11 +59,12 @@ Purpose:
 
 This spec assumes the user arrives here after selecting a service from `/app/{slug}/services`.
 
-The list route itself is not the implementation target of this spec.
+Current entry behavior:
 
-This spec only defines what happens once the user is already on:
+- the services registry table links each service row to `/app/{slug}/services/{serviceId}`
+- the user-facing services list no longer routes to account settings
 
-- `/app/{slug}/services/{serviceId}`
+The list route itself is not the implementation target of this spec, except for the fact that it is the primary entry point into this detail page.
 
 ## 5. Data Model
 
@@ -80,6 +81,31 @@ Primary entities:
 The detail page is a read-oriented projection of the configured service.
 
 It is not an admin editing surface.
+
+### Current read endpoint
+
+The detail page is currently backed by:
+
+- `GET /api/services/{tenantId}/catalog/{serviceId}`
+
+This endpoint is intended for normal tenant users with active membership.
+
+Current response shape includes:
+
+- service identity and description
+- base price and currency
+- tax exemption and tenant billing defaults
+- partial payment settings
+- checklist items
+- published follow-up templates
+- professionals
+
+Important optimization rule:
+
+- follow-up templates are returned with counts only, not full flow graphs
+  - `flowNodeCount`
+  - `flowEdgeCount`
+- professionals are returned without admin-only notes
 
 ## 6. Detail Page Goal
 
@@ -100,13 +126,13 @@ The page should help a user confidently move from browsing to action.
 
 The page should follow the product’s existing white-card, blue-accent visual direction.
 
-Recommended structure:
+Current structure:
 
 1. header hero
 2. summary cards
 3. overview content blocks
 4. supporting detail sections
-5. sticky or strongly visible primary action
+5. strong transaction call to action
 
 The page should feel rich but not overwhelming.
 
@@ -119,13 +145,17 @@ The top section should include:
 - active availability state
 - quick price summary
 - primary action: `Create transaction`
+- back action to `/app/{slug}/services`
 
-Recommended header behavior:
+Current header behavior:
 
 - soft branded background
 - strong title
 - concise support copy
-- prominent primary CTA
+- dark right-side CTA panel
+- `Create transaction` action in the hero
+
+There is also a secondary bottom-of-page CTA section that opens the same dialog instance.
 
 Optional secondary actions:
 
@@ -136,7 +166,7 @@ Optional secondary actions:
 
 Directly below the header, show compact scan cards.
 
-Recommended cards:
+Current cards:
 
 - `Price`
 - `Payment`
@@ -181,7 +211,7 @@ Recommended cards:
 
 The body should be composed of clear content blocks, not one dense table.
 
-Recommended sections:
+Current sections:
 
 - `About this service`
 - `Pricing & Payment`
@@ -233,15 +263,14 @@ If partial payments are allowed:
 - show a plain-language summary such as:
   - `Pay at least $20 today, then 4 monthly installments`
 
-### Visual treatment
+### Current visual treatment
 
-This block should use a structured summary layout rather than raw form-like rows.
+The section currently uses structured read-only cards with:
 
-Recommended:
-
-- label/value pairs
-- short helper copy
-- one highlighted payment summary card
+- label/value groups
+- payment summary copy
+- tax summary copy
+- estimated total including tax
 
 ## 13. Tax Section
 
@@ -291,6 +320,14 @@ Recommended fields:
 - type: internal or external
 - external contact when available
 
+Current implementation uses:
+
+- avatar stack in the section header
+- read-only table below
+- internal users with image or initials fallback
+- external professionals with initials fallback
+- internal blue / external orange tone treatment
+
 The section should communicate confidence and staffing coverage.
 
 ## 15. Follow-Up Templates Section
@@ -308,6 +345,13 @@ Recommended fields:
 - template name
 - number of nodes
 - number of connections
+
+Current implementation uses a simple overview table with:
+
+- numbered rows
+- template name
+- `flowNodeCount`
+- `flowEdgeCount`
 
 This page does not need the full builder.
 
@@ -329,6 +373,13 @@ Recommended presentation:
 - required/optional badges
 - compact summary like `3 required · 2 optional`
 
+Current implementation uses checklist cards with:
+
+- numbered order chips
+- required / optional badge
+- description when available
+- empty state copy when no checklist items exist
+
 The goal is to answer:
 
 - what will be needed for this service
@@ -346,7 +397,7 @@ This detail-page dialog should reuse the same overall create-transaction interac
 
 It should feel like the same product flow, not a completely different modal.
 
-### Target step order from service detail
+### Current step order from service detail
 
 - `Contact`
 - `Follow up`
@@ -360,7 +411,8 @@ It should feel like the same product flow, not a completely different modal.
 - the service should be visually shown as already selected or tied to the transaction
 - the user should choose the contact first
 - then choose the follow-up template for this service
-- if applicable, choose the follow-up owner
+- optionally assign a service professional
+- optionally choose the follow-up owner
 - review checklist items that will be created
 - complete payment details
 
@@ -375,6 +427,29 @@ The service detail transaction dialog should keep the same foundational behavior
 - same payment behavior
 - same success outcome after transaction creation
 
+### Current step detail
+
+#### Contact
+
+- search contacts by name, email, or phone
+- select a single contact before continuing
+
+#### Follow up
+
+- choose a published follow-up template or leave default
+- optionally assign a configured service professional
+- optionally assign a tenant user as follow-up owner
+
+#### Checklist
+
+- review the checklist items that will be created for the selected contact
+
+#### Payment
+
+- choose `Pay in Full`, `Partial Payment`, or `Pay Later`
+- enter partial payment only when partial payments are allowed
+- optionally add notes
+
 The difference is only service context:
 
 - service is already selected
@@ -384,17 +459,10 @@ The difference is only service context:
 
 ### Professional handling
 
-If the service has configured professionals:
+Current behavior:
 
-- allow the user to assign one of the available professionals during the flow
-
-This can happen in:
-
-- the contact step, or
-- the follow-up step, or
-- a compact service-context panel shown throughout the dialog
-
-The important rule is that the user should not need to reselect the service.
+- if the service has configured professionals, the dialog allows the user to assign one during the `Follow up` step
+- the user never needs to reselect the service
 
 ## 18. Service Context In Transaction Dialog
 
@@ -403,11 +471,14 @@ Because the dialog is launched from a selected service, the dialog should always
 Recommended context panel:
 
 - service name
-- service description summary when helpful
 - price
-- payment summary
-- tax summary
-- assigned service professional when selected
+
+Current implementation uses a compact locked service panel in the dialog with:
+
+- service name
+- base price
+
+This panel appears near the top of the dialog and reinforces that the service is preselected.
 
 This context should stay visible in a small header or summary block across steps.
 
@@ -422,6 +493,7 @@ Expected permissions:
 - any user who can access `/app/{slug}/services` can open `/app/{slug}/services/{serviceId}`
 - the page is read-only
 - account-settings edit controls must not appear here
+- the backend route requires active tenant membership
 
 ## 20. Design Direction
 
@@ -440,7 +512,24 @@ Avoid:
 - unclear pricing language
 - links into account-settings from the user-facing flow
 
-## 21. Empty and Edge States
+## 21. Frontend Validation
+
+The transaction dialog on this page currently uses frontend Zod validation in addition to backend validation.
+
+Current validation coverage includes:
+
+- contact is required
+- selected follow-up template must belong to the service
+- selected professional must belong to the service
+- selected follow-up owner must be a valid tenant assignee option
+- partial payment is only valid when the service allows it
+- partial payment must be greater than zero and not exceed total service price
+- partial payment must respect `minimumPartialPaymentCents`
+- notes are capped at 4,000 characters
+
+Backend validation remains the source of truth.
+
+## 22. Empty and Edge States
 
 ### No professionals
 
@@ -450,7 +539,7 @@ Avoid:
 ### No follow-up templates
 
 - show that no follow-up templates are available
-- if transaction flow requires a template, communicate that clearly
+- the transaction flow can still proceed when no published template is available
 
 ### No checklist items
 
@@ -464,7 +553,7 @@ Avoid:
 
 - explicitly say that the service is tax exempt
 
-## 22. Success Criteria
+## 23. Success Criteria
 
 This feature is successful when:
 
@@ -473,3 +562,4 @@ This feature is successful when:
 - operational readiness is visible through professionals, templates, and checklist sections
 - users can start a transaction from the selected service without reselecting it
 - the page feels polished, readable, and consistent with the rest of the product
+- the page loads from a lean public catalog payload rather than full admin configuration data

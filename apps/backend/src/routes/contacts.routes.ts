@@ -1490,6 +1490,38 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
           dateOfBirth: true,
           phone: true,
           email: true,
+          assignedToMembership: {
+            select: {
+              userId: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+            },
+          },
+          serviceProcesses: {
+            where: {
+              status: {
+                in: ["PENDING", "IN_PROGRESS"] as const,
+              },
+              followUpSteps: {
+                some: {
+                  status: "ACTIVE",
+                },
+              },
+            },
+            select: {
+              service: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
           statusConfig: {
             select: {
               id: true,
@@ -1506,20 +1538,44 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
 
     return res.json({
       ok: true,
-      items: contacts.map((contact) => ({
-        id: contact.id,
-        fullName: [contact.firstName, contact.middleName, contact.lastName]
-          .filter(Boolean)
-          .join(" "),
-        dateOfBirth: contact.dateOfBirth,
-        phoneNumber: contact.phone ?? null,
-        email: contact.email ?? null,
-        status: contact.statusConfig?.name ?? "Unassigned",
-        statusConfigId: contact.statusConfig?.id ?? null,
-        statusBgColor: contact.statusConfig?.bgColor ?? null,
-        statusTextColor: contact.statusConfig?.textColor ?? null,
-        followUps: 0,
-      })),
+      items: contacts.map((contact) => {
+        const activeFollowUpServices = Array.from(
+          new Map(
+            contact.serviceProcesses.map((serviceProcess) => [
+              serviceProcess.service.id,
+              {
+                id: serviceProcess.service.id,
+                name: serviceProcess.service.name,
+              },
+            ]),
+          ).values(),
+        ).sort((left, right) => left.name.localeCompare(right.name))
+
+        return {
+          id: contact.id,
+          fullName: [contact.firstName, contact.middleName, contact.lastName]
+            .filter(Boolean)
+            .join(" "),
+          dateOfBirth: contact.dateOfBirth,
+          phoneNumber: contact.phone ?? null,
+          email: contact.email ?? null,
+          assignedTo: contact.assignedToMembership
+            ? {
+                userId: contact.assignedToMembership.userId,
+                name:
+                  contact.assignedToMembership.user.name?.trim() ||
+                  contact.assignedToMembership.user.email,
+                email: contact.assignedToMembership.user.email,
+                image: contact.assignedToMembership.user.image ?? null,
+              }
+            : null,
+          activeFollowUpServices,
+          status: contact.statusConfig?.name ?? "Unassigned",
+          statusConfigId: contact.statusConfig?.id ?? null,
+          statusBgColor: contact.statusConfig?.bgColor ?? null,
+          statusTextColor: contact.statusConfig?.textColor ?? null,
+        }
+      }),
       pagination: {
         page,
         pageSize,

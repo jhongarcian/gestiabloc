@@ -2955,6 +2955,158 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/catalog-summary:
+    get:
+      tags: [Services]
+      summary: Get services catalog summary metrics
+      description: Returns aggregate metrics for the services dashboard cards. Gross sales and services sold use the selected range. Active follow-up services and remaining balance are live totals.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: preset
+          required: false
+          schema:
+            $ref: "#/components/schemas/ServicesSummaryRangePreset"
+        - in: query
+          name: from
+          required: false
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        - in: query
+          name: to
+          required: false
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      responses:
+        "200":
+          description: Services dashboard summary returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceSummaryResponse"
+        "400":
+          description: Invalid summary range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/catalog/{serviceId}:
+    get:
+      tags: [Services]
+      summary: Get one user-facing service catalog item
+      description: Returns the read-only service overview used by tenant users on `/app/{slug}/services/{serviceId}`.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: serviceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Service overview returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceCatalogDetailResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Service not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/catalog/{serviceId}/summary:
+    get:
+      tags: [Services]
+      summary: Get one service summary metrics
+      description: Returns aggregate metrics for the single-service summary cards on `/app/{slug}/services/{serviceId}`.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: serviceId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: preset
+          required: false
+          schema:
+            $ref: "#/components/schemas/ServicesSummaryRangePreset"
+        - in: query
+          name: from
+          required: false
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        - in: query
+          name: to
+          required: false
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      responses:
+        "200":
+          description: Service summary returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceSummaryResponse"
+        "400":
+          description: Invalid summary range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Service not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services:
     get:
       tags: [Services]
@@ -4043,6 +4195,18 @@ components:
         website:
           type: string
           nullable: true
+        taxEnabled:
+          type: boolean
+          default: false
+        taxLabel:
+          type: string
+          nullable: true
+          maxLength: 80
+        defaultTaxRatePercent:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 100
     AccountSettingsTenantInfoResponse:
       type: object
       properties:
@@ -4085,6 +4249,14 @@ components:
               nullable: true
             website:
               type: string
+              nullable: true
+            taxEnabled:
+              type: boolean
+            taxLabel:
+              type: string
+              nullable: true
+            defaultTaxRatePercent:
+              type: number
               nullable: true
             emailVerified:
               type: boolean
@@ -4440,6 +4612,28 @@ components:
         email:
           type: string
           nullable: true
+        assignedTo:
+          type: object
+          nullable: true
+          properties:
+            userId:
+              type: string
+            name:
+              type: string
+            email:
+              type: string
+            image:
+              type: string
+              nullable: true
+        activeFollowUpServices:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
         status:
           type: string
         statusConfigId:
@@ -4451,8 +4645,6 @@ components:
         statusTextColor:
           type: string
           nullable: true
-        followUps:
-          type: integer
     ContactDetailsResponse:
       type: object
       properties:
@@ -5541,6 +5733,9 @@ components:
           minLength: 3
           maxLength: 3
           default: USD
+        isTaxExempt:
+          type: boolean
+          default: false
         allowPartialPayments:
           type: boolean
           default: false
@@ -5548,6 +5743,12 @@ components:
           type: integer
           minimum: 0
           nullable: true
+        installmentCount:
+          type: integer
+          minimum: 2
+          nullable: true
+        installmentFrequency:
+          $ref: "#/components/schemas/InstallmentFrequency"
         isActive:
           type: boolean
           default: true
@@ -5584,12 +5785,20 @@ components:
           type: string
           minLength: 3
           maxLength: 3
+        isTaxExempt:
+          type: boolean
         allowPartialPayments:
           type: boolean
         minimumPartialPaymentCents:
           type: integer
           minimum: 0
           nullable: true
+        installmentCount:
+          type: integer
+          minimum: 2
+          nullable: true
+        installmentFrequency:
+          $ref: "#/components/schemas/InstallmentFrequency"
         isActive:
           type: boolean
         sortOrder:
@@ -5621,11 +5830,18 @@ components:
           type: integer
         currency:
           type: string
+        isTaxExempt:
+          type: boolean
         allowPartialPayments:
           type: boolean
         minimumPartialPaymentCents:
           type: integer
           nullable: true
+        installmentCount:
+          type: integer
+          nullable: true
+        installmentFrequency:
+          $ref: "#/components/schemas/InstallmentFrequency"
         isActive:
           type: boolean
         sortOrder:
@@ -5697,6 +5913,34 @@ components:
                 nullable: true
               sortOrder:
                 type: integer
+              user:
+                type: object
+                nullable: true
+                properties:
+                  name:
+                    type: string
+                    nullable: true
+                  email:
+                    type: string
+                    nullable: true
+                  image:
+                    type: string
+                    nullable: true
+        tenantBilling:
+          $ref: "#/components/schemas/TenantBillingSummary"
+        configStatus:
+          type: object
+          properties:
+            overviewComplete:
+              type: boolean
+            checklistComplete:
+              type: boolean
+            followUpsComplete:
+              type: boolean
+            professionalsComplete:
+              type: boolean
+            isComplete:
+              type: boolean
     AccountSettingsServiceProfessionalSummaryItem:
       type: object
       properties:
@@ -6006,15 +6250,201 @@ components:
               type: integer
             currency:
               type: string
+            isTaxExempt:
+              type: boolean
             allowPartialPayments:
               type: boolean
             minimumPartialPaymentCents:
               type: integer
               nullable: true
+            installmentCount:
+              type: integer
+              nullable: true
+            installmentFrequency:
+              $ref: "#/components/schemas/InstallmentFrequency"
             isActive:
               type: boolean
             sortOrder:
               type: integer
+    ServicesSummaryRangePreset:
+      type: string
+      enum: [THIS_MONTH, LAST_MONTH, LAST_3_MONTHS, CUSTOM]
+    InstallmentFrequency:
+      type: string
+      nullable: true
+      enum: [WEEKLY, BIWEEKLY, MONTHLY]
+    TenantBillingSummary:
+      type: object
+      properties:
+        taxEnabled:
+          type: boolean
+        taxLabel:
+          type: string
+          nullable: true
+        defaultTaxRatePercent:
+          type: number
+          nullable: true
+    ServiceCatalogChecklistItem:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+          nullable: true
+        isRequired:
+          type: boolean
+        sortOrder:
+          type: integer
+    ServiceCatalogFollowUpTemplate:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        isPublished:
+          type: boolean
+        sortOrder:
+          type: integer
+        flowNodeCount:
+          type: integer
+        flowEdgeCount:
+          type: integer
+    ServiceCatalogProfessionalUser:
+      type: object
+      nullable: true
+      properties:
+        name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        image:
+          type: string
+          nullable: true
+    ServiceCatalogProfessional:
+      type: object
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [INTERNAL_USER, EXTERNAL]
+        userId:
+          type: string
+          nullable: true
+        externalProfessionalName:
+          type: string
+          nullable: true
+        externalContact:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+        user:
+          $ref: "#/components/schemas/ServiceCatalogProfessionalUser"
+    ServiceCatalogDetailResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        service:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            description:
+              type: string
+              nullable: true
+            basePriceCents:
+              type: integer
+            currency:
+              type: string
+            isTaxExempt:
+              type: boolean
+            allowPartialPayments:
+              type: boolean
+            minimumPartialPaymentCents:
+              type: integer
+              nullable: true
+            installmentCount:
+              type: integer
+              nullable: true
+            installmentFrequency:
+              $ref: "#/components/schemas/InstallmentFrequency"
+            isActive:
+              type: boolean
+            checklistItems:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceCatalogChecklistItem"
+            followUpTemplates:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceCatalogFollowUpTemplate"
+            professionals:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceCatalogProfessional"
+            tenantBilling:
+              $ref: "#/components/schemas/TenantBillingSummary"
+    ServiceSummaryRange:
+      type: object
+      properties:
+        preset:
+          $ref: "#/components/schemas/ServicesSummaryRangePreset"
+        from:
+          type: string
+        to:
+          type: string
+    ServiceSummaryMetrics:
+      type: object
+      properties:
+        grossSalesCents:
+          type: integer
+        servicesSold:
+          type: integer
+        activeFollowUpServices:
+          type: integer
+        remainingBalanceCents:
+          type: integer
+        range:
+          $ref: "#/components/schemas/ServiceSummaryRange"
+    ServiceSummaryResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        summary:
+          $ref: "#/components/schemas/ServiceSummaryMetrics"
+    ContactServiceAssignedProfessional:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [INTERNAL_USER, EXTERNAL]
+        userId:
+          type: string
+          nullable: true
+        externalProfessionalName:
+          type: string
+          nullable: true
+        externalContact:
+          type: string
+          nullable: true
+        user:
+          $ref: "#/components/schemas/ServiceCatalogProfessionalUser"
     ContactServiceFollowUpStepItem:
       type: object
       properties:
@@ -6084,6 +6514,8 @@ components:
         notes:
           type: string
           nullable: true
+        assignedProfessional:
+          $ref: "#/components/schemas/ContactServiceAssignedProfessional"
         contactName:
           type: string
         service:
@@ -6230,6 +6662,13 @@ components:
           type: string
         followUpTemplateId:
           type: string
+          nullable: true
+        followUpAssignedToUserId:
+          type: string
+          nullable: true
+        assignedProfessionalId:
+          type: string
+          nullable: true
         purchasedAt:
           type: string
           format: date-time

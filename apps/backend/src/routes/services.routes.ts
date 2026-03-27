@@ -61,6 +61,48 @@ const ContactServicesListQuerySchema = z.object({
   status: z.enum(["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELED"]).optional(),
 })
 
+const ServicesCatalogSummaryPresetSchema = z.enum([
+  "THIS_MONTH",
+  "LAST_MONTH",
+  "LAST_3_MONTHS",
+  "CUSTOM",
+])
+
+const OptionalDateOnlySchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value
+    const trimmed = value.trim()
+    return trimmed.length ? trimmed : undefined
+  },
+  z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+)
+
+const ServicesCatalogSummaryQuerySchema = z
+  .object({
+    preset: ServicesCatalogSummaryPresetSchema.default("THIS_MONTH"),
+    from: OptionalDateOnlySchema,
+    to: OptionalDateOnlySchema,
+  })
+  .superRefine((value, ctx) => {
+    if (value.preset !== "CUSTOM") return
+
+    if (!value.from) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["from"],
+        message: "from is required when preset is CUSTOM",
+      })
+    }
+
+    if (!value.to) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["to"],
+        message: "to is required when preset is CUSTOM",
+      })
+    }
+  })
+
 const FollowUpsListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce
@@ -266,6 +308,132 @@ function getTodayRange(timezone: string) {
   return { start, end }
 }
 
+function parseDateOnlyParts(value: string) {
+  const [year, month, day] = value.split("-").map(Number)
+  return { year, month, day }
+}
+
+function formatDateOnlyParts(value: { year: number; month: number; day: number }) {
+  return `${String(value.year).padStart(4, "0")}-${String(value.month).padStart(2, "0")}-${String(value.day).padStart(2, "0")}`
+}
+
+function getMonthRange(timezone: string, monthOffset: number) {
+  const today = getTimezoneDayParts(new Date(), timezone)
+  const monthStart = zonedDateTimeToUtc(
+    timezone,
+    today.year,
+    today.month + monthOffset,
+    1,
+    0,
+    0,
+    0,
+  )
+  const monthStartParts = getTimezoneDayParts(monthStart, timezone)
+  const nextMonthStart = zonedDateTimeToUtc(
+    timezone,
+    monthStartParts.year,
+    monthStartParts.month + 1,
+    1,
+    0,
+    0,
+    0,
+  )
+
+  return {
+    start: monthStart,
+    end: nextMonthStart,
+    from: formatDateOnlyParts(monthStartParts),
+    to: formatDateOnlyParts(getTimezoneDayParts(new Date(nextMonthStart.getTime() - 1), timezone)),
+  }
+}
+
+function getServicesCatalogSummaryRange(
+  query: z.infer<typeof ServicesCatalogSummaryQuerySchema>,
+  timezone: string,
+) {
+  if (query.preset === "THIS_MONTH") {
+    return getMonthRange(timezone, 0)
+  }
+
+  if (query.preset === "LAST_MONTH") {
+    return getMonthRange(timezone, -1)
+  }
+
+  if (query.preset === "LAST_3_MONTHS") {
+    const today = getTimezoneDayParts(new Date(), timezone)
+    const start = zonedDateTimeToUtc(timezone, today.year, today.month - 2, 1, 0, 0, 0)
+    const startParts = getTimezoneDayParts(start, timezone)
+    const end = zonedDateTimeToUtc(timezone, today.year, today.month + 1, 1, 0, 0, 0)
+
+    return {
+      start,
+      end,
+      from: formatDateOnlyParts(startParts),
+      to: formatDateOnlyParts(getTimezoneDayParts(new Date(end.getTime() - 1), timezone)),
+    }
+  }
+
+  const fromParts = parseDateOnlyParts(query.from!)
+  const toParts = parseDateOnlyParts(query.to!)
+  const start = zonedDateTimeToUtc(
+    timezone,
+    fromParts.year,
+    fromParts.month,
+    fromParts.day,
+    0,
+    0,
+    0,
+  )
+  const end = zonedDateTimeToUtc(
+    timezone,
+    toParts.year,
+    toParts.month,
+    toParts.day + 1,
+    0,
+    0,
+    0,
+  )
+  const maxRangeDays = 366
+  const totalDays = Math.ceil((end.getTime() - start.getTime()) / 86_400_000)
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    throw new z.ZodError([
+      {
+        code: z.ZodIssueCode.custom,
+        path: ["from"],
+        message: "Invalid custom date range.",
+      },
+    ])
+  }
+
+  if (end <= start) {
+    throw new z.ZodError([
+      {
+        code: z.ZodIssueCode.custom,
+        path: ["to"],
+        message: "to must be the same day or after from",
+      },
+    ])
+  }
+
+  if (totalDays > maxRangeDays) {
+    throw new z.ZodError([
+      {
+        code: z.ZodIssueCode.custom,
+        path: ["to"],
+        message: "Custom date range cannot exceed 366 days.",
+      },
+    ])
+  }
+
+  return {
+    start,
+    end,
+    from: query.from!,
+    to: query.to!,
+  }
+}
+
 async function summarizeContactServicePayments(
   prismaTx: any,
   tenantId: string,
@@ -451,7 +619,6 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
             userId: true,
             externalProfessionalName: true,
             externalContact: true,
-            notes: true,
             sortOrder: true,
             user: {
               select: {
@@ -484,8 +651,23 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
         installmentFrequency: service.installmentFrequency,
         isActive: service.isActive,
         checklistItems: service.checklistItems,
-        followUpTemplates: service.followUpTemplates,
-        professionals: service.professionals,
+        followUpTemplates: service.followUpTemplates.map((template: any) => ({
+          id: template.id,
+          name: template.name,
+          isPublished: template.isPublished,
+          sortOrder: template.sortOrder,
+          flowNodeCount: Array.isArray(template.flowNodes) ? template.flowNodes.length : 0,
+          flowEdgeCount: Array.isArray(template.flowEdges) ? template.flowEdges.length : 0,
+        })),
+        professionals: service.professionals.map((professional: any) => ({
+          id: professional.id,
+          kind: professional.kind,
+          userId: professional.userId,
+          externalProfessionalName: professional.externalProfessionalName,
+          externalContact: professional.externalContact,
+          sortOrder: professional.sortOrder,
+          user: professional.user,
+        })),
         tenantBilling: {
           taxEnabled: service.tenant.taxEnabled,
           taxLabel: service.tenant.taxLabel,
@@ -494,6 +676,265 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
             service.tenant.defaultTaxRateBps !== undefined
               ? service.tenant.defaultTaxRateBps / 100
               : null,
+        },
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const query = ServicesCatalogSummaryQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { timezone: true },
+    })
+    const timezone = getSafeTimezone(tenant?.timezone)
+    const range = getServicesCatalogSummaryRange(query, timezone)
+    const salesDateWhere = {
+      OR: [
+        {
+          purchasedAt: {
+            gte: range.start,
+            lt: range.end,
+          },
+        },
+        {
+          purchasedAt: null,
+          createdAt: {
+            gte: range.start,
+            lt: range.end,
+          },
+        },
+      ],
+    }
+
+    const [grossSalesAggregate, servicesSold, activeFollowUpServices, openTotals, openPayments] =
+      await Promise.all([
+        prismaWithServices.contactService.aggregate({
+          where: {
+            tenantId,
+            status: {
+              not: "CANCELED",
+            },
+            ...salesDateWhere,
+          },
+          _sum: {
+            totalPriceCents: true,
+          },
+        }),
+        prismaWithServices.contactService.count({
+          where: {
+            tenantId,
+            status: {
+              not: "CANCELED",
+            },
+            ...salesDateWhere,
+          },
+        }),
+        prismaWithServices.contactService.count({
+          where: {
+            tenantId,
+            status: {
+              not: "CANCELED",
+            },
+            followUpSteps: {
+              some: {
+                status: {
+                  in: ["PENDING", "ACTIVE", "POSTPONED"] as const,
+                },
+              },
+            },
+          },
+        }),
+        prismaWithServices.contactService.aggregate({
+          where: {
+            tenantId,
+            status: {
+              not: "CANCELED",
+            },
+          },
+          _sum: {
+            totalPriceCents: true,
+          },
+        }),
+        prismaWithServices.contactServicePayment.aggregate({
+          where: {
+            tenantId,
+            contactService: {
+              tenantId,
+              status: {
+                not: "CANCELED",
+              },
+            },
+          },
+          _sum: {
+            amountCents: true,
+          },
+        }),
+      ])
+
+    const totalOpenPriceCents = openTotals._sum.totalPriceCents ?? 0
+    const totalOpenPaidCents = openPayments._sum.amountCents ?? 0
+
+    return res.json({
+      ok: true,
+      summary: {
+        grossSalesCents: grossSalesAggregate._sum.totalPriceCents ?? 0,
+        servicesSold,
+        activeFollowUpServices,
+        remainingBalanceCents: Math.max(0, totalOpenPriceCents - totalOpenPaidCents),
+        range: {
+          preset: query.preset,
+          from: range.from,
+          to: range.to,
+        },
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/catalog/:serviceId/summary", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, serviceId } = TenantServicePathSchema.parse(req.params)
+    const query = ServicesCatalogSummaryQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { timezone: true },
+    })
+    const timezone = getSafeTimezone(tenant?.timezone)
+    const range = getServicesCatalogSummaryRange(query, timezone)
+
+    const service = await prismaWithServices.service.findFirst({
+      where: {
+        id: serviceId,
+        tenantId,
+        isActive: true,
+      },
+      select: { id: true },
+    })
+
+    if (!service) {
+      return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
+    }
+
+    const salesDateWhere = {
+      OR: [
+        {
+          purchasedAt: {
+            gte: range.start,
+            lt: range.end,
+          },
+        },
+        {
+          purchasedAt: null,
+          createdAt: {
+            gte: range.start,
+            lt: range.end,
+          },
+        },
+      ],
+    }
+
+    const [grossSalesAggregate, servicesSold, activeFollowUpServices, openTotals, openPayments] =
+      await Promise.all([
+        prismaWithServices.contactService.aggregate({
+          where: {
+            tenantId,
+            serviceId,
+            status: {
+              not: "CANCELED",
+            },
+            ...salesDateWhere,
+          },
+          _sum: {
+            totalPriceCents: true,
+          },
+        }),
+        prismaWithServices.contactService.count({
+          where: {
+            tenantId,
+            serviceId,
+            status: {
+              not: "CANCELED",
+            },
+            ...salesDateWhere,
+          },
+        }),
+        prismaWithServices.contactService.count({
+          where: {
+            tenantId,
+            serviceId,
+            status: {
+              not: "CANCELED",
+            },
+            followUpSteps: {
+              some: {
+                status: {
+                  in: ["PENDING", "ACTIVE", "POSTPONED"] as const,
+                },
+              },
+            },
+          },
+        }),
+        prismaWithServices.contactService.aggregate({
+          where: {
+            tenantId,
+            serviceId,
+            status: {
+              not: "CANCELED",
+            },
+          },
+          _sum: {
+            totalPriceCents: true,
+          },
+        }),
+        prismaWithServices.contactServicePayment.aggregate({
+          where: {
+            tenantId,
+            contactService: {
+              tenantId,
+              serviceId,
+              status: {
+                not: "CANCELED",
+              },
+            },
+          },
+          _sum: {
+            amountCents: true,
+          },
+        }),
+      ])
+
+    const totalOpenPriceCents = openTotals._sum.totalPriceCents ?? 0
+    const totalOpenPaidCents = openPayments._sum.amountCents ?? 0
+
+    return res.json({
+      ok: true,
+      summary: {
+        grossSalesCents: grossSalesAggregate._sum.totalPriceCents ?? 0,
+        servicesSold,
+        activeFollowUpServices,
+        remainingBalanceCents: Math.max(0, totalOpenPriceCents - totalOpenPaidCents),
+        range: {
+          preset: query.preset,
+          from: range.from,
+          to: range.to,
         },
       },
     })

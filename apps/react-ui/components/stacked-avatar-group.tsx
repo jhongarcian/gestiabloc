@@ -27,6 +27,8 @@ type StackedAvatarGroupProps = {
   maxVisible?: number
   emptyLabel?: string
   className?: string
+  avatarSize?: "sm" | "default" | "lg"
+  enableHoverEffect?: boolean
 }
 
 const TONE_STYLES = {
@@ -61,6 +63,8 @@ export function StackedAvatarGroup({
   maxVisible = 4,
   emptyLabel = "No items assigned.",
   className,
+  avatarSize = "default",
+  enableHoverEffect = true,
 }: StackedAvatarGroupProps) {
   if (items.length === 0) {
     return <p className="text-xs text-slate-500">{emptyLabel}</p>
@@ -68,6 +72,15 @@ export function StackedAvatarGroup({
 
   const visibleItems = items.slice(0, maxVisible)
   const overflowItems = items.slice(maxVisible)
+  const interactiveClassName = enableHoverEffect
+    ? "transition-all duration-200 hover:z-20 hover:mx-1 hover:scale-125"
+    : ""
+  const fallbackTextClassName =
+    avatarSize === "sm"
+      ? "text-[9px]"
+      : avatarSize === "lg"
+        ? "text-xs"
+        : "text-[11px]"
 
   return (
     <TooltipProvider delayDuration={120}>
@@ -78,13 +91,13 @@ export function StackedAvatarGroup({
           return (
             <Tooltip key={item.id}>
               <TooltipTrigger asChild>
-                <div className="-ml-2 first:ml-0 transition-all duration-200 hover:z-20 hover:mx-1 hover:scale-125">
+                <div className={cn("-ml-2 first:ml-0", interactiveClassName)}>
                   <Avatar
                     className={cn(
                       "border-2 border-white shadow-sm ring-1",
                       toneStyles.avatarClass,
                     )}
-                    size="default"
+                    size={avatarSize}
                   >
                     {item.imageUrl ? (
                       <AvatarImage
@@ -95,7 +108,8 @@ export function StackedAvatarGroup({
                     ) : null}
                     <AvatarFallback
                       className={cn(
-                        "text-[11px] font-semibold",
+                        fallbackTextClassName,
+                        "font-semibold",
                         toneStyles.fallbackClass,
                       )}
                     >
@@ -114,7 +128,7 @@ export function StackedAvatarGroup({
         {overflowItems.length ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <div className="-ml-2 first:ml-0 transition-all duration-200 hover:z-20 hover:mx-1 hover:scale-125">
+              <div className={cn("-ml-2 first:ml-0", interactiveClassName)}>
                 <AvatarGroupCount className="bg-slate-100 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
                   +{overflowItems.length}
                 </AvatarGroupCount>
