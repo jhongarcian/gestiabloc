@@ -99,6 +99,12 @@ enum ServiceProfessionalKind {
   EXTERNAL
 }
 
+enum InstallmentFrequency {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
 enum ContactServiceStatus {
   PENDING
   IN_PROGRESS
@@ -402,8 +408,11 @@ model Service {
   description                String?
   basePriceCents             Int
   currency                   String  @default("USD")
+  isTaxExempt                Boolean @default(false)
   allowPartialPayments       Boolean @default(false)
   minimumPartialPaymentCents Int?
+  installmentCount           Int?
+  installmentFrequency       InstallmentFrequency?
   isActive                   Boolean @default(true)
   sortOrder                  Int     @default(0)
 

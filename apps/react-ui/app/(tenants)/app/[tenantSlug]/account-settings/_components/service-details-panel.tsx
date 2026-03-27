@@ -62,6 +62,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Tooltip,
@@ -81,8 +82,11 @@ export type ServiceDetailsPanelProps = {
     description: string | null
     basePriceCents: number
     currency: string
+    isTaxExempt: boolean
     allowPartialPayments: boolean
     minimumPartialPaymentCents: number | null
+    installmentCount: number | null
+    installmentFrequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null
     isActive: boolean
     checklistItems: Array<{
       id: string
@@ -118,7 +122,13 @@ export type ServiceDetailsPanelProps = {
         email: string
       } | null
     }>
+    tenantBilling: {
+      taxEnabled: boolean
+      taxLabel: string | null
+      defaultTaxRatePercent: number | null
+    }
     configStatus: {
+      overviewComplete: boolean
       checklistComplete: boolean
       followUpsComplete: boolean
       professionalsComplete: boolean
@@ -164,9 +174,11 @@ function createDraftId(prefix: string) {
 
 function SortableChecklistItem({
   item,
+  index,
   onOpen,
 }: {
   item: ChecklistItemDraft
+  index: number
   onOpen: (item: ChecklistItemDraft) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({
@@ -177,12 +189,12 @@ function SortableChecklistItem({
     <article
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className="rounded-xl border border-slate-200 bg-slate-50/70 p-3"
+      className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50/30"
     >
       <div className="flex items-center gap-2">
         <button
           type="button"
-          className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 active:cursor-grabbing"
+          className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 active:cursor-grabbing"
           aria-label={`Reorder ${item.label || "checklist item"}`}
           {...attributes}
           {...listeners}
@@ -192,33 +204,50 @@ function SortableChecklistItem({
         <button
           type="button"
           onClick={() => onOpen(item)}
-          className="flex min-w-0 flex-1 cursor-pointer items-center justify-between rounded-lg border border-transparent px-2 py-2 text-left hover:border-slate-200 hover:bg-white"
+          className="flex min-w-0 flex-1 cursor-pointer items-center justify-between rounded-xl border border-transparent px-2 py-2 text-left transition-colors hover:border-blue-200 hover:bg-blue-50/60"
         >
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <p className="truncate text-sm font-medium text-slate-900">{item.label}</p>
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="inline-flex h-7 min-w-7 items-center justify-center self-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
+              {index + 1}
+            </span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <p className="truncate text-sm font-medium text-slate-900">{item.label}</p>
+                {item.description.trim() ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        className="inline-flex h-5 w-5 cursor-help items-center justify-center rounded-full text-slate-500 hover:bg-slate-100"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <CircleHelp className="h-3.5 w-3.5" />
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs text-sm leading-5">
+                      {item.description}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <span className="inline-flex h-5 w-5 items-center justify-center opacity-0">
+                    <CircleHelp className="h-3.5 w-3.5" />
+                  </span>
+                )}
+              </div>
               {item.description.trim() ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span
-                      className="inline-flex h-5 w-5 cursor-help items-center justify-center rounded-full text-slate-500 hover:bg-slate-100"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <CircleHelp className="h-3.5 w-3.5" />
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-xs text-sm leading-5">
-                    {item.description}
-                  </TooltipContent>
-                </Tooltip>
+                <p className="mt-1 truncate text-sm text-slate-500">{item.description}</p>
               ) : (
-                <span className="inline-flex h-5 w-5 items-center justify-center opacity-0">
-                  <CircleHelp className="h-3.5 w-3.5" />
-                </span>
+                <p className="mt-1 text-sm text-slate-400">No description added</p>
               )}
             </div>
           </div>
-          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600">
+          <span
+            className={cn(
+              "rounded-full border px-2.5 py-1 text-xs font-medium",
+              item.isRequired
+                ? "border-blue-200 bg-blue-50 text-blue-700"
+                : "border-slate-200 bg-slate-50 text-slate-600",
+            )}
+          >
             {item.isRequired ? "Required" : "Optional"}
           </span>
         </button>
@@ -229,10 +258,12 @@ function SortableChecklistItem({
 
 function SortableProfessionalRow({
   entry,
+  index,
   displayName,
   onOpen,
 }: {
   entry: ProfessionalDraft
+  index: number
   displayName: string
   onOpen: (professionalId: string) => void
 }) {
@@ -244,13 +275,16 @@ function SortableProfessionalRow({
     <TableRow
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cn("cursor-pointer transition-colors hover:bg-slate-50", isDragging && "bg-slate-50")}
+      className={cn(
+        "cursor-pointer transition-colors hover:bg-blue-50/50 focus-visible:bg-blue-50/50",
+        isDragging && "bg-blue-50/50",
+      )}
       onClick={() => onOpen(entry.id)}
     >
       <TableCell className="w-10">
         <button
           type="button"
-          className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 active:cursor-grabbing"
+          className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 active:cursor-grabbing"
           aria-label={`Reorder ${displayName}`}
           onClick={(event) => event.stopPropagation()}
           {...attributes}
@@ -259,10 +293,39 @@ function SortableProfessionalRow({
           <GripVertical className="h-4 w-4" />
         </button>
       </TableCell>
-      <TableCell>{entry.kind === "INTERNAL_USER" ? "Internal user" : "External professional"}</TableCell>
-      <TableCell className="font-medium text-slate-900">{displayName}</TableCell>
+      <TableCell>
+        <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
+          {index + 1}
+        </span>
+      </TableCell>
+      <TableCell>
+        <span
+          className={cn(
+            "rounded-full border px-2.5 py-1 text-xs font-medium",
+            entry.kind === "INTERNAL_USER"
+              ? "border-blue-200 bg-blue-50 text-blue-700"
+              : "border-orange-200 bg-orange-50 text-orange-700",
+          )}
+        >
+          {entry.kind === "INTERNAL_USER" ? "Internal user" : "External professional"}
+        </span>
+      </TableCell>
+      <TableCell>
+        <div className="space-y-0.5">
+          <p className="font-medium text-slate-900">{displayName}</p>
+          <p className="text-sm text-slate-500">
+            {entry.kind === "INTERNAL_USER" ? "Assigned from tenant users" : "External specialist"}
+          </p>
+        </div>
+      </TableCell>
       <TableCell className="text-slate-600">
-        {entry.kind === "INTERNAL_USER" ? "-" : entry.externalContact || "-"}
+        {entry.kind === "INTERNAL_USER" ? (
+          <span className="text-slate-400">No external contact</span>
+        ) : entry.externalContact ? (
+          entry.externalContact
+        ) : (
+          <span className="text-slate-400">No contact added</span>
+        )}
       </TableCell>
     </TableRow>
   )
@@ -281,8 +344,32 @@ function dollarsToCents(value: string) {
   return Math.round(numericValue * 100)
 }
 
+const INSTALLMENT_FREQUENCY_OPTIONS = [
+  { value: "WEEKLY", label: "Weekly" },
+  { value: "BIWEEKLY", label: "Biweekly" },
+  { value: "MONTHLY", label: "Monthly" },
+] as const
+
+function formatInstallmentFrequency(
+  value: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null | undefined,
+) {
+  return INSTALLMENT_FREQUENCY_OPTIONS.find((option) => option.value === value)?.label ?? null
+}
+
+function formatCurrency(valueCents: number, currency: string) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: currency || "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format((valueCents || 0) / 100)
+}
+
 export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDetailsPanelProps) {
   const router = useRouter()
+  const [activeTab, setActiveTab] = useState<
+    "overview" | "checklists" | "follow-up-templates" | "professionals"
+  >("overview")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isChecklistSaving, setIsChecklistSaving] = useState(false)
   const [isProfessionalsSaving, setIsProfessionalsSaving] = useState(false)
@@ -303,12 +390,19 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
   const [description, setDescription] = useState(service.description ?? "")
   const [basePrice, setBasePrice] = useState(centsToDollars(service.basePriceCents))
   const [currency] = useState(service.currency)
+  const [isTaxExempt, setIsTaxExempt] = useState(service.isTaxExempt)
   const [allowPartialPayments, setAllowPartialPayments] = useState(service.allowPartialPayments)
   const [minimumPartialPayment, setMinimumPartialPayment] = useState(
     service.minimumPartialPaymentCents !== null
       ? centsToDollars(service.minimumPartialPaymentCents)
       : "",
   )
+  const [installmentCount, setInstallmentCount] = useState(
+    service.installmentCount !== null ? String(service.installmentCount) : "",
+  )
+  const [installmentFrequency, setInstallmentFrequency] = useState<
+    "WEEKLY" | "BIWEEKLY" | "MONTHLY" | ""
+  >(service.installmentFrequency ?? "")
   const [isActive, setIsActive] = useState(service.isActive)
   const [users, setUsers] = useState<UsersResponse["items"]>([])
   const [checklistItems, setChecklistItems] = useState<ChecklistItemDraft[]>(
@@ -381,46 +475,173 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
   )
 
   const checklistComplete = checklistItems.some((item) => item.label.trim())
+  const requiredChecklistCount = checklistItems.filter((item) => item.isRequired).length
+  const optionalChecklistCount = checklistItems.length - requiredChecklistCount
   const followUpsComplete =
     service.followUpTemplates.length > 0 || service.followUpTemplateSteps.length > 0
+  const totalTemplateNodes = useMemo(
+    () =>
+      service.followUpTemplates.reduce(
+        (total, template) => total + (Array.isArray(template.flowNodes) ? template.flowNodes.length : 0),
+        0,
+      ),
+    [service.followUpTemplates],
+  )
+  const totalTemplateEdges = useMemo(
+    () =>
+      service.followUpTemplates.reduce(
+        (total, template) => total + (Array.isArray(template.flowEdges) ? template.flowEdges.length : 0),
+        0,
+      ),
+    [service.followUpTemplates],
+  )
+  const internalProfessionalsCount = useMemo(
+    () => professionals.filter((entry) => entry.kind === "INTERNAL_USER").length,
+    [professionals],
+  )
+  const externalProfessionalsCount = professionals.length - internalProfessionalsCount
   const professionalsComplete = professionals.length > 0
+  const basePriceCentsPreview = useMemo(() => dollarsToCents(basePrice), [basePrice])
+  const minimumDepositCentsPreview = useMemo(
+    () => (allowPartialPayments ? dollarsToCents(minimumPartialPayment) : null),
+    [allowPartialPayments, minimumPartialPayment],
+  )
+  const installmentCountNumber = useMemo(() => {
+    if (!allowPartialPayments) return null
+    const parsed = Number.parseInt(installmentCount, 10)
+    if (!Number.isInteger(parsed) || parsed < 2) return null
+    return parsed
+  }, [allowPartialPayments, installmentCount])
+  const tenantTaxRatePercent = service.tenantBilling.defaultTaxRatePercent
+  const tenantTaxLabel = service.tenantBilling.taxLabel?.trim() || "Tax"
+  const taxApplies =
+    service.tenantBilling.taxEnabled &&
+    !isTaxExempt &&
+    tenantTaxRatePercent !== null &&
+    tenantTaxRatePercent !== undefined
+  const estimatedTaxCents = useMemo(() => {
+    if (!taxApplies || basePriceCentsPreview === null) return 0
+    return Math.round(basePriceCentsPreview * (tenantTaxRatePercent! / 100))
+  }, [basePriceCentsPreview, taxApplies, tenantTaxRatePercent])
+  const totalWithTaxCents = useMemo(() => {
+    if (basePriceCentsPreview === null) return null
+    return basePriceCentsPreview + estimatedTaxCents
+  }, [basePriceCentsPreview, estimatedTaxCents])
+  const maxAllowedDepositCents = totalWithTaxCents ?? basePriceCentsPreview
+  const estimatedInstallmentCents = useMemo(() => {
+    if (
+      !allowPartialPayments ||
+      installmentCountNumber === null ||
+      totalWithTaxCents === null
+    ) {
+      return null
+    }
+
+    const deposit = minimumDepositCentsPreview ?? 0
+    const remainingBalance = Math.max(0, totalWithTaxCents - deposit)
+    return Math.round(remainingBalance / installmentCountNumber)
+  }, [
+    allowPartialPayments,
+    installmentCountNumber,
+    minimumDepositCentsPreview,
+    totalWithTaxCents,
+  ])
+  const overviewComplete = useMemo(() => {
+    if (!name.trim()) return false
+    if (basePriceCentsPreview === null) return false
+    if (currency.trim().length !== 3) return false
+    if (service.tenantBilling.taxEnabled && !isTaxExempt && tenantTaxRatePercent == null) {
+      return false
+    }
+    if (!allowPartialPayments) return true
+    if (minimumDepositCentsPreview === null) return false
+    if (
+      maxAllowedDepositCents !== null &&
+      minimumDepositCentsPreview > maxAllowedDepositCents
+    ) {
+      return false
+    }
+    if (installmentCountNumber === null) return false
+    if (!installmentFrequency) return false
+    return true
+  }, [
+    allowPartialPayments,
+    basePriceCentsPreview,
+    currency,
+    installmentCountNumber,
+    installmentFrequency,
+    isTaxExempt,
+    maxAllowedDepositCents,
+    minimumDepositCentsPreview,
+    name,
+    service.tenantBilling.taxEnabled,
+    tenantTaxRatePercent,
+  ])
   const usersById = useMemo(
     () => new Map(users.map((user) => [user.id, user])),
     [users],
   )
 
   const isComplete = useMemo(
-    () => checklistComplete && followUpsComplete && professionalsComplete,
-    [checklistComplete, followUpsComplete, professionalsComplete],
+    () => overviewComplete && checklistComplete && followUpsComplete && professionalsComplete,
+    [overviewComplete, checklistComplete, followUpsComplete, professionalsComplete],
   )
   const summaryItems = useMemo(
     () => [
       {
+        key: "overview" as const,
+        label: "Overview",
+        value: allowPartialPayments
+          ? installmentCountNumber
+            ? `${installmentCountNumber} ${installmentCountNumber === 1 ? "installment" : "installments"}`
+            : "Billing setup needed"
+          : "Full payment",
+        hint: overviewComplete
+          ? "Billing rules configured"
+          : service.tenantBilling.taxEnabled && !isTaxExempt && tenantTaxRatePercent == null
+            ? "Tenant tax settings are incomplete"
+            : "Finish billing and tax rules",
+        icon: CircleHelp,
+        isComplete: overviewComplete,
+      },
+      {
+        key: "checklists" as const,
         label: "Checklist",
         value: checklistItems.length,
         hint: checklistComplete ? "Configured" : "Needs at least one item",
         icon: ClipboardList,
+        isComplete: checklistComplete,
       },
       {
-        label: "Templates",
+        key: "follow-up-templates" as const,
+        label: "Follow-Up Templates",
         value: service.followUpTemplates.length,
         hint: followUpsComplete ? "Ready to enroll" : "No template yet",
         icon: Route,
+        isComplete: followUpsComplete,
       },
       {
+        key: "professionals" as const,
         label: "Professionals",
         value: professionals.length,
         hint: professionalsComplete ? "Coverage configured" : "No professionals assigned",
         icon: UserRoundCog,
+        isComplete: professionalsComplete,
       },
     ],
     [
+      allowPartialPayments,
       checklistComplete,
       checklistItems.length,
       followUpsComplete,
+      installmentCountNumber,
+      isTaxExempt,
+      overviewComplete,
       professionals.length,
       professionalsComplete,
       service.followUpTemplates.length,
+      service.tenantBilling.taxEnabled,
+      tenantTaxRatePercent,
     ],
   )
 
@@ -656,18 +877,46 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     const minimumPartialPaymentCents = allowPartialPayments
       ? dollarsToCents(minimumPartialPayment)
       : null
+    const nextInstallmentCount = allowPartialPayments
+      ? Number.parseInt(installmentCount, 10)
+      : null
 
     if (allowPartialPayments && minimumPartialPaymentCents === null) {
-      toast.error("Minimum partial payment must be a valid number.")
+      toast.error("Minimum deposit must be a valid number.")
       return
     }
 
     if (
       allowPartialPayments &&
       minimumPartialPaymentCents !== null &&
-      minimumPartialPaymentCents > basePriceCents
+      maxAllowedDepositCents !== null &&
+      minimumPartialPaymentCents > maxAllowedDepositCents
     ) {
-      toast.error("Minimum partial payment cannot exceed base price.")
+      toast.error("Minimum deposit cannot exceed the service total.")
+      return
+    }
+
+    if (
+      service.tenantBilling.taxEnabled &&
+      !isTaxExempt &&
+      (tenantTaxRatePercent === null || tenantTaxRatePercent === undefined)
+    ) {
+      toast.error("This tenant must configure a default tax rate first.")
+      return
+    }
+
+    if (
+      allowPartialPayments &&
+      (nextInstallmentCount === null ||
+        !Number.isInteger(nextInstallmentCount) ||
+        nextInstallmentCount < 2)
+    ) {
+      toast.error("Number of installments must be at least 2.")
+      return
+    }
+
+    if (allowPartialPayments && !installmentFrequency) {
+      toast.error("Select an installment frequency.")
       return
     }
 
@@ -679,8 +928,11 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         description: description.trim() || null,
         basePriceCents,
         currency: currency.trim().toUpperCase() || "USD",
+        isTaxExempt,
         allowPartialPayments,
         minimumPartialPaymentCents,
+        installmentCount: allowPartialPayments ? nextInstallmentCount : null,
+        installmentFrequency: allowPartialPayments ? installmentFrequency : null,
         isActive,
         checklistItems: checklistItems
           .filter((item) => item.label.trim())
@@ -754,21 +1006,21 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Service Setup</p>
-            <h2 className="text-2xl font-semibold text-slate-950">{service.name}</h2>
+            <h2 className="text-2xl font-semibold text-slate-950">{name}</h2>
             <p className="text-sm text-slate-600">
-              Configure core details, checklist, professionals, and follow-up template from one place.
+              Configure overview, checklist, follow-up templates, and professionals from one workspace.
             </p>
           </div>
           <div className="flex items-center gap-2">
             {isComplete ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
                 <CheckCircle2 className="h-4 w-4" />
-                Complete
+                Ready
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700">
+              <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-700">
                 <AlertTriangle className="h-4 w-4" />
-                Incomplete
+                Configuration incomplete
               </span>
             )}
             <Button
@@ -785,219 +1037,503 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       </section>
 
       <section className="rounded-[20px] border border-slate-200 bg-white p-4 md:p-5">
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {summaryItems.map((item) => {
             const Icon = item.icon
 
             return (
-              <div key={item.label} className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+              <article
+                key={item.label}
+                className={cn(
+                  "rounded-2xl border px-4 py-3",
+                  item.isComplete
+                    ? "border-emerald-200 bg-emerald-50/70"
+                    : "border-rose-200 bg-rose-50/80",
+                )}
+              >
                 <div className="flex items-start justify-between gap-3">
                   <div className="space-y-1">
-                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
-                      {item.label}
-                    </p>
-                    <p className="text-2xl font-semibold text-slate-950">{item.value}</p>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={cn(
+                          "h-2.5 w-2.5 rounded-full",
+                          item.isComplete ? "bg-emerald-500" : "bg-rose-500",
+                        )}
+                      />
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+                        {item.label}
+                      </p>
+                    </div>
+                    <p className="text-xl font-semibold text-slate-950">{item.value}</p>
                     <p className="text-sm text-slate-600">{item.hint}</p>
                   </div>
-                  <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600">
+                  <span
+                    className={cn(
+                      "inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-white",
+                      item.isComplete
+                        ? "border-emerald-200 text-emerald-700"
+                        : "border-rose-200 text-rose-700",
+                    )}
+                  >
                     <Icon className="h-4 w-4" />
                   </span>
                 </div>
-              </div>
+              </article>
             )
           })}
         </div>
       </section>
 
-      <section className="rounded-[20px] border border-slate-200 bg-white p-5">
-        <div className="space-y-1">
-          <h3 className="text-lg font-semibold text-slate-900">Core Settings</h3>
-          <p className="text-sm text-slate-500">
-            Basic billing and activation details for this service.
-          </p>
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) =>
+          setActiveTab(value as "overview" | "checklists" | "follow-up-templates" | "professionals")
+        }
+        className="space-y-5"
+      >
+        <div className="overflow-x-auto">
+          <TabsList className="inline-flex h-auto min-w-max items-center gap-2 rounded-none bg-transparent p-0">
+            <TabsTrigger
+              value="overview"
+              className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
+            >
+              Overview
+            </TabsTrigger>
+            <TabsTrigger
+              value="checklists"
+              className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
+            >
+              Checklists
+            </TabsTrigger>
+            <TabsTrigger
+              value="follow-up-templates"
+              className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
+            >
+              Follow-Up Templates
+            </TabsTrigger>
+            <TabsTrigger
+              value="professionals"
+              className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
+            >
+              Professionals
+            </TabsTrigger>
+          </TabsList>
         </div>
-        <div className="mt-4 grid gap-4">
-          <div className="grid gap-2">
-            <Label>Service name</Label>
-            <Input value={name} onChange={(event) => setName(event.target.value)} />
-          </div>
-          <div className="grid gap-2">
-            <Label>Description</Label>
-            <Textarea rows={3} value={description} onChange={(event) => setDescription(event.target.value)} />
-          </div>
 
-          <div className="grid gap-4 md:grid-cols-4">
-            <div className="grid gap-2 md:col-span-2">
-              <Label>Base price</Label>
-              <Input type="number" min={0} step="0.01" value={basePrice} onChange={(event) => setBasePrice(event.target.value)} />
+        <TabsContent value="overview" className="mt-0 space-y-5">
+          <section className="rounded-[20px] border border-slate-200 bg-white p-5">
+            <div className="space-y-1">
+              <h3 className="text-lg font-semibold text-slate-900">Overview</h3>
+              <p className="text-sm text-slate-500">
+                Configure the core details, billing rules, and tax behavior for this service.
+              </p>
             </div>
-            <div className="grid gap-2 md:col-span-1">
-              <Label>Currency</Label>
-              <Input maxLength={3} value={currency} disabled readOnly className="cursor-not-allowed uppercase" />
-            </div>
-            <div className="grid gap-2 md:col-span-1">
-              <Label>Status</Label>
-              <Select
-                value={isActive ? "active" : "inactive"}
-                onValueChange={(value) => setIsActive(value === "active")}
-              >
-                <SelectTrigger className="cursor-pointer">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="inactive">Inactive</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-[auto_1fr] md:items-end">
-            <label className="flex items-center gap-2 pb-2 text-sm text-slate-700">
-              <Checkbox
-                checked={allowPartialPayments}
-                onCheckedChange={(checked) => setAllowPartialPayments(checked === true)}
-              />
-              Allow partial payments
-            </label>
-            <div className="grid gap-2">
-              <Label>Minimum partial payment</Label>
-              <Input
-                type="number"
-                min={0}
-                step="0.01"
-                disabled={!allowPartialPayments}
-                value={minimumPartialPayment}
-                onChange={(event) => setMinimumPartialPayment(event.target.value)}
-              />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-      <section className="rounded-[20px] border border-slate-200 bg-white p-5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="space-y-1">
-            <h3 className="text-lg font-semibold text-slate-900">Checklist</h3>
-            <p className="text-sm text-slate-500">
-              Documents and requirements the contact needs before the service can move forward.
-            </p>
-          </div>
-          <Dialog
-            open={isChecklistDialogOpen}
-            onOpenChange={(open) => {
-              setIsChecklistDialogOpen(open)
-              if (!open) {
-                setChecklistDraft({ label: "", description: "", isRequired: true })
-              }
-            }}
-          >
-            <DialogTrigger asChild>
-              <Button type="button" variant="outline" size="sm" className="cursor-pointer" disabled={isChecklistSaving}>
-                Add item
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-lg">
-              <DialogHeader>
-                <DialogTitle>Create checklist item</DialogTitle>
-              </DialogHeader>
-              <div className="grid gap-4">
-                <div className="grid gap-2">
-                  <Label>Label</Label>
-                  <Input
-                    placeholder="Document ID"
-                    value={checklistDraft.label}
-                    onChange={(event) =>
-                      setChecklistDraft((prev) => ({ ...prev, label: event.target.value }))
-                    }
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label>Description</Label>
-                  <Textarea
-                    rows={3}
-                    placeholder="What this item is and why it is needed"
-                    value={checklistDraft.description}
-                    onChange={(event) =>
-                      setChecklistDraft((prev) => ({
-                        ...prev,
-                        description: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-                <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                  <Checkbox
-                    checked={checklistDraft.isRequired}
-                    onCheckedChange={(checked) =>
-                      setChecklistDraft((prev) => ({
-                        ...prev,
-                        isRequired: checked === true,
-                      }))
-                    }
-                  />
-                  Required
-                </label>
+            <div className="mt-4 grid gap-4">
+              <div className="grid gap-2">
+                <Label>Service name</Label>
+                <Input value={name} onChange={(event) => setName(event.target.value)} />
               </div>
-              <DialogFooter>
+              <div className="grid gap-2">
+                <Label>Description</Label>
+                <Textarea rows={3} value={description} onChange={(event) => setDescription(event.target.value)} />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-4">
+                <div className="grid gap-2 md:col-span-2">
+                  <Label>Base price</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={basePrice}
+                    onChange={(event) => setBasePrice(event.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2 md:col-span-1">
+                  <Label>Currency</Label>
+                  <Input maxLength={3} value={currency} disabled readOnly className="cursor-not-allowed uppercase" />
+                </div>
+                <div className="grid gap-2 md:col-span-1">
+                  <Label>Status</Label>
+                  <Select
+                    value={isActive ? "active" : "inactive"}
+                    onValueChange={(value) => setIsActive(value === "active")}
+                  >
+                    <SelectTrigger className="cursor-pointer">
+                      <SelectValue placeholder="Status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="active">Active</SelectItem>
+                      <SelectItem value="inactive">Inactive</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="space-y-1">
+                  <h4 className="text-sm font-semibold text-slate-900">Billing Rules</h4>
+                  <p className="text-sm text-slate-500">
+                    Configure tax exemption, deposit rules, and the fixed installment schedule.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-slate-900">Tax behavior</p>
+                    <p className="text-sm text-slate-500">
+                      Use the tenant default tax unless this service should always be tax exempt.
+                    </p>
+                  </div>
+                  <label className="mt-3 inline-flex items-center gap-2 text-sm text-slate-700">
+                    <Checkbox
+                      checked={isTaxExempt}
+                      onCheckedChange={(checked) => setIsTaxExempt(checked === true)}
+                    />
+                    Tax exempt service
+                  </label>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-slate-900">Payment plan</p>
+                    <p className="text-sm text-slate-500">
+                      Decide whether the contact can pay over time and define the installment structure.
+                    </p>
+                  </div>
+                  <label className="mt-3 inline-flex items-center gap-2 text-sm text-slate-700">
+                    <Checkbox
+                      checked={allowPartialPayments}
+                      onCheckedChange={(checked) => setAllowPartialPayments(checked === true)}
+                    />
+                    Allow partial payments
+                  </label>
+                  <div className="mt-4 grid gap-4 border-t border-slate-200 pt-4 md:grid-cols-3">
+                    <div className="grid gap-2">
+                      <Label>Minimum deposit</Label>
+                      <div className="relative">
+                        <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-sm text-slate-500">
+                          $
+                        </span>
+                        <Input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          inputMode="decimal"
+                          disabled={!allowPartialPayments}
+                          value={minimumPartialPayment}
+                          onChange={(event) => {
+                            const nextValue = event.target.value
+                            if (nextValue.startsWith("-")) return
+
+                            const parsed = Number.parseFloat(nextValue)
+                            if (Number.isFinite(parsed) && parsed < 0) return
+
+                            setMinimumPartialPayment(nextValue)
+                          }}
+                          className="pl-7"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>Number of installments</Label>
+                      <Input
+                        type="number"
+                        min={2}
+                        step={1}
+                        inputMode="numeric"
+                        disabled={!allowPartialPayments}
+                        value={installmentCount}
+                        onChange={(event) => {
+                          const nextValue = event.target.value
+                          if (nextValue.startsWith("-")) return
+
+                          const parsed = Number.parseInt(nextValue, 10)
+                          if (Number.isInteger(parsed) && parsed < 0) return
+
+                          setInstallmentCount(nextValue)
+                        }}
+                        placeholder="4"
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>Installment frequency</Label>
+                      <Select
+                        value={installmentFrequency || "__none__"}
+                        onValueChange={(value) =>
+                          setInstallmentFrequency(
+                            value === "__none__" ? "" : (value as "WEEKLY" | "BIWEEKLY" | "MONTHLY"),
+                          )
+                        }
+                        disabled={!allowPartialPayments}
+                      >
+                        <SelectTrigger className="cursor-pointer">
+                          <SelectValue placeholder="Select frequency" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">No frequency selected</SelectItem>
+                          {INSTALLMENT_FREQUENCY_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    Tax Summary
+                  </p>
+                  {service.tenantBilling.taxEnabled ? (
+                    <div className="mt-2 space-y-1 text-sm text-slate-600">
+                      {isTaxExempt ? (
+                        <p>This service is marked tax exempt.</p>
+                      ) : tenantTaxRatePercent != null ? (
+                        <>
+                          <p>
+                            {tenantTaxLabel}:{" "}
+                            <span className="font-medium text-slate-900">
+                              {tenantTaxRatePercent.toFixed(2).replace(/\.00$/, "")}%
+                            </span>
+                          </p>
+                          <p>
+                            Estimated tax on current price:{" "}
+                            <span className="font-medium text-slate-900">
+                              {basePriceCentsPreview !== null
+                                ? formatCurrency(estimatedTaxCents, currency)
+                                : "Enter a valid price"}
+                            </span>
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-rose-700">
+                          Tenant tax settings are incomplete. Configure the tax rate in account settings.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-slate-600">
+                      This tenant does not charge tax by default.
+                    </p>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    Payment Plan Preview
+                  </p>
+                  <div className="mt-2 space-y-1 text-sm text-slate-600">
+                    <p>
+                      Total:{" "}
+                      <span className="font-medium text-slate-900">
+                        {totalWithTaxCents !== null
+                          ? formatCurrency(totalWithTaxCents, currency)
+                          : "Enter a valid price"}
+                      </span>
+                    </p>
+                    <p>
+                      {allowPartialPayments
+                        ? installmentCountNumber && installmentFrequency && estimatedInstallmentCents !== null
+                          ? `${installmentCountNumber} ${formatInstallmentFrequency(installmentFrequency)?.toLowerCase()} installments after first payment`
+                          : "Complete installment fields to preview the schedule"
+                        : "Full amount only"}
+                    </p>
+                    {allowPartialPayments ? (
+                      <>
+                        <p>
+                          Minimum deposit:{" "}
+                          <span className="font-medium text-slate-900">
+                            {minimumDepositCentsPreview !== null
+                              ? formatCurrency(minimumDepositCentsPreview, currency)
+                              : "Required"}
+                          </span>
+                        </p>
+                        {estimatedInstallmentCents !== null ? (
+                          <p>
+                            Estimated installment:{" "}
+                            <span className="font-medium text-slate-900">
+                              {formatCurrency(estimatedInstallmentCents, currency)}
+                            </span>
+                          </p>
+                        ) : null}
+                      </>
+                    ) : (
+                      <p>Contacts can still pay the full amount at any time.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </TabsContent>
+
+        <TabsContent value="checklists" className="mt-0">
+          <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-200 px-5 py-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="space-y-1">
+              <h3 className="inline-flex items-center gap-2 text-lg font-semibold text-slate-900">
+                <ClipboardList className="h-4 w-4 text-blue-700" />
+                Checklist
+              </h3>
+              <p className="text-sm text-slate-500">
+                Documents and requirements the contact needs before the service can move forward.
+              </p>
+            </div>
+            <Dialog
+              open={isChecklistDialogOpen}
+              onOpenChange={(open) => {
+                setIsChecklistDialogOpen(open)
+                if (!open) {
+                  setChecklistDraft({ label: "", description: "", isRequired: true })
+                }
+              }}
+            >
+              <DialogTrigger asChild>
                 <Button
                   type="button"
-                  variant="outline"
-                  className="cursor-pointer"
-                  onClick={() => {
-                    setIsChecklistDialogOpen(false)
-                    setChecklistDraft({ label: "", description: "", isRequired: true })
-                  }}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="button"
-                  className="cursor-pointer"
-                  onClick={addChecklistItemFromDialog}
+                  size="sm"
+                  className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
                   disabled={isChecklistSaving}
                 >
-                  {isChecklistSaving ? "Saving..." : "Add checklist item"}
+                  Add item
                 </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-lg">
+                <DialogHeader>
+                  <DialogTitle>Create checklist item</DialogTitle>
+                </DialogHeader>
+                <div className="grid gap-4">
+                  <div className="grid gap-2">
+                    <Label>Label</Label>
+                    <Input
+                      placeholder="Document ID"
+                      value={checklistDraft.label}
+                      onChange={(event) =>
+                        setChecklistDraft((prev) => ({ ...prev, label: event.target.value }))
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Description</Label>
+                    <Textarea
+                      rows={3}
+                      placeholder="What this item is and why it is needed"
+                      value={checklistDraft.description}
+                      onChange={(event) =>
+                        setChecklistDraft((prev) => ({
+                          ...prev,
+                          description: event.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                  <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                    <Checkbox
+                      checked={checklistDraft.isRequired}
+                      onCheckedChange={(checked) =>
+                        setChecklistDraft((prev) => ({
+                          ...prev,
+                          isRequired: checked === true,
+                        }))
+                      }
+                    />
+                    Required
+                  </label>
+                </div>
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
+                    onClick={() => {
+                      setIsChecklistDialogOpen(false)
+                      setChecklistDraft({ label: "", description: "", isRequired: true })
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
+                    onClick={addChecklistItemFromDialog}
+                    disabled={isChecklistSaving}
+                  >
+                    {isChecklistSaving ? "Saving..." : "Add checklist item"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
         </div>
 
-        <div className="mt-4 space-y-2">
-          <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2">
-            <p className="text-sm text-slate-600">Drag items to reorder the checklist workflow.</p>
-            <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
-              {checklistItems.length} item{checklistItems.length === 1 ? "" : "s"}
-            </span>
+        <div className="p-5">
+          <div className="flex items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-[linear-gradient(135deg,#eff6ff_0%,#f8fafc_100%)] px-4 py-3">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium text-slate-900">Checklist workflow</p>
+              <p className="text-sm text-slate-600">
+                {checklistItems.length > 1
+                  ? "Drag items to reorder the requirements for this service."
+                  : "Add the requirements this contact must complete for the service."}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <span className="rounded-full border border-blue-200 bg-white px-2.5 py-1 text-xs font-medium text-blue-700">
+                {checklistItems.length} item{checklistItems.length === 1 ? "" : "s"}
+              </span>
+              {checklistItems.length ? (
+                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
+                  {requiredChecklistCount} required · {optionalChecklistCount} optional
+                </span>
+              ) : null}
+            </div>
           </div>
-          {checklistItems.length ? (
-            <TooltipProvider delayDuration={120}>
-              <DndContext
-                sensors={checklistSensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleChecklistDragEnd}
-              >
-                <SortableContext
-                  items={checklistItems.map((item) => item.id)}
-                  strategy={verticalListSortingStrategy}
+
+          <div className="mt-4">
+            {checklistItems.length ? (
+              <TooltipProvider delayDuration={120}>
+                <DndContext
+                  sensors={checklistSensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleChecklistDragEnd}
                 >
-                  <div className="space-y-2">
-                    {checklistItems.map((item) => (
-                      <SortableChecklistItem
-                        key={item.id}
-                        item={item}
-                        onOpen={openChecklistEditDialog}
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
-            </TooltipProvider>
-          ) : (
-            <p className="text-sm text-amber-700">No checklist items yet. Add at least one to complete this section.</p>
-          )}
+                  <SortableContext
+                    items={checklistItems.map((item) => item.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <div className="space-y-3">
+                      {checklistItems.map((item, index) => (
+                        <SortableChecklistItem
+                          key={item.id}
+                          item={item}
+                          index={index}
+                          onOpen={openChecklistEditDialog}
+                        />
+                      ))}
+                    </div>
+                  </SortableContext>
+                </DndContext>
+              </TooltipProvider>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
+                <p className="text-base font-medium text-slate-900">No checklist items yet</p>
+                <p className="mt-2 text-sm text-slate-500">
+                  Add at least one requirement so the service is ready for enrollment.
+                </p>
+                <p className="mt-3 text-xs uppercase tracking-[0.18em] text-slate-400">
+                  Example items
+                </p>
+                <p className="mt-2 text-sm text-slate-500">
+                  ID document · Consent form · Proof of address
+                </p>
+              </div>
+            )}
+          </div>
         </div>
 
         <Dialog
@@ -1052,7 +1588,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               <Button
                 type="button"
                 variant="destructive"
-                className="cursor-pointer"
+                className="cursor-pointer bg-rose-600 text-white hover:bg-rose-700"
                 onClick={deleteChecklistItem}
                 disabled={isChecklistSaving}
               >
@@ -1062,14 +1598,14 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                 <Button
                   type="button"
                   variant="outline"
-                  className="cursor-pointer"
+                  className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
                   onClick={() => setEditingChecklistItemId(null)}
                 >
                   Cancel
                 </Button>
                 <Button
                   type="button"
-                  className="cursor-pointer"
+                  className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
                   onClick={saveChecklistEdit}
                   disabled={isChecklistSaving}
                 >
@@ -1080,20 +1616,27 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
           </DialogContent>
         </Dialog>
       </section>
+        </TabsContent>
 
+        <TabsContent value="follow-up-templates" className="mt-0">
       <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-200 px-5 py-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <div className="space-y-1">
               <h3 className="inline-flex items-center gap-2 text-lg font-semibold text-slate-900">
-                <Route className="h-4 w-4" />
+                <Route className="h-4 w-4 text-blue-700" />
                 Follow-Up Templates
               </h3>
               <p className="text-sm text-slate-500">
                 Each template defines the flow a contact will follow after purchasing this service.
               </p>
             </div>
-            <Button asChild type="button" size="sm" variant="outline">
+            <Button
+              asChild
+              type="button"
+              size="sm"
+              className="bg-blue-950 text-white hover:bg-blue-900"
+            >
               <Link href={`/app/${tenantSlug}/account-settings/services/${service.id}/follow-up-templates/new`}>
                 Add template
               </Link>
@@ -1102,10 +1645,31 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         </div>
 
         <div className="p-5">
+          <div className="flex items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-[linear-gradient(135deg,#eff6ff_0%,#f8fafc_100%)] px-4 py-3">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium text-slate-900">Template coverage</p>
+              <p className="text-sm text-slate-600">
+                Open any row to edit the flow builder, nodes, and path logic for this service.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <span className="rounded-full border border-blue-200 bg-white px-2.5 py-1 text-xs font-medium text-blue-700">
+                {service.followUpTemplates.length} template{service.followUpTemplates.length === 1 ? "" : "s"}
+              </span>
+              <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
+                {totalTemplateNodes} nodes
+              </span>
+              <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
+                {totalTemplateEdges} connections
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-4">
           {service.followUpTemplates.length ? (
-            <div className="overflow-auto">
-              <Table className="[&_td]:py-2 [&_th]:h-8">
-                <TableHeader>
+            <div className="overflow-auto rounded-2xl border border-slate-200">
+              <Table className="[&_td]:py-3 [&_th]:h-10">
+                <TableHeader className="bg-slate-50/80">
                   <TableRow>
                     <TableHead className="min-w-12 text-xs">#</TableHead>
                     <TableHead className="min-w-56 text-xs">Template</TableHead>
@@ -1120,7 +1684,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                       tabIndex={0}
                       role="link"
                       aria-label={`Open ${template.name}`}
-                      className="cursor-pointer transition-colors hover:bg-slate-50 focus-visible:bg-slate-50"
+                      className="cursor-pointer transition-colors hover:bg-blue-50/50 focus-visible:bg-blue-50/50"
                       onClick={() =>
                         router.push(
                           `/app/${tenantSlug}/account-settings/services/${service.id}/follow-up-templates/${template.id}`,
@@ -1135,32 +1699,68 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                         }
                       }}
                     >
-                      <TableCell>{index + 1}</TableCell>
-                      <TableCell className="font-medium text-slate-900">{template.name}</TableCell>
-                      <TableCell>{Array.isArray(template.flowNodes) ? template.flowNodes.length : 0}</TableCell>
-                      <TableCell>{Array.isArray(template.flowEdges) ? template.flowEdges.length : 0}</TableCell>
+                      <TableCell>
+                        <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
+                          {index + 1}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <div className="space-y-0.5">
+                          <p className="font-medium text-slate-900">{template.name}</p>
+                          <p className="text-sm text-slate-500">Open flow builder</p>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
+                          {Array.isArray(template.flowNodes) ? template.flowNodes.length : 0}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
+                          {Array.isArray(template.flowEdges) ? template.flowEdges.length : 0}
+                        </span>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </div>
           ) : (
-            <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center">
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
               <p className="text-base font-medium text-slate-900">No follow-up templates yet</p>
               <p className="mt-2 text-sm text-slate-500">
                 Create a template and build its workflow with React Flow.
               </p>
+              <p className="mt-3 text-xs uppercase tracking-[0.18em] text-slate-400">
+                Common templates
+              </p>
+              <p className="mt-2 text-sm text-slate-500">
+                Welcome sequence · Payment reminders · Post-service check-in
+              </p>
+              <Button
+                asChild
+                type="button"
+                size="sm"
+                className="mt-5 bg-blue-950 text-white hover:bg-blue-900"
+              >
+                <Link href={`/app/${tenantSlug}/account-settings/services/${service.id}/follow-up-templates/new`}>
+                  Create first template
+                </Link>
+              </Button>
             </div>
           )}
+          </div>
         </div>
       </section>
+        </TabsContent>
 
+        <TabsContent value="professionals" className="mt-0">
       <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-200 px-5 py-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <div className="space-y-1">
               <h3 className="inline-flex items-center gap-2 text-lg font-semibold text-slate-900">
-                <Users className="h-4 w-4" />
+                <Users className="h-4 w-4 text-blue-700" />
                 Professionals
               </h3>
               <p className="text-sm text-slate-500">
@@ -1170,8 +1770,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
             <Button
               type="button"
               size="sm"
-              variant="outline"
-              className="cursor-pointer"
+              className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
               onClick={openCreateProfessionalDialog}
               disabled={isProfessionalsSaving}
             >
@@ -1181,6 +1780,27 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         </div>
 
         <div className="p-5">
+          <div className="flex items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-[linear-gradient(135deg,#eff6ff_0%,#f8fafc_100%)] px-4 py-3">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium text-slate-900">Service coverage</p>
+              <p className="text-sm text-slate-600">
+                Keep the service assignable by defining internal team members and external specialists.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <span className="rounded-full border border-blue-200 bg-white px-2.5 py-1 text-xs font-medium text-blue-700">
+                {professionals.length} professional{professionals.length === 1 ? "" : "s"}
+              </span>
+              <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
+                {internalProfessionalsCount} internal
+              </span>
+              <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
+                {externalProfessionalsCount} external
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-4">
           {professionals.length ? (
             <TooltipProvider delayDuration={120}>
               <DndContext
@@ -1192,19 +1812,20 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                   items={professionals.map((entry) => entry.id)}
                   strategy={verticalListSortingStrategy}
                 >
-                  <ScrollArea className="min-h-[320px] max-h-[520px] rounded-xl border border-slate-200">
+                  <ScrollArea className="min-h-[320px] max-h-[520px] rounded-2xl border border-slate-200">
                     <div className="px-4 py-4 md:px-5">
                       <Table className="[&_td]:py-3 [&_th]:h-9">
-                        <TableHeader className="sticky top-0 z-10 bg-white">
+                        <TableHeader className="sticky top-0 z-10 bg-slate-50/90">
                           <TableRow>
                             <TableHead className="w-10 text-xs" />
+                            <TableHead className="min-w-12 text-xs">#</TableHead>
                             <TableHead className="min-w-36 text-xs">Type</TableHead>
                             <TableHead className="min-w-48 text-xs">Name</TableHead>
                             <TableHead className="min-w-40 text-xs">Contact Number</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {professionals.map((entry) => {
+                          {professionals.map((entry, index) => {
                             const internalUser = entry.userId ? usersById.get(entry.userId) : null
                             const displayName =
                               entry.kind === "INTERNAL_USER"
@@ -1215,6 +1836,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                               <SortableProfessionalRow
                                 key={entry.id}
                                 entry={entry}
+                                index={index}
                                 displayName={displayName}
                                 onOpen={openEditProfessionalDialog}
                               />
@@ -1228,11 +1850,26 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               </DndContext>
             </TooltipProvider>
           ) : (
-            <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center">
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
               <p className="text-base font-medium text-slate-900">No professionals yet</p>
               <p className="mt-2 text-sm text-slate-500">Add at least one internal or external professional for this service.</p>
+              <p className="mt-3 text-xs uppercase tracking-[0.18em] text-slate-400">
+                Common roles
+              </p>
+              <p className="mt-2 text-sm text-slate-500">
+                Therapist · Coordinator · Technician · External consultant
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                className="mt-5 bg-blue-950 text-white hover:bg-blue-900"
+                onClick={openCreateProfessionalDialog}
+              >
+                Add first professional
+              </Button>
             </div>
           )}
+          </div>
 
           {professionals.length ? (
             <div className="mt-3 border-t border-slate-200 pt-4">
@@ -1357,7 +1994,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                   <Button
                     type="button"
                     variant="destructive"
-                    className="cursor-pointer"
+                    className="cursor-pointer bg-rose-600 text-white hover:bg-rose-700"
                     onClick={deleteProfessionalFromDialog}
                     disabled={isProfessionalsSaving}
                   >
@@ -1369,7 +2006,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                 <Button
                   type="button"
                   variant="outline"
-                  className="cursor-pointer"
+                  className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
                   onClick={() => {
                     setIsProfessionalDialogOpen(false)
                     setEditingProfessionalId(null)
@@ -1379,7 +2016,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                 </Button>
                 <Button
                   type="button"
-                  className="cursor-pointer"
+                  className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
                   onClick={saveProfessionalDialog}
                   disabled={isProfessionalsSaving}
                 >
@@ -1390,39 +2027,8 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
           </DialogContent>
         </Dialog>
       </section>
-      </div>
-
-      <section className="rounded-[20px] border border-slate-200 bg-white p-5">
-        <div className="space-y-1">
-          <h3 className="text-lg font-semibold text-slate-900">Configuration Progress</h3>
-          <p className="text-sm text-slate-500">
-            Quick health check for the parts a service needs before it is fully usable.
-          </p>
-        </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
-          <div className={cn("rounded-lg border p-3", checklistComplete ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50")}>
-            <p className="text-sm font-medium">Checklist</p>
-            <p className="mt-1 text-xs text-slate-600">{checklistComplete ? "Complete" : "Incomplete"}</p>
-          </div>
-          <div className={cn("rounded-lg border p-3", followUpsComplete ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50")}>
-            <p className="inline-flex items-center gap-1 text-sm font-medium"><Route className="h-4 w-4" /> Follow Ups</p>
-            <p className="mt-1 text-xs text-slate-600">{followUpsComplete ? "Complete" : "Incomplete"}</p>
-          </div>
-          <div className={cn("rounded-lg border p-3", professionalsComplete ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50")}>
-            <p className="inline-flex items-center gap-1 text-sm font-medium"><UserRoundCog className="h-4 w-4" /> Professionals</p>
-            <p className="mt-1 text-xs text-slate-600">{professionalsComplete ? "Complete" : "Incomplete"}</p>
-          </div>
-        </div>
-
-        <p className="mt-4 text-sm text-slate-600">
-          Professionals tab is a summary view. Configuration happens in this service detail page.
-          {" "}
-          <Link href={`/app/${tenantSlug}/account-settings/professionals`} className="text-blue-700 hover:underline">
-            Open professionals summary
-          </Link>
-          .
-        </p>
-      </section>
+        </TabsContent>
+      </Tabs>
 
       <div className="sticky bottom-4 z-10 flex justify-end">
         <div className="rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-lg backdrop-blur">

@@ -28,6 +28,10 @@ const TenantPathSchema = z.object({
   tenantId: z.string().trim().min(1),
 })
 
+const TenantServicePathSchema = TenantPathSchema.extend({
+  serviceId: z.string().trim().min(1),
+})
+
 const TenantContactServicePathSchema = TenantPathSchema.extend({
   contactServiceId: z.string().trim().min(1),
 })
@@ -383,6 +387,120 @@ async function reconcileContactServiceCompletionFromFollowUps(
 
   return contactService
 }
+
+router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, serviceId } = TenantServicePathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const service = await prismaWithServices.service.findFirst({
+      where: {
+        id: serviceId,
+        tenantId,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        basePriceCents: true,
+        currency: true,
+        isTaxExempt: true,
+        allowPartialPayments: true,
+        minimumPartialPaymentCents: true,
+        installmentCount: true,
+        installmentFrequency: true,
+        isActive: true,
+        tenant: {
+          select: {
+            taxEnabled: true,
+            taxLabel: true,
+            defaultTaxRateBps: true,
+          },
+        },
+        checklistItems: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            label: true,
+            description: true,
+            isRequired: true,
+            sortOrder: true,
+          },
+        },
+        followUpTemplates: {
+          where: { isPublished: true },
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            name: true,
+            isPublished: true,
+            sortOrder: true,
+            flowNodes: true,
+            flowEdges: true,
+          },
+        },
+        professionals: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            kind: true,
+            userId: true,
+            externalProfessionalName: true,
+            externalContact: true,
+            notes: true,
+            sortOrder: true,
+            user: {
+              select: {
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+          },
+        },
+      },
+    })
+
+    if (!service) {
+      return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
+    }
+
+    return res.json({
+      ok: true,
+      service: {
+        id: service.id,
+        name: service.name,
+        description: service.description,
+        basePriceCents: service.basePriceCents,
+        currency: service.currency,
+        isTaxExempt: service.isTaxExempt,
+        allowPartialPayments: service.allowPartialPayments,
+        minimumPartialPaymentCents: service.minimumPartialPaymentCents,
+        installmentCount: service.installmentCount,
+        installmentFrequency: service.installmentFrequency,
+        isActive: service.isActive,
+        checklistItems: service.checklistItems,
+        followUpTemplates: service.followUpTemplates,
+        professionals: service.professionals,
+        tenantBilling: {
+          taxEnabled: service.tenant.taxEnabled,
+          taxLabel: service.tenant.taxLabel,
+          defaultTaxRatePercent:
+            service.tenant.defaultTaxRateBps !== null &&
+            service.tenant.defaultTaxRateBps !== undefined
+              ? service.tenant.defaultTaxRateBps / 100
+              : null,
+        },
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
 
 router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
   try {

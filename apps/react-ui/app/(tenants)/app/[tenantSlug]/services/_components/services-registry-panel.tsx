@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { isAxiosError } from "axios"
 import { Check, ChevronDown, UserRound } from "lucide-react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
@@ -1813,72 +1814,69 @@ export function ServicesRegistryPanel({
                     service.followUpTemplates.filter(
                       (template) => template.isPublished,
                     ).length
+                  const serviceHref = `/app/${tenantSlug}/services/${service.id}`
 
                   return (
                     <TableRow
                       key={service.id}
-                      tabIndex={0}
-                      role="link"
-                      aria-label={`Open ${service.name} details`}
-                      className="cursor-pointer transition-colors hover:bg-slate-50 focus-visible:bg-slate-50"
-                      onClick={() => {
-                        router.push(
-                          `/app/${tenantSlug}/account-settings/services/${service.id}`,
-                        )
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault()
-                          router.push(
-                            `/app/${tenantSlug}/account-settings/services/${service.id}`,
-                          )
-                        }
-                      }}
+                      className="transition-colors hover:bg-slate-50"
                     >
                       <TableCell className="align-middle font-medium text-slate-900">
-                        {service.name}
+                        <Link href={serviceHref} className="block text-slate-900 hover:text-slate-900">
+                          {service.name}
+                        </Link>
                       </TableCell>
                       <TableCell className="align-middle text-slate-700">
-                        {formatCurrency(
-                          service.basePriceCents,
-                          service.currency,
-                        )}
+                        <Link href={serviceHref} className="block text-slate-700 hover:text-slate-700">
+                          {formatCurrency(
+                            service.basePriceCents,
+                            service.currency,
+                          )}
+                        </Link>
                       </TableCell>
                       <TableCell className="align-middle text-slate-700">
-                        {service.allowPartialPayments
-                          ? service.minimumPartialPaymentCents !== null
-                            ? formatCurrency(
-                                service.minimumPartialPaymentCents,
-                                service.currency,
-                              )
-                            : "No minimum"
-                          : "Full only"}
+                        <Link href={serviceHref} className="block text-slate-700 hover:text-slate-700">
+                          {service.allowPartialPayments
+                            ? service.minimumPartialPaymentCents !== null
+                              ? formatCurrency(
+                                  service.minimumPartialPaymentCents,
+                                  service.currency,
+                                )
+                              : "No minimum"
+                            : "Full only"}
+                        </Link>
                       </TableCell>
                       <TableCell className="align-middle">
-                        <span
-                          className={
-                            checklistCount > 0
-                              ? "inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-emerald-700"
-                              : "inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-slate-700"
-                          }
-                        >
-                          {checklistCount > 0 ? "Yes" : "No"}
-                        </span>
+                        <Link href={serviceHref} className="block">
+                          <span
+                            className={
+                              checklistCount > 0
+                                ? "inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-emerald-700"
+                                : "inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-slate-700"
+                            }
+                          >
+                            {checklistCount > 0 ? "Yes" : "No"}
+                          </span>
+                        </Link>
                       </TableCell>
                       <TableCell className="align-middle">
-                        <StackedAvatarGroup
-                          items={service.professionals.map(toProfessionalAvatarItem)}
-                          emptyLabel="No professionals assigned."
-                        />
+                        <Link href={serviceHref} className="block">
+                          <StackedAvatarGroup
+                            items={service.professionals.map(toProfessionalAvatarItem)}
+                            emptyLabel="No professionals assigned."
+                          />
+                        </Link>
                       </TableCell>
                       <TableCell className="align-middle">
-                        <Badge
-                          variant="secondary"
-                          className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-800 hover:bg-blue-50"
-                        >
-                          {publishedTemplateCount} follow-up template
-                          {publishedTemplateCount === 1 ? "" : "s"}
-                        </Badge>
+                        <Link href={serviceHref} className="block">
+                          <Badge
+                            variant="secondary"
+                            className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-800 hover:bg-blue-50"
+                          >
+                            {publishedTemplateCount} follow-up template
+                            {publishedTemplateCount === 1 ? "" : "s"}
+                          </Badge>
+                        </Link>
                       </TableCell>
                     </TableRow>
                   )

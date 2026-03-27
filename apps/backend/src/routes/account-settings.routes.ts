@@ -243,6 +243,7 @@ const FollowUpTemplatesPaginationQuerySchema = z.object({
 });
 
 const ServiceProfessionalKindSchema = z.enum(["INTERNAL_USER", "EXTERNAL"]);
+const InstallmentFrequencySchema = z.enum(["WEEKLY", "BIWEEKLY", "MONTHLY"]);
 
 const ServiceChecklistItemInputSchema = z.object({
   label: z.string().trim().min(1).max(200),
@@ -288,6 +289,7 @@ const CreateServiceSchema = z.object({
   description: optionalStringField(2000),
   basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000),
   currency: z.string().trim().min(3).max(3).default("USD"),
+  isTaxExempt: z.boolean().default(false),
   allowPartialPayments: z.boolean().default(false),
   minimumPartialPaymentCents: z.coerce
     .number()
@@ -296,6 +298,8 @@ const CreateServiceSchema = z.object({
     .max(1_000_000_000)
     .nullable()
     .optional(),
+  installmentCount: z.coerce.number().int().min(2).max(365).nullable().optional(),
+  installmentFrequency: InstallmentFrequencySchema.nullable().optional(),
   isActive: z.boolean().default(true),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
   checklistItems: z.array(ServiceChecklistItemInputSchema).max(100).default([]),
@@ -311,6 +315,7 @@ const UpdateServiceSchema = z.object({
   description: optionalStringField(2000),
   basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
   currency: z.string().trim().min(3).max(3).optional(),
+  isTaxExempt: z.boolean().optional(),
   allowPartialPayments: z.boolean().optional(),
   minimumPartialPaymentCents: z.coerce
     .number()
@@ -319,6 +324,8 @@ const UpdateServiceSchema = z.object({
     .max(1_000_000_000)
     .nullable()
     .optional(),
+  installmentCount: z.coerce.number().int().min(2).max(365).nullable().optional(),
+  installmentFrequency: InstallmentFrequencySchema.nullable().optional(),
   isActive: z.boolean().optional(),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
   checklistItems: z.array(ServiceChecklistItemInputSchema).max(100).optional(),
@@ -628,9 +635,29 @@ function normalizeServicePayload(
 
   if (normalized.allowPartialPayments === false) {
     normalized.minimumPartialPaymentCents = null;
+    normalized.installmentCount = null;
+    normalized.installmentFrequency = null;
   }
 
   return normalized;
+}
+
+function getServiceTotalWithTaxCents({
+  basePriceCents,
+  isTaxExempt,
+  taxEnabled,
+  defaultTaxRateBps,
+}: {
+  basePriceCents: number;
+  isTaxExempt: boolean;
+  taxEnabled: boolean;
+  defaultTaxRateBps: number | null;
+}) {
+  if (!taxEnabled || isTaxExempt || defaultTaxRateBps === null) {
+    return basePriceCents;
+  }
+
+  return basePriceCents + Math.round((basePriceCents * defaultTaxRateBps) / 10_000);
 }
 
 async function validateServiceProfessionalsForTenant(
@@ -2606,10 +2633,20 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
         description: true,
         basePriceCents: true,
         currency: true,
+        isTaxExempt: true,
         allowPartialPayments: true,
         minimumPartialPaymentCents: true,
+        installmentCount: true,
+        installmentFrequency: true,
         isActive: true,
         sortOrder: true,
+        tenant: {
+          select: {
+            taxEnabled: true,
+            taxLabel: true,
+            defaultTaxRateBps: true,
+          },
+        },
         checklistItems: {
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
@@ -2671,14 +2708,54 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
     return res.json({
       ok: true,
       service: {
-        ...service,
+        id: service.id,
+        tenantId: service.tenantId,
+        name: service.name,
+        description: service.description,
+        basePriceCents: service.basePriceCents,
+        currency: service.currency,
+        isTaxExempt: service.isTaxExempt,
+        allowPartialPayments: service.allowPartialPayments,
+        minimumPartialPaymentCents: service.minimumPartialPaymentCents,
+        installmentCount: service.installmentCount,
+        installmentFrequency: service.installmentFrequency,
+        isActive: service.isActive,
+        sortOrder: service.sortOrder,
+        checklistItems: service.checklistItems,
+        followUpTemplateSteps: service.followUpTemplateSteps,
+        followUpTemplates: service.followUpTemplates,
+        professionals: service.professionals,
+        tenantBilling: {
+          taxEnabled: service.tenant.taxEnabled,
+          taxLabel: service.tenant.taxLabel,
+          defaultTaxRatePercent:
+            service.tenant.defaultTaxRateBps !== null &&
+            service.tenant.defaultTaxRateBps !== undefined
+              ? service.tenant.defaultTaxRateBps / 100
+              : null,
+        },
         configStatus: {
+          overviewComplete:
+            service.name.trim().length > 0 &&
+            service.basePriceCents >= 0 &&
+            service.currency.trim().length === 3 &&
+            (!service.allowPartialPayments ||
+              (service.minimumPartialPaymentCents !== null &&
+                service.installmentCount !== null &&
+                service.installmentFrequency !== null)),
           checklistComplete: service.checklistItems.length > 0,
           followUpsComplete:
             service.followUpTemplates.length > 0 ||
             service.followUpTemplateSteps.length > 0,
           professionalsComplete: service.professionals.length > 0,
           isComplete:
+            service.name.trim().length > 0 &&
+            service.basePriceCents >= 0 &&
+            service.currency.trim().length === 3 &&
+            (!service.allowPartialPayments ||
+              (service.minimumPartialPaymentCents !== null &&
+                service.installmentCount !== null &&
+                service.installmentFrequency !== null)) &&
             service.checklistItems.length > 0 &&
             (service.followUpTemplates.length > 0 ||
               service.followUpTemplateSteps.length > 0) &&
@@ -2719,10 +2796,29 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
       return res.status(400).json({ error: professionalValidation.error });
     }
 
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        taxEnabled: true,
+        defaultTaxRateBps: true,
+      },
+    });
+
+    if (!tenant) {
+      return res.status(404).json({ error: "TENANT_NOT_FOUND" });
+    }
+
+    const maxAllowedDepositCents = getServiceTotalWithTaxCents({
+      basePriceCents: payload.basePriceCents,
+      isTaxExempt: payload.isTaxExempt,
+      taxEnabled: tenant.taxEnabled,
+      defaultTaxRateBps: tenant.defaultTaxRateBps,
+    });
+
     if (
       payload.allowPartialPayments &&
       normalizedPayload.minimumPartialPaymentCents !== null &&
-      normalizedPayload.minimumPartialPaymentCents > payload.basePriceCents
+      normalizedPayload.minimumPartialPaymentCents > maxAllowedDepositCents
     ) {
       return res.status(400).json({ error: "MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE" });
     }
@@ -2741,8 +2837,11 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
         description: normalizedPayload.description ?? null,
         basePriceCents: payload.basePriceCents,
         currency: normalizedPayload.currency || "USD",
+        isTaxExempt: payload.isTaxExempt,
         allowPartialPayments: payload.allowPartialPayments,
         minimumPartialPaymentCents: normalizedPayload.minimumPartialPaymentCents,
+        installmentCount: normalizedPayload.installmentCount ?? null,
+        installmentFrequency: normalizedPayload.installmentFrequency ?? null,
         isActive: payload.isActive,
         sortOrder: payload.sortOrder ?? nextSortOrder,
         checklistItems: {
@@ -2790,8 +2889,11 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
         description: true,
         basePriceCents: true,
         currency: true,
+        isTaxExempt: true,
         allowPartialPayments: true,
         minimumPartialPaymentCents: true,
+        installmentCount: true,
+        installmentFrequency: true,
         isActive: true,
         sortOrder: true,
       },
@@ -2820,7 +2922,14 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
         id: true,
         tenantId: true,
         basePriceCents: true,
+        isTaxExempt: true,
         allowPartialPayments: true,
+        tenant: {
+          select: {
+            taxEnabled: true,
+            defaultTaxRateBps: true,
+          },
+        },
       },
     });
 
@@ -2846,19 +2955,35 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
     }
 
     const nextBasePriceCents = payload.basePriceCents ?? existing.basePriceCents;
+    const nextIsTaxExempt = payload.isTaxExempt ?? existing.isTaxExempt;
     const nextAllowPartialPayments = payload.allowPartialPayments ?? existing.allowPartialPayments;
     const nextMinimumPartial =
       payload.minimumPartialPaymentCents === undefined
         ? undefined
         : payload.minimumPartialPaymentCents;
+    const maxAllowedDepositCents = getServiceTotalWithTaxCents({
+      basePriceCents: nextBasePriceCents,
+      isTaxExempt: nextIsTaxExempt,
+      taxEnabled: existing.tenant.taxEnabled,
+      defaultTaxRateBps: existing.tenant.defaultTaxRateBps,
+    });
 
     if (
       nextAllowPartialPayments &&
       nextMinimumPartial !== undefined &&
       nextMinimumPartial !== null &&
-      nextMinimumPartial > nextBasePriceCents
+      nextMinimumPartial > maxAllowedDepositCents
     ) {
       return res.status(400).json({ error: "MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE" });
+    }
+
+    if (
+      nextAllowPartialPayments &&
+      payload.installmentCount !== undefined &&
+      payload.installmentCount !== null &&
+      payload.installmentCount < 2
+    ) {
+      return res.status(400).json({ error: "INVALID_INSTALLMENT_COUNT" });
     }
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -2900,6 +3025,9 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
             ? { basePriceCents: payload.basePriceCents }
             : {}),
           ...(payload.currency !== undefined ? { currency: payload.currency } : {}),
+          ...(payload.isTaxExempt !== undefined
+            ? { isTaxExempt: payload.isTaxExempt }
+            : {}),
           ...(payload.allowPartialPayments !== undefined
             ? { allowPartialPayments: payload.allowPartialPayments }
             : {}),
@@ -2907,6 +3035,20 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
             ? {
                 minimumPartialPaymentCents: nextAllowPartialPayments
                   ? payload.minimumPartialPaymentCents
+                  : null,
+              }
+            : {}),
+          ...(payload.installmentCount !== undefined
+            ? {
+                installmentCount: nextAllowPartialPayments
+                  ? payload.installmentCount
+                  : null,
+              }
+            : {}),
+          ...(payload.installmentFrequency !== undefined
+            ? {
+                installmentFrequency: nextAllowPartialPayments
+                  ? payload.installmentFrequency
                   : null,
               }
             : {}),
@@ -2969,8 +3111,11 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
           description: true,
           basePriceCents: true,
           currency: true,
+          isTaxExempt: true,
           allowPartialPayments: true,
           minimumPartialPaymentCents: true,
+          installmentCount: true,
+          installmentFrequency: true,
           isActive: true,
           sortOrder: true,
         },

@@ -1,12 +1,12 @@
 import { isAxiosError } from "axios"
-import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 
-import { api, type MeResponse } from "@/lib/api"
+import { api } from "@/lib/api"
 
-import { ServiceDetailsPanelClient } from "./_components/service-details-panel-client"
+import { getTenantMembershipContext } from "../../_lib/tenant-session"
+import { ServiceOverviewPanel } from "./_components/service-overview-panel"
 
-type ServiceDetailsResponse = {
+type ServiceOverviewResponse = {
   ok: boolean
   service: {
     id: string
@@ -27,16 +27,10 @@ type ServiceDetailsResponse = {
       isRequired: boolean
       sortOrder: number
     }>
-    followUpTemplateSteps: Array<{
-      id: string
-      title: string
-      notesTemplate: string | null
-      dueDaysFromStart: number
-      sortOrder: number
-    }>
     followUpTemplates: Array<{
       id: string
       name: string
+      isPublished: boolean
       sortOrder: number
       flowNodes: unknown[] | null
       flowEdges: unknown[] | null
@@ -51,7 +45,8 @@ type ServiceDetailsResponse = {
       sortOrder: number
       user: {
         name: string | null
-        email: string
+        email: string | null
+        image: string | null
       } | null
     }>
     tenantBilling: {
@@ -59,66 +54,44 @@ type ServiceDetailsResponse = {
       taxLabel: string | null
       defaultTaxRatePercent: number | null
     }
-    configStatus: {
-      overviewComplete: boolean
-      checklistComplete: boolean
-      followUpsComplete: boolean
-      professionalsComplete: boolean
-      isComplete: boolean
-    }
   }
 }
 
-export default async function AccountSettingsServiceDetailsPage({
+export default async function ServiceOverviewPage({
   params,
 }: {
   params: Promise<{ tenantSlug: string; serviceId: string }>
 }) {
   const { tenantSlug, serviceId } = await params
-
-  let me: MeResponse["user"] | null = null
-  const cookie = (await headers()).get("cookie") ?? ""
-
-  try {
-    const { data } = await api.get<MeResponse>("/api/auth/me", {
-      headers: { cookie },
-    })
-
-    me = data?.user ?? null
-  } catch {
-    redirect("/login")
-  }
-
-  if (!me?.memberships?.length) {
-    redirect("/login")
-  }
-
-  const membership = me.memberships.find((item) => item.tenant?.slug === tenantSlug)
+  const { membership, cookie } = await getTenantMembershipContext(tenantSlug)
 
   if (!membership?.tenant?.id) {
     redirect(`/app/${tenantSlug}`)
   }
 
+  let data: ServiceOverviewResponse | null = null
+
   try {
-    const { data } = await api.get<ServiceDetailsResponse>(
-      `/api/account-settings/${membership.tenant.id}/services/${serviceId}`,
+    const response = await api.get<ServiceOverviewResponse>(
+      `/api/services/${membership.tenant.id}/catalog/${serviceId}`,
       {
         headers: { cookie },
       },
     )
-
-    return (
-      <ServiceDetailsPanelClient
-        tenantId={membership.tenant.id}
-        tenantSlug={tenantSlug}
-        service={data.service}
-      />
-    )
+    data = response.data
   } catch (error) {
     if (isAxiosError(error) && error.response?.status === 404) {
-      redirect(`/app/${tenantSlug}/account-settings/services`)
+      redirect(`/app/${tenantSlug}/services`)
     }
 
-    redirect(`/app/${tenantSlug}/account-settings/services`)
+    redirect(`/app/${tenantSlug}/services`)
   }
+
+  return (
+    <ServiceOverviewPanel
+      tenantId={membership.tenant.id}
+      tenantSlug={tenantSlug}
+      service={data.service}
+    />
+  )
 }
