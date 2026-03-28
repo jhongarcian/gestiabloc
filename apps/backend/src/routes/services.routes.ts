@@ -48,6 +48,14 @@ const TenantContactServiceChecklistItemPathSchema = TenantContactServicePathSche
   checklistItemId: z.string().trim().min(1),
 })
 
+const ContactServiceStatusSchema = z.enum([
+  "PENDING",
+  "IN_PROGRESS",
+  "PENDING_PAYMENT",
+  "COMPLETED",
+  "CANCELED",
+])
+
 const ContactServicesListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce
@@ -58,7 +66,7 @@ const ContactServicesListQuerySchema = z.object({
     })
     .default(10),
   contactId: z.string().trim().min(1).optional(),
-  status: z.enum(["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELED"]).optional(),
+  status: ContactServiceStatusSchema.optional(),
 })
 
 const ServicesCatalogSummaryPresetSchema = z.enum([
@@ -155,7 +163,7 @@ const UpdateContactServicePaymentSchema = z.object({
 })
 
 const UpdateContactServiceSchema = z.object({
-  status: z.enum(["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELED"]).optional(),
+  status: ContactServiceStatusSchema.optional(),
   startedAt: z.string().datetime().nullable().optional(),
   purchasedAt: z.string().datetime().nullable().optional(),
   completedAt: z.string().datetime().nullable().optional(),
@@ -477,6 +485,24 @@ async function summarizeContactServicePayments(
   }
 }
 
+function getServiceTotalWithTaxCents({
+  basePriceCents,
+  isTaxExempt,
+  taxEnabled,
+  defaultTaxRateBps,
+}: {
+  basePriceCents: number
+  isTaxExempt: boolean
+  taxEnabled: boolean
+  defaultTaxRateBps: number | null
+}) {
+  if (!taxEnabled || isTaxExempt || defaultTaxRateBps === null) {
+    return basePriceCents
+  }
+
+  return basePriceCents + Math.round((basePriceCents * defaultTaxRateBps) / 10_000)
+}
+
 async function reconcileContactServiceCompletionFromFollowUps(
   prismaTx: any,
   tenantId: string,
@@ -491,6 +517,7 @@ async function reconcileContactServiceCompletionFromFollowUps(
       id: true,
       status: true,
       completedAt: true,
+      totalPriceCents: true,
     },
   })
 
@@ -509,41 +536,41 @@ async function reconcileContactServiceCompletionFromFollowUps(
     },
   })
 
-  const hasSteps = followUpSteps.length > 0
-  const allStepsCompleted = hasSteps
-    ? followUpSteps.every(
-        (step: { status: string | null; completedAt: Date | null }) =>
-          step.status === "COMPLETED" ||
-          step.status === "SKIPPED" ||
-          Boolean(step.completedAt),
-      )
-    : false
+  const paymentSummary = await summarizeContactServicePayments(
+    prismaTx,
+    tenantId,
+    contactServiceId,
+  )
 
-  if (allStepsCompleted) {
-    if (contactService.status !== "COMPLETED") {
-      return prismaTx.contactService.update({
-        where: { id: contactServiceId },
-        data: {
-          status: "COMPLETED",
-          completedAt: contactService.completedAt ?? new Date(),
-        },
-        select: {
-          id: true,
-          status: true,
-          completedAt: true,
-        },
-      })
-    }
-
+  if (!paymentSummary) {
     return contactService
   }
 
-  if (contactService.status === "COMPLETED") {
+  const allStepsCompleted = followUpSteps.every(
+    (step: { status: string | null; completedAt: Date | null }) =>
+      step.status === "COMPLETED" ||
+      step.status === "SKIPPED" ||
+      Boolean(step.completedAt),
+  )
+  const isPaidInFull = paymentSummary.remainingCents <= 0
+  const nextStatus = allStepsCompleted
+    ? isPaidInFull
+      ? "COMPLETED"
+      : "PENDING_PAYMENT"
+    : contactService.status === "PENDING"
+      ? "PENDING"
+      : "IN_PROGRESS"
+
+  if (
+    contactService.status !== nextStatus ||
+    (nextStatus === "COMPLETED" && !contactService.completedAt) ||
+    (nextStatus !== "COMPLETED" && contactService.completedAt)
+  ) {
     return prismaTx.contactService.update({
       where: { id: contactServiceId },
       data: {
-        status: "IN_PROGRESS",
-        completedAt: null,
+        status: nextStatus,
+        completedAt: nextStatus === "COMPLETED" ? contactService.completedAt ?? new Date() : null,
       },
       select: {
         id: true,
@@ -1001,7 +1028,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
     const where = {
       tenantId,
       status: {
-        in: ["PENDING", "IN_PROGRESS"] as const,
+        in: ["PENDING", "IN_PROGRESS", "PENDING_PAYMENT"] as const,
       },
       followUpSteps: {
         some: {
@@ -1095,7 +1122,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
       where: {
         tenantId,
         status: {
-          in: ["PENDING", "IN_PROGRESS"] as const,
+          in: ["PENDING", "IN_PROGRESS", "PENDING_PAYMENT"] as const,
         },
         followUpSteps: {
           some: {
@@ -1122,7 +1149,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
         where: {
           tenantId,
           status: {
-            in: ["PENDING", "IN_PROGRESS"] as const,
+            in: ["PENDING", "IN_PROGRESS", "PENDING_PAYMENT"] as const,
           },
           followUpSteps: {
             some: {
@@ -1142,7 +1169,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
           contactService: {
             tenantId,
             status: {
-              in: ["PENDING", "IN_PROGRESS"] as const,
+              in: ["PENDING", "IN_PROGRESS", "PENDING_PAYMENT"] as const,
             },
           },
         },
@@ -1155,7 +1182,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
           contactService: {
             tenantId,
             status: {
-              in: ["PENDING", "IN_PROGRESS"] as const,
+              in: ["PENDING", "IN_PROGRESS", "PENDING_PAYMENT"] as const,
             },
           },
         },
@@ -1350,6 +1377,14 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               dueAt: true,
               completedAt: true,
               assignedToUserId: true,
+              assignedTo: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
               note: true,
               sortOrder: true,
             },
@@ -1383,6 +1418,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
       const prismaTx = tx as any
       const activatedIds: string[] = []
       let checklistBackfilled = false
+      let statusReconciled = false
       for (const item of items) {
         const activatedId = await syncContactServiceActiveStep({
           prismaTx,
@@ -1414,11 +1450,24 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           })
           checklistBackfilled = true
         }
+
+        const reconciled = await reconcileContactServiceCompletionFromFollowUps(
+          prismaTx,
+          tenantId,
+          item.id,
+        )
+        if (reconciled?.status && reconciled.status !== item.status) {
+          statusReconciled = true
+        }
       }
-      return { activatedIds, checklistBackfilled }
+      return { activatedIds, checklistBackfilled, statusReconciled }
     })
 
-    if (syncResults.activatedIds.length > 0 || syncResults.checklistBackfilled) {
+    if (
+      syncResults.activatedIds.length > 0 ||
+      syncResults.checklistBackfilled ||
+      syncResults.statusReconciled
+    ) {
       items = await prismaWithServices.contactService.findMany({
         where,
         orderBy: [{ createdAt: "desc" }],
@@ -1497,6 +1546,14 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               dueAt: true,
               completedAt: true,
               assignedToUserId: true,
+              assignedTo: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
               note: true,
               sortOrder: true,
             },
@@ -1605,7 +1662,18 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           id: true,
           basePriceCents: true,
           currency: true,
+          isTaxExempt: true,
           allowPartialPayments: true,
+          minimumPartialPaymentCents: true,
+          installmentCount: true,
+          installmentFrequency: true,
+          tenant: {
+            select: {
+              taxEnabled: true,
+              taxLabel: true,
+              defaultTaxRateBps: true,
+            },
+          },
           professionals: {
             select: {
               id: true,
@@ -1698,7 +1766,12 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
 
     const purchasedAt = payload.purchasedAt ? new Date(payload.purchasedAt) : new Date()
     const startedAt = payload.startedAt ? new Date(payload.startedAt) : new Date()
-    const totalPriceCents = service.basePriceCents
+    const totalPriceCents = getServiceTotalWithTaxCents({
+      basePriceCents: service.basePriceCents,
+      isTaxExempt: service.isTaxExempt,
+      taxEnabled: service.tenant.taxEnabled,
+      defaultTaxRateBps: service.tenant.defaultTaxRateBps ?? null,
+    })
     const initialPaymentCents = payload.initialPaymentCents ?? 0
 
     if (initialPaymentCents < 0 || initialPaymentCents > totalPriceCents) {
@@ -1792,6 +1865,12 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         })
       }
 
+      await reconcileContactServiceCompletionFromFollowUps(
+        prismaTx,
+        tenantId,
+        contactService.id,
+      )
+
       return contactService
     })
 
@@ -1862,6 +1941,17 @@ router.get(
                 name: true,
                 description: true,
                 basePriceCents: true,
+                isTaxExempt: true,
+                minimumPartialPaymentCents: true,
+                installmentCount: true,
+                installmentFrequency: true,
+                tenant: {
+                  select: {
+                    taxEnabled: true,
+                    taxLabel: true,
+                    defaultTaxRateBps: true,
+                  },
+                },
                 checklistItems: {
                   select: {
                     id: true,
@@ -1922,6 +2012,14 @@ router.get(
                 dueAt: true,
                 completedAt: true,
                 assignedToUserId: true,
+                assignedTo: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
                 note: true,
                 sortOrder: true,
               },
@@ -1987,13 +2085,24 @@ router.get(
           })
         }
 
+        const reconciled = await reconcileContactServiceCompletionFromFollowUps(
+          prismaTx,
+          tenantId,
+          item.id,
+        )
+
         return {
           activatedId,
           checklistBackfilled: missingChecklistItemIds.length > 0,
+          statusReconciled: reconciled?.status !== item.status,
         }
       })
 
-      if (syncResult.activatedId || syncResult.checklistBackfilled) {
+      if (
+        syncResult.activatedId ||
+        syncResult.checklistBackfilled ||
+        syncResult.statusReconciled
+      ) {
         item = await fetchItem()
       }
 
@@ -2026,7 +2135,25 @@ router.get(
           contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
             .filter(Boolean)
             .join(" "),
-          service: item.service,
+          service: {
+            id: item.service.id,
+            name: item.service.name,
+            description: item.service.description,
+            basePriceCents: item.service.basePriceCents,
+            isTaxExempt: item.service.isTaxExempt,
+            minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
+            installmentCount: item.service.installmentCount,
+            installmentFrequency: item.service.installmentFrequency,
+          },
+          tenantBilling: {
+            taxEnabled: item.service.tenant.taxEnabled,
+            taxLabel: item.service.tenant.taxLabel,
+            defaultTaxRatePercent:
+              item.service.tenant.defaultTaxRateBps !== null &&
+              item.service.tenant.defaultTaxRateBps !== undefined
+                ? item.service.tenant.defaultTaxRateBps / 100
+                : null,
+          },
           followUpTemplate: item.followUpTemplate,
           payments: item.payments,
           serviceNotes: item.serviceNotes,

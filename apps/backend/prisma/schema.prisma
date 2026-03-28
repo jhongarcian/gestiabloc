@@ -108,6 +108,7 @@ enum InstallmentFrequency {
 enum ContactServiceStatus {
   PENDING
   IN_PROGRESS
+  PENDING_PAYMENT
   COMPLETED
   CANCELED
 }

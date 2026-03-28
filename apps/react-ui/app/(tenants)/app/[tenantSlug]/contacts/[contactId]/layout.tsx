@@ -8,6 +8,7 @@ import {
   ListTodo,
 } from "lucide-react"
 
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { ContactBreadcrumbSync } from "./_components/contact-breadcrumb-sync"
@@ -23,6 +24,7 @@ import {
 type ContactServicesPageResponse = {
   ok: boolean
   items: Array<{
+    id: string
     status: string
     totalPriceCents: number
     paidCents: number
@@ -31,8 +33,19 @@ type ContactServicesPageResponse = {
       name: string
     }
     followUpSteps: Array<{
+      id: string
+      title: string
       status: string
+      dueAt?: string | null
+      availableAt?: string | null
       completedAt: string | null
+      assignedToUserId?: string | null
+      assignedTo?: {
+        id: string
+        name: string | null
+        email: string | null
+        image: string | null
+      } | null
     }>
   }>
   pagination: {
@@ -155,6 +168,17 @@ function formatUsdAmount(cents: number) {
   }).format(cents / 100)
 }
 
+function getInitials(value: string | null | undefined) {
+  return (
+    value
+      ?.split(" ")
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("") || "NA"
+  )
+}
+
 export default async function ContactDetailsLayout({
   children,
   params,
@@ -177,6 +201,9 @@ export default async function ContactDetailsLayout({
     completed: number
     total: number
     percentage: number
+    currentStepTitle: string | null
+    ownerName: string | null
+    ownerImage: string | null
   }> = []
   let assigneeOptions: ContactAssigneesResponse["items"] = []
   let statusOptions: Array<{
@@ -210,14 +237,25 @@ export default async function ContactDetailsLayout({
             Boolean(step.completedAt),
         ).length
         const hasActiveFollowUp = total > 0 && completed < total
+        const currentStep =
+          service.followUpSteps.find((step) => step.status === "ACTIVE") ??
+          service.followUpSteps.find((step) => step.status === "POSTPONED") ??
+          service.followUpSteps.find((step) => step.status === "PENDING") ??
+          null
 
         return hasActiveFollowUp
           ? {
-              id: service.service.id,
+              id: service.id,
               name: service.service.name,
               completed,
               total,
               percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
+              currentStepTitle: currentStep?.title ?? null,
+              ownerName:
+                currentStep?.assignedTo?.name?.trim() ||
+                currentStep?.assignedTo?.email?.trim() ||
+                null,
+              ownerImage: currentStep?.assignedTo?.image ?? null,
             }
           : null
       })
@@ -350,10 +388,31 @@ export default async function ContactDetailsLayout({
                             <p className="mt-2 truncate text-sm font-semibold text-slate-950">
                               {service.name}
                             </p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {service.currentStepTitle
+                                ? `Current step: ${service.currentStepTitle}`
+                                : "Follow-up in progress"}
+                            </p>
                           </div>
-                          <span className="shrink-0 text-sm font-semibold text-slate-900">
-                            {service.percentage}%
-                          </span>
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-2.5 py-1">
+                              <Avatar className="h-7 w-7 shrink-0">
+                                <AvatarImage
+                                  src={service.ownerImage ?? undefined}
+                                  alt={service.ownerName ?? "Unassigned follow-up owner"}
+                                />
+                                <AvatarFallback className="bg-slate-200 text-[10px] font-semibold text-slate-700">
+                                  {getInitials(service.ownerName)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <span className="max-w-[140px] truncate text-xs font-medium text-slate-700">
+                                {service.ownerName ?? "Unassigned"}
+                              </span>
+                            </div>
+                            <span className="shrink-0 text-sm font-semibold text-slate-900">
+                              {service.percentage}%
+                            </span>
+                          </div>
                         </div>
 
                         <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200/80">

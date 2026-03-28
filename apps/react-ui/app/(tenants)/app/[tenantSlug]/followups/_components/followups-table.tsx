@@ -37,7 +37,7 @@ type CurrentStepStatus = "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTP
 
 type EnrollmentRow = {
   id: string
-  status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "CANCELED"
+  status: "PENDING" | "IN_PROGRESS" | "PENDING_PAYMENT" | "COMPLETED" | "CANCELED"
   contactId: string
   contactName: string
   phoneNumber: string | null

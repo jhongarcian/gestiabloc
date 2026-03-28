@@ -146,10 +146,18 @@ type ServiceDetailsResponse = {
     description: string | null
     basePriceCents: number
     currency: string
+    isTaxExempt: boolean
     allowPartialPayments: boolean
     minimumPartialPaymentCents: number | null
+    installmentCount: number | null
+    installmentFrequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null
     checklistItems: ServiceChecklistItem[]
     professionals: ServiceProfessional[]
+    tenantBilling: {
+      taxEnabled: boolean
+      taxLabel: string | null
+      defaultTaxRatePercent: number | null
+    }
   }
 }
 
@@ -308,6 +316,24 @@ function parseUsdToCents(value: string) {
   if (!Number.isFinite(parsed) || parsed < 0) return null
 
   return Math.round(parsed * 100)
+}
+
+function getServiceTotalWithTaxCents({
+  basePriceCents,
+  isTaxExempt,
+  taxEnabled,
+  defaultTaxRatePercent,
+}: {
+  basePriceCents: number
+  isTaxExempt: boolean
+  taxEnabled: boolean
+  defaultTaxRatePercent: number | null
+}) {
+  if (!taxEnabled || isTaxExempt || defaultTaxRatePercent === null) {
+    return basePriceCents
+  }
+
+  return basePriceCents + Math.round(basePriceCents * (defaultTaxRatePercent / 100))
 }
 
 function getProfessionalLabel(professional: ServiceProfessional) {
@@ -761,6 +787,18 @@ function PurchaseTransactionDialog({
   const [serviceDetails, setServiceDetails] = useState<
     ServiceDetailsResponse["service"] | null
   >(null)
+  const serviceTotalCents = useMemo(
+    () =>
+      serviceDetails
+        ? getServiceTotalWithTaxCents({
+            basePriceCents: serviceDetails.basePriceCents,
+            isTaxExempt: serviceDetails.isTaxExempt,
+            taxEnabled: serviceDetails.tenantBilling.taxEnabled,
+            defaultTaxRatePercent: serviceDetails.tenantBilling.defaultTaxRatePercent,
+          })
+        : null,
+    [serviceDetails],
+  )
 
   const resetForm = useCallback(() => {
     setStep(1)
@@ -1035,7 +1073,7 @@ function PurchaseTransactionDialog({
       return
     }
 
-    const totalPriceCents = serviceDetails?.basePriceCents ?? null
+    const totalPriceCents = serviceTotalCents
     if (totalPriceCents === null) {
       toast.error("Select a valid service.")
       return
@@ -1602,12 +1640,23 @@ function PurchaseTransactionDialog({
                     id="service-transaction-cost"
                     readOnly
                     value={
-                      serviceDetails
-                        ? centsToUsdInput(serviceDetails.basePriceCents)
+                      serviceTotalCents !== null
+                        ? centsToUsdInput(serviceTotalCents)
                         : ""
                     }
                     className="bg-slate-50 text-slate-600"
                   />
+                  {serviceDetails &&
+                  serviceTotalCents !== null &&
+                  serviceTotalCents !== serviceDetails.basePriceCents ? (
+                    <p className="text-xs text-slate-500">
+                      Includes {serviceDetails.tenantBilling.taxLabel || "tax"} at{" "}
+                      {(serviceDetails.tenantBilling.defaultTaxRatePercent ?? 0)
+                        .toFixed(2)
+                        .replace(/\.00$/, "")}
+                      %.
+                    </p>
+                  ) : null}
                 </div>
               </div>
 
@@ -1649,8 +1698,8 @@ function PurchaseTransactionDialog({
                         ? initialPaymentUsd
                         : paymentMode === "LATER"
                           ? "0.00"
-                          : serviceDetails
-                            ? centsToUsdInput(serviceDetails.basePriceCents)
+                          : serviceTotalCents !== null
+                            ? centsToUsdInput(serviceTotalCents)
                             : ""
                     }
                     onChange={(event) =>

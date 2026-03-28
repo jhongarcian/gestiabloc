@@ -244,6 +244,24 @@ function parseUsdToCents(value: string) {
   return Math.round(parsed * 100)
 }
 
+function getServiceTotalWithTaxCents({
+  basePriceCents,
+  isTaxExempt,
+  taxEnabled,
+  defaultTaxRatePercent,
+}: {
+  basePriceCents: number
+  isTaxExempt: boolean
+  taxEnabled: boolean
+  defaultTaxRatePercent: number | null
+}) {
+  if (!taxEnabled || isTaxExempt || defaultTaxRatePercent === null) {
+    return basePriceCents
+  }
+
+  return basePriceCents + Math.round(basePriceCents * (defaultTaxRatePercent / 100))
+}
+
 function formatDateOnly(date: Date) {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, "0")
@@ -676,6 +694,17 @@ function CreateTransactionDialog({
   const [initialPaymentUsd, setInitialPaymentUsd] = useState("")
   const [notes, setNotes] = useState("")
   const [errors, setErrors] = useState<TransactionFormErrors>({})
+  const totalWithTaxCents = getServiceTotalWithTaxCents({
+    basePriceCents: service.basePriceCents,
+    isTaxExempt: service.isTaxExempt,
+    taxEnabled: service.tenantBilling.taxEnabled,
+    defaultTaxRatePercent: service.tenantBilling.defaultTaxRatePercent,
+  })
+  const selectedFollowUpAssignee = useMemo(
+    () =>
+      followUpAssigneeOptions.find((item) => item.value === followUpAssignedToUserId) ?? null,
+    [followUpAssignedToUserId, followUpAssigneeOptions],
+  )
 
   const contactStepSchema = useMemo(
     () =>
@@ -766,7 +795,7 @@ function CreateTransactionDialog({
             return
           }
 
-          if (initialPaymentCents > service.basePriceCents) {
+          if (initialPaymentCents > totalWithTaxCents) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               path: ["initialPaymentUsd"],
@@ -786,7 +815,11 @@ function CreateTransactionDialog({
             })
           }
         }),
-    [service.allowPartialPayments, service.basePriceCents, service.minimumPartialPaymentCents],
+    [
+      service.allowPartialPayments,
+      service.minimumPartialPaymentCents,
+      totalWithTaxCents,
+    ],
   )
 
   const clearFieldError = (field: keyof TransactionFormErrors) => {
@@ -1031,7 +1064,7 @@ function CreateTransactionDialog({
       return
     }
 
-    const totalPriceCents = service.basePriceCents
+    const totalPriceCents = totalWithTaxCents
 
     const initialPaymentCents =
       paymentMode === "FULL"
@@ -1459,7 +1492,7 @@ function CreateTransactionDialog({
                   <Input
                     id="service-transaction-cost"
                     readOnly
-                    value={centsToUsdInput(service.basePriceCents)}
+                    value={centsToUsdInput(totalWithTaxCents)}
                     className="bg-slate-50 text-slate-600"
                   />
                 </div>
@@ -1478,10 +1511,28 @@ function CreateTransactionDialog({
 
               {followUpAssignedToUserId ? (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  Follow-up owner:{" "}
-                  <span className="font-medium text-slate-900">
-                    {followUpAssigneeOptions.find((item) => item.value === followUpAssignedToUserId)?.label ?? "Assigned user"}
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-9 w-9 shrink-0 border border-slate-200 bg-white shadow-sm">
+                      {selectedFollowUpAssignee?.image ? (
+                        <AvatarImage
+                          src={selectedFollowUpAssignee.image}
+                          alt={selectedFollowUpAssignee.label}
+                          className="object-cover"
+                        />
+                      ) : null}
+                      <AvatarFallback className="bg-blue-100 text-xs font-semibold text-blue-900">
+                        {getInitials(selectedFollowUpAssignee?.label ?? "Assigned user")}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">
+                        Follow-up owner
+                      </p>
+                      <p className="truncate font-medium text-slate-900">
+                        {selectedFollowUpAssignee?.label ?? "Assigned user"}
+                      </p>
+                    </div>
+                  </div>
                 </div>
               ) : null}
 
@@ -1497,7 +1548,7 @@ function CreateTransactionDialog({
                         ? initialPaymentUsd
                         : paymentMode === "LATER"
                           ? "0.00"
-                          : centsToUsdInput(service.basePriceCents)
+                          : centsToUsdInput(totalWithTaxCents)
                     }
                     onChange={(event) => {
                       clearFieldError("initialPaymentUsd")

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 import {
   ArrowLeft,
+  CircleDollarSign,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -17,6 +18,7 @@ import {
   Loader2,
   NotebookPen,
   Plus,
+  UserRound,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -67,7 +69,12 @@ import {
 } from "@/lib/date-time"
 import { cn } from "@/lib/utils"
 
-type ContactServiceStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED" | "CANCELED"
+type ContactServiceStatus =
+  | "PENDING"
+  | "IN_PROGRESS"
+  | "PENDING_PAYMENT"
+  | "COMPLETED"
+  | "CANCELED"
 type FollowUpStepStatus = "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
 
 type ContactServiceDetails = {
@@ -90,7 +97,16 @@ type ContactServiceDetails = {
     name: string
     description: string | null
     basePriceCents: number
+    isTaxExempt: boolean
+    minimumPartialPaymentCents: number | null
+    installmentCount: number | null
+    installmentFrequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null
   }
+  tenantBilling?: {
+    taxEnabled: boolean
+    taxLabel: string | null
+    defaultTaxRatePercent: number | null
+  } | null
   followUpTemplate?: {
     id: string
     name: string
@@ -115,6 +131,13 @@ type ContactServiceDetails = {
     availableAt: string | null
     dueAt: string | null
     completedAt: string | null
+    assignedToUserId: string | null
+    assignedTo?: {
+      id: string
+      name: string | null
+      email: string | null
+      image?: string | null
+    } | null
     note?: string | null
     sortOrder: number
   }>
@@ -154,6 +177,18 @@ type ContactServiceDetails = {
 type ContactServiceResponse = {
   ok: boolean
   contactService: ContactServiceDetails
+}
+
+type TenantAssigneeOption = {
+  value: string
+  label: string
+  email: string
+  image: string | null
+}
+
+type TenantAssigneesResponse = {
+  ok: boolean
+  items: TenantAssigneeOption[]
 }
 
 type ContactServiceDetailsPanelProps = {
@@ -196,6 +231,12 @@ const currencyFormatter = (valueCents: number, currency: string) =>
 
 const centsToUsdInput = (valueCents: number) => ((valueCents || 0) / 100).toFixed(2)
 
+const DEFAULT_TENANT_BILLING = {
+  taxEnabled: false,
+  taxLabel: null,
+  defaultTaxRatePercent: null,
+} satisfies NonNullable<ContactServiceDetails["tenantBilling"]>
+
 const parseUsdToCents = (value: string) => {
   const normalized = value.replace(/\$/g, "").replace(/,/g, "").trim()
   if (!normalized) return null
@@ -220,6 +261,18 @@ const getAssignedProfessionalLabel = (
   )
 }
 
+const getFollowUpAssigneeLabel = (
+  assignee:
+    | ContactServiceDetails["followUpSteps"][number]["assignedTo"]
+    | TenantAssigneeOption
+    | null
+    | undefined,
+) => {
+  if (!assignee) return "Unassigned"
+
+  return ("label" in assignee ? assignee.label : assignee.name)?.trim() || assignee.email?.trim() || "Assigned owner"
+}
+
 const PAYMENT_METHOD_OPTIONS = [
   { value: "CASH", label: "Cash" },
   { value: "CARD", label: "Card" },
@@ -227,6 +280,12 @@ const PAYMENT_METHOD_OPTIONS = [
   { value: "TRANSFER", label: "Transfer" },
   { value: "ACH", label: "ACH" },
 ] as const
+
+const INSTALLMENT_FREQUENCY_LABELS = {
+  WEEKLY: "Weekly",
+  BIWEEKLY: "Biweekly",
+  MONTHLY: "Monthly",
+} as const
 
 const PAYMENTS_PAGE_SIZE = 5
 
@@ -250,6 +309,12 @@ const SERVICE_STATUS_OPTIONS: ServiceStatusOption[] = [
     textClassName: "text-sky-800",
   },
   {
+    value: "PENDING_PAYMENT",
+    label: "Pending Payment",
+    bgClassName: "bg-orange-100",
+    textClassName: "text-orange-800",
+  },
+  {
     value: "COMPLETED",
     label: "Completed",
     bgClassName: "bg-emerald-100",
@@ -270,6 +335,31 @@ const STATUS_OPTION_BY_VALUE = Object.fromEntries(
 const formatDateTime = (value: string | null | undefined) => {
   if (!value) return "-"
   return new Date(value).toLocaleString()
+}
+
+const formatDateOnly = (value: string | Date | null | undefined) => {
+  if (!value) return "-"
+  return new Date(value).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  })
+}
+
+const addInstallmentInterval = (
+  baseDate: Date,
+  frequency: NonNullable<ContactServiceDetails["service"]["installmentFrequency"]>,
+  occurrences: number,
+) => {
+  const nextDate = new Date(baseDate)
+  if (frequency === "MONTHLY") {
+    nextDate.setMonth(nextDate.getMonth() + occurrences)
+    return nextDate
+  }
+
+  const daysToAdd = frequency === "WEEKLY" ? 7 * occurrences : 14 * occurrences
+  nextDate.setDate(nextDate.getDate() + daysToAdd)
+  return nextDate
 }
 
 const isBeforeToday = (date: Date) => {
@@ -338,6 +428,14 @@ const getInitials = (value: string | null | undefined) =>
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("") || "NA"
 
+const normalizeContactServiceDetails = (details: ContactServiceDetails): ContactServiceDetails => ({
+  ...details,
+  tenantBilling: {
+    ...DEFAULT_TENANT_BILLING,
+    ...(details.tenantBilling ?? {}),
+  },
+})
+
 export function ContactServiceDetailsPanel({
   tenantId,
   tenantSlug,
@@ -349,6 +447,8 @@ export function ContactServiceDetailsPanel({
   const canManageSensitiveServiceActions = membershipSecurityLevel !== "LOW"
   const [item, setItem] = useState<ContactServiceDetails | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isLoadingAssignees, setIsLoadingAssignees] = useState(false)
+  const [followUpAssigneeOptions, setFollowUpAssigneeOptions] = useState<TenantAssigneeOption[]>([])
   const [isChecklistSavingId, setIsChecklistSavingId] = useState<string | null>(null)
   const [statusOpen, setStatusOpen] = useState(false)
   const [isStatusSaving, setIsStatusSaving] = useState(false)
@@ -360,6 +460,7 @@ export function ContactServiceDetailsPanel({
   const [isNoteOpen, setIsNoteOpen] = useState(false)
   const [isNoteSaving, setIsNoteSaving] = useState(false)
   const [selectedPaymentId, setSelectedPaymentId] = useState<string | null>(null)
+  const [paymentEntryMode, setPaymentEntryMode] = useState<"FULL" | "PARTIAL">("FULL")
   const [paymentAmountUsd, setPaymentAmountUsd] = useState("")
   const [paymentMethod, setPaymentMethod] = useState<string>("")
   const [paymentNote, setPaymentNote] = useState("")
@@ -373,6 +474,7 @@ export function ContactServiceDetailsPanel({
   const [isStepDetailsDialogOpen, setIsStepDetailsDialogOpen] = useState(false)
   const [isStepNoteDialogOpen, setIsStepNoteDialogOpen] = useState(false)
   const [isStepTaskDialogOpen, setIsStepTaskDialogOpen] = useState(false)
+  const [isFollowUpOwnerDialogOpen, setIsFollowUpOwnerDialogOpen] = useState(false)
   const [activeStep, setActiveStep] = useState<ContactServiceDetails["followUpSteps"][number] | null>(
     null,
   )
@@ -381,6 +483,10 @@ export function ContactServiceDetailsPanel({
   const [stepStatusNote, setStepStatusNote] = useState("")
   const [stepPostponeInput, setStepPostponeInput] = useState<DateTimeDraft>({ date: "", time: "" })
   const [isSavingStepStatus, setIsSavingStepStatus] = useState(false)
+  const [followUpOwnerUserId, setFollowUpOwnerUserId] = useState("")
+  const [isSavingFollowUpOwner, setIsSavingFollowUpOwner] = useState(false)
+  const [stepAssignedToUserId, setStepAssignedToUserId] = useState("")
+  const [isSavingStepAssignee, setIsSavingStepAssignee] = useState(false)
   const [stepNoteTitle, setStepNoteTitle] = useState("")
   const [stepNoteBody, setStepNoteBody] = useState("")
   const [isSavingStepNote, setIsSavingStepNote] = useState(false)
@@ -397,7 +503,7 @@ export function ContactServiceDetailsPanel({
       const { data } = await api.get<ContactServiceResponse>(
         `/api/services/${tenantId}/contact-services/${contactServiceId}`,
       )
-      setItem(data.contactService)
+      setItem(normalizeContactServiceDetails(data.contactService))
     } catch {
       setItem(null)
       toast.error("Could not load service enrollment.")
@@ -406,15 +512,35 @@ export function ContactServiceDetailsPanel({
     }
   }, [contactServiceId, tenantId])
 
+  const loadFollowUpAssignees = useCallback(async () => {
+    setIsLoadingAssignees(true)
+    try {
+      const { data } = await api.get<TenantAssigneesResponse>(
+        `/api/tasks/${encodeURIComponent(tenantId)}/assignees`,
+      )
+      setFollowUpAssigneeOptions(data.items ?? [])
+    } catch {
+      setFollowUpAssigneeOptions([])
+      toast.error("Could not load follow-up assignees.")
+    } finally {
+      setIsLoadingAssignees(false)
+    }
+  }, [tenantId])
+
   useEffect(() => {
     void loadItem()
   }, [loadItem])
+
+  useEffect(() => {
+    void loadFollowUpAssignees()
+  }, [loadFollowUpAssignees])
 
   useEffect(() => {
     setVisiblePaymentsCount(PAYMENTS_PAGE_SIZE)
   }, [item?.id, item?.payments?.length])
 
   const resetPaymentForm = () => {
+    setPaymentEntryMode("FULL")
     setPaymentAmountUsd("")
     setPaymentMethod("")
     setPaymentNote("")
@@ -470,9 +596,19 @@ export function ContactServiceDetailsPanel({
 
   const onAddPayment = async () => {
     if (!item) return
-    const amountCents = parseUsdToCents(paymentAmountUsd)
+    if (paymentEntryMode === "PARTIAL" && !item.allowPartialPayments) {
+      toast.error("This service does not allow partial payments.")
+      return
+    }
+
+    const amountCents =
+      paymentEntryMode === "FULL" ? item.remainingCents : parseUsdToCents(paymentAmountUsd)
     if (amountCents === null || amountCents <= 0) {
       toast.error("Enter a valid payment amount in USD.")
+      return
+    }
+    if (amountCents > item.remainingCents) {
+      toast.error("Payment amount cannot be greater than the remaining balance.")
       return
     }
 
@@ -703,8 +839,159 @@ export function ContactServiceDetailsPanel({
     () => (followUpSteps.length ? Math.round((followUpCompletedCount / followUpSteps.length) * 100) : 0),
     [followUpCompletedCount, followUpSteps.length],
   )
+  const taxAmountCents = useMemo(() => {
+    if (!item) return 0
+    return Math.max(0, item.totalPriceCents - item.service.basePriceCents)
+  }, [item])
+  const paymentCollectionState = useMemo(() => {
+    if (!item) return "Pay later"
+    if (item.paidCents <= 0) return "Pay later"
+    if (item.remainingCents > 0) return "Partial payment"
+    return "Paid in full"
+  }, [item])
+  const latestPayment = useMemo(() => {
+    if (!payments.length) return null
+    return payments.reduce((latest, payment) =>
+      new Date(payment.paidAt).getTime() > new Date(latest.paidAt).getTime() ? payment : latest,
+    )
+  }, [payments])
+  const completedScheduledPaymentsCount = useMemo(() => {
+    if (!item) return 0
+    return payments.filter((payment) => payment.note?.trim().toLowerCase() !== "initial payment").length
+  }, [item, payments])
+  const remainingScheduledInstallments = useMemo(() => {
+    if (!item || item.remainingCents <= 0 || !item.service.installmentCount) return 0
+    return Math.max(item.service.installmentCount - completedScheduledPaymentsCount, 1)
+  }, [completedScheduledPaymentsCount, item])
+  const suggestedInstallmentPaymentCents = useMemo(() => {
+    if (!item || item.remainingCents <= 0 || remainingScheduledInstallments <= 0) return null
+    return Math.ceil(item.remainingCents / remainingScheduledInstallments)
+  }, [item, remainingScheduledInstallments])
+  const nextScheduledPaymentDate = useMemo(() => {
+    if (
+      !item?.purchasedAt ||
+      item.remainingCents <= 0 ||
+      !item.service.installmentCount ||
+      !item.service.installmentFrequency
+    ) {
+      return null
+    }
+
+    return addInstallmentInterval(
+      new Date(item.purchasedAt),
+      item.service.installmentFrequency,
+      completedScheduledPaymentsCount + 1,
+    )
+  }, [completedScheduledPaymentsCount, item])
+  const paymentPlanSummary = useMemo(() => {
+    if (!item) return "Full payment only"
+    if (!item.allowPartialPayments) return "Full payment only"
+
+    if (item.service.installmentCount && item.service.installmentFrequency) {
+      return `Minimum deposit ${item.service.minimumPartialPaymentCents !== null ? currencyFormatter(item.service.minimumPartialPaymentCents, item.currency) : "required"} · ${item.service.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[item.service.installmentFrequency].toLowerCase()} installments`
+    }
+
+    return item.service.minimumPartialPaymentCents !== null
+      ? `Minimum deposit ${currencyFormatter(item.service.minimumPartialPaymentCents, item.currency)}`
+      : "Partial payments allowed"
+  }, [item])
+  const nextScheduledPaymentSummary = useMemo(() => {
+    if (!item || !nextScheduledPaymentDate) return null
+    return `Next scheduled payment: ${formatDateOnly(nextScheduledPaymentDate)}`
+  }, [item, nextScheduledPaymentDate])
+  const addPaymentPlanSummary = useMemo(() => {
+    if (!item) return ""
+    if (item.remainingCents <= 0) return "No balance remains on this service."
+    if (!item.allowPartialPayments) {
+      return `The remaining balance is ${currencyFormatter(item.remainingCents, item.currency)}.`
+    }
+    if (suggestedInstallmentPaymentCents !== null && remainingScheduledInstallments > 0) {
+      return `${remainingScheduledInstallments} scheduled payment${remainingScheduledInstallments === 1 ? "" : "s"} remaining at about ${currencyFormatter(suggestedInstallmentPaymentCents, item.currency)} each.`
+    }
+    return `Enter the amount to record against the remaining balance of ${currencyFormatter(item.remainingCents, item.currency)}.`
+  }, [item, remainingScheduledInstallments, suggestedInstallmentPaymentCents])
   const canAddPayments = Boolean(item && item.remainingCents > 0)
   const currentStatusOption = item ? STATUS_OPTION_BY_VALUE[item.status] : null
+  const tenantBilling = item?.tenantBilling ?? DEFAULT_TENANT_BILLING
+  const openFollowUpSteps = useMemo(
+    () =>
+      followUpSteps.filter(
+        (step) => step.status !== "COMPLETED" && step.status !== "SKIPPED",
+      ),
+    [followUpSteps],
+  )
+  const currentFollowUpOwner = useMemo(
+    () =>
+      openFollowUpSteps.find((step) => step.status === "ACTIVE")?.assignedTo ??
+      openFollowUpSteps.find((step) => step.status === "POSTPONED")?.assignedTo ??
+      openFollowUpSteps.find((step) => step.status === "PENDING")?.assignedTo ??
+      openFollowUpSteps[0]?.assignedTo ??
+      null,
+    [openFollowUpSteps],
+  )
+  const hasMixedOpenStepOwners = useMemo(() => {
+    const assignedUserIds = new Set(
+      openFollowUpSteps.map((step) => step.assignedToUserId ?? "").filter((value) => value.length > 0),
+    )
+    const hasUnassignedOpenStep = openFollowUpSteps.some((step) => !step.assignedToUserId)
+    return assignedUserIds.size > 1 || (assignedUserIds.size > 0 && hasUnassignedOpenStep)
+  }, [openFollowUpSteps])
+
+  const openFollowUpOwnerDialog = () => {
+    const uniqueOpenOwnerIds = Array.from(
+      new Set(openFollowUpSteps.map((step) => step.assignedToUserId ?? "")),
+    )
+    setFollowUpOwnerUserId(uniqueOpenOwnerIds.length === 1 ? uniqueOpenOwnerIds[0] ?? "" : "")
+    setIsFollowUpOwnerDialogOpen(true)
+  }
+
+  const saveFollowUpOwner = async () => {
+    if (!item) return
+    if (!openFollowUpSteps.length) {
+      toast.error("There are no open follow-up steps to reassign.")
+      return
+    }
+
+    const stepsToUpdate = openFollowUpSteps.filter(
+      (step) => (step.assignedToUserId ?? "") !== followUpOwnerUserId,
+    )
+
+    if (!stepsToUpdate.length) {
+      setIsFollowUpOwnerDialogOpen(false)
+      return
+    }
+
+    setIsSavingFollowUpOwner(true)
+    try {
+      await Promise.all(
+        stepsToUpdate.map((step) =>
+          api.patch(
+            `/api/services/${tenantId}/contact-services/${item.id}/follow-up-steps/${step.id}`,
+            {
+              assignedToUserId: followUpOwnerUserId || null,
+            },
+          ),
+        ),
+      )
+      toast.success("Follow-up owner updated.")
+      await loadItem()
+      router.refresh()
+      setIsFollowUpOwnerDialogOpen(false)
+    } catch (error) {
+      if (isAxiosError(error)) {
+        const backendError = error.response?.data?.error
+        toast.error(
+          typeof backendError === "string"
+            ? backendError.replace(/_/g, " ")
+            : "Could not update follow-up owner.",
+        )
+      } else {
+        toast.error("Could not update follow-up owner.")
+      }
+    } finally {
+      setIsSavingFollowUpOwner(false)
+    }
+  }
 
   const openStepStatusDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
     setActiveStep(step)
@@ -716,7 +1003,41 @@ export function ContactServiceDetailsPanel({
 
   const openStepDetailsDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
     setActiveStep(step)
+    setStepAssignedToUserId(step.assignedToUserId ?? "")
     setIsStepDetailsDialogOpen(true)
+  }
+
+  const saveStepAssignee = async () => {
+    if (!item || !activeStep) return
+
+    setIsSavingStepAssignee(true)
+    try {
+      await api.patch(
+        `/api/services/${tenantId}/contact-services/${item.id}/follow-up-steps/${activeStep.id}`,
+        {
+          assignedToUserId: stepAssignedToUserId || null,
+        },
+      )
+      toast.success("Follow-up owner updated.")
+      await loadItem()
+      router.refresh()
+      setIsStepDetailsDialogOpen(false)
+      setActiveStep(null)
+      setStepAssignedToUserId("")
+    } catch (error) {
+      if (isAxiosError(error)) {
+        const backendError = error.response?.data?.error
+        toast.error(
+          typeof backendError === "string"
+            ? backendError.replace(/_/g, " ")
+            : "Could not update follow-up owner.",
+        )
+      } else {
+        toast.error("Could not update follow-up owner.")
+      }
+    } finally {
+      setIsSavingStepAssignee(false)
+    }
   }
 
   const updateStepStatus = async (
@@ -1008,6 +1329,66 @@ export function ContactServiceDetailsPanel({
                 {isDeleting ? "Deleting..." : "Delete"}
               </Button>
             ) : null}
+            {canAddPayments && canManageSensitiveServiceActions ? (
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-8 cursor-pointer rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300 hover:bg-white hover:text-slate-950"
+                onClick={() => setIsPaymentOpen(true)}
+              >
+                <CircleDollarSign className="h-3.5 w-3.5" />
+                Add payment
+              </Button>
+            ) : null}
+            {canManageSensitiveServiceActions && item.followUpSteps.length ? (
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-8 max-w-[220px] cursor-pointer rounded-full border border-white/70 bg-white/60 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/80"
+                onClick={openFollowUpOwnerDialog}
+                disabled={isSavingFollowUpOwner || isLoadingAssignees}
+              >
+                {hasMixedOpenStepOwners ? (
+                  <div className="flex min-w-0 max-w-full items-center gap-2">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                      <UserRound className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="truncate text-xs font-medium text-slate-700">
+                      Mixed assignees
+                    </span>
+                  </div>
+                ) : currentFollowUpOwner ? (
+                  <div className="flex min-w-0 max-w-full items-center gap-2">
+                    <Avatar className="h-5 w-5 shrink-0">
+                      <AvatarImage
+                        src={currentFollowUpOwner.image ?? undefined}
+                        alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                      />
+                      <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                        {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="truncate text-xs font-medium text-slate-700">
+                      {getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex min-w-0 max-w-full items-center gap-2">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                      <UserRound className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="truncate text-xs font-medium text-slate-600">
+                      Unassigned
+                    </span>
+                  </div>
+                )}
+                {isLoadingAssignees ? (
+                  <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin text-slate-500" />
+                ) : (
+                  <ChevronDown className="ml-1 h-3.5 w-3.5 shrink-0 text-slate-500" />
+                )}
+              </Button>
+            ) : null}
             <Popover
               open={canManageSensitiveServiceActions ? statusOpen : false}
               onOpenChange={(open) => {
@@ -1072,11 +1453,18 @@ export function ContactServiceDetailsPanel({
         </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-[24px] border border-slate-200 bg-white p-6">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Total</p>
           <p className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
             {currencyFormatter(item.totalPriceCents, item.currency)}
+          </p>
+          <p className="mt-2 text-xs text-slate-500">
+            {taxAmountCents > 0
+              ? `Includes ${currencyFormatter(taxAmountCents, item.currency)} in ${tenantBilling.taxLabel || "tax"}`
+              : tenantBilling.taxEnabled && item.service.isTaxExempt
+                ? "Tax exempt service"
+                : "No tax applied"}
           </p>
         </div>
         <div className="rounded-[24px] border border-slate-200 bg-white p-6">
@@ -1084,11 +1472,34 @@ export function ContactServiceDetailsPanel({
           <p className="mt-3 text-3xl font-semibold tracking-tight text-sky-700">
             {currencyFormatter(item.paidCents, item.currency)}
           </p>
+          <p className="mt-2 text-xs text-slate-500">
+            {latestPayment
+              ? `Last payment: ${formatDateOnly(latestPayment.paidAt)}`
+              : "No payments recorded yet"}
+          </p>
         </div>
         <div className="rounded-[24px] border border-slate-200 bg-white p-6">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Balance</p>
           <p className="mt-3 text-3xl font-semibold tracking-tight text-amber-700">
             {currencyFormatter(item.remainingCents, item.currency)}
+          </p>
+          <p className="mt-2 text-xs text-slate-500">
+            {item.service.installmentCount
+              ? `${remainingScheduledInstallments} installment${remainingScheduledInstallments === 1 ? "" : "s"} left to pay`
+              : "No installment schedule configured"}
+          </p>
+        </div>
+        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+            Next Payment
+          </p>
+          <p className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
+            {nextScheduledPaymentDate ? formatDateOnly(nextScheduledPaymentDate) : "Not scheduled"}
+          </p>
+          <p className="mt-2 text-xs text-slate-500">
+            {item.service.installmentFrequency
+              ? `${INSTALLMENT_FREQUENCY_LABELS[item.service.installmentFrequency]} installment schedule`
+              : "No installment schedule configured"}
           </p>
         </div>
       </div>
@@ -1200,21 +1611,38 @@ export function ContactServiceDetailsPanel({
                 Review payment history and record partial payments when a balance is still open.
               </p>
             </div>
-            {canAddPayments && canManageSensitiveServiceActions ? (
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-8 cursor-pointer rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300 hover:bg-white hover:text-slate-950"
-                onClick={() => setIsPaymentOpen(true)}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Add payment
-              </Button>
-            ) : (
-              <Badge className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-800 hover:bg-emerald-100">
-                Paid in full
-              </Badge>
-            )}
+            <Badge
+              className={cn(
+                "rounded-full px-3 py-1 hover:bg-inherit",
+                item.remainingCents > 0
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-emerald-100 text-emerald-800",
+              )}
+            >
+              {paymentCollectionState}
+            </Badge>
+          </div>
+          <div className="mb-4 grid gap-3 md:grid-cols-2">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              Payment plan: <span className="font-medium text-slate-900">{paymentPlanSummary}</span>
+              {nextScheduledPaymentSummary ? (
+                <p className="mt-1 text-xs text-slate-500">{nextScheduledPaymentSummary}</p>
+              ) : null}
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {taxAmountCents > 0 ? (
+                <>
+                  Includes <span className="font-medium text-slate-900">{currencyFormatter(taxAmountCents, item.currency)}</span> in{" "}
+                  {tenantBilling.taxLabel || "tax"}.
+                </>
+              ) : (
+                <>
+                  {tenantBilling.taxEnabled && item.service.isTaxExempt
+                    ? "This service is tax exempt."
+                    : "No tax is applied to this service total."}
+                </>
+              )}
+            </div>
           </div>
           {payments.length ? (
             <div className="space-y-3">
@@ -1387,6 +1815,23 @@ export function ContactServiceDetailsPanel({
                                 {step.title}
                               </button>
                               <p className="text-xs font-medium text-slate-500">{timeMeta.helper}</p>
+                              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                                <Avatar className="h-7 w-7 shrink-0 border border-slate-200">
+                                  <AvatarImage
+                                    src={step.assignedTo?.image ?? undefined}
+                                    alt={getFollowUpAssigneeLabel(step.assignedTo)}
+                                  />
+                                  <AvatarFallback className="bg-slate-200 text-[10px] font-semibold text-slate-700">
+                                    {getInitials(getFollowUpAssigneeLabel(step.assignedTo))}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <span>
+                                  Owner:{" "}
+                                  <span className="font-medium text-slate-700">
+                                    {getFollowUpAssigneeLabel(step.assignedTo)}
+                                  </span>
+                                </span>
+                              </div>
                             </div>
                           </div>
                           <p className="max-w-3xl text-sm leading-6 text-slate-600">
@@ -1576,6 +2021,90 @@ export function ContactServiceDetailsPanel({
       </section>
 
       <Dialog
+        open={isFollowUpOwnerDialogOpen}
+        onOpenChange={(open) => {
+          setIsFollowUpOwnerDialogOpen(open)
+          if (!open) setFollowUpOwnerUserId("")
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Change follow-up owner</DialogTitle>
+            <DialogDescription>
+              Update the person responsible for the open follow-up steps on this service.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-1">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+              <div className="flex items-center gap-3">
+                <Avatar className="h-10 w-10 shrink-0 border border-slate-200">
+                  <AvatarImage
+                    src={currentFollowUpOwner?.image ?? undefined}
+                    alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                  />
+                  <AvatarFallback className="bg-slate-200 text-xs font-semibold text-slate-700">
+                    {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-900">
+                    Current owner: {hasMixedOpenStepOwners ? "Mixed assignees" : getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    This will update {openFollowUpSteps.length} open follow-up step{openFollowUpSteps.length === 1 ? "" : "s"}.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="grid gap-2">
+              <Label>Follow-up owner</Label>
+              <Select
+                value={followUpOwnerUserId || "__none__"}
+                onValueChange={(value) =>
+                  setFollowUpOwnerUserId(value === "__none__" ? "" : value)
+                }
+                disabled={isLoadingAssignees || isSavingFollowUpOwner}
+              >
+                <SelectTrigger className="cursor-pointer">
+                  <SelectValue placeholder="Select follow-up owner" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Unassigned</SelectItem>
+                  {followUpAssigneeOptions.map((assignee) => (
+                    <SelectItem key={assignee.value} value={assignee.value}>
+                      {assignee.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-slate-500">
+                Open steps include active, pending, and postponed follow-up work.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsFollowUpOwnerDialogOpen(false)}
+              disabled={isSavingFollowUpOwner}
+              className="cursor-pointer"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void saveFollowUpOwner()}
+              disabled={isSavingFollowUpOwner || !openFollowUpSteps.length}
+              className="cursor-pointer"
+            >
+              {isSavingFollowUpOwner ? "Saving..." : "Save owner"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={isPaymentOpen}
         onOpenChange={(open) => {
           setIsPaymentOpen(open)
@@ -1595,15 +2124,88 @@ export function ContactServiceDetailsPanel({
                 <CreditCard className="h-4 w-4 text-slate-500" />
                 Remaining balance: {currencyFormatter(item.remainingCents, item.currency)}
               </div>
+              <p className="mt-2 text-xs text-slate-500">
+                Current state: {paymentCollectionState}. {addPaymentPlanSummary}
+              </p>
+              {nextScheduledPaymentSummary ? (
+                <p className="mt-1 text-xs text-slate-500">{nextScheduledPaymentSummary}</p>
+              ) : null}
+            </div>
+            <div className="grid gap-2">
+              <Label>Payment action</Label>
+              <Select
+                value={paymentEntryMode}
+                onValueChange={(value) => {
+                  const nextMode = value as "FULL" | "PARTIAL"
+                  setPaymentEntryMode(nextMode)
+                  if (nextMode === "FULL") {
+                    setPaymentAmountUsd("")
+                    return
+                  }
+                  setPaymentAmountUsd(
+                    suggestedInstallmentPaymentCents !== null
+                      ? centsToUsdInput(suggestedInstallmentPaymentCents)
+                      : "",
+                  )
+                }}
+              >
+                <SelectTrigger className="cursor-pointer">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="FULL">Pay remaining in full</SelectItem>
+                  <SelectItem value="PARTIAL" disabled={!item.allowPartialPayments}>
+                    Record partial payment
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              {paymentEntryMode === "PARTIAL" ? (
+                <p className="text-xs text-slate-500">
+                  {addPaymentPlanSummary} You can record a different amount and the next suggested
+                  payment will update automatically.
+                </p>
+              ) : null}
             </div>
             <div className="grid gap-2">
               <Label>Payment Amount (USD)</Label>
               <Input
-                value={paymentAmountUsd}
+                value={
+                  paymentEntryMode === "FULL"
+                    ? centsToUsdInput(item.remainingCents)
+                    : paymentAmountUsd
+                }
                 onChange={(event) => setPaymentAmountUsd(event.target.value)}
                 inputMode="decimal"
                 placeholder="0.00"
+                readOnly={paymentEntryMode === "FULL"}
               />
+              {paymentEntryMode === "PARTIAL" && suggestedInstallmentPaymentCents !== null ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-7 cursor-pointer rounded-full border-slate-200 px-3 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                    onClick={() =>
+                      setPaymentAmountUsd(centsToUsdInput(suggestedInstallmentPaymentCents))
+                    }
+                  >
+                    Use scheduled payment{" "}
+                    {currencyFormatter(suggestedInstallmentPaymentCents, item.currency)}
+                  </Button>
+                  <p className="text-xs text-slate-500">
+                    Based on {remainingScheduledInstallments} remaining installment
+                    {remainingScheduledInstallments === 1 ? "" : "s"} and a balance of{" "}
+                    {currencyFormatter(item.remainingCents, item.currency)}. You can enter a higher
+                    or lower amount, and the next suggested payment will recalculate from the new
+                    balance.
+                  </p>
+                </div>
+              ) : paymentEntryMode === "PARTIAL" ? (
+                <p className="text-xs text-slate-500">
+                  Remaining balance: {currencyFormatter(item.remainingCents, item.currency)}. You
+                  can enter any amount up to the remaining balance.
+                </p>
+              ) : null}
             </div>
             <div className="grid gap-2">
               <Label>Payment Method</Label>
@@ -1879,7 +2481,16 @@ export function ContactServiceDetailsPanel({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isStepDetailsDialogOpen} onOpenChange={setIsStepDetailsDialogOpen}>
+      <Dialog
+        open={isStepDetailsDialogOpen}
+        onOpenChange={(open) => {
+          setIsStepDetailsDialogOpen(open)
+          if (!open) {
+            setActiveStep(null)
+            setStepAssignedToUserId("")
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Follow-up step details</DialogTitle>
@@ -1909,6 +2520,55 @@ export function ContactServiceDetailsPanel({
                 </div>
               </div>
               <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Follow-up owner</p>
+                <div className="mt-3 flex items-center gap-3">
+                  <Avatar className="h-10 w-10 shrink-0 border border-slate-200">
+                    <AvatarImage
+                      src={activeStep.assignedTo?.image ?? undefined}
+                      alt={getFollowUpAssigneeLabel(activeStep.assignedTo)}
+                    />
+                    <AvatarFallback className="bg-slate-200 text-xs font-semibold text-slate-700">
+                      {getInitials(getFollowUpAssigneeLabel(activeStep.assignedTo))}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-900">
+                      {getFollowUpAssigneeLabel(activeStep.assignedTo)}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {activeStep.assignedTo?.email || "No owner assigned yet."}
+                    </p>
+                  </div>
+                </div>
+                {canManageSensitiveServiceActions ? (
+                  <div className="mt-4 grid gap-2">
+                    <Label>Change follow-up owner</Label>
+                    <Select
+                      value={stepAssignedToUserId || "__none__"}
+                      onValueChange={(value) =>
+                        setStepAssignedToUserId(value === "__none__" ? "" : value)
+                      }
+                      disabled={isLoadingAssignees || isSavingStepAssignee}
+                    >
+                      <SelectTrigger className="cursor-pointer">
+                        <SelectValue placeholder="Select follow-up owner" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">Unassigned</SelectItem>
+                        {followUpAssigneeOptions.map((assignee) => (
+                          <SelectItem key={assignee.value} value={assignee.value}>
+                            {assignee.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-slate-500">
+                      Change the owner to rebalance follow-up execution for this service.
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Description</p>
                 <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
                   {activeStep.notesTemplate?.trim() || "No description provided for this step."}
@@ -1923,6 +2583,19 @@ export function ContactServiceDetailsPanel({
             </div>
           ) : null}
           <DialogFooter>
+            {canManageSensitiveServiceActions ? (
+              <Button
+                type="button"
+                onClick={() => void saveStepAssignee()}
+                disabled={
+                  isSavingStepAssignee ||
+                  (activeStep?.assignedToUserId ?? "") === stepAssignedToUserId
+                }
+                className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+              >
+                {isSavingStepAssignee ? "Saving..." : "Save owner"}
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="outline"
