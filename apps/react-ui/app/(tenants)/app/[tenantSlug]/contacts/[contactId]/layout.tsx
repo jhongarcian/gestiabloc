@@ -634,7 +634,7 @@ export default async function ContactDetailsLayout({
         ) : null}
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="px-4 py-4 md:px-5">
+          <div className="border-b border-slate-200 px-4 py-4 md:px-5">
             <ContactDetailTabs tenantSlug={tenantSlug} contactId={contactId} />
           </div>
           <div className="min-h-0 flex-1 p-5 md:p-6">{children}</div>

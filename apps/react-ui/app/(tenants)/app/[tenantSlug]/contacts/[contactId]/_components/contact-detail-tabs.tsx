@@ -27,8 +27,7 @@ export function ContactDetailTabs({
 
   return (
     <nav aria-label="Contact detail sections" className="w-full">
-      <div className="overflow-x-auto">
-        <div className="inline-flex min-w-full items-end gap-1 border-b border-slate-200 px-1">
+      <div className="flex flex-wrap items-center gap-2">
         {TABS.map((tab) => {
           const href = `/app/${tenantSlug}/contacts/${contactId}/${tab.key}`
           const isActive = pathname === href || pathname.startsWith(`${href}/`)
@@ -39,17 +38,16 @@ export function ContactDetailTabs({
               href={href}
               aria-current={isActive ? "page" : undefined}
               className={cn(
-                "inline-flex h-10 shrink-0 items-center rounded-t-[18px] border border-transparent px-4 text-sm font-medium transition",
-                "bg-transparent text-slate-500 hover:text-slate-900",
+                "inline-flex h-10 items-center rounded-xl border px-3.5 text-sm font-medium transition",
+                "border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900",
                 isActive &&
-                  "-mb-px h-11 border-blue-200 border-b-white bg-white text-blue-950 shadow-[0_-1px_0_rgba(255,255,255,0.85),0_8px_16px_rgba(15,23,42,0.06)] hover:border-blue-200 hover:border-b-white hover:bg-white hover:text-blue-950",
+                  "border-blue-950 bg-blue-950 text-white shadow-sm hover:border-blue-950 hover:bg-blue-950/90 hover:text-white",
               )}
             >
               {tab.label}
             </Link>
           )
         })}
-        </div>
       </div>
     </nav>
   )
