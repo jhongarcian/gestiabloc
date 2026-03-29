@@ -3,7 +3,7 @@
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 import { z } from "zod"
-import { Check, ChevronDown, Plus, Settings2, UserRound } from "lucide-react"
+import { Check, ChevronDown, CircleHelp, Plus, Settings2, UserRound } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { Bar, BarChart, Cell, Pie, PieChart, XAxis, YAxis } from "recharts"
 import { toast } from "sonner"
@@ -50,6 +50,12 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -94,6 +100,12 @@ type ContactServiceItem = {
     availableAt?: string | null
     dueAt?: string | null
     completedAt?: string | null
+    assignedTo?: {
+      id: string
+      name: string | null
+      email: string | null
+      image: string | null
+    } | null
   }>
 }
 
@@ -1154,6 +1166,16 @@ export function ContactServicesPanel({
     return nextStep?.dueAt ?? nextStep?.availableAt ?? null
   }
 
+  const getCurrentFollowUpAssignee = (item: ContactServiceItem) => {
+    const nextStep =
+      item.followUpSteps.find((step) => step.status === "ACTIVE") ??
+      item.followUpSteps.find((step) => step.status === "POSTPONED") ??
+      item.followUpSteps.find((step) => step.status === "PENDING") ??
+      null
+
+    return nextStep?.assignedTo ?? null
+  }
+
   const createServiceTotalCents = useMemo(() => {
     if (!createServiceDetails) return null
 
@@ -1389,22 +1411,43 @@ export function ContactServicesPanel({
       </div>
 
       <div className="overflow-hidden rounded-[20px] border border-slate-200 bg-white">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Service</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Created At</TableHead>
-              <TableHead>Next Follow-up</TableHead>
-              <TableHead>Paid</TableHead>
-              <TableHead>Balance</TableHead>
-              <TableHead>Progress</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
+        <TooltipProvider>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Service</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Created At</TableHead>
+                <TableHead>Next Follow-up</TableHead>
+                <TableHead>
+                  <div className="flex items-center gap-1">
+                    <span>Owner</span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex h-4 w-4 items-center justify-center text-slate-400 transition hover:text-slate-600"
+                          onClick={(event) => event.stopPropagation()}
+                          aria-label="Owner column help"
+                        >
+                          <CircleHelp className="h-3.5 w-3.5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Assigned person to the follow up.</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                </TableHead>
+                <TableHead>Paid</TableHead>
+                <TableHead>Balance</TableHead>
+                <TableHead>Progress</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={7} className="h-24 text-center text-slate-500">Loading services...</TableCell>
+                <TableCell colSpan={8} className="h-24 text-center text-slate-500">Loading services...</TableCell>
               </TableRow>
             ) : hasItems ? (
               items.map((item) => (
@@ -1423,6 +1466,30 @@ export function ContactServicesPanel({
                   </TableCell>
                   <TableCell className="text-slate-600">{formatDate(item.purchasedAt)}</TableCell>
                   <TableCell className="text-slate-600">{formatDate(getNextFollowUpDate(item))}</TableCell>
+                  <TableCell>
+                    {(() => {
+                      const assignee = getCurrentFollowUpAssignee(item)
+                      const label = assignee?.name?.trim() || assignee?.email?.trim() || "Unassigned"
+
+                      return (
+                        <div className="flex items-center gap-2">
+                          {assignee ? (
+                            <Avatar className="h-7 w-7 shrink-0 border border-slate-200">
+                              <AvatarImage src={assignee.image ?? undefined} alt={label} />
+                              <AvatarFallback className="bg-blue-100 text-[10px] font-semibold text-blue-900">
+                                {getInitials(label)}
+                              </AvatarFallback>
+                            </Avatar>
+                          ) : (
+                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                              <UserRound className="h-3.5 w-3.5" />
+                            </span>
+                          )}
+                          <span className="truncate text-sm text-slate-600">{label}</span>
+                        </div>
+                      )
+                    })()}
+                  </TableCell>
                   <TableCell>{currencyFormatter(item.paidCents, item.currency)}</TableCell>
                   <TableCell>{currencyFormatter(item.remainingCents, item.currency)}</TableCell>
                   <TableCell>
@@ -1472,11 +1539,12 @@ export function ContactServicesPanel({
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={7} className="h-24 text-center text-slate-500">No services enrolled yet.</TableCell>
+                <TableCell colSpan={8} className="h-24 text-center text-slate-500">No services enrolled yet.</TableCell>
               </TableRow>
             )}
-          </TableBody>
-        </Table>
+            </TableBody>
+          </Table>
+        </TooltipProvider>
       </div>
 
       <Dialog open={isCreateOpen} onOpenChange={(open) => {

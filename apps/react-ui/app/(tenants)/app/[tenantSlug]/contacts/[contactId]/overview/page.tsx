@@ -25,6 +25,7 @@ export default async function ContactOverviewPage({
     currentUserId,
     membershipSecurityLevel,
     canApproveSensitiveFieldAccess,
+    canManageContactTags,
   } = await getContactDetailsContext(tenantSlug, contactId)
   const cookie = (await headers()).get("cookie") ?? ""
 
@@ -82,6 +83,7 @@ export default async function ContactOverviewPage({
         currentUserId={currentUserId}
         membershipSecurityLevel={membershipSecurityLevel}
         canApproveSensitiveFieldAccess={canApproveSensitiveFieldAccess}
+        canManageTags={canManageContactTags}
         initialContact={contact}
         statusOptions={statusOptions}
       />
