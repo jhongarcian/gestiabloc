@@ -3,7 +3,18 @@
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 import { z } from "zod"
-import { Check, ChevronDown, CircleHelp, Plus, Settings2, UserRound } from "lucide-react"
+import {
+  BriefcaseBusiness,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  CircleDollarSign,
+  CircleHelp,
+  Clock3,
+  Plus,
+  Settings2,
+  UserRound,
+} from "lucide-react"
 import { useRouter } from "next/navigation"
 import { Bar, BarChart, Cell, Pie, PieChart, XAxis, YAxis } from "recharts"
 import { toast } from "sonner"
@@ -1281,21 +1292,53 @@ export function ContactServicesPanel({
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Enrolled Services</p>
-          <p className="mt-3 text-2xl font-semibold tracking-tight text-slate-900">{totals.enrolled}</p>
+        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-400">
+            <BriefcaseBusiness className="h-4 w-4" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+              Enrolled Services
+            </p>
+          </div>
+          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
+            {totals.enrolled}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">Active and historical service enrollments for this contact.</p>
         </div>
-        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Completed Services</p>
-          <p className="mt-3 text-2xl font-semibold tracking-tight text-emerald-700">{totals.completed}</p>
+        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-400">
+            <CheckCircle2 className="h-4 w-4" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+              Completed Services
+            </p>
+          </div>
+          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-emerald-700">
+            {totals.completed}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">Enrollments already finished or fully closed out.</p>
         </div>
-        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Current Spending</p>
-          <p className="mt-3 text-2xl font-semibold tracking-tight text-slate-900">{currencyFormatter(totals.totalPaidCents, "USD")}</p>
+        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-400">
+            <CircleDollarSign className="h-4 w-4" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+              Current Spending
+            </p>
+          </div>
+          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
+            {currencyFormatter(totals.totalPaidCents, "USD")}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">Amount already collected across purchased services.</p>
         </div>
-        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Remaining Balance</p>
-          <p className="mt-3 text-2xl font-semibold tracking-tight text-amber-700">{currencyFormatter(totals.totalRemainingCents, "USD")}</p>
+        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-400">
+            <Clock3 className="h-4 w-4" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+              Remaining Balance
+            </p>
+          </div>
+          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-amber-700">
+            {currencyFormatter(totals.totalRemainingCents, "USD")}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">Open balance that still needs to be collected.</p>
         </div>
       </div>
 

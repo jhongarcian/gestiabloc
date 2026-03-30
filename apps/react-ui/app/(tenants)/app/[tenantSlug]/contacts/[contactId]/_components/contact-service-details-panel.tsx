@@ -1454,12 +1454,15 @@ export function ContactServiceDetailsPanel({
       </div>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Total</p>
-          <p className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-400">
+            <CircleDollarSign className="h-4 w-4" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Total Amount</p>
+          </div>
+          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
             {currencyFormatter(item.totalPriceCents, item.currency)}
           </p>
-          <p className="mt-2 text-xs text-slate-500">
+          <p className="mt-1 text-xs text-slate-500">
             {taxAmountCents > 0
               ? `Includes ${currencyFormatter(taxAmountCents, item.currency)} in ${tenantBilling.taxLabel || "tax"}`
               : tenantBilling.taxEnabled && item.service.isTaxExempt
@@ -1467,36 +1470,45 @@ export function ContactServiceDetailsPanel({
                 : "No tax applied"}
           </p>
         </div>
-        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Paid</p>
-          <p className="mt-3 text-3xl font-semibold tracking-tight text-sky-700">
+        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-400">
+            <CheckCircle2 className="h-4 w-4" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Paid</p>
+          </div>
+          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-sky-700">
             {currencyFormatter(item.paidCents, item.currency)}
           </p>
-          <p className="mt-2 text-xs text-slate-500">
+          <p className="mt-1 text-xs text-slate-500">
             {latestPayment
               ? `Last payment: ${formatDateOnly(latestPayment.paidAt)}`
               : "No payments recorded yet"}
           </p>
         </div>
-        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Balance</p>
-          <p className="mt-3 text-3xl font-semibold tracking-tight text-amber-700">
+        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-400">
+            <Clock3 className="h-4 w-4" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Balance Due</p>
+          </div>
+          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-amber-700">
             {currencyFormatter(item.remainingCents, item.currency)}
           </p>
-          <p className="mt-2 text-xs text-slate-500">
+          <p className="mt-1 text-xs text-slate-500">
             {item.service.installmentCount
               ? `${remainingScheduledInstallments} installment${remainingScheduledInstallments === 1 ? "" : "s"} left to pay`
               : "No installment schedule configured"}
           </p>
         </div>
-        <div className="rounded-[24px] border border-slate-200 bg-white p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-            Next Payment
-          </p>
-          <p className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
+        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-400">
+            <CreditCard className="h-4 w-4" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+              Next Payment
+            </p>
+          </div>
+          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
             {nextScheduledPaymentDate ? formatDateOnly(nextScheduledPaymentDate) : "Not scheduled"}
           </p>
-          <p className="mt-2 text-xs text-slate-500">
+          <p className="mt-1 text-xs text-slate-500">
             {item.service.installmentFrequency
               ? `${INSTALLMENT_FREQUENCY_LABELS[item.service.installmentFrequency]} installment schedule`
               : "No installment schedule configured"}
