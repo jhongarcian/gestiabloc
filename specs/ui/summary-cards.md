@@ -14,6 +14,8 @@ Current reference implementations:
 
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/_components/services-registry-panel.tsx`
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/[serviceId]/_components/service-overview-panel.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/contacts/[contactId]/_components/contact-services-panel.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/contacts/[contactId]/_components/contact-service-details-panel.tsx`
 
 This spec is intended to be reused in other views without inventing a new card pattern each time.
 
@@ -70,6 +72,10 @@ Recommended grid:
 
 - `grid gap-4 md:grid-cols-2 xl:grid-cols-4`
 
+Compact operational grids may use:
+
+- `grid gap-3 sm:grid-cols-2 xl:grid-cols-4`
+
 Cards should be:
 
 - rounded
@@ -81,9 +87,19 @@ Recommended card shell:
 
 - `rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm`
 
+Compact detailed card shell:
+
+- `rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm`
+
 If the parent shell uses a gradient, frosted cards are allowed:
 
 - `border-white/80 bg-white/70 backdrop-blur`
+
+Use the compact detailed shell when:
+
+- the cards sit directly under a hero or title band
+- the page already contains several stacked operational cards below
+- the screen needs fast scanability without adding too much height
 
 ## 4. Card Anatomy
 
@@ -102,17 +118,48 @@ Recommended order:
 3. optional status badge
 4. short supporting text
 
+### Compact Detailed Cards
+
+This is the preferred stat-card variant for operational detail views.
+
+Use it for screens like:
+
+- contact summary metrics
+- contact services metrics
+- contact service financial summary cards
+
+This variant is intentionally tighter than dashboard summary cards.
+
+Required structure:
+
+1. muted icon + uppercase label row
+2. one strong primary value line
+3. one short helper line
+
+Avoid extra badges, charts, or multi-line explanations inside this compact variant unless the page has no other summary surface.
+
 ### Label row
 
 Recommended styling:
 
 - `text-[11px] font-semibold uppercase tracking-[0.18em]`
+- pair with a small muted icon like `h-4 w-4 text-slate-400`
 
 ### Metric value
 
 Recommended styling:
 
 - `text-2xl font-semibold tracking-tight text-slate-950`
+
+Compact detailed cards may use:
+
+- `text-xl font-semibold tracking-tight`
+
+Use semantic color on the value only when it improves scanability:
+
+- neutral slate for totals and dates
+- green for paid/completed
+- amber for remaining/open balances
 
 Use:
 
@@ -134,6 +181,37 @@ Recommended badge behavior:
 
 - only use when it helps clarify metric scope
 - do not place multiple badges in a single summary card unless clearly necessary
+
+For compact detailed cards, prefer no badge by default.
+
+In this variant, the helper line should carry most of the explanatory context.
+
+### Helper Text
+
+The helper line is required for compact detailed cards.
+
+Recommended styling:
+
+- `mt-1 text-xs text-slate-500`
+
+Rules:
+
+- keep it to one short sentence or phrase
+- explain scope, last activity, or schedule
+- avoid wrapping to multiple lines on standard desktop widths whenever possible
+
+Good examples:
+
+- `Last payment: Mar 12, 2026`
+- `No tax applied`
+- `3 installments left to pay`
+- `Open balance that still needs to be collected`
+
+Avoid:
+
+- long prose
+- multiple helper paragraphs
+- repeating the exact label text in the helper line
 
 ## 5. Range Controls
 
@@ -370,6 +448,10 @@ When reusing it:
 - keep the same label/value/badge hierarchy
 - use the same range-control pattern
 - keep API response contracts small and aggregate-focused
+
+For operational detail screens, prefer the compact detailed-card variant instead of inventing a second KPI style.
+
+If a screen already uses the contact-header metric language, adjacent service cards should match that same compact rhythm unless there is a strong reason to diverge.
 
 Do not create one-off summary cards with a different visual hierarchy unless the screen has a strong product reason to diverge.
 

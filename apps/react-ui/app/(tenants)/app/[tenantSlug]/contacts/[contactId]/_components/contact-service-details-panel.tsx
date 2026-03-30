@@ -9,15 +9,13 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  Circle,
-  CircleCheckBig,
-  CircleDashed,
+  CircleHelp,
   Clock3,
   CreditCard,
   ListTodo,
   Loader2,
   NotebookPen,
-  Plus,
+  SendHorizontal,
   UserRound,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
@@ -245,6 +243,12 @@ const parseUsdToCents = (value: string) => {
   return Math.round(parsed * 100)
 }
 
+const buildServiceNoteTitle = (value: string) => {
+  const normalized = value.replace(/\s+/g, " ").trim()
+  if (!normalized) return "Service note"
+  return normalized.length > 64 ? `${normalized.slice(0, 61).trimEnd()}...` : normalized
+}
+
 const toSentence = (value: string) => value.toLowerCase().replace(/_/g, " ")
 
 const getAssignedProfessionalLabel = (
@@ -457,7 +461,6 @@ export function ContactServiceDetailsPanel({
   const [isPaymentSaving, setIsPaymentSaving] = useState(false)
   const [isPaymentEditOpen, setIsPaymentEditOpen] = useState(false)
   const [isPaymentDeleting, setIsPaymentDeleting] = useState(false)
-  const [isNoteOpen, setIsNoteOpen] = useState(false)
   const [isNoteSaving, setIsNoteSaving] = useState(false)
   const [selectedPaymentId, setSelectedPaymentId] = useState<string | null>(null)
   const [paymentEntryMode, setPaymentEntryMode] = useState<"FULL" | "PARTIAL">("FULL")
@@ -467,7 +470,6 @@ export function ContactServiceDetailsPanel({
   const [editPaymentAmountUsd, setEditPaymentAmountUsd] = useState("")
   const [editPaymentMethod, setEditPaymentMethod] = useState<string>("")
   const [editPaymentNote, setEditPaymentNote] = useState("")
-  const [serviceNoteTitle, setServiceNoteTitle] = useState("")
   const [serviceNoteBody, setServiceNoteBody] = useState("")
   const [visiblePaymentsCount, setVisiblePaymentsCount] = useState(PAYMENTS_PAGE_SIZE)
   const [isStepStatusDialogOpen, setIsStepStatusDialogOpen] = useState(false)
@@ -554,7 +556,6 @@ export function ContactServiceDetailsPanel({
   }
 
   const resetNoteForm = () => {
-    setServiceNoteTitle("")
     setServiceNoteBody("")
   }
 
@@ -743,19 +744,19 @@ export function ContactServiceDetailsPanel({
 
   const onAddServiceNote = async () => {
     if (!item) return
-    if (!serviceNoteTitle.trim() || !serviceNoteBody.trim()) {
-      toast.error("Title and body are required.")
+    const trimmedBody = serviceNoteBody.trim()
+    if (!trimmedBody) {
+      toast.error("Enter a note before sending.")
       return
     }
 
     setIsNoteSaving(true)
     try {
       await api.post(`/api/services/${tenantId}/contact-services/${item.id}/notes`, {
-        title: serviceNoteTitle,
-        body: serviceNoteBody,
+        title: buildServiceNoteTitle(trimmedBody),
+        body: trimmedBody,
       })
       toast.success("Service note added.")
-      setIsNoteOpen(false)
       resetNoteForm()
       await loadItem()
       router.refresh()
@@ -829,6 +830,13 @@ export function ContactServiceDetailsPanel({
   const checklistCompletedCount = useMemo(
     () => checklistItems.filter((entry) => Boolean(entry.completedAt)).length,
     [checklistItems],
+  )
+  const checklistCompletionPercentage = useMemo(
+    () =>
+      checklistItems.length
+        ? Math.round((checklistCompletedCount / checklistItems.length) * 100)
+        : 0,
+    [checklistCompletedCount, checklistItems.length],
   )
   const followUpCompletedCount = useMemo(
     () =>
@@ -1329,17 +1337,6 @@ export function ContactServiceDetailsPanel({
                 {isDeleting ? "Deleting..." : "Delete"}
               </Button>
             ) : null}
-            {canAddPayments && canManageSensitiveServiceActions ? (
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-8 cursor-pointer rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300 hover:bg-white hover:text-slate-950"
-                onClick={() => setIsPaymentOpen(true)}
-              >
-                <CircleDollarSign className="h-3.5 w-3.5" />
-                Add payment
-              </Button>
-            ) : null}
             {canManageSensitiveServiceActions && item.followUpSteps.length ? (
               <Button
                 type="button"
@@ -1516,521 +1513,633 @@ export function ContactServiceDetailsPanel({
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                Checklist Tracking
-              </p>
-              <p className="mt-1 text-sm text-slate-600">
-                Mark documents as received as soon as the contact brings them in.
-              </p>
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+        <div className="space-y-4">
+          <section className="rounded-[24px] border border-slate-200 bg-white p-5">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service Follow-Up</p>
+                <p className="mt-1 text-sm text-slate-600">
+                  Review the enrolled follow-up path for this service and move each step forward when it becomes active.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
+                  {followUpCompletionPercentage}% complete
+                </Badge>
+                <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+                  {followUpCompletedCount}/{followUpSteps.length} steps
+                </Badge>
+              </div>
             </div>
-            <Badge variant="outline" className="w-fit border-slate-200 bg-slate-50 text-slate-700">
-              {checklistCompletedCount}/{checklistItems.length} received
-            </Badge>
-          </div>
-          {checklistItems.length ? (
-            <div className="space-y-3">
-              {[...checklistItems]
-                .sort((a, b) => a.sortOrder - b.sortOrder)
-                .map((checklistItem) => {
-                  const isCompleted = Boolean(checklistItem.completedAt)
-                  const isSavingChecklist = isChecklistSavingId === checklistItem.id
-                  return (
-                    <div
-                      key={checklistItem.id}
-                      className={cn(
-                        "flex items-center gap-3 rounded-2xl border px-4 py-3 transition",
-                        isCompleted
-                          ? "border-emerald-200 bg-emerald-50/70"
-                          : "border-slate-200 bg-slate-50",
-                        isSavingChecklist && "opacity-70",
-                      )}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className={cn("text-sm font-semibold", isCompleted ? "text-emerald-900" : "text-slate-900")}>
-                            {checklistItem.label}
-                          </p>
-                          {checklistItem.isRequired ? (
-                            <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700">
-                              Required
-                            </Badge>
-                          ) : null}
-                          <Badge
-                            variant="outline"
+            {followUpSteps.length ? (
+              <div className="space-y-4">
+                <div className="h-1.5 overflow-hidden rounded-full bg-slate-200">
+                  <div
+                    className="h-full rounded-full bg-emerald-500 transition-all"
+                    style={{ width: `${followUpCompletionPercentage}%` }}
+                  />
+                </div>
+                <div className="space-y-3">
+                  {followUpSteps.map((step, index) => {
+                    const timeMeta = getStepTimeMeta(step)
+                    const isStatusLocked = (step.status ?? "PENDING") !== "ACTIVE"
+                    const isActive = (step.status ?? "PENDING") === "ACTIVE"
+                    const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"
+
+                    return (
+                      <div key={step.id} className="flex gap-3">
+                        <div className="flex w-8 shrink-0 flex-col items-center pt-2">
+                          <span
                             className={cn(
-                              isCompleted
-                                ? "border-emerald-200 bg-emerald-100 text-emerald-700"
-                                : "border-slate-200 bg-white text-slate-600",
+                              "inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold",
+                              isDone
+                                ? "border-emerald-200 bg-emerald-100 text-emerald-800"
+                                : isActive
+                                  ? "border-blue-200 bg-blue-50 text-blue-900"
+                                  : "border-slate-200 bg-slate-50 text-slate-600",
                             )}
                           >
-                            {isCompleted ? "Received" : "Pending"}
-                          </Badge>
-                        </div>
-                        {checklistItem.description ? (
-                          <p className="mt-1 text-sm leading-6 text-slate-600">
-                            {checklistItem.description}
-                          </p>
-                        ) : null}
-                        <p className="mt-2 inline-flex items-center gap-1 text-xs text-slate-500">
-                          {isCompleted ? (
-                            <>
-                              <Check className="h-3.5 w-3.5 text-emerald-600" />
-                              Received {formatDateTime(checklistItem.completedAt)}
-                            </>
-                          ) : (
-                            <>
-                              <CircleDashed className="h-3.5 w-3.5" />
-                              Click the circle to mark as received
-                            </>
-                          )}
-                        </p>
-                      </div>
-                      <div className="ml-auto flex shrink-0 items-center self-center">
-                        <button
-                          type="button"
-                          className="cursor-pointer rounded-full text-slate-400 transition hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
-                          onClick={() => void toggleChecklistItem(checklistItem)}
-                          disabled={isSavingChecklist}
-                          aria-label={isCompleted ? `Uncheck ${checklistItem.label}` : `Check ${checklistItem.label}`}
-                        >
-                          {isCompleted ? (
-                            <CircleCheckBig className="h-6 w-6 text-emerald-600" />
-                          ) : (
-                            <Circle className="h-6 w-6" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-            </div>
-          ) : (
-            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-              This service does not have checklist requirements yet.
-            </div>
-          )}
-        </section>
-
-        <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Payments</p>
-              <p className="mt-1 text-sm text-slate-600">
-                Review payment history and record partial payments when a balance is still open.
-              </p>
-            </div>
-            <Badge
-              className={cn(
-                "rounded-full px-3 py-1 hover:bg-inherit",
-                item.remainingCents > 0
-                  ? "bg-amber-100 text-amber-800"
-                  : "bg-emerald-100 text-emerald-800",
-              )}
-            >
-              {paymentCollectionState}
-            </Badge>
-          </div>
-          <div className="mb-4 grid gap-3 md:grid-cols-2">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              Payment plan: <span className="font-medium text-slate-900">{paymentPlanSummary}</span>
-              {nextScheduledPaymentSummary ? (
-                <p className="mt-1 text-xs text-slate-500">{nextScheduledPaymentSummary}</p>
-              ) : null}
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              {taxAmountCents > 0 ? (
-                <>
-                  Includes <span className="font-medium text-slate-900">{currencyFormatter(taxAmountCents, item.currency)}</span> in{" "}
-                  {tenantBilling.taxLabel || "tax"}.
-                </>
-              ) : (
-                <>
-                  {tenantBilling.taxEnabled && item.service.isTaxExempt
-                    ? "This service is tax exempt."
-                    : "No tax is applied to this service total."}
-                </>
-              )}
-            </div>
-          </div>
-          {payments.length ? (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs text-slate-500">
-                  Showing {Math.min(visiblePaymentsCount, payments.length)} of {payments.length} payments
-                </p>
-                {payments.length > PAYMENTS_PAGE_SIZE ? (
-                  <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-600">
-                    {payments.length - Math.min(visiblePaymentsCount, payments.length)} more
-                  </Badge>
-                ) : null}
-              </div>
-              {visiblePayments.map((payment, index) => (
-                <button
-                  key={payment.id ?? `${payment.paidAt}-${payment.amountCents}-${index}`}
-                  type="button"
-                  className={cn(
-                    "w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-left transition",
-                    canManageSensitiveServiceActions
-                      ? "cursor-pointer hover:border-slate-300 hover:bg-white"
-                      : "cursor-default",
-                  )}
-                  onClick={() => {
-                    if (!canManageSensitiveServiceActions) return
-                    openEditPayment(payment)
-                  }}
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <p className="text-sm font-semibold text-slate-900">
-                        {currencyFormatter(payment.amountCents, item.currency)}
-                      </p>
-                      <p className="text-xs text-slate-500">{formatDateTime(payment.paidAt)}</p>
-                    </div>
-                    {payment.paymentMethod ? (
-                      <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
-                        {formatPaymentMethod(payment.paymentMethod)}
-                      </Badge>
-                    ) : null}
-                  </div>
-                  {payment.note ? (
-                    <p className="mt-2 text-sm leading-6 text-slate-600">{payment.note}</p>
-                  ) : null}
-                  {payment.recordedBy?.name ? (
-                    <p className="mt-2 text-xs text-slate-500">Recorded by {payment.recordedBy.name}</p>
-                  ) : null}
-                </button>
-              ))}
-              {payments.length > visiblePaymentsCount ? (
-                <div className="flex justify-center pt-1">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                    onClick={() =>
-                      setVisiblePaymentsCount((current) =>
-                        Math.min(current + PAYMENTS_PAGE_SIZE, payments.length),
-                      )
-                    }
-                  >
-                    Load more payments
-                  </Button>
-                </div>
-              ) : payments.length > PAYMENTS_PAGE_SIZE ? (
-                <div className="flex justify-center pt-1">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="cursor-pointer rounded-full border border-slate-200 bg-slate-50 text-slate-700 hover:bg-white hover:text-slate-950"
-                    onClick={() => setVisiblePaymentsCount(PAYMENTS_PAGE_SIZE)}
-                  >
-                    Show less
-                  </Button>
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-              No payments have been recorded for this service yet.
-            </div>
-          )}
-        </section>
-      </div>
-
-      <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service Follow-Up</p>
-            <p className="mt-1 text-sm text-slate-600">
-              Review the enrolled follow-up path for this service and move each step forward when it becomes active.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
-              {followUpCompletionPercentage}% complete
-            </Badge>
-            <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
-              {followUpCompletedCount}/{followUpSteps.length} steps
-            </Badge>
-          </div>
-        </div>
-        {followUpSteps.length ? (
-          <div className="space-y-4">
-            <div className="overflow-hidden rounded-full bg-slate-200">
-              <div
-                className="h-2.5 rounded-full bg-emerald-500 transition-all"
-                style={{ width: `${followUpCompletionPercentage}%` }}
-              />
-            </div>
-            <div className="space-y-3">
-              {followUpSteps.map((step, index) => {
-                const timeMeta = getStepTimeMeta(step)
-                const isStatusLocked = (step.status ?? "PENDING") !== "ACTIVE"
-                const isActive = (step.status ?? "PENDING") === "ACTIVE"
-                const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"
-
-                return (
-                  <div key={step.id} className="flex gap-3">
-                    <div className="flex w-8 shrink-0 flex-col items-center pt-2">
-                      <span
-                        className={cn(
-                          "inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold",
-                          isDone
-                            ? "border-emerald-200 bg-emerald-100 text-emerald-800"
-                            : isActive
-                              ? "border-blue-200 bg-blue-50 text-blue-900"
-                              : "border-slate-200 bg-slate-50 text-slate-600",
-                        )}
-                      >
-                        {index + 1}
-                      </span>
-                      {index < followUpSteps.length - 1 ? (
-                        <span className="mt-2 h-full min-h-8 w-px bg-slate-200" />
-                      ) : null}
-                    </div>
-                    <article
-                      className={cn(
-                        "flex-1 rounded-[22px] border px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]",
-                        isDone
-                          ? "border-emerald-200 bg-emerald-50/50"
-                          : isActive
-                            ? "border-blue-200 bg-blue-50/40"
-                            : "border-slate-200 bg-white",
-                      )}
-                    >
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="min-w-0 flex-1 space-y-3">
-                          <div className="flex flex-wrap items-start justify-between gap-3">
-                            <div className="min-w-0 flex-1 space-y-2">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <Badge
-                                  variant="outline"
-                                  className="border-slate-200 bg-white text-slate-600"
-                                >
-                                  Step {index + 1}
-                                </Badge>
-                                <Badge className={timeMeta.badgeClassName}>{timeMeta.label}</Badge>
-                                {isActive ? (
-                                  <Badge className="bg-blue-100 text-blue-900 hover:bg-blue-100">
-                                    Current step
-                                  </Badge>
-                                ) : null}
-                              </div>
-                              <button
-                                type="button"
-                                className="cursor-pointer text-left text-base font-semibold tracking-tight text-slate-950 transition hover:text-slate-700"
-                                onClick={() => openStepDetailsDialog(step)}
-                              >
-                                {step.title}
-                              </button>
-                              <p className="text-xs font-medium text-slate-500">{timeMeta.helper}</p>
-                              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                                <Avatar className="h-7 w-7 shrink-0 border border-slate-200">
-                                  <AvatarImage
-                                    src={step.assignedTo?.image ?? undefined}
-                                    alt={getFollowUpAssigneeLabel(step.assignedTo)}
-                                  />
-                                  <AvatarFallback className="bg-slate-200 text-[10px] font-semibold text-slate-700">
-                                    {getInitials(getFollowUpAssigneeLabel(step.assignedTo))}
-                                  </AvatarFallback>
-                                </Avatar>
-                                <span>
-                                  Owner:{" "}
-                                  <span className="font-medium text-slate-700">
-                                    {getFollowUpAssigneeLabel(step.assignedTo)}
-                                  </span>
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                          <p className="max-w-3xl text-sm leading-6 text-slate-600">
-                            {step.notesTemplate?.trim() || "No description provided for this step."}
-                          </p>
-                          {step.note?.trim() ? (
-                            <div className="rounded-2xl bg-slate-50 px-3 py-2.5">
-                              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                                Latest Step Note
-                              </p>
-                              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-700">{step.note}</p>
-                            </div>
+                            {index + 1}
+                          </span>
+                          {index < followUpSteps.length - 1 ? (
+                            <span className="mt-2 h-full min-h-8 w-px bg-slate-200" />
                           ) : null}
                         </div>
-                        <div className="flex w-full items-center gap-2 lg:w-auto lg:min-w-[320px] lg:justify-end">
-                          {!isStatusLocked ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              className="h-10 min-w-[150px] cursor-pointer justify-between rounded-full border-slate-200 bg-white text-sm capitalize shadow-sm"
-                              disabled={mutatingStepId === step.id}
-                              onClick={() => openStepStatusDialog(step)}
-                            >
-                              <span>{(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}</span>
-                              {mutatingStepId === step.id ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
+                        <article
+                          className={cn(
+                            "flex-1 rounded-[22px] border px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]",
+                            isDone
+                              ? "border-emerald-200 bg-emerald-50/50"
+                              : isActive
+                                ? "border-blue-200 bg-blue-50/40"
+                                : "border-slate-200 bg-white",
+                          )}
+                        >
+                          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                            <div className="min-w-0 flex-1 space-y-3">
+                              <div className="min-w-0 space-y-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge
+                                    variant="outline"
+                                    className="border-slate-200 bg-white text-slate-600"
+                                  >
+                                    Step {index + 1}
+                                  </Badge>
+                                  <Badge className={timeMeta.badgeClassName}>{timeMeta.label}</Badge>
+                                  {isActive ? (
+                                    <Badge className="bg-blue-100 text-blue-900 hover:bg-blue-100">
+                                      Current step
+                                    </Badge>
+                                  ) : null}
+                                </div>
+                                <button
+                                  type="button"
+                                  className="cursor-pointer text-left text-base font-semibold tracking-tight text-slate-950 transition hover:text-slate-700"
+                                  onClick={() => openStepDetailsDialog(step)}
+                                >
+                                  {step.title}
+                                </button>
+                                <p className="text-xs font-medium text-slate-500">{timeMeta.helper}</p>
+                              </div>
+                              <p className="max-w-3xl text-sm leading-6 text-slate-600">
+                                {step.notesTemplate?.trim() || "No description provided for this step."}
+                              </p>
+                              {step.note?.trim() ? (
+                                <div className="rounded-2xl bg-slate-50 px-3 py-2.5">
+                                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                                    Latest Step Note
+                                  </p>
+                                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-700">{step.note}</p>
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="flex w-full items-center gap-2 xl:w-auto xl:min-w-[320px] xl:justify-end">
+                              {!isStatusLocked ? (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="h-10 min-w-[150px] cursor-pointer justify-between rounded-full border-slate-200 bg-white text-sm capitalize shadow-sm"
+                                  disabled={mutatingStepId === step.id}
+                                  onClick={() => openStepStatusDialog(step)}
+                                >
+                                  <span>{(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}</span>
+                                  {mutatingStepId === step.id ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <ChevronDown className="h-4 w-4" />
+                                  )}
+                                </Button>
                               ) : (
-                                <ChevronDown className="h-4 w-4" />
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="inline-flex">
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="h-10 min-w-[150px] cursor-not-allowed justify-between rounded-full border-slate-200 bg-white text-sm capitalize shadow-sm"
+                                        disabled
+                                      >
+                                        <span>{(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}</span>
+                                        <ChevronDown className="h-4 w-4" />
+                                      </Button>
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" sideOffset={6}>
+                                    Only the current active step can be updated.
+                                  </TooltipContent>
+                                </Tooltip>
                               )}
-                            </Button>
-                          ) : (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="inline-flex">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
                                   <Button
                                     type="button"
                                     variant="outline"
-                                    className="h-10 min-w-[150px] cursor-not-allowed justify-between rounded-full border-slate-200 bg-white text-sm capitalize shadow-sm"
-                                    disabled
+                                    size="icon"
+                                    className="h-10 w-10 cursor-pointer rounded-xl border-slate-200 bg-white text-fuchsia-700 hover:border-fuchsia-200 hover:bg-white hover:text-fuchsia-800"
+                                    onClick={() => openStepNoteDialog(step)}
+                                    aria-label={`Add note for ${step.title}`}
                                   >
-                                    <span>{(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}</span>
-                                    <ChevronDown className="h-4 w-4" />
+                                    <NotebookPen className="h-4 w-4" />
                                   </Button>
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent side="top" sideOffset={6}>
-                                Only the current active step can be updated.
-                              </TooltipContent>
-                            </Tooltip>
-                          )}
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="icon"
-                                className="h-10 w-10 cursor-pointer rounded-xl border-slate-200 bg-white text-fuchsia-700 hover:border-fuchsia-200 hover:bg-white hover:text-fuchsia-800"
-                                onClick={() => openStepNoteDialog(step)}
-                                aria-label={`Add note for ${step.title}`}
-                              >
-                                <NotebookPen className="h-4 w-4" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent side="top" sideOffset={6}>Add note</TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="icon"
-                                className="h-10 w-10 cursor-pointer rounded-xl border-slate-200 bg-white text-cyan-700 hover:border-cyan-200 hover:bg-white hover:text-cyan-800"
-                                onClick={() => openStepTaskDialog(step)}
-                                aria-label={`Create task for ${step.title}`}
-                              >
-                                <ListTodo className="h-4 w-4" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent side="top" sideOffset={6}>Create task</TooltipContent>
-                          </Tooltip>
-                        </div>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" sideOffset={6}>Add note</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="icon"
+                                    className="h-10 w-10 cursor-pointer rounded-xl border-slate-200 bg-white text-cyan-700 hover:border-cyan-200 hover:bg-white hover:text-cyan-800"
+                                    onClick={() => openStepTaskDialog(step)}
+                                    aria-label={`Create task for ${step.title}`}
+                                  >
+                                    <ListTodo className="h-4 w-4" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" sideOffset={6}>Create task</TooltipContent>
+                              </Tooltip>
+                            </div>
+                          </div>
+                        </article>
                       </div>
-                    </article>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        ) : (
-          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-            No follow-up steps are enrolled for this service yet.
-          </div>
-        )}
-      </section>
-
-      <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service Notes</p>
-            <p className="mt-1 text-sm text-slate-600">
-              Keep service-specific notes separate from general contact notes.
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            className="h-8 cursor-pointer rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300 hover:bg-white hover:text-slate-950"
-            onClick={() => setIsNoteOpen(true)}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Add note
-          </Button>
-        </div>
-        {serviceNotes.length ? (
-          <div className="space-y-3">
-            {serviceNotes.map((note) => (
-              <article key={note.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-start gap-3">
-                    <Avatar className="h-10 w-10 shrink-0">
-                      <AvatarImage
-                        src={note.createdBy?.image ?? undefined}
-                        alt={note.createdBy?.name ?? "Service note author"}
-                      />
-                      <AvatarFallback className="bg-blue-950 text-xs font-semibold text-white">
-                        {getInitials(note.createdBy?.name)}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="min-w-0">
-                    <h2 className="text-sm font-semibold text-slate-900">{note.title}</h2>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {note.createdBy?.name ? `Added by ${note.createdBy.name}` : "Added to this service"}
-                      {" · "}
-                      {formatDateTime(note.createdAt)}
-                    </p>
-                    </div>
-                  </div>
-                </div>
-                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{note.body}</p>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-            No service notes have been added yet.
-          </div>
-        )}
-      </section>
-
-      <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-        <div className="mb-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service History</p>
-          <p className="mt-1 text-sm text-slate-600">
-            Review the service timeline, including payments, checklist receipts, and note activity.
-          </p>
-        </div>
-        {historyItems.length ? (
-          <div className="space-y-3">
-            {historyItems.map((historyItem) => (
-              <div key={historyItem.id} className="flex gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                <div className={cn("mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border", historyItem.tone)}>
-                  {historyItem.icon === "payment" ? (
-                    <CreditCard className="h-4 w-4" />
-                  ) : historyItem.icon === "checklist" ? (
-                    <CheckCircle2 className="h-4 w-4" />
-                  ) : historyItem.icon === "note" ? (
-                    <NotebookPen className="h-4 w-4" />
-                  ) : (
-                    <Clock3 className="h-4 w-4" />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <p className="text-sm font-semibold text-slate-900">{historyItem.title}</p>
-                    <p className="text-xs text-slate-500">{formatDateTime(historyItem.createdAt)}</p>
-                  </div>
-                  <p className="mt-1 text-sm leading-6 text-slate-600">{historyItem.description}</p>
+                    )
+                  })}
                 </div>
               </div>
-            ))}
-          </div>
-        ) : (
-          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-            No service activity is available yet.
-          </div>
-        )}
-      </section>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                No follow-up steps are enrolled for this service yet.
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-[24px] border border-slate-200 bg-white p-5">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Payment History</p>
+                <p className="mt-1 text-sm text-slate-600">
+                  Review recorded payments and add a new transaction when more balance is collected.
+                </p>
+              </div>
+              {canManageSensitiveServiceActions ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-9 cursor-pointer rounded-xl border border-blue-100 bg-blue-50/80 px-3.5 text-xs font-semibold text-blue-700 shadow-sm hover:border-blue-200 hover:bg-blue-100/80 hover:text-blue-800"
+                  onClick={() => setIsPaymentOpen(true)}
+                  disabled={!canAddPayments}
+                >
+                  <CircleDollarSign className="h-3.5 w-3.5" />
+                  Add transaction
+                </Button>
+              ) : null}
+            </div>
+            <div className="mb-4 grid gap-3 md:grid-cols-3">
+              <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Installments & Frequency
+                </p>
+                <p className="mt-2 text-base font-semibold text-slate-950">
+                  {item.service.installmentCount && item.service.installmentFrequency
+                    ? `${item.service.installmentCount} · ${INSTALLMENT_FREQUENCY_LABELS[item.service.installmentFrequency]}`
+                    : "Full payment only"}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">{paymentPlanSummary}</p>
+              </div>
+              <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Next Payment Date
+                </p>
+                <p className="mt-2 text-base font-semibold text-slate-950">
+                  {nextScheduledPaymentDate ? formatDateOnly(nextScheduledPaymentDate) : "Not scheduled"}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {item.remainingCents > 0
+                    ? nextScheduledPaymentSummary ?? "No upcoming scheduled payment."
+                    : "No remaining balance on this service."}
+                </p>
+              </div>
+              <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Minimum Deposit
+                </p>
+                <p className="mt-2 text-base font-semibold text-slate-950">
+                  {item.service.minimumPartialPaymentCents !== null
+                    ? currencyFormatter(item.service.minimumPartialPaymentCents, item.currency)
+                    : "Not required"}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {item.allowPartialPayments
+                    ? "Minimum amount accepted for the first partial payment."
+                    : "This service is configured for full payment only."}
+                </p>
+              </div>
+            </div>
+            {payments.length ? (
+              <div className="overflow-hidden rounded-[22px] border border-slate-200">
+                <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/70 px-5 py-3">
+                  <p className="text-xs text-slate-500">
+                    Showing {Math.min(visiblePaymentsCount, payments.length)} of {payments.length} payments
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      className={cn(
+                        "rounded-full px-2.5 py-0.5 hover:bg-inherit",
+                        item.remainingCents > 0
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-emerald-100 text-emerald-800",
+                      )}
+                    >
+                      {paymentCollectionState}
+                    </Badge>
+                    {payments.length > PAYMENTS_PAGE_SIZE ? (
+                      <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
+                        {payments.length - Math.min(visiblePaymentsCount, payments.length)} more
+                      </Badge>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[760px] table-fixed">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50/40">
+                        <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          Date Paid
+                        </th>
+                        <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          Recorded By
+                        </th>
+                        <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          Type
+                        </th>
+                        <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          Note
+                        </th>
+                        <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          Amount
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 bg-white">
+                      {visiblePayments.map((payment, index) => (
+                        <tr
+                          key={payment.id ?? `${payment.paidAt}-${payment.amountCents}-${index}`}
+                          className={cn(
+                            "transition-colors",
+                            canManageSensitiveServiceActions
+                              ? "cursor-pointer hover:bg-slate-50/60"
+                              : "cursor-default",
+                          )}
+                          onClick={() => {
+                            if (!canManageSensitiveServiceActions) return
+                            openEditPayment(payment)
+                          }}
+                        >
+                          <td className="px-5 py-3.5 align-top text-sm font-medium text-slate-900">
+                            {formatDateTime(payment.paidAt)}
+                          </td>
+                          <td className="px-5 py-3.5 align-top">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-slate-900">
+                                {payment.recordedBy?.name ?? "System"}
+                              </p>
+                              <p className="text-xs text-slate-500">Recorded payment</p>
+                            </div>
+                          </td>
+                          <td className="px-5 py-3.5 align-top">
+                            {payment.paymentMethod ? (
+                              <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+                                {formatPaymentMethod(payment.paymentMethod)}
+                              </Badge>
+                            ) : (
+                              <span className="text-sm text-slate-400">No method</span>
+                            )}
+                          </td>
+                          <td className="px-5 py-3.5 align-top">
+                            <p className="line-clamp-2 text-sm leading-6 text-slate-600">
+                              {payment.note?.trim() || "Payment recorded for this service."}
+                            </p>
+                          </td>
+                          <td className="px-5 py-3.5 text-right align-top">
+                            <p className="text-sm font-semibold text-slate-950">
+                              {currencyFormatter(payment.amountCents, item.currency)}
+                            </p>
+                            <p className="mt-1 text-xs text-emerald-600">Paid</p>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {payments.length > visiblePaymentsCount ? (
+                  <div className="flex justify-center border-t border-slate-200 bg-slate-50/60 px-5 py-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                      onClick={() =>
+                        setVisiblePaymentsCount((current) =>
+                          Math.min(current + PAYMENTS_PAGE_SIZE, payments.length),
+                        )
+                      }
+                    >
+                      Load more payments
+                    </Button>
+                  </div>
+                ) : payments.length > PAYMENTS_PAGE_SIZE ? (
+                  <div className="flex justify-center border-t border-slate-200 bg-slate-50/60 px-5 py-3">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="cursor-pointer rounded-full border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-950"
+                      onClick={() => setVisiblePaymentsCount(PAYMENTS_PAGE_SIZE)}
+                    >
+                      Show less
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                No payments have been recorded for this service yet.
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-[24px] border border-slate-200 bg-white p-5">
+            <div className="mb-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service Notes</p>
+                <p className="mt-1 text-sm text-slate-600">
+                  Keep service-specific notes separate from general contact notes.
+                </p>
+              </div>
+            </div>
+            {serviceNotes.length ? (
+              <div className="space-y-3">
+                {serviceNotes.map((note) => (
+                  <article key={note.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-start gap-3">
+                        <Avatar className="h-10 w-10 shrink-0">
+                          <AvatarImage
+                            src={note.createdBy?.image ?? undefined}
+                            alt={note.createdBy?.name ?? "Service note author"}
+                          />
+                          <AvatarFallback className="bg-blue-950 text-xs font-semibold text-white">
+                            {getInitials(note.createdBy?.name)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0">
+                          <h2 className="text-sm font-semibold text-slate-900">{note.title}</h2>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {note.createdBy?.name ? `Added by ${note.createdBy.name}` : "Added to this service"}
+                            {" · "}
+                            {formatDateTime(note.createdAt)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{note.body}</p>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                No service notes have been added yet.
+              </div>
+            )}
+            <form
+              className="mt-4 rounded-[22px] border border-slate-200 bg-slate-50/80 px-4 py-4 shadow-sm"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void onAddServiceNote()
+              }}
+            >
+              <div className="flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <Textarea
+                    value={serviceNoteBody}
+                    onChange={(event) => setServiceNoteBody(event.target.value)}
+                    rows={3}
+                    placeholder="Add a service note..."
+                    disabled={isNoteSaving}
+                    className="min-h-[104px] resize-none rounded-[18px] border-slate-200 bg-white px-4 py-3 text-sm leading-6 shadow-sm placeholder:text-slate-400 focus-visible:border-blue-200 focus-visible:ring-2 focus-visible:ring-blue-100"
+                  />
+                </div>
+                <Button
+                  type="submit"
+                  size="icon"
+                  disabled={isNoteSaving || !serviceNoteBody.trim()}
+                  className="h-12 w-12 shrink-0 self-center rounded-full bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+                  aria-label="Send service note"
+                >
+                  {isNoteSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
+                </Button>
+              </div>
+            </form>
+          </section>
+
+          <section className="rounded-[24px] border border-slate-200 bg-white p-5">
+            <div className="mb-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service History</p>
+              <p className="mt-1 text-sm text-slate-600">
+                Review the service timeline, including payments, checklist receipts, and note activity.
+              </p>
+            </div>
+            {historyItems.length ? (
+              <div className="space-y-3">
+                {historyItems.map((historyItem) => (
+                  <div key={historyItem.id} className="flex gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                    <div className={cn("mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border", historyItem.tone)}>
+                      {historyItem.icon === "payment" ? (
+                        <CreditCard className="h-4 w-4" />
+                      ) : historyItem.icon === "checklist" ? (
+                        <CheckCircle2 className="h-4 w-4" />
+                      ) : historyItem.icon === "note" ? (
+                        <NotebookPen className="h-4 w-4" />
+                      ) : (
+                        <Clock3 className="h-4 w-4" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <p className="text-sm font-semibold text-slate-900">{historyItem.title}</p>
+                        <p className="text-xs text-slate-500">{formatDateTime(historyItem.createdAt)}</p>
+                      </div>
+                      <p className="mt-1 text-sm leading-6 text-slate-600">{historyItem.description}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                No service activity is available yet.
+              </div>
+            )}
+          </section>
+        </div>
+
+        <div className="flex flex-col gap-4 self-start xl:sticky xl:top-20 xl:max-h-[calc(100vh-5.5rem)] xl:overflow-y-auto xl:pr-1">
+          <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white xl:flex xl:max-h-[44rem] xl:flex-col">
+            <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    Checklist Tracking
+                  </p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Mark documents as received as soon as the contact brings them in.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
+                    {checklistCompletionPercentage}% complete
+                  </Badge>
+                  <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+                    {checklistCompletedCount}/{checklistItems.length} items
+                  </Badge>
+                </div>
+              </div>
+              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200">
+                <div
+                  className="h-full rounded-full bg-emerald-500 transition-[width]"
+                  style={{ width: `${checklistCompletionPercentage}%` }}
+                />
+              </div>
+            </div>
+            {checklistItems.length ? (
+              <div className="xl:min-h-0 xl:flex-1 xl:overflow-y-auto">
+                <div className="sticky top-0 z-10 hidden items-center gap-3 border-b border-slate-200 bg-white/95 px-5 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 backdrop-blur sm:flex">
+                  <div className="min-w-0 flex-1">Checklist Item</div>
+                  <div className="w-[132px] shrink-0 text-right">Received On</div>
+                </div>
+                <div className="divide-y divide-slate-200">
+                  {[...checklistItems]
+                    .sort((a, b) => a.sortOrder - b.sortOrder)
+                    .map((checklistItem) => {
+                      const isCompleted = Boolean(checklistItem.completedAt)
+                      const isSavingChecklist = isChecklistSavingId === checklistItem.id
+                      return (
+                        <div
+                          key={checklistItem.id}
+                          className={cn(
+                            "flex items-center gap-3 px-5 py-3 transition-colors",
+                            isCompleted
+                              ? "bg-emerald-50/40"
+                              : "hover:bg-slate-50/60",
+                            isSavingChecklist && "opacity-70",
+                          )}
+                        >
+                          <button
+                            type="button"
+                            className={cn(
+                              "mt-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 transition",
+                              isCompleted
+                                ? "border-emerald-500 bg-emerald-500 text-white shadow-[0_4px_10px_rgba(16,185,129,0.25)] hover:border-emerald-600 hover:bg-emerald-600"
+                                : "border-slate-300 bg-white text-transparent hover:border-emerald-400 hover:bg-emerald-50",
+                              "disabled:cursor-not-allowed disabled:opacity-60",
+                            )}
+                            onClick={() => void toggleChecklistItem(checklistItem)}
+                            disabled={isSavingChecklist}
+                            aria-label={isCompleted ? `Uncheck ${checklistItem.label}` : `Check ${checklistItem.label}`}
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                          </button>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <p
+                                className={cn(
+                                  "flex items-center text-sm font-medium leading-5",
+                                  isCompleted
+                                    ? "text-slate-500 line-through"
+                                    : "text-slate-900",
+                                )}
+                              >
+                                {checklistItem.label}
+                              </p>
+                              {checklistItem.description ? (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full text-slate-400 transition hover:text-slate-600"
+                                      aria-label={`Description for ${checklistItem.label}`}
+                                    >
+                                      <CircleHelp className="h-3.5 w-3.5" />
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent
+                                    side="top"
+                                    sideOffset={6}
+                                    className="max-w-xs text-sm leading-5"
+                                  >
+                                    {checklistItem.description}
+                                  </TooltipContent>
+                                </Tooltip>
+                              ) : null}
+                              {checklistItem.isRequired ? (
+                                <span
+                                  className="inline-flex items-center text-sm font-semibold leading-5 text-rose-500"
+                                  title="Required"
+                                  aria-label="Required item"
+                                >
+                                  *
+                                </span>
+                              ) : null}
+                            </div>
+                            {checklistItem.description ? (
+                              <p className="mt-0.5 text-xs leading-5 text-slate-500 sm:hidden">
+                                {checklistItem.description}
+                              </p>
+                            ) : null}
+                          </div>
+                          <div className="shrink-0 self-center text-right">
+                            <p className="text-[11px] font-medium text-slate-500 sm:hidden">
+                              {isCompleted ? "Received on" : "Status"}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {isCompleted
+                                ? formatDateTime(checklistItem.completedAt)
+                                : "Not received"}
+                            </p>
+                          </div>
+                        </div>
+                      )
+                    })}
+                </div>
+              </div>
+            ) : (
+              <div className="px-5 py-8 text-center text-sm text-slate-500">
+                This service does not have checklist requirements yet.
+              </div>
+            )}
+          </section>
+
+        </div>
+      </div>
 
       <Dialog
         open={isFollowUpOwnerDialogOpen}
@@ -2349,61 +2458,6 @@ export function ContactServiceDetailsPanel({
                 {isPaymentSaving ? "Saving..." : "Save payment"}
               </Button>
             </div>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={isNoteOpen}
-        onOpenChange={(open) => {
-          setIsNoteOpen(open)
-          if (!open) resetNoteForm()
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Add service note</DialogTitle>
-            <DialogDescription>
-              Save a note that belongs to this service and stays visible in the service history.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-1">
-            <div className="grid gap-2">
-              <Label>Title</Label>
-              <Input
-                value={serviceNoteTitle}
-                onChange={(event) => setServiceNoteTitle(event.target.value)}
-                placeholder="Service note title"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label>Body</Label>
-              <Textarea
-                value={serviceNoteBody}
-                onChange={(event) => setServiceNoteBody(event.target.value)}
-                rows={6}
-                placeholder="Add context about this service"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setIsNoteOpen(false)}
-              disabled={isNoteSaving}
-              className="cursor-pointer"
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void onAddServiceNote()}
-              disabled={isNoteSaving}
-              className="cursor-pointer"
-            >
-              {isNoteSaving ? "Saving..." : "Add note"}
-            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

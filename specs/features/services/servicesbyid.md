@@ -139,27 +139,59 @@ Buttons appear as compact rounded pills.
 
 ### 2. KPI Summary Cards
 
+These cards now follow the same compact operational stat-card style used in the contact header and contact services list.
+
+They should not feel like oversized dashboard blocks. They should be:
+
+- short in height
+- easy to scan in one pass
+- icon-led
+- value-first
+- supported by one concise helper line
+
+Required visual structure for each card:
+
+1. muted icon + uppercase label row
+2. compact strong value line
+3. one short helper line
+
+Recommended shell:
+
+- `rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm`
+
+Recommended value sizing:
+
+- `text-xl font-semibold tracking-tight`
+
+This card pattern should stay aligned with the shared card rules in:
+
+- `specs/ui/summary-cards.md`
+
 Directly under the hero is a four-card summary grid.
 
 #### Total
 
 - shows total service amount
 - helper text explains tax inclusion or tax exemption
+- uses neutral total styling
 
 #### Paid
 
 - shows total paid
 - helper text shows latest payment date or says no payments exist
+- uses positive/paid color styling
 
 #### Balance
 
 - shows remaining balance
 - helper text shows remaining installments when installment count exists
+- uses warning/open-balance color styling
 
 #### Next Payment
 
 - shows the next scheduled payment date
 - helper text shows installment frequency or indicates none is configured
+- uses neutral date styling
 
 These four cards are critical. They are the fastest way to understand the financial state of the enrollment.
 
