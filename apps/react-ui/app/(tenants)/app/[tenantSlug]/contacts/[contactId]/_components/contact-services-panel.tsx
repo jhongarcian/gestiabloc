@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 import { z } from "zod"
@@ -1342,12 +1343,16 @@ export function ContactServicesPanel({
                 items.map((item) => (
                   <TableRow
                     key={item.id}
-                    className="cursor-pointer"
-                    onClick={() =>
-                      router.push(`/app/${tenantSlug}/contacts/${contactId}/services/${item.id}`)
-                    }
+                    className="relative"
                   >
-                    <TableCell className="font-medium text-slate-900">{item.service.name}</TableCell>
+                    <TableCell className="font-medium text-slate-900">
+                      <Link
+                        href={`/app/${tenantSlug}/contacts/${contactId}/services/${item.id}`}
+                        aria-label={`Open ${item.service.name}`}
+                        className="absolute inset-0 z-10"
+                      />
+                      <span className="relative">{item.service.name}</span>
+                    </TableCell>
                     <TableCell>
                       <Badge className={`capitalize ${SERVICE_STATUS_STYLES[item.status]}`}>
                         {toSentence(item.status)}
@@ -1381,7 +1386,7 @@ export function ContactServicesPanel({
                     </TableCell>
                     <TableCell>{currencyFormatter(item.paidCents, item.currency)}</TableCell>
                     <TableCell>{currencyFormatter(item.remainingCents, item.currency)}</TableCell>
-                    <TableCell>
+                    <TableCell className="relative z-20">
                       {(() => {
                         const progress = getServiceProgress(item)
                         return (

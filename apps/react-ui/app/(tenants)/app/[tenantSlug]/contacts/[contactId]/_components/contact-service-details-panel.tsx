@@ -2110,11 +2110,11 @@ export function ContactServiceDetailsPanel({
         </TabsList>
 
         <TabsContent value="overview" className="pt-4">
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
-            <section className="rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-5 shadow-sm">
+          <div className="grid gap-3 lg:gap-4 2xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+            <section className="rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-4 shadow-sm sm:p-5">
               <div className="flex flex-col gap-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
                     <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
                       Enrollment snapshot
                     </p>
@@ -2125,12 +2125,12 @@ export function ContactServiceDetailsPanel({
                       Key enrollment details, ownership, and progress at a glance.
                     </p>
                   </div>
-                  <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
+                  <Badge className="w-fit bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
                     {followUpCompletionPercentage}% complete
                   </Badge>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-3 min-[520px]:grid-cols-2 2xl:grid-cols-4">
                   <div className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-sm">
                     <div className="flex items-center gap-2 text-slate-400">
                       <CircleHelp className="h-4 w-4 text-blue-700" />
@@ -2220,15 +2220,15 @@ export function ContactServiceDetailsPanel({
 
             <section
               className={cn(
-                "rounded-[24px] p-5 shadow-sm",
+                "rounded-[24px] p-4 shadow-sm sm:p-5",
                 nextFollowUpStep && getStepTimeMeta(nextFollowUpStep).label === "Overdue"
                   ? "border border-rose-200 bg-[linear-gradient(135deg,#fff1f2_0%,#fff7ed_45%,#ffffff_100%)]"
                   : "border border-blue-200 bg-[linear-gradient(135deg,#eff6ff_0%,#f8fafc_45%,#ffffff_100%)]",
               )}
             >
               <div className="flex h-full flex-col gap-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
                     <p
                       className={cn(
                         "text-xs font-semibold uppercase tracking-[0.14em]",
@@ -2266,7 +2266,7 @@ export function ContactServiceDetailsPanel({
                 </p>
 
                 {nextFollowUpStep ? (
-                  <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-3 2xl:grid-cols-2">
                     <div className="rounded-[18px] border border-white/80 bg-white/80 px-4 py-3 shadow-sm">
                       <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
                         Due
@@ -2312,7 +2312,7 @@ export function ContactServiceDetailsPanel({
                     <Button
                       type="button"
                       variant="outline"
-                      className="cursor-pointer rounded-full border-blue-200 bg-white text-blue-950 hover:bg-blue-50"
+                      className="w-full cursor-pointer rounded-full border-blue-200 bg-white text-blue-950 hover:bg-blue-50 sm:w-auto"
                       onClick={() => handleTabChange("follow-up")}
                     >
                       Open follow-up tab
@@ -2323,9 +2323,9 @@ export function ContactServiceDetailsPanel({
             </section>
           </div>
 
-          <section className="mt-4 rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
+          <section className="mt-4 rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
                   Quick checklist preview
                 </p>
@@ -2340,7 +2340,7 @@ export function ContactServiceDetailsPanel({
                 <Button
                   type="button"
                   variant="outline"
-                  className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  className="w-full cursor-pointer rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50 sm:w-auto"
                   onClick={() => handleTabChange("checklist")}
                 >
                   View all checklist items
@@ -2348,7 +2348,7 @@ export function ContactServiceDetailsPanel({
               ) : null}
             </div>
             {overviewChecklistPreview.length ? (
-              <div className="mt-4 grid gap-3 lg:grid-cols-3">
+              <div className="mt-4 grid gap-3 min-[520px]:grid-cols-2 2xl:grid-cols-3">
                 {overviewChecklistPreview.map((checklistItem) => (
                   <div
                     key={checklistItem.id}
