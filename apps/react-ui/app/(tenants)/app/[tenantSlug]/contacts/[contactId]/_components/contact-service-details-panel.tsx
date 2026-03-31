@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react"
 import { isAxiosError } from "axios"
 import {
   ArrowLeft,
@@ -12,11 +12,16 @@ import {
   CircleHelp,
   Clock3,
   CreditCard,
+  FileText,
+  ImageIcon,
   ListTodo,
   Loader2,
   NotebookPen,
+  Paperclip,
   SendHorizontal,
+  Upload,
   UserRound,
+  X,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -51,6 +56,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Tooltip,
   TooltipContent,
@@ -68,12 +74,24 @@ import {
 import { cn } from "@/lib/utils"
 
 type ContactServiceStatus =
-  | "PENDING"
   | "IN_PROGRESS"
   | "PENDING_PAYMENT"
   | "COMPLETED"
   | "CANCELED"
 type FollowUpStepStatus = "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
+type FollowUpStepAction = "REOPEN"
+type NoteAttachment = {
+  id: string
+  fileId: string
+  key: string
+  fileName: string
+  contentType: string
+  size: number | null
+}
+type PendingUpload = {
+  id: string
+  file: File
+}
 
 type ContactServiceDetails = {
   id: string
@@ -155,10 +173,25 @@ type ContactServiceDetails = {
     title: string
     body: string
     createdAt: string
+    kind: "SERVICE_NOTE" | "FOLLOW_UP_NOTE" | "LINKED_CONTACT_NOTE"
+    followUpTemplateName?: string | null
+    followUpStepTitle?: string | null
     createdBy?: {
       id: string
       name: string
       image?: string | null
+    } | null
+    attachments: NoteAttachment[]
+  }>
+  executionLogs: Array<{
+    id: string
+    eventType: string
+    title: string
+    details: string | null
+    createdAt: string
+    actor?: {
+      id: string
+      name: string | null
     } | null
   }>
   checklistItems: Array<{
@@ -172,9 +205,25 @@ type ContactServiceDetails = {
   }>
 }
 
+type ContactServiceOverview = Omit<
+  ContactServiceDetails,
+  "payments" | "serviceNotes" | "executionLogs"
+> & {
+  paymentSummary?: {
+    latestPaidAt: string | null
+    totalPaymentsCount: number
+    scheduledPaymentsRecordedCount: number
+  }
+}
+
 type ContactServiceResponse = {
   ok: boolean
   contactService: ContactServiceDetails
+}
+
+type ContactServiceOverviewResponse = {
+  ok: boolean
+  contactService: ContactServiceOverview
 }
 
 type TenantAssigneeOption = {
@@ -219,6 +268,8 @@ type StepTimeMeta = {
   badgeClassName: string
 }
 
+type ContactServiceTab = "overview" | "follow-up" | "payments" | "checklist" | "notes" | "activity"
+
 const currencyFormatter = (valueCents: number, currency: string) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -227,7 +278,99 @@ const currencyFormatter = (valueCents: number, currency: string) =>
     maximumFractionDigits: 2,
   }).format((valueCents || 0) / 100)
 
+const MAX_NOTE_ATTACHMENTS = 10
+
 const centsToUsdInput = (valueCents: number) => ((valueCents || 0) / 100).toFixed(2)
+
+function inferContentType(file: File) {
+  if (file.type) return file.type
+  const extension = file.name.split(".").pop()?.toLowerCase()
+  if (extension === "png") return "image/png"
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg"
+  if (extension === "webp") return "image/webp"
+  if (extension === "pdf") return "application/pdf"
+  return ""
+}
+
+function isImageAttachment(contentType: string) {
+  return contentType.startsWith("image/")
+}
+
+function isPdfAttachment(contentType: string) {
+  return contentType === "application/pdf"
+}
+
+function attachmentIcon(contentType: string) {
+  return isImageAttachment(contentType) ? ImageIcon : FileText
+}
+
+function attachmentTone(contentType: string) {
+  if (isPdfAttachment(contentType)) {
+    return {
+      chip:
+        "border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 hover:bg-rose-100",
+      icon: "text-rose-600",
+      panel: "border-rose-200/70 bg-rose-50/70",
+    }
+  }
+
+  if (isImageAttachment(contentType)) {
+    return {
+      chip:
+        "border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100",
+      icon: "text-sky-600",
+      panel: "border-sky-200/70 bg-sky-50/70",
+    }
+  }
+
+  return {
+    chip:
+      "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50",
+    icon: "text-slate-500",
+    panel: "border-slate-200 bg-slate-50/70",
+  }
+}
+
+async function uploadAttachment(tenantId: string, file: File) {
+  const contentType = inferContentType(file)
+  if (!contentType) {
+    throw new Error("UNSUPPORTED_CONTENT_TYPE")
+  }
+
+  const { data } = await api.post<{
+    url: string
+    fields: Record<string, string>
+    key: string
+    fileId: string
+  }>("/api/files/presign-upload", {
+    tenantId,
+    filename: file.name,
+    contentType,
+  })
+
+  const formData = new FormData()
+  for (const [key, value] of Object.entries(data.fields)) {
+    formData.append(key, value)
+  }
+  formData.append("file", file)
+
+  const uploadResponse = await fetch(data.url, {
+    method: "POST",
+    body: formData,
+  })
+
+  if (!uploadResponse.ok) {
+    throw new Error("UPLOAD_FAILED")
+  }
+
+  return {
+    fileId: data.fileId,
+    key: data.key,
+    contentType,
+    fileName: file.name,
+    size: file.size,
+  }
+}
 
 const DEFAULT_TENANT_BILLING = {
   taxEnabled: false,
@@ -241,12 +384,6 @@ const parseUsdToCents = (value: string) => {
   const parsed = Number.parseFloat(normalized)
   if (!Number.isFinite(parsed) || parsed < 0) return null
   return Math.round(parsed * 100)
-}
-
-const buildServiceNoteTitle = (value: string) => {
-  const normalized = value.replace(/\s+/g, " ").trim()
-  if (!normalized) return "Service note"
-  return normalized.length > 64 ? `${normalized.slice(0, 61).trimEnd()}...` : normalized
 }
 
 const toSentence = (value: string) => value.toLowerCase().replace(/_/g, " ")
@@ -292,6 +429,7 @@ const INSTALLMENT_FREQUENCY_LABELS = {
 } as const
 
 const PAYMENTS_PAGE_SIZE = 5
+const ACTIVITY_PAGE_SIZE = 8
 
 const formatPaymentMethod = (value: string | null | undefined) => {
   if (!value) return null
@@ -299,19 +437,15 @@ const formatPaymentMethod = (value: string | null | undefined) => {
   return PAYMENT_METHOD_OPTIONS.find((option) => option.value === value)?.label ?? value
 }
 
+const IN_PROGRESS_STATUS_OPTION: ServiceStatusOption = {
+  value: "IN_PROGRESS",
+  label: "In Progress",
+  bgClassName: "bg-sky-100",
+  textClassName: "text-sky-800",
+}
+
 const SERVICE_STATUS_OPTIONS: ServiceStatusOption[] = [
-  {
-    value: "PENDING",
-    label: "Pending",
-    bgClassName: "bg-amber-100",
-    textClassName: "text-amber-800",
-  },
-  {
-    value: "IN_PROGRESS",
-    label: "In Progress",
-    bgClassName: "bg-sky-100",
-    textClassName: "text-sky-800",
-  },
+  IN_PROGRESS_STATUS_OPTION,
   {
     value: "PENDING_PAYMENT",
     label: "Pending Payment",
@@ -332,9 +466,12 @@ const SERVICE_STATUS_OPTIONS: ServiceStatusOption[] = [
   },
 ]
 
-const STATUS_OPTION_BY_VALUE = Object.fromEntries(
-  SERVICE_STATUS_OPTIONS.map((option) => [option.value, option]),
-) as Record<ContactServiceStatus, ServiceStatusOption>
+const STATUS_OPTION_BY_VALUE: Record<ContactServiceStatus, ServiceStatusOption> = {
+  IN_PROGRESS: IN_PROGRESS_STATUS_OPTION,
+  PENDING_PAYMENT: SERVICE_STATUS_OPTIONS[1],
+  COMPLETED: SERVICE_STATUS_OPTIONS[2],
+  CANCELED: SERVICE_STATUS_OPTIONS[3],
+}
 
 const formatDateTime = (value: string | null | undefined) => {
   if (!value) return "-"
@@ -378,14 +515,21 @@ const getStepTimeMeta = (step: ContactServiceDetails["followUpSteps"][number]): 
   if (step.status === "COMPLETED") {
     return {
       label: "Completed",
-      helper: step.completedAt ? new Date(step.completedAt).toLocaleString() : "Marked as completed",
+      helper: step.completedAt ? `Completed ${new Date(step.completedAt).toLocaleString()}` : "Marked as completed",
       badgeClassName: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
+    }
+  }
+  if (step.status === "SKIPPED") {
+    return {
+      label: "Skipped",
+      helper: "Marked as skipped",
+      badgeClassName: "bg-slate-200 text-slate-700 hover:bg-slate-200",
     }
   }
   if (step.status === "POSTPONED") {
     return {
       label: "Postponed",
-      helper: step.dueAt ? `Now due ${new Date(step.dueAt).toLocaleString()}` : "Postponed",
+      helper: step.dueAt ? `Postponed to ${new Date(step.dueAt).toLocaleString()}` : "Postponed",
       badgeClassName: "bg-violet-100 text-violet-800 hover:bg-violet-100",
     }
   }
@@ -424,6 +568,27 @@ const getStepTimeMeta = (step: ContactServiceDetails["followUpSteps"][number]): 
   }
 }
 
+const formatFollowUpStepStatus = (status: FollowUpStepStatus | null | undefined) =>
+  (status ?? "PENDING")
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+
+const getFollowUpStepStatusBadgeClass = (status: FollowUpStepStatus | null | undefined) => {
+  switch (status ?? "PENDING") {
+    case "ACTIVE":
+      return "bg-blue-100 text-blue-900 hover:bg-blue-100"
+    case "COMPLETED":
+      return "bg-emerald-100 text-emerald-800 hover:bg-emerald-100"
+    case "SKIPPED":
+      return "bg-slate-200 text-slate-700 hover:bg-slate-200"
+    case "POSTPONED":
+      return "bg-violet-100 text-violet-800 hover:bg-violet-100"
+    default:
+      return "bg-slate-100 text-slate-700 hover:bg-slate-100"
+  }
+}
+
 const getInitials = (value: string | null | undefined) =>
   (value ?? "")
     .split(" ")
@@ -434,9 +599,34 @@ const getInitials = (value: string | null | undefined) =>
 
 const normalizeContactServiceDetails = (details: ContactServiceDetails): ContactServiceDetails => ({
   ...details,
+  followUpSteps: details.followUpSteps ?? [],
+  payments: details.payments ?? [],
+  serviceNotes: (details.serviceNotes ?? []).map((note) => ({
+    ...note,
+    attachments: note.attachments ?? [],
+  })),
+  executionLogs: details.executionLogs ?? [],
+  checklistItems: details.checklistItems ?? [],
   tenantBilling: {
     ...DEFAULT_TENANT_BILLING,
     ...(details.tenantBilling ?? {}),
+  },
+})
+
+const normalizeContactServiceOverview = (
+  details: ContactServiceOverview,
+): ContactServiceOverview => ({
+  ...details,
+  followUpSteps: details.followUpSteps ?? [],
+  checklistItems: details.checklistItems ?? [],
+  tenantBilling: {
+    ...DEFAULT_TENANT_BILLING,
+    ...(details.tenantBilling ?? {}),
+  },
+  paymentSummary: {
+    latestPaidAt: details.paymentSummary?.latestPaidAt ?? null,
+    totalPaymentsCount: details.paymentSummary?.totalPaymentsCount ?? 0,
+    scheduledPaymentsRecordedCount: details.paymentSummary?.scheduledPaymentsRecordedCount ?? 0,
   },
 })
 
@@ -447,10 +637,18 @@ export function ContactServiceDetailsPanel({
   contactServiceId,
   membershipSecurityLevel,
 }: ContactServiceDetailsPanelProps) {
+  const serviceNoteFileInputRef = useRef<HTMLInputElement | null>(null)
+  const stepNoteFileInputRef = useRef<HTMLInputElement | null>(null)
   const router = useRouter()
   const canManageSensitiveServiceActions = membershipSecurityLevel !== "LOW"
+  const encodedTenantId = encodeURIComponent(tenantId)
+  const encodedContactId = encodeURIComponent(contactId)
+  const encodedContactServiceId = encodeURIComponent(contactServiceId)
+  const [activeTab, setActiveTab] = useState<ContactServiceTab>("overview")
+  const [overview, setOverview] = useState<ContactServiceOverview | null>(null)
   const [item, setItem] = useState<ContactServiceDetails | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isDetailLoading, setIsDetailLoading] = useState(false)
   const [isLoadingAssignees, setIsLoadingAssignees] = useState(false)
   const [followUpAssigneeOptions, setFollowUpAssigneeOptions] = useState<TenantAssigneeOption[]>([])
   const [isChecklistSavingId, setIsChecklistSavingId] = useState<string | null>(null)
@@ -470,13 +668,18 @@ export function ContactServiceDetailsPanel({
   const [editPaymentAmountUsd, setEditPaymentAmountUsd] = useState("")
   const [editPaymentMethod, setEditPaymentMethod] = useState<string>("")
   const [editPaymentNote, setEditPaymentNote] = useState("")
+  const [serviceNoteTitle, setServiceNoteTitle] = useState("")
   const [serviceNoteBody, setServiceNoteBody] = useState("")
+  const [pendingServiceNoteUploads, setPendingServiceNoteUploads] = useState<PendingUpload[]>([])
+  const [serviceNoteAttachmentError, setServiceNoteAttachmentError] = useState<string | null>(null)
+  const [downloadingServiceNoteKey, setDownloadingServiceNoteKey] = useState<string | null>(null)
   const [visiblePaymentsCount, setVisiblePaymentsCount] = useState(PAYMENTS_PAGE_SIZE)
+  const [visibleHistoryCount, setVisibleHistoryCount] = useState(ACTIVITY_PAGE_SIZE)
   const [isStepStatusDialogOpen, setIsStepStatusDialogOpen] = useState(false)
   const [isStepDetailsDialogOpen, setIsStepDetailsDialogOpen] = useState(false)
   const [isStepNoteDialogOpen, setIsStepNoteDialogOpen] = useState(false)
   const [isStepTaskDialogOpen, setIsStepTaskDialogOpen] = useState(false)
-  const [isFollowUpOwnerDialogOpen, setIsFollowUpOwnerDialogOpen] = useState(false)
+  const [followUpOwnerOpen, setFollowUpOwnerOpen] = useState(false)
   const [activeStep, setActiveStep] = useState<ContactServiceDetails["followUpSteps"][number] | null>(
     null,
   )
@@ -485,40 +688,57 @@ export function ContactServiceDetailsPanel({
   const [stepStatusNote, setStepStatusNote] = useState("")
   const [stepPostponeInput, setStepPostponeInput] = useState<DateTimeDraft>({ date: "", time: "" })
   const [isSavingStepStatus, setIsSavingStepStatus] = useState(false)
-  const [followUpOwnerUserId, setFollowUpOwnerUserId] = useState("")
   const [isSavingFollowUpOwner, setIsSavingFollowUpOwner] = useState(false)
   const [stepAssignedToUserId, setStepAssignedToUserId] = useState("")
   const [isSavingStepAssignee, setIsSavingStepAssignee] = useState(false)
   const [stepNoteTitle, setStepNoteTitle] = useState("")
   const [stepNoteBody, setStepNoteBody] = useState("")
+  const [pendingStepNoteUploads, setPendingStepNoteUploads] = useState<PendingUpload[]>([])
+  const [stepNoteAttachmentError, setStepNoteAttachmentError] = useState<string | null>(null)
   const [isSavingStepNote, setIsSavingStepNote] = useState(false)
   const [stepTaskName, setStepTaskName] = useState("")
   const [stepTaskDescription, setStepTaskDescription] = useState("")
   const [stepTaskDueAt, setStepTaskDueAt] = useState<DateTimeDraft>({ date: "", time: "" })
+  const [stepTaskAssignedToUserId, setStepTaskAssignedToUserId] = useState("")
   const [isSavingStepTask, setIsSavingStepTask] = useState(false)
 
   const backHref = `/app/${tenantSlug}/contacts/${contactId}/services`
 
-  const loadItem = useCallback(async () => {
+  const loadOverview = useCallback(async () => {
     setIsLoading(true)
     try {
-      const { data } = await api.get<ContactServiceResponse>(
-        `/api/services/${tenantId}/contact-services/${contactServiceId}`,
+      const { data } = await api.get<ContactServiceOverviewResponse>(
+        `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/overview`,
       )
-      setItem(normalizeContactServiceDetails(data.contactService))
+      setOverview(normalizeContactServiceOverview(data.contactService))
     } catch {
-      setItem(null)
+      setOverview(null)
       toast.error("Could not load service enrollment.")
     } finally {
       setIsLoading(false)
     }
-  }, [contactServiceId, tenantId])
+  }, [encodedContactServiceId, encodedTenantId])
+
+  const loadItem = useCallback(async () => {
+    setIsDetailLoading(true)
+    try {
+      const { data } = await api.get<ContactServiceResponse>(
+        `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}`,
+      )
+      setItem(normalizeContactServiceDetails(data.contactService))
+    } catch {
+      setItem(null)
+      toast.error("Could not load service details.")
+    } finally {
+      setIsDetailLoading(false)
+    }
+  }, [encodedContactServiceId, encodedTenantId])
 
   const loadFollowUpAssignees = useCallback(async () => {
     setIsLoadingAssignees(true)
     try {
       const { data } = await api.get<TenantAssigneesResponse>(
-        `/api/tasks/${encodeURIComponent(tenantId)}/assignees`,
+        `/api/tasks/${encodedTenantId}/assignees`,
       )
       setFollowUpAssigneeOptions(data.items ?? [])
     } catch {
@@ -527,11 +747,11 @@ export function ContactServiceDetailsPanel({
     } finally {
       setIsLoadingAssignees(false)
     }
-  }, [tenantId])
+  }, [encodedTenantId])
 
   useEffect(() => {
-    void loadItem()
-  }, [loadItem])
+    void loadOverview()
+  }, [loadOverview])
 
   useEffect(() => {
     void loadFollowUpAssignees()
@@ -540,6 +760,10 @@ export function ContactServiceDetailsPanel({
   useEffect(() => {
     setVisiblePaymentsCount(PAYMENTS_PAGE_SIZE)
   }, [item?.id, item?.payments?.length])
+
+  useEffect(() => {
+    setVisibleHistoryCount(ACTIVITY_PAGE_SIZE)
+  }, [item?.id, overview?.id])
 
   const resetPaymentForm = () => {
     setPaymentEntryMode("FULL")
@@ -556,15 +780,37 @@ export function ContactServiceDetailsPanel({
   }
 
   const resetNoteForm = () => {
+    setServiceNoteTitle("")
     setServiceNoteBody("")
+    setPendingServiceNoteUploads([])
+    setServiceNoteAttachmentError(null)
+    if (serviceNoteFileInputRef.current) {
+      serviceNoteFileInputRef.current.value = ""
+    }
   }
 
+  const refreshData = useCallback(
+    async (includeDetail = Boolean(item)) => {
+      await loadOverview()
+      if (includeDetail) {
+        await loadItem()
+      }
+    },
+    [item, loadItem, loadOverview],
+  )
+
+  const ensureDetailLoaded = useCallback(async () => {
+    if (item || isDetailLoading) return
+    await loadItem()
+  }, [isDetailLoading, item, loadItem])
+
   const updateStatus = async (nextStatus: ContactServiceStatus) => {
-    if (!item || isStatusSaving || item.status === nextStatus) return
+    const currentService = item ?? overview
+    if (!currentService || isStatusSaving || currentService.status === nextStatus) return
 
     setIsStatusSaving(true)
     try {
-      await api.patch(`/api/services/${tenantId}/contact-services/${item.id}`, {
+      await api.patch(`/api/services/${encodedTenantId}/contact-services/${currentService.id}`, {
         status: nextStatus,
       })
       setItem((current) =>
@@ -577,7 +823,7 @@ export function ContactServiceDetailsPanel({
       )
       setStatusOpen(false)
       toast.success("Service status updated.")
-      await loadItem()
+      await refreshData(Boolean(item))
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
@@ -615,7 +861,7 @@ export function ContactServiceDetailsPanel({
 
     setIsPaymentSaving(true)
     try {
-      await api.post(`/api/services/${tenantId}/contact-services/${item.id}/payments`, {
+      await api.post(`/api/services/${encodedTenantId}/contact-services/${item.id}/payments`, {
         amountCents,
         ...(paymentMethod ? { paymentMethod } : {}),
         ...(paymentNote.trim() ? { note: paymentNote.trim() } : {}),
@@ -623,7 +869,7 @@ export function ContactServiceDetailsPanel({
       toast.success("Payment recorded.")
       setIsPaymentOpen(false)
       resetPaymentForm()
-      await loadItem()
+      await refreshData(true)
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
@@ -642,11 +888,12 @@ export function ContactServiceDetailsPanel({
   }
 
   const onDeleteService = async () => {
-    if (!item) return
+    const currentService = item ?? overview
+    if (!currentService) return
 
     setIsDeleting(true)
     try {
-      await api.delete(`/api/services/${tenantId}/contact-services/${item.id}`)
+      await api.delete(`/api/services/${encodedTenantId}/contact-services/${currentService.id}`)
       toast.success("Service removed.")
       router.push(backHref)
       router.refresh()
@@ -685,7 +932,7 @@ export function ContactServiceDetailsPanel({
     setIsPaymentSaving(true)
     try {
       await api.patch(
-        `/api/services/${tenantId}/contact-services/${item.id}/payments/${selectedPaymentId}`,
+        `/api/services/${encodedTenantId}/contact-services/${item.id}/payments/${selectedPaymentId}`,
         {
           amountCents,
           paymentMethod: editPaymentMethod || null,
@@ -695,7 +942,7 @@ export function ContactServiceDetailsPanel({
       toast.success("Payment updated.")
       setIsPaymentEditOpen(false)
       resetEditPaymentForm()
-      await loadItem()
+      await refreshData(true)
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
@@ -719,12 +966,12 @@ export function ContactServiceDetailsPanel({
     setIsPaymentDeleting(true)
     try {
       await api.delete(
-        `/api/services/${tenantId}/contact-services/${item.id}/payments/${selectedPaymentId}`,
+        `/api/services/${encodedTenantId}/contact-services/${item.id}/payments/${selectedPaymentId}`,
       )
       toast.success("Payment deleted.")
       setIsPaymentEditOpen(false)
       resetEditPaymentForm()
-      await loadItem()
+      await refreshData(true)
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
@@ -742,32 +989,91 @@ export function ContactServiceDetailsPanel({
     }
   }
 
+  const handleSelectServiceNoteFiles = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextFiles = Array.from(event.target.files ?? [])
+    if (nextFiles.length === 0) return
+
+    const totalCount = pendingServiceNoteUploads.length + nextFiles.length
+    if (totalCount > MAX_NOTE_ATTACHMENTS) {
+      setServiceNoteAttachmentError(
+        `You can attach up to ${MAX_NOTE_ATTACHMENTS} files.`,
+      )
+      event.target.value = ""
+      return
+    }
+
+    setServiceNoteAttachmentError(null)
+    setPendingServiceNoteUploads((current) => [
+      ...current,
+      ...nextFiles.map((file) => ({
+        id: `${file.name}-${file.size}-${crypto.randomUUID()}`,
+        file,
+      })),
+    ])
+    event.target.value = ""
+  }
+
+  const handleOpenServiceNoteAttachment = async (attachment: NoteAttachment) => {
+    setDownloadingServiceNoteKey(attachment.key)
+    try {
+      const { data } = await api.post<{ url: string }>("/api/files/presign-download", {
+        tenantId,
+        key: attachment.key,
+      })
+
+      window.open(data.url, "_blank", "noopener,noreferrer")
+    } catch {
+      toast.error("Could not open this attachment.")
+    } finally {
+      setDownloadingServiceNoteKey(null)
+    }
+  }
+
   const onAddServiceNote = async () => {
     if (!item) return
+    const trimmedTitle = serviceNoteTitle.trim()
     const trimmedBody = serviceNoteBody.trim()
-    if (!trimmedBody) {
-      toast.error("Enter a note before sending.")
+    if (!trimmedTitle || !trimmedBody) {
+      toast.error("Enter a title and note before sending.")
+      return
+    }
+    if (pendingServiceNoteUploads.length > MAX_NOTE_ATTACHMENTS) {
+      setServiceNoteAttachmentError(
+        `You can attach up to ${MAX_NOTE_ATTACHMENTS} files.`,
+      )
       return
     }
 
     setIsNoteSaving(true)
     try {
-      await api.post(`/api/services/${tenantId}/contact-services/${item.id}/notes`, {
-        title: buildServiceNoteTitle(trimmedBody),
+      const uploadedFiles = []
+      for (const pendingUpload of pendingServiceNoteUploads) {
+        uploadedFiles.push(await uploadAttachment(tenantId, pendingUpload.file))
+      }
+
+      await api.post(`/api/services/${encodedTenantId}/contact-services/${item.id}/notes`, {
+        title: trimmedTitle,
         body: trimmedBody,
+        attachmentFileIds: uploadedFiles.map((attachment) => attachment.fileId),
       })
       toast.success("Service note added.")
       resetNoteForm()
-      await loadItem()
+      await refreshData(true)
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
-        toast.error(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ")
-            : "Could not add service note.",
-        )
+        if (backendError === "UNSUPPORTED_CONTENT_TYPE") {
+          toast.error("Only PNG, JPG, WEBP, and PDF files are supported.")
+        } else {
+          toast.error(
+            typeof backendError === "string"
+              ? backendError.replace(/_/g, " ")
+              : "Could not add service note.",
+          )
+        }
+      } else if (error instanceof Error && error.message === "UNSUPPORTED_CONTENT_TYPE") {
+        toast.error("Only PNG, JPG, WEBP, and PDF files are supported.")
       } else {
         toast.error("Could not add service note.")
       }
@@ -787,7 +1093,7 @@ export function ContactServiceDetailsPanel({
         ok: boolean
         checklistItem: ContactServiceDetails["checklistItems"][number]
       }>(
-        `/api/services/${tenantId}/contact-services/${item.id}/checklist-items/${checklistItem.id}`,
+        `/api/services/${encodedTenantId}/contact-services/${item.id}/checklist-items/${checklistItem.id}`,
         {
           completed: nextCompleted,
         },
@@ -810,22 +1116,26 @@ export function ContactServiceDetailsPanel({
     }
   }
 
+  const serviceData = item ?? overview
   const payments = useMemo(() => item?.payments ?? [], [item?.payments])
   const visiblePayments = useMemo(
     () => payments.slice(0, visiblePaymentsCount),
     [payments, visiblePaymentsCount],
   )
   const serviceNotes = useMemo(() => item?.serviceNotes ?? [], [item?.serviceNotes])
-  const checklistItems = useMemo(() => item?.checklistItems ?? [], [item?.checklistItems])
+  const checklistItems = useMemo(
+    () => item?.checklistItems ?? overview?.checklistItems ?? [],
+    [item?.checklistItems, overview?.checklistItems],
+  )
   const followUpSteps = useMemo(
     () =>
-      [...(item?.followUpSteps ?? [])]
+      [...(item?.followUpSteps ?? overview?.followUpSteps ?? [])]
         .map((step) => ({
           ...step,
           status: step.status ?? (step.completedAt ? "COMPLETED" : "PENDING"),
         }))
         .sort((a, b) => a.sortOrder - b.sortOrder),
-    [item?.followUpSteps],
+    [item?.followUpSteps, overview?.followUpSteps],
   )
   const checklistCompletedCount = useMemo(
     () => checklistItems.filter((entry) => Boolean(entry.completedAt)).length,
@@ -848,79 +1158,71 @@ export function ContactServiceDetailsPanel({
     [followUpCompletedCount, followUpSteps.length],
   )
   const taxAmountCents = useMemo(() => {
-    if (!item) return 0
-    return Math.max(0, item.totalPriceCents - item.service.basePriceCents)
-  }, [item])
+    if (!serviceData) return 0
+    return Math.max(0, serviceData.totalPriceCents - serviceData.service.basePriceCents)
+  }, [serviceData])
   const paymentCollectionState = useMemo(() => {
-    if (!item) return "Pay later"
-    if (item.paidCents <= 0) return "Pay later"
-    if (item.remainingCents > 0) return "Partial payment"
+    if (!serviceData) return "Pay later"
+    if (serviceData.paidCents <= 0) return "Pay later"
+    if (serviceData.remainingCents > 0) return "Partial payment"
     return "Paid in full"
-  }, [item])
-  const latestPayment = useMemo(() => {
-    if (!payments.length) return null
-    return payments.reduce((latest, payment) =>
-      new Date(payment.paidAt).getTime() > new Date(latest.paidAt).getTime() ? payment : latest,
-    )
-  }, [payments])
+  }, [serviceData])
+  const latestPaymentAt = useMemo(() => {
+    if (item && payments.length) {
+      return payments.reduce((latest, payment) =>
+        new Date(payment.paidAt).getTime() > new Date(latest.paidAt).getTime() ? payment : latest,
+      ).paidAt
+    }
+    return overview?.paymentSummary?.latestPaidAt ?? null
+  }, [item, overview?.paymentSummary?.latestPaidAt, payments])
   const completedScheduledPaymentsCount = useMemo(() => {
-    if (!item) return 0
-    return payments.filter((payment) => payment.note?.trim().toLowerCase() !== "initial payment").length
-  }, [item, payments])
+    if (item) {
+      return payments.filter((payment) => payment.note?.trim().toLowerCase() !== "initial payment").length
+    }
+    return overview?.paymentSummary?.scheduledPaymentsRecordedCount ?? 0
+  }, [item, overview?.paymentSummary?.scheduledPaymentsRecordedCount, payments])
   const remainingScheduledInstallments = useMemo(() => {
-    if (!item || item.remainingCents <= 0 || !item.service.installmentCount) return 0
-    return Math.max(item.service.installmentCount - completedScheduledPaymentsCount, 1)
-  }, [completedScheduledPaymentsCount, item])
+    if (!serviceData || serviceData.remainingCents <= 0 || !serviceData.service.installmentCount) return 0
+    return Math.max(serviceData.service.installmentCount - completedScheduledPaymentsCount, 1)
+  }, [completedScheduledPaymentsCount, serviceData])
   const suggestedInstallmentPaymentCents = useMemo(() => {
-    if (!item || item.remainingCents <= 0 || remainingScheduledInstallments <= 0) return null
-    return Math.ceil(item.remainingCents / remainingScheduledInstallments)
-  }, [item, remainingScheduledInstallments])
+    if (!serviceData || serviceData.remainingCents <= 0 || remainingScheduledInstallments <= 0) return null
+    return Math.ceil(serviceData.remainingCents / remainingScheduledInstallments)
+  }, [remainingScheduledInstallments, serviceData])
   const nextScheduledPaymentDate = useMemo(() => {
     if (
-      !item?.purchasedAt ||
-      item.remainingCents <= 0 ||
-      !item.service.installmentCount ||
-      !item.service.installmentFrequency
+      !serviceData?.purchasedAt ||
+      serviceData.remainingCents <= 0 ||
+      !serviceData.service.installmentCount ||
+      !serviceData.service.installmentFrequency
     ) {
       return null
     }
 
     return addInstallmentInterval(
-      new Date(item.purchasedAt),
-      item.service.installmentFrequency,
+      new Date(serviceData.purchasedAt),
+      serviceData.service.installmentFrequency,
       completedScheduledPaymentsCount + 1,
     )
-  }, [completedScheduledPaymentsCount, item])
-  const paymentPlanSummary = useMemo(() => {
-    if (!item) return "Full payment only"
-    if (!item.allowPartialPayments) return "Full payment only"
-
-    if (item.service.installmentCount && item.service.installmentFrequency) {
-      return `Minimum deposit ${item.service.minimumPartialPaymentCents !== null ? currencyFormatter(item.service.minimumPartialPaymentCents, item.currency) : "required"} · ${item.service.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[item.service.installmentFrequency].toLowerCase()} installments`
-    }
-
-    return item.service.minimumPartialPaymentCents !== null
-      ? `Minimum deposit ${currencyFormatter(item.service.minimumPartialPaymentCents, item.currency)}`
-      : "Partial payments allowed"
-  }, [item])
+  }, [completedScheduledPaymentsCount, serviceData])
   const nextScheduledPaymentSummary = useMemo(() => {
-    if (!item || !nextScheduledPaymentDate) return null
+    if (!serviceData || !nextScheduledPaymentDate) return null
     return `Next scheduled payment: ${formatDateOnly(nextScheduledPaymentDate)}`
-  }, [item, nextScheduledPaymentDate])
+  }, [nextScheduledPaymentDate, serviceData])
   const addPaymentPlanSummary = useMemo(() => {
-    if (!item) return ""
-    if (item.remainingCents <= 0) return "No balance remains on this service."
-    if (!item.allowPartialPayments) {
-      return `The remaining balance is ${currencyFormatter(item.remainingCents, item.currency)}.`
+    if (!serviceData) return ""
+    if (serviceData.remainingCents <= 0) return "No balance remains on this service."
+    if (!serviceData.allowPartialPayments) {
+      return `The remaining balance is ${currencyFormatter(serviceData.remainingCents, serviceData.currency)}.`
     }
     if (suggestedInstallmentPaymentCents !== null && remainingScheduledInstallments > 0) {
-      return `${remainingScheduledInstallments} scheduled payment${remainingScheduledInstallments === 1 ? "" : "s"} remaining at about ${currencyFormatter(suggestedInstallmentPaymentCents, item.currency)} each.`
+      return `${remainingScheduledInstallments} scheduled payment${remainingScheduledInstallments === 1 ? "" : "s"} remaining at about ${currencyFormatter(suggestedInstallmentPaymentCents, serviceData.currency)} each.`
     }
-    return `Enter the amount to record against the remaining balance of ${currencyFormatter(item.remainingCents, item.currency)}.`
-  }, [item, remainingScheduledInstallments, suggestedInstallmentPaymentCents])
-  const canAddPayments = Boolean(item && item.remainingCents > 0)
-  const currentStatusOption = item ? STATUS_OPTION_BY_VALUE[item.status] : null
-  const tenantBilling = item?.tenantBilling ?? DEFAULT_TENANT_BILLING
+    return `Enter the amount to record against the remaining balance of ${currencyFormatter(serviceData.remainingCents, serviceData.currency)}.`
+  }, [remainingScheduledInstallments, serviceData, suggestedInstallmentPaymentCents])
+  const canAddPayments = Boolean(serviceData && serviceData.remainingCents > 0)
+  const currentStatusOption = serviceData ? STATUS_OPTION_BY_VALUE[serviceData.status] : null
+  const tenantBilling = serviceData?.tenantBilling ?? DEFAULT_TENANT_BILLING
   const openFollowUpSteps = useMemo(
     () =>
       followUpSteps.filter(
@@ -937,6 +1239,18 @@ export function ContactServiceDetailsPanel({
       null,
     [openFollowUpSteps],
   )
+  const nextFollowUpStep = useMemo(
+    () =>
+      followUpSteps.find((step) => step.status === "ACTIVE") ??
+      followUpSteps.find((step) => step.status === "POSTPONED") ??
+      followUpSteps.find((step) => step.status === "PENDING") ??
+      null,
+    [followUpSteps],
+  )
+  const overviewChecklistPreview = useMemo(
+    () => [...checklistItems].sort((a, b) => a.sortOrder - b.sortOrder).slice(0, 3),
+    [checklistItems],
+  )
   const hasMixedOpenStepOwners = useMemo(() => {
     const assignedUserIds = new Set(
       openFollowUpSteps.map((step) => step.assignedToUserId ?? "").filter((value) => value.length > 0),
@@ -944,28 +1258,38 @@ export function ContactServiceDetailsPanel({
     const hasUnassignedOpenStep = openFollowUpSteps.some((step) => !step.assignedToUserId)
     return assignedUserIds.size > 1 || (assignedUserIds.size > 0 && hasUnassignedOpenStep)
   }, [openFollowUpSteps])
-
-  const openFollowUpOwnerDialog = () => {
+  const currentFollowUpOwnerUserId = useMemo(() => {
     const uniqueOpenOwnerIds = Array.from(
       new Set(openFollowUpSteps.map((step) => step.assignedToUserId ?? "")),
     )
-    setFollowUpOwnerUserId(uniqueOpenOwnerIds.length === 1 ? uniqueOpenOwnerIds[0] ?? "" : "")
-    setIsFollowUpOwnerDialogOpen(true)
-  }
+    return uniqueOpenOwnerIds.length === 1 ? (uniqueOpenOwnerIds[0] ?? "") : ""
+  }, [openFollowUpSteps])
 
-  const saveFollowUpOwner = async () => {
-    if (!item) return
+  const handleTabChange = useCallback(
+    (value: string) => {
+      const nextTab = value as ContactServiceTab
+      setActiveTab(nextTab)
+      if (nextTab !== "overview" && !item && !isDetailLoading) {
+        void ensureDetailLoaded()
+      }
+    },
+    [ensureDetailLoaded, isDetailLoading, item],
+  )
+
+  const updateFollowUpOwner = async (nextUserId: string) => {
+    const currentService = item ?? overview
+    if (!currentService) return
     if (!openFollowUpSteps.length) {
       toast.error("There are no open follow-up steps to reassign.")
       return
     }
 
     const stepsToUpdate = openFollowUpSteps.filter(
-      (step) => (step.assignedToUserId ?? "") !== followUpOwnerUserId,
+      (step) => (step.assignedToUserId ?? "") !== nextUserId,
     )
 
     if (!stepsToUpdate.length) {
-      setIsFollowUpOwnerDialogOpen(false)
+      setFollowUpOwnerOpen(false)
       return
     }
 
@@ -974,17 +1298,17 @@ export function ContactServiceDetailsPanel({
       await Promise.all(
         stepsToUpdate.map((step) =>
           api.patch(
-            `/api/services/${tenantId}/contact-services/${item.id}/follow-up-steps/${step.id}`,
+            `/api/services/${encodedTenantId}/contact-services/${currentService.id}/follow-up-steps/${step.id}`,
             {
-              assignedToUserId: followUpOwnerUserId || null,
+              assignedToUserId: nextUserId || null,
             },
           ),
         ),
       )
       toast.success("Follow-up owner updated.")
-      await loadItem()
+      await refreshData(true)
       router.refresh()
-      setIsFollowUpOwnerDialogOpen(false)
+      setFollowUpOwnerOpen(false)
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
@@ -1003,7 +1327,7 @@ export function ContactServiceDetailsPanel({
 
   const openStepStatusDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
     setActiveStep(step)
-    setStepStatusValue(step.status ?? "PENDING")
+    setStepStatusValue("COMPLETED")
     setStepStatusNote("")
     setStepPostponeInput(formatUtcIsoToDateTimeDraft(step.dueAt, "America/Chicago"))
     setIsStepStatusDialogOpen(true)
@@ -1021,13 +1345,13 @@ export function ContactServiceDetailsPanel({
     setIsSavingStepAssignee(true)
     try {
       await api.patch(
-        `/api/services/${tenantId}/contact-services/${item.id}/follow-up-steps/${activeStep.id}`,
+        `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-steps/${activeStep.id}`,
         {
           assignedToUserId: stepAssignedToUserId || null,
         },
       )
       toast.success("Follow-up owner updated.")
-      await loadItem()
+      await refreshData(true)
       router.refresh()
       setIsStepDetailsDialogOpen(false)
       setActiveStep(null)
@@ -1058,7 +1382,7 @@ export function ContactServiceDetailsPanel({
     setMutatingStepId(step.id)
     try {
       await api.patch(
-        `/api/services/${tenantId}/contact-services/${item.id}/follow-up-steps/${step.id}`,
+        `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-steps/${step.id}`,
         {
           status: nextStatus,
           ...(note?.trim() ? { note: note.trim() } : {}),
@@ -1066,7 +1390,7 @@ export function ContactServiceDetailsPanel({
         },
       )
       toast.success(nextStatus === "COMPLETED" ? "Step marked as completed." : "Step status updated.")
-      await loadItem()
+      await refreshData(true)
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
@@ -1078,6 +1402,34 @@ export function ContactServiceDetailsPanel({
         )
       } else {
         toast.error("Could not update this follow-up step.")
+      }
+    } finally {
+      setMutatingStepId(null)
+    }
+  }
+
+  const reopenStep = async (step: ContactServiceDetails["followUpSteps"][number]) => {
+    if (!item) return
+    setMutatingStepId(step.id)
+    try {
+      await api.patch(`/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-steps/${step.id}`, {
+        action: "REOPEN" satisfies FollowUpStepAction,
+      })
+      toast.success(
+        step.status === "POSTPONED" ? "Postponed step moved back to active." : "Step reopened.",
+      )
+      await refreshData(true)
+      router.refresh()
+    } catch (error) {
+      if (isAxiosError(error)) {
+        const backendError = error.response?.data?.error
+        toast.error(
+          typeof backendError === "string"
+            ? backendError.replace(/_/g, " ")
+            : "Could not reopen this step.",
+        )
+      } else {
+        toast.error("Could not reopen this step.")
       }
     } finally {
       setMutatingStepId(null)
@@ -1105,20 +1457,53 @@ export function ContactServiceDetailsPanel({
       stepStatusValue !== "POSTPONED" || isDateTimeDraftEmpty(stepPostponeInput)
         ? undefined
         : dateTimeDraftToUtcIso(stepPostponeInput, "America/Chicago") ?? undefined
+    const stepToUpdate = activeStep
+    const nextStatusValue = stepStatusValue
+    const nextStatusNote = stepStatusNote
+
     setIsSavingStepStatus(true)
-    await updateStepStatus(activeStep, stepStatusValue, stepStatusNote, postponeToIso)
-    setIsSavingStepStatus(false)
     setIsStepStatusDialogOpen(false)
     setActiveStep(null)
     setStepStatusNote("")
     setStepPostponeInput({ date: "", time: "" })
+    await updateStepStatus(stepToUpdate, nextStatusValue, nextStatusNote, postponeToIso)
+    setIsSavingStepStatus(false)
   }
 
   const openStepNoteDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
     setActiveStep(step)
-    setStepNoteTitle(`${item?.service.name ?? "Service"} - ${step.title}`)
+    setStepNoteTitle("")
     setStepNoteBody("")
+    setPendingStepNoteUploads([])
+    setStepNoteAttachmentError(null)
+    if (stepNoteFileInputRef.current) {
+      stepNoteFileInputRef.current.value = ""
+    }
     setIsStepNoteDialogOpen(true)
+  }
+
+  const handleSelectStepNoteFiles = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextFiles = Array.from(event.target.files ?? [])
+    if (nextFiles.length === 0) return
+
+    const totalCount = pendingStepNoteUploads.length + nextFiles.length
+    if (totalCount > MAX_NOTE_ATTACHMENTS) {
+      setStepNoteAttachmentError(
+        `You can attach up to ${MAX_NOTE_ATTACHMENTS} files.`,
+      )
+      event.target.value = ""
+      return
+    }
+
+    setStepNoteAttachmentError(null)
+    setPendingStepNoteUploads((current) => [
+      ...current,
+      ...nextFiles.map((file) => ({
+        id: `${file.name}-${file.size}-${crypto.randomUUID()}`,
+        file,
+      })),
+    ])
+    event.target.value = ""
   }
 
   const saveStepNote = async () => {
@@ -1127,21 +1512,52 @@ export function ContactServiceDetailsPanel({
       toast.error("Title and note body are required.")
       return
     }
+    if (pendingStepNoteUploads.length > MAX_NOTE_ATTACHMENTS) {
+      setStepNoteAttachmentError(
+        `You can attach up to ${MAX_NOTE_ATTACHMENTS} files.`,
+      )
+      return
+    }
 
     setIsSavingStepNote(true)
     try {
-      await api.post(`/api/contacts/${tenantId}/${contactId}/notes`, {
+      const uploadedFiles = []
+      for (const pendingUpload of pendingStepNoteUploads) {
+        uploadedFiles.push(await uploadAttachment(tenantId, pendingUpload.file))
+      }
+
+      await api.post(`/api/contacts/${encodedTenantId}/${encodedContactId}/notes`, {
         title: stepNoteTitle.trim(),
-        body: `Service: ${item.service.name}\nTemplate: ${item.followUpTemplate?.name ?? "No template selected"}\nStep: ${activeStep.title}\n\n${stepNoteBody.trim()}`,
+        body: stepNoteBody.trim(),
+        contactServiceId: item.id,
+        followUpTemplateId: item.followUpTemplate?.id ?? null,
+        contactServiceFollowUpStepId: activeStep.id,
+        attachmentFileIds: uploadedFiles.map((attachment) => attachment.fileId),
       })
       toast.success("Step note created.")
       setIsStepNoteDialogOpen(false)
       setActiveStep(null)
       setStepNoteTitle("")
       setStepNoteBody("")
+      setPendingStepNoteUploads([])
+      setStepNoteAttachmentError(null)
+      if (stepNoteFileInputRef.current) {
+        stepNoteFileInputRef.current.value = ""
+      }
       router.refresh()
-    } catch {
-      toast.error("Could not create a note for this step.")
+    } catch (error) {
+      if (isAxiosError(error)) {
+        const backendError = error.response?.data?.error
+        if (backendError === "UNSUPPORTED_CONTENT_TYPE") {
+          toast.error("Only PNG, JPG, WEBP, and PDF files are supported.")
+        } else {
+          toast.error("Could not create a note for this step.")
+        }
+      } else if (error instanceof Error && error.message === "UNSUPPORTED_CONTENT_TYPE") {
+        toast.error("Only PNG, JPG, WEBP, and PDF files are supported.")
+      } else {
+        toast.error("Could not create a note for this step.")
+      }
     } finally {
       setIsSavingStepNote(false)
     }
@@ -1149,9 +1565,10 @@ export function ContactServiceDetailsPanel({
 
   const openStepTaskDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
     setActiveStep(step)
-    setStepTaskName(`Follow-up: ${step.title}`)
-    setStepTaskDescription(`Service: ${item?.service.name ?? ""}\nStep: ${step.title}`)
+    setStepTaskName(step.title)
+    setStepTaskDescription("")
     setStepTaskDueAt(formatUtcIsoToDateTimeDraft(step.dueAt, "America/Chicago"))
+    setStepTaskAssignedToUserId(step.assignedToUserId ?? "")
     setIsStepTaskDialogOpen(true)
   }
 
@@ -1164,12 +1581,16 @@ export function ContactServiceDetailsPanel({
 
     setIsSavingStepTask(true)
     try {
-      await api.post(`/api/tasks/${tenantId}`, {
+      await api.post(`/api/tasks/${encodedTenantId}`, {
         name: stepTaskName.trim(),
         contactId,
         description: stepTaskDescription.trim() || null,
+        contactServiceId: item.id,
+        followUpTemplateId: item.followUpTemplate?.id ?? null,
+        contactServiceFollowUpStepId: activeStep.id,
         linkedEntityName: `${item.service.name} - ${activeStep.title}`,
         linkedEntityType: "SERVICE",
+        assignedToUserId: stepTaskAssignedToUserId || null,
         dueDate: isDateTimeDraftComplete(stepTaskDueAt)
           ? dateTimeDraftToUtcIso(stepTaskDueAt, "America/Chicago")
           : null,
@@ -1181,6 +1602,7 @@ export function ContactServiceDetailsPanel({
       setStepTaskName("")
       setStepTaskDescription("")
       setStepTaskDueAt({ date: "", time: "" })
+      setStepTaskAssignedToUserId("")
       router.refresh()
     } catch {
       toast.error("Could not create task for this step.")
@@ -1266,10 +1688,39 @@ export function ContactServiceDetailsPanel({
       })
     })
 
+    item.executionLogs.forEach((log) => {
+      entries.push({
+        id: `execution-${log.id}`,
+        createdAt: log.createdAt,
+        title: log.title,
+        description: log.details ?? (log.actor?.name ? `Updated by ${log.actor.name}` : "Follow-up activity recorded."),
+        tone:
+          log.eventType === "STEP_STATUS_UPDATED"
+            ? "border-blue-200 bg-blue-50/80 text-blue-800"
+            : log.eventType === "STEP_ACTIVATED"
+              ? "border-amber-200 bg-amber-50/80 text-amber-800"
+              : log.eventType === "FLOW_COMPLETED"
+                ? "border-emerald-200 bg-emerald-50/80 text-emerald-800"
+                : "border-slate-200 bg-slate-50 text-slate-700",
+        icon: "status",
+      })
+    })
+
     return entries.sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     )
   }, [checklistItems, item, payments, serviceNotes])
+  const visibleHistoryItems = useMemo(
+    () => historyItems.slice(0, visibleHistoryCount),
+    [historyItems, visibleHistoryCount],
+  )
+
+  const detailTabState = useMemo(() => {
+    if (activeTab === "overview") return "ready" as const
+    if (isDetailLoading && !item) return "loading" as const
+    if (!item) return "empty" as const
+    return "ready" as const
+  }, [activeTab, isDetailLoading, item])
 
   if (isLoading) {
     return (
@@ -1279,7 +1730,7 @@ export function ContactServiceDetailsPanel({
     )
   }
 
-  if (!item) {
+  if (!serviceData) {
     return (
       <section className="rounded-[26px] border border-dashed border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
         This service enrollment could not be found.
@@ -1295,10 +1746,10 @@ export function ContactServiceDetailsPanel({
           <div className="space-y-3">
             <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
               <span>Contact Service</span>
-              {item.followUpTemplate?.name ? (
+              {serviceData.followUpTemplate?.name ? (
                 <>
                   <span className="text-slate-300">/</span>
-                  <span>{item.followUpTemplate.name}</span>
+                  <span>{serviceData.followUpTemplate.name}</span>
                 </>
               ) : null}
             </div>
@@ -1312,14 +1763,156 @@ export function ContactServiceDetailsPanel({
               </Link>
               <div className="space-y-1">
                 <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
-                  {item.service.name}
+                  {serviceData.service.name}
                 </h1>
                 <p className="text-sm text-slate-500">
-                  Professional: {getAssignedProfessionalLabel(item.assignedProfessional)}
+                  Professional: {getAssignedProfessionalLabel(serviceData.assignedProfessional)}
                 </p>
-                {item.service.description ? (
+                <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
+                  <span>Assigned to task:</span>
+                  {canManageSensitiveServiceActions && followUpSteps.length ? (
+                    <Popover
+                      open={followUpOwnerOpen}
+                      onOpenChange={(open) => {
+                        if (!canManageSensitiveServiceActions || !followUpSteps.length) return
+                        setFollowUpOwnerOpen(open)
+                      }}
+                    >
+                      <PopoverTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="h-8 max-w-[260px] cursor-pointer rounded-full border border-white/70 bg-white/70 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/90"
+                          disabled={isSavingFollowUpOwner || isLoadingAssignees}
+                        >
+                          {hasMixedOpenStepOwners ? (
+                            <div className="flex min-w-0 max-w-full items-center gap-2">
+                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                                <UserRound className="h-3.5 w-3.5" />
+                              </span>
+                              <span className="truncate text-xs font-medium text-slate-700">
+                                Mixed assignees
+                              </span>
+                            </div>
+                          ) : currentFollowUpOwner ? (
+                            <div className="flex min-w-0 max-w-full items-center gap-2">
+                              <Avatar className="h-5 w-5 shrink-0">
+                                <AvatarImage
+                                  src={currentFollowUpOwner.image ?? undefined}
+                                  alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                                />
+                                <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                                  {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
+                                </AvatarFallback>
+                              </Avatar>
+                              <span className="truncate text-xs font-medium text-slate-700">
+                                {getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex min-w-0 max-w-full items-center gap-2">
+                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                                <UserRound className="h-3.5 w-3.5" />
+                              </span>
+                              <span className="truncate text-xs font-medium text-slate-600">
+                                Unassigned
+                              </span>
+                            </div>
+                          )}
+                          {isLoadingAssignees || isSavingFollowUpOwner ? (
+                            <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin text-slate-500" />
+                          ) : (
+                            <ChevronDown className="ml-1 h-3.5 w-3.5 shrink-0 text-slate-500" />
+                          )}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-[320px] p-0">
+                        <Command>
+                          <CommandInput placeholder="Change follow-up owner..." />
+                          <CommandList>
+                            <CommandEmpty>No assignees found.</CommandEmpty>
+                            <CommandItem
+                              onSelect={() => void updateFollowUpOwner("")}
+                              className="cursor-pointer gap-2 px-3 py-2"
+                              disabled={isSavingFollowUpOwner}
+                            >
+                              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                                <UserRound className="h-3.5 w-3.5" />
+                              </span>
+                              <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
+                                Unassigned
+                              </span>
+                              <Check
+                                className={cn(
+                                  "h-4 w-4 text-blue-950",
+                                  !hasMixedOpenStepOwners && currentFollowUpOwnerUserId === ""
+                                    ? "opacity-100"
+                                    : "opacity-0",
+                                )}
+                              />
+                            </CommandItem>
+                            {followUpAssigneeOptions.map((assignee) => (
+                              <CommandItem
+                                key={assignee.value}
+                                onSelect={() => void updateFollowUpOwner(assignee.value)}
+                                className="cursor-pointer gap-2 px-3 py-2"
+                                disabled={isSavingFollowUpOwner}
+                              >
+                                <Avatar className="h-6 w-6 shrink-0">
+                                  <AvatarImage src={assignee.image ?? undefined} alt={assignee.label} />
+                                  <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                                    {getInitials(assignee.label)}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
+                                  {assignee.label}
+                                </span>
+                                <Check
+                                  className={cn(
+                                    "h-4 w-4 text-blue-950",
+                                    !hasMixedOpenStepOwners && currentFollowUpOwnerUserId === assignee.value
+                                      ? "opacity-100"
+                                      : "opacity-0",
+                                  )}
+                                />
+                              </CommandItem>
+                            ))}
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                  ) : hasMixedOpenStepOwners ? (
+                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                        <UserRound className="h-3.5 w-3.5" />
+                      </span>
+                      Mixed assignees
+                    </span>
+                  ) : currentFollowUpOwner ? (
+                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
+                      <Avatar className="h-5 w-5 shrink-0">
+                        <AvatarImage
+                          src={currentFollowUpOwner.image ?? undefined}
+                          alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                        />
+                        <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                          {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
+                        </AvatarFallback>
+                      </Avatar>
+                      {getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-600">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                        <UserRound className="h-3.5 w-3.5" />
+                      </span>
+                      Unassigned
+                    </span>
+                  )}
+                </div>
+                {serviceData.service.description ? (
                   <p className="max-w-3xl text-sm leading-6 text-slate-600">
-                    {item.service.description}
+                    {serviceData.service.description}
                   </p>
                 ) : null}
               </div>
@@ -1335,55 +1928,6 @@ export function ContactServiceDetailsPanel({
                 disabled={isDeleting || isStatusSaving}
               >
                 {isDeleting ? "Deleting..." : "Delete"}
-              </Button>
-            ) : null}
-            {canManageSensitiveServiceActions && item.followUpSteps.length ? (
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-8 max-w-[220px] cursor-pointer rounded-full border border-white/70 bg-white/60 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/80"
-                onClick={openFollowUpOwnerDialog}
-                disabled={isSavingFollowUpOwner || isLoadingAssignees}
-              >
-                {hasMixedOpenStepOwners ? (
-                  <div className="flex min-w-0 max-w-full items-center gap-2">
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                      <UserRound className="h-3.5 w-3.5" />
-                    </span>
-                    <span className="truncate text-xs font-medium text-slate-700">
-                      Mixed assignees
-                    </span>
-                  </div>
-                ) : currentFollowUpOwner ? (
-                  <div className="flex min-w-0 max-w-full items-center gap-2">
-                    <Avatar className="h-5 w-5 shrink-0">
-                      <AvatarImage
-                        src={currentFollowUpOwner.image ?? undefined}
-                        alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                      />
-                      <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
-                        {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="truncate text-xs font-medium text-slate-700">
-                      {getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex min-w-0 max-w-full items-center gap-2">
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                      <UserRound className="h-3.5 w-3.5" />
-                    </span>
-                    <span className="truncate text-xs font-medium text-slate-600">
-                      Unassigned
-                    </span>
-                  </div>
-                )}
-                {isLoadingAssignees ? (
-                  <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin text-slate-500" />
-                ) : (
-                  <ChevronDown className="ml-1 h-3.5 w-3.5 shrink-0 text-slate-500" />
-                )}
               </Button>
             ) : null}
             <Popover
@@ -1405,7 +1949,9 @@ export function ContactServiceDetailsPanel({
                   )}
                   disabled={!canManageSensitiveServiceActions}
                 >
-                  <span className="truncate">{currentStatusOption?.label ?? toSentence(item.status)}</span>
+                  <span className="truncate">
+                    {currentStatusOption?.label ?? toSentence(serviceData.status)}
+                  </span>
                   {isStatusSaving ? (
                     <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin" />
                   ) : (
@@ -1437,7 +1983,7 @@ export function ContactServiceDetailsPanel({
                         <Check
                           className={cn(
                             "h-4 w-4 text-blue-950",
-                            item.status === option.value ? "opacity-100" : "opacity-0",
+                            serviceData.status === option.value ? "opacity-100" : "opacity-0",
                           )}
                         />
                       </CommandItem>
@@ -1457,12 +2003,12 @@ export function ContactServiceDetailsPanel({
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Total Amount</p>
           </div>
           <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
-            {currencyFormatter(item.totalPriceCents, item.currency)}
+            {currencyFormatter(serviceData.totalPriceCents, serviceData.currency)}
           </p>
           <p className="mt-1 text-xs text-slate-500">
             {taxAmountCents > 0
-              ? `Includes ${currencyFormatter(taxAmountCents, item.currency)} in ${tenantBilling.taxLabel || "tax"}`
-              : tenantBilling.taxEnabled && item.service.isTaxExempt
+              ? `Includes ${currencyFormatter(taxAmountCents, serviceData.currency)} in ${tenantBilling.taxLabel || "tax"}`
+              : tenantBilling.taxEnabled && serviceData.service.isTaxExempt
                 ? "Tax exempt service"
                 : "No tax applied"}
           </p>
@@ -1473,11 +2019,11 @@ export function ContactServiceDetailsPanel({
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Paid</p>
           </div>
           <p className="mt-2 truncate text-xl font-semibold tracking-tight text-sky-700">
-            {currencyFormatter(item.paidCents, item.currency)}
+            {currencyFormatter(serviceData.paidCents, serviceData.currency)}
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            {latestPayment
-              ? `Last payment: ${formatDateOnly(latestPayment.paidAt)}`
+            {latestPaymentAt
+              ? `Last payment: ${formatDateOnly(latestPaymentAt)}`
               : "No payments recorded yet"}
           </p>
         </div>
@@ -1487,10 +2033,10 @@ export function ContactServiceDetailsPanel({
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Balance Due</p>
           </div>
           <p className="mt-2 truncate text-xl font-semibold tracking-tight text-amber-700">
-            {currencyFormatter(item.remainingCents, item.currency)}
+            {currencyFormatter(serviceData.remainingCents, serviceData.currency)}
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            {item.service.installmentCount
+            {serviceData.service.installmentCount
               ? `${remainingScheduledInstallments} installment${remainingScheduledInstallments === 1 ? "" : "s"} left to pay`
               : "No installment schedule configured"}
           </p>
@@ -1503,728 +2049,1249 @@ export function ContactServiceDetailsPanel({
             </p>
           </div>
           <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
-            {nextScheduledPaymentDate ? formatDateOnly(nextScheduledPaymentDate) : "Not scheduled"}
+            {serviceData.remainingCents <= 0
+              ? "Paid in full"
+              : nextScheduledPaymentDate
+                ? formatDateOnly(nextScheduledPaymentDate)
+                : "Not scheduled"}
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            {item.service.installmentFrequency
-              ? `${INSTALLMENT_FREQUENCY_LABELS[item.service.installmentFrequency]} installment schedule`
-              : "No installment schedule configured"}
+            {serviceData.remainingCents <= 0
+              ? "No remaining balance on this service"
+              : serviceData.service.installmentFrequency
+                ? `${INSTALLMENT_FREQUENCY_LABELS[serviceData.service.installmentFrequency]} installment schedule`
+                : "No installment schedule configured"}
           </p>
         </div>
       </div>
 
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
-        <div className="space-y-4">
-          <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service Follow-Up</p>
-                <p className="mt-1 text-sm text-slate-600">
-                  Review the enrolled follow-up path for this service and move each step forward when it becomes active.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
-                  {followUpCompletionPercentage}% complete
-                </Badge>
-                <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
-                  {followUpCompletedCount}/{followUpSteps.length} steps
-                </Badge>
-              </div>
-            </div>
-            {followUpSteps.length ? (
-              <div className="space-y-4">
-                <div className="h-1.5 overflow-hidden rounded-full bg-slate-200">
-                  <div
-                    className="h-full rounded-full bg-emerald-500 transition-all"
-                    style={{ width: `${followUpCompletionPercentage}%` }}
-                  />
-                </div>
-                <div className="space-y-3">
-                  {followUpSteps.map((step, index) => {
-                    const timeMeta = getStepTimeMeta(step)
-                    const isStatusLocked = (step.status ?? "PENDING") !== "ACTIVE"
-                    const isActive = (step.status ?? "PENDING") === "ACTIVE"
-                    const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"
+      <Tabs
+        value={activeTab}
+        onValueChange={handleTabChange}
+        className="rounded-[28px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-5 shadow-sm md:p-6"
+      >
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-2 bg-transparent p-0 md:grid-cols-3 xl:grid-cols-6">
+            <TabsTrigger
+              value="overview"
+              className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
+            >
+              Overview
+            </TabsTrigger>
+            <TabsTrigger
+              value="follow-up"
+              className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
+            >
+              Follow up
+            </TabsTrigger>
+            <TabsTrigger
+              value="payments"
+              className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
+            >
+              Payments
+            </TabsTrigger>
+            <TabsTrigger
+              value="checklist"
+              className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
+            >
+              Checklist
+            </TabsTrigger>
+            <TabsTrigger
+              value="notes"
+              className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
+            >
+              Notes
+            </TabsTrigger>
+            <TabsTrigger
+              value="activity"
+              className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
+            >
+              Activity log
+            </TabsTrigger>
+        </TabsList>
 
-                    return (
-                      <div key={step.id} className="flex gap-3">
-                        <div className="flex w-8 shrink-0 flex-col items-center pt-2">
-                          <span
-                            className={cn(
-                              "inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold",
-                              isDone
-                                ? "border-emerald-200 bg-emerald-100 text-emerald-800"
-                                : isActive
-                                  ? "border-blue-200 bg-blue-50 text-blue-900"
-                                  : "border-slate-200 bg-slate-50 text-slate-600",
-                            )}
-                          >
-                            {index + 1}
-                          </span>
-                          {index < followUpSteps.length - 1 ? (
-                            <span className="mt-2 h-full min-h-8 w-px bg-slate-200" />
-                          ) : null}
-                        </div>
-                        <article
-                          className={cn(
-                            "flex-1 rounded-[22px] border px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]",
-                            isDone
-                              ? "border-emerald-200 bg-emerald-50/50"
-                              : isActive
-                                ? "border-blue-200 bg-blue-50/40"
-                                : "border-slate-200 bg-white",
-                          )}
-                        >
-                          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                            <div className="min-w-0 flex-1 space-y-3">
-                              <div className="min-w-0 space-y-2">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <Badge
-                                    variant="outline"
-                                    className="border-slate-200 bg-white text-slate-600"
-                                  >
-                                    Step {index + 1}
-                                  </Badge>
-                                  <Badge className={timeMeta.badgeClassName}>{timeMeta.label}</Badge>
-                                  {isActive ? (
-                                    <Badge className="bg-blue-100 text-blue-900 hover:bg-blue-100">
-                                      Current step
-                                    </Badge>
-                                  ) : null}
-                                </div>
-                                <button
-                                  type="button"
-                                  className="cursor-pointer text-left text-base font-semibold tracking-tight text-slate-950 transition hover:text-slate-700"
-                                  onClick={() => openStepDetailsDialog(step)}
-                                >
-                                  {step.title}
-                                </button>
-                                <p className="text-xs font-medium text-slate-500">{timeMeta.helper}</p>
-                              </div>
-                              <p className="max-w-3xl text-sm leading-6 text-slate-600">
-                                {step.notesTemplate?.trim() || "No description provided for this step."}
-                              </p>
-                              {step.note?.trim() ? (
-                                <div className="rounded-2xl bg-slate-50 px-3 py-2.5">
-                                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                                    Latest Step Note
-                                  </p>
-                                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-700">{step.note}</p>
-                                </div>
-                              ) : null}
-                            </div>
-                            <div className="flex w-full items-center gap-2 xl:w-auto xl:min-w-[320px] xl:justify-end">
-                              {!isStatusLocked ? (
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  className="h-10 min-w-[150px] cursor-pointer justify-between rounded-full border-slate-200 bg-white text-sm capitalize shadow-sm"
-                                  disabled={mutatingStepId === step.id}
-                                  onClick={() => openStepStatusDialog(step)}
-                                >
-                                  <span>{(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}</span>
-                                  {mutatingStepId === step.id ? (
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                  ) : (
-                                    <ChevronDown className="h-4 w-4" />
-                                  )}
-                                </Button>
-                              ) : (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <span className="inline-flex">
-                                      <Button
-                                        type="button"
-                                        variant="outline"
-                                        className="h-10 min-w-[150px] cursor-not-allowed justify-between rounded-full border-slate-200 bg-white text-sm capitalize shadow-sm"
-                                        disabled
-                                      >
-                                        <span>{(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}</span>
-                                        <ChevronDown className="h-4 w-4" />
-                                      </Button>
-                                    </span>
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top" sideOffset={6}>
-                                    Only the current active step can be updated.
-                                  </TooltipContent>
-                                </Tooltip>
-                              )}
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="icon"
-                                    className="h-10 w-10 cursor-pointer rounded-xl border-slate-200 bg-white text-fuchsia-700 hover:border-fuchsia-200 hover:bg-white hover:text-fuchsia-800"
-                                    onClick={() => openStepNoteDialog(step)}
-                                    aria-label={`Add note for ${step.title}`}
-                                  >
-                                    <NotebookPen className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent side="top" sideOffset={6}>Add note</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="icon"
-                                    className="h-10 w-10 cursor-pointer rounded-xl border-slate-200 bg-white text-cyan-700 hover:border-cyan-200 hover:bg-white hover:text-cyan-800"
-                                    onClick={() => openStepTaskDialog(step)}
-                                    aria-label={`Create task for ${step.title}`}
-                                  >
-                                    <ListTodo className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent side="top" sideOffset={6}>Create task</TooltipContent>
-                              </Tooltip>
-                            </div>
-                          </div>
-                        </article>
-                      </div>
-                    )
-                  })}
+        <TabsContent value="overview" className="pt-4">
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
+            <section className="rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-5 shadow-sm">
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                      Enrollment snapshot
+                    </p>
+                    <h2 className="mt-1 text-lg font-semibold tracking-tight text-slate-950">
+                      Service overview
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Key enrollment details, ownership, and progress at a glance.
+                    </p>
+                  </div>
+                  <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
+                    {followUpCompletionPercentage}% complete
+                  </Badge>
                 </div>
-              </div>
-            ) : (
-              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                No follow-up steps are enrolled for this service yet.
-              </div>
-            )}
-          </section>
 
-          <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Payment History</p>
-                <p className="mt-1 text-sm text-slate-600">
-                  Review recorded payments and add a new transaction when more balance is collected.
-                </p>
-              </div>
-              {canManageSensitiveServiceActions ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="h-9 cursor-pointer rounded-xl border border-blue-100 bg-blue-50/80 px-3.5 text-xs font-semibold text-blue-700 shadow-sm hover:border-blue-200 hover:bg-blue-100/80 hover:text-blue-800"
-                  onClick={() => setIsPaymentOpen(true)}
-                  disabled={!canAddPayments}
-                >
-                  <CircleDollarSign className="h-3.5 w-3.5" />
-                  Add transaction
-                </Button>
-              ) : null}
-            </div>
-            <div className="mb-4 grid gap-3 md:grid-cols-3">
-              <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                  Installments & Frequency
-                </p>
-                <p className="mt-2 text-base font-semibold text-slate-950">
-                  {item.service.installmentCount && item.service.installmentFrequency
-                    ? `${item.service.installmentCount} · ${INSTALLMENT_FREQUENCY_LABELS[item.service.installmentFrequency]}`
-                    : "Full payment only"}
-                </p>
-                <p className="mt-1 text-xs text-slate-500">{paymentPlanSummary}</p>
-              </div>
-              <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                  Next Payment Date
-                </p>
-                <p className="mt-2 text-base font-semibold text-slate-950">
-                  {nextScheduledPaymentDate ? formatDateOnly(nextScheduledPaymentDate) : "Not scheduled"}
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  {item.remainingCents > 0
-                    ? nextScheduledPaymentSummary ?? "No upcoming scheduled payment."
-                    : "No remaining balance on this service."}
-                </p>
-              </div>
-              <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                  Minimum Deposit
-                </p>
-                <p className="mt-2 text-base font-semibold text-slate-950">
-                  {item.service.minimumPartialPaymentCents !== null
-                    ? currencyFormatter(item.service.minimumPartialPaymentCents, item.currency)
-                    : "Not required"}
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  {item.allowPartialPayments
-                    ? "Minimum amount accepted for the first partial payment."
-                    : "This service is configured for full payment only."}
-                </p>
-              </div>
-            </div>
-            {payments.length ? (
-              <div className="overflow-hidden rounded-[22px] border border-slate-200">
-                <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/70 px-5 py-3">
-                  <p className="text-xs text-slate-500">
-                    Showing {Math.min(visiblePaymentsCount, payments.length)} of {payments.length} payments
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <Badge
-                      className={cn(
-                        "rounded-full px-2.5 py-0.5 hover:bg-inherit",
-                        item.remainingCents > 0
-                          ? "bg-amber-100 text-amber-800"
-                          : "bg-emerald-100 text-emerald-800",
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-center gap-2 text-slate-400">
+                      <CircleHelp className="h-4 w-4 text-blue-700" />
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Status</p>
+                    </div>
+                    <p className="mt-3 text-base font-semibold text-slate-950">
+                      {currentStatusOption?.label ?? toSentence(serviceData.status)}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Current enrollment state for this service.
+                    </p>
+                  </div>
+
+                  <div className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-center gap-2 text-slate-400">
+                      <UserRound className="h-4 w-4 text-blue-700" />
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Owner</p>
+                    </div>
+                    <div className="mt-3 flex items-center gap-2">
+                      {hasMixedOpenStepOwners ? (
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                          <UserRound className="h-4 w-4" />
+                        </span>
+                      ) : currentFollowUpOwner ? (
+                        <Avatar className="h-8 w-8 shrink-0 border border-slate-200">
+                          <AvatarImage
+                            src={currentFollowUpOwner.image ?? undefined}
+                            alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                          />
+                          <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                            {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
+                          </AvatarFallback>
+                        </Avatar>
+                      ) : (
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                          <UserRound className="h-4 w-4" />
+                        </span>
                       )}
-                    >
-                      {paymentCollectionState}
-                    </Badge>
-                    {payments.length > PAYMENTS_PAGE_SIZE ? (
-                      <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
-                        {payments.length - Math.min(visiblePaymentsCount, payments.length)} more
-                      </Badge>
-                    ) : null}
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-950">
+                          {hasMixedOpenStepOwners
+                            ? "Mixed assignees"
+                            : getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Follow-up owner for the open work.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-center gap-2 text-slate-400">
+                      <Clock3 className="h-4 w-4 text-blue-700" />
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">
+                        Created
+                      </p>
+                    </div>
+                    <p className="mt-3 text-base font-semibold text-slate-950">
+                      {formatDateOnly(serviceData.purchasedAt ?? serviceData.startedAt)}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Purchase date for this enrollment.
+                    </p>
+                  </div>
+
+                  <div className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-center gap-2 text-slate-400">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">
+                        Progress
+                      </p>
+                    </div>
+                    <p className="mt-3 text-base font-semibold text-slate-950">
+                      {followUpCompletedCount}/{followUpSteps.length || 0} steps
+                    </p>
+                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200">
+                      <div
+                        className="h-full rounded-full bg-emerald-500 transition-all"
+                        style={{ width: `${followUpCompletionPercentage}%` }}
+                      />
+                    </div>
                   </div>
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[760px] table-fixed">
-                    <thead>
-                      <tr className="border-b border-slate-200 bg-slate-50/40">
-                        <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                          Date Paid
-                        </th>
-                        <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                          Recorded By
-                        </th>
-                        <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                          Type
-                        </th>
-                        <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                          Note
-                        </th>
-                        <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                          Amount
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200 bg-white">
-                      {visiblePayments.map((payment, index) => (
-                        <tr
-                          key={payment.id ?? `${payment.paidAt}-${payment.amountCents}-${index}`}
-                          className={cn(
-                            "transition-colors",
-                            canManageSensitiveServiceActions
-                              ? "cursor-pointer hover:bg-slate-50/60"
-                              : "cursor-default",
-                          )}
-                          onClick={() => {
-                            if (!canManageSensitiveServiceActions) return
-                            openEditPayment(payment)
-                          }}
-                        >
-                          <td className="px-5 py-3.5 align-top text-sm font-medium text-slate-900">
-                            {formatDateTime(payment.paidAt)}
-                          </td>
-                          <td className="px-5 py-3.5 align-top">
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium text-slate-900">
-                                {payment.recordedBy?.name ?? "System"}
-                              </p>
-                              <p className="text-xs text-slate-500">Recorded payment</p>
-                            </div>
-                          </td>
-                          <td className="px-5 py-3.5 align-top">
-                            {payment.paymentMethod ? (
-                              <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
-                                {formatPaymentMethod(payment.paymentMethod)}
-                              </Badge>
-                            ) : (
-                              <span className="text-sm text-slate-400">No method</span>
-                            )}
-                          </td>
-                          <td className="px-5 py-3.5 align-top">
-                            <p className="line-clamp-2 text-sm leading-6 text-slate-600">
-                              {payment.note?.trim() || "Payment recorded for this service."}
-                            </p>
-                          </td>
-                          <td className="px-5 py-3.5 text-right align-top">
-                            <p className="text-sm font-semibold text-slate-950">
-                              {currencyFormatter(payment.amountCents, item.currency)}
-                            </p>
-                            <p className="mt-1 text-xs text-emerald-600">Paid</p>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              </div>
+            </section>
+
+            <section
+              className={cn(
+                "rounded-[24px] p-5 shadow-sm",
+                nextFollowUpStep && getStepTimeMeta(nextFollowUpStep).label === "Overdue"
+                  ? "border border-rose-200 bg-[linear-gradient(135deg,#fff1f2_0%,#fff7ed_45%,#ffffff_100%)]"
+                  : "border border-blue-200 bg-[linear-gradient(135deg,#eff6ff_0%,#f8fafc_45%,#ffffff_100%)]",
+              )}
+            >
+              <div className="flex h-full flex-col gap-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p
+                      className={cn(
+                        "text-xs font-semibold uppercase tracking-[0.14em]",
+                        nextFollowUpStep && getStepTimeMeta(nextFollowUpStep).label === "Overdue"
+                          ? "text-rose-700"
+                          : "text-blue-700",
+                      )}
+                    >
+                      Next follow-up
+                    </p>
+                    <h2 className="mt-2 text-lg font-semibold tracking-tight text-slate-950">
+                      {nextFollowUpStep?.title ?? "No open follow-up steps"}
+                    </h2>
+                  </div>
+                  {nextFollowUpStep ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge className={getFollowUpStepStatusBadgeClass(nextFollowUpStep.status)}>
+                        {formatFollowUpStepStatus(nextFollowUpStep.status)}
+                      </Badge>
+                      {getStepTimeMeta(nextFollowUpStep).label === "Overdue" ? (
+                        <Badge className="bg-rose-100 text-rose-800 hover:bg-rose-100">
+                          Overdue
+                        </Badge>
+                      ) : null}
+                      <Badge className={getStepTimeMeta(nextFollowUpStep).badgeClassName}>
+                        Due
+                      </Badge>
+                    </div>
+                  ) : null}
                 </div>
-                {payments.length > visiblePaymentsCount ? (
-                  <div className="flex justify-center border-t border-slate-200 bg-slate-50/60 px-5 py-3">
+
+                <p className="text-sm leading-6 text-slate-600">
+                  {nextFollowUpStep?.notesTemplate?.trim() ||
+                    "This enrollment does not have any remaining follow-up work right now."}
+                </p>
+
+                {nextFollowUpStep ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-[18px] border border-white/80 bg-white/80 px-4 py-3 shadow-sm">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                        Due
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-slate-950">
+                        {getStepTimeMeta(nextFollowUpStep).helper}
+                      </p>
+                    </div>
+                    <div className="rounded-[18px] border border-white/80 bg-white/80 px-4 py-3 shadow-sm">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                        Assigned to
+                      </p>
+                      <div className="mt-2 flex items-center gap-2">
+                        {nextFollowUpStep.assignedTo ? (
+                          <Avatar className="h-7 w-7 shrink-0 border border-slate-200">
+                            <AvatarImage
+                              src={nextFollowUpStep.assignedTo.image ?? undefined}
+                              alt={getFollowUpAssigneeLabel(nextFollowUpStep.assignedTo)}
+                            />
+                            <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                              {getInitials(getFollowUpAssigneeLabel(nextFollowUpStep.assignedTo))}
+                            </AvatarFallback>
+                          </Avatar>
+                        ) : (
+                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                            <UserRound className="h-3.5 w-3.5" />
+                          </span>
+                        )}
+                        <p className="truncate text-sm font-semibold text-slate-950">
+                          {getFollowUpAssigneeLabel(nextFollowUpStep.assignedTo)}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-[18px] border border-dashed border-blue-200 bg-white/70 px-4 py-5 text-sm text-slate-500">
+                    There is no active, postponed, or pending step waiting right now.
+                  </div>
+                )}
+
+                {nextFollowUpStep ? (
+                  <div className="flex flex-wrap gap-2 pt-1">
                     <Button
                       type="button"
                       variant="outline"
-                      className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                      onClick={() =>
-                        setVisiblePaymentsCount((current) =>
-                          Math.min(current + PAYMENTS_PAGE_SIZE, payments.length),
-                        )
-                      }
+                      className="cursor-pointer rounded-full border-blue-200 bg-white text-blue-950 hover:bg-blue-50"
+                      onClick={() => handleTabChange("follow-up")}
                     >
-                      Load more payments
-                    </Button>
-                  </div>
-                ) : payments.length > PAYMENTS_PAGE_SIZE ? (
-                  <div className="flex justify-center border-t border-slate-200 bg-slate-50/60 px-5 py-3">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      className="cursor-pointer rounded-full border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-950"
-                      onClick={() => setVisiblePaymentsCount(PAYMENTS_PAGE_SIZE)}
-                    >
-                      Show less
+                      Open follow-up tab
                     </Button>
                   </div>
                 ) : null}
               </div>
-            ) : (
-              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                No payments have been recorded for this service yet.
-              </div>
-            )}
-          </section>
+            </section>
+          </div>
 
-          <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-            <div className="mb-4">
+          <section className="mt-4 rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service Notes</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                  Quick checklist preview
+                </p>
+                <h3 className="mt-1 text-lg font-semibold tracking-tight text-slate-950">
+                  Required documents snapshot
+                </h3>
                 <p className="mt-1 text-sm text-slate-600">
-                  Keep service-specific notes separate from general contact notes.
+                  The first items the contact will likely ask about for this service.
                 </p>
               </div>
-            </div>
-            {serviceNotes.length ? (
-              <div className="space-y-3">
-                {serviceNotes.map((note) => (
-                  <article key={note.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="flex min-w-0 items-start gap-3">
-                        <Avatar className="h-10 w-10 shrink-0">
-                          <AvatarImage
-                            src={note.createdBy?.image ?? undefined}
-                            alt={note.createdBy?.name ?? "Service note author"}
-                          />
-                          <AvatarFallback className="bg-blue-950 text-xs font-semibold text-white">
-                            {getInitials(note.createdBy?.name)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="min-w-0">
-                          <h2 className="text-sm font-semibold text-slate-900">{note.title}</h2>
-                          <p className="mt-1 text-xs text-slate-500">
-                            {note.createdBy?.name ? `Added by ${note.createdBy.name}` : "Added to this service"}
-                            {" · "}
-                            {formatDateTime(note.createdAt)}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{note.body}</p>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                No service notes have been added yet.
-              </div>
-            )}
-            <form
-              className="mt-4 rounded-[22px] border border-slate-200 bg-slate-50/80 px-4 py-4 shadow-sm"
-              onSubmit={(event) => {
-                event.preventDefault()
-                void onAddServiceNote()
-              }}
-            >
-              <div className="flex items-center gap-3">
-                <div className="min-w-0 flex-1">
-                  <Textarea
-                    value={serviceNoteBody}
-                    onChange={(event) => setServiceNoteBody(event.target.value)}
-                    rows={3}
-                    placeholder="Add a service note..."
-                    disabled={isNoteSaving}
-                    className="min-h-[104px] resize-none rounded-[18px] border-slate-200 bg-white px-4 py-3 text-sm leading-6 shadow-sm placeholder:text-slate-400 focus-visible:border-blue-200 focus-visible:ring-2 focus-visible:ring-blue-100"
-                  />
-                </div>
+              {checklistItems.length > 3 ? (
                 <Button
-                  type="submit"
-                  size="icon"
-                  disabled={isNoteSaving || !serviceNoteBody.trim()}
-                  className="h-12 w-12 shrink-0 self-center rounded-full bg-blue-950 text-white shadow-sm hover:bg-blue-900"
-                  aria-label="Send service note"
+                  type="button"
+                  variant="outline"
+                  className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  onClick={() => handleTabChange("checklist")}
                 >
-                  {isNoteSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
+                  View all checklist items
                 </Button>
-              </div>
-            </form>
-          </section>
-
-          <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-            <div className="mb-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service History</p>
-              <p className="mt-1 text-sm text-slate-600">
-                Review the service timeline, including payments, checklist receipts, and note activity.
-              </p>
+              ) : null}
             </div>
-            {historyItems.length ? (
-              <div className="space-y-3">
-                {historyItems.map((historyItem) => (
-                  <div key={historyItem.id} className="flex gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                    <div className={cn("mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border", historyItem.tone)}>
-                      {historyItem.icon === "payment" ? (
-                        <CreditCard className="h-4 w-4" />
-                      ) : historyItem.icon === "checklist" ? (
-                        <CheckCircle2 className="h-4 w-4" />
-                      ) : historyItem.icon === "note" ? (
-                        <NotebookPen className="h-4 w-4" />
-                      ) : (
-                        <Clock3 className="h-4 w-4" />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <p className="text-sm font-semibold text-slate-900">{historyItem.title}</p>
-                        <p className="text-xs text-slate-500">{formatDateTime(historyItem.createdAt)}</p>
+            {overviewChecklistPreview.length ? (
+              <div className="mt-4 grid gap-3 lg:grid-cols-3">
+                {overviewChecklistPreview.map((checklistItem) => (
+                  <div
+                    key={checklistItem.id}
+                    className="rounded-[20px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-4 shadow-sm"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <p className="text-sm font-semibold text-slate-900">{checklistItem.label}</p>
+                          {checklistItem.isRequired ? (
+                            <span className="text-sm font-semibold text-rose-500">*</span>
+                          ) : null}
+                        </div>
+                        <p className="mt-2 text-xs leading-5 text-slate-500">
+                          {checklistItem.description?.trim() || "No additional description provided."}
+                        </p>
                       </div>
-                      <p className="mt-1 text-sm leading-6 text-slate-600">{historyItem.description}</p>
+                      <Badge
+                        className={cn(
+                          checklistItem.completedAt
+                            ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100"
+                            : "bg-slate-100 text-slate-700 hover:bg-slate-100",
+                        )}
+                      >
+                        {checklistItem.completedAt ? "Received" : "Pending"}
+                      </Badge>
                     </div>
+                    <p className="mt-3 text-xs text-slate-500">
+                      {checklistItem.completedAt
+                        ? `Received ${formatDateTime(checklistItem.completedAt)}`
+                        : "Still waiting to be received"}
+                    </p>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                No service activity is available yet.
-              </div>
-            )}
-          </section>
-        </div>
-
-        <div className="flex flex-col gap-4 self-start xl:sticky xl:top-20 xl:max-h-[calc(100vh-5.5rem)] xl:overflow-y-auto xl:pr-1">
-          <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white xl:flex xl:max-h-[44rem] xl:flex-col">
-            <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                    Checklist Tracking
-                  </p>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Mark documents as received as soon as the contact brings them in.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
-                    {checklistCompletionPercentage}% complete
-                  </Badge>
-                  <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
-                    {checklistCompletedCount}/{checklistItems.length} items
-                  </Badge>
-                </div>
-              </div>
-              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200">
-                <div
-                  className="h-full rounded-full bg-emerald-500 transition-[width]"
-                  style={{ width: `${checklistCompletionPercentage}%` }}
-                />
-              </div>
-            </div>
-            {checklistItems.length ? (
-              <div className="xl:min-h-0 xl:flex-1 xl:overflow-y-auto">
-                <div className="sticky top-0 z-10 hidden items-center gap-3 border-b border-slate-200 bg-white/95 px-5 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 backdrop-blur sm:flex">
-                  <div className="min-w-0 flex-1">Checklist Item</div>
-                  <div className="w-[132px] shrink-0 text-right">Received On</div>
-                </div>
-                <div className="divide-y divide-slate-200">
-                  {[...checklistItems]
-                    .sort((a, b) => a.sortOrder - b.sortOrder)
-                    .map((checklistItem) => {
-                      const isCompleted = Boolean(checklistItem.completedAt)
-                      const isSavingChecklist = isChecklistSavingId === checklistItem.id
-                      return (
-                        <div
-                          key={checklistItem.id}
-                          className={cn(
-                            "flex items-center gap-3 px-5 py-3 transition-colors",
-                            isCompleted
-                              ? "bg-emerald-50/40"
-                              : "hover:bg-slate-50/60",
-                            isSavingChecklist && "opacity-70",
-                          )}
-                        >
-                          <button
-                            type="button"
-                            className={cn(
-                              "mt-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 transition",
-                              isCompleted
-                                ? "border-emerald-500 bg-emerald-500 text-white shadow-[0_4px_10px_rgba(16,185,129,0.25)] hover:border-emerald-600 hover:bg-emerald-600"
-                                : "border-slate-300 bg-white text-transparent hover:border-emerald-400 hover:bg-emerald-50",
-                              "disabled:cursor-not-allowed disabled:opacity-60",
-                            )}
-                            onClick={() => void toggleChecklistItem(checklistItem)}
-                            disabled={isSavingChecklist}
-                            aria-label={isCompleted ? `Uncheck ${checklistItem.label}` : `Check ${checklistItem.label}`}
-                          >
-                            <Check className="h-3.5 w-3.5" />
-                          </button>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <p
-                                className={cn(
-                                  "flex items-center text-sm font-medium leading-5",
-                                  isCompleted
-                                    ? "text-slate-500 line-through"
-                                    : "text-slate-900",
-                                )}
-                              >
-                                {checklistItem.label}
-                              </p>
-                              {checklistItem.description ? (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <button
-                                      type="button"
-                                      className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full text-slate-400 transition hover:text-slate-600"
-                                      aria-label={`Description for ${checklistItem.label}`}
-                                    >
-                                      <CircleHelp className="h-3.5 w-3.5" />
-                                    </button>
-                                  </TooltipTrigger>
-                                  <TooltipContent
-                                    side="top"
-                                    sideOffset={6}
-                                    className="max-w-xs text-sm leading-5"
-                                  >
-                                    {checklistItem.description}
-                                  </TooltipContent>
-                                </Tooltip>
-                              ) : null}
-                              {checklistItem.isRequired ? (
-                                <span
-                                  className="inline-flex items-center text-sm font-semibold leading-5 text-rose-500"
-                                  title="Required"
-                                  aria-label="Required item"
-                                >
-                                  *
-                                </span>
-                              ) : null}
-                            </div>
-                            {checklistItem.description ? (
-                              <p className="mt-0.5 text-xs leading-5 text-slate-500 sm:hidden">
-                                {checklistItem.description}
-                              </p>
-                            ) : null}
-                          </div>
-                          <div className="shrink-0 self-center text-right">
-                            <p className="text-[11px] font-medium text-slate-500 sm:hidden">
-                              {isCompleted ? "Received on" : "Status"}
-                            </p>
-                            <p className="text-xs text-slate-500">
-                              {isCompleted
-                                ? formatDateTime(checklistItem.completedAt)
-                                : "Not received"}
-                            </p>
-                          </div>
-                        </div>
-                      )
-                    })}
-                </div>
-              </div>
-            ) : (
-              <div className="px-5 py-8 text-center text-sm text-slate-500">
+              <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
                 This service does not have checklist requirements yet.
               </div>
             )}
           </section>
+        </TabsContent>
 
-        </div>
-      </div>
-
-      <Dialog
-        open={isFollowUpOwnerDialogOpen}
-        onOpenChange={(open) => {
-          setIsFollowUpOwnerDialogOpen(open)
-          if (!open) setFollowUpOwnerUserId("")
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Change follow-up owner</DialogTitle>
-            <DialogDescription>
-              Update the person responsible for the open follow-up steps on this service.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-1">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
-              <div className="flex items-center gap-3">
-                <Avatar className="h-10 w-10 shrink-0 border border-slate-200">
-                  <AvatarImage
-                    src={currentFollowUpOwner?.image ?? undefined}
-                    alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                  />
-                  <AvatarFallback className="bg-slate-200 text-xs font-semibold text-slate-700">
-                    {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-slate-900">
-                    Current owner: {hasMixedOpenStepOwners ? "Mixed assignees" : getFollowUpAssigneeLabel(currentFollowUpOwner)}
+        <TabsContent value="follow-up" className="pt-4">
+          {detailTabState !== "ready" || !item ? (
+            <div className="rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-10 text-center text-sm text-slate-500">
+              {detailTabState === "loading"
+                ? "Loading follow-up details..."
+                : "Open this tab to load the service follow-up details."}
+            </div>
+          ) : (
+            <section className="rounded-[24px] border border-slate-200 bg-white p-5">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service Follow-Up</p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Review the enrolled follow-up path for this service and update steps as the contact completes them.
                   </p>
-                  <p className="text-xs text-slate-500">
-                    This will update {openFollowUpSteps.length} open follow-up step{openFollowUpSteps.length === 1 ? "" : "s"}.
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
+                    {followUpCompletionPercentage}% complete
+                  </Badge>
+                  <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+                    {followUpCompletedCount}/{followUpSteps.length} steps
+                  </Badge>
+                </div>
+              </div>
+              {followUpSteps.length ? (
+                <div className="space-y-4">
+                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-200">
+                    <div
+                      className="h-full rounded-full bg-emerald-500 transition-all"
+                      style={{ width: `${followUpCompletionPercentage}%` }}
+                    />
+                  </div>
+                  <div className="space-y-3">
+                    {followUpSteps.map((step, index) => {
+                      const currentStatus = step.status ?? "PENDING"
+                      const timeMeta = getStepTimeMeta(step)
+                      const isActive = currentStatus === "ACTIVE"
+                      const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"
+                      const isOverdue = timeMeta.label === "Overdue" && !isDone
+                      const showStatusBadge = currentStatus !== "ACTIVE"
+                      const showTimeBadge = currentStatus === "PENDING" || currentStatus === "ACTIVE"
+                      const canChangeStatus =
+                        currentStatus === "ACTIVE" || currentStatus === "PENDING"
+                      const canReopen =
+                        currentStatus === "COMPLETED" ||
+                        currentStatus === "SKIPPED" ||
+                        currentStatus === "POSTPONED"
+
+                      return (
+                        <div key={step.id} className="flex gap-3">
+                          <div className="flex w-8 shrink-0 flex-col items-center pt-2">
+                            <span
+                              className={cn(
+                                "inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold",
+                                isOverdue
+                                  ? "border-rose-200 bg-rose-50 text-rose-700"
+                                  : isDone
+                                  ? "border-emerald-200 bg-emerald-100 text-emerald-800"
+                                  : isActive
+                                    ? "border-blue-200 bg-blue-50 text-blue-900"
+                                    : "border-slate-200 bg-slate-50 text-slate-600",
+                              )}
+                            >
+                              {index + 1}
+                            </span>
+                            {index < followUpSteps.length - 1 ? (
+                              <span className="mt-2 h-full min-h-8 w-px bg-slate-200" />
+                            ) : null}
+                          </div>
+                          <article
+                            className={cn(
+                              "flex-1 rounded-[22px] border px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]",
+                              isOverdue
+                                ? "border-rose-200 bg-rose-50/40"
+                                : isDone
+                                ? "border-emerald-200 bg-emerald-50/50"
+                                : isActive
+                                  ? "border-blue-200 bg-blue-50/40"
+                                  : "border-slate-200 bg-white",
+                            )}
+                          >
+                            <div className="flex flex-col gap-3">
+                              <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                                <div className="min-w-0 flex-1 space-y-2.5">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    {showStatusBadge ? (
+                                      <Badge className={getFollowUpStepStatusBadgeClass(step.status)}>
+                                        {formatFollowUpStepStatus(step.status)}
+                                      </Badge>
+                                    ) : null}
+                                    {showTimeBadge ? (
+                                      <Badge className={timeMeta.badgeClassName}>{timeMeta.label}</Badge>
+                                    ) : null}
+                                    {isActive ? (
+                                      <Badge className="bg-blue-100 text-blue-900 hover:bg-blue-100">
+                                        Current step
+                                      </Badge>
+                                    ) : null}
+                                  </div>
+                                  <div className="min-w-0 space-y-1.5">
+                                    <button
+                                      type="button"
+                                      className="cursor-pointer text-left text-base font-semibold tracking-tight text-slate-950 transition hover:text-slate-700"
+                                      onClick={() => openStepDetailsDialog(step)}
+                                    >
+                                      {step.title}
+                                    </button>
+                                    <div className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-slate-500">
+                                      <Clock3 className="h-3.5 w-3.5 text-slate-400" />
+                                      <span>{timeMeta.helper}</span>
+                                    </div>
+                                  </div>
+                                  <p className="max-w-3xl text-sm leading-6 text-slate-600">
+                                    {step.notesTemplate?.trim() || "No description provided for this step."}
+                                  </p>
+                                </div>
+                                <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:shrink-0 xl:self-start">
+                                  {canChangeStatus ? (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      className="h-9 min-w-[142px] cursor-pointer rounded-full border-slate-200 bg-white text-sm font-medium text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50"
+                                      disabled={mutatingStepId === step.id}
+                                      onClick={() => openStepStatusDialog(step)}
+                                    >
+                                      {mutatingStepId === step.id ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                      ) : (
+                                        <>
+                                          Change status
+                                          <ChevronDown className="h-4 w-4" />
+                                        </>
+                                      )}
+                                    </Button>
+                                  ) : null}
+                                  {canReopen ? (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      className="h-9 cursor-pointer rounded-full border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50"
+                                      disabled={mutatingStepId === step.id}
+                                      onClick={() => void reopenStep(step)}
+                                    >
+                                      {mutatingStepId === step.id ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                      ) : currentStatus === "POSTPONED" ? (
+                                        "Undo postpone"
+                                      ) : (
+                                        "Reopen step"
+                                      )}
+                                    </Button>
+                                  ) : null}
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="icon"
+                                        className="h-9 w-9 cursor-pointer rounded-xl border-slate-200 bg-white text-fuchsia-700 hover:border-fuchsia-200 hover:bg-white hover:text-fuchsia-800"
+                                        onClick={() => openStepNoteDialog(step)}
+                                        aria-label={`Add note for ${step.title}`}
+                                      >
+                                        <NotebookPen className="h-4 w-4" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" sideOffset={6}>Add note</TooltipContent>
+                                  </Tooltip>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="icon"
+                                        className="h-9 w-9 cursor-pointer rounded-xl border-slate-200 bg-white text-cyan-700 hover:border-cyan-200 hover:bg-white hover:text-cyan-800"
+                                        onClick={() => openStepTaskDialog(step)}
+                                        aria-label={`Create task for ${step.title}`}
+                                      >
+                                        <ListTodo className="h-4 w-4" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" sideOffset={6}>Create task</TooltipContent>
+                                  </Tooltip>
+                                </div>
+                              </div>
+                              {step.note?.trim() ? (
+                                <div className="rounded-2xl border border-slate-200/80 bg-white/80 px-3.5 py-3">
+                                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                                    Latest Step Note
+                                  </p>
+                                  <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                                    {step.note}
+                                  </p>
+                                </div>
+                              ) : null}
+                            </div>
+                          </article>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                  No follow-up steps are enrolled for this service yet.
+                </div>
+              )}
+            </section>
+          )}
+        </TabsContent>
+
+        <TabsContent value="payments" className="pt-4">
+          {detailTabState !== "ready" || !item ? (
+            <div className="rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-10 text-center text-sm text-slate-500">
+              {detailTabState === "loading"
+                ? "Loading payment details..."
+                : "Open this tab to load the service payment details."}
+            </div>
+          ) : (
+            <section className="rounded-[24px] border border-slate-200 bg-white p-5">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Payment History</p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Review recorded payments and add a new transaction when more balance is collected.
+                  </p>
+                </div>
+                {canManageSensitiveServiceActions ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-9 cursor-pointer rounded-xl border border-blue-100 bg-blue-50/80 px-3.5 text-xs font-semibold text-blue-700 shadow-sm hover:border-blue-200 hover:bg-blue-100/80 hover:text-blue-800"
+                    onClick={() => setIsPaymentOpen(true)}
+                    disabled={!canAddPayments}
+                  >
+                    <CircleDollarSign className="h-3.5 w-3.5" />
+                    Add transaction
+                  </Button>
+                ) : null}
+              </div>
+              <div className="mb-4 grid gap-3 md:grid-cols-3">
+                <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Schedule
+                  </p>
+                  <p className="mt-2 text-base font-semibold text-slate-950">
+                    {item.service.installmentCount && item.service.installmentFrequency
+                      ? `${item.service.installmentCount} · ${INSTALLMENT_FREQUENCY_LABELS[item.service.installmentFrequency]}`
+                      : "Full payment only"}
+                  </p>
+                </div>
+                <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Next Payment Date
+                  </p>
+                  <p className="mt-2 text-base font-semibold text-slate-950">
+                    {item.remainingCents <= 0
+                      ? "Paid in full"
+                      : nextScheduledPaymentDate
+                        ? formatDateOnly(nextScheduledPaymentDate)
+                        : "Not scheduled"}
+                  </p>
+                </div>
+                <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Minimum Deposit
+                  </p>
+                  <p className="mt-2 text-base font-semibold text-slate-950">
+                    {item.service.minimumPartialPaymentCents !== null
+                      ? currencyFormatter(item.service.minimumPartialPaymentCents, item.currency)
+                      : "Not required"}
                   </p>
                 </div>
               </div>
-            </div>
-            <div className="grid gap-2">
-              <Label>Follow-up owner</Label>
-              <Select
-                value={followUpOwnerUserId || "__none__"}
-                onValueChange={(value) =>
-                  setFollowUpOwnerUserId(value === "__none__" ? "" : value)
-                }
-                disabled={isLoadingAssignees || isSavingFollowUpOwner}
-              >
-                <SelectTrigger className="cursor-pointer">
-                  <SelectValue placeholder="Select follow-up owner" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">Unassigned</SelectItem>
-                  {followUpAssigneeOptions.map((assignee) => (
-                    <SelectItem key={assignee.value} value={assignee.value}>
-                      {assignee.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-slate-500">
-                Open steps include active, pending, and postponed follow-up work.
-              </p>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setIsFollowUpOwnerDialogOpen(false)}
-              disabled={isSavingFollowUpOwner}
-              className="cursor-pointer"
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void saveFollowUpOwner()}
-              disabled={isSavingFollowUpOwner || !openFollowUpSteps.length}
-              className="cursor-pointer"
-            >
-              {isSavingFollowUpOwner ? "Saving..." : "Save owner"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              {payments.length ? (
+                <div className="overflow-hidden rounded-[22px] border border-slate-200">
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/70 px-5 py-3">
+                    <p className="text-xs text-slate-500">
+                      Showing {Math.min(visiblePaymentsCount, payments.length)} of {payments.length} payments
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        className={cn(
+                          "rounded-full px-2.5 py-0.5 hover:bg-inherit",
+                          item.remainingCents > 0
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-emerald-100 text-emerald-800",
+                        )}
+                      >
+                        {paymentCollectionState}
+                      </Badge>
+                      {payments.length > PAYMENTS_PAGE_SIZE ? (
+                        <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
+                          {payments.length - Math.min(visiblePaymentsCount, payments.length)} more
+                        </Badge>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[760px] table-fixed">
+                      <thead>
+                        <tr className="border-b border-slate-200 bg-slate-50/40">
+                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                            Date Paid
+                          </th>
+                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                            Recorded By
+                          </th>
+                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                            Type
+                          </th>
+                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                            Note
+                          </th>
+                          <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                            Amount
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 bg-white">
+                        {visiblePayments.map((payment, index) => (
+                          <tr
+                            key={payment.id ?? `${payment.paidAt}-${payment.amountCents}-${index}`}
+                            className={cn(
+                              "transition-colors",
+                              canManageSensitiveServiceActions
+                                ? "cursor-pointer hover:bg-slate-50/60"
+                                : "cursor-default",
+                            )}
+                            onClick={() => {
+                              if (!canManageSensitiveServiceActions) return
+                              openEditPayment(payment)
+                            }}
+                          >
+                            <td className="px-5 py-3.5 align-top text-sm font-medium text-slate-900">
+                              {formatDateTime(payment.paidAt)}
+                            </td>
+                            <td className="px-5 py-3.5 align-top">
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-slate-900">
+                                  {payment.recordedBy?.name ?? "System"}
+                                </p>
+                                <p className="text-xs text-slate-500">Recorded payment</p>
+                              </div>
+                            </td>
+                            <td className="px-5 py-3.5 align-top">
+                              {payment.paymentMethod ? (
+                                <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+                                  {formatPaymentMethod(payment.paymentMethod)}
+                                </Badge>
+                              ) : (
+                                <span className="text-sm text-slate-400">No method</span>
+                              )}
+                            </td>
+                            <td className="px-5 py-3.5 align-top">
+                              <p className="line-clamp-2 text-sm leading-6 text-slate-600">
+                                {payment.note?.trim() || "Payment recorded for this service."}
+                              </p>
+                            </td>
+                            <td className="px-5 py-3.5 text-right align-top">
+                              <p className="text-sm font-semibold text-slate-950">
+                                {currencyFormatter(payment.amountCents, item.currency)}
+                              </p>
+                              <p className="mt-1 text-xs text-emerald-600">Paid</p>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {payments.length > visiblePaymentsCount ? (
+                    <div className="flex justify-center border-t border-slate-200 bg-slate-50/60 px-5 py-3">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                        onClick={() =>
+                          setVisiblePaymentsCount((current) =>
+                            Math.min(current + PAYMENTS_PAGE_SIZE, payments.length),
+                          )
+                        }
+                      >
+                        Load more payments
+                      </Button>
+                    </div>
+                  ) : payments.length > PAYMENTS_PAGE_SIZE ? (
+                    <div className="flex justify-center border-t border-slate-200 bg-slate-50/60 px-5 py-3">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="cursor-pointer rounded-full border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-950"
+                        onClick={() => setVisiblePaymentsCount(PAYMENTS_PAGE_SIZE)}
+                      >
+                        Show less
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                  No payments have been recorded for this service yet.
+                </div>
+              )}
+            </section>
+          )}
+        </TabsContent>
 
+        <TabsContent value="checklist" className="pt-4">
+          {detailTabState !== "ready" || !item ? (
+            <div className="rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-10 text-center text-sm text-slate-500">
+              {detailTabState === "loading"
+                ? "Loading checklist details..."
+                : "Open this tab to load the service checklist details."}
+            </div>
+          ) : (
+            <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white">
+              <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                      Checklist Tracking
+                    </p>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Mark documents as received as soon as the contact brings them in.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
+                      {checklistCompletionPercentage}% complete
+                    </Badge>
+                    <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+                      {checklistCompletedCount}/{checklistItems.length} items
+                    </Badge>
+                  </div>
+                </div>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200">
+                  <div
+                    className="h-full rounded-full bg-emerald-500 transition-[width]"
+                    style={{ width: `${checklistCompletionPercentage}%` }}
+                  />
+                </div>
+              </div>
+              {checklistItems.length ? (
+                <div>
+                  <div className="sticky top-0 z-10 hidden items-center gap-3 border-b border-slate-200 bg-white/95 px-5 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 backdrop-blur sm:flex">
+                    <div className="min-w-0 flex-1">Checklist Item</div>
+                    <div className="w-[132px] shrink-0 text-right">Received On</div>
+                  </div>
+                  <div className="divide-y divide-slate-200">
+                    {[...checklistItems]
+                      .sort((a, b) => a.sortOrder - b.sortOrder)
+                      .map((checklistItem) => {
+                        const isCompleted = Boolean(checklistItem.completedAt)
+                        const isSavingChecklist = isChecklistSavingId === checklistItem.id
+                        return (
+                          <div
+                            key={checklistItem.id}
+                            className={cn(
+                              "flex items-center gap-3 px-5 py-3 transition-colors",
+                              isCompleted
+                                ? "bg-emerald-50/40"
+                                : "hover:bg-slate-50/60",
+                              isSavingChecklist && "opacity-70",
+                            )}
+                          >
+                            <button
+                              type="button"
+                              className={cn(
+                                "mt-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 transition",
+                                isCompleted
+                                  ? "border-emerald-500 bg-emerald-500 text-white shadow-[0_4px_10px_rgba(16,185,129,0.25)] hover:border-emerald-600 hover:bg-emerald-600"
+                                  : "border-slate-300 bg-white text-transparent hover:border-emerald-400 hover:bg-emerald-50",
+                                "disabled:cursor-not-allowed disabled:opacity-60",
+                              )}
+                              onClick={() => void toggleChecklistItem(checklistItem)}
+                              disabled={isSavingChecklist}
+                              aria-label={isCompleted ? `Uncheck ${checklistItem.label}` : `Check ${checklistItem.label}`}
+                            >
+                              <Check className="h-3.5 w-3.5" />
+                            </button>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <p
+                                  className={cn(
+                                    "flex items-center text-sm font-medium leading-5",
+                                    isCompleted
+                                      ? "text-slate-500 line-through"
+                                      : "text-slate-900",
+                                  )}
+                                >
+                                  {checklistItem.label}
+                                </p>
+                                {checklistItem.description ? (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button
+                                        type="button"
+                                        className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full text-slate-400 transition hover:text-slate-600"
+                                        aria-label={`Description for ${checklistItem.label}`}
+                                      >
+                                        <CircleHelp className="h-3.5 w-3.5" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent
+                                      side="top"
+                                      sideOffset={6}
+                                      className="max-w-xs text-sm leading-5"
+                                    >
+                                      {checklistItem.description}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                ) : null}
+                                {checklistItem.isRequired ? (
+                                  <span
+                                    className="inline-flex items-center text-sm font-semibold leading-5 text-rose-500"
+                                    title="Required"
+                                    aria-label="Required item"
+                                  >
+                                    *
+                                  </span>
+                                ) : null}
+                              </div>
+                              {checklistItem.description ? (
+                                <p className="mt-0.5 text-xs leading-5 text-slate-500 sm:hidden">
+                                  {checklistItem.description}
+                                </p>
+                              ) : null}
+                            </div>
+                            <div className="shrink-0 self-center text-right">
+                              <p className="text-[11px] font-medium text-slate-500 sm:hidden">
+                                {isCompleted ? "Received on" : "Status"}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                {isCompleted
+                                  ? formatDateTime(checklistItem.completedAt)
+                                  : "Not received"}
+                              </p>
+                            </div>
+                          </div>
+                        )
+                      })}
+                  </div>
+                </div>
+              ) : (
+                <div className="px-5 py-8 text-center text-sm text-slate-500">
+                  This service does not have checklist requirements yet.
+                </div>
+              )}
+            </section>
+          )}
+        </TabsContent>
+
+        <TabsContent value="notes" className="pt-4">
+          {detailTabState !== "ready" || !item ? (
+            <div className="rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-10 text-center text-sm text-slate-500">
+              {detailTabState === "loading"
+                ? "Loading service notes..."
+                : "Open this tab to load the service notes."}
+            </div>
+          ) : (
+            <section className="rounded-[24px] border border-slate-200 bg-white p-5">
+              <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service Notes</p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Review all notes tied to this purchased service, including follow-up step notes.
+                  </p>
+                </div>
+                <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
+                  {serviceNotes.length} note{serviceNotes.length === 1 ? "" : "s"}
+                </div>
+              </div>
+              {serviceNotes.length ? (
+                <div className="space-y-3">
+                  {serviceNotes.map((note) => (
+                    <article key={note.id} className="rounded-[22px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] px-4 py-4 shadow-sm">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="flex min-w-0 items-start gap-3">
+                          <Avatar className="h-10 w-10 shrink-0">
+                            <AvatarImage
+                              src={note.createdBy?.image ?? undefined}
+                              alt={note.createdBy?.name ?? "Service note author"}
+                            />
+                            <AvatarFallback className="bg-blue-950 text-xs font-semibold text-white">
+                              {getInitials(note.createdBy?.name)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div className="min-w-0">
+                            <h2 className="text-sm font-semibold tracking-tight text-slate-950">{note.title}</h2>
+                            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                              <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2 py-1">
+                                {note.createdBy?.name ? `Added by ${note.createdBy.name}` : "Added to this service"}
+                              </span>
+                              <span
+                                className={cn(
+                                  "inline-flex items-center gap-1.5 rounded-full px-2 py-1",
+                                  note.kind === "SERVICE_NOTE"
+                                    ? "bg-sky-50 text-sky-700"
+                                    : note.kind === "FOLLOW_UP_NOTE"
+                                      ? "bg-violet-50 text-violet-700"
+                                      : "bg-slate-100 text-slate-700",
+                                )}
+                              >
+                                {note.kind === "SERVICE_NOTE"
+                                  ? "Service note"
+                                  : note.kind === "FOLLOW_UP_NOTE"
+                                    ? "Follow-up note"
+                                    : "Linked contact note"}
+                              </span>
+                              {note.followUpTemplateName ? (
+                                <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-50 px-2 py-1 text-violet-700">
+                                  Template: {note.followUpTemplateName}
+                                </span>
+                              ) : null}
+                              {note.followUpStepTitle ? (
+                                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2 py-1 text-amber-700">
+                                  Step: {note.followUpStepTitle}
+                                </span>
+                              ) : null}
+                              <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2 py-1">
+                                {formatDateTime(note.createdAt)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-3 rounded-2xl bg-slate-50/90 px-3.5 py-3">
+                        <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">{note.body}</p>
+                      </div>
+                      {note.attachments.length > 0 ? (
+                        <div className="mt-3 flex flex-wrap gap-2 border-t border-dashed border-slate-200 pt-3">
+                          {note.attachments.map((attachment) => {
+                            const AttachmentIcon = attachmentIcon(attachment.contentType)
+                            const tone = attachmentTone(attachment.contentType)
+
+                            return (
+                              <button
+                                key={attachment.id}
+                                type="button"
+                                onClick={() => void handleOpenServiceNoteAttachment(attachment)}
+                                disabled={downloadingServiceNoteKey === attachment.key}
+                                className={`inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-60 ${tone.chip}`}
+                              >
+                                {downloadingServiceNoteKey === attachment.key ? (
+                                  <Loader2 className="h-3 w-3 animate-spin text-slate-500" />
+                                ) : (
+                                  <AttachmentIcon className={`h-3 w-3 ${tone.icon}`} />
+                                )}
+                                <span className="truncate">{attachment.fileName}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      ) : null}
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                  No service notes have been added yet.
+                </div>
+              )}
+              <form
+                className="mt-5 rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] px-4 py-4 shadow-sm"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void onAddServiceNote()
+                }}
+              >
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                      New Service Note
+                    </p>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Capture the service context and attach supporting files in one place.
+                    </p>
+                  </div>
+                  <div className="grid gap-3">
+                    <Input
+                      value={serviceNoteTitle}
+                      onChange={(event) => setServiceNoteTitle(event.target.value)}
+                      placeholder="Note title"
+                      disabled={isNoteSaving}
+                      className="h-11 rounded-[18px] border-slate-200 bg-white px-4 shadow-sm placeholder:text-slate-400 focus-visible:border-blue-200 focus-visible:ring-2 focus-visible:ring-blue-100"
+                    />
+                    <Textarea
+                      value={serviceNoteBody}
+                      onChange={(event) => setServiceNoteBody(event.target.value)}
+                      rows={4}
+                      placeholder="Add a service note..."
+                      disabled={isNoteSaving}
+                      className="min-h-[132px] resize-none rounded-[18px] border-slate-200 bg-white px-4 py-3 text-sm leading-6 shadow-sm placeholder:text-slate-400 focus-visible:border-blue-200 focus-visible:ring-2 focus-visible:ring-blue-100"
+                    />
+                  </div>
+
+                  <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50/80 px-4 py-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                          Attachments
+                        </p>
+                        <p className="mt-1 text-sm text-slate-600">
+                          Supported files: PNG, JPG, WEBP, and PDF.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => serviceNoteFileInputRef.current?.click()}
+                        disabled={isNoteSaving}
+                        className="cursor-pointer border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                      >
+                        <Upload className="h-4 w-4" />
+                        Add files
+                      </Button>
+                    </div>
+
+                    <input
+                      ref={serviceNoteFileInputRef}
+                      type="file"
+                      accept=".png,.jpg,.jpeg,.webp,.pdf,image/png,image/jpeg,image/webp,application/pdf"
+                      multiple
+                      className="hidden"
+                      onChange={handleSelectServiceNoteFiles}
+                      disabled={isNoteSaving}
+                    />
+
+                    {serviceNoteAttachmentError ? (
+                      <p className="mt-3 text-sm text-rose-600">{serviceNoteAttachmentError}</p>
+                    ) : null}
+
+                    <div className="mt-4 space-y-3">
+                      {pendingServiceNoteUploads.map((attachment) => {
+                        const contentType = inferContentType(attachment.file)
+                        const AttachmentIcon = attachmentIcon(contentType)
+                        const tone = attachmentTone(contentType)
+
+                        return (
+                          <div
+                            key={attachment.id}
+                            className={`flex items-center justify-between gap-3 rounded-xl border border-dashed px-3 py-3 ${tone.panel}`}
+                          >
+                            <div className="min-w-0 flex items-center gap-3">
+                              <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/90">
+                                <AttachmentIcon className={`h-4 w-4 ${tone.icon}`} />
+                              </span>
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-medium text-slate-900">
+                                  {attachment.file.name}
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                  Will upload when you save this note
+                                </p>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPendingServiceNoteUploads((current) =>
+                                  current.filter((item) => item.id !== attachment.id),
+                                )
+                              }
+                              disabled={isNoteSaving}
+                              className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full text-slate-400 transition hover:bg-white hover:text-rose-600"
+                              aria-label={`Remove ${attachment.file.name}`}
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
+                          </div>
+                        )
+                      })}
+
+                      {pendingServiceNoteUploads.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center">
+                          <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                            <Paperclip className="h-4 w-4" />
+                          </span>
+                          <p className="mt-3 text-sm font-medium text-slate-700">
+                            No files selected yet
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            Attach supporting documents or screenshots to this service note.
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end">
+                    <Button
+                      type="submit"
+                      disabled={isNoteSaving || !serviceNoteTitle.trim() || !serviceNoteBody.trim()}
+                      className="cursor-pointer rounded-full bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+                    >
+                      {isNoteSaving ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <SendHorizontal className="h-3.5 w-3.5" />
+                      )}
+                      Add service note
+                    </Button>
+                  </div>
+                </div>
+              </form>
+            </section>
+          )}
+        </TabsContent>
+
+        <TabsContent value="activity" className="pt-4">
+          {detailTabState !== "ready" || !item ? (
+            <div className="rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-10 text-center text-sm text-slate-500">
+              {detailTabState === "loading"
+                ? "Loading service activity..."
+                : "Open this tab to load the service activity log."}
+            </div>
+          ) : (
+            <section className="rounded-[24px] border border-slate-200 bg-white p-5">
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service History</p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Review the service timeline, including payments, checklist receipts, and note activity.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-slate-500">
+                  <span>
+                    Showing {Math.min(visibleHistoryCount, historyItems.length)} of {historyItems.length} activity items
+                  </span>
+                  {historyItems.length > ACTIVITY_PAGE_SIZE ? (
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-medium text-slate-600">
+                      {historyItems.length - Math.min(visibleHistoryCount, historyItems.length)} more
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              {historyItems.length ? (
+                <div className="space-y-3">
+                  {visibleHistoryItems.map((historyItem) => (
+                    <div key={historyItem.id} className="flex gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                      <div className={cn("mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border", historyItem.tone)}>
+                        {historyItem.icon === "payment" ? (
+                          <CreditCard className="h-4 w-4" />
+                        ) : historyItem.icon === "checklist" ? (
+                          <CheckCircle2 className="h-4 w-4" />
+                        ) : historyItem.icon === "note" ? (
+                          <NotebookPen className="h-4 w-4" />
+                        ) : (
+                          <Clock3 className="h-4 w-4" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <p className="text-sm font-semibold text-slate-900">{historyItem.title}</p>
+                          <p className="text-xs text-slate-500">{formatDateTime(historyItem.createdAt)}</p>
+                        </div>
+                        <p className="mt-1 text-sm leading-6 text-slate-600">{historyItem.description}</p>
+                      </div>
+                    </div>
+                  ))}
+                  {historyItems.length > visibleHistoryCount ? (
+                    <div className="flex justify-center pt-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                        onClick={() =>
+                          setVisibleHistoryCount((current) =>
+                            Math.min(current + ACTIVITY_PAGE_SIZE, historyItems.length),
+                          )
+                        }
+                      >
+                        Load more activity
+                      </Button>
+                    </div>
+                  ) : historyItems.length > ACTIVITY_PAGE_SIZE ? (
+                    <div className="flex justify-center pt-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="cursor-pointer rounded-full border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-950"
+                        onClick={() => setVisibleHistoryCount(ACTIVITY_PAGE_SIZE)}
+                      >
+                        Show less
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                  No service activity is available yet.
+                </div>
+              )}
+            </section>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      {item ? (
+        <>
       <Dialog
         open={isPaymentOpen}
         onOpenChange={(open) => {
@@ -2232,25 +3299,35 @@ export function ContactServiceDetailsPanel({
           if (!open) resetPaymentForm()
         }}
       >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
+        <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-xl">
+          <DialogHeader className="gap-1 border-b border-slate-200 pb-4">
             <DialogTitle>Add payment</DialogTitle>
             <DialogDescription>
               Record an additional payment for this service enrollment.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-1">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
-              <div className="flex items-center gap-2 text-sm font-medium text-slate-900">
-                <CreditCard className="h-4 w-4 text-slate-500" />
-                Remaining balance: {currencyFormatter(item.remainingCents, item.currency)}
+          <div className="grid gap-5 py-4">
+            <div className="grid gap-3 rounded-2xl border border-slate-200/90 px-4 py-4 sm:grid-cols-2">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                  Remaining balance
+                </p>
+                <div className="mt-2 flex items-center gap-2 text-base font-semibold text-slate-950">
+                  <CreditCard className="h-4 w-4 text-slate-500" />
+                  {currencyFormatter(item.remainingCents, item.currency)}
+                </div>
               </div>
-              <p className="mt-2 text-xs text-slate-500">
-                Current state: {paymentCollectionState}. {addPaymentPlanSummary}
-              </p>
-              {nextScheduledPaymentSummary ? (
-                <p className="mt-1 text-xs text-slate-500">{nextScheduledPaymentSummary}</p>
-              ) : null}
+              <div className="min-w-0 sm:text-right">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                  Status
+                </p>
+                <div className="mt-2 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+                  {paymentCollectionState}
+                </div>
+                {nextScheduledPaymentSummary ? (
+                  <p className="mt-2 text-xs text-slate-500">{nextScheduledPaymentSummary}</p>
+                ) : null}
+              </div>
             </div>
             <div className="grid gap-2">
               <Label>Payment action</Label>
@@ -2270,7 +3347,7 @@ export function ContactServiceDetailsPanel({
                   )
                 }}
               >
-                <SelectTrigger className="cursor-pointer">
+                <SelectTrigger className="h-11 cursor-pointer rounded-xl border-slate-200 bg-white">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -2281,68 +3358,65 @@ export function ContactServiceDetailsPanel({
                 </SelectContent>
               </Select>
               {paymentEntryMode === "PARTIAL" ? (
-                <p className="text-xs text-slate-500">
-                  {addPaymentPlanSummary} You can record a different amount and the next suggested
-                  payment will update automatically.
+                <p className="text-xs leading-5 text-slate-500">
+                  {addPaymentPlanSummary} You can record a different amount and the next suggested payment will update automatically.
                 </p>
               ) : null}
             </div>
-            <div className="grid gap-2">
-              <Label>Payment Amount (USD)</Label>
-              <Input
-                value={
-                  paymentEntryMode === "FULL"
-                    ? centsToUsdInput(item.remainingCents)
-                    : paymentAmountUsd
-                }
-                onChange={(event) => setPaymentAmountUsd(event.target.value)}
-                inputMode="decimal"
-                placeholder="0.00"
-                readOnly={paymentEntryMode === "FULL"}
-              />
-              {paymentEntryMode === "PARTIAL" && suggestedInstallmentPaymentCents !== null ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="h-7 cursor-pointer rounded-full border-slate-200 px-3 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
-                    onClick={() =>
-                      setPaymentAmountUsd(centsToUsdInput(suggestedInstallmentPaymentCents))
-                    }
-                  >
-                    Use scheduled payment{" "}
-                    {currencyFormatter(suggestedInstallmentPaymentCents, item.currency)}
-                  </Button>
-                  <p className="text-xs text-slate-500">
-                    Based on {remainingScheduledInstallments} remaining installment
-                    {remainingScheduledInstallments === 1 ? "" : "s"} and a balance of{" "}
-                    {currencyFormatter(item.remainingCents, item.currency)}. You can enter a higher
-                    or lower amount, and the next suggested payment will recalculate from the new
-                    balance.
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-2">
+                <Label>Payment Amount (USD)</Label>
+                <Input
+                  value={
+                    paymentEntryMode === "FULL"
+                      ? centsToUsdInput(item.remainingCents)
+                      : paymentAmountUsd
+                  }
+                  onChange={(event) => setPaymentAmountUsd(event.target.value)}
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  readOnly={paymentEntryMode === "FULL"}
+                  className="h-11 rounded-xl border-slate-200"
+                />
+                {paymentEntryMode === "PARTIAL" && suggestedInstallmentPaymentCents !== null ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-7 cursor-pointer rounded-full border-slate-200 px-3 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                      onClick={() =>
+                        setPaymentAmountUsd(centsToUsdInput(suggestedInstallmentPaymentCents))
+                      }
+                    >
+                      Use {currencyFormatter(suggestedInstallmentPaymentCents, item.currency)}
+                    </Button>
+                    <p className="text-xs leading-5 text-slate-500">
+                      Based on {remainingScheduledInstallments} remaining installment
+                      {remainingScheduledInstallments === 1 ? "" : "s"}.
+                    </p>
+                  </div>
+                ) : paymentEntryMode === "PARTIAL" ? (
+                  <p className="text-xs leading-5 text-slate-500">
+                    Enter any amount up to {currencyFormatter(item.remainingCents, item.currency)}.
                   </p>
-                </div>
-              ) : paymentEntryMode === "PARTIAL" ? (
-                <p className="text-xs text-slate-500">
-                  Remaining balance: {currencyFormatter(item.remainingCents, item.currency)}. You
-                  can enter any amount up to the remaining balance.
-                </p>
-              ) : null}
-            </div>
-            <div className="grid gap-2">
-              <Label>Payment Method</Label>
-              <Select value={paymentMethod || "__none__"} onValueChange={(value) => setPaymentMethod(value === "__none__" ? "" : value)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select payment method" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">No method</SelectItem>
-                  {PAYMENT_METHOD_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                ) : null}
+              </div>
+              <div className="grid gap-2">
+                <Label>Payment Method</Label>
+                <Select value={paymentMethod || "__none__"} onValueChange={(value) => setPaymentMethod(value === "__none__" ? "" : value)}>
+                  <SelectTrigger className="h-11 rounded-xl border-slate-200 bg-white">
+                    <SelectValue placeholder="Select payment method" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">No method</SelectItem>
+                    {PAYMENT_METHOD_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <div className="grid gap-2">
               <Label>Note</Label>
@@ -2351,16 +3425,17 @@ export function ContactServiceDetailsPanel({
                 onChange={(event) => setPaymentNote(event.target.value)}
                 rows={4}
                 placeholder="Optional payment note"
+                className="min-h-[112px] rounded-2xl border-slate-200 bg-white px-4 py-3 text-sm leading-6"
               />
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="border-t border-slate-200 pt-4">
             <Button
               type="button"
               variant="outline"
               onClick={() => setIsPaymentOpen(false)}
               disabled={isPaymentSaving}
-              className="cursor-pointer"
+              className="cursor-pointer rounded-xl"
             >
               Cancel
             </Button>
@@ -2368,7 +3443,7 @@ export function ContactServiceDetailsPanel({
               type="button"
               onClick={() => void onAddPayment()}
               disabled={isPaymentSaving}
-              className="cursor-pointer"
+              className="cursor-pointer rounded-xl"
             >
               {isPaymentSaving ? "Saving..." : "Add payment"}
             </Button>
@@ -2462,12 +3537,22 @@ export function ContactServiceDetailsPanel({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isStepStatusDialogOpen} onOpenChange={setIsStepStatusDialogOpen}>
+      <Dialog
+        open={isStepStatusDialogOpen}
+        onOpenChange={(open) => {
+          setIsStepStatusDialogOpen(open)
+          if (!open) {
+            setActiveStep(null)
+            setStepStatusNote("")
+            setStepPostponeInput({ date: "", time: "" })
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Update step status</DialogTitle>
             <DialogDescription>
-              Change follow-up step status and add an optional note for completed, skipped, or postponed steps.
+              Move the current step forward and add an optional note. The active step is set automatically by the follow-up flow.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-1">
@@ -2494,8 +3579,6 @@ export function ContactServiceDetailsPanel({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="PENDING" className="cursor-pointer">Pending</SelectItem>
-                  <SelectItem value="ACTIVE" className="cursor-pointer">Active</SelectItem>
                   <SelectItem value="COMPLETED" className="cursor-pointer">Completed</SelectItem>
                   <SelectItem value="SKIPPED" className="cursor-pointer">Skipped</SelectItem>
                   <SelectItem value="POSTPONED" className="cursor-pointer">Postponed</SelectItem>
@@ -2674,31 +3757,147 @@ export function ContactServiceDetailsPanel({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isStepNoteDialogOpen} onOpenChange={setIsStepNoteDialogOpen}>
+      <Dialog
+        open={isStepNoteDialogOpen}
+        onOpenChange={(open) => {
+          setIsStepNoteDialogOpen(open)
+          if (!open) {
+            setStepNoteTitle("")
+            setStepNoteBody("")
+            setPendingStepNoteUploads([])
+            setStepNoteAttachmentError(null)
+            if (stepNoteFileInputRef.current) {
+              stepNoteFileInputRef.current.value = ""
+            }
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Add step note</DialogTitle>
             <DialogDescription>
-              This note will be saved in the contact note section with service and step reference.
+              Add a note for this follow-up step.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-1">
-            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-              {activeStep ? (
-                <>
-                  <p><span className="font-medium text-slate-900">Service:</span> {item.service.name}</p>
-                  <p><span className="font-medium text-slate-900">Template:</span> {item.followUpTemplate?.name ?? "No template selected"}</p>
-                  <p><span className="font-medium text-slate-900">Step:</span> {activeStep.title}</p>
-                </>
+            {activeStep ? (
+              <div className="flex flex-wrap gap-2 text-xs">
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-600">
+                  Service: <span className="font-medium text-slate-900">{item.service.name}</span>
+                </span>
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-600">
+                  Step: <span className="font-medium text-slate-900">{activeStep.title}</span>
+                </span>
+              </div>
+            ) : null}
+            <div className="grid gap-2">
+              <Label>Title</Label>
+              <Input
+                value={stepNoteTitle}
+                onChange={(event) => setStepNoteTitle(event.target.value)}
+                placeholder="Ex: Missing signature"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label>Note</Label>
+              <Textarea
+                value={stepNoteBody}
+                onChange={(event) => setStepNoteBody(event.target.value)}
+                rows={5}
+                placeholder="Add the details the team should know about this step..."
+              />
+            </div>
+            <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50/80 px-4 py-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                    Attachments
+                  </p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Add screenshots or documents related to this follow-up step.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => stepNoteFileInputRef.current?.click()}
+                  disabled={isSavingStepNote}
+                  className="cursor-pointer border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                >
+                  <Upload className="h-4 w-4" />
+                  Add files
+                </Button>
+              </div>
+
+              <input
+                ref={stepNoteFileInputRef}
+                type="file"
+                accept=".png,.jpg,.jpeg,.webp,.pdf,image/png,image/jpeg,image/webp,application/pdf"
+                multiple
+                className="hidden"
+                onChange={handleSelectStepNoteFiles}
+                disabled={isSavingStepNote}
+              />
+
+              {stepNoteAttachmentError ? (
+                <p className="mt-3 text-sm text-rose-600">{stepNoteAttachmentError}</p>
               ) : null}
-            </div>
-            <div className="grid gap-2">
-              <Label>Note title</Label>
-              <Input value={stepNoteTitle} onChange={(event) => setStepNoteTitle(event.target.value)} />
-            </div>
-            <div className="grid gap-2">
-              <Label>Note body</Label>
-              <Textarea value={stepNoteBody} onChange={(event) => setStepNoteBody(event.target.value)} rows={5} />
+
+              <div className="mt-4 space-y-3">
+                {pendingStepNoteUploads.map((attachment) => {
+                  const contentType = inferContentType(attachment.file)
+                  const AttachmentIcon = attachmentIcon(contentType)
+                  const tone = attachmentTone(contentType)
+
+                  return (
+                    <div
+                      key={attachment.id}
+                      className={`flex items-center justify-between gap-3 rounded-xl border border-dashed px-3 py-3 ${tone.panel}`}
+                    >
+                      <div className="min-w-0 flex items-center gap-3">
+                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/90">
+                          <AttachmentIcon className={`h-4 w-4 ${tone.icon}`} />
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-slate-900">
+                            {attachment.file.name}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            Will upload when you save this step note
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPendingStepNoteUploads((current) =>
+                            current.filter((item) => item.id !== attachment.id),
+                          )
+                        }
+                        disabled={isSavingStepNote}
+                        className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full text-slate-400 transition hover:bg-white hover:text-rose-600"
+                        aria-label={`Remove ${attachment.file.name}`}
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )
+                })}
+
+                {pendingStepNoteUploads.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center">
+                    <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                      <Paperclip className="h-4 w-4" />
+                    </span>
+                    <p className="mt-3 text-sm font-medium text-slate-700">
+                      No files selected yet
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Attach supporting files if this step note needs evidence or context.
+                    </p>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -2727,21 +3926,28 @@ export function ContactServiceDetailsPanel({
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Create step task</DialogTitle>
-            <DialogDescription>Create a task linked to this service follow-up step.</DialogDescription>
+            <DialogDescription>
+              Create a task for this follow-up step.
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-1">
-            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-              {activeStep ? (
-                <>
-                  <p><span className="font-medium text-slate-900">Service:</span> {item.service.name}</p>
-                  <p><span className="font-medium text-slate-900">Template:</span> {item.followUpTemplate?.name ?? "No template selected"}</p>
-                  <p><span className="font-medium text-slate-900">Step:</span> {activeStep.title}</p>
-                </>
-              ) : null}
-            </div>
+            {activeStep ? (
+              <div className="flex flex-wrap gap-2 text-xs">
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-600">
+                  Service: <span className="font-medium text-slate-900">{item.service.name}</span>
+                </span>
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-600">
+                  Step: <span className="font-medium text-slate-900">{activeStep.title}</span>
+                </span>
+              </div>
+            ) : null}
             <div className="grid gap-2">
               <Label>Task title</Label>
-              <Input value={stepTaskName} onChange={(event) => setStepTaskName(event.target.value)} />
+              <Input
+                value={stepTaskName}
+                onChange={(event) => setStepTaskName(event.target.value)}
+                placeholder="Ex: Follow up on missing document"
+              />
             </div>
             <div className="grid gap-2">
               <Label>Description</Label>
@@ -2749,15 +3955,39 @@ export function ContactServiceDetailsPanel({
                 value={stepTaskDescription}
                 onChange={(event) => setStepTaskDescription(event.target.value)}
                 rows={4}
+                placeholder="Add any details or next actions for this task..."
               />
             </div>
-            <div className="grid gap-2">
-              <Label>Due date (optional)</Label>
-              <DateTimeInput
-                value={stepTaskDueAt}
-                onValueChange={setStepTaskDueAt}
-                disabledDate={isBeforeToday}
-              />
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-2">
+                <Label>Assign to</Label>
+                <Select
+                  value={stepTaskAssignedToUserId || "__none__"}
+                  onValueChange={(value) =>
+                    setStepTaskAssignedToUserId(value === "__none__" ? "" : value)
+                  }
+                >
+                  <SelectTrigger className="cursor-pointer">
+                    <SelectValue placeholder="Select assignee" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Unassigned</SelectItem>
+                    {followUpAssigneeOptions.map((assignee) => (
+                      <SelectItem key={assignee.value} value={assignee.value}>
+                        {assignee.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <Label>Due date (optional)</Label>
+                <DateTimeInput
+                  value={stepTaskDueAt}
+                  onValueChange={setStepTaskDueAt}
+                  disabledDate={isBeforeToday}
+                />
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -2781,6 +4011,8 @@ export function ContactServiceDetailsPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+        </>
+      ) : null}
       </section>
     </TooltipProvider>
   )

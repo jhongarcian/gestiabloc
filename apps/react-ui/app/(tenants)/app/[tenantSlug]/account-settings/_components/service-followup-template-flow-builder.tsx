@@ -967,7 +967,7 @@ type ExecutionLogItem = {
 
 type ExecutionLogEnrollment = {
   id: string
-  status: "PENDING" | "IN_PROGRESS" | "PENDING_PAYMENT" | "COMPLETED" | "CANCELED"
+  status: "IN_PROGRESS" | "PENDING_PAYMENT" | "COMPLETED" | "CANCELED"
   createdAt: string
   purchasedAt: string | null
   startedAt: string | null

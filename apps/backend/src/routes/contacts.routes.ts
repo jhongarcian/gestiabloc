@@ -16,6 +16,19 @@ import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 const router = Router()
 const prismaWithContacts = prisma as any
 
+const stripHtmlTags = (value: string) => value.replace(/<[^>]*>/g, " ")
+const removeUnsafeControls = (value: string) =>
+  value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+const sanitizeSingleLineText = (value: string) =>
+  removeUnsafeControls(stripHtmlTags(value)).replace(/\s+/g, " ").trim()
+const sanitizeMultilineText = (value: string) =>
+  removeUnsafeControls(stripHtmlTags(value))
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .join("\n")
+    .trim()
+
 const TenantPathSchema = z.object({
   tenantId: z.string().trim().min(1),
 })
@@ -122,13 +135,16 @@ const CreateContactRelationshipSchema = z.object({
 })
 
 const ContactNoteAttachmentIdsSchema = z
-  .array(z.string().min(1))
+  .array(z.string().trim().min(1))
   .max(10)
   .default([])
 
 const CreateContactNoteSchema = z.object({
   title: z.string().trim().min(1).max(160),
   body: z.string().trim().min(1).max(5000),
+  contactServiceId: z.string().trim().min(1).nullable().optional(),
+  followUpTemplateId: z.string().trim().min(1).nullable().optional(),
+  contactServiceFollowUpStepId: z.string().trim().min(1).nullable().optional(),
   attachmentFileIds: ContactNoteAttachmentIdsSchema,
 })
 
@@ -490,6 +506,20 @@ function serializeContactNote(
     createdAt: Date
     updatedAt: Date
     createdBy: { id: string; name: string | null; email: string }
+    contactService?: {
+      id: string
+      service: {
+        name: string
+      }
+    } | null
+    followUpTemplate?: {
+      id: string
+      name: string
+    } | null
+    contactServiceFollowUpStep?: {
+      id: string
+      title: string
+    } | null
     attachments: Array<{
       id: string
       file: {
@@ -506,6 +536,8 @@ function serializeContactNote(
     type: "CONTACT" | "SERVICE"
     contactServiceId?: string
     serviceName?: string
+    followUpTemplateName?: string
+    followUpStepTitle?: string
   },
 ) {
   return {
@@ -534,6 +566,35 @@ function serializeContactNote(
       contentType: attachment.file.contentType,
       size: attachment.file.size ?? null,
     })),
+  }
+}
+
+function buildContactNoteSource(note: {
+  contactService?: {
+    id: string
+    service: {
+      name: string
+    }
+  } | null
+  followUpTemplate?: {
+    id: string
+    name: string
+  } | null
+  contactServiceFollowUpStep?: {
+    id: string
+    title: string
+  } | null
+}) {
+  if (!note.contactService && !note.followUpTemplate && !note.contactServiceFollowUpStep) {
+    return undefined
+  }
+
+  return {
+    type: "SERVICE" as const,
+    contactServiceId: note.contactService?.id,
+    serviceName: note.contactService?.service?.name,
+    followUpTemplateName: note.followUpTemplate?.name,
+    followUpStepTitle: note.contactServiceFollowUpStep?.title,
   }
 }
 
@@ -1505,7 +1566,7 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
           serviceProcesses: {
             where: {
               status: {
-                in: ["PENDING", "IN_PROGRESS"] as const,
+                in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
               },
               followUpSteps: {
                 some: {
@@ -2426,6 +2487,28 @@ router.get(
                 email: true,
               },
             },
+            contactService: {
+              select: {
+                id: true,
+                service: {
+                  select: {
+                    name: true,
+                  },
+                },
+              },
+            },
+            followUpTemplate: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            contactServiceFollowUpStep: {
+              select: {
+                id: true,
+                title: true,
+              },
+            },
             attachments: {
               orderBy: { createdAt: "asc" },
               select: {
@@ -2461,9 +2544,29 @@ router.get(
             contactService: {
               select: {
                 id: true,
+                followUpTemplate: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
                 service: {
                   select: {
                     name: true,
+                  },
+                },
+              },
+            },
+            attachments: {
+              orderBy: { createdAt: "asc" },
+              select: {
+                id: true,
+                file: {
+                  select: {
+                    id: true,
+                    key: true,
+                    contentType: true,
+                    size: true,
                   },
                 },
               },
@@ -2478,7 +2581,12 @@ router.get(
 
       const mergedNotes = [
         ...contactNotes.map((note: any) =>
-          serializeContactNote(note, membership, authed.user.id),
+          serializeContactNote(
+            note,
+            membership,
+            authed.user.id,
+            buildContactNoteSource(note),
+          ),
         ),
         ...serviceNotes.map((note: any) => ({
           id: note.id,
@@ -2499,8 +2607,16 @@ router.get(
             type: "SERVICE" as const,
             contactServiceId: note.contactService.id,
             serviceName: note.contactService.service.name,
+            followUpTemplateName: note.contactService.followUpTemplate?.name,
           },
-          attachments: [],
+          attachments: note.attachments.map((attachment: any) => ({
+            id: attachment.id,
+            fileId: attachment.file.id,
+            key: attachment.file.key,
+            fileName: fileNameFromKey(attachment.file.key),
+            contentType: attachment.file.contentType,
+            size: attachment.file.size,
+          })),
         })),
       ].sort((left, right) => {
         const leftUpdatedAt = new Date(left.updatedAt).getTime()
@@ -2555,12 +2671,25 @@ router.post(
       const membership = await requireActiveMembership(authed, res, tenantId)
       if (!membership) return
 
-      const [contact, files] = await Promise.all([
+      const [contact, files, linkedContactService] = await Promise.all([
         prisma.contact.findFirst({
           where: { id: contactId, tenantId },
           select: { id: true },
         }),
         getValidatedNoteFiles(tenantId, payload.attachmentFileIds),
+        payload.contactServiceId
+          ? prismaWithContacts.contactService.findFirst({
+              where: {
+                id: payload.contactServiceId,
+                tenantId,
+                contactId,
+              },
+              select: {
+                id: true,
+                followUpTemplateId: true,
+              },
+            })
+          : Promise.resolve(null),
       ])
 
       if (!contact) {
@@ -2571,14 +2700,63 @@ router.post(
         return res.status(400).json({ error: "INVALID_NOTE_ATTACHMENTS" })
       }
 
+      let resolvedContactServiceId: string | null = null
+      let resolvedFollowUpTemplateId: string | null = null
+      let resolvedContactServiceFollowUpStepId: string | null = null
+
+      if (payload.contactServiceId || payload.followUpTemplateId || payload.contactServiceFollowUpStepId) {
+        if (!payload.contactServiceId) {
+          return res.status(400).json({ error: "CONTACT_SERVICE_ID_REQUIRED" })
+        }
+
+        const contactService = linkedContactService
+
+        if (!contactService) {
+          return res.status(400).json({ error: "INVALID_CONTACT_SERVICE" })
+        }
+
+        if (
+          payload.followUpTemplateId &&
+          payload.followUpTemplateId !== contactService.followUpTemplateId
+        ) {
+          return res.status(400).json({ error: "INVALID_FOLLOW_UP_TEMPLATE" })
+        }
+
+        if (payload.contactServiceFollowUpStepId) {
+          const followUpStep = await prismaWithContacts.contactServiceFollowUpStep.findFirst({
+            where: {
+              id: payload.contactServiceFollowUpStepId,
+              tenantId,
+              contactServiceId: contactService.id,
+            },
+            select: {
+              id: true,
+            },
+          })
+
+          if (!followUpStep) {
+            return res.status(400).json({ error: "INVALID_FOLLOW_UP_STEP" })
+          }
+
+          resolvedContactServiceFollowUpStepId = followUpStep.id
+        }
+
+        resolvedContactServiceId = contactService.id
+        resolvedFollowUpTemplateId =
+          payload.followUpTemplateId ?? contactService.followUpTemplateId ?? null
+      }
+
       const created = await prisma.$transaction(async (tx) => {
         const txWithContacts = tx as any
         const note = await txWithContacts.contactNote.create({
           data: {
             tenantId,
             contactId,
-            title: payload.title,
-            body: payload.body,
+            contactServiceId: resolvedContactServiceId,
+            followUpTemplateId: resolvedFollowUpTemplateId,
+            contactServiceFollowUpStepId: resolvedContactServiceFollowUpStepId,
+            title: sanitizeSingleLineText(payload.title),
+            body: sanitizeMultilineText(payload.body),
             createdById: authed.user.id,
             attachments: {
               create: files.map((file: { id: string }) => ({
@@ -2599,6 +2777,28 @@ router.post(
                 id: true,
                 name: true,
                 email: true,
+              },
+            },
+            contactService: {
+              select: {
+                id: true,
+                service: {
+                  select: {
+                    name: true,
+                  },
+                },
+              },
+            },
+            followUpTemplate: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            contactServiceFollowUpStep: {
+              select: {
+                id: true,
+                title: true,
               },
             },
             attachments: {
@@ -2623,7 +2823,12 @@ router.post(
 
       return res.status(201).json({
         ok: true,
-        note: serializeContactNote(created, membership, authed.user.id),
+        note: serializeContactNote(
+          created,
+          membership,
+          authed.user.id,
+          buildContactNoteSource(created),
+        ),
       })
     } catch (error) {
       return next(error)
@@ -2745,6 +2950,28 @@ router.patch(
                 email: true,
               },
             },
+            contactService: {
+              select: {
+                id: true,
+                service: {
+                  select: {
+                    name: true,
+                  },
+                },
+              },
+            },
+            followUpTemplate: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            contactServiceFollowUpStep: {
+              select: {
+                id: true,
+                title: true,
+              },
+            },
             attachments: {
               orderBy: { createdAt: "asc" },
               select: {
@@ -2767,7 +2994,12 @@ router.patch(
 
       return res.json({
         ok: true,
-        note: serializeContactNote(updated, membership, authed.user.id),
+        note: serializeContactNote(
+          updated,
+          membership,
+          authed.user.id,
+          buildContactNoteSource(updated),
+        ),
       })
     } catch (error) {
       return next(error)

@@ -106,7 +106,6 @@ enum InstallmentFrequency {
 }
 
 enum ContactServiceStatus {
-  PENDING
   IN_PROGRESS
   PENDING_PAYMENT
   COMPLETED
@@ -241,6 +240,7 @@ model File {
   tenant          Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdBy       User                    @relation(fields: [createdById], references: [id], onDelete: Cascade)
   noteAttachments ContactNoteAttachment[]
+  serviceNoteAttachments ContactServiceNoteAttachment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -379,6 +379,7 @@ model Tenant {
   contactRelationships             ContactRelationship[]
   contactNotes                     ContactNote[]
   contactNoteAttachments           ContactNoteAttachment[]
+  contactServiceNoteAttachments    ContactServiceNoteAttachment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -469,6 +470,8 @@ model ServiceFollowUpTemplate {
   steps   ServiceFollowUpTemplateStep[]
   contactServices ContactService[]
   executionLogs ServiceFollowUpExecutionLog[]
+  contactNotes ContactNote[]
+  tasks Task[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -532,7 +535,7 @@ model ContactService {
   serviceId            String
   followUpTemplateId   String?
   assignedProfessionalId String?
-  status               ContactServiceStatus @default(PENDING)
+  status               ContactServiceStatus @default(IN_PROGRESS)
   startedAt            DateTime?
   purchasedAt          DateTime?
   completedAt          DateTime?
@@ -552,6 +555,8 @@ model ContactService {
   checklistItems ContactServiceChecklistItem[]
   serviceNotes  ContactServiceNote[]
   executionLogs ServiceFollowUpExecutionLog[]
+  contactNotes ContactNote[]
+  tasks Task[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -623,6 +628,8 @@ model ContactServiceFollowUpStep {
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
   assignedTo     User?          @relation("ContactServiceFollowUpAssignedUser", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  contactNotes   ContactNote[]
+  tasks          Task[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -645,6 +652,7 @@ model ContactServiceNote {
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
   createdBy      User           @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  attachments    ContactServiceNoteAttachment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -652,6 +660,23 @@ model ContactServiceNote {
   @@unique([tenantId, id])
   @@index([tenantId, contactServiceId, createdAt])
   @@index([tenantId, createdById])
+}
+
+model ContactServiceNoteAttachment {
+  id       String @id @default(uuid())
+  tenantId String
+  noteId   String
+  fileId   String
+
+  tenant Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  note   ContactServiceNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  file   File               @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, noteId, fileId])
+  @@index([tenantId, noteId])
+  @@index([tenantId, fileId])
 }
 
 model ServiceFollowUpExecutionLog {
@@ -897,6 +922,9 @@ model Task {
   id               String                @id @default(uuid())
   tenantId         String
   contactId        String?
+  contactServiceId String?
+  followUpTemplateId String?
+  contactServiceFollowUpStepId String?
   statusConfigId   String?
   assignedToUserId String?
   priority         TaskPriority?
@@ -909,6 +937,9 @@ model Task {
 
   tenant               Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact              Contact?          @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  contactService       ContactService?   @relation(fields: [contactServiceId], references: [id], onDelete: SetNull)
+  followUpTemplate     ServiceFollowUpTemplate? @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
+  contactServiceFollowUpStep ContactServiceFollowUpStep? @relation(fields: [contactServiceFollowUpStepId], references: [id], onDelete: SetNull)
   statusConfig         TaskStatusConfig? @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
   assignedToMembership Membership?       @relation("TaskAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
   reminders            TaskReminder[]
@@ -924,6 +955,9 @@ model Task {
   @@index([tenantId, priority])
   @@index([tenantId, assignedToUserId])
   @@index([tenantId, contactId])
+  @@index([tenantId, contactServiceId])
+  @@index([tenantId, followUpTemplateId])
+  @@index([tenantId, contactServiceFollowUpStepId])
   @@index([tenantId, createdAt])
 }
 
@@ -1130,12 +1164,18 @@ model ContactNote {
   id          String @id @default(uuid())
   tenantId    String
   contactId   String
+  contactServiceId String?
+  followUpTemplateId String?
+  contactServiceFollowUpStepId String?
   title       String
   body        String
   createdById String
 
   tenant      Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact     Contact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contactService ContactService?      @relation(fields: [contactServiceId], references: [id], onDelete: SetNull)
+  followUpTemplate ServiceFollowUpTemplate? @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
+  contactServiceFollowUpStep ContactServiceFollowUpStep? @relation(fields: [contactServiceFollowUpStepId], references: [id], onDelete: SetNull)
   createdBy   User                    @relation(fields: [createdById], references: [id], onDelete: Cascade)
   attachments ContactNoteAttachment[]
 
@@ -1144,6 +1184,9 @@ model ContactNote {
 
   @@unique([tenantId, id])
   @@index([tenantId, contactId, createdAt])
+  @@index([tenantId, contactServiceId, createdAt])
+  @@index([tenantId, followUpTemplateId, createdAt])
+  @@index([tenantId, contactServiceFollowUpStepId, createdAt])
   @@index([tenantId, createdById])
 }
 

@@ -101,7 +101,7 @@ export function ContactHeaderAssignee({
         <Button
           type="button"
           variant="ghost"
-          className="h-8 max-w-[220px] cursor-pointer rounded-full border border-white/70 bg-white/60 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/80"
+          className="h-8 max-w-[260px] cursor-pointer rounded-full border border-white/70 bg-white/70 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/90"
         >
           {assignedTo ? (
             <div className="flex min-w-0 max-w-full items-center gap-2">

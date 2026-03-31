@@ -23,6 +23,164 @@ const sanitizeMultilineText = (value: string) =>
     .map((line) => line.replace(/\s+/g, " ").trim())
     .join("\n")
     .trim()
+const normalizeSearchValue = (value: string | null | undefined) =>
+  value?.trim().toLowerCase().replace(/\s+/g, " ") ?? ""
+const normalizePhoneSearchValue = (value: string | null | undefined) => (value ?? "").replace(/\D/g, "")
+const splitSearchTokens = (value: string | null | undefined) =>
+  normalizeSearchValue(value)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+const getSearchTokens = (
+  value: string | null | undefined,
+  options?: { includeSingleCharacter?: boolean },
+) => {
+  const includeSingleCharacter = options?.includeSingleCharacter ?? false
+
+  return splitSearchTokens(value).filter((token) => {
+    if (includeSingleCharacter) return true
+    return token.length > 1 || /\d/.test(token)
+  })
+}
+const getNameSearchPrefix = (token: string, options?: { broad?: boolean }) => {
+  const normalizedToken = normalizeSearchValue(token)
+  if (!normalizedToken) return ""
+  if (!options?.broad) return normalizedToken
+  if (normalizedToken.length <= 2) return normalizedToken
+  return normalizedToken.slice(0, 2)
+}
+const buildStartsWithClauses = (
+  fields: string[],
+  token: string,
+  options?: { broad?: boolean },
+) => {
+  const normalizedToken = normalizeSearchValue(token)
+  if (!normalizedToken) return []
+
+  const values = [normalizedToken, getNameSearchPrefix(normalizedToken, options)].filter(Boolean)
+
+  return fields.flatMap((field) =>
+    [...new Set(values)].map((value) => ({
+      [field]: { startsWith: value, mode: "insensitive" as const },
+    })),
+  )
+}
+const buildRelatedContactSearchWhere = (query: string) => {
+  const normalizedQuery = normalizeSearchValue(query)
+  const queryTokens = getSearchTokens(query, { includeSingleCharacter: true })
+  const hasEmailLikeQuery = normalizedQuery.includes("@")
+  const hasPhoneLikeQuery = normalizePhoneSearchValue(query).length >= 3
+  const nameTokens = queryTokens.filter((token) => /[a-z]/i.test(token))
+
+  const andClauses: Array<Record<string, unknown>> = []
+
+  if (!hasEmailLikeQuery && !hasPhoneLikeQuery && nameTokens.length >= 2) {
+    const firstToken = nameTokens[0]!
+    const lastToken = nameTokens[nameTokens.length - 1]!
+    const middleTokens = nameTokens.slice(1, -1)
+
+    andClauses.push({
+      OR: buildStartsWithClauses(["firstName", "middleName"], firstToken, {
+        broad: true,
+      }),
+    })
+
+    andClauses.push({
+      OR:
+        nameTokens.length === 2
+          ? buildStartsWithClauses(["lastName", "middleName"], lastToken)
+          : buildStartsWithClauses(["lastName"], lastToken),
+    })
+
+    for (const token of middleTokens) {
+      andClauses.push({
+        OR: buildStartsWithClauses(["middleName"], token),
+      })
+    }
+
+    return { AND: andClauses }
+  }
+
+  const singleTokenTerms = [...new Set([normalizedQuery, ...getSearchTokens(query)].filter(Boolean))]
+
+  andClauses.push({
+    OR: singleTokenTerms.flatMap((term) => [
+      ...buildStartsWithClauses(["firstName", "middleName", "lastName"], term, {
+        broad: true,
+      }),
+      { email: { contains: term, mode: "insensitive" as const } },
+      { phone: { contains: term, mode: "insensitive" as const } },
+    ]),
+  })
+
+  return { AND: andClauses }
+}
+const fileNameFromKey = (key: string) => {
+  const segments = key.split("/")
+  return segments[segments.length - 1] ?? key
+}
+const hasServiceNoteAttachmentQueryError = (error: unknown) =>
+  error instanceof Error &&
+  (error.message.includes("ContactServiceNoteAttachment") ||
+    error.message.includes("Unknown field `attachments`"))
+const serializeRelatedServiceNote = (
+  note: {
+    id: string
+    title: string
+    body: string
+    createdAt: Date
+    createdBy?: {
+      id: string
+      name: string | null
+      email?: string | null
+      image?: string | null
+    } | null
+    followUpTemplate?: {
+      id: string
+      name: string
+    } | null
+    contactServiceFollowUpStep?: {
+      id: string
+      title: string
+    } | null
+    attachments?: Array<{
+      id: string
+      file: {
+        id: string
+        key: string
+        contentType: string
+        size: number | null
+      }
+    }>
+  },
+  kind: "SERVICE_NOTE" | "FOLLOW_UP_NOTE" | "LINKED_CONTACT_NOTE",
+) => ({
+  id: note.id,
+  title: note.title,
+  body: note.body,
+  createdAt: note.createdAt,
+  kind,
+  followUpTemplateName: note.followUpTemplate?.name ?? null,
+  followUpStepTitle: note.contactServiceFollowUpStep?.title ?? null,
+  createdBy: note.createdBy
+    ? {
+        id: note.createdBy.id,
+        name:
+          note.createdBy.name?.trim() ||
+          note.createdBy.email?.trim() ||
+          "Unknown user",
+        image: note.createdBy.image ?? null,
+      }
+    : null,
+  attachments: (note.attachments ?? []).map((attachment) => ({
+    id: attachment.id,
+    fileId: attachment.file.id,
+    key: attachment.file.key,
+    fileName: fileNameFromKey(attachment.file.key),
+    contentType: attachment.file.contentType,
+    size: attachment.file.size ?? null,
+  })),
+})
 
 const TenantPathSchema = z.object({
   tenantId: z.string().trim().min(1),
@@ -49,7 +207,6 @@ const TenantContactServiceChecklistItemPathSchema = TenantContactServicePathSche
 })
 
 const ContactServiceStatusSchema = z.enum([
-  "PENDING",
   "IN_PROGRESS",
   "PENDING_PAYMENT",
   "COMPLETED",
@@ -127,6 +284,8 @@ const FollowUpsListQuerySchema = z.object({
   dueDatePreset: z
     .enum(["OVERDUE", "TODAY", "NEXT_7_DAYS", "NO_DUE_DATE"])
     .optional(),
+  followUpTemplateId: z.string().trim().min(1).optional(),
+  assignedToUserId: z.string().trim().min(1).optional(),
 })
 
 const CreateContactServiceSchema = z.object({
@@ -172,15 +331,54 @@ const UpdateContactServiceSchema = z.object({
   notes: z.string().trim().max(4000).nullable().optional(),
 })
 
+const ContactServiceNoteAttachmentIdsSchema = z
+  .array(z.string().trim().min(1))
+  .max(10)
+  .default([])
+
 const CreateContactServiceNoteSchema = z.object({
   title: z.string().trim().min(1).max(160),
   body: z.string().trim().min(1).max(8000),
+  attachmentFileIds: ContactServiceNoteAttachmentIdsSchema,
 })
+
+async function getValidatedServiceNoteFiles(
+  tenantId: string,
+  attachmentFileIds: string[],
+) {
+  if (attachmentFileIds.length === 0) {
+    return []
+  }
+
+  const uniqueFileIds = [...new Set(attachmentFileIds)]
+  const files = await prisma.file.findMany({
+    where: {
+      tenantId,
+      id: { in: uniqueFileIds },
+      purpose: "GENERIC",
+    },
+    select: {
+      id: true,
+      key: true,
+      contentType: true,
+      size: true,
+    },
+  })
+
+  if (files.length !== uniqueFileIds.length) {
+    return null
+  }
+
+  return uniqueFileIds
+    .map((fileId) => files.find((file) => file.id === fileId))
+    .filter((file): file is NonNullable<typeof file> => Boolean(file))
+}
 
 const UpdateFollowUpStepSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   notesTemplate: z.string().trim().max(1000).nullable().optional(),
   status: z.enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED", "POSTPONED"]).optional(),
+  action: z.enum(["REOPEN"]).optional(),
   availableAt: z.string().datetime().nullable().optional(),
   dueAt: z.string().datetime().nullable().optional(),
   postponeTo: z.string().datetime().optional(),
@@ -507,6 +705,7 @@ async function reconcileContactServiceCompletionFromFollowUps(
   prismaTx: any,
   tenantId: string,
   contactServiceId: string,
+  actorUserId?: string | null,
 ) {
   const contactService = await prismaTx.contactService.findFirst({
     where: {
@@ -518,6 +717,13 @@ async function reconcileContactServiceCompletionFromFollowUps(
       status: true,
       completedAt: true,
       totalPriceCents: true,
+      contactId: true,
+      followUpTemplateId: true,
+      service: {
+        select: {
+          name: true,
+        },
+      },
     },
   })
 
@@ -557,16 +763,14 @@ async function reconcileContactServiceCompletionFromFollowUps(
     ? isPaidInFull
       ? "COMPLETED"
       : "PENDING_PAYMENT"
-    : contactService.status === "PENDING"
-      ? "PENDING"
-      : "IN_PROGRESS"
+    : "IN_PROGRESS"
 
   if (
     contactService.status !== nextStatus ||
     (nextStatus === "COMPLETED" && !contactService.completedAt) ||
     (nextStatus !== "COMPLETED" && contactService.completedAt)
   ) {
-    return prismaTx.contactService.update({
+    const updated = await prismaTx.contactService.update({
       where: { id: contactServiceId },
       data: {
         status: nextStatus,
@@ -578,6 +782,27 @@ async function reconcileContactServiceCompletionFromFollowUps(
         completedAt: true,
       },
     })
+
+    if (contactService.followUpTemplateId) {
+      await prismaTx.serviceFollowUpExecutionLog.create({
+        data: {
+          tenantId,
+          templateId: contactService.followUpTemplateId,
+          contactServiceId,
+          contactId: contactService.contactId,
+          actorUserId: actorUserId ?? null,
+          eventType: "SERVICE_STATUS_UPDATED",
+          title: `Service status updated: ${contactService.service.name}`,
+          details: `Service moved from ${contactService.status.toLowerCase().replace(/_/g, " ")} to ${nextStatus.toLowerCase().replace(/_/g, " ")}.`,
+          payload: {
+            previousStatus: contactService.status,
+            status: nextStatus,
+          },
+        },
+      })
+    }
+
+    return updated
   }
 
   return contactService
@@ -974,7 +1199,15 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
     const { tenantId } = TenantPathSchema.parse(req.params)
-    const { page, pageSize, search, status, dueDatePreset } = FollowUpsListQuerySchema.parse(
+    const {
+      page,
+      pageSize,
+      search,
+      status,
+      dueDatePreset,
+      followUpTemplateId,
+      assignedToUserId,
+    } = FollowUpsListQuerySchema.parse(
       req.query,
     )
 
@@ -1004,60 +1237,66 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
       dueDatePreset === "OVERDUE"
         ? {
             ...currentStepStatusClause,
+            ...(assignedToUserId ? { assignedToUserId } : {}),
             dueAt: { lt: now },
           }
         : dueDatePreset === "TODAY"
           ? {
               ...currentStepStatusClause,
+              ...(assignedToUserId ? { assignedToUserId } : {}),
               dueAt: { gte: todayRange.start, lt: todayRange.end },
             }
           : dueDatePreset === "NEXT_7_DAYS"
             ? {
                 ...currentStepStatusClause,
+                ...(assignedToUserId ? { assignedToUserId } : {}),
                 dueAt: { gte: todayRange.start, lt: nextSevenDaysEnd },
               }
             : dueDatePreset === "NO_DUE_DATE"
               ? {
                   ...currentStepStatusClause,
+                  ...(assignedToUserId ? { assignedToUserId } : {}),
                   dueAt: null,
                 }
               : {
                   ...currentStepStatusClause,
+                  ...(assignedToUserId ? { assignedToUserId } : {}),
                 }
 
-    const where = {
-      tenantId,
-      status: {
-        in: ["PENDING", "IN_PROGRESS", "PENDING_PAYMENT"] as const,
-      },
-      followUpSteps: {
-        some: {
-          ...currentStepWhere,
-          ...(searchableValue
-            ? {
+    const searchOrClauses = searchableValue
+      ? [
+          { service: { name: { contains: searchableValue, mode: "insensitive" as const } } },
+          {
+            contact: buildRelatedContactSearchWhere(searchableValue),
+          },
+          {
+            followUpSteps: {
+              some: {
+                ...currentStepWhere,
                 OR: [
                   { title: { contains: searchableValue, mode: "insensitive" as const } },
                   { note: { contains: searchableValue, mode: "insensitive" as const } },
                 ],
-              }
-            : {}),
+              },
+            },
+          },
+        ]
+      : undefined
+
+    const where = {
+      tenantId,
+      status: {
+        in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
+      },
+      followUpSteps: {
+        some: {
+          ...currentStepWhere,
         },
       },
-      ...(searchableValue
+      ...(searchOrClauses ? { OR: searchOrClauses } : {}),
+      ...(followUpTemplateId
         ? {
-            OR: [
-              { service: { name: { contains: searchableValue, mode: "insensitive" as const } } },
-              {
-                contact: {
-                  OR: [
-                    { firstName: { contains: searchableValue, mode: "insensitive" as const } },
-                    { middleName: { contains: searchableValue, mode: "insensitive" as const } },
-                    { lastName: { contains: searchableValue, mode: "insensitive" as const } },
-                    { phone: { contains: searchableValue, mode: "insensitive" as const } },
-                  ],
-                },
-              },
-            ],
+            followUpTemplateId,
           }
         : {}),
     }
@@ -1122,7 +1361,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
       where: {
         tenantId,
         status: {
-          in: ["PENDING", "IN_PROGRESS", "PENDING_PAYMENT"] as const,
+          in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
         },
         followUpSteps: {
           some: {
@@ -1149,7 +1388,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
         where: {
           tenantId,
           status: {
-            in: ["PENDING", "IN_PROGRESS", "PENDING_PAYMENT"] as const,
+            in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
           },
           followUpSteps: {
             some: {
@@ -1169,7 +1408,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
           contactService: {
             tenantId,
             status: {
-              in: ["PENDING", "IN_PROGRESS", "PENDING_PAYMENT"] as const,
+              in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
             },
           },
         },
@@ -1182,7 +1421,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
           contactService: {
             tenantId,
             status: {
-              in: ["PENDING", "IN_PROGRESS", "PENDING_PAYMENT"] as const,
+              in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
             },
           },
         },
@@ -1215,6 +1454,9 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
                 service.followUpSteps.find((step: any) => step.status === currentStatus) ?? null,
             )
             .find(Boolean) ?? null
+        const currentStepIndex = currentStep
+          ? service.followUpSteps.findIndex((step: any) => step.id === currentStep.id)
+          : -1
         const totalSteps = service.followUpSteps.length
         const completedSteps = service.followUpSteps.filter(
           (step: any) => step.status === "COMPLETED" || step.status === "SKIPPED",
@@ -1246,6 +1488,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
                   currentStep.assignedTo?.name?.trim() || currentStep.assignedTo?.email || null,
                 note: currentStep.note,
                 sortOrder: currentStep.sortOrder,
+                stepNumber: currentStepIndex >= 0 ? currentStepIndex + 1 : null,
               }
             : null,
           progress: {
@@ -1280,6 +1523,43 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
   }
 })
 
+router.get("/:tenantId/follow-up-template-options", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const templates = await prisma.serviceFollowUpTemplate.findMany({
+      where: {
+        tenantId,
+        isPublished: true,
+        contactServices: {
+          some: {
+            tenantId,
+            status: {
+              in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
+            },
+          },
+        },
+      },
+      orderBy: [{ name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+      },
+    })
+
+    return res.json({
+      ok: true,
+      items: templates,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
@@ -1307,59 +1587,18 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         select: {
           id: true,
           status: true,
-          startedAt: true,
           purchasedAt: true,
-          completedAt: true,
-          canceledAt: true,
           totalPriceCents: true,
           currency: true,
-          allowPartialPayments: true,
-          notes: true,
-          assignedProfessional: {
-            select: {
-              id: true,
-              kind: true,
-              userId: true,
-              externalProfessionalName: true,
-              externalContact: true,
-              user: {
-                select: {
-                  name: true,
-                  email: true,
-                  image: true,
-                },
-              },
-            },
-          },
-          contact: {
-            select: {
-              firstName: true,
-              middleName: true,
-              lastName: true,
-            },
-          },
           service: {
             select: {
               id: true,
               name: true,
-              description: true,
-              basePriceCents: true,
               checklistItems: {
                 select: {
                   id: true,
-                  label: true,
-                  description: true,
-                  isRequired: true,
-                  sortOrder: true,
                 },
-                orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
               },
-            },
-          },
-          followUpTemplate: {
-            select: {
-              id: true,
-              name: true,
             },
           },
           payments: {
@@ -1370,23 +1609,15 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           followUpSteps: {
             select: {
               id: true,
-              title: true,
-              notesTemplate: true,
               status: true,
-              availableAt: true,
               dueAt: true,
-              completedAt: true,
-              assignedToUserId: true,
               assignedTo: {
                 select: {
-                  id: true,
                   name: true,
                   email: true,
                   image: true,
                 },
               },
-              note: true,
-              sortOrder: true,
             },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           },
@@ -1455,6 +1686,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           prismaTx,
           tenantId,
           item.id,
+          authed.user.id,
         )
         if (reconciled?.status && reconciled.status !== item.status) {
           statusReconciled = true
@@ -1476,59 +1708,18 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         select: {
           id: true,
           status: true,
-          startedAt: true,
           purchasedAt: true,
-          completedAt: true,
-          canceledAt: true,
           totalPriceCents: true,
           currency: true,
-          allowPartialPayments: true,
-          notes: true,
-          assignedProfessional: {
-            select: {
-              id: true,
-              kind: true,
-              userId: true,
-              externalProfessionalName: true,
-              externalContact: true,
-              user: {
-                select: {
-                  name: true,
-                  email: true,
-                  image: true,
-                },
-              },
-            },
-          },
-          contact: {
-            select: {
-              firstName: true,
-              middleName: true,
-              lastName: true,
-            },
-          },
           service: {
             select: {
               id: true,
               name: true,
-              description: true,
-              basePriceCents: true,
               checklistItems: {
                 select: {
                   id: true,
-                  label: true,
-                  description: true,
-                  isRequired: true,
-                  sortOrder: true,
                 },
-                orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
               },
-            },
-          },
-          followUpTemplate: {
-            select: {
-              id: true,
-              name: true,
             },
           },
           payments: {
@@ -1539,23 +1730,15 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           followUpSteps: {
             select: {
               id: true,
-              title: true,
-              notesTemplate: true,
               status: true,
-              availableAt: true,
               dueAt: true,
-              completedAt: true,
-              assignedToUserId: true,
               assignedTo: {
                 select: {
-                  id: true,
                   name: true,
                   email: true,
                   image: true,
                 },
               },
-              note: true,
-              sortOrder: true,
             },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           },
@@ -1596,32 +1779,13 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         return {
           id: item.id,
           status: item.status,
-          startedAt: item.startedAt,
           purchasedAt: item.purchasedAt,
-          completedAt: item.completedAt,
-          canceledAt: item.canceledAt,
           totalPriceCents: item.totalPriceCents,
           paidCents,
           remainingCents: Math.max(0, item.totalPriceCents - paidCents),
           currency: item.currency,
-          allowPartialPayments: item.allowPartialPayments,
-          notes: item.notes,
-          assignedProfessional: item.assignedProfessional,
-          contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
-            .filter(Boolean)
-            .join(" "),
           service: item.service,
-          followUpTemplate: item.followUpTemplate,
           followUpSteps: item.followUpSteps,
-          checklistItems: item.checklistItems.map((checklistItem: any) => ({
-            id: checklistItem.id,
-            checklistItemId: checklistItem.checklistItemId,
-            completedAt: checklistItem.completedAt,
-            label: checklistItem.checklistItem?.label ?? "",
-            description: checklistItem.checklistItem?.description ?? null,
-            isRequired: Boolean(checklistItem.checklistItem?.isRequired),
-            sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
-          })),
         }
       }),
       pagination: {
@@ -1869,6 +2033,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         prismaTx,
         tenantId,
         contactService.id,
+        authed.user.id,
       )
 
       return contactService
@@ -1884,7 +2049,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
 })
 
 router.get(
-  "/:tenantId/contact-services/:contactServiceId",
+  "/:tenantId/contact-services/:contactServiceId/overview",
   requireAuth,
   async (req, res, next) => {
     try {
@@ -1895,6 +2060,331 @@ router.get(
       if (!membership) return
 
       const fetchItem = async () =>
+        prismaWithServices.contactService.findFirst({
+          where: {
+            id: contactServiceId,
+            tenantId,
+          },
+          select: {
+            id: true,
+            contactId: true,
+            status: true,
+            startedAt: true,
+            purchasedAt: true,
+            completedAt: true,
+            canceledAt: true,
+            totalPriceCents: true,
+            currency: true,
+            allowPartialPayments: true,
+            notes: true,
+            assignedProfessional: {
+              select: {
+                id: true,
+                kind: true,
+                userId: true,
+                externalProfessionalName: true,
+                externalContact: true,
+                user: {
+                  select: {
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+              },
+            },
+            contact: {
+              select: {
+                firstName: true,
+                middleName: true,
+                lastName: true,
+              },
+            },
+            service: {
+              select: {
+                id: true,
+                name: true,
+                description: true,
+                basePriceCents: true,
+                isTaxExempt: true,
+                minimumPartialPaymentCents: true,
+                installmentCount: true,
+                installmentFrequency: true,
+                tenant: {
+                  select: {
+                    taxEnabled: true,
+                    taxLabel: true,
+                    defaultTaxRateBps: true,
+                  },
+                },
+                checklistItems: {
+                  select: {
+                    id: true,
+                    label: true,
+                    description: true,
+                    isRequired: true,
+                    sortOrder: true,
+                  },
+                  orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+                },
+              },
+            },
+            followUpTemplate: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            payments: {
+              select: {
+                amountCents: true,
+                paidAt: true,
+                note: true,
+              },
+              orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
+            },
+            followUpSteps: {
+              select: {
+                id: true,
+                title: true,
+                notesTemplate: true,
+                status: true,
+                availableAt: true,
+                dueAt: true,
+                completedAt: true,
+                assignedToUserId: true,
+                assignedTo: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+                note: true,
+                sortOrder: true,
+              },
+              orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            },
+            checklistItems: {
+              select: {
+                id: true,
+                checklistItemId: true,
+                completedAt: true,
+                checklistItem: {
+                  select: {
+                    id: true,
+                    label: true,
+                    description: true,
+                    isRequired: true,
+                    sortOrder: true,
+                  },
+                },
+              },
+              orderBy: [
+                { checklistItem: { sortOrder: "asc" } },
+                { createdAt: "asc" },
+              ],
+            },
+          },
+        })
+
+      let item = await fetchItem()
+
+      if (!item) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const syncResult = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const activatedId = await syncContactServiceActiveStep({
+          prismaTx,
+          tenantId,
+          contactServiceId: item.id,
+        })
+
+        const serviceChecklistItemIds = (item.service?.checklistItems ?? []).map(
+          (checklistItem: { id: string }) => checklistItem.id,
+        )
+        const existingChecklistItemIds = new Set(
+          (item.checklistItems ?? []).map(
+            (checklistItem: { checklistItemId: string }) => checklistItem.checklistItemId,
+          ),
+        )
+        const missingChecklistItemIds = serviceChecklistItemIds.filter(
+          (checklistItemId: string) => !existingChecklistItemIds.has(checklistItemId),
+        )
+
+        if (missingChecklistItemIds.length) {
+          await prismaTx.contactServiceChecklistItem.createMany({
+            data: missingChecklistItemIds.map((checklistItemId: string) => ({
+              tenantId,
+              contactServiceId: item.id,
+              checklistItemId,
+            })),
+            skipDuplicates: true,
+          })
+        }
+
+        const reconciled = await reconcileContactServiceCompletionFromFollowUps(
+          prismaTx,
+          tenantId,
+          item.id,
+          authed.user.id,
+        )
+
+        return {
+          activatedId,
+          checklistBackfilled: missingChecklistItemIds.length > 0,
+          statusReconciled: reconciled?.status !== item.status,
+        }
+      })
+
+      if (
+        syncResult.activatedId ||
+        syncResult.checklistBackfilled ||
+        syncResult.statusReconciled
+      ) {
+        item = await fetchItem()
+      }
+
+      if (!item) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const paidCents = item.payments.reduce(
+        (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
+        0,
+      )
+      const latestPaidAt = item.payments[0]?.paidAt ?? null
+      const scheduledPaymentsRecordedCount = item.payments.filter(
+        (payment: { note: string | null }) =>
+          payment.note?.trim().toLowerCase() !== "initial payment",
+      ).length
+
+      return res.json({
+        ok: true,
+        contactService: {
+          id: item.id,
+          contactId: item.contactId,
+          status: item.status,
+          startedAt: item.startedAt,
+          purchasedAt: item.purchasedAt,
+          completedAt: item.completedAt,
+          canceledAt: item.canceledAt,
+          totalPriceCents: item.totalPriceCents,
+          paidCents,
+          remainingCents: Math.max(0, item.totalPriceCents - paidCents),
+          currency: item.currency,
+          allowPartialPayments: item.allowPartialPayments,
+          notes: item.notes,
+          assignedProfessional: item.assignedProfessional,
+          contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
+            .filter(Boolean)
+            .join(" "),
+          service: {
+            id: item.service.id,
+            name: item.service.name,
+            description: item.service.description,
+            basePriceCents: item.service.basePriceCents,
+            isTaxExempt: item.service.isTaxExempt,
+            minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
+            installmentCount: item.service.installmentCount,
+            installmentFrequency: item.service.installmentFrequency,
+          },
+          tenantBilling: {
+            taxEnabled: item.service.tenant.taxEnabled,
+            taxLabel: item.service.tenant.taxLabel,
+            defaultTaxRatePercent:
+              item.service.tenant.defaultTaxRateBps !== null &&
+              item.service.tenant.defaultTaxRateBps !== undefined
+                ? item.service.tenant.defaultTaxRateBps / 100
+                : null,
+          },
+          followUpTemplate: item.followUpTemplate,
+          followUpSteps: item.followUpSteps,
+          checklistItems: item.checklistItems.map((checklistItem: any) => ({
+            id: checklistItem.id,
+            checklistItemId: checklistItem.checklistItemId,
+            completedAt: checklistItem.completedAt,
+            label: checklistItem.checklistItem?.label ?? "",
+            description: checklistItem.checklistItem?.description ?? null,
+            isRequired: Boolean(checklistItem.checklistItem?.isRequired),
+            sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
+          })),
+          paymentSummary: {
+            latestPaidAt,
+            totalPaymentsCount: item.payments.length,
+            scheduledPaymentsRecordedCount,
+          },
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.get(
+  "/:tenantId/contact-services/:contactServiceId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const serviceNotesSelectWithAttachments = {
+        select: {
+          id: true,
+          title: true,
+          body: true,
+          createdAt: true,
+          createdBy: {
+            select: {
+              id: true,
+              name: true,
+              image: true,
+            },
+          },
+          attachments: {
+            orderBy: { createdAt: "asc" as const },
+            select: {
+              id: true,
+              file: {
+                select: {
+                  id: true,
+                  key: true,
+                  contentType: true,
+                  size: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: [{ createdAt: "desc" as const }],
+      }
+
+      const serviceNotesSelectWithoutAttachments = {
+        select: {
+          id: true,
+          title: true,
+          body: true,
+          createdAt: true,
+          createdBy: {
+            select: {
+              id: true,
+              name: true,
+              image: true,
+            },
+          },
+        },
+        orderBy: [{ createdAt: "desc" as const }],
+      }
+
+      const fetchItem = async (includeServiceNoteAttachments = true) =>
         prismaWithServices.contactService.findFirst({
           where: {
             id: contactServiceId,
@@ -1986,7 +2476,10 @@ router.get(
               },
               orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
             },
-            serviceNotes: {
+            serviceNotes: includeServiceNoteAttachments
+              ? serviceNotesSelectWithAttachments
+              : serviceNotesSelectWithoutAttachments,
+            contactNotes: {
               select: {
                 id: true,
                 title: true,
@@ -1996,7 +2489,50 @@ router.get(
                   select: {
                     id: true,
                     name: true,
+                    email: true,
                     image: true,
+                  },
+                },
+                followUpTemplate: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+                contactServiceFollowUpStep: {
+                  select: {
+                    id: true,
+                    title: true,
+                  },
+                },
+                attachments: {
+                  orderBy: { createdAt: "asc" },
+                  select: {
+                    id: true,
+                    file: {
+                      select: {
+                        id: true,
+                        key: true,
+                        contentType: true,
+                        size: true,
+                      },
+                    },
+                  },
+                },
+              },
+              orderBy: [{ createdAt: "desc" }],
+            },
+            executionLogs: {
+              select: {
+                id: true,
+                eventType: true,
+                title: true,
+                details: true,
+                createdAt: true,
+                actor: {
+                  select: {
+                    id: true,
+                    name: true,
                   },
                 },
               },
@@ -2048,7 +2584,15 @@ router.get(
           },
         })
 
-      let item = await fetchItem()
+      let item: Awaited<ReturnType<typeof fetchItem>> | null
+      try {
+        item = await fetchItem(true)
+      } catch (error) {
+        if (!hasServiceNoteAttachmentQueryError(error)) {
+          throw error
+        }
+        item = await fetchItem(false)
+      }
 
       if (!item) {
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
@@ -2089,6 +2633,7 @@ router.get(
           prismaTx,
           tenantId,
           item.id,
+          authed.user.id,
         )
 
         return {
@@ -2103,7 +2648,14 @@ router.get(
         syncResult.checklistBackfilled ||
         syncResult.statusReconciled
       ) {
-        item = await fetchItem()
+        try {
+          item = await fetchItem(true)
+        } catch (error) {
+          if (!hasServiceNoteAttachmentQueryError(error)) {
+            throw error
+          }
+          item = await fetchItem(false)
+        }
       }
 
       if (!item) {
@@ -2113,6 +2665,22 @@ router.get(
       const paidCents = item.payments.reduce(
         (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
         0,
+      )
+      const combinedNotes = [
+        ...item.serviceNotes.map((note: any) =>
+          serializeRelatedServiceNote(note, "SERVICE_NOTE"),
+        ),
+        ...item.contactNotes.map((note: any) =>
+          serializeRelatedServiceNote(
+            note,
+            note.followUpTemplate || note.contactServiceFollowUpStep
+              ? "FOLLOW_UP_NOTE"
+              : "LINKED_CONTACT_NOTE",
+          ),
+        ),
+      ].sort(
+        (left, right) =>
+          new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
       )
 
       return res.json({
@@ -2156,7 +2724,7 @@ router.get(
           },
           followUpTemplate: item.followUpTemplate,
           payments: item.payments,
-          serviceNotes: item.serviceNotes,
+          serviceNotes: combinedNotes,
           followUpSteps: item.followUpSteps,
           checklistItems: item.checklistItems.map((checklistItem: any) => ({
             id: checklistItem.id,
@@ -2194,11 +2762,23 @@ router.post(
         },
         select: {
           id: true,
+          status: true,
+          contactId: true,
+          followUpTemplateId: true,
+          service: {
+            select: {
+              name: true,
+            },
+          },
         },
       })
+      const files = await getValidatedServiceNoteFiles(tenantId, payload.attachmentFileIds)
 
       if (!existing) {
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+      if (!files) {
+        return res.status(400).json({ error: "INVALID_NOTE_ATTACHMENTS" })
       }
 
       const note = await prismaWithServices.contactServiceNote.create({
@@ -2208,6 +2788,12 @@ router.post(
           createdById: authed.user.id,
           title: sanitizeSingleLineText(payload.title),
           body: sanitizeMultilineText(payload.body),
+          attachments: {
+            create: files.map((file: { id: string }) => ({
+              tenantId,
+              fileId: file.id,
+            })),
+          },
         },
         select: {
           id: true,
@@ -2221,12 +2807,36 @@ router.post(
               image: true,
             },
           },
+          attachments: {
+            orderBy: { createdAt: "asc" },
+            select: {
+              id: true,
+              file: {
+                select: {
+                  id: true,
+                  key: true,
+                  contentType: true,
+                  size: true,
+                },
+              },
+            },
+          },
         },
       })
 
       return res.status(201).json({
         ok: true,
-        note,
+        note: {
+          ...note,
+          attachments: note.attachments.map((attachment: any) => ({
+            id: attachment.id,
+            fileId: attachment.file.id,
+            key: attachment.file.key,
+            fileName: fileNameFromKey(attachment.file.key),
+            contentType: attachment.file.contentType,
+            size: attachment.file.size ?? null,
+          })),
+        },
       })
     } catch (error) {
       return next(error)
@@ -2319,6 +2929,7 @@ router.post(
         prismaWithServices,
         tenantId,
         contactServiceId,
+        authed.user.id,
       )
 
       return res.status(201).json({
@@ -2445,6 +3056,7 @@ router.patch(
         prismaWithServices,
         tenantId,
         contactServiceId,
+        authed.user.id,
       )
 
       return res.json({
@@ -2502,6 +3114,7 @@ router.delete(
         prismaWithServices,
         tenantId,
         contactServiceId,
+        authed.user.id,
       )
 
       return res.json({
@@ -2599,6 +3212,25 @@ router.patch(
           notes: true,
         },
       })
+
+      if (payload.status !== undefined && payload.status !== existing.status && existing.followUpTemplateId) {
+        await prismaWithServices.serviceFollowUpExecutionLog.create({
+          data: {
+            tenantId,
+            templateId: existing.followUpTemplateId,
+            contactServiceId,
+            contactId: existing.contactId,
+            actorUserId: authed.user.id,
+            eventType: "SERVICE_STATUS_UPDATED",
+            title: `Service status updated: ${existing.service.name}`,
+            details: `Service moved from ${existing.status.toLowerCase().replace(/_/g, " ")} to ${updated.status.toLowerCase().replace(/_/g, " ")}.`,
+            payload: {
+              previousStatus: existing.status,
+              status: updated.status,
+            },
+          },
+        })
+      }
 
       return res.json({
         ok: true,
@@ -2783,15 +3415,43 @@ router.patch(
       if (!existing) {
         return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
       }
+      const isReopenAction = payload.action === "REOPEN"
+
+      if (isReopenAction && !["COMPLETED", "SKIPPED", "POSTPONED"].includes(existing.status)) {
+        return res.status(409).json({ error: "STEP_REOPEN_NOT_ALLOWED" })
+      }
+
+      if (isReopenAction) {
+        const laterCompletedStep = await prismaWithServices.contactServiceFollowUpStep.findFirst({
+          where: {
+            tenantId,
+            contactServiceId,
+            sortOrder: { gt: existing.sortOrder },
+            status: { in: ["COMPLETED", "SKIPPED"] },
+          },
+          select: { id: true },
+        })
+
+        if (laterCompletedStep) {
+          return res.status(409).json({ error: "STEP_REOPEN_BLOCKED_BY_LATER_COMPLETED_STEPS" })
+        }
+      }
+
       if (
-        existing.status !== "ACTIVE" &&
+        ["COMPLETED", "SKIPPED"].includes(existing.status) &&
+        !isReopenAction &&
         (payload.status !== undefined || payload.postponeTo !== undefined)
       ) {
-        return res.status(409).json({ error: "STEP_STATUS_LOCKED_UNTIL_ACTIVE" })
+        return res.status(409).json({ error: "STEP_REOPEN_REQUIRED" })
       }
 
       const statusUpdate =
-        payload.status === undefined
+        isReopenAction
+          ? {
+              status: "ACTIVE" as const,
+              completedAt: null,
+            }
+          : payload.status === undefined
           ? payload.completedAt === undefined
             ? {}
             : payload.completedAt
@@ -2821,6 +3481,32 @@ router.patch(
       let updated: any
       await prisma.$transaction(async (tx) => {
         const prismaTx = tx as any
+
+        if (isReopenAction) {
+          await prismaTx.contactServiceFollowUpStep.updateMany({
+            where: {
+              tenantId,
+              contactServiceId,
+              id: { not: followUpStepId },
+              status: "ACTIVE",
+            },
+            data: {
+              status: "PENDING",
+            },
+          })
+
+          await prismaTx.contactServiceFollowUpStep.updateMany({
+            where: {
+              tenantId,
+              contactServiceId,
+              sortOrder: { gt: existing.sortOrder },
+              status: { in: ["PENDING", "ACTIVE", "POSTPONED"] },
+            },
+            data: {
+              status: "PENDING",
+            },
+          })
+        }
 
         updated = await prismaTx.contactServiceFollowUpStep.update({
           where: {
@@ -2882,7 +3568,10 @@ router.patch(
 
         if (
           contactServiceRecord?.followUpTemplateId &&
-          (payload.status !== undefined || payload.completedAt !== undefined || payload.postponeTo !== undefined)
+          (isReopenAction ||
+            payload.status !== undefined ||
+            payload.completedAt !== undefined ||
+            payload.postponeTo !== undefined)
         ) {
           await prismaTx.serviceFollowUpExecutionLog.create({
             data: {
@@ -2894,13 +3583,16 @@ router.patch(
               flowNodeId: updated.templateNodeId ?? null,
               stepId: updated.id,
               eventType: "STEP_STATUS_UPDATED",
-              title: `Updated step status: ${updated.title}`,
-              details: `Step moved to ${updated.status.toLowerCase().replace(/_/g, " ")}.`,
+              title: isReopenAction ? `Reopened step: ${updated.title}` : `Updated step status: ${updated.title}`,
+              details: isReopenAction
+                ? "Step reopened and moved back to active."
+                : `Step moved to ${updated.status.toLowerCase().replace(/_/g, " ")}.`,
               payload: {
                 status: updated.status,
                 dueAt: updated.dueAt,
                 completedAt: updated.completedAt,
                 postponeTo: payload.postponeTo ?? null,
+                action: payload.action ?? null,
               },
             },
           })
@@ -2968,13 +3660,27 @@ router.patch(
             completedStepSortOrder: existing.sortOrder,
             completedStepTemplateNodeId: existing.templateNodeId,
             actorUserId: authed.user.id,
-            ignoreWaitNodes: true,
+            ignoreWaitNodes: false,
           })
           await syncContactServiceActiveStep({
             prismaTx,
             tenantId,
             contactServiceId,
           })
+        }
+
+        if (
+          isReopenAction ||
+          payload.status !== undefined ||
+          payload.completedAt !== undefined ||
+          payload.postponeTo !== undefined
+        ) {
+          await reconcileContactServiceCompletionFromFollowUps(
+            prismaTx,
+            tenantId,
+            contactServiceId,
+            authed.user.id,
+          )
         }
       })
 

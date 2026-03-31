@@ -196,6 +196,14 @@ function formatShortDate(value: string | null | undefined) {
   }).format(parsed)
 }
 
+function isPastDue(value: string | null | undefined) {
+  if (!value) return false
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return false
+
+  return parsed.getTime() < Date.now()
+}
+
 function sortTags<
   T extends {
     sortOrder: number
@@ -243,6 +251,7 @@ export default async function ContactDetailsLayout({
     percentage: number
     currentStepTitle: string | null
     currentStepDueAt: string | null
+    isOverdue: boolean
     ownerName: string | null
     ownerId: string | null
     ownerImage: string | null
@@ -298,6 +307,7 @@ export default async function ContactDetailsLayout({
               percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
               currentStepTitle: currentStep?.title ?? null,
               currentStepDueAt: currentStep?.dueAt ?? null,
+              isOverdue: isPastDue(currentStep?.dueAt ?? null),
               ownerName:
                 currentStep?.assignedTo?.name?.trim() ||
                 currentStep?.assignedTo?.email?.trim() ||
@@ -553,7 +563,11 @@ export default async function ContactDetailsLayout({
               {visibleActiveFollowUpServices.map((service) => (
                 <div
                   key={service.id}
-                  className="rounded-[20px] border border-slate-200 bg-slate-50/60 px-4 py-3.5 shadow-sm"
+                  className={
+                    service.isOverdue
+                      ? "rounded-[20px] border border-rose-200 bg-rose-50/80 px-4 py-3.5 shadow-sm"
+                      : "rounded-[20px] border border-slate-200 bg-slate-50/60 px-4 py-3.5 shadow-sm"
+                  }
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
@@ -569,6 +583,11 @@ export default async function ContactDetailsLayout({
                       <Badge className="border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] text-sky-700 hover:bg-sky-50">
                         In Progress
                       </Badge>
+                      {service.isOverdue ? (
+                        <Badge className="border-rose-200 bg-rose-100 px-2 py-0.5 text-[11px] text-rose-700 hover:bg-rose-100">
+                          Overdue
+                        </Badge>
+                      ) : null}
                       {service.ownerName ? (
                         <StackedAvatarGroup
                           items={[
@@ -587,7 +606,7 @@ export default async function ContactDetailsLayout({
                     </div>
                   </div>
 
-                  <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-slate-200/80">
+                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200/80">
                     <div
                       className="h-full rounded-full bg-teal-500 transition-[width]"
                       style={{ width: `${service.percentage}%` }}
@@ -598,7 +617,13 @@ export default async function ContactDetailsLayout({
                     <p className="text-[13px] font-semibold text-slate-950">
                       {service.percentage}% Complete
                     </p>
-                    <div className="flex items-center gap-1.5 text-[13px] text-slate-600">
+                    <div
+                      className={
+                        service.isOverdue
+                          ? "flex items-center gap-1.5 text-[13px] font-medium text-rose-700"
+                          : "flex items-center gap-1.5 text-[13px] text-slate-600"
+                      }
+                    >
                       <CalendarClock className="h-3.5 w-3.5" />
                       <span>
                         Due: {formatShortDate(service.currentStepDueAt)}

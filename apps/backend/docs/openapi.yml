@@ -3285,6 +3285,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/overview:
+    get:
+      tags: [Services]
+      summary: Get overview data for a single contact service process
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lightweight contact service overview returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactServiceOverviewResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/notes:
     post:
       tags: [Services]
@@ -5169,6 +5207,18 @@ components:
           type: string
           minLength: 1
           maxLength: 5000
+        contactServiceId:
+          type: string
+          nullable: true
+          description: Optional related contact service enrollment id. Required when linking the note to a follow-up template or step.
+        followUpTemplateId:
+          type: string
+          nullable: true
+          description: Optional related follow-up template id. Must belong to the provided contact service.
+        contactServiceFollowUpStepId:
+          type: string
+          nullable: true
+          description: Optional related contact service follow-up step id. Must belong to the provided contact service.
         attachmentFileIds:
           type: array
           maxItems: 10
@@ -5429,6 +5479,18 @@ components:
           maxLength: 160
         contactId:
           type: string
+        contactServiceId:
+          type: string
+          nullable: true
+          description: Optional related contact service enrollment id. Required when linking the task to a follow-up template or step.
+        followUpTemplateId:
+          type: string
+          nullable: true
+          description: Optional related follow-up template id. Must belong to the provided contact service.
+        contactServiceFollowUpStepId:
+          type: string
+          nullable: true
+          description: Optional related contact service follow-up step id. Must belong to the provided contact service.
         description:
           type: string
           nullable: true
@@ -5459,6 +5521,15 @@ components:
           maxLength: 160
         contactId:
           type: string
+        contactServiceId:
+          type: string
+          nullable: true
+        followUpTemplateId:
+          type: string
+          nullable: true
+        contactServiceFollowUpStepId:
+          type: string
+          nullable: true
         description:
           type: string
           nullable: true
@@ -6631,6 +6702,30 @@ components:
             image:
               type: string
               nullable: true
+    ContactServiceExecutionLogItem:
+      type: object
+      properties:
+        id:
+          type: string
+        eventType:
+          type: string
+        title:
+          type: string
+        details:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        actor:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+              nullable: true
     ContactServicesListResponse:
       type: object
       properties:
@@ -6718,6 +6813,34 @@ components:
                   type: array
                   items:
                     $ref: "#/components/schemas/ContactServiceNoteItem"
+                executionLogs:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/ContactServiceExecutionLogItem"
+    ContactServiceOverviewResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        contactService:
+          allOf:
+            - $ref: "#/components/schemas/ContactServiceListItem"
+            - type: object
+              properties:
+                paymentSummary:
+                  $ref: "#/components/schemas/ContactServicePaymentSummary"
+    ContactServicePaymentSummary:
+      type: object
+      properties:
+        latestPaidAt:
+          type: string
+          format: date-time
+          nullable: true
+        totalPaymentsCount:
+          type: integer
+        scheduledPaymentsRecordedCount:
+          type: integer
     UpdateContactServiceRequest:
       type: object
       properties:
@@ -6934,6 +7057,10 @@ components:
           type: string
           nullable: true
           maxLength: 1000
+        action:
+          type: string
+          enum: [REOPEN]
+          description: Explicit recovery action for a completed, skipped, or postponed step.
         status:
           type: string
           enum: [PENDING, ACTIVE, COMPLETED, SKIPPED, POSTPONED]

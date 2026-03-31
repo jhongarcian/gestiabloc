@@ -1,6 +1,6 @@
 "use client"
 
-import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 import { z } from "zod"
 import {
@@ -16,13 +16,11 @@ import {
   UserRound,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
-import { Bar, BarChart, Cell, Pie, PieChart, XAxis, YAxis } from "recharts"
 import { toast } from "sonner"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import {
   Command,
   CommandEmpty,
@@ -72,39 +70,19 @@ import { cn } from "@/lib/utils"
 
 type ContactServiceItem = {
   id: string
-  status: "PENDING" | "IN_PROGRESS" | "PENDING_PAYMENT" | "COMPLETED" | "CANCELED"
+  status: "IN_PROGRESS" | "PENDING_PAYMENT" | "COMPLETED" | "CANCELED"
   purchasedAt?: string | null
   totalPriceCents: number
   paidCents: number
   remainingCents: number
   currency: string
-  notes: string | null
   service: {
     id: string
     name: string
-    description?: string | null
-    basePriceCents?: number
     checklistItems?: Array<{
       id: string
-      label: string
-      description: string | null
-      isRequired: boolean
-      sortOrder: number
     }>
   }
-  followUpTemplate?: {
-    id: string
-    name: string
-  } | null
-  checklistItems: Array<{
-    id: string
-    checklistItemId: string
-    completedAt: string | null
-    label: string
-    description: string | null
-    isRequired: boolean
-    sortOrder: number
-  }>
   followUpSteps: Array<{
     id: string
     status?: "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
@@ -112,7 +90,6 @@ type ContactServiceItem = {
     dueAt?: string | null
     completedAt?: string | null
     assignedTo?: {
-      id: string
       name: string | null
       email: string | null
       image: string | null
@@ -130,6 +107,8 @@ type ContactServicesResponse = {
     totalPages: number
   }
 }
+
+const PAGE_SIZE_OPTIONS = [10, 25] as const
 
 type ServiceOptionsResponse = {
   ok: boolean
@@ -238,14 +217,6 @@ const formatDate = (value: string | null | undefined) => {
   })
 }
 
-const formatCurrencyValue = (value: number, currency: string) =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: currency || "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value || 0)
-
 const getServiceTotalWithTaxCents = ({
   basePriceCents,
   isTaxExempt,
@@ -291,29 +262,11 @@ const optionalStringIdSchema = z.preprocess(
 )
 
 const SERVICE_STATUS_STYLES: Record<ContactServiceItem["status"], string> = {
-  PENDING: "bg-amber-100 text-amber-800 hover:bg-amber-100",
   IN_PROGRESS: "bg-sky-100 text-sky-800 hover:bg-sky-100",
   PENDING_PAYMENT: "bg-orange-100 text-orange-800 hover:bg-orange-100",
   COMPLETED: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
   CANCELED: "bg-rose-100 text-rose-800 hover:bg-rose-100",
 }
-
-const STATUS_CHART_COLORS: Record<ContactServiceItem["status"], string> = {
-  PENDING: "#f59e0b",
-  IN_PROGRESS: "#0ea5e9",
-  PENDING_PAYMENT: "#f97316",
-  COMPLETED: "#22c55e",
-  CANCELED: "#ef4444",
-}
-
-const spendingChartConfig = {
-  paid: { label: "Paid", color: "#22c55e" },
-  total: { label: "Total", color: "#f59e0b" },
-} satisfies ChartConfig
-
-const statusChartConfig = {
-  value: { label: "Services", color: "#64748b" },
-} satisfies ChartConfig
 
 function getInitials(value: string) {
   const parts = value
@@ -682,6 +635,14 @@ export function ContactServicesPanel({
 }: ContactServicesPanelProps) {
   const router = useRouter()
   const [items, setItems] = useState<ContactServiceItem[]>([])
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(10)
+  const [pagination, setPagination] = useState({
+    page: 1,
+    pageSize: 10,
+    total: 0,
+    totalPages: 1,
+  })
   const [isLoading, setIsLoading] = useState(false)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [createStep, setCreateStep] = useState<1 | 2 | 3 | 4>(1)
@@ -734,19 +695,26 @@ export function ContactServicesPanel({
     try {
       const { data } = await api.get<ContactServicesResponse>(`/api/services/${tenantId}/contact-services`, {
         params: {
-          page: 1,
-          pageSize: 25,
+          page,
+          pageSize,
           contactId,
         },
       })
       setItems(data.items)
+      setPagination(data.pagination)
     } catch {
       setItems([])
+      setPagination({
+        page,
+        pageSize,
+        total: 0,
+        totalPages: 1,
+      })
       toast.error("Could not load enrolled services.")
     } finally {
       setIsLoading(false)
     }
-  }, [tenantId, contactId])
+  }, [tenantId, contactId, page, pageSize])
 
   const loadServiceOptions = useCallback(async () => {
     setIsLoadingServiceOptions(true)
@@ -1132,27 +1100,12 @@ export function ContactServicesPanel({
     }
   }, [items])
 
-  const spendingBreakdownData = useMemo(() => {
-    return items.map((item) => ({
-      id: item.id,
-      serviceName: item.service.name,
-      paid: Number((item.paidCents / 100).toFixed(2)),
-      total: Number((item.totalPriceCents / 100).toFixed(2)),
-      balance: Number((item.remainingCents / 100).toFixed(2)),
-      currency: item.currency,
-    }))
-  }, [items])
-
-  const statusBreakdownData = useMemo(
-    () =>
-      (["PENDING", "IN_PROGRESS", "PENDING_PAYMENT", "COMPLETED", "CANCELED"] as const).map((status) => ({
-        status,
-        label: toSentence(status),
-        value: items.filter((item) => item.status === status).length,
-        fill: STATUS_CHART_COLORS[status],
-      })),
-    [items],
-  )
+  const showingLabel = useMemo(() => {
+    if (!pagination.total) return "Showing 0 services"
+    const start = (pagination.page - 1) * pagination.pageSize + 1
+    const end = Math.min(pagination.total, start + items.length - 1)
+    return `Showing ${start}-${end} of ${pagination.total} services`
+  }, [items.length, pagination.page, pagination.pageSize, pagination.total])
 
   const getServiceProgress = (item: ContactServiceItem) => {
     const total = item.followUpSteps.length
@@ -1342,252 +1295,195 @@ export function ContactServicesPanel({
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-3">
-        <div className="rounded-[20px] border border-slate-200 bg-white p-4 xl:col-span-2">
-          <div className="mb-3">
-            <h3 className="text-sm font-semibold text-slate-900">Balance Overview</h3>
-            <p className="text-xs text-slate-500">Total amount versus paid amount for each purchased service.</p>
-          </div>
-          <ChartContainer config={spendingChartConfig} className="h-[260px] w-full">
-            <BarChart
-              accessibilityLayer
-              data={spendingBreakdownData}
-              barCategoryGap={items.length <= 1 ? "80%" : "35%"}
-              margin={{ top: 8, right: 12, left: 12, bottom: 0 }}
-            >
-              <XAxis
-                dataKey="serviceName"
-                tickLine={false}
-                tickMargin={10}
-                axisLine={false}
-                tickFormatter={(value) => {
-                  const label = String(value)
-                  return label.length > 18 ? `${label.slice(0, 18)}...` : label
-                }}
-              />
-              <YAxis
-                tickLine={false}
-                axisLine={false}
-                tickMargin={10}
-                width={72}
-                tickFormatter={(value) => formatCurrencyValue(Number(value), "USD")}
-              />
-              <Bar
-                dataKey="total"
-                fill="var(--color-total)"
-                radius={[4, 4, 0, 0]}
-                barSize={56}
-                maxBarSize={56}
-              />
-              <Bar
-                dataKey="paid"
-                fill="var(--color-paid)"
-                radius={[4, 4, 0, 0]}
-                barSize={36}
-                maxBarSize={36}
-              />
-              <ChartTooltip
-                cursor={false}
-                content={
-                  <ChartTooltipContent
-                    className="w-[210px]"
-                    labelFormatter={(value) => String(value)}
-                    formatter={(value, name, item, index) => (
-                      <>
-                        <div
-                          className="h-2.5 w-2.5 shrink-0 rounded-[2px] bg-(--color-bg)"
-                          style={
-                            {
-                              "--color-bg": `var(--color-${name})`,
-                            } as CSSProperties
-                          }
-                        />
-                        {spendingChartConfig[name as keyof typeof spendingChartConfig]?.label || name}
-                        <div className="ml-auto font-mono font-medium text-foreground tabular-nums">
-                          {formatCurrencyValue(
-                            Number(value),
-                            String(item.payload.currency ?? "USD"),
-                          )}
-                        </div>
-                        {index === 1 ? (
-                          <div className="mt-1.5 flex basis-full items-center border-t pt-1.5 text-xs font-medium text-foreground">
-                            Balance
-                            <div className="ml-auto font-mono font-medium text-foreground tabular-nums">
-                              {formatCurrencyValue(
-                                Number(item.payload.total ?? 0) - Number(item.payload.paid ?? 0),
-                                String(item.payload.currency ?? "USD"),
-                              )}
-                            </div>
-                          </div>
-                        ) : null}
-                      </>
-                    )}
-                  />
-                }
-              />
-            </BarChart>
-          </ChartContainer>
+      <div className="min-h-[560px] overflow-hidden rounded-[20px] border border-slate-200 bg-white">
+        <div className="border-b border-slate-200 px-4 py-3 text-sm text-slate-600 sm:px-5">
+          {showingLabel}
         </div>
-        <div className="rounded-[20px] border border-slate-200 bg-white p-4">
-          <div className="mb-3">
-            <h3 className="text-sm font-semibold text-slate-900">Service Status Mix</h3>
-            <p className="text-xs text-slate-500">How enrolled services are distributed by status.</p>
-          </div>
-          <ChartContainer config={statusChartConfig} className="h-[220px] w-full">
-            <PieChart>
-              <ChartTooltip content={<ChartTooltipContent nameKey="label" />} />
-              <Pie data={statusBreakdownData} dataKey="value" nameKey="label" innerRadius={45} outerRadius={76} paddingAngle={2}>
-                {statusBreakdownData.map((entry) => (
-                  <Cell key={entry.status} fill={entry.fill} />
-                ))}
-              </Pie>
-            </PieChart>
-          </ChartContainer>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {statusBreakdownData.map((entry) => (
-              <Badge key={entry.status} variant="outline" className="capitalize">
-                {entry.label}: {entry.value}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="overflow-hidden rounded-[20px] border border-slate-200 bg-white">
         <TooltipProvider>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Service</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Created At</TableHead>
-                <TableHead>Next Follow-up</TableHead>
-                <TableHead>
-                  <div className="flex items-center gap-1">
-                    <span>Owner</span>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          className="inline-flex h-4 w-4 items-center justify-center text-slate-400 transition hover:text-slate-600"
-                          onClick={(event) => event.stopPropagation()}
-                          aria-label="Owner column help"
-                        >
-                          <CircleHelp className="h-3.5 w-3.5" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>Assigned person to the follow up.</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
-                </TableHead>
-                <TableHead>Paid</TableHead>
-                <TableHead>Balance</TableHead>
-                <TableHead>Progress</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-            {isLoading ? (
-              <TableRow>
-                <TableCell colSpan={8} className="h-24 text-center text-slate-500">Loading services...</TableCell>
-              </TableRow>
-            ) : hasItems ? (
-              items.map((item) => (
-                <TableRow
-                  key={item.id}
-                  className="cursor-pointer"
-                  onClick={() =>
-                    router.push(`/app/${tenantSlug}/contacts/${contactId}/services/${item.id}`)
-                  }
-                >
-                  <TableCell className="font-medium text-slate-900">{item.service.name}</TableCell>
-                  <TableCell>
-                    <Badge className={`capitalize ${SERVICE_STATUS_STYLES[item.status]}`}>
-                      {toSentence(item.status)}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-slate-600">{formatDate(item.purchasedAt)}</TableCell>
-                  <TableCell className="text-slate-600">{formatDate(getNextFollowUpDate(item))}</TableCell>
-                  <TableCell>
-                    {(() => {
-                      const assignee = getCurrentFollowUpAssignee(item)
-                      const label = assignee?.name?.trim() || assignee?.email?.trim() || "Unassigned"
+          <div className="min-h-[430px] overflow-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Service</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Created At</TableHead>
+                  <TableHead>Next Follow-up</TableHead>
+                  <TableHead>
+                    <div className="flex items-center gap-1">
+                      <span>Owner</span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            className="inline-flex h-4 w-4 items-center justify-center text-slate-400 transition hover:text-slate-600"
+                            onClick={(event) => event.stopPropagation()}
+                            aria-label="Owner column help"
+                          >
+                            <CircleHelp className="h-3.5 w-3.5" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Assigned person to the follow up.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </div>
+                  </TableHead>
+                  <TableHead>Paid</TableHead>
+                  <TableHead>Balance</TableHead>
+                  <TableHead>Progress</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="h-24 text-center text-slate-500">Loading services...</TableCell>
+                </TableRow>
+              ) : hasItems ? (
+                items.map((item) => (
+                  <TableRow
+                    key={item.id}
+                    className="cursor-pointer"
+                    onClick={() =>
+                      router.push(`/app/${tenantSlug}/contacts/${contactId}/services/${item.id}`)
+                    }
+                  >
+                    <TableCell className="font-medium text-slate-900">{item.service.name}</TableCell>
+                    <TableCell>
+                      <Badge className={`capitalize ${SERVICE_STATUS_STYLES[item.status]}`}>
+                        {toSentence(item.status)}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-slate-600">{formatDate(item.purchasedAt)}</TableCell>
+                    <TableCell className="text-slate-600">{formatDate(getNextFollowUpDate(item))}</TableCell>
+                    <TableCell>
+                      {(() => {
+                        const assignee = getCurrentFollowUpAssignee(item)
+                        const label = assignee?.name?.trim() || assignee?.email?.trim() || "Unassigned"
 
-                      return (
-                        <div className="flex items-center gap-2">
-                          {assignee ? (
-                            <Avatar className="h-7 w-7 shrink-0 border border-slate-200">
-                              <AvatarImage src={assignee.image ?? undefined} alt={label} />
-                              <AvatarFallback className="bg-blue-100 text-[10px] font-semibold text-blue-900">
-                                {getInitials(label)}
-                              </AvatarFallback>
-                            </Avatar>
-                          ) : (
-                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                              <UserRound className="h-3.5 w-3.5" />
-                            </span>
-                          )}
-                          <span className="truncate text-sm text-slate-600">{label}</span>
-                        </div>
-                      )
-                    })()}
-                  </TableCell>
-                  <TableCell>{currencyFormatter(item.paidCents, item.currency)}</TableCell>
-                  <TableCell>{currencyFormatter(item.remainingCents, item.currency)}</TableCell>
-                  <TableCell>
-                    {(() => {
-                      const progress = getServiceProgress(item)
-                      return (
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <button
-                              type="button"
-                              className="w-[190px] cursor-pointer"
+                        return (
+                          <div className="flex items-center gap-2">
+                            {assignee ? (
+                              <Avatar className="h-7 w-7 shrink-0 border border-slate-200">
+                                <AvatarImage src={assignee.image ?? undefined} alt={label} />
+                                <AvatarFallback className="bg-blue-100 text-[10px] font-semibold text-blue-900">
+                                  {getInitials(label)}
+                                </AvatarFallback>
+                              </Avatar>
+                            ) : (
+                              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                                <UserRound className="h-3.5 w-3.5" />
+                              </span>
+                            )}
+                            <span className="truncate text-sm text-slate-600">{label}</span>
+                          </div>
+                        )
+                      })()}
+                    </TableCell>
+                    <TableCell>{currencyFormatter(item.paidCents, item.currency)}</TableCell>
+                    <TableCell>{currencyFormatter(item.remainingCents, item.currency)}</TableCell>
+                    <TableCell>
+                      {(() => {
+                        const progress = getServiceProgress(item)
+                        return (
+                          <Popover>
+                            <PopoverTrigger asChild>
+                              <button
+                                type="button"
+                                className="w-[190px] cursor-pointer"
+                                onClick={(event) => event.stopPropagation()}
+                              >
+                                <div className="flex items-center gap-3">
+                                  <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-slate-200">
+                                    <div
+                                      className="h-full rounded-full bg-emerald-500 transition-all"
+                                      style={{ width: `${progress.percentage}%` }}
+                                    />
+                                  </div>
+                                  <span className="w-10 text-right text-xs font-medium text-slate-600">
+                                    {progress.percentage}%
+                                  </span>
+                                </div>
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent
+                              className="w-56"
+                              align="start"
                               onClick={(event) => event.stopPropagation()}
                             >
-                              <div className="flex items-center gap-3">
-                                <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-slate-200">
-                                  <div
-                                    className="h-full rounded-full bg-emerald-500 transition-all"
-                                    style={{ width: `${progress.percentage}%` }}
-                                  />
-                                </div>
-                                <span className="w-10 text-right text-xs font-medium text-slate-600">
-                                  {progress.percentage}%
-                                </span>
+                              <div className="space-y-1">
+                                <p className="text-sm font-semibold text-slate-900">
+                                  {progress.percentage}% Completed
+                                </p>
+                                <p className="text-xs text-slate-600">
+                                  {progress.completed} completed, {progress.remaining} remaining out of{" "}
+                                  {progress.total} follow-ups.
+                                </p>
                               </div>
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            className="w-56"
-                            align="start"
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <div className="space-y-1">
-                              <p className="text-sm font-semibold text-slate-900">
-                                {progress.percentage}% Completed
-                              </p>
-                              <p className="text-xs text-slate-600">
-                                {progress.completed} completed, {progress.remaining} remaining out of{" "}
-                                {progress.total} follow-ups.
-                              </p>
-                            </div>
-                          </PopoverContent>
-                        </Popover>
-                      )
-                    })()}
-                  </TableCell>
+                            </PopoverContent>
+                          </Popover>
+                        )
+                      })()}
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell colSpan={8} className="h-24 text-center text-slate-500">No services enrolled yet.</TableCell>
                 </TableRow>
-              ))
-            ) : (
-              <TableRow>
-                <TableCell colSpan={8} className="h-24 text-center text-slate-500">No services enrolled yet.</TableCell>
-              </TableRow>
-            )}
-            </TableBody>
-          </Table>
+              )}
+              </TableBody>
+            </Table>
+          </div>
         </TooltipProvider>
+        <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3 sm:px-5">
+          <div className="flex items-center gap-3 text-sm text-slate-600">
+            <span>Rows per page</span>
+            <Select
+              value={String(pageSize)}
+              onValueChange={(value) => {
+                const nextPageSize = Number(value) as (typeof PAGE_SIZE_OPTIONS)[number]
+                setPageSize(nextPageSize)
+                setPage(1)
+              }}
+            >
+              <SelectTrigger className="h-9 w-[88px] cursor-pointer rounded-xl border-slate-200 bg-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PAGE_SIZE_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={String(option)} className="cursor-pointer">
+                    {option}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-3 text-sm text-slate-600">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 cursor-pointer rounded-xl border-slate-200 bg-white"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={page <= 1 || isLoading}
+            >
+              Previous
+            </Button>
+            <span>
+              Page {pagination.page} of {Math.max(1, pagination.totalPages)}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 cursor-pointer rounded-xl border-slate-200 bg-white"
+              onClick={() =>
+                setPage((current) => Math.min(Math.max(1, pagination.totalPages), current + 1))
+              }
+              disabled={page >= Math.max(1, pagination.totalPages) || isLoading}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
       </div>
 
       <Dialog open={isCreateOpen} onOpenChange={(open) => {
