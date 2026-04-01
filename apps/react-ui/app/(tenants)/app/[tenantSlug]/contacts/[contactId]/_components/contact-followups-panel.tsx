@@ -82,6 +82,7 @@ type FlattenedStep = FollowUpStep & {
   contactServiceId: string
   serviceName: string
   templateName: string | null
+  templateId: string | null
 }
 
 type ServiceFollowUpView = {
@@ -242,6 +243,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
           contactServiceId: service.id,
           serviceName: service.service.name,
           templateName: service.followUpTemplate?.name ?? null,
+          templateId: service.followUpTemplate?.id ?? null,
         }))
         .sort((a, b) => a.sortOrder - b.sortOrder)
       const totalCount = steps.length
@@ -394,7 +396,10 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
     try {
       await api.post(`/api/contacts/${tenantId}/${contactId}/notes`, {
         title: stepNoteTitle.trim(),
-        body: `Service: ${activeStepContext.serviceName}\nStep: ${activeStepContext.title}\n\n${stepNoteBody.trim()}`,
+        body: stepNoteBody.trim(),
+        contactServiceId: activeStepContext.contactServiceId,
+        followUpTemplateId: activeStepContext.templateId,
+        contactServiceFollowUpStepId: activeStepContext.id,
       })
       toast.success("Step note created.")
       setIsNoteDialogOpen(false)

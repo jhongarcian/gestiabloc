@@ -1,7 +1,16 @@
 import { type Response, Router } from "express"
 import { z } from "zod"
 
+import { decryptCustomFieldValue } from "../lib/contact-custom-field-encryption.js"
 import { prisma } from "../lib/prisma.js"
+import { generateServiceFitExplanation } from "../lib/service-fit-explanations.js"
+import {
+  buildServiceFitFieldCatalog,
+  evaluateServiceFitProfile,
+  normalizeServiceFitProfile,
+  sortServiceFitEvaluations,
+  validateServiceFitProfile,
+} from "../lib/service-fit.js"
 import {
   executeFollowUpFromStart,
   executeFollowUpFromStep,
@@ -226,6 +235,59 @@ const ContactServicesListQuerySchema = z.object({
   status: ContactServiceStatusSchema.optional(),
 })
 
+const FitScanQuerySchema = z.object({
+  contactId: z.string().trim().min(1),
+  serviceId: z.string().trim().min(1).optional(),
+})
+
+const ServiceFitRuleSourceSchema = z.enum(["core", "status", "tags", "custom", "derived"])
+const ServiceFitValueTypeSchema = z.enum(["string", "number", "date", "boolean", "stringArray"])
+const ServiceFitOperatorSchema = z.enum([
+  "equals",
+  "not_equals",
+  "contains",
+  "not_contains",
+  "greater_than",
+  "greater_than_or_equal",
+  "less_than",
+  "less_than_or_equal",
+  "between",
+  "includes_any",
+  "includes_all",
+  "excludes_all",
+  "is_true",
+  "is_false",
+  "is_empty",
+  "is_not_empty",
+])
+
+const ServiceFitPreviewSchema = z.object({
+  contactId: z.string().trim().min(1),
+  fitProfile: z.object({
+    enabled: z.boolean().default(false),
+    summary: z.string().trim().max(2000).default(""),
+    rules: z
+      .array(
+        z.object({
+          id: z.string().trim().min(1).max(120),
+          source: ServiceFitRuleSourceSchema,
+          fieldKey: z.string().trim().min(1).max(120),
+          valueType: ServiceFitValueTypeSchema,
+          operator: ServiceFitOperatorSchema,
+          compareValue: z.unknown().nullable().optional(),
+          required: z.boolean().default(false),
+          requiredGroup: z.string().trim().max(120).nullable().optional(),
+          requiredBranch: z.string().trim().max(120).nullable().optional(),
+          weight: z.coerce.number().int().min(1).max(10).default(1),
+          label: z.string().trim().max(160).nullable().optional(),
+          explanation: z.string().trim().max(300).nullable().optional(),
+        }),
+      )
+      .max(100)
+      .default([]),
+  }),
+})
+
 const ServicesCatalogSummaryPresetSchema = z.enum([
   "THIS_MONTH",
   "LAST_MONTH",
@@ -442,6 +504,25 @@ const DEFAULT_TIMEZONE = "America/Chicago"
 
 function getSafeTimezone(timezone?: string | null) {
   return timezone?.trim() || DEFAULT_TIMEZONE
+}
+
+function decodeCustomFieldValue(storedValue: {
+  value: unknown
+  valueCiphertext: string | null
+  valueIv: string | null
+  valueAuthTag: string | null
+  valueKeyVersion: number | null
+}) {
+  if (storedValue.value !== null && storedValue.value !== undefined) {
+    return storedValue.value
+  }
+
+  return decryptCustomFieldValue({
+    valueCiphertext: storedValue.valueCiphertext,
+    valueIv: storedValue.valueIv,
+    valueAuthTag: storedValue.valueAuthTag,
+    valueKeyVersion: storedValue.valueKeyVersion,
+  })
 }
 
 function parseOffsetMinutes(label: string) {
@@ -699,6 +780,340 @@ function getServiceTotalWithTaxCents({
   }
 
   return basePriceCents + Math.round((basePriceCents * defaultTaxRateBps) / 10_000)
+}
+
+async function loadServiceFitCatalog(tenantId: string) {
+  const [statuses, tags, customFields] = await Promise.all([
+    prisma.contactStatusConfig.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+      },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+      },
+    }),
+    prisma.tenantTag.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+      },
+    }),
+    prisma.contactCustomField.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        isSensitive: false,
+      },
+      orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+      select: {
+        id: true,
+        key: true,
+        label: true,
+        description: true,
+        fieldType: true,
+        options: true,
+      },
+    }),
+  ])
+
+  return buildServiceFitFieldCatalog({
+    statuses,
+    tags,
+    customFields: customFields.map((field: any) => ({
+      id: field.id,
+      key: field.key,
+      label: field.label,
+      description: field.description ?? null,
+      fieldType: field.fieldType,
+      options: Array.isArray(field.options) ? field.options : [],
+    })),
+  })
+}
+
+async function loadServiceFitContactSnapshot(tenantId: string, contactId: string) {
+  const [contact, tags, customFields, customFieldValues] = await Promise.all([
+    prisma.contact.findFirst({
+      where: {
+        tenantId,
+        id: contactId,
+      },
+      select: {
+        id: true,
+        firstName: true,
+        middleName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        secondaryPhone: true,
+        dateOfBirth: true,
+        addressLine1: true,
+        addressLine2: true,
+        city: true,
+        state: true,
+        postalCode: true,
+        country: true,
+        statusConfigId: true,
+      },
+    }),
+    prisma.contactTag.findMany({
+      where: {
+        tenantId,
+        contactId,
+      },
+      select: {
+        tagId: true,
+      },
+    }),
+    prisma.contactCustomField.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        isSensitive: false,
+      },
+      select: {
+        id: true,
+        key: true,
+      },
+    }),
+    prisma.contactCustomFieldValue.findMany({
+      where: {
+        tenantId,
+        contactId,
+      },
+      select: {
+        fieldId: true,
+        value: true,
+        valueCiphertext: true,
+        valueIv: true,
+        valueAuthTag: true,
+        valueKeyVersion: true,
+      },
+    }),
+  ])
+
+  if (!contact) {
+    return null
+  }
+
+  const fieldKeyById = new Map(
+    customFields.map((field: any) => [field.id, field.key] as const),
+  )
+
+  const customFieldValuesByKey: Record<string, unknown> = {}
+  for (const item of customFieldValues as Array<any>) {
+    const key = fieldKeyById.get(item.fieldId)
+    if (!key) continue
+    customFieldValuesByKey[key] = decodeCustomFieldValue(item)
+  }
+
+  return {
+    id: contact.id,
+    firstName: contact.firstName ?? null,
+    middleName: contact.middleName ?? null,
+    lastName: contact.lastName ?? null,
+    email: contact.email ?? null,
+    phoneNumber: contact.phone ?? null,
+    secondaryPhoneNumber: contact.secondaryPhone ?? null,
+    dateOfBirth: contact.dateOfBirth ?? null,
+    addressLine1: contact.addressLine1 ?? null,
+    addressLine2: contact.addressLine2 ?? null,
+    city: contact.city ?? null,
+    state: contact.state ?? null,
+    postalCode: contact.postalCode ?? null,
+    country: contact.country ?? null,
+    statusConfigId: contact.statusConfigId ?? null,
+    tagIds: tags.map((item: any) => item.tagId),
+    customFieldValues: customFieldValuesByKey,
+  }
+}
+
+async function evaluateServiceFitScan(params: {
+  tenantId: string
+  contactId: string
+  serviceId?: string
+  fitProfileOverrideByServiceId?: Record<string, unknown>
+}) {
+  const { tenantId, contactId, serviceId, fitProfileOverrideByServiceId } = params
+
+  const [tenant, catalog, contact, services] = await Promise.all([
+    prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { timezone: true },
+    }),
+    loadServiceFitCatalog(tenantId),
+    loadServiceFitContactSnapshot(tenantId, contactId),
+    prismaWithServices.service.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        ...(serviceId ? { id: serviceId } : {}),
+      },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        fitProfile: true,
+      },
+    }),
+  ])
+
+  if (!contact) {
+    return { error: "CONTACT_NOT_FOUND" as const }
+  }
+
+  const serviceIds = services.map((service: any) => service.id)
+  const existingContactServices = serviceIds.length
+    ? await prismaWithServices.contactService.findMany({
+        where: {
+          tenantId,
+          contactId,
+          serviceId: { in: serviceIds },
+        },
+        orderBy: [{ purchasedAt: "desc" }, { createdAt: "desc" }],
+        select: {
+          id: true,
+          serviceId: true,
+          status: true,
+          purchasedAt: true,
+          createdAt: true,
+        },
+      })
+    : []
+
+  const contactServicesByServiceId = new Map<string, Array<any>>()
+  for (const record of existingContactServices) {
+    const records = contactServicesByServiceId.get(record.serviceId) ?? []
+    records.push(record)
+    contactServicesByServiceId.set(record.serviceId, records)
+  }
+
+  const timezone = getSafeTimezone(tenant?.timezone)
+
+  type ContactServiceEnrollmentStatus =
+    | "IN_PROGRESS"
+    | "PENDING_PAYMENT"
+    | "COMPLETED"
+    | "CANCELED"
+
+  function summarizeContactServiceEnrollment(records: Array<{
+    id: string
+    status: ContactServiceEnrollmentStatus
+  }>) {
+    const active = records.find(
+      (record) => record.status === "IN_PROGRESS" || record.status === "PENDING_PAYMENT",
+    )
+    if (active) {
+      return {
+        hasPurchased: true,
+        hasActiveEnrollment: true,
+        currentContactServiceId: active.id,
+        currentContactServiceStatus: active.status,
+      } as const
+    }
+
+    const purchased = records.find((record) => record.status !== "CANCELED")
+    if (purchased) {
+      return {
+        hasPurchased: true,
+        hasActiveEnrollment: false,
+        currentContactServiceId: purchased.id,
+        currentContactServiceStatus: purchased.status,
+      } as const
+    }
+
+    const canceled = records[0]
+    return {
+      hasPurchased: false,
+      hasActiveEnrollment: false,
+      currentContactServiceId: canceled?.id ?? null,
+      currentContactServiceStatus: canceled?.status ?? null,
+    } as const
+  }
+
+  type FitScanItem = {
+    serviceId: string
+    serviceName: string
+    description: string | null
+    fitProfile: ReturnType<typeof normalizeServiceFitProfile>
+    eligibilityStatus: "ELIGIBLE" | "NEEDS_INFO" | "NOT_ELIGIBLE"
+    fitScore: number
+    matchedRules: Array<{ ruleId: string; label: string; reason: string }>
+    blockingRules: Array<{ ruleId: string; label: string; reason: string }>
+    missingRules: Array<{ ruleId: string; label: string; reason: string }>
+    summary: string
+    hasPurchased: boolean
+    hasActiveEnrollment: boolean
+    currentContactServiceId: string | null
+    currentContactServiceStatus: ContactServiceEnrollmentStatus | null
+  }
+
+  const items: FitScanItem[] = services
+    .map((service: any) => {
+      const rawProfile =
+        fitProfileOverrideByServiceId?.[service.id] ?? service.fitProfile
+      const profile = normalizeServiceFitProfile(rawProfile)
+      if (!profile.enabled || profile.rules.length === 0) {
+        return null
+      }
+
+      const evaluation = evaluateServiceFitProfile({
+        profile,
+        catalog,
+        contact,
+        timezone,
+      })
+      const enrollmentSummary = summarizeContactServiceEnrollment(
+        contactServicesByServiceId.get(service.id) ?? [],
+      )
+
+      return {
+        serviceId: service.id,
+        serviceName: service.name,
+        description: service.description ?? null,
+        fitProfile: profile,
+        ...enrollmentSummary,
+        ...evaluation,
+      }
+    })
+    .filter(
+      (
+        item: unknown,
+      ): item is FitScanItem => Boolean(item),
+    )
+
+  const sortedItems = sortServiceFitEvaluations(items)
+  const itemsWithExplanations = await Promise.all(
+    sortedItems.map(async (item) => {
+      const explanationResult = await generateServiceFitExplanation({
+        serviceName: item.serviceName,
+        serviceDescription: item.description ?? null,
+        fitSummary: item.fitProfile.summary || item.summary || null,
+        eligibilityStatus: item.eligibilityStatus,
+        fitScore: item.fitScore,
+        matchedRules: item.matchedRules,
+        blockingRules: item.blockingRules,
+        missingRules: item.missingRules,
+      })
+
+      return {
+        ...item,
+        explanation: explanationResult.explanation,
+        explanationSource: explanationResult.explanationSource,
+        configurationGapNotes: explanationResult.configurationGapNotes,
+        recommendedUpdates: explanationResult.recommendedUpdates,
+      }
+    }),
+  )
+
+  return {
+    items: itemsWithExplanations,
+  }
 }
 
 async function reconcileContactServiceCompletionFromFollowUps(
@@ -1554,6 +1969,84 @@ router.get("/:tenantId/follow-up-template-options", requireAuth, async (req, res
     return res.json({
       ok: true,
       items: templates,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/fit-scan", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const query = FitScanQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const result = await evaluateServiceFitScan({
+      tenantId,
+      contactId: query.contactId,
+      serviceId: query.serviceId,
+    })
+
+    if ("error" in result) {
+      return res.status(404).json({ error: result.error })
+    }
+
+    return res.json({
+      ok: true,
+      items: result.items,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post("/:tenantId/fit-scan/preview", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const payload = ServiceFitPreviewSchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const catalog = await loadServiceFitCatalog(tenantId)
+    const fitProfileValidation = validateServiceFitProfile(
+      normalizeServiceFitProfile(payload.fitProfile),
+      catalog,
+    )
+
+    if (!fitProfileValidation.ok) {
+      return res.status(400).json({
+        error: "INVALID_SERVICE_FIT_PROFILE",
+        details: fitProfileValidation.error,
+      })
+    }
+
+    const [tenant, contact] = await Promise.all([
+      prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { timezone: true },
+      }),
+      loadServiceFitContactSnapshot(tenantId, payload.contactId),
+    ])
+
+    if (!contact) {
+      return res.status(404).json({ error: "CONTACT_NOT_FOUND" })
+    }
+
+    const preview = evaluateServiceFitProfile({
+      profile: fitProfileValidation.profile,
+      catalog,
+      contact,
+      timezone: getSafeTimezone(tenant?.timezone),
+    })
+
+    return res.json({
+      ok: true,
+      result: preview,
     })
   } catch (error) {
     return next(error)

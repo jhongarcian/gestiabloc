@@ -4,6 +4,7 @@ import { redirect } from "next/navigation"
 
 import { api, type MeResponse } from "@/lib/api"
 
+import { EMPTY_SERVICE_FIT_PROFILE } from "../../_components/service-fit-rules-tab"
 import { ServiceDetailsPanelClient } from "./_components/service-details-panel-client"
 
 type ServiceDetailsResponse = {
@@ -12,6 +13,40 @@ type ServiceDetailsResponse = {
     id: string
     name: string
     description: string | null
+    fitProfile?: {
+      enabled: boolean
+      summary: string
+      rules: Array<{
+        id: string
+        source: "core" | "status" | "tags" | "custom" | "derived"
+        fieldKey: string
+        valueType: "string" | "number" | "date" | "boolean" | "stringArray"
+        operator:
+          | "equals"
+          | "not_equals"
+          | "contains"
+          | "not_contains"
+          | "greater_than"
+          | "greater_than_or_equal"
+          | "less_than"
+          | "less_than_or_equal"
+          | "between"
+          | "includes_any"
+          | "includes_all"
+          | "excludes_all"
+          | "is_true"
+          | "is_false"
+          | "is_empty"
+          | "is_not_empty"
+        compareValue: unknown
+        required: boolean
+        requiredGroup: string | null
+        requiredBranch: string | null
+        weight: number
+        label: string | null
+        explanation: string | null
+      }>
+    }
     basePriceCents: number
     currency: string
     isTaxExempt: boolean
@@ -111,7 +146,10 @@ export default async function AccountSettingsServiceDetailsPage({
       <ServiceDetailsPanelClient
         tenantId={membership.tenant.id}
         tenantSlug={tenantSlug}
-        service={data.service}
+        service={{
+          ...data.service,
+          fitProfile: data.service.fitProfile ?? EMPTY_SERVICE_FIT_PROFILE,
+        }}
       />
     )
   } catch (error) {

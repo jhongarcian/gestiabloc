@@ -204,6 +204,8 @@ function isPastDue(value: string | null | undefined) {
   return parsed.getTime() < Date.now()
 }
 
+const ACTIVE_CONTACT_SERVICE_STATUSES = new Set(["IN_PROGRESS", "PENDING_PAYMENT"])
+
 function sortTags<
   T extends {
     sortOrder: number
@@ -282,7 +284,7 @@ export default async function ContactDetailsLayout({
       0,
     )
     activeFollowUpServices = services
-      .filter((service) => service.status !== "COMPLETED")
+      .filter((service) => ACTIVE_CONTACT_SERVICE_STATUSES.has(service.status))
       .map((service) => {
         const total = service.followUpSteps.length
         const completed = service.followUpSteps.filter(

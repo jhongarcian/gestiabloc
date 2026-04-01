@@ -685,7 +685,7 @@ export default function SignUpPage() {
                   ) : null}
 
                   <p className="text-xs text-center text-slate-400 mt-4">
-                    By clicking "Create Account", you agree to our{" "}
+                    By clicking &quot;Create Account&quot;, you agree to our{" "}
                     <a href="#" className="text-indigo-600 hover:underline">
                       Terms of Service
                     </a>{" "}

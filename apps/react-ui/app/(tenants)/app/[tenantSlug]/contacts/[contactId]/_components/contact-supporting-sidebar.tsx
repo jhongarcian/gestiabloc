@@ -336,10 +336,8 @@ export function ContactSupportingSidebar({
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="left">
-                  {item.key === "relationships"
-                    ? `${item.label} (${initialRelationships.length})`
-                    : item.key === "followups"
-                      ? `${item.label} (${activeFollowUpCount})`
+                  {item.key === "followups"
+                    ? `${item.label} (${activeFollowUpCount})`
                     : item.label}
                 </TooltipContent>
               </Tooltip>

@@ -72,6 +72,11 @@ import {
 } from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import {
+  EMPTY_SERVICE_FIT_PROFILE,
+  type ServiceFitProfileDraft,
+  ServiceFitRulesTab,
+} from "./service-fit-rules-tab"
 
 export type ServiceDetailsPanelProps = {
   tenantId: string
@@ -80,6 +85,7 @@ export type ServiceDetailsPanelProps = {
     id: string
     name: string
     description: string | null
+    fitProfile?: ServiceFitProfileDraft | null
     basePriceCents: number
     currency: string
     isTaxExempt: boolean
@@ -368,7 +374,7 @@ function formatCurrency(valueCents: number, currency: string) {
 export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDetailsPanelProps) {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<
-    "overview" | "checklists" | "follow-up-templates" | "professionals"
+    "overview" | "fit-rules" | "checklists" | "follow-up-templates" | "professionals"
   >("overview")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isChecklistSaving, setIsChecklistSaving] = useState(false)
@@ -388,6 +394,9 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
   })
   const [name, setName] = useState(service.name)
   const [description, setDescription] = useState(service.description ?? "")
+  const [fitProfile, setFitProfile] = useState<ServiceFitProfileDraft>(
+    service.fitProfile ?? EMPTY_SERVICE_FIT_PROFILE,
+  )
   const [basePrice, setBasePrice] = useState(centsToDollars(service.basePriceCents))
   const [currency] = useState(service.currency)
   const [isTaxExempt, setIsTaxExempt] = useState(service.isTaxExempt)
@@ -926,6 +935,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       await api.patch(`/api/account-settings/${tenantId}/services/${service.id}`, {
         name: name.trim(),
         description: description.trim() || null,
+        fitProfile,
         basePriceCents,
         currency: currency.trim().toUpperCase() || "USD",
         isTaxExempt,
@@ -1087,7 +1097,9 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       <Tabs
         value={activeTab}
         onValueChange={(value) =>
-          setActiveTab(value as "overview" | "checklists" | "follow-up-templates" | "professionals")
+          setActiveTab(
+            value as "overview" | "fit-rules" | "checklists" | "follow-up-templates" | "professionals",
+          )
         }
         className="space-y-5"
       >
@@ -1098,6 +1110,12 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
             >
               Overview
+            </TabsTrigger>
+            <TabsTrigger
+              value="fit-rules"
+              className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
+            >
+              Fit Rules
             </TabsTrigger>
             <TabsTrigger
               value="checklists"
@@ -1370,6 +1388,14 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               </div>
             </div>
           </section>
+        </TabsContent>
+
+        <TabsContent value="fit-rules" className="mt-0">
+          <ServiceFitRulesTab
+            tenantId={tenantId}
+            profile={fitProfile}
+            onChange={setFitProfile}
+          />
         </TabsContent>
 
         <TabsContent value="checklists" className="mt-0">

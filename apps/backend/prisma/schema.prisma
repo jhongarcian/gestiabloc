@@ -408,6 +408,7 @@ model Service {
   tenantId                   String
   name                       String
   description                String?
+  fitProfile                 Json?
   basePriceCents             Int
   currency                   String  @default("USD")
   isTaxExempt                Boolean @default(false)

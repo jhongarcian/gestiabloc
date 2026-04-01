@@ -13,6 +13,7 @@ import {
   CircleHelp,
   Clock3,
   Plus,
+  Sparkles,
   Settings2,
   UserRound,
 } from "lucide-react"
@@ -68,6 +69,12 @@ import {
 } from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import {
+  FIT_STATUS_STYLES,
+  type ServiceFitScanItem,
+  type ServiceFitScanResponse,
+  toSentence,
+} from "../_lib/service-fit"
 
 type ContactServiceItem = {
   id: string
@@ -185,6 +192,8 @@ type ContactServicesPanelProps = {
   tenantSlug: string
   contactId: string
   membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
+  initialCreateServiceId?: string | null
+  initialCreateOpen?: boolean
 }
 
 const currencyFormatter = (valueCents: number, currency: string) =>
@@ -195,7 +204,6 @@ const currencyFormatter = (valueCents: number, currency: string) =>
     maximumFractionDigits: 2,
   }).format((valueCents || 0) / 100)
 
-const toSentence = (value: string) => value.toLowerCase().replace(/_/g, " ")
 const centsToUsdInput = (valueCents: number) => ((valueCents || 0) / 100).toFixed(2)
 const parseUsdToCents = (value: string) => {
   const normalized = value.replace(/\$/g, "").replace(/,/g, "").trim()
@@ -633,6 +641,8 @@ export function ContactServicesPanel({
   tenantId,
   tenantSlug,
   contactId,
+  initialCreateServiceId,
+  initialCreateOpen,
 }: ContactServicesPanelProps) {
   const router = useRouter()
   const [items, setItems] = useState<ContactServiceItem[]>([])
@@ -645,9 +655,13 @@ export function ContactServicesPanel({
     totalPages: 1,
   })
   const [isLoading, setIsLoading] = useState(false)
+  const [fitRecommendations, setFitRecommendations] = useState<ServiceFitScanItem[]>([])
+  const [isLoadingFitRecommendations, setIsLoadingFitRecommendations] = useState(false)
+  const [hasRunFitScan, setHasRunFitScan] = useState(false)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [createStep, setCreateStep] = useState<1 | 2 | 3 | 4>(1)
   const [isSaving, setIsSaving] = useState(false)
+  const [hasAppliedInitialCreateState, setHasAppliedInitialCreateState] = useState(false)
   const [isLoadingServiceOptions, setIsLoadingServiceOptions] = useState(false)
   const [isLoadingServiceDetails, setIsLoadingServiceDetails] = useState(false)
   const [isLoadingAssignees, setIsLoadingAssignees] = useState(false)
@@ -691,6 +705,14 @@ export function ContactServicesPanel({
     setCreateErrors({})
   }
 
+  const openCreateDialog = (serviceId?: string) => {
+    resetCreate()
+    setIsCreateOpen(true)
+    if (serviceId) {
+      setCreateServiceId(serviceId)
+    }
+  }
+
   const loadServices = useCallback(async () => {
     setIsLoading(true)
     try {
@@ -716,6 +738,28 @@ export function ContactServicesPanel({
       setIsLoading(false)
     }
   }, [tenantId, contactId, page, pageSize])
+
+  const loadFitRecommendations = useCallback(async () => {
+    setIsLoadingFitRecommendations(true)
+    try {
+      const { data } = await api.get<ServiceFitScanResponse>(
+        `/api/services/${encodeURIComponent(tenantId)}/fit-scan`,
+        {
+          params: {
+            contactId,
+          },
+        },
+      )
+      setFitRecommendations(data.items ?? [])
+      setHasRunFitScan(true)
+    } catch {
+      setFitRecommendations([])
+      setHasRunFitScan(true)
+      toast.error("Could not load service recommendations.")
+    } finally {
+      setIsLoadingFitRecommendations(false)
+    }
+  }, [tenantId, contactId])
 
   const loadServiceOptions = useCallback(async () => {
     setIsLoadingServiceOptions(true)
@@ -791,9 +835,15 @@ export function ContactServicesPanel({
     if (followUpAssigneeOptions.length === 0) {
       void loadFollowUpAssignees()
     }
+    if (!hasRunFitScan && !isLoadingFitRecommendations) {
+      void loadFitRecommendations()
+    }
   }, [
     followUpAssigneeOptions.length,
+    hasRunFitScan,
     isCreateOpen,
+    isLoadingFitRecommendations,
+    loadFitRecommendations,
     loadFollowUpAssignees,
     loadServiceOptions,
     serviceOptions.length,
@@ -825,6 +875,21 @@ export function ContactServicesPanel({
       setCreateTemplateId("")
     }
   }, [createAssignedProfessionalId, createServiceDetails, createTemplateId])
+
+  useEffect(() => {
+    if (hasAppliedInitialCreateState) return
+    if (!initialCreateOpen) {
+      setHasAppliedInitialCreateState(true)
+      return
+    }
+
+    openCreateDialog(initialCreateServiceId ?? undefined)
+    setHasAppliedInitialCreateState(true)
+  }, [
+    hasAppliedInitialCreateState,
+    initialCreateOpen,
+    initialCreateServiceId,
+  ])
 
   const clearCreateError = (
     field:
@@ -1207,6 +1272,9 @@ export function ContactServicesPanel({
       setIsCreateOpen(false)
       resetCreate()
       await loadServices()
+      if (hasRunFitScan) {
+        await loadFitRecommendations()
+      }
       router.push(`/app/${tenantSlug}/contacts/${contactId}/services/${data.contactService.id}`)
       router.refresh()
     } catch (error) {
@@ -1225,6 +1293,11 @@ export function ContactServicesPanel({
     }
   }
 
+  const shortlistedFitRecommendations = fitRecommendations.filter(
+    (item) => item.eligibilityStatus === "ELIGIBLE" || item.eligibilityStatus === "NEEDS_INFO",
+  )
+  const topRecommendationCount = shortlistedFitRecommendations.length
+
   return (
     <section className="flex flex-col gap-5">
       <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
@@ -1237,13 +1310,50 @@ export function ContactServicesPanel({
             </div>
           </div>
           <div className="flex items-center gap-2 md:self-center">
-            <Button type="button" onClick={() => setIsCreateOpen(true)} className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90">
+            <Button type="button" onClick={() => openCreateDialog()} className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90">
               <Plus className="h-4 w-4" />
               Purchase service
             </Button>
           </div>
         </div>
       </div>
+
+      <section className="rounded-[20px] border border-slate-200 bg-white p-5">
+        <div className="rounded-[24px] border border-amber-200 bg-[linear-gradient(135deg,#fff9ed_0%,#f8fafc_60%,#eef2ff_100%)] p-5">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div className="space-y-2">
+              <div className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-white/80 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">
+                <Sparkles className="h-3.5 w-3.5" />
+                AI Qualification
+              </div>
+              <div className="space-y-1">
+                <h2 className="text-lg font-semibold text-slate-900">Assistant-led qualification workspace</h2>
+                <p className="max-w-2xl text-sm text-slate-600">
+                  Run the dedicated AI Qualification tab when you want a full assistant-style report
+                  on what this contact qualifies for, what is missing, and what you can do next.
+                </p>
+              </div>
+              {hasRunFitScan && !isLoadingFitRecommendations ? (
+                <p className="text-sm text-slate-500">
+                  {topRecommendationCount > 0
+                    ? `${topRecommendationCount} likely fits are ready from the latest qualification scan.`
+                    : "The last qualification scan found no services ready to move forward yet."}
+                </p>
+              ) : (
+                <p className="text-sm text-slate-500">
+                  Qualification results stay available in the purchase flow once you open it.
+                </p>
+              )}
+            </div>
+
+            <Button asChild className="cursor-pointer bg-slate-950 text-white hover:bg-slate-900">
+              <Link href={`/app/${tenantSlug}/contacts/${contactId}/ai-qualification`}>
+                Open AI Qualification
+              </Link>
+            </Button>
+          </div>
+        </div>
+      </section>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
@@ -1570,6 +1680,61 @@ export function ContactServicesPanel({
                     This decides the price, payment rules, checklist items, and the professionals available for this transaction.
                   </p>
                 </div>
+
+                {hasRunFitScan && shortlistedFitRecommendations.length ? (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <div className="space-y-1">
+                      <p className="text-sm font-semibold text-slate-900">
+                        Recommended for this contact
+                      </p>
+                      <p className="text-sm text-slate-500">
+                        Pick one of the ranked matches or use the full selector below.
+                      </p>
+                    </div>
+                    <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                      {shortlistedFitRecommendations.slice(0, 4).map((item) => (
+                        <button
+                          key={item.serviceId}
+                          type="button"
+                          className={cn(
+                            "rounded-2xl border p-3 text-left transition",
+                            createServiceId === item.serviceId
+                              ? "border-blue-300 bg-blue-50"
+                              : "border-slate-200 bg-slate-50 hover:border-slate-300 hover:bg-white",
+                          )}
+                          onClick={() => {
+                            clearCreateError("serviceId")
+                            setCreateServiceId(item.serviceId)
+                            setCreateTemplateId("")
+                            setCreateAssignedProfessionalId("")
+                          }}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="space-y-1">
+                              <p className="text-sm font-semibold text-slate-900">
+                                {item.serviceName}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                {item.explanation ||
+                                  item.summary ||
+                                  item.description ||
+                                  "No explanation available."}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 flex-col items-end gap-1">
+                              <Badge className={FIT_STATUS_STYLES[item.eligibilityStatus]}>
+                                {toSentence(item.eligibilityStatus)}
+                              </Badge>
+                              <span className="text-xs font-semibold text-slate-600">
+                                Score {item.fitScore}
+                              </span>
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 <FlowStepCard
                   stepNumber="1"

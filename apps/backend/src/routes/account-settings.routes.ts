@@ -6,6 +6,15 @@ import { z } from "zod";
 
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { deleteBlobByUrl, uploadPublicBlob } from "../lib/blob.js";
+import {
+  buildServiceFitFieldCatalog,
+  DEFAULT_SERVICE_FIT_PROFILE,
+  normalizeServiceFitProfile,
+  SERVICE_FIT_OPERATORS,
+  SERVICE_FIT_RULE_SOURCES,
+  SERVICE_FIT_VALUE_TYPES,
+  validateServiceFitProfile,
+} from "../lib/service-fit.js";
 import { sendVerifyEmail } from "../lib/email.js";
 import { prisma } from "../lib/prisma.js";
 import { enforceSameOrigin } from "../lib/security.js";
@@ -284,9 +293,35 @@ const ServiceProfessionalInputSchema = z.object({
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
 });
 
+const ServiceFitRuleSourceSchema = z.enum(SERVICE_FIT_RULE_SOURCES);
+const ServiceFitValueTypeSchema = z.enum(SERVICE_FIT_VALUE_TYPES);
+const ServiceFitOperatorSchema = z.enum(SERVICE_FIT_OPERATORS);
+
+const ServiceFitRuleInputSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  source: ServiceFitRuleSourceSchema,
+  fieldKey: z.string().trim().min(1).max(120),
+  valueType: ServiceFitValueTypeSchema,
+  operator: ServiceFitOperatorSchema,
+  compareValue: z.unknown().nullable().optional(),
+  required: z.boolean().default(false),
+  requiredGroup: optionalStringField(120),
+  requiredBranch: optionalStringField(120),
+  weight: z.coerce.number().int().min(1).max(10).default(1),
+  label: optionalStringField(160),
+  explanation: optionalStringField(300),
+});
+
+const ServiceFitProfileSchema = z.object({
+  enabled: z.boolean().default(false),
+  summary: z.string().trim().max(2000).default(""),
+  rules: z.array(ServiceFitRuleInputSchema).max(100).default([]),
+});
+
 const CreateServiceSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: optionalStringField(2000),
+  fitProfile: ServiceFitProfileSchema.optional(),
   basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000),
   currency: z.string().trim().min(3).max(3).default("USD"),
   isTaxExempt: z.boolean().default(false),
@@ -313,6 +348,7 @@ const CreateServiceSchema = z.object({
 const UpdateServiceSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   description: optionalStringField(2000),
+  fitProfile: ServiceFitProfileSchema.optional(),
   basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
   currency: z.string().trim().min(3).max(3).optional(),
   isTaxExempt: z.boolean().optional(),
@@ -622,6 +658,59 @@ async function findServiceByName(
     select: {
       id: true,
     },
+  });
+}
+
+async function loadServiceFitCatalog(tenantId: string) {
+  const [statuses, tags, customFields] = await Promise.all([
+    prismaWithContacts.contactStatusConfig.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+      },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+      },
+    }),
+    prismaWithContacts.tenantTag.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+      },
+    }),
+    prismaWithContacts.contactCustomField.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        isSensitive: false,
+      },
+      orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+      select: {
+        id: true,
+        key: true,
+        label: true,
+        description: true,
+        fieldType: true,
+        options: true,
+      },
+    }),
+  ]);
+
+  return buildServiceFitFieldCatalog({
+    statuses,
+    tags,
+    customFields: customFields.map((field: any) => ({
+      id: field.id,
+      key: field.key,
+      label: field.label,
+      description: field.description ?? null,
+      fieldType: field.fieldType,
+      options: Array.isArray(field.options) ? field.options : [],
+    })),
   });
 }
 
@@ -2056,6 +2145,20 @@ router.get("/:tenantId/follow-up-templates", ...readMiddlewares, async (req, res
   }
 });
 
+router.get("/:tenantId/service-fit-fields", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const fields = await loadServiceFitCatalog(tenantId);
+
+    return res.json({
+      ok: true,
+      fields,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get(
   "/:tenantId/services/:recordId/follow-up-templates",
   ...readMiddlewares,
@@ -2631,6 +2734,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
         tenantId: true,
         name: true,
         description: true,
+        fitProfile: true,
         basePriceCents: true,
         currency: true,
         isTaxExempt: true,
@@ -2712,6 +2816,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
         tenantId: service.tenantId,
         name: service.name,
         description: service.description,
+        fitProfile: normalizeServiceFitProfile(service.fitProfile),
         basePriceCents: service.basePriceCents,
         currency: service.currency,
         isTaxExempt: service.isTaxExempt,
@@ -2796,6 +2901,21 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
       return res.status(400).json({ error: professionalValidation.error });
     }
 
+    let fitProfile = DEFAULT_SERVICE_FIT_PROFILE;
+    if (payload.fitProfile) {
+      const catalog = await loadServiceFitCatalog(tenantId);
+      const validation = validateServiceFitProfile(
+        normalizeServiceFitProfile(payload.fitProfile),
+        catalog,
+      );
+
+      if (!validation.ok) {
+        return res.status(400).json({ error: "INVALID_SERVICE_FIT_PROFILE", details: validation.error });
+      }
+
+      fitProfile = validation.profile;
+    }
+
     const tenant = await prisma.tenant.findUnique({
       where: { id: tenantId },
       select: {
@@ -2835,6 +2955,7 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
         tenantId,
         name: normalizedName,
         description: normalizedPayload.description ?? null,
+        fitProfile,
         basePriceCents: payload.basePriceCents,
         currency: normalizedPayload.currency || "USD",
         isTaxExempt: payload.isTaxExempt,
@@ -2887,6 +3008,7 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
         id: true,
         name: true,
         description: true,
+        fitProfile: true,
         basePriceCents: true,
         currency: true,
         isTaxExempt: true,
@@ -2899,7 +3021,13 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
       },
     });
 
-    return res.status(201).json({ ok: true, service: created });
+    return res.status(201).json({
+      ok: true,
+      service: {
+        ...created,
+        fitProfile: normalizeServiceFitProfile(created.fitProfile),
+      },
+    });
   } catch (error) {
     return next(error);
   }
@@ -2952,6 +3080,21 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
       if (!professionalValidation.ok) {
         return res.status(400).json({ error: professionalValidation.error });
       }
+    }
+
+    let nextFitProfile: z.infer<typeof ServiceFitProfileSchema> | undefined;
+    if (payload.fitProfile !== undefined) {
+      const catalog = await loadServiceFitCatalog(tenantId);
+      const validation = validateServiceFitProfile(
+        normalizeServiceFitProfile(payload.fitProfile),
+        catalog,
+      );
+
+      if (!validation.ok) {
+        return res.status(400).json({ error: "INVALID_SERVICE_FIT_PROFILE", details: validation.error });
+      }
+
+      nextFitProfile = validation.profile;
     }
 
     const nextBasePriceCents = payload.basePriceCents ?? existing.basePriceCents;
@@ -3021,6 +3164,7 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
         data: {
           ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
           ...(payload.description !== undefined ? { description: payload.description ?? null } : {}),
+          ...(payload.fitProfile !== undefined ? { fitProfile: nextFitProfile } : {}),
           ...(payload.basePriceCents !== undefined
             ? { basePriceCents: payload.basePriceCents }
             : {}),
@@ -3109,6 +3253,7 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
           id: true,
           name: true,
           description: true,
+          fitProfile: true,
           basePriceCents: true,
           currency: true,
           isTaxExempt: true,
@@ -3122,7 +3267,13 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
       });
     });
 
-    return res.json({ ok: true, service: updated });
+    return res.json({
+      ok: true,
+      service: {
+        ...updated,
+        fitProfile: normalizeServiceFitProfile(updated.fitProfile),
+      },
+    });
   } catch (error) {
     return next(error);
   }
