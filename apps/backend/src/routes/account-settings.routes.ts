@@ -312,10 +312,53 @@ const ServiceFitRuleInputSchema = z.object({
   explanation: optionalStringField(300),
 });
 
+const ServiceVerificationProfileSchema = z.object({
+  mode: z
+    .enum(["NONE", "WEB_SOURCES", "INTERNAL_KB", "EXTERNAL_API", "MANUAL_CONFIRMATION"])
+    .default("NONE"),
+  guidance: z.string().trim().max(2000).default(""),
+  sourceUrls: z.array(z.string().trim().url().max(500)).max(8).default([]),
+  triggerKeywords: z.array(z.string().trim().min(1).max(80)).max(12).default([]),
+});
+
+const ServiceKnowledgeProfileSchema = z.object({
+  overview: z.string().trim().max(4000).default(""),
+  pricingNotes: z.string().trim().max(4000).default(""),
+  workflowNotes: z.string().trim().max(4000).default(""),
+  faqNotes: z.string().trim().max(4000).default(""),
+  adapter: z.enum(["NONE", "IMMIGRATION_USCIS"]).default("NONE"),
+});
+
+const ServiceFitRequirementMetadataSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).default(""),
+});
+
+const ServiceFitOptionMetadataSchema = z.object({
+  requirementName: z.string().trim().min(1).max(120),
+  optionName: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).default(""),
+});
+
 const ServiceFitProfileSchema = z.object({
   enabled: z.boolean().default(false),
   summary: z.string().trim().max(2000).default(""),
   rules: z.array(ServiceFitRuleInputSchema).max(100).default([]),
+  requirementMetadata: z.array(ServiceFitRequirementMetadataSchema).max(30).default([]),
+  optionMetadata: z.array(ServiceFitOptionMetadataSchema).max(100).default([]),
+  verificationProfile: ServiceVerificationProfileSchema.default({
+    mode: "NONE",
+    guidance: "",
+    sourceUrls: [],
+    triggerKeywords: [],
+  }),
+  knowledgeProfile: ServiceKnowledgeProfileSchema.default({
+    overview: "",
+    pricingNotes: "",
+    workflowNotes: "",
+    faqNotes: "",
+    adapter: "NONE",
+  }),
 });
 
 const CreateServiceSchema = z.object({

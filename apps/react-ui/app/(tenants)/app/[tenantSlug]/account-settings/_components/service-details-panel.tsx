@@ -371,6 +371,19 @@ function formatCurrency(valueCents: number, currency: string) {
   }).format((valueCents || 0) / 100)
 }
 
+function joinListForTextarea(values: string[]) {
+  return values.join("\n")
+}
+
+function parseTextareaList(value: string, maxItems: number) {
+  return [...new Set(
+    value
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )].slice(0, maxItems)
+}
+
 export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDetailsPanelProps) {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<
@@ -442,6 +455,8 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     externalContact: "",
     notes: "",
   })
+  const verificationProfile = fitProfile.verificationProfile ?? EMPTY_SERVICE_FIT_PROFILE.verificationProfile
+  const knowledgeProfile = fitProfile.knowledgeProfile ?? EMPTY_SERVICE_FIT_PROFILE.knowledgeProfile
 
   const loadUsers = useCallback(async () => {
     try {
@@ -1154,6 +1169,218 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               <div className="grid gap-2">
                 <Label>Description</Label>
                 <Textarea rows={3} value={description} onChange={(event) => setDescription(event.target.value)} />
+              </div>
+
+              <div className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="space-y-1">
+                  <h4 className="text-sm font-semibold text-slate-900">Service Knowledge</h4>
+                  <p className="text-sm text-slate-500">
+                    Add tenant-specific operating knowledge so the assistant can answer beyond fit rules.
+                  </p>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-2">
+                    <Label>Knowledge adapter</Label>
+                    <Select
+                      value={knowledgeProfile.adapter}
+                      onValueChange={(value) =>
+                        setFitProfile((current) => ({
+                          ...current,
+                          knowledgeProfile: {
+                            ...current.knowledgeProfile,
+                            adapter: value as "NONE" | "IMMIGRATION_USCIS",
+                          },
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="cursor-pointer">
+                        <SelectValue placeholder="Select adapter" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="NONE">No structured adapter</SelectItem>
+                        <SelectItem value="IMMIGRATION_USCIS">USCIS immigration adapter</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label>Service overview for AI</Label>
+                    <Textarea
+                      rows={3}
+                      placeholder="Explain what this service covers, who it is for, and what staff should optimize for."
+                      value={knowledgeProfile.overview}
+                      onChange={(event) =>
+                        setFitProfile((current) => ({
+                          ...current,
+                          knowledgeProfile: {
+                            ...current.knowledgeProfile,
+                            overview: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-2">
+                    <Label>Pricing notes</Label>
+                    <Textarea
+                      rows={4}
+                      placeholder="Explain how your team prices this service, what is included, and what costs often vary."
+                      value={knowledgeProfile.pricingNotes}
+                      onChange={(event) =>
+                        setFitProfile((current) => ({
+                          ...current,
+                          knowledgeProfile: {
+                            ...current.knowledgeProfile,
+                            pricingNotes: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label>Workflow notes</Label>
+                    <Textarea
+                      rows={4}
+                      placeholder="Add process notes, checkpoints, escalation rules, or when staff should create follow-ups instead of moving forward."
+                      value={knowledgeProfile.workflowNotes}
+                      onChange={(event) =>
+                        setFitProfile((current) => ({
+                          ...current,
+                          knowledgeProfile: {
+                            ...current.knowledgeProfile,
+                            workflowNotes: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label>FAQ / answer notes</Label>
+                  <Textarea
+                    rows={4}
+                    placeholder="Add common questions and how your team answers them. The assistant uses this before going to live verification."
+                    value={knowledgeProfile.faqNotes}
+                    onChange={(event) =>
+                      setFitProfile((current) => ({
+                        ...current,
+                        knowledgeProfile: {
+                          ...current.knowledgeProfile,
+                          faqNotes: event.target.value,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="space-y-1">
+                  <h4 className="text-sm font-semibold text-slate-900">External Verification</h4>
+                  <p className="text-sm text-slate-500">
+                    Choose how the AI qualification chat should verify questions that require outside knowledge for this service.
+                  </p>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-2">
+                    <Label>Verification mode</Label>
+                    <Select
+                      value={verificationProfile.mode}
+                      onValueChange={(value) =>
+                        setFitProfile((current) => ({
+                          ...current,
+                          verificationProfile: {
+                            ...current.verificationProfile,
+                            mode: value as
+                              | "NONE"
+                              | "WEB_SOURCES"
+                              | "INTERNAL_KB"
+                              | "EXTERNAL_API"
+                              | "MANUAL_CONFIRMATION",
+                          },
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="cursor-pointer">
+                        <SelectValue placeholder="Select verification mode" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="NONE">No external verification</SelectItem>
+                        <SelectItem value="WEB_SOURCES">Web sources</SelectItem>
+                        <SelectItem value="INTERNAL_KB">Internal knowledge base</SelectItem>
+                        <SelectItem value="EXTERNAL_API">External API</SelectItem>
+                        <SelectItem value="MANUAL_CONFIRMATION">Manual confirmation</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label>Trigger keywords</Label>
+                    <Textarea
+                      rows={3}
+                      placeholder={`switch\ncoverage\ndeadline`}
+                      value={joinListForTextarea(verificationProfile.triggerKeywords)}
+                      onChange={(event) =>
+                        setFitProfile((current) => ({
+                          ...current,
+                          verificationProfile: {
+                            ...current.verificationProfile,
+                            triggerKeywords: parseTextareaList(event.target.value, 12),
+                          },
+                        }))
+                      }
+                    />
+                    <p className="text-xs text-slate-500">
+                      One keyword or phrase per line. The assistant will try the verifier when the question matches these terms.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label>Verifier guidance</Label>
+                  <Textarea
+                    rows={3}
+                    placeholder="Explain what the assistant should verify and how workers should use the result."
+                    value={verificationProfile.guidance}
+                      onChange={(event) =>
+                        setFitProfile((current) => ({
+                          ...current,
+                          verificationProfile: {
+                            ...current.verificationProfile,
+                            guidance: event.target.value,
+                          },
+                        }))
+                    }
+                  />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label>Source URLs</Label>
+                  <Textarea
+                    rows={4}
+                    placeholder={`https://example.com/policy\nhttps://example.com/coverage-guide`}
+                    value={joinListForTextarea(verificationProfile.sourceUrls)}
+                      onChange={(event) =>
+                        setFitProfile((current) => ({
+                          ...current,
+                          verificationProfile: {
+                            ...current.verificationProfile,
+                            sourceUrls: parseTextareaList(event.target.value, 8),
+                          },
+                        }))
+                    }
+                  />
+                  <p className="text-xs text-slate-500">
+                    One URL per line. Use official or trusted service-specific sources when this service requires outside verification.
+                  </p>
+                </div>
               </div>
 
               <div className="grid gap-4 md:grid-cols-4">

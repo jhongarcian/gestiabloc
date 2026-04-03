@@ -1,10 +1,11 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { CircleHelp, Loader2, Plus, Search, Trash2 } from "lucide-react"
+import { ChevronDown, CircleHelp, Loader2, Plus, Search, Trash2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -67,16 +68,61 @@ export type ServiceFitRuleDraft = {
   explanation: string | null
 }
 
+export type ServiceFitRequirementMetadataDraft = {
+  name: string
+  description: string
+}
+
+export type ServiceFitOptionMetadataDraft = {
+  requirementName: string
+  optionName: string
+  description: string
+}
+
+export type ServiceVerificationProfileDraft = {
+  mode: "NONE" | "WEB_SOURCES" | "INTERNAL_KB" | "EXTERNAL_API" | "MANUAL_CONFIRMATION"
+  guidance: string
+  sourceUrls: string[]
+  triggerKeywords: string[]
+}
+
+export type ServiceKnowledgeProfileDraft = {
+  overview: string
+  pricingNotes: string
+  workflowNotes: string
+  faqNotes: string
+  adapter: "NONE" | "IMMIGRATION_USCIS"
+}
+
 export type ServiceFitProfileDraft = {
   enabled: boolean
   summary: string
   rules: ServiceFitRuleDraft[]
+  requirementMetadata: ServiceFitRequirementMetadataDraft[]
+  optionMetadata: ServiceFitOptionMetadataDraft[]
+  verificationProfile: ServiceVerificationProfileDraft
+  knowledgeProfile: ServiceKnowledgeProfileDraft
 }
 
 export const EMPTY_SERVICE_FIT_PROFILE: ServiceFitProfileDraft = {
   enabled: false,
   summary: "",
   rules: [],
+  requirementMetadata: [],
+  optionMetadata: [],
+  verificationProfile: {
+    mode: "NONE",
+    guidance: "",
+    sourceUrls: [],
+    triggerKeywords: [],
+  },
+  knowledgeProfile: {
+    overview: "",
+    pricingNotes: "",
+    workflowNotes: "",
+    faqNotes: "",
+    adapter: "NONE",
+  },
 }
 
 type ContactSearchResult = {
@@ -147,18 +193,18 @@ function createDraftId() {
 
 function createDefaultBranchName(existingGroups: string[]) {
   let index = 1
-  while (existingGroups.includes(`Branch ${index}`)) {
+  while (existingGroups.includes(`Option ${index}`)) {
     index += 1
   }
-  return `Branch ${index}`
+  return `Option ${index}`
 }
 
 function createDefaultRequirementName(existingGroups: string[]) {
   let index = 1
-  while (existingGroups.includes(`Requirement ${index}`)) {
+  while (existingGroups.includes(`Rule ${index}`)) {
     index += 1
   }
-  return `Requirement ${index}`
+  return `Rule ${index}`
 }
 
 function getDefaultCompareValue(field: ServiceFitFieldDefinition) {
@@ -229,6 +275,28 @@ function normalizeRuleForPreview(rule: ServiceFitRuleDraft, field: ServiceFitFie
   }
 }
 
+type GroupedRequirementDraft = {
+  name: string
+  description: string
+  branches: Array<{
+    name: string
+    description: string
+    rules: ServiceFitRuleDraft[]
+  }>
+}
+
+function normalizeName(value: string) {
+  return value.trim().replace(/\s+/g, " ")
+}
+
+function requirementMetaKey(value: string) {
+  return normalizeName(value).toLowerCase()
+}
+
+function optionMetaKey(requirementName: string, optionName: string) {
+  return `${requirementMetaKey(requirementName)}::${requirementMetaKey(optionName)}`
+}
+
 export function ServiceFitRulesTab({
   tenantId,
   profile,
@@ -261,6 +329,28 @@ export function ServiceFitRulesTab({
     [fields],
   )
 
+  const requirementMetadataMap = useMemo(
+    () =>
+      new Map(
+        safeProfile.requirementMetadata.map((entry) => [
+          requirementMetaKey(entry.name),
+          entry,
+        ] as const),
+      ),
+    [safeProfile.requirementMetadata],
+  )
+
+  const optionMetadataMap = useMemo(
+    () =>
+      new Map(
+        safeProfile.optionMetadata.map((entry) => [
+          optionMetaKey(entry.requirementName, entry.optionName),
+          entry,
+        ] as const),
+      ),
+    [safeProfile.optionMetadata],
+  )
+
   const requiredGroupOptions = useMemo(() => {
     const groups = [
       ...new Set(
@@ -272,28 +362,16 @@ export function ServiceFitRulesTab({
     return groups.sort((a, b) => a.localeCompare(b))
   }, [safeProfile.rules])
 
-  const groupedRequirements = useMemo(() => {
-    const groups = new Map<
-      string,
-      {
-        name: string
-        branches: Map<
-          string,
-          {
-            name: string
-            rules: ServiceFitRuleDraft[]
-          }
-        >
-      }
-    >()
+  const groupedRequirements = useMemo<GroupedRequirementDraft[]>(() => {
+    const groups = new Map<string, { name: string; branches: Map<string, { name: string; rules: ServiceFitRuleDraft[] }> }>()
 
     safeProfile.rules.forEach((rule) => {
       if (!rule.required || !(rule.requiredGroup?.trim() || rule.requiredBranch?.trim())) return
 
       const groupName = rule.requiredBranch?.trim()
         ? rule.requiredGroup?.trim() || createDefaultRequirementName([])
-        : "Qualification requirement"
-      const branchName = rule.requiredBranch?.trim() || rule.requiredGroup?.trim() || "Branch 1"
+        : "Qualification rule"
+      const branchName = rule.requiredBranch?.trim() || rule.requiredGroup?.trim() || "Option 1"
 
       const group = groups.get(groupName) ?? {
         name: groupName,
@@ -311,10 +389,18 @@ export function ServiceFitRulesTab({
     return [...groups.values()]
       .map((group) => ({
         name: group.name,
-        branches: [...group.branches.values()].sort((a, b) => a.name.localeCompare(b.name)),
+        description:
+          requirementMetadataMap.get(requirementMetaKey(group.name))?.description ?? "",
+        branches: [...group.branches.values()]
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((branch) => ({
+            ...branch,
+            description:
+              optionMetadataMap.get(optionMetaKey(group.name, branch.name))?.description ?? "",
+          })),
       }))
       .sort((a, b) => a.name.localeCompare(b.name))
-  }, [safeProfile.rules])
+  }, [optionMetadataMap, requirementMetadataMap, safeProfile.rules])
 
   const qualificationSummary = useMemo(() => {
     const alwaysRequiredRules = safeProfile.rules.filter(
@@ -440,6 +526,144 @@ export function ServiceFitRulesTab({
     })
   }
 
+  const upsertRequirementMetadata = (
+    requirementName: string,
+    updater: (
+      current: ServiceFitRequirementMetadataDraft | null,
+    ) => ServiceFitRequirementMetadataDraft | null,
+  ) => {
+    const normalizedRequirementName = normalizeName(requirementName)
+    if (!normalizedRequirementName) return
+
+    const existing =
+      safeProfile.requirementMetadata.find(
+        (entry) => requirementMetaKey(entry.name) === requirementMetaKey(normalizedRequirementName),
+      ) ?? null
+    const next = updater(existing)
+
+    onChange({
+      ...safeProfile,
+      requirementMetadata: next
+        ? [
+            ...safeProfile.requirementMetadata.filter(
+              (entry) =>
+                requirementMetaKey(entry.name) !== requirementMetaKey(normalizedRequirementName),
+            ),
+            next,
+          ].sort((a, b) => a.name.localeCompare(b.name))
+        : safeProfile.requirementMetadata.filter(
+            (entry) =>
+              requirementMetaKey(entry.name) !== requirementMetaKey(normalizedRequirementName),
+          ),
+    })
+  }
+
+  const upsertOptionMetadata = (
+    requirementName: string,
+    optionName: string,
+    updater: (
+      current: ServiceFitOptionMetadataDraft | null,
+    ) => ServiceFitOptionMetadataDraft | null,
+  ) => {
+    const normalizedRequirementName = normalizeName(requirementName)
+    const normalizedOptionName = normalizeName(optionName)
+    if (!normalizedRequirementName || !normalizedOptionName) return
+
+    const currentKey = optionMetaKey(normalizedRequirementName, normalizedOptionName)
+    const existing =
+      safeProfile.optionMetadata.find(
+        (entry) => optionMetaKey(entry.requirementName, entry.optionName) === currentKey,
+      ) ?? null
+    const next = updater(existing)
+
+    onChange({
+      ...safeProfile,
+      optionMetadata: next
+        ? [
+            ...safeProfile.optionMetadata.filter(
+              (entry) => optionMetaKey(entry.requirementName, entry.optionName) !== currentKey,
+            ),
+            next,
+          ].sort(
+            (a, b) =>
+              a.requirementName.localeCompare(b.requirementName) ||
+              a.optionName.localeCompare(b.optionName),
+          )
+        : safeProfile.optionMetadata.filter(
+            (entry) => optionMetaKey(entry.requirementName, entry.optionName) !== currentKey,
+          ),
+    })
+  }
+
+  const renameRequirement = (currentName: string, nextNameRaw: string) => {
+    const nextName = normalizeName(nextNameRaw)
+    const previousName = normalizeName(currentName)
+    if (!nextName || !previousName || nextName === previousName) return
+
+    onChange({
+      ...safeProfile,
+      rules: safeProfile.rules.map((rule) =>
+        rule.required && normalizeName(rule.requiredGroup ?? "") === previousName
+          ? { ...rule, requiredGroup: nextName }
+          : rule,
+      ),
+      requirementMetadata: safeProfile.requirementMetadata
+        .map((entry) =>
+          requirementMetaKey(entry.name) === requirementMetaKey(previousName)
+            ? { ...entry, name: nextName }
+            : entry,
+        )
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      optionMetadata: safeProfile.optionMetadata
+        .map((entry) =>
+          requirementMetaKey(entry.requirementName) === requirementMetaKey(previousName)
+            ? { ...entry, requirementName: nextName }
+            : entry,
+        )
+        .sort(
+          (a, b) =>
+            a.requirementName.localeCompare(b.requirementName) ||
+            a.optionName.localeCompare(b.optionName),
+        ),
+    })
+  }
+
+  const renameOption = (
+    requirementName: string,
+    currentOptionName: string,
+    nextOptionNameRaw: string,
+  ) => {
+    const normalizedRequirementName = normalizeName(requirementName)
+    const nextOptionName = normalizeName(nextOptionNameRaw)
+    const previousOptionName = normalizeName(currentOptionName)
+    if (!normalizedRequirementName || !nextOptionName || nextOptionName === previousOptionName) {
+      return
+    }
+
+    onChange({
+      ...safeProfile,
+      rules: safeProfile.rules.map((rule) =>
+        rule.required &&
+        normalizeName(rule.requiredGroup ?? "") === normalizedRequirementName &&
+        normalizeName(rule.requiredBranch ?? "") === previousOptionName
+          ? { ...rule, requiredBranch: nextOptionName }
+          : rule,
+      ),
+      optionMetadata: safeProfile.optionMetadata
+        .map((entry) =>
+          optionMetaKey(entry.requirementName, entry.optionName) ===
+          optionMetaKey(normalizedRequirementName, previousOptionName)
+            ? { ...entry, optionName: nextOptionName }
+            : entry,
+        )
+        .sort(
+          (a, b) =>
+            a.requirementName.localeCompare(b.requirementName) ||
+            a.optionName.localeCompare(b.optionName),
+        ),
+    })
+  }
+
   const addRule = (overrides?: Partial<ServiceFitRuleDraft>) => {
     const firstField = fields[0]
     if (!firstField) {
@@ -480,13 +704,45 @@ export function ServiceFitRulesTab({
   const addQualificationRequirement = () => {
     const requirementName = createDefaultRequirementName(requiredGroupOptions)
     const branchName = createDefaultBranchName([])
-    addRule({
-      required: true,
-      requiredGroup: requirementName,
-      requiredBranch: branchName,
-      weight: 1,
-      label: null,
-      explanation: null,
+    const firstField = fields[0]
+    if (!firstField) {
+      toast.error("No fields are available for service fit yet.")
+      return
+    }
+
+    const baseRule = createRuleFromField(firstField)
+    onChange({
+      ...safeProfile,
+      rules: [
+        ...safeProfile.rules,
+        {
+          ...baseRule,
+          required: true,
+          requiredGroup: requirementName,
+          requiredBranch: branchName,
+          weight: 1,
+          label: null,
+          explanation: null,
+        },
+      ],
+      requirementMetadata: [
+        ...safeProfile.requirementMetadata.filter(
+          (entry) => requirementMetaKey(entry.name) !== requirementMetaKey(requirementName),
+        ),
+        { name: requirementName, description: "" },
+      ].sort((a, b) => a.name.localeCompare(b.name)),
+      optionMetadata: [
+        ...safeProfile.optionMetadata.filter(
+          (entry) =>
+            optionMetaKey(entry.requirementName, entry.optionName) !==
+            optionMetaKey(requirementName, branchName),
+        ),
+        { requirementName, optionName: branchName, description: "" },
+      ].sort(
+        (a, b) =>
+          a.requirementName.localeCompare(b.requirementName) ||
+          a.optionName.localeCompare(b.optionName),
+      ),
     })
   }
 
@@ -505,11 +761,37 @@ export function ServiceFitRulesTab({
       .find((requirement) => requirement.name === requirementName)
       ?.branches.map((branch) => branch.name) ?? []
     const branchName = createDefaultBranchName(existingBranches)
-    addRule({
-      required: true,
-      requiredGroup: requirementName,
-      requiredBranch: branchName,
-      weight: 1,
+    const firstField = fields[0]
+    if (!firstField) {
+      toast.error("No fields are available for service fit yet.")
+      return
+    }
+
+    const baseRule = createRuleFromField(firstField)
+    onChange({
+      ...safeProfile,
+      rules: [
+        ...safeProfile.rules,
+        {
+          ...baseRule,
+          required: true,
+          requiredGroup: requirementName,
+          requiredBranch: branchName,
+          weight: 1,
+        },
+      ],
+      optionMetadata: [
+        ...safeProfile.optionMetadata.filter(
+          (entry) =>
+            optionMetaKey(entry.requirementName, entry.optionName) !==
+            optionMetaKey(requirementName, branchName),
+        ),
+        { requirementName, optionName: branchName, description: "" },
+      ].sort(
+        (a, b) =>
+          a.requirementName.localeCompare(b.requirementName) ||
+          a.optionName.localeCompare(b.optionName),
+      ),
     })
   }
 
@@ -537,6 +819,12 @@ export function ServiceFitRulesTab({
       rules: safeProfile.rules.filter(
         (rule) => !(rule.required && (rule.requiredGroup?.trim() || "") === requirementName),
       ),
+      requirementMetadata: safeProfile.requirementMetadata.filter(
+        (entry) => requirementMetaKey(entry.name) !== requirementMetaKey(requirementName),
+      ),
+      optionMetadata: safeProfile.optionMetadata.filter(
+        (entry) => requirementMetaKey(entry.requirementName) !== requirementMetaKey(requirementName),
+      ),
     })
   }
 
@@ -550,6 +838,11 @@ export function ServiceFitRulesTab({
             (rule.requiredGroup?.trim() || "") === requirementName &&
             (rule.requiredBranch?.trim() || "") === branchName
           ),
+      ),
+      optionMetadata: safeProfile.optionMetadata.filter(
+        (entry) =>
+          optionMetaKey(entry.requirementName, entry.optionName) !==
+          optionMetaKey(requirementName, branchName),
       ),
     })
   }
@@ -571,6 +864,8 @@ export function ServiceFitRulesTab({
           fitProfile: {
             enabled: safeProfile.enabled,
             summary: safeProfile.summary,
+            requirementMetadata: safeProfile.requirementMetadata,
+            optionMetadata: safeProfile.optionMetadata,
             rules: safeProfile.rules.map((rule) =>
               normalizeRuleForPreview(
                 rule,
@@ -596,6 +891,34 @@ export function ServiceFitRulesTab({
     }
   }
 
+  const formatRulePreview = (rule: ServiceFitRuleDraft) => {
+    const field = fieldMap.get(`${rule.source}:${rule.fieldKey}`)
+    const fieldLabel = rule.label?.trim() || field?.label || "Condition"
+    const operatorLabel = OPERATOR_LABELS[rule.operator]
+
+    if (!shouldShowCompareValue(rule)) {
+      return `${fieldLabel} · ${operatorLabel}`
+    }
+
+    if (rule.operator === "between") {
+      const value = (rule.compareValue as { min?: unknown; max?: unknown } | null) ?? {}
+      const min = String(value.min ?? "").trim()
+      const max = String(value.max ?? "").trim()
+      return `${fieldLabel} · ${operatorLabel} ${min || "?"} and ${max || "?"}`
+    }
+
+    if (Array.isArray(rule.compareValue)) {
+      return `${fieldLabel} · ${operatorLabel} ${rule.compareValue.join(", ") || "Select values"}`
+    }
+
+    const compareValue =
+      typeof rule.compareValue === "string"
+        ? rule.compareValue.trim()
+        : String(rule.compareValue ?? "").trim()
+
+    return `${fieldLabel} · ${operatorLabel}${compareValue ? ` ${compareValue}` : ""}`
+  }
+
   const renderRuleEditor = (
     rule: ServiceFitRuleDraft,
     title: string,
@@ -604,270 +927,288 @@ export function ServiceFitRulesTab({
     const field = fieldMap.get(`${rule.source}:${rule.fieldKey}`)
     const operatorOptions = field?.operators ?? []
     const compareValue = (rule.compareValue as { min?: unknown; max?: unknown } | null) ?? {}
+    const modeLabel =
+      mode === "shared" ? "Shared condition" : mode === "scored" ? "Scored condition" : "AND condition"
 
     return (
-      <article key={rule.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="space-y-0.5">
-            <p className="text-sm font-semibold text-slate-900">{title}</p>
-            <p className="text-xs text-slate-500">
-              {field ? `${SOURCE_LABELS[field.source]} field` : "Select a field"}
-            </p>
-          </div>
-
-          <Button
-            type="button"
-            variant="outline"
-            className="cursor-pointer border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800"
-            onClick={() => removeRule(rule.id)}
-          >
-            <Trash2 className="h-4 w-4" />
-            Remove
-          </Button>
-        </div>
-
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <div className="grid gap-2">
-            <Label>Field</Label>
-            <Select
-              value={`${rule.source}:${rule.fieldKey}`}
-              onValueChange={(value) => {
-                const nextField = fieldMap.get(value)
-                if (!nextField) return
-                updateRule(rule.id, (current) => ({
-                  ...createRuleFromField(nextField),
-                  id: current.id,
-                  required: current.required,
-                  requiredGroup: current.required ? current.requiredGroup : null,
-                  requiredBranch: current.required ? current.requiredBranch : null,
-                  weight: current.required ? 1 : current.weight,
-                  label: current.label,
-                  explanation: current.explanation,
-                }))
-              }}
-            >
-              <SelectTrigger className="cursor-pointer">
-                <SelectValue placeholder="Select a field" />
-              </SelectTrigger>
-              <SelectContent>
-                {fieldOptions.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="grid gap-2">
-            <Label>Operator</Label>
-            <Select
-              value={rule.operator}
-              onValueChange={(value) =>
-                updateRule(rule.id, (current) => ({
-                  ...current,
-                  operator: value as ServiceFitRuleDraft["operator"],
-                  compareValue:
-                    value === "between"
-                      ? { min: "", max: "" }
-                      : value === "is_true" ||
-                          value === "is_false" ||
-                          value === "is_empty" ||
-                          value === "is_not_empty"
-                        ? null
-                        : field
-                          ? getDefaultCompareValue(field)
-                          : current.compareValue,
-                }))
-              }
-            >
-              <SelectTrigger className="cursor-pointer">
-                <SelectValue placeholder="Select an operator" />
-              </SelectTrigger>
-              <SelectContent>
-                {operatorOptions.map((operator) => (
-                  <SelectItem key={operator} value={operator}>
-                    {OPERATOR_LABELS[operator]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="grid gap-2">
-            <Label>Condition label</Label>
-            <Input
-              value={rule.label ?? ""}
-              onChange={(event) =>
-                updateRule(rule.id, (current) => ({
-                  ...current,
-                  label: event.target.value || null,
-                }))
-              }
-              placeholder={field?.label ?? "Condition label"}
-            />
-          </div>
-
-          <div className="grid gap-2">
-            <Label className="flex items-center gap-1.5">
-              Admin note
-              <CircleHelp className="h-3.5 w-3.5 text-slate-400" />
-            </Label>
-            <Input
-              value={rule.explanation ?? ""}
-              onChange={(event) =>
-                updateRule(rule.id, (current) => ({
-                  ...current,
-                  explanation: event.target.value || null,
-                }))
-              }
-              placeholder="Optional note about why this condition matters"
-            />
-          </div>
-
-          {shouldShowCompareValue(rule) ? (
-            <div className="grid gap-2 lg:col-span-2">
-              <Label>Compare value</Label>
-              {rule.operator === "between" ? (
-                <div className="grid gap-3 md:grid-cols-2">
-                  <Input
-                    type={field?.valueType === "number" ? "number" : field?.valueType === "date" ? "date" : "text"}
-                    value={typeof compareValue.min === "string" ? compareValue.min : String(compareValue.min ?? "")}
-                    onChange={(event) =>
-                      updateRule(rule.id, (current) => ({
-                        ...current,
-                        compareValue: {
-                          ...(current.compareValue as { min?: unknown; max?: unknown } | null),
-                          min: event.target.value,
-                        },
-                      }))
-                    }
-                    placeholder="Minimum"
-                  />
-                  <Input
-                    type={field?.valueType === "number" ? "number" : field?.valueType === "date" ? "date" : "text"}
-                    value={typeof compareValue.max === "string" ? compareValue.max : String(compareValue.max ?? "")}
-                    onChange={(event) =>
-                      updateRule(rule.id, (current) => ({
-                        ...current,
-                        compareValue: {
-                          ...(current.compareValue as { min?: unknown; max?: unknown } | null),
-                          max: event.target.value,
-                        },
-                      }))
-                    }
-                    placeholder="Maximum"
-                  />
-                </div>
-              ) : field?.valueType === "stringArray" ? (
-                <div className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3">
-                  {field.options.map((option) => {
-                    const selectedValues = Array.isArray(rule.compareValue) ? rule.compareValue : []
-                    const checked = selectedValues.includes(option.value)
-
-                    return (
-                      <label key={option.value} className="inline-flex items-center gap-2 text-sm text-slate-700">
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(nextChecked) =>
-                            updateRule(rule.id, (current) => {
-                              const currentValues = Array.isArray(current.compareValue)
-                                ? current.compareValue
-                                : []
-                              const nextValues = nextChecked === true
-                                ? [...currentValues, option.value]
-                                : currentValues.filter((value) => value !== option.value)
-
-                              return {
-                                ...current,
-                                compareValue: [...new Set(nextValues)],
-                              }
-                            })
-                          }
-                        />
-                        {option.label}
-                      </label>
-                    )
-                  })}
-                </div>
-              ) : field?.options.length ? (
-                <Select
-                  value={typeof rule.compareValue === "string" ? rule.compareValue : ""}
-                  onValueChange={(value) =>
-                    updateRule(rule.id, (current) => ({
-                      ...current,
-                      compareValue: value,
-                    }))
-                  }
-                >
-                  <SelectTrigger className="cursor-pointer">
-                    <SelectValue placeholder="Select a value" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {field.options.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input
-                  type={field?.valueType === "number" ? "number" : field?.valueType === "date" ? "date" : "text"}
-                  value={typeof rule.compareValue === "string" ? rule.compareValue : String(rule.compareValue ?? "")}
-                  onChange={(event) =>
-                    updateRule(rule.id, (current) => ({
-                      ...current,
-                      compareValue: event.target.value,
-                    }))
-                  }
-                  placeholder="Comparison value"
-                />
-              )}
-            </div>
-          ) : null}
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-3 lg:col-span-2">
-            {mode === "scored" ? (
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <p className="text-sm text-slate-700">
-                  This condition helps rank the service but does not block qualification.
-                </p>
-
-                <div className="grid gap-2">
-                  <Label>Score weight</Label>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={String(rule.weight)}
-                    onChange={(event) =>
-                      updateRule(rule.id, (current) => ({
-                        ...current,
-                        weight: Math.max(1, Math.min(10, Number(event.target.value) || 1)),
-                      }))
-                    }
-                    className="w-24"
-                  />
-                </div>
-              </div>
-            ) : mode === "shared" ? (
-              <p className="text-sm text-slate-600">
-                This condition must be true for every qualifying contact.
+      <details key={rule.id} className="group rounded-2xl border border-slate-200 bg-slate-50/80" open>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 [&::-webkit-details-marker]:hidden">
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="secondary" className="bg-white text-slate-700">
+                {modeLabel}
+              </Badge>
+              <p className="text-sm font-semibold text-slate-900">
+                {rule.label?.trim() || title}
               </p>
+            </div>
+            <p className="truncate text-sm text-slate-600">{formatRulePreview(rule)}</p>
+            {rule.explanation?.trim() ? (
+              <p className="truncate text-xs text-slate-500">{rule.explanation}</p>
             ) : (
-              <p className="text-sm text-slate-600">
-                This condition is part of the current option. All conditions in the same option must
-                match together.
+              <p className="text-xs text-slate-500">
+                {field ? `${SOURCE_LABELS[field.source]} field` : "Select a field"}
               </p>
             )}
           </div>
-        </div>
+          <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition group-open:rotate-180" />
+        </summary>
 
-        {field?.description ? (
-          <p className="mt-3 text-xs text-slate-500">{field.description}</p>
-        ) : null}
-      </article>
+        <div className="border-t border-slate-200 px-4 pb-4 pt-4">
+          <div className="mb-4 flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              className="cursor-pointer border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+              onClick={() => removeRule(rule.id)}
+            >
+              <Trash2 className="h-4 w-4" />
+              Remove condition
+            </Button>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="grid gap-2">
+              <Label>Condition name</Label>
+              <Input
+                value={rule.label ?? ""}
+                onChange={(event) =>
+                  updateRule(rule.id, (current) => ({
+                    ...current,
+                    label: event.target.value || null,
+                  }))
+                }
+                placeholder={field?.label ?? "Condition name"}
+              />
+            </div>
+
+            <div className="grid gap-2">
+              <Label className="flex items-center gap-1.5">
+                Condition description
+                <CircleHelp className="h-3.5 w-3.5 text-slate-400" />
+              </Label>
+              <Input
+                value={rule.explanation ?? ""}
+                onChange={(event) =>
+                  updateRule(rule.id, (current) => ({
+                    ...current,
+                    explanation: event.target.value || null,
+                  }))
+                }
+                placeholder="Explain what this condition is checking"
+              />
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Field</Label>
+              <Select
+                value={`${rule.source}:${rule.fieldKey}`}
+                onValueChange={(value) => {
+                  const nextField = fieldMap.get(value)
+                  if (!nextField) return
+                  updateRule(rule.id, (current) => ({
+                    ...createRuleFromField(nextField),
+                    id: current.id,
+                    required: current.required,
+                    requiredGroup: current.required ? current.requiredGroup : null,
+                    requiredBranch: current.required ? current.requiredBranch : null,
+                    weight: current.required ? 1 : current.weight,
+                    label: current.label,
+                    explanation: current.explanation,
+                  }))
+                }}
+              >
+                <SelectTrigger className="cursor-pointer">
+                  <SelectValue placeholder="Select a field" />
+                </SelectTrigger>
+                <SelectContent>
+                  {fieldOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Operator</Label>
+              <Select
+                value={rule.operator}
+                onValueChange={(value) =>
+                  updateRule(rule.id, (current) => ({
+                    ...current,
+                    operator: value as ServiceFitRuleDraft["operator"],
+                    compareValue:
+                      value === "between"
+                        ? { min: "", max: "" }
+                        : value === "is_true" ||
+                            value === "is_false" ||
+                            value === "is_empty" ||
+                            value === "is_not_empty"
+                          ? null
+                          : field
+                            ? getDefaultCompareValue(field)
+                            : current.compareValue,
+                  }))
+                }
+              >
+                <SelectTrigger className="cursor-pointer">
+                  <SelectValue placeholder="Select an operator" />
+                </SelectTrigger>
+                <SelectContent>
+                  {operatorOptions.map((operator) => (
+                    <SelectItem key={operator} value={operator}>
+                      {OPERATOR_LABELS[operator]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {shouldShowCompareValue(rule) ? (
+              <div className="grid gap-2 lg:col-span-2">
+                <Label>Compare value</Label>
+                {rule.operator === "between" ? (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Input
+                      type={field?.valueType === "number" ? "number" : field?.valueType === "date" ? "date" : "text"}
+                      value={typeof compareValue.min === "string" ? compareValue.min : String(compareValue.min ?? "")}
+                      onChange={(event) =>
+                        updateRule(rule.id, (current) => ({
+                          ...current,
+                          compareValue: {
+                            ...(current.compareValue as { min?: unknown; max?: unknown } | null),
+                            min: event.target.value,
+                          },
+                        }))
+                      }
+                      placeholder="Minimum"
+                    />
+                    <Input
+                      type={field?.valueType === "number" ? "number" : field?.valueType === "date" ? "date" : "text"}
+                      value={typeof compareValue.max === "string" ? compareValue.max : String(compareValue.max ?? "")}
+                      onChange={(event) =>
+                        updateRule(rule.id, (current) => ({
+                          ...current,
+                          compareValue: {
+                            ...(current.compareValue as { min?: unknown; max?: unknown } | null),
+                            max: event.target.value,
+                          },
+                        }))
+                      }
+                      placeholder="Maximum"
+                    />
+                  </div>
+                ) : field?.valueType === "stringArray" ? (
+                  <div className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3">
+                    {field.options.map((option) => {
+                      const selectedValues = Array.isArray(rule.compareValue) ? rule.compareValue : []
+                      const checked = selectedValues.includes(option.value)
+
+                      return (
+                        <label key={option.value} className="inline-flex items-center gap-2 text-sm text-slate-700">
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={(nextChecked) =>
+                              updateRule(rule.id, (current) => {
+                                const currentValues = Array.isArray(current.compareValue)
+                                  ? current.compareValue
+                                  : []
+                                const nextValues = nextChecked === true
+                                  ? [...currentValues, option.value]
+                                  : currentValues.filter((value) => value !== option.value)
+
+                                return {
+                                  ...current,
+                                  compareValue: [...new Set(nextValues)],
+                                }
+                              })
+                            }
+                          />
+                          {option.label}
+                        </label>
+                      )
+                    })}
+                  </div>
+                ) : field?.options.length ? (
+                  <Select
+                    value={typeof rule.compareValue === "string" ? rule.compareValue : ""}
+                    onValueChange={(value) =>
+                      updateRule(rule.id, (current) => ({
+                        ...current,
+                        compareValue: value,
+                      }))
+                    }
+                  >
+                    <SelectTrigger className="cursor-pointer">
+                      <SelectValue placeholder="Select a value" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {field.options.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    type={field?.valueType === "number" ? "number" : field?.valueType === "date" ? "date" : "text"}
+                    value={typeof rule.compareValue === "string" ? rule.compareValue : String(rule.compareValue ?? "")}
+                    onChange={(event) =>
+                      updateRule(rule.id, (current) => ({
+                        ...current,
+                        compareValue: event.target.value,
+                      }))
+                    }
+                    placeholder="Comparison value"
+                  />
+                )}
+              </div>
+            ) : null}
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-3 lg:col-span-2">
+              {mode === "scored" ? (
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <p className="text-sm text-slate-700">
+                    This condition helps rank the service but does not block qualification.
+                  </p>
+
+                  <div className="grid gap-2">
+                    <Label>Score weight</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={String(rule.weight)}
+                      onChange={(event) =>
+                        updateRule(rule.id, (current) => ({
+                          ...current,
+                          weight: Math.max(1, Math.min(10, Number(event.target.value) || 1)),
+                        }))
+                      }
+                      className="w-24"
+                    />
+                  </div>
+                </div>
+              ) : mode === "shared" ? (
+                <p className="text-sm text-slate-600">
+                  This condition must be true for every qualifying contact.
+                </p>
+              ) : (
+                <p className="text-sm text-slate-600">
+                  All conditions inside this option must match together.
+                </p>
+              )}
+            </div>
+          </div>
+
+          {field?.description ? (
+            <p className="mt-3 text-xs text-slate-500">{field.description}</p>
+          ) : null}
+        </div>
+      </details>
     )
   }
 
@@ -1013,7 +1354,9 @@ export function ServiceFitRulesTab({
                         className="rounded-2xl border border-sky-200 bg-white p-3"
                       >
                         <div className="flex items-center justify-between gap-3">
-                          <p className="text-sm font-semibold text-slate-900">Rule {index + 1}</p>
+                          <p className="text-sm font-semibold text-slate-900">
+                            {requirement.name || `Rule ${index + 1}`}
+                          </p>
                           <span className="rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-800">
                             {requirement.branchCount} option{requirement.branchCount === 1 ? "" : "s"}
                           </span>
@@ -1106,122 +1449,198 @@ export function ServiceFitRulesTab({
               {groupedRequirements.length ? (
                 <div className="space-y-4">
                   {groupedRequirements.map((requirement, requirementIndex) => (
-                    <div
+                    <details
                       key={requirement.name}
-                        className="rounded-[20px] border border-sky-200 bg-sky-50/60 p-4"
+                      className="group rounded-[20px] border border-sky-200 bg-sky-50/60"
+                      open
                     >
-                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                        <div className="grid flex-1 gap-1">
-                          <p className="text-sm font-semibold text-slate-900">
-                            {groupedRequirements.length === 1
-                              ? "Qualification options"
-                              : `Advanced AND rule ${requirementIndex + 1}`}
-                          </p>
+                      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 [&::-webkit-details-marker]:hidden">
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge className="bg-white text-sky-900 hover:bg-white">
+                              {groupedRequirements.length === 1 ? "Qualification rule" : `Rule ${requirementIndex + 1}`}
+                            </Badge>
+                            <p className="text-sm font-semibold text-slate-900">
+                              {requirement.name}
+                            </p>
+                          </div>
                           <p className="text-sm text-slate-600">
-                            {groupedRequirements.length === 1
-                              ? "If any one option below matches, this service can qualify."
-                              : "This advanced rule also has to match. Any one option below can satisfy it."}
+                            {requirement.description ||
+                              (groupedRequirements.length === 1
+                                ? "If any option below matches, the contact passes this rule."
+                                : "This rule must pass, and any one option below can satisfy it.")}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            {requirement.branches.length} option{requirement.branches.length === 1 ? "" : "s"}
                           </p>
                         </div>
+                        <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition group-open:rotate-180" />
+                      </summary>
 
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="cursor-pointer border-slate-300 bg-white"
-                            onClick={() => addBranchToRequirement(requirement.name)}
-                            disabled={isLoadingFields}
-                          >
-                            <Plus className="h-4 w-4" />
-                            Add OR option
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="cursor-pointer border-rose-200 bg-white text-rose-700 hover:bg-rose-50 hover:text-rose-800"
-                            onClick={() => removeRequirement(requirement.name)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                            Remove rule
-                          </Button>
+                      <div className="border-t border-sky-200 px-4 pb-4 pt-4">
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
+                          <div className="grid gap-4 md:grid-cols-2">
+                            <div className="grid gap-2">
+                              <Label>Rule name</Label>
+                              <Input
+                                key={`requirement-name:${requirement.name}`}
+                                defaultValue={requirement.name}
+                                onBlur={(event) => renameRequirement(requirement.name, event.target.value)}
+                                placeholder={`Rule ${requirementIndex + 1}`}
+                              />
+                            </div>
+                            <div className="grid gap-2 md:col-span-1">
+                              <Label>Rule description</Label>
+                              <Textarea
+                                rows={2}
+                                value={requirement.description}
+                                onChange={(event) =>
+                                  upsertRequirementMetadata(requirement.name, (current) => ({
+                                    name: current?.name ?? requirement.name,
+                                    description: event.target.value,
+                                  }))
+                                }
+                                placeholder="Explain what this rule is checking before the options below are evaluated."
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex justify-end">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="cursor-pointer border-rose-200 bg-white text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+                              onClick={() => removeRequirement(requirement.name)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              Remove rule
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 space-y-4">
+                          {requirement.branches.map((branch, branchIndex) => (
+                            <div key={`${requirement.name}:${branch.name}`} className="space-y-4">
+                              {branchIndex > 0 ? (
+                                <div className="flex items-center justify-center">
+                                  <Badge variant="outline" className="rounded-full border-sky-300 bg-white px-4 py-1 text-sky-800">
+                                    OR
+                                  </Badge>
+                                </div>
+                              ) : null}
+
+                              <details className="group/option rounded-2xl border border-sky-200 bg-white/90" open>
+                                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 [&::-webkit-details-marker]:hidden">
+                                  <div className="min-w-0 space-y-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Badge variant="secondary" className="bg-sky-100 text-sky-900">
+                                        Option {branchIndex + 1}
+                                      </Badge>
+                                      <p className="text-sm font-semibold text-slate-900">
+                                        {branch.name}
+                                      </p>
+                                    </div>
+                                    <p className="text-sm text-slate-600">
+                                      {branch.description || "All conditions inside this option must match together."}
+                                    </p>
+                                    <p className="text-xs text-slate-500">
+                                      {branch.rules.length} condition{branch.rules.length === 1 ? "" : "s"}
+                                    </p>
+                                  </div>
+                                  <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition group-open/option:rotate-180" />
+                                </summary>
+
+                                <div className="border-t border-sky-100 px-4 pb-4 pt-4">
+                                  <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
+                                    <div className="grid gap-4 md:grid-cols-2">
+                                      <div className="grid gap-2">
+                                        <Label>Option name</Label>
+                                        <Input
+                                          key={`option-name:${requirement.name}:${branch.name}`}
+                                          defaultValue={branch.name}
+                                          onBlur={(event) =>
+                                            renameOption(requirement.name, branch.name, event.target.value)
+                                          }
+                                          placeholder={`Option ${branchIndex + 1}`}
+                                        />
+                                      </div>
+                                      <div className="grid gap-2">
+                                        <Label>Option description</Label>
+                                        <Textarea
+                                          rows={2}
+                                          value={branch.description}
+                                          onChange={(event) =>
+                                            upsertOptionMetadata(requirement.name, branch.name, (current) => ({
+                                              requirementName: current?.requirementName ?? requirement.name,
+                                              optionName: current?.optionName ?? branch.name,
+                                              description: event.target.value,
+                                            }))
+                                          }
+                                          placeholder="Describe when this option should be used, for example Best fit or Guaranteed issue."
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <div className="flex justify-end">
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="cursor-pointer border-rose-200 bg-white text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+                                        onClick={() => removeBranch(requirement.name, branch.name)}
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                        Remove option
+                                      </Button>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-4 space-y-4">
+                                    {branch.rules.map((rule, index) => (
+                                      <div key={rule.id} className="space-y-4">
+                                        {index > 0 ? (
+                                          <div className="flex items-center justify-center">
+                                            <Badge variant="outline" className="rounded-full border-slate-300 bg-slate-50 px-4 py-1 text-slate-700">
+                                              AND
+                                            </Badge>
+                                          </div>
+                                        ) : null}
+                                        {renderRuleEditor(rule, `Condition ${index + 1}`, "option")}
+                                      </div>
+                                    ))}
+
+                                    <div className="flex justify-center">
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="cursor-pointer rounded-full border-slate-300 bg-white px-4"
+                                        onClick={() => addRuleToBranch(requirement.name, branch.name)}
+                                        disabled={isLoadingFields}
+                                      >
+                                        <Plus className="h-4 w-4" />
+                                        Add AND condition
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </details>
+                            </div>
+                          ))}
+
+                          <div className="flex justify-center">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="cursor-pointer rounded-full border-sky-300 bg-white px-4 text-sky-900"
+                              onClick={() => addBranchToRequirement(requirement.name)}
+                              disabled={isLoadingFields}
+                            >
+                              <Plus className="h-4 w-4" />
+                              Add OR option
+                            </Button>
+                          </div>
                         </div>
                       </div>
-
-                      <div className="mt-4 space-y-4">
-                        {requirement.branches.map((branch, branchIndex) => (
-                          <div key={`${requirement.name}:${branch.name}`} className="space-y-4">
-                            {branchIndex > 0 ? (
-                              <div className="flex items-center justify-center">
-                                <span className="rounded-full border border-sky-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">
-                                  OR
-                                </span>
-                              </div>
-                            ) : null}
-
-                            <div className="rounded-2xl border border-sky-200 bg-white/80 p-4">
-                            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                              <div className="grid flex-1 gap-1">
-                                <p className="text-sm font-semibold text-slate-900">
-                                  Option {branchIndex + 1}
-                                </p>
-                                <p className="text-sm text-slate-600">
-                                  All conditions in this option must match together.
-                                </p>
-                              </div>
-                              <div className="flex flex-wrap gap-2">
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  className="cursor-pointer border-slate-300 bg-white"
-                                  onClick={() => addRuleToBranch(requirement.name, branch.name)}
-                                  disabled={isLoadingFields}
-                                >
-                                  <Plus className="h-4 w-4" />
-                                  Add AND condition
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  className="cursor-pointer border-rose-200 bg-white text-rose-700 hover:bg-rose-50 hover:text-rose-800"
-                                  onClick={() => removeBranch(requirement.name, branch.name)}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                  Remove option
-                                </Button>
-                              </div>
-                            </div>
-
-                            <div className="mt-4 space-y-4">
-                              {branch.rules.map((rule, index) => (
-                                <div key={rule.id} className="space-y-4">
-                                  {index > 0 ? (
-                                    <div className="flex items-center justify-center">
-                                      <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-700">
-                                        AND
-                                      </span>
-                                    </div>
-                                  ) : null}
-                                  {renderRuleEditor(rule, `Condition ${index + 1}`, "option")}
-                                </div>
-                              ))}
-                              <div className="flex justify-end">
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  className="cursor-pointer border-slate-300 bg-white"
-                                  onClick={() => addRuleToBranch(requirement.name, branch.name)}
-                                  disabled={isLoadingFields}
-                                >
-                                  <Plus className="h-4 w-4" />
-                                  Add AND condition
-                                </Button>
-                              </div>
-                            </div>
-                          </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                    </details>
                   ))}
                 </div>
               ) : (

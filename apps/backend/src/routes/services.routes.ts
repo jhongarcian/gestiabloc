@@ -4,6 +4,7 @@ import { z } from "zod"
 import { decryptCustomFieldValue } from "../lib/contact-custom-field-encryption.js"
 import { prisma } from "../lib/prisma.js"
 import { generateServiceFitExplanation } from "../lib/service-fit-explanations.js"
+import { routeServiceQuestion } from "../lib/service-fit-question-router.js"
 import {
   buildServiceFitFieldCatalog,
   evaluateServiceFitProfile,
@@ -240,6 +241,13 @@ const FitScanQuerySchema = z.object({
   serviceId: z.string().trim().min(1).optional(),
 })
 
+const FitScanAssistantBodySchema = z.object({
+  contactId: z.string().trim().min(1),
+  serviceId: z.string().trim().min(1).optional(),
+  scope: z.enum(["all", "service"]).default("service"),
+  question: z.string().trim().min(1).max(500).optional().nullable(),
+})
+
 const ServiceFitRuleSourceSchema = z.enum(["core", "status", "tags", "custom", "derived"])
 const ServiceFitValueTypeSchema = z.enum(["string", "number", "date", "boolean", "stringArray"])
 const ServiceFitOperatorSchema = z.enum([
@@ -285,6 +293,55 @@ const ServiceFitPreviewSchema = z.object({
       )
       .max(100)
       .default([]),
+    requirementMetadata: z
+      .array(
+        z.object({
+          name: z.string().trim().min(1).max(120),
+          description: z.string().trim().max(500).default(""),
+        }),
+      )
+      .max(30)
+      .default([]),
+    optionMetadata: z
+      .array(
+        z.object({
+          requirementName: z.string().trim().min(1).max(120),
+          optionName: z.string().trim().min(1).max(120),
+          description: z.string().trim().max(500).default(""),
+        }),
+      )
+      .max(100)
+      .default([]),
+    verificationProfile: z
+      .object({
+        mode: z
+          .enum(["NONE", "WEB_SOURCES", "INTERNAL_KB", "EXTERNAL_API", "MANUAL_CONFIRMATION"])
+          .default("NONE"),
+        guidance: z.string().trim().max(2000).default(""),
+        sourceUrls: z.array(z.string().trim().url().max(500)).max(8).default([]),
+        triggerKeywords: z.array(z.string().trim().min(1).max(80)).max(12).default([]),
+      })
+      .default({
+        mode: "NONE",
+        guidance: "",
+        sourceUrls: [],
+        triggerKeywords: [],
+      }),
+    knowledgeProfile: z
+      .object({
+        overview: z.string().trim().max(4000).default(""),
+        pricingNotes: z.string().trim().max(4000).default(""),
+        workflowNotes: z.string().trim().max(4000).default(""),
+        faqNotes: z.string().trim().max(4000).default(""),
+        adapter: z.enum(["NONE", "IMMIGRATION_USCIS"]).default("NONE"),
+      })
+      .default({
+        overview: "",
+        pricingNotes: "",
+        workflowNotes: "",
+        faqNotes: "",
+        adapter: "NONE",
+      }),
   }),
 })
 
@@ -1997,6 +2054,56 @@ router.get("/:tenantId/fit-scan", requireAuth, async (req, res, next) => {
     return res.json({
       ok: true,
       items: result.items,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post("/:tenantId/fit-scan/assistant", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const payload = FitScanAssistantBodySchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const scope = payload.scope === "service" && payload.serviceId ? "service" : "all"
+    const result = await evaluateServiceFitScan({
+      tenantId,
+      contactId: payload.contactId,
+      serviceId: scope === "service" ? payload.serviceId : undefined,
+    })
+
+    if ("error" in result) {
+      return res.status(404).json({ error: result.error })
+    }
+
+    if (scope === "service" && result.items.length === 0) {
+      return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
+    }
+
+    const serviceItem =
+      scope === "service"
+        ? result.items.find((item) => item.serviceId === payload.serviceId) ?? result.items[0] ?? null
+        : null
+
+    const answer = await routeServiceQuestion({
+      items: result.items,
+      scope,
+      serviceId: payload.serviceId,
+      question: payload.question ?? null,
+    })
+
+    return res.json({
+      ok: true,
+      scope: {
+        mode: scope,
+        serviceId: serviceItem?.serviceId ?? null,
+        serviceName: serviceItem?.serviceName ?? null,
+      },
+      answer,
     })
   } catch (error) {
     return next(error)

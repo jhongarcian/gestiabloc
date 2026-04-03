@@ -64,10 +64,57 @@ export type ServiceFitRule = {
   explanation: string | null
 }
 
+export const SERVICE_VERIFICATION_MODES = [
+  "NONE",
+  "WEB_SOURCES",
+  "INTERNAL_KB",
+  "EXTERNAL_API",
+  "MANUAL_CONFIRMATION",
+] as const
+
+export type ServiceVerificationMode = (typeof SERVICE_VERIFICATION_MODES)[number]
+
+export type ServiceVerificationProfile = {
+  mode: ServiceVerificationMode
+  guidance: string
+  sourceUrls: string[]
+  triggerKeywords: string[]
+}
+
+export const SERVICE_KNOWLEDGE_ADAPTERS = [
+  "NONE",
+  "IMMIGRATION_USCIS",
+] as const
+
+export type ServiceKnowledgeAdapter = (typeof SERVICE_KNOWLEDGE_ADAPTERS)[number]
+
+export type ServiceKnowledgeProfile = {
+  overview: string
+  pricingNotes: string
+  workflowNotes: string
+  faqNotes: string
+  adapter: ServiceKnowledgeAdapter
+}
+
+export type ServiceFitRequirementMetadata = {
+  name: string
+  description: string
+}
+
+export type ServiceFitOptionMetadata = {
+  requirementName: string
+  optionName: string
+  description: string
+}
+
 export type ServiceFitProfile = {
   enabled: boolean
   summary: string
   rules: ServiceFitRule[]
+  requirementMetadata: ServiceFitRequirementMetadata[]
+  optionMetadata: ServiceFitOptionMetadata[]
+  verificationProfile: ServiceVerificationProfile
+  knowledgeProfile: ServiceKnowledgeProfile
 }
 
 export type ServiceFitFieldOption = {
@@ -136,10 +183,29 @@ export type ServiceFitEvaluation = {
   summary: string
 }
 
+export const DEFAULT_SERVICE_VERIFICATION_PROFILE: ServiceVerificationProfile = {
+  mode: "NONE",
+  guidance: "",
+  sourceUrls: [],
+  triggerKeywords: [],
+}
+
+export const DEFAULT_SERVICE_KNOWLEDGE_PROFILE: ServiceKnowledgeProfile = {
+  overview: "",
+  pricingNotes: "",
+  workflowNotes: "",
+  faqNotes: "",
+  adapter: "NONE",
+}
+
 export const DEFAULT_SERVICE_FIT_PROFILE: ServiceFitProfile = {
   enabled: false,
   summary: "",
   rules: [],
+  requirementMetadata: [],
+  optionMetadata: [],
+  verificationProfile: { ...DEFAULT_SERVICE_VERIFICATION_PROFILE },
+  knowledgeProfile: { ...DEFAULT_SERVICE_KNOWLEDGE_PROFILE },
 }
 
 const DEFAULT_TIMEZONE = "America/Chicago"
@@ -365,7 +431,14 @@ export function buildServiceFitFieldCatalog(input: ServiceFitCatalogInput): Serv
 
 export function normalizeServiceFitProfile(value: unknown): ServiceFitProfile {
   if (!value || typeof value !== "object") {
-    return { ...DEFAULT_SERVICE_FIT_PROFILE, rules: [] }
+    return {
+      ...DEFAULT_SERVICE_FIT_PROFILE,
+      rules: [],
+      requirementMetadata: [],
+      optionMetadata: [],
+      verificationProfile: { ...DEFAULT_SERVICE_VERIFICATION_PROFILE },
+      knowledgeProfile: { ...DEFAULT_SERVICE_KNOWLEDGE_PROFILE },
+    }
   }
 
   const record = value as Record<string, unknown>
@@ -379,6 +452,110 @@ export function normalizeServiceFitProfile(value: unknown): ServiceFitProfile {
     enabled: record.enabled === true,
     summary: typeof record.summary === "string" ? record.summary.trim() : "",
     rules,
+    requirementMetadata: normalizeServiceFitRequirementMetadata(record.requirementMetadata),
+    optionMetadata: normalizeServiceFitOptionMetadata(record.optionMetadata),
+    verificationProfile: normalizeServiceVerificationProfile(record.verificationProfile),
+    knowledgeProfile: normalizeServiceKnowledgeProfile(record.knowledgeProfile),
+  }
+}
+
+export function normalizeServiceFitRequirementMetadata(
+  value: unknown,
+): ServiceFitRequirementMetadata[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const items = new Map<string, ServiceFitRequirementMetadata>()
+
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue
+    const record = entry as Record<string, unknown>
+    const name = normalizeString(record.name)
+    if (!name) continue
+
+    items.set(name.toLowerCase(), {
+      name,
+      description: normalizeString(record.description),
+    })
+  }
+
+  return [...items.values()].sort((left, right) => left.name.localeCompare(right.name))
+}
+
+export function normalizeServiceFitOptionMetadata(
+  value: unknown,
+): ServiceFitOptionMetadata[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const items = new Map<string, ServiceFitOptionMetadata>()
+
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue
+    const record = entry as Record<string, unknown>
+    const requirementName = normalizeString(record.requirementName)
+    const optionName = normalizeString(record.optionName)
+    if (!requirementName || !optionName) continue
+
+    items.set(`${requirementName.toLowerCase()}::${optionName.toLowerCase()}`, {
+      requirementName,
+      optionName,
+      description: normalizeString(record.description),
+    })
+  }
+
+  return [...items.values()].sort(
+    (left, right) =>
+      left.requirementName.localeCompare(right.requirementName) ||
+      left.optionName.localeCompare(right.optionName),
+  )
+}
+
+export function normalizeServiceVerificationProfile(value: unknown): ServiceVerificationProfile {
+  if (!value || typeof value !== "object") {
+    return { ...DEFAULT_SERVICE_VERIFICATION_PROFILE }
+  }
+
+  const record = value as Record<string, unknown>
+  const normalizedMode = SERVICE_VERIFICATION_MODES.includes(record.mode as ServiceVerificationMode)
+    ? (record.mode as ServiceVerificationMode)
+    : "NONE"
+
+  const normalizeStringList = (input: unknown, limit: number) =>
+    Array.isArray(input)
+      ? [...new Set(
+          input
+            .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+            .filter(Boolean),
+        )].slice(0, limit)
+      : []
+
+  return {
+    mode: normalizedMode,
+    guidance: typeof record.guidance === "string" ? record.guidance.trim() : "",
+    sourceUrls: normalizeStringList(record.sourceUrls, 8),
+    triggerKeywords: normalizeStringList(record.triggerKeywords, 12),
+  }
+}
+
+export function normalizeServiceKnowledgeProfile(value: unknown): ServiceKnowledgeProfile {
+  if (!value || typeof value !== "object") {
+    return { ...DEFAULT_SERVICE_KNOWLEDGE_PROFILE }
+  }
+
+  const record = value as Record<string, unknown>
+  const normalizeTextField = (field: unknown) => (typeof field === "string" ? field.trim() : "")
+
+  return {
+    overview: normalizeTextField(record.overview),
+    pricingNotes: normalizeTextField(record.pricingNotes),
+    workflowNotes: normalizeTextField(record.workflowNotes),
+    faqNotes: normalizeTextField(record.faqNotes),
+    adapter: SERVICE_KNOWLEDGE_ADAPTERS.includes(record.adapter as ServiceKnowledgeAdapter)
+      ? (record.adapter as ServiceKnowledgeAdapter)
+      : "NONE",
   }
 }
 
@@ -529,6 +706,10 @@ export function validateServiceFitProfile(
       enabled: profile.enabled,
       summary: profile.summary.trim(),
       rules: normalizedRules,
+      requirementMetadata: normalizeServiceFitRequirementMetadata(profile.requirementMetadata),
+      optionMetadata: normalizeServiceFitOptionMetadata(profile.optionMetadata),
+      verificationProfile: normalizeServiceVerificationProfile(profile.verificationProfile),
+      knowledgeProfile: normalizeServiceKnowledgeProfile(profile.knowledgeProfile),
     },
   }
 }

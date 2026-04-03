@@ -46,6 +46,28 @@ type ServiceDetailsResponse = {
         label: string | null
         explanation: string | null
       }>
+      requirementMetadata: Array<{
+        name: string
+        description: string
+      }>
+      optionMetadata: Array<{
+        requirementName: string
+        optionName: string
+        description: string
+      }>
+      verificationProfile: {
+        mode: "NONE" | "WEB_SOURCES" | "INTERNAL_KB" | "EXTERNAL_API" | "MANUAL_CONFIRMATION"
+        guidance: string
+        sourceUrls: string[]
+        triggerKeywords: string[]
+      }
+      knowledgeProfile: {
+        overview: string
+        pricingNotes: string
+        workflowNotes: string
+        faqNotes: string
+        adapter: "NONE" | "IMMIGRATION_USCIS"
+      }
     }
     basePriceCents: number
     currency: string
