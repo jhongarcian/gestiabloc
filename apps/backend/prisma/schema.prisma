@@ -191,6 +191,23 @@ enum ContactRelationshipType {
   OTHER
 }
 
+enum AppointmentStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELED
+  NO_SHOW
+}
+
+enum CalendarScheduleScope {
+  TENANT
+  USER
+}
+
+enum CalendarAvailabilityKind {
+  OPEN
+  BLOCK
+}
+
 model User {
   id           String       @id @default(uuid())
   email        String       @unique
@@ -217,6 +234,10 @@ model User {
   recordedServicePayments       ContactServicePayment[]           @relation("ContactServicePaymentRecordedBy")
   assignedServiceFollowUps      ContactServiceFollowUpStep[]      @relation("ContactServiceFollowUpAssignedUser")
   serviceFollowUpExecutionLogs  ServiceFollowUpExecutionLog[]     @relation("ServiceFollowUpExecutionLogActor")
+  bookedAppointments            Appointment[]                     @relation("AppointmentBookedBy")
+  assignedAppointments          Appointment[]                     @relation("AppointmentAssignedTo")
+  calendarAvailabilityRules     CalendarAvailabilityRule[]
+  calendarTimeBlocks            CalendarTimeBlock[]
   loginChallenges               LoginChallenge[]
   emailVerifications            EmailVerification[]
   passwordResetTokens           PasswordResetToken[]
@@ -237,9 +258,9 @@ model File {
   createdById String
   purpose     FilePurpose @default(GENERIC)
 
-  tenant          Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdBy       User                    @relation(fields: [createdById], references: [id], onDelete: Cascade)
-  noteAttachments ContactNoteAttachment[]
+  tenant                 Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy              User                           @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  noteAttachments        ContactNoteAttachment[]
   serviceNoteAttachments ContactServiceNoteAttachment[]
 
   createdAt DateTime @default(now())
@@ -329,23 +350,23 @@ model PasswordResetToken {
 }
 
 model Tenant {
-  id            String  @id @default(uuid())
-  name          String
-  slug          String  @unique
-  email         String?
-  phone         String?
-  addressLine1  String?
-  addressLine2  String?
-  city          String?
-  state         String?
-  postalCode    String?
-  country       String?
-  timezone      String?
-  website       String?
-  taxEnabled    Boolean @default(false)
-  taxLabel      String?
+  id                String  @id @default(uuid())
+  name              String
+  slug              String  @unique
+  email             String?
+  phone             String?
+  addressLine1      String?
+  addressLine2      String?
+  city              String?
+  state             String?
+  postalCode        String?
+  country           String?
+  timezone          String?
+  website           String?
+  taxEnabled        Boolean @default(false)
+  taxLabel          String?
   defaultTaxRateBps Int?
-  emailVerified Boolean @default(false)
+  emailVerified     Boolean @default(false)
 
   members                          Membership[]
   files                            File[]
@@ -380,6 +401,9 @@ model Tenant {
   contactNotes                     ContactNote[]
   contactNoteAttachments           ContactNoteAttachment[]
   contactServiceNoteAttachments    ContactServiceNoteAttachment[]
+  appointments                     Appointment[]
+  calendarAvailabilityRules        CalendarAvailabilityRule[]
+  calendarTimeBlocks               CalendarTimeBlock[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -404,20 +428,20 @@ model TenantLinkedEntity {
 }
 
 model Service {
-  id                         String  @id @default(uuid())
+  id                         String                @id @default(uuid())
   tenantId                   String
   name                       String
   description                String?
   fitProfile                 Json?
   basePriceCents             Int
-  currency                   String  @default("USD")
-  isTaxExempt                Boolean @default(false)
-  allowPartialPayments       Boolean @default(false)
+  currency                   String                @default("USD")
+  isTaxExempt                Boolean               @default(false)
+  allowPartialPayments       Boolean               @default(false)
   minimumPartialPaymentCents Int?
   installmentCount           Int?
   installmentFrequency       InstallmentFrequency?
-  isActive                   Boolean @default(true)
-  sortOrder                  Int     @default(0)
+  isActive                   Boolean               @default(true)
+  sortOrder                  Int                   @default(0)
 
   tenant                Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   checklistItems        ServiceChecklistItem[]
@@ -425,6 +449,7 @@ model Service {
   followUpTemplateSteps ServiceFollowUpTemplateStep[]
   professionals         ServiceProfessional[]
   contactServices       ContactService[]
+  appointments          Appointment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -444,8 +469,8 @@ model ServiceChecklistItem {
   isRequired  Boolean @default(true)
   sortOrder   Int     @default(0)
 
-  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  tenant                Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service               Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   contactChecklistItems ContactServiceChecklistItem[]
 
   createdAt DateTime @default(now())
@@ -456,23 +481,23 @@ model ServiceChecklistItem {
 }
 
 model ServiceFollowUpTemplate {
-  id        String @id @default(uuid())
-  tenantId  String
-  serviceId String
-  name      String
-  sortOrder Int    @default(0)
-  isPublished Boolean  @default(false)
+  id          String    @id @default(uuid())
+  tenantId    String
+  serviceId   String
+  name        String
+  sortOrder   Int       @default(0)
+  isPublished Boolean   @default(false)
   publishedAt DateTime?
-  flowNodes Json?
-  flowEdges Json?
+  flowNodes   Json?
+  flowEdges   Json?
 
-  tenant  Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  service Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  steps   ServiceFollowUpTemplateStep[]
+  tenant          Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service         Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  steps           ServiceFollowUpTemplateStep[]
   contactServices ContactService[]
-  executionLogs ServiceFollowUpExecutionLog[]
-  contactNotes ContactNote[]
-  tasks Task[]
+  executionLogs   ServiceFollowUpExecutionLog[]
+  contactNotes    ContactNote[]
+  tasks           Task[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -516,9 +541,9 @@ model ServiceProfessional {
   notes                    String?
   sortOrder                Int                     @default(0)
 
-  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  tenant                  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service                 Service          @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  user                    User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
   assignedContactServices ContactService[] @relation("ContactServiceAssignedProfessional")
 
   createdAt DateTime @default(now())
@@ -530,34 +555,34 @@ model ServiceProfessional {
 }
 
 model ContactService {
-  id                   String               @id @default(uuid())
-  tenantId             String
-  contactId            String
-  serviceId            String
-  followUpTemplateId   String?
+  id                     String               @id @default(uuid())
+  tenantId               String
+  contactId              String
+  serviceId              String
+  followUpTemplateId     String?
   assignedProfessionalId String?
-  status               ContactServiceStatus @default(IN_PROGRESS)
-  startedAt            DateTime?
-  purchasedAt          DateTime?
-  completedAt          DateTime?
-  canceledAt           DateTime?
-  totalPriceCents      Int
-  currency             String               @default("USD")
-  allowPartialPayments Boolean              @default(false)
-  notes                String?
+  status                 ContactServiceStatus @default(IN_PROGRESS)
+  startedAt              DateTime?
+  purchasedAt            DateTime?
+  completedAt            DateTime?
+  canceledAt             DateTime?
+  totalPriceCents        Int
+  currency               String               @default("USD")
+  allowPartialPayments   Boolean              @default(false)
+  notes                  String?
 
-  tenant        Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  contact       Contact                      @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  service       Service                      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  followUpTemplate ServiceFollowUpTemplate?  @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
-  assignedProfessional ServiceProfessional?  @relation("ContactServiceAssignedProfessional", fields: [assignedProfessionalId], references: [id], onDelete: SetNull)
-  payments      ContactServicePayment[]
-  followUpSteps ContactServiceFollowUpStep[]
-  checklistItems ContactServiceChecklistItem[]
-  serviceNotes  ContactServiceNote[]
-  executionLogs ServiceFollowUpExecutionLog[]
-  contactNotes ContactNote[]
-  tasks Task[]
+  tenant               Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact              Contact                       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  service              Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  followUpTemplate     ServiceFollowUpTemplate?      @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
+  assignedProfessional ServiceProfessional?          @relation("ContactServiceAssignedProfessional", fields: [assignedProfessionalId], references: [id], onDelete: SetNull)
+  payments             ContactServicePayment[]
+  followUpSteps        ContactServiceFollowUpStep[]
+  checklistItems       ContactServiceChecklistItem[]
+  serviceNotes         ContactServiceNote[]
+  executionLogs        ServiceFollowUpExecutionLog[]
+  contactNotes         ContactNote[]
+  tasks                Task[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -571,7 +596,7 @@ model ContactService {
 }
 
 model ContactServiceChecklistItem {
-  id               String   @id @default(uuid())
+  id               String    @id @default(uuid())
   tenantId         String
   contactServiceId String
   checklistItemId  String
@@ -612,7 +637,7 @@ model ContactServicePayment {
 }
 
 model ContactServiceFollowUpStep {
-  id               String    @id @default(uuid())
+  id               String                           @id @default(uuid())
   tenantId         String
   contactServiceId String
   templateNodeId   String?
@@ -624,7 +649,7 @@ model ContactServiceFollowUpStep {
   completedAt      DateTime?
   assignedToUserId String?
   note             String?
-  sortOrder        Int       @default(0)
+  sortOrder        Int                              @default(0)
 
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
@@ -650,9 +675,9 @@ model ContactServiceNote {
   title            String
   body             String
 
-  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
-  createdBy      User           @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  tenant         Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactService ContactService                 @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  createdBy      User                           @relation(fields: [createdById], references: [id], onDelete: Cascade)
   attachments    ContactServiceNoteAttachment[]
 
   createdAt DateTime @default(now())
@@ -681,7 +706,7 @@ model ContactServiceNoteAttachment {
 }
 
 model ServiceFollowUpExecutionLog {
-  id               String @id @default(uuid())
+  id               String  @id @default(uuid())
   tenantId         String
   templateId       String
   contactServiceId String
@@ -920,32 +945,32 @@ model TenantTag {
 }
 
 model Task {
-  id               String                @id @default(uuid())
-  tenantId         String
-  contactId        String?
-  contactServiceId String?
-  followUpTemplateId String?
+  id                           String                @id @default(uuid())
+  tenantId                     String
+  contactId                    String?
+  contactServiceId             String?
+  followUpTemplateId           String?
   contactServiceFollowUpStepId String?
-  statusConfigId   String?
-  assignedToUserId String?
-  priority         TaskPriority?
-  name             String
-  description      String?
-  dueDate          DateTime?
-  startedAt        DateTime?
-  linkedEntityName String?
-  linkedEntityType TaskLinkedEntityType?
+  statusConfigId               String?
+  assignedToUserId             String?
+  priority                     TaskPriority?
+  name                         String
+  description                  String?
+  dueDate                      DateTime?
+  startedAt                    DateTime?
+  linkedEntityName             String?
+  linkedEntityType             TaskLinkedEntityType?
 
-  tenant               Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  contact              Contact?          @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  contactService       ContactService?   @relation(fields: [contactServiceId], references: [id], onDelete: SetNull)
-  followUpTemplate     ServiceFollowUpTemplate? @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
+  tenant                     Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact                    Contact?                    @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  contactService             ContactService?             @relation(fields: [contactServiceId], references: [id], onDelete: SetNull)
+  followUpTemplate           ServiceFollowUpTemplate?    @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
   contactServiceFollowUpStep ContactServiceFollowUpStep? @relation(fields: [contactServiceFollowUpStepId], references: [id], onDelete: SetNull)
-  statusConfig         TaskStatusConfig? @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
-  assignedToMembership Membership?       @relation("TaskAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
-  reminders            TaskReminder[]
-  notifications        Notification[]
-  activities           TaskActivity[]
+  statusConfig               TaskStatusConfig?           @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
+  assignedToMembership       Membership?                 @relation("TaskAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
+  reminders                  TaskReminder[]
+  notifications              Notification[]
+  activities                 TaskActivity[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1013,6 +1038,85 @@ model Notification {
   @@index([tenantId, userId, createdAt])
   @@index([tenantId, userId, readAt, createdAt])
   @@index([tenantId, userId, contactId, createdAt])
+}
+
+model Appointment {
+  id               String            @id @default(uuid())
+  tenantId         String
+  contactId        String
+  serviceId        String?
+  bookedByUserId   String
+  assignedToUserId String?
+  status           AppointmentStatus @default(SCHEDULED)
+  title            String
+  notes            String?
+  startAt          DateTime
+  endAt            DateTime
+  isAllDay         Boolean           @default(false)
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact    Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  service    Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  bookedBy   User     @relation("AppointmentBookedBy", fields: [bookedByUserId], references: [id], onDelete: Restrict)
+  assignedTo User?    @relation("AppointmentAssignedTo", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, startAt])
+  @@index([tenantId, endAt])
+  @@index([tenantId, status, startAt])
+  @@index([tenantId, assignedToUserId, startAt])
+  @@index([tenantId, contactId, startAt])
+  @@index([tenantId, serviceId, startAt])
+  @@index([tenantId, bookedByUserId, startAt])
+}
+
+model CalendarAvailabilityRule {
+  id               String                   @id @default(uuid())
+  tenantId         String
+  userId           String?
+  scope            CalendarScheduleScope
+  kind             CalendarAvailabilityKind @default(OPEN)
+  dayOfWeek        Int
+  startTimeMinutes Int
+  endTimeMinutes   Int
+  label            String?
+  isActive         Boolean                  @default(true)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, scope, userId, isActive])
+  @@index([tenantId, dayOfWeek, startTimeMinutes, endTimeMinutes])
+}
+
+model CalendarTimeBlock {
+  id          String                @id @default(uuid())
+  tenantId    String
+  userId      String?
+  scope       CalendarScheduleScope
+  title       String
+  description String?
+  startsAt    DateTime
+  endsAt      DateTime
+  isAllDay    Boolean               @default(false)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, startsAt])
+  @@index([tenantId, endsAt])
+  @@index([tenantId, scope, userId, startsAt])
 }
 
 model ContactCustomFieldValue {
@@ -1097,16 +1201,17 @@ model Contact {
   tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   statusConfig ContactStatusConfig? @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
 
-  assignedToMembership      Membership?               @relation("ContactAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
-  servicingAgentMembership  Membership?               @relation("ContactServicingAgentMembership", fields: [tenantId, servicingAgentUserId], references: [tenantId, userId])
-  additionalAgentMembership Membership?               @relation("ContactAdditionalAgentMembership", fields: [tenantId, additionalAgentUserId], references: [tenantId, userId])
-  tags                      ContactTag[]
-  customFieldValues         ContactCustomFieldValue[]
-  outgoingRelationships     ContactRelationship[]     @relation("ContactRelationshipSource")
-  incomingRelationships     ContactRelationship[]     @relation("ContactRelationshipTarget")
-  notes                     ContactNote[]
-  tasks                     Task[]
-  serviceProcesses          ContactService[]
+  assignedToMembership         Membership?                   @relation("ContactAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
+  servicingAgentMembership     Membership?                   @relation("ContactServicingAgentMembership", fields: [tenantId, servicingAgentUserId], references: [tenantId, userId])
+  additionalAgentMembership    Membership?                   @relation("ContactAdditionalAgentMembership", fields: [tenantId, additionalAgentUserId], references: [tenantId, userId])
+  tags                         ContactTag[]
+  customFieldValues            ContactCustomFieldValue[]
+  outgoingRelationships        ContactRelationship[]         @relation("ContactRelationshipSource")
+  incomingRelationships        ContactRelationship[]         @relation("ContactRelationshipTarget")
+  notes                        ContactNote[]
+  tasks                        Task[]
+  appointments                 Appointment[]
+  serviceProcesses             ContactService[]
   serviceFollowUpExecutionLogs ServiceFollowUpExecutionLog[]
 
   createdAt DateTime @default(now())
@@ -1162,23 +1267,23 @@ model ContactRelationship {
 }
 
 model ContactNote {
-  id          String @id @default(uuid())
-  tenantId    String
-  contactId   String
-  contactServiceId String?
-  followUpTemplateId String?
+  id                           String  @id @default(uuid())
+  tenantId                     String
+  contactId                    String
+  contactServiceId             String?
+  followUpTemplateId           String?
   contactServiceFollowUpStepId String?
-  title       String
-  body        String
-  createdById String
+  title                        String
+  body                         String
+  createdById                  String
 
-  tenant      Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  contact     Contact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  contactService ContactService?      @relation(fields: [contactServiceId], references: [id], onDelete: SetNull)
-  followUpTemplate ServiceFollowUpTemplate? @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
+  tenant                     Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact                    Contact                     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contactService             ContactService?             @relation(fields: [contactServiceId], references: [id], onDelete: SetNull)
+  followUpTemplate           ServiceFollowUpTemplate?    @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
   contactServiceFollowUpStep ContactServiceFollowUpStep? @relation(fields: [contactServiceFollowUpStepId], references: [id], onDelete: SetNull)
-  createdBy   User                    @relation(fields: [createdById], references: [id], onDelete: Cascade)
-  attachments ContactNoteAttachment[]
+  createdBy                  User                        @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  attachments                ContactNoteAttachment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

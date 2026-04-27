@@ -29,6 +29,7 @@ const prismaWithContacts = prisma as any;
 const ACCOUNT_SETTINGS_SECTIONS = [
   "users",
   "account",
+  "calendar",
   "services",
   "professionals",
   "follow-ups",
@@ -168,6 +169,127 @@ const UpdateTenantInfoSchema = z.object({
       message: "Tax rate is required when taxes are enabled.",
     });
   }
+});
+
+const TIME_INPUT_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+const CalendarWeeklyAvailabilityItemSchema = z
+  .object({
+    dayOfWeek: z.coerce.number().int().min(0).max(6),
+    enabled: z.boolean().default(false),
+    startTime: z.string().trim().regex(TIME_INPUT_REGEX).nullable().optional(),
+    endTime: z.string().trim().regex(TIME_INPUT_REGEX).nullable().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.enabled) {
+      return;
+    }
+
+    if (!value.startTime) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["startTime"],
+        message: "Start time is required when the day is enabled.",
+      });
+    }
+
+    if (!value.endTime) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["endTime"],
+        message: "End time is required when the day is enabled.",
+      });
+    }
+
+    if (!value.startTime || !value.endTime) {
+      return;
+    }
+
+    const [startHour, startMinute] = value.startTime.split(":").map(Number);
+    const [endHour, endMinute] = value.endTime.split(":").map(Number);
+    const startMinutes = startHour * 60 + startMinute;
+    const endMinutes = endHour * 60 + endMinute;
+
+    if (endMinutes <= startMinutes) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["endTime"],
+        message: "End time must be after start time.",
+      });
+    }
+  });
+
+const UpdateTenantCalendarConfigSchema = z.object({
+  weeklyAvailability: z
+    .array(CalendarWeeklyAvailabilityItemSchema)
+    .max(7)
+    .refine(
+      (items) => new Set(items.map((item) => item.dayOfWeek)).size === items.length,
+      "Each weekday can only appear once.",
+    ),
+});
+
+const CalendarBlockSchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  description: optionalStringField(1000),
+  startsAt: z.string().datetime(),
+  endsAt: z.string().datetime(),
+  isAllDay: z.boolean().optional().default(false),
+});
+
+function validateCalendarBlockRange(
+  value: {
+    startsAt?: string;
+    endsAt?: string;
+  },
+  ctx: z.RefinementCtx,
+) {
+  const startsAt = value.startsAt ? new Date(value.startsAt) : null;
+  const endsAt = value.endsAt ? new Date(value.endsAt) : null;
+
+  if (startsAt && Number.isNaN(startsAt.getTime())) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["startsAt"],
+      message: "Start time is invalid.",
+    });
+  }
+
+  if (endsAt && Number.isNaN(endsAt.getTime())) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endsAt"],
+      message: "End time is invalid.",
+    });
+  }
+
+  if (!startsAt || !endsAt || Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+    return;
+  }
+
+  if (endsAt <= startsAt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endsAt"],
+      message: "End time must be after start time.",
+    });
+  }
+}
+
+const CreateCalendarBlockSchema = CalendarBlockSchema.superRefine((value, ctx) => {
+  validateCalendarBlockRange(value, ctx);
+});
+
+const UpdateCalendarBlockSchema = CalendarBlockSchema.partial().superRefine((value, ctx) => {
+  if (Object.keys(value).length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [],
+      message: "At least one field must be updated.",
+    });
+  }
+
+  validateCalendarBlockRange(value, ctx);
 });
 
 const UpdateMemberSecurityLevelSchema = z.object({
@@ -827,6 +949,17 @@ async function validateServiceProfessionalsForTenant(
   }
 
   return { ok: true as const };
+}
+
+function timeInputToMinutes(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function minutesToTimeInput(value: number) {
+  const hours = Math.floor(value / 60);
+  const minutes = value % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
 const readMiddlewares = [
@@ -1697,6 +1830,275 @@ router.patch("/:tenantId/account", ...writeMiddlewares, async (req, res, next) =
             : null,
       },
     });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:tenantId/calendar", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+
+    const [tenant, rules, blocks] = await prisma.$transaction([
+      prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: {
+          timezone: true,
+        },
+      }),
+      prisma.calendarAvailabilityRule.findMany({
+        where: {
+          tenantId,
+          scope: "TENANT",
+          kind: "OPEN",
+          userId: null,
+        },
+        orderBy: [{ dayOfWeek: "asc" }, { startTimeMinutes: "asc" }],
+        select: {
+          id: true,
+          dayOfWeek: true,
+          startTimeMinutes: true,
+          endTimeMinutes: true,
+          isActive: true,
+        },
+      }),
+      prisma.calendarTimeBlock.findMany({
+        where: {
+          tenantId,
+          scope: "TENANT",
+          userId: null,
+        },
+        orderBy: [{ startsAt: "asc" }],
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          startsAt: true,
+          endsAt: true,
+          isAllDay: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+    ]);
+
+    const rulesByDay = new Map(rules.map((rule) => [rule.dayOfWeek, rule]));
+    const weeklyAvailability = Array.from({ length: 7 }, (_, dayOfWeek) => {
+      const rule = rulesByDay.get(dayOfWeek);
+      return {
+        dayOfWeek,
+        enabled: Boolean(rule?.isActive),
+        startTime: rule ? minutesToTimeInput(rule.startTimeMinutes) : "09:00",
+        endTime: rule ? minutesToTimeInput(rule.endTimeMinutes) : "17:00",
+      };
+    });
+
+    return res.json({
+      ok: true,
+      timezone: tenant?.timezone ?? null,
+      weeklyAvailability,
+      blocks: blocks.map((block) => ({
+        id: block.id,
+        title: block.title,
+        description: block.description,
+        startsAt: block.startsAt.toISOString(),
+        endsAt: block.endsAt.toISOString(),
+        isAllDay: block.isAllDay,
+        createdAt: block.createdAt.toISOString(),
+        updatedAt: block.updatedAt.toISOString(),
+      })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/calendar", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = UpdateTenantCalendarConfigSchema.parse(req.body);
+
+    const enabledDays = payload.weeklyAvailability
+      .filter((item) => item.enabled && item.startTime && item.endTime)
+      .map((item) => ({
+        tenantId,
+        userId: null,
+        scope: "TENANT" as const,
+        kind: "OPEN" as const,
+        dayOfWeek: item.dayOfWeek,
+        startTimeMinutes: timeInputToMinutes(item.startTime!),
+        endTimeMinutes: timeInputToMinutes(item.endTime!),
+        isActive: true,
+      }));
+
+    await prisma.$transaction([
+      prisma.calendarAvailabilityRule.deleteMany({
+        where: {
+          tenantId,
+          scope: "TENANT",
+          kind: "OPEN",
+          userId: null,
+        },
+      }),
+      ...(enabledDays.length > 0
+        ? [
+            prisma.calendarAvailabilityRule.createMany({
+              data: enabledDays,
+            }),
+          ]
+        : []),
+    ]);
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:tenantId/calendar/blocks", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = CreateCalendarBlockSchema.parse(req.body);
+
+    const created = await prisma.calendarTimeBlock.create({
+      data: {
+        tenantId,
+        userId: null,
+        scope: "TENANT",
+        title: payload.title.trim(),
+        description: payload.description ?? null,
+        startsAt: new Date(payload.startsAt),
+        endsAt: new Date(payload.endsAt),
+        isAllDay: payload.isAllDay,
+      },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        startsAt: true,
+        endsAt: true,
+        isAllDay: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.status(201).json({
+      ok: true,
+      block: {
+        ...created,
+        startsAt: created.startsAt.toISOString(),
+        endsAt: created.endsAt.toISOString(),
+        createdAt: created.createdAt.toISOString(),
+        updatedAt: created.updatedAt.toISOString(),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/calendar/blocks/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+    const payload = UpdateCalendarBlockSchema.parse(req.body);
+
+    const existing = await prisma.calendarTimeBlock.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+        scope: true,
+        userId: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId || existing.scope !== "TENANT" || existing.userId !== null) {
+      return res.status(404).json({ error: "CALENDAR_BLOCK_NOT_FOUND" });
+    }
+
+    const startsAt =
+      payload.startsAt !== undefined ? new Date(payload.startsAt) : undefined;
+    const endsAt =
+      payload.endsAt !== undefined ? new Date(payload.endsAt) : undefined;
+
+    if (
+      startsAt &&
+      endsAt &&
+      !Number.isNaN(startsAt.getTime()) &&
+      !Number.isNaN(endsAt.getTime()) &&
+      endsAt <= startsAt
+    ) {
+      return res.status(400).json({ error: "INVALID_BLOCK_RANGE" });
+    }
+
+    const updated = await prisma.calendarTimeBlock.update({
+      where: { id: recordId },
+      data: {
+        title: payload.title?.trim(),
+        description: payload.description,
+        startsAt,
+        endsAt,
+        isAllDay: payload.isAllDay,
+      },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        startsAt: true,
+        endsAt: true,
+        isAllDay: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      block: {
+        ...updated,
+        startsAt: updated.startsAt.toISOString(),
+        endsAt: updated.endsAt.toISOString(),
+        createdAt: updated.createdAt.toISOString(),
+        updatedAt: updated.updatedAt.toISOString(),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete("/:tenantId/calendar/blocks/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+
+    const existing = await prisma.calendarTimeBlock.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+        scope: true,
+        userId: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId || existing.scope !== "TENANT" || existing.userId !== null) {
+      return res.status(404).json({ error: "CALENDAR_BLOCK_NOT_FOUND" });
+    }
+
+    await prisma.calendarTimeBlock.delete({
+      where: { id: recordId },
+    });
+
+    return res.json({ ok: true });
   } catch (error) {
     return next(error);
   }
