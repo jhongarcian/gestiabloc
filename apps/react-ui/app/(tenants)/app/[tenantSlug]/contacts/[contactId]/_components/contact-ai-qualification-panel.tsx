@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import {
+  buildAllScopeServiceNarrative,
   FIT_STATUS_STYLES,
   getEnrollmentSummary,
   groupServiceFitResults,
@@ -107,8 +108,8 @@ function buildInitialAssistantMessage(items: ServiceFitScanItem[]) {
   return createMessage({
     role: "assistant",
     title: "Choose a qualification scope",
-    body: `${items.length} active services were reviewed. ${grouped.eligible.length} are eligible now, ${grouped.needsInfo.length} need more information, and ${grouped.notEligible.length} are not eligible. Which active service would you like to analyze?`,
-    bullets: items.slice(0, 4).map((item) => `${item.serviceName}: ${toSentence(item.eligibilityStatus)}.`),
+    body: `I reviewed ${items.length} active services for this contact. ${grouped.eligible.length} look ready to move forward, ${grouped.needsInfo.length} may qualify with more information, and ${grouped.notEligible.length} are currently blocked. Choose a service below to see the reason in more detail.`,
+    bullets: items.slice(0, 4).map((item) => buildAllScopeServiceNarrative(item)),
     showServiceChoices: true,
   })
 }
@@ -493,21 +494,22 @@ export function ContactAiQualificationPanel({
                       </p>
 
                       {message.bullets?.length ? (
-                        <div className="mt-3 space-y-2">
+                        <ul
+                          className={cn(
+                            "mt-3 space-y-2 text-sm leading-6",
+                            message.role === "user" ? "text-slate-100" : "text-slate-700",
+                          )}
+                        >
                           {message.bullets.map((bullet) => (
-                            <div
+                            <li
                               key={bullet}
-                              className={cn(
-                                "rounded-2xl px-3.5 py-2.5 text-sm leading-6",
-                                message.role === "user"
-                                  ? "bg-white/10 text-slate-100"
-                                  : "border border-slate-200/80 bg-slate-50/85 text-slate-700",
-                              )}
+                              className="flex items-start gap-2"
                             >
-                              {bullet}
-                            </div>
+                              <span className="mt-0.5 shrink-0 font-semibold">*</span>
+                              <span>{bullet}</span>
+                            </li>
                           ))}
-                        </div>
+                        </ul>
                       ) : null}
 
                       {message.showServiceChoices && items.length > 0 ? (

@@ -60,7 +60,7 @@ describe("buildServiceFitAssistantReply", () => {
     })
 
     assert.equal(reply.title, "Qualification scope")
-    assert.equal(reply.summary.includes("2 active services were reviewed"), true)
+    assert.equal(reply.summary.includes("I reviewed 2 active services for this contact"), true)
     assert.equal(reply.bullets.length > 0, true)
   })
 

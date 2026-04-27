@@ -46,6 +46,85 @@ function dedupe(values: string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
 }
 
+function joinPhrases(values: string[]) {
+  if (values.length === 0) return ""
+  if (values.length === 1) return values[0]
+  if (values.length === 2) return `${values[0]} and ${values[1]}`
+  return `${values.slice(0, -1).join(", ")}, and ${values[values.length - 1]}`
+}
+
+function humanizeRuleReason(reason: string) {
+  const trimmed = reason.trim()
+  if (!trimmed) return ""
+
+  const presentMatch = trimmed.match(/^(.+?) is present\.$/i)
+  if (presentMatch) {
+    return `${presentMatch[1]} is already on file`
+  }
+
+  const notEmptyMatch = trimmed.match(/^(.+?) is not empty\.$/i)
+  if (notEmptyMatch) {
+    return `${notEmptyMatch[1]} is already on file`
+  }
+
+  const missingMatch = trimmed.match(/^(.+?) is missing\.$/i)
+  if (missingMatch) {
+    return `${missingMatch[1]} is still missing`
+  }
+
+  const missingDataMatch = trimmed.match(/^(.+?) does not have enough data yet\.$/i)
+  if (missingDataMatch) {
+    return `${missingDataMatch[1]} still needs to be confirmed`
+  }
+
+  const aboveLimitMatch = trimmed.match(/^(.+?) does not satisfy is at most (.+)\.$/i)
+  if (aboveLimitMatch) {
+    return `${aboveLimitMatch[1]} is above the allowed limit of ${aboveLimitMatch[2]}`
+  }
+
+  const belowMinimumMatch = trimmed.match(/^(.+?) does not satisfy is at least (.+)\.$/i)
+  if (belowMinimumMatch) {
+    return `${belowMinimumMatch[1]} is below the required minimum of ${belowMinimumMatch[2]}`
+  }
+
+  const matchedYes = trimmed.match(/^(.+?) matches Yes\.$/i)
+  if (matchedYes) {
+    return `${matchedYes[1]} is confirmed`
+  }
+
+  return trimmed.replace(/\.$/, "")
+}
+
+export function buildAllScopeServiceNarrative(item: ServiceFitScanItem) {
+  const reasons =
+    item.eligibilityStatus === "ELIGIBLE"
+      ? item.matchedRules
+      : item.eligibilityStatus === "NEEDS_INFO"
+        ? item.missingRules
+        : item.blockingRules
+
+  const humanizedReasons = dedupe(
+    reasons.slice(0, 2).map((rule) => humanizeRuleReason(rule.reason)),
+  ).filter(Boolean)
+  const detail = joinPhrases(humanizedReasons)
+
+  if (item.eligibilityStatus === "ELIGIBLE") {
+    return detail
+      ? `${item.serviceName} looks like a good match because ${detail}.`
+      : `${item.serviceName} looks like a good match under the current rules.`
+  }
+
+  if (item.eligibilityStatus === "NEEDS_INFO") {
+    return detail
+      ? `${item.serviceName} may qualify, but ${detail}.`
+      : `${item.serviceName} may qualify, but more information is still needed.`
+  }
+
+  return detail
+    ? `${item.serviceName} does not qualify right now because ${detail}.`
+    : `${item.serviceName} is currently blocked by the configured rules.`
+}
+
 export function buildReviewedFacts(items: ServiceFitScanItem[]) {
   const labels = dedupe(
     items.flatMap((item) => [

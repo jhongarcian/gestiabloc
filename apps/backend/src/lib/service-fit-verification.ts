@@ -351,7 +351,7 @@ class GroqServiceVerificationProvider {
       'Return strict JSON: {"summary":"string","bullets":["string"],"citations":[{"url":"string","title":"string"}]}.',
       "",
       `Question: ${input.question}`,
-      `Service name: ${input.serviceName}`,
+      `Service name: ${input.serviceName}`,    
       `Service description: ${normalizeText(input.serviceDescription) || "None provided."}`,
       `Fit summary: ${normalizeText(input.fitProfile.summary) || "None provided."}`,
       `Eligibility status: ${input.eligibilityStatus}`,

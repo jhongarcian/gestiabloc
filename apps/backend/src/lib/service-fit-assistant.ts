@@ -61,6 +61,93 @@ function toSentence(value: string) {
   return value.toLowerCase().replace(/_/g, " ")
 }
 
+function joinPhrases(values: string[]) {
+  if (values.length === 0) return ""
+  if (values.length === 1) return values[0]
+  if (values.length === 2) return `${values[0]} and ${values[1]}`
+  return `${values.slice(0, -1).join(", ")}, and ${values[values.length - 1]}`
+}
+
+function humanizeRuleReason(reason: string) {
+  const trimmed = reason.trim()
+  if (!trimmed) return ""
+
+  const presentMatch = trimmed.match(/^(.+?) is present\.$/i)
+  if (presentMatch) {
+    return `${presentMatch[1]} is already on file`
+  }
+
+  const notEmptyMatch = trimmed.match(/^(.+?) is not empty\.$/i)
+  if (notEmptyMatch) {
+    return `${notEmptyMatch[1]} is already on file`
+  }
+
+  const missingMatch = trimmed.match(/^(.+?) is missing\.$/i)
+  if (missingMatch) {
+    return `${missingMatch[1]} is still missing`
+  }
+
+  const missingDataMatch = trimmed.match(/^(.+?) does not have enough data yet\.$/i)
+  if (missingDataMatch) {
+    return `${missingDataMatch[1]} still needs to be confirmed`
+  }
+
+  const aboveLimitMatch = trimmed.match(/^(.+?) does not satisfy is at most (.+)\.$/i)
+  if (aboveLimitMatch) {
+    return `${aboveLimitMatch[1]} is above the allowed limit of ${aboveLimitMatch[2]}`
+  }
+
+  const belowMinimumMatch = trimmed.match(/^(.+?) does not satisfy is at least (.+)\.$/i)
+  if (belowMinimumMatch) {
+    return `${belowMinimumMatch[1]} is below the required minimum of ${belowMinimumMatch[2]}`
+  }
+
+  const matchedYes = trimmed.match(/^(.+?) matches Yes\.$/i)
+  if (matchedYes) {
+    return `${matchedYes[1]} is confirmed`
+  }
+
+  const matchedNo = trimmed.match(/^(.+?) matches No\.$/i)
+  if (matchedNo) {
+    return `${matchedNo[1]} is marked no`
+  }
+
+  const blockedYes = trimmed.match(/^(.+?) does not match Yes\.$/i)
+  if (blockedYes) {
+    return `${blockedYes[1]} is not confirmed`
+  }
+
+  return trimmed.replace(/\.$/, "")
+}
+
+function buildAllScopeServiceNarrative(item: ServiceFitAssistantScanItem) {
+  const reasons =
+    item.eligibilityStatus === "ELIGIBLE"
+      ? item.matchedRules
+      : item.eligibilityStatus === "NEEDS_INFO"
+        ? item.missingRules
+        : item.blockingRules
+
+  const humanizedReasons = dedupe(reasons.slice(0, 2).map((rule) => humanizeRuleReason(rule.reason))).filter(Boolean)
+  const detail = joinPhrases(humanizedReasons)
+
+  if (item.eligibilityStatus === "ELIGIBLE") {
+    return detail
+      ? `${item.serviceName} looks like a good match because ${detail}.`
+      : `${item.serviceName} looks like a good match under the current rules.`
+  }
+
+  if (item.eligibilityStatus === "NEEDS_INFO") {
+    return detail
+      ? `${item.serviceName} may qualify, but ${detail}.`
+      : `${item.serviceName} may qualify, but more information is still needed.`
+  }
+
+  return detail
+    ? `${item.serviceName} does not qualify right now because ${detail}.`
+    : `${item.serviceName} is currently blocked by the configured rules.`
+}
+
 function joinRuleReasons(
   rules: ServiceFitExplanationRuleSummary[],
   emptyText: string,
@@ -399,17 +486,7 @@ function buildServiceReply(
 }
 
 function buildServiceListBullet(item: ServiceFitAssistantScanItem) {
-  const detail =
-    item.eligibilityStatus === "ELIGIBLE"
-      ? joinRuleReasons(item.matchedRules, item.explanation || "Ready to move forward.")
-      : item.eligibilityStatus === "NEEDS_INFO"
-        ? joinRuleReasons(
-            item.missingRules,
-            item.recommendedUpdates[0] || "More information is still needed.",
-          )
-        : joinRuleReasons(item.blockingRules, item.explanation || "Blocked by the configured rules.")
-
-  return `${item.serviceName}: ${toSentence(item.eligibilityStatus)}. ${truncate(detail, 120)}`
+  return truncate(buildAllScopeServiceNarrative(item), 160)
 }
 
 function buildAllScopeSuggestions() {
@@ -434,7 +511,7 @@ function buildAllScopeReply(
       summary:
         items.length === 0
           ? "There are no active services with fit rules available for this contact."
-          : `${items.length} active services were reviewed. ${eligible.length} are eligible now, ${needsInfo.length} need more information, and ${items.length - eligible.length - needsInfo.length} are not eligible.`,
+          : `I reviewed ${items.length} active services for this contact. ${eligible.length} look ready to move forward, ${needsInfo.length} may qualify with more information, and ${items.length - eligible.length - needsInfo.length} are currently blocked. Choose a service below to see the reason in more detail.`,
       bullets: items.slice(0, 4).map(buildServiceListBullet),
       suggestedQuestions: buildAllScopeSuggestions(),
     }
