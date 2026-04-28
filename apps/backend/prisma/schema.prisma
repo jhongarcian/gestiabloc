@@ -208,6 +208,11 @@ enum CalendarAvailabilityKind {
   BLOCK
 }
 
+enum CalendarBufferAvailabilityMode {
+  BUSY
+  UNAVAILABLE
+}
+
 model User {
   id           String       @id @default(uuid())
   email        String       @unique
@@ -362,6 +367,14 @@ model Tenant {
   postalCode        String?
   country           String?
   timezone          String?
+  calendarAppointmentSlotMinutes Int @default(30)
+  calendarMeetingDurationMinutes Int @default(30)
+  calendarMinimumScheduleNoticeMinutes Int @default(0)
+  calendarMaximumBookingsPerDay Int?
+  calendarMaximumBookingsPerSlot Int @default(1)
+  calendarPreBufferMinutes Int @default(0)
+  calendarPostBufferMinutes Int @default(0)
+  calendarBufferAvailabilityMode CalendarBufferAvailabilityMode @default(BUSY)
   website           String?
   taxEnabled        Boolean @default(false)
   taxLabel          String?
@@ -755,6 +768,8 @@ model Membership {
   role          TenantRole
   status        MembershipStatus @default(ACTIVE)
   securityLevel SecurityLevel    @default(LOW)
+  calendarEnabled Boolean        @default(false)
+  calendarColor   String?
 
   user                    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenant                  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)

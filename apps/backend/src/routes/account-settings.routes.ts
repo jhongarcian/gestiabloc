@@ -172,6 +172,32 @@ const UpdateTenantInfoSchema = z.object({
 });
 
 const TIME_INPUT_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const CALENDAR_SLOT_DURATION_OPTIONS = [15, 30, 45, 60, 120] as const;
+const CALENDAR_HEX_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/;
+const CALENDAR_BUFFER_MODE_OPTIONS = ["BUSY", "UNAVAILABLE"] as const;
+
+const CalendarSlotDurationMinutesSchema = z.coerce
+  .number()
+  .int()
+  .refine(
+    (value) =>
+      (CALENDAR_SLOT_DURATION_OPTIONS as readonly number[]).includes(value),
+    {
+      message: "Slot duration must be one of 15, 30, 45, 60, or 120 minutes.",
+    },
+  );
+
+const CalendarBufferAvailabilityModeSchema = z.enum(CALENDAR_BUFFER_MODE_OPTIONS);
+
+const positiveCalendarLimitField = (max: number) =>
+  z.preprocess((value) => {
+    if (value === null || value === undefined || value === "") return null;
+    if (typeof value === "string") return Number(value.trim());
+    return value;
+  }, z.number().int().min(1).max(max).nullable());
+
+const nonNegativeCalendarMinutesField = (max: number) =>
+  z.coerce.number().int().min(0).max(max);
 
 const CalendarWeeklyAvailabilityItemSchema = z
   .object({
@@ -219,13 +245,41 @@ const CalendarWeeklyAvailabilityItemSchema = z
     }
   });
 
+const CalendarBookingRulesSchema = z.object({
+  meetingIntervalMinutes: CalendarSlotDurationMinutesSchema.default(30),
+  meetingDurationMinutes: CalendarSlotDurationMinutesSchema.default(30),
+  minimumScheduleNoticeMinutes: nonNegativeCalendarMinutesField(14 * 24 * 60).default(0),
+  maximumBookingsPerDay: positiveCalendarLimitField(500).default(null),
+  maximumBookingsPerSlot: z.coerce.number().int().min(1).max(50).default(1),
+  preBufferMinutes: nonNegativeCalendarMinutesField(8 * 60).default(0),
+  postBufferMinutes: nonNegativeCalendarMinutesField(8 * 60).default(0),
+  bufferAvailabilityMode: CalendarBufferAvailabilityModeSchema.default("BUSY"),
+});
+
 const UpdateTenantCalendarConfigSchema = z.object({
+  bookingRules: CalendarBookingRulesSchema,
   weeklyAvailability: z
     .array(CalendarWeeklyAvailabilityItemSchema)
     .max(7)
     .refine(
       (items) => new Set(items.map((item) => item.dayOfWeek)).size === items.length,
       "Each weekday can only appear once.",
+    ),
+});
+
+const CalendarStaffMemberSchema = z.object({
+  userId: z.string().trim().min(1),
+  enabled: z.boolean().default(false),
+  color: z.string().trim().regex(CALENDAR_HEX_COLOR_REGEX).nullable().optional(),
+});
+
+const UpdateCalendarStaffSchema = z.object({
+  staff: z
+    .array(CalendarStaffMemberSchema)
+    .max(250)
+    .refine(
+      (items) => new Set(items.map((item) => item.userId)).size === items.length,
+      "Each user can only appear once.",
     ),
 });
 
@@ -960,6 +1014,38 @@ function minutesToTimeInput(value: number) {
   const hours = Math.floor(value / 60);
   const minutes = value % 60;
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function getSafeCalendarSlotDuration(value?: number | null) {
+  return (CALENDAR_SLOT_DURATION_OPTIONS as readonly number[]).includes(value ?? -1)
+    ? value!
+    : 30;
+}
+
+function getSafeCalendarBufferMode(value?: string | null) {
+  return (CALENDAR_BUFFER_MODE_OPTIONS as readonly string[]).includes(value ?? "")
+    ? (value as (typeof CALENDAR_BUFFER_MODE_OPTIONS)[number])
+    : "BUSY";
+}
+
+function buildWeeklyAvailabilityFromRules(
+  rules: Array<{
+    dayOfWeek: number;
+    startTimeMinutes: number;
+    endTimeMinutes: number;
+    isActive: boolean;
+  }>,
+) {
+  const rulesByDay = new Map(rules.map((rule) => [rule.dayOfWeek, rule]));
+  return Array.from({ length: 7 }, (_, dayOfWeek) => {
+    const rule = rulesByDay.get(dayOfWeek);
+    return {
+      dayOfWeek,
+      enabled: Boolean(rule?.isActive),
+      startTime: rule ? minutesToTimeInput(rule.startTimeMinutes) : "09:00",
+      endTime: rule ? minutesToTimeInput(rule.endTimeMinutes) : "17:00",
+    };
+  });
 }
 
 const readMiddlewares = [
@@ -1839,11 +1925,19 @@ router.get("/:tenantId/calendar", ...readMiddlewares, async (req, res, next) => 
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
 
-    const [tenant, rules, blocks] = await prisma.$transaction([
+    const [tenant, rules, blocks, users] = await prisma.$transaction([
       prisma.tenant.findUnique({
         where: { id: tenantId },
         select: {
           timezone: true,
+          calendarAppointmentSlotMinutes: true,
+          calendarMeetingDurationMinutes: true,
+          calendarMinimumScheduleNoticeMinutes: true,
+          calendarMaximumBookingsPerDay: true,
+          calendarMaximumBookingsPerSlot: true,
+          calendarPreBufferMinutes: true,
+          calendarPostBufferMinutes: true,
+          calendarBufferAvailabilityMode: true,
         },
       }),
       prisma.calendarAvailabilityRule.findMany({
@@ -1880,22 +1974,50 @@ router.get("/:tenantId/calendar", ...readMiddlewares, async (req, res, next) => 
           updatedAt: true,
         },
       }),
+      prisma.membership.findMany({
+        where: {
+          tenantId,
+          status: "ACTIVE",
+        },
+        orderBy: [{ user: { name: "asc" } }],
+        select: {
+          userId: true,
+          role: true,
+          calendarEnabled: true,
+          calendarColor: true,
+          user: {
+            select: {
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
+        },
+      }),
     ]);
 
-    const rulesByDay = new Map(rules.map((rule) => [rule.dayOfWeek, rule]));
-    const weeklyAvailability = Array.from({ length: 7 }, (_, dayOfWeek) => {
-      const rule = rulesByDay.get(dayOfWeek);
-      return {
-        dayOfWeek,
-        enabled: Boolean(rule?.isActive),
-        startTime: rule ? minutesToTimeInput(rule.startTimeMinutes) : "09:00",
-        endTime: rule ? minutesToTimeInput(rule.endTimeMinutes) : "17:00",
-      };
-    });
+    const weeklyAvailability = buildWeeklyAvailabilityFromRules(rules);
 
     return res.json({
       ok: true,
       timezone: tenant?.timezone ?? null,
+      bookingRules: {
+        meetingIntervalMinutes: getSafeCalendarSlotDuration(
+          tenant?.calendarAppointmentSlotMinutes,
+        ),
+        meetingDurationMinutes: getSafeCalendarSlotDuration(
+          tenant?.calendarMeetingDurationMinutes,
+        ),
+        minimumScheduleNoticeMinutes:
+          tenant?.calendarMinimumScheduleNoticeMinutes ?? 0,
+        maximumBookingsPerDay: tenant?.calendarMaximumBookingsPerDay ?? null,
+        maximumBookingsPerSlot: tenant?.calendarMaximumBookingsPerSlot ?? 1,
+        preBufferMinutes: tenant?.calendarPreBufferMinutes ?? 0,
+        postBufferMinutes: tenant?.calendarPostBufferMinutes ?? 0,
+        bufferAvailabilityMode: getSafeCalendarBufferMode(
+          tenant?.calendarBufferAvailabilityMode,
+        ),
+      },
       weeklyAvailability,
       blocks: blocks.map((block) => ({
         id: block.id,
@@ -1906,6 +2028,15 @@ router.get("/:tenantId/calendar", ...readMiddlewares, async (req, res, next) => 
         isAllDay: block.isAllDay,
         createdAt: block.createdAt.toISOString(),
         updatedAt: block.updatedAt.toISOString(),
+      })),
+      staff: users.map((item) => ({
+        id: item.userId,
+        label: item.user.name?.trim() || item.user.email,
+        email: item.user.email,
+        image: item.user.image ?? null,
+        role: item.role,
+        enabled: item.calendarEnabled,
+        color: item.calendarColor ?? null,
       })),
     });
   } catch (error) {
@@ -1934,12 +2065,233 @@ router.patch("/:tenantId/calendar", ...writeMiddlewares, async (req, res, next) 
       }));
 
     await prisma.$transaction([
+      prisma.tenant.update({
+        where: { id: tenantId },
+        data: {
+          calendarAppointmentSlotMinutes: payload.bookingRules.meetingIntervalMinutes,
+          calendarMeetingDurationMinutes: payload.bookingRules.meetingDurationMinutes,
+          calendarMinimumScheduleNoticeMinutes:
+            payload.bookingRules.minimumScheduleNoticeMinutes,
+          calendarMaximumBookingsPerDay:
+            payload.bookingRules.maximumBookingsPerDay,
+          calendarMaximumBookingsPerSlot:
+            payload.bookingRules.maximumBookingsPerSlot,
+          calendarPreBufferMinutes: payload.bookingRules.preBufferMinutes,
+          calendarPostBufferMinutes: payload.bookingRules.postBufferMinutes,
+          calendarBufferAvailabilityMode:
+            payload.bookingRules.bufferAvailabilityMode,
+        },
+      }),
       prisma.calendarAvailabilityRule.deleteMany({
         where: {
           tenantId,
           scope: "TENANT",
           kind: "OPEN",
           userId: null,
+        },
+      }),
+      ...(enabledDays.length > 0
+        ? [
+            prisma.calendarAvailabilityRule.createMany({
+              data: enabledDays,
+            }),
+          ]
+        : []),
+    ]);
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/calendar/staff", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = UpdateCalendarStaffSchema.parse(req.body);
+
+    const memberships = await prisma.membership.findMany({
+      where: {
+        tenantId,
+        status: "ACTIVE",
+      },
+      select: {
+        userId: true,
+      },
+    });
+
+    const activeUserIds = new Set(memberships.map((item) => item.userId));
+    const invalidUserId = payload.staff.find((item) => !activeUserIds.has(item.userId));
+    if (invalidUserId) {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    await prisma.$transaction(
+      payload.staff.map((item) =>
+        prisma.membership.update({
+          where: {
+            userId_tenantId: {
+              tenantId,
+              userId: item.userId,
+            },
+          },
+          data: {
+            calendarEnabled: item.enabled,
+            calendarColor: item.enabled ? item.color ?? null : null,
+          },
+        }),
+      ),
+    );
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:tenantId/calendar/users/:userId", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId, userId } = TenantUserPathSchema.parse(req.params);
+
+    const [membership, rules, blocks] = await prisma.$transaction([
+      prisma.membership.findUnique({
+        where: {
+          userId_tenantId: {
+            tenantId,
+            userId,
+          },
+        },
+        select: {
+          userId: true,
+          status: true,
+          role: true,
+          calendarEnabled: true,
+          calendarColor: true,
+          user: {
+            select: {
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
+        },
+      }),
+      prisma.calendarAvailabilityRule.findMany({
+        where: {
+          tenantId,
+          scope: "USER",
+          kind: "OPEN",
+          userId,
+        },
+        orderBy: [{ dayOfWeek: "asc" }, { startTimeMinutes: "asc" }],
+        select: {
+          id: true,
+          dayOfWeek: true,
+          startTimeMinutes: true,
+          endTimeMinutes: true,
+          isActive: true,
+        },
+      }),
+      prisma.calendarTimeBlock.findMany({
+        where: {
+          tenantId,
+          scope: "USER",
+          userId,
+        },
+        orderBy: [{ startsAt: "asc" }],
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          startsAt: true,
+          endsAt: true,
+          isAllDay: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+    ]);
+
+    if (!membership || membership.status !== "ACTIVE") {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    return res.json({
+      ok: true,
+      user: {
+        id: membership.userId,
+        label: membership.user.name?.trim() || membership.user.email,
+        email: membership.user.email,
+        image: membership.user.image ?? null,
+        role: membership.role,
+        enabled: membership.calendarEnabled,
+        color: membership.calendarColor ?? null,
+      },
+      weeklyAvailability: buildWeeklyAvailabilityFromRules(rules),
+      blocks: blocks.map((block) => ({
+        id: block.id,
+        title: block.title,
+        description: block.description,
+        startsAt: block.startsAt.toISOString(),
+        endsAt: block.endsAt.toISOString(),
+        isAllDay: block.isAllDay,
+        createdAt: block.createdAt.toISOString(),
+        updatedAt: block.updatedAt.toISOString(),
+      })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/calendar/users/:userId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, userId } = TenantUserPathSchema.parse(req.params);
+    const payload = UpdateTenantCalendarConfigSchema.pick({
+      weeklyAvailability: true,
+    }).parse(req.body);
+
+    const membership = await prisma.membership.findUnique({
+      where: {
+        userId_tenantId: {
+          tenantId,
+          userId,
+        },
+      },
+      select: {
+        userId: true,
+        status: true,
+      },
+    });
+
+    if (!membership || membership.status !== "ACTIVE") {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    const enabledDays = payload.weeklyAvailability
+      .filter((item) => item.enabled && item.startTime && item.endTime)
+      .map((item) => ({
+        tenantId,
+        userId,
+        scope: "USER" as const,
+        kind: "OPEN" as const,
+        dayOfWeek: item.dayOfWeek,
+        startTimeMinutes: timeInputToMinutes(item.startTime!),
+        endTimeMinutes: timeInputToMinutes(item.endTime!),
+        isActive: true,
+      }));
+
+    await prisma.$transaction([
+      prisma.calendarAvailabilityRule.deleteMany({
+        where: {
+          tenantId,
+          scope: "USER",
+          kind: "OPEN",
+          userId,
         },
       }),
       ...(enabledDays.length > 0
@@ -2091,6 +2443,109 @@ router.delete("/:tenantId/calendar/blocks/:recordId", ...writeMiddlewares, async
     });
 
     if (!existing || existing.tenantId !== tenantId || existing.scope !== "TENANT" || existing.userId !== null) {
+      return res.status(404).json({ error: "CALENDAR_BLOCK_NOT_FOUND" });
+    }
+
+    await prisma.calendarTimeBlock.delete({
+      where: { id: recordId },
+    });
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:tenantId/calendar/users/:userId/blocks", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, userId } = TenantUserPathSchema.parse(req.params);
+    const payload = CreateCalendarBlockSchema.parse(req.body);
+
+    const membership = await prisma.membership.findUnique({
+      where: {
+        userId_tenantId: {
+          tenantId,
+          userId,
+        },
+      },
+      select: {
+        userId: true,
+        status: true,
+      },
+    });
+
+    if (!membership || membership.status !== "ACTIVE") {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    const created = await prisma.calendarTimeBlock.create({
+      data: {
+        tenantId,
+        userId,
+        scope: "USER",
+        title: payload.title.trim(),
+        description: payload.description ?? null,
+        startsAt: new Date(payload.startsAt),
+        endsAt: new Date(payload.endsAt),
+        isAllDay: payload.isAllDay,
+      },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        startsAt: true,
+        endsAt: true,
+        isAllDay: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.status(201).json({
+      ok: true,
+      block: {
+        ...created,
+        startsAt: created.startsAt.toISOString(),
+        endsAt: created.endsAt.toISOString(),
+        createdAt: created.createdAt.toISOString(),
+        updatedAt: created.updatedAt.toISOString(),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete("/:tenantId/calendar/users/:userId/blocks/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, userId, recordId } = z
+      .object({
+        tenantId: z.string().trim().min(1),
+        userId: z.string().trim().min(1),
+        recordId: z.string().trim().min(1),
+      })
+      .parse(req.params);
+
+    const existing = await prisma.calendarTimeBlock.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+        scope: true,
+        userId: true,
+      },
+    });
+
+    if (
+      !existing ||
+      existing.tenantId !== tenantId ||
+      existing.scope !== "USER" ||
+      existing.userId !== userId
+    ) {
       return res.status(404).json({ error: "CALENDAR_BLOCK_NOT_FOUND" });
     }
 

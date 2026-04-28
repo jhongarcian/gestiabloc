@@ -1,0 +1,2 @@
+ALTER TABLE "Tenant"
+ADD COLUMN IF NOT EXISTS "calendarAppointmentSlotMinutes" INTEGER NOT NULL DEFAULT 30;

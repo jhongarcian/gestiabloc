@@ -8,6 +8,8 @@ import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 const router = Router()
 
 const DEFAULT_TIMEZONE = "America/Chicago"
+const CALENDAR_SLOT_DURATION_OPTIONS = [15, 30, 45, 60, 120] as const
+const CALENDAR_BUFFER_MODE_OPTIONS = ["BUSY", "UNAVAILABLE"] as const
 
 const TenantPathSchema = z.object({
   tenantId: z.string().trim().min(1),
@@ -24,6 +26,11 @@ const CalendarQuerySchema = z.object({
   serviceId: z.string().trim().min(1).optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
+})
+
+const CalendarSlotsQuerySchema = z.object({
+  assignedToUserId: z.string().trim().min(1),
+  date: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/),
 })
 
 const optionalStringField = (max: number) =>
@@ -53,6 +60,18 @@ const CreateAppointmentSchema = z.object({
 
 function getSafeTimezone(timezone?: string | null) {
   return timezone?.trim() || DEFAULT_TIMEZONE
+}
+
+function getSafeCalendarSlotDuration(value?: number | null) {
+  return (CALENDAR_SLOT_DURATION_OPTIONS as readonly number[]).includes(value ?? -1)
+    ? value!
+    : 30
+}
+
+function getSafeCalendarBufferMode(value?: string | null) {
+  return (CALENDAR_BUFFER_MODE_OPTIONS as readonly string[]).includes(value ?? "")
+    ? (value as (typeof CALENDAR_BUFFER_MODE_OPTIONS)[number])
+    : "BUSY"
 }
 
 function parseOffsetMinutes(label: string) {
@@ -169,6 +188,79 @@ function formatMinutes(minutes: number) {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`
 }
 
+function mergeIntervals(intervals: Array<{ start: number; end: number }>) {
+  if (intervals.length === 0) return []
+
+  const sorted = [...intervals].sort((left, right) => left.start - right.start)
+  const merged: Array<{ start: number; end: number }> = [sorted[0]]
+
+  for (const interval of sorted.slice(1)) {
+    const last = merged[merged.length - 1]
+    if (interval.start <= last.end) {
+      last.end = Math.max(last.end, interval.end)
+      continue
+    }
+
+    merged.push({ ...interval })
+  }
+
+  return merged
+}
+
+function intersectIntervals(
+  left: Array<{ start: number; end: number }>,
+  right: Array<{ start: number; end: number }>,
+) {
+  const intersections: Array<{ start: number; end: number }> = []
+
+  for (const leftInterval of left) {
+    for (const rightInterval of right) {
+      const start = Math.max(leftInterval.start, rightInterval.start)
+      const end = Math.min(leftInterval.end, rightInterval.end)
+      if (end > start) {
+        intersections.push({ start, end })
+      }
+    }
+  }
+
+  return mergeIntervals(intersections)
+}
+
+function subtractIntervals(
+  base: Array<{ start: number; end: number }>,
+  blocked: Array<{ start: number; end: number }>,
+) {
+  if (blocked.length === 0) return base
+
+  const normalizedBlocked = mergeIntervals(blocked)
+  const result: Array<{ start: number; end: number }> = []
+
+  for (const interval of base) {
+    let cursor = interval.start
+
+    for (const block of normalizedBlocked) {
+      if (block.end <= cursor || block.start >= interval.end) {
+        continue
+      }
+
+      if (block.start > cursor) {
+        result.push({ start: cursor, end: Math.min(block.start, interval.end) })
+      }
+
+      cursor = Math.max(cursor, block.end)
+      if (cursor >= interval.end) {
+        break
+      }
+    }
+
+    if (cursor < interval.end) {
+      result.push({ start: cursor, end: interval.end })
+    }
+  }
+
+  return result.filter((interval) => interval.end > interval.start)
+}
+
 async function requireActiveMembership(
   req: AuthedRequest,
   res: Response,
@@ -206,6 +298,8 @@ async function ensureActiveAssignee(tenantId: string, userId: string) {
     select: {
       userId: true,
       status: true,
+      calendarEnabled: true,
+      calendarColor: true,
       user: {
         select: {
           name: true,
@@ -215,7 +309,7 @@ async function ensureActiveAssignee(tenantId: string, userId: string) {
     },
   })
 
-  if (!membership || membership.status !== "ACTIVE") {
+  if (!membership || membership.status !== "ACTIVE" || !membership.calendarEnabled) {
     return null
   }
 
@@ -233,10 +327,30 @@ async function evaluateAvailability(params: {
 
   const tenant = await prisma.tenant.findUnique({
     where: { id: tenantId },
-    select: { timezone: true },
+    select: {
+      timezone: true,
+      calendarMeetingDurationMinutes: true,
+      calendarMinimumScheduleNoticeMinutes: true,
+      calendarMaximumBookingsPerDay: true,
+      calendarMaximumBookingsPerSlot: true,
+      calendarPreBufferMinutes: true,
+      calendarPostBufferMinutes: true,
+      calendarBufferAvailabilityMode: true,
+    },
   })
 
   const timezone = getSafeTimezone(tenant?.timezone)
+  const meetingDurationMinutes = getSafeCalendarSlotDuration(
+    tenant?.calendarMeetingDurationMinutes,
+  )
+  const minimumScheduleNoticeMinutes = tenant?.calendarMinimumScheduleNoticeMinutes ?? 0
+  const maximumBookingsPerDay = tenant?.calendarMaximumBookingsPerDay ?? null
+  const maximumBookingsPerSlot = tenant?.calendarMaximumBookingsPerSlot ?? 1
+  const preBufferMinutes = tenant?.calendarPreBufferMinutes ?? 0
+  const postBufferMinutes = tenant?.calendarPostBufferMinutes ?? 0
+  const bufferAvailabilityMode = getSafeCalendarBufferMode(
+    tenant?.calendarBufferAvailabilityMode,
+  )
   const startParts = getTimezoneDateParts(startAt, timezone)
   const endParts = getTimezoneDateParts(endAt, timezone)
 
@@ -252,8 +366,21 @@ async function evaluateAvailability(params: {
 
   const startMinutes = startParts.hour * 60 + startParts.minute
   const endMinutes = endParts.hour * 60 + endParts.minute
+  const requestedDurationMinutes = Math.round((endAt.getTime() - startAt.getTime()) / 60_000)
+  const dayStart = zonedDateTimeToUtc(
+    timezone,
+    startParts.year,
+    startParts.month,
+    startParts.day,
+    0,
+    0,
+    0,
+  )
+  const nextDayStart = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000)
+  const overlapQueryStart = new Date(startAt.getTime() - postBufferMinutes * 60_000)
+  const overlapQueryEnd = new Date(endAt.getTime() + preBufferMinutes * 60_000)
 
-  const [rules, timeBlocks, overlappingAppointments] = await prisma.$transaction([
+  const [rules, timeBlocks, overlappingAppointments, bookingsForDay] = await prisma.$transaction([
     prisma.calendarAvailabilityRule.findMany({
       where: {
         tenantId,
@@ -293,8 +420,8 @@ async function evaluateAvailability(params: {
               },
             }
           : {}),
-        startAt: { lt: endAt },
-        endAt: { gt: startAt },
+        startAt: { lt: overlapQueryEnd },
+        endAt: { gt: overlapQueryStart },
       },
       orderBy: [{ startAt: "asc" }],
       select: {
@@ -302,6 +429,22 @@ async function evaluateAvailability(params: {
         title: true,
         startAt: true,
         endAt: true,
+      },
+    }),
+    prisma.appointment.count({
+      where: {
+        tenantId,
+        assignedToUserId,
+        status: "SCHEDULED",
+        ...(appointmentId
+          ? {
+              id: {
+                not: appointmentId,
+              },
+            }
+          : {}),
+        startAt: { lt: nextDayStart },
+        endAt: { gt: dayStart },
       },
     }),
   ])
@@ -337,13 +480,43 @@ async function evaluateAvailability(params: {
     reasons.push("The selected time overlaps a blocked period on the calendar.")
   }
 
-  if (overlappingAppointments.length > 0) {
+  const overlappingAppointmentsWithBuffer = overlappingAppointments.filter((appointment) => {
+    const bufferedStart = new Date(appointment.startAt.getTime() - preBufferMinutes * 60_000)
+    const bufferedEnd = new Date(appointment.endAt.getTime() + postBufferMinutes * 60_000)
+    return overlapsRange(bufferedStart, bufferedEnd, startAt, endAt)
+  })
+
+  if (requestedDurationMinutes !== meetingDurationMinutes) {
+    reasons.push(`Appointments must use the configured ${meetingDurationMinutes}-minute duration.`)
+  }
+
+  if (minimumScheduleNoticeMinutes > 0) {
+    const noticeMs = minimumScheduleNoticeMinutes * 60_000
+    if (startAt.getTime() - Date.now() < noticeMs) {
+      reasons.push("The selected time does not meet the minimum scheduling notice.")
+    }
+  }
+
+  if (maximumBookingsPerDay !== null && bookingsForDay >= maximumBookingsPerDay) {
+    reasons.push("The selected assignee reached the maximum bookings allowed for that day.")
+  }
+
+  if (overlappingAppointmentsWithBuffer.length >= maximumBookingsPerSlot) {
     reasons.push("The selected assignee already has an appointment in this time range.")
   }
 
   return {
     available: reasons.length === 0,
     timezone,
+    bookingRules: {
+      meetingDurationMinutes,
+      minimumScheduleNoticeMinutes,
+      maximumBookingsPerDay,
+      maximumBookingsPerSlot,
+      preBufferMinutes,
+      postBufferMinutes,
+      bufferAvailabilityMode,
+    },
     reasons,
     windows: {
       tenantOpen: tenantOpenRules.map((rule) => ({
@@ -363,7 +536,7 @@ async function evaluateAvailability(params: {
       })),
     },
     conflicts: {
-      appointments: overlappingAppointments.map((appointment) => ({
+      appointments: overlappingAppointmentsWithBuffer.map((appointment) => ({
         id: appointment.id,
         title: appointment.title,
         startAt: appointment.startAt.toISOString(),
@@ -379,6 +552,290 @@ async function evaluateAvailability(params: {
   }
 }
 
+async function buildAppointmentSlots(params: {
+  tenantId: string
+  assignedToUserId: string
+  localDate: string
+}) {
+  const { tenantId, assignedToUserId, localDate } = params
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: {
+      timezone: true,
+      calendarAppointmentSlotMinutes: true,
+      calendarMeetingDurationMinutes: true,
+      calendarMinimumScheduleNoticeMinutes: true,
+      calendarMaximumBookingsPerDay: true,
+      calendarMaximumBookingsPerSlot: true,
+      calendarPreBufferMinutes: true,
+      calendarPostBufferMinutes: true,
+      calendarBufferAvailabilityMode: true,
+    },
+  })
+
+  const timezone = getSafeTimezone(tenant?.timezone)
+  const meetingIntervalMinutes = getSafeCalendarSlotDuration(
+    tenant?.calendarAppointmentSlotMinutes,
+  )
+  const meetingDurationMinutes = getSafeCalendarSlotDuration(
+    tenant?.calendarMeetingDurationMinutes,
+  )
+  const minimumScheduleNoticeMinutes = tenant?.calendarMinimumScheduleNoticeMinutes ?? 0
+  const maximumBookingsPerDay = tenant?.calendarMaximumBookingsPerDay ?? null
+  const maximumBookingsPerSlot = tenant?.calendarMaximumBookingsPerSlot ?? 1
+  const preBufferMinutes = tenant?.calendarPreBufferMinutes ?? 0
+  const postBufferMinutes = tenant?.calendarPostBufferMinutes ?? 0
+  const bufferAvailabilityMode = getSafeCalendarBufferMode(
+    tenant?.calendarBufferAvailabilityMode,
+  )
+  const [year, month, day] = localDate.split("-").map(Number)
+  const dayStart = zonedDateTimeToUtc(timezone, year, month, day, 0, 0, 0)
+  const nextDayStart = zonedDateTimeToUtc(timezone, year, month, day + 1, 0, 0, 0)
+  const { dayOfWeek } = getTimezoneDateParts(dayStart, timezone)
+
+  const [rules, timeBlocks, overlappingAppointments, bookingsForDay] = await prisma.$transaction([
+    prisma.calendarAvailabilityRule.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        dayOfWeek,
+        OR: [
+          { scope: "TENANT", userId: null },
+          { scope: "USER", userId: assignedToUserId },
+        ],
+      },
+      orderBy: [
+        { scope: "asc" },
+        { startTimeMinutes: "asc" },
+      ],
+    }),
+    prisma.calendarTimeBlock.findMany({
+      where: {
+        tenantId,
+        OR: [
+          { scope: "TENANT", userId: null },
+          { scope: "USER", userId: assignedToUserId },
+        ],
+        startsAt: { lt: nextDayStart },
+        endsAt: { gt: dayStart },
+      },
+      orderBy: [{ startsAt: "asc" }],
+    }),
+    prisma.appointment.findMany({
+      where: {
+        tenantId,
+        assignedToUserId,
+        status: "SCHEDULED",
+        startAt: { lt: nextDayStart },
+        endAt: { gt: dayStart },
+      },
+      orderBy: [{ startAt: "asc" }],
+      select: {
+        id: true,
+        title: true,
+        startAt: true,
+        endAt: true,
+      },
+    }),
+    prisma.appointment.count({
+      where: {
+        tenantId,
+        assignedToUserId,
+        status: "SCHEDULED",
+        startAt: { lt: nextDayStart },
+        endAt: { gt: dayStart },
+      },
+    }),
+  ])
+
+  const tenantOpenRules = rules.filter(
+    (rule) => rule.scope === "TENANT" && rule.kind === "OPEN",
+  )
+  const userOpenRules = rules.filter(
+    (rule) => rule.scope === "USER" && rule.kind === "OPEN" && rule.userId === assignedToUserId,
+  )
+  const blockRules = rules.filter((rule) => rule.kind === "BLOCK")
+
+  const tenantIntervals = tenantOpenRules.length > 0
+    ? tenantOpenRules.map((rule) => ({
+        start: rule.startTimeMinutes,
+        end: rule.endTimeMinutes,
+      }))
+    : [{ start: 0, end: 24 * 60 }]
+
+  const userIntervals = userOpenRules.length > 0
+    ? userOpenRules.map((rule) => ({
+        start: rule.startTimeMinutes,
+        end: rule.endTimeMinutes,
+      }))
+    : tenantIntervals
+
+  const recurringBlockedIntervals = blockRules.map((rule) => ({
+    start: rule.startTimeMinutes,
+    end: rule.endTimeMinutes,
+  }))
+
+  const openIntervals = subtractIntervals(
+    intersectIntervals(mergeIntervals(tenantIntervals), mergeIntervals(userIntervals)),
+    recurringBlockedIntervals,
+  )
+
+  const blockRanges = timeBlocks.map((block) => {
+    const blockStartParts = getTimezoneDateParts(block.startsAt, timezone)
+    const blockEndParts = getTimezoneDateParts(block.endsAt, timezone)
+    const blockStartMinutes =
+      blockStartParts.year === year &&
+      blockStartParts.month === month &&
+      blockStartParts.day === day
+        ? blockStartParts.hour * 60 + blockStartParts.minute
+        : 0
+    const blockEndMinutes =
+      blockEndParts.year === year &&
+      blockEndParts.month === month &&
+      blockEndParts.day === day
+        ? blockEndParts.hour * 60 + blockEndParts.minute
+        : 24 * 60
+
+    return {
+      id: block.id,
+      title: block.title,
+      startMinutes: Math.max(0, blockStartMinutes),
+      endMinutes: Math.min(24 * 60, blockEndMinutes),
+    }
+  })
+
+  const appointmentRanges = overlappingAppointments.map((appointment) => {
+    const appointmentStartParts = getTimezoneDateParts(appointment.startAt, timezone)
+    const appointmentEndParts = getTimezoneDateParts(appointment.endAt, timezone)
+    const appointmentStartMinutes =
+      appointmentStartParts.year === year &&
+      appointmentStartParts.month === month &&
+      appointmentStartParts.day === day
+        ? appointmentStartParts.hour * 60 + appointmentStartParts.minute
+        : 0
+    const appointmentEndMinutes =
+      appointmentEndParts.year === year &&
+      appointmentEndParts.month === month &&
+      appointmentEndParts.day === day
+        ? appointmentEndParts.hour * 60 + appointmentEndParts.minute
+        : 24 * 60
+
+    return {
+      id: appointment.id,
+      title: appointment.title,
+      startMinutes: Math.max(0, appointmentStartMinutes),
+      endMinutes: Math.min(24 * 60, appointmentEndMinutes),
+    }
+  })
+
+  const nowWithNotice = new Date(Date.now() + minimumScheduleNoticeMinutes * 60_000)
+  const noticeCutoffMinutes =
+    minimumScheduleNoticeMinutes > 0
+      ? (() => {
+          const noticeParts = getTimezoneDateParts(nowWithNotice, timezone)
+          if (
+            noticeParts.year === year &&
+            noticeParts.month === month &&
+            noticeParts.day === day
+          ) {
+            return noticeParts.hour * 60 + noticeParts.minute
+          }
+          return null
+        })()
+      : null
+
+  const slots: Array<{
+    startAt: string
+    endAt: string
+    startLabel: string
+    endLabel: string
+    available: boolean
+    reason: string | null
+  }> = []
+
+  for (const interval of openIntervals) {
+    for (
+      let startMinutes = interval.start;
+      startMinutes + meetingDurationMinutes <= interval.end;
+      startMinutes += meetingIntervalMinutes
+    ) {
+      const endMinutes = startMinutes + meetingDurationMinutes
+      const dayLimitReached =
+        maximumBookingsPerDay !== null && bookingsForDay >= maximumBookingsPerDay
+      const violatesNotice =
+        noticeCutoffMinutes !== null && startMinutes < noticeCutoffMinutes
+      const overlappingBlock = blockRanges.find(
+        (block) => startMinutes < block.endMinutes && endMinutes > block.startMinutes,
+      )
+      const overlappingBufferedAppointments = appointmentRanges.filter(
+        (appointment) =>
+          startMinutes < appointment.endMinutes + postBufferMinutes &&
+          endMinutes > appointment.startMinutes - preBufferMinutes,
+      )
+      const slotCapacityReached =
+        overlappingBufferedAppointments.length >= maximumBookingsPerSlot
+
+      const startAt = zonedDateTimeToUtc(
+        timezone,
+        year,
+        month,
+        day,
+        Math.floor(startMinutes / 60),
+        startMinutes % 60,
+        0,
+      )
+      const endAt = zonedDateTimeToUtc(
+        timezone,
+        year,
+        month,
+        day,
+        Math.floor(endMinutes / 60),
+        endMinutes % 60,
+        0,
+      )
+
+      slots.push({
+        startAt: startAt.toISOString(),
+        endAt: endAt.toISOString(),
+        startLabel: formatMinutes(startMinutes),
+        endLabel: formatMinutes(endMinutes),
+        available:
+          !violatesNotice &&
+          !dayLimitReached &&
+          !overlappingBlock &&
+          !slotCapacityReached,
+        reason: violatesNotice
+          ? "Notice required"
+          : dayLimitReached
+            ? "Daily limit"
+            : slotCapacityReached
+              ? bufferAvailabilityMode === "UNAVAILABLE"
+                ? "Unavailable"
+                : "Busy"
+          : overlappingBlock
+            ? "Blocked"
+            : null,
+      })
+    }
+  }
+
+  return {
+    timezone,
+    meetingIntervalMinutes,
+    meetingDurationMinutes,
+    bookingRules: {
+      minimumScheduleNoticeMinutes,
+      maximumBookingsPerDay,
+      maximumBookingsPerSlot,
+      preBufferMinutes,
+      postBufferMinutes,
+      bufferAvailabilityMode,
+    },
+    slots,
+  }
+}
+
 router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
@@ -387,16 +844,31 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    const [users, services] = await prisma.$transaction([
+    const [tenant, users, services] = await prisma.$transaction([
+      prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: {
+          calendarAppointmentSlotMinutes: true,
+          calendarMeetingDurationMinutes: true,
+          calendarMinimumScheduleNoticeMinutes: true,
+          calendarMaximumBookingsPerDay: true,
+          calendarMaximumBookingsPerSlot: true,
+          calendarPreBufferMinutes: true,
+          calendarPostBufferMinutes: true,
+          calendarBufferAvailabilityMode: true,
+        },
+      }),
       prisma.membership.findMany({
         where: {
           tenantId,
           status: "ACTIVE",
+          calendarEnabled: true,
         },
         orderBy: [{ user: { name: "asc" } }],
         select: {
           userId: true,
           role: true,
+          calendarColor: true,
           user: {
             select: {
               name: true,
@@ -421,6 +893,23 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
 
     return res.json({
       ok: true,
+      settings: {
+        meetingIntervalMinutes: getSafeCalendarSlotDuration(
+          tenant?.calendarAppointmentSlotMinutes,
+        ),
+        meetingDurationMinutes: getSafeCalendarSlotDuration(
+          tenant?.calendarMeetingDurationMinutes,
+        ),
+        minimumScheduleNoticeMinutes:
+          tenant?.calendarMinimumScheduleNoticeMinutes ?? 0,
+        maximumBookingsPerDay: tenant?.calendarMaximumBookingsPerDay ?? null,
+        maximumBookingsPerSlot: tenant?.calendarMaximumBookingsPerSlot ?? 1,
+        preBufferMinutes: tenant?.calendarPreBufferMinutes ?? 0,
+        postBufferMinutes: tenant?.calendarPostBufferMinutes ?? 0,
+        bufferAvailabilityMode: getSafeCalendarBufferMode(
+          tenant?.calendarBufferAvailabilityMode,
+        ),
+      },
       filters: {
         users: users.map((item) => ({
           id: item.userId,
@@ -428,9 +917,48 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
           email: item.user.email,
           role: item.role,
           image: item.user.image ?? null,
+          color: item.calendarColor ?? null,
         })),
         services,
       },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/slots", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const query = CalendarSlotsQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const assignee = await ensureActiveAssignee(tenantId, query.assignedToUserId)
+    if (!assignee) {
+      return res.status(404).json({ error: "ASSIGNEE_NOT_FOUND" })
+    }
+
+    const data = await buildAppointmentSlots({
+      tenantId,
+      assignedToUserId: query.assignedToUserId,
+      localDate: query.date,
+    })
+
+    return res.json({
+      ok: true,
+      timezone: data.timezone,
+      meetingIntervalMinutes: data.meetingIntervalMinutes,
+      meetingDurationMinutes: data.meetingDurationMinutes,
+      bookingRules: data.bookingRules,
+      assignee: {
+        id: assignee.userId,
+        label: assignee.user.name?.trim() || assignee.user.email,
+      },
+      date: query.date,
+      slots: data.slots,
     })
   } catch (error) {
     return next(error)
@@ -485,6 +1013,15 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
           select: {
             name: true,
             email: true,
+            memberships: {
+              where: {
+                tenantId,
+              },
+              select: {
+                calendarColor: true,
+              },
+              take: 1,
+            },
           },
         },
         service: {
@@ -504,6 +1041,7 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
         endAt: item.endAt.toISOString(),
         assignedToUserId: item.assignedToUserId,
         assignedToLabel: item.assignedTo?.name?.trim() || item.assignedTo?.email || "Unassigned",
+        assignedToColor: item.assignedTo?.memberships[0]?.calendarColor ?? null,
         contactId: item.contactId,
         contactName: `${item.contact.firstName} ${item.contact.lastName}`.trim(),
         serviceId: item.serviceId,
