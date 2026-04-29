@@ -283,6 +283,36 @@ const UpdateCalendarStaffSchema = z.object({
     ),
 });
 
+const CalendarStaffGroupMemberIdsSchema = z
+  .array(z.string().trim().min(1))
+  .max(100)
+  .refine(
+    (items) => new Set(items).size === items.length,
+    "Each user can only appear once in a group.",
+  );
+
+const CreateCalendarStaffGroupSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  description: optionalStringField(500),
+  memberUserIds: CalendarStaffGroupMemberIdsSchema.default([]),
+});
+
+const UpdateCalendarStaffGroupSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    description: optionalStringField(500),
+    memberUserIds: CalendarStaffGroupMemberIdsSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (Object.keys(value).length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [],
+        message: "At least one field must be updated.",
+      });
+    }
+  });
+
 const CalendarBlockSchema = z.object({
   title: z.string().trim().min(1).max(120),
   description: optionalStringField(1000),
@@ -1016,6 +1046,10 @@ function minutesToTimeInput(value: number) {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
+function normalizeCalendarGroupName(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
 function getSafeCalendarSlotDuration(value?: number | null) {
   return (CALENDAR_SLOT_DURATION_OPTIONS as readonly number[]).includes(value ?? -1)
     ? value!
@@ -1046,6 +1080,39 @@ function buildWeeklyAvailabilityFromRules(
       endTime: rule ? minutesToTimeInput(rule.endTimeMinutes) : "17:00",
     };
   });
+}
+
+async function validateCalendarGroupMemberUserIds(
+  tenantId: string,
+  memberUserIds: string[],
+) {
+  if (memberUserIds.length === 0) {
+    return { ok: true as const };
+  }
+
+  const memberships = await prisma.membership.findMany({
+    where: {
+      tenantId,
+      status: "ACTIVE",
+      calendarEnabled: true,
+      userId: { in: memberUserIds },
+    },
+    select: {
+      userId: true,
+    },
+  });
+
+  const validUserIds = new Set(memberships.map((item) => item.userId));
+  const invalidUserId = memberUserIds.find((userId) => !validUserIds.has(userId));
+
+  if (invalidUserId) {
+    return {
+      ok: false as const,
+      invalidUserId,
+    };
+  }
+
+  return { ok: true as const };
 }
 
 const readMiddlewares = [
@@ -1925,7 +1992,7 @@ router.get("/:tenantId/calendar", ...readMiddlewares, async (req, res, next) => 
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
 
-    const [tenant, rules, blocks, users] = await prisma.$transaction([
+    const [tenant, rules, blocks, users, groups] = await prisma.$transaction([
       prisma.tenant.findUnique({
         where: { id: tenantId },
         select: {
@@ -1994,6 +2061,35 @@ router.get("/:tenantId/calendar", ...readMiddlewares, async (req, res, next) => 
           },
         },
       }),
+      prisma.calendarStaffGroup.findMany({
+        where: {
+          tenantId,
+        },
+        orderBy: [{ name: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          members: {
+            orderBy: [{ userId: "asc" }],
+            select: {
+              userId: true,
+              membership: {
+                select: {
+                  calendarColor: true,
+                  user: {
+                    select: {
+                      name: true,
+                      email: true,
+                      image: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
     ]);
 
     const weeklyAvailability = buildWeeklyAvailabilityFromRules(rules);
@@ -2037,6 +2133,19 @@ router.get("/:tenantId/calendar", ...readMiddlewares, async (req, res, next) => 
         role: item.role,
         enabled: item.calendarEnabled,
         color: item.calendarColor ?? null,
+      })),
+      groups: groups.map((group) => ({
+        id: group.id,
+        name: group.name,
+        description: group.description ?? null,
+        members: group.members.map((member) => ({
+          userId: member.userId,
+          label:
+            member.membership.user.name?.trim() || member.membership.user.email,
+          email: member.membership.user.email,
+          image: member.membership.user.image ?? null,
+          color: member.membership.calendarColor ?? null,
+        })),
       })),
     });
   } catch (error) {
@@ -2128,8 +2237,12 @@ router.patch("/:tenantId/calendar/staff", ...writeMiddlewares, async (req, res, 
       return res.status(404).json({ error: "USER_NOT_FOUND" });
     }
 
-    await prisma.$transaction(
-      payload.staff.map((item) =>
+    const disabledUserIds = payload.staff
+      .filter((item) => !item.enabled)
+      .map((item) => item.userId);
+
+    await prisma.$transaction([
+      ...payload.staff.map((item) =>
         prisma.membership.update({
           where: {
             userId_tenantId: {
@@ -2143,7 +2256,293 @@ router.patch("/:tenantId/calendar/staff", ...writeMiddlewares, async (req, res, 
           },
         }),
       ),
+      ...(disabledUserIds.length > 0
+        ? [
+            prisma.calendarStaffGroupMember.deleteMany({
+              where: {
+                tenantId,
+                userId: {
+                  in: disabledUserIds,
+                },
+              },
+            }),
+          ]
+        : []),
+    ]);
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:tenantId/calendar/groups", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = CreateCalendarStaffGroupSchema.parse(req.body);
+    const normalizedName = normalizeCalendarGroupName(payload.name);
+
+    const validMembers = await validateCalendarGroupMemberUserIds(
+      tenantId,
+      payload.memberUserIds,
     );
+    if (!validMembers.ok) {
+      return res.status(404).json({ error: "CALENDAR_GROUP_MEMBER_NOT_FOUND" });
+    }
+
+    const existing = await prisma.calendarStaffGroup.findFirst({
+      where: {
+        tenantId,
+        name: {
+          equals: normalizedName,
+          mode: "insensitive",
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (existing) {
+      return res.status(409).json({ error: "CALENDAR_GROUP_NAME_IN_USE" });
+    }
+
+    const created = await prisma.$transaction(async (tx) => {
+      const group = await tx.calendarStaffGroup.create({
+        data: {
+          tenantId,
+          name: normalizedName,
+          description: payload.description ?? null,
+        },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+        },
+      });
+
+      if (payload.memberUserIds.length > 0) {
+        await tx.calendarStaffGroupMember.createMany({
+          data: payload.memberUserIds.map((userId) => ({
+            tenantId,
+            groupId: group.id,
+            userId,
+          })),
+        });
+      }
+
+      const members = await tx.calendarStaffGroupMember.findMany({
+        where: {
+          tenantId,
+          groupId: group.id,
+        },
+        orderBy: [{ userId: "asc" }],
+        select: {
+          userId: true,
+          membership: {
+            select: {
+              calendarColor: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      return {
+        group,
+        members,
+      };
+    });
+
+    return res.status(201).json({
+      ok: true,
+      group: {
+        id: created.group.id,
+        name: created.group.name,
+        description: created.group.description ?? null,
+        members: created.members.map((member) => ({
+          userId: member.userId,
+          label: member.membership.user.name?.trim() || member.membership.user.email,
+          email: member.membership.user.email,
+          image: member.membership.user.image ?? null,
+          color: member.membership.calendarColor ?? null,
+        })),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/calendar/groups/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+    const payload = UpdateCalendarStaffGroupSchema.parse(req.body);
+    const normalizedName = payload.name
+      ? normalizeCalendarGroupName(payload.name)
+      : undefined;
+
+    const existing = await prisma.calendarStaffGroup.findUnique({
+      where: {
+        id: recordId,
+      },
+      select: {
+        id: true,
+        tenantId: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId) {
+      return res.status(404).json({ error: "CALENDAR_GROUP_NOT_FOUND" });
+    }
+
+    if (payload.memberUserIds) {
+      const validMembers = await validateCalendarGroupMemberUserIds(
+        tenantId,
+        payload.memberUserIds,
+      );
+      if (!validMembers.ok) {
+        return res.status(404).json({ error: "CALENDAR_GROUP_MEMBER_NOT_FOUND" });
+      }
+    }
+
+    if (payload.name) {
+      const nameConflict = await prisma.calendarStaffGroup.findFirst({
+        where: {
+          tenantId,
+          NOT: { id: recordId },
+          name: {
+            equals: normalizedName!,
+            mode: "insensitive",
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (nameConflict) {
+        return res.status(409).json({ error: "CALENDAR_GROUP_NAME_IN_USE" });
+      }
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const group = await tx.calendarStaffGroup.update({
+        where: {
+          id: recordId,
+        },
+        data: {
+          ...(normalizedName !== undefined ? { name: normalizedName } : {}),
+          ...(payload.description !== undefined
+            ? { description: payload.description ?? null }
+            : {}),
+        },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+        },
+      });
+
+      if (payload.memberUserIds) {
+        await tx.calendarStaffGroupMember.deleteMany({
+          where: {
+            tenantId,
+            groupId: recordId,
+          },
+        });
+
+        if (payload.memberUserIds.length > 0) {
+          await tx.calendarStaffGroupMember.createMany({
+            data: payload.memberUserIds.map((userId) => ({
+              tenantId,
+              groupId: recordId,
+              userId,
+            })),
+          });
+        }
+      }
+
+      const members = await tx.calendarStaffGroupMember.findMany({
+        where: {
+          tenantId,
+          groupId: recordId,
+        },
+        orderBy: [{ userId: "asc" }],
+        select: {
+          userId: true,
+          membership: {
+            select: {
+              calendarColor: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      return {
+        group,
+        members,
+      };
+    });
+
+    return res.json({
+      ok: true,
+      group: {
+        id: updated.group.id,
+        name: updated.group.name,
+        description: updated.group.description ?? null,
+        members: updated.members.map((member) => ({
+          userId: member.userId,
+          label: member.membership.user.name?.trim() || member.membership.user.email,
+          email: member.membership.user.email,
+          image: member.membership.user.image ?? null,
+          color: member.membership.calendarColor ?? null,
+        })),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete("/:tenantId/calendar/groups/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+
+    const existing = await prisma.calendarStaffGroup.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId) {
+      return res.status(404).json({ error: "CALENDAR_GROUP_NOT_FOUND" });
+    }
+
+    await prisma.calendarStaffGroup.delete({
+      where: { id: recordId },
+    });
 
     return res.json({ ok: true });
   } catch (error) {

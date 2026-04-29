@@ -1,5 +1,6 @@
 export const ACCOUNT_SETTINGS_TABS = [
   { key: "account", label: "Account" },
+  { key: "calendar", label: "Calendar" },
   { key: "users", label: "Users" },
   { key: "services", label: "Services" },
   { key: "professionals", label: "Professionals" },
@@ -18,14 +19,15 @@ export const ACCOUNT_SETTINGS_SECTIONS = new Set<AccountSettingsSection>(
 )
 
 export const ACCOUNT_SETTINGS_COPY: Record<AccountSettingsSection, string> = {
-  "account": "Manage tenant profile details and contact information.",
-  users: "Manage tenant users and access levels.",
-  services: "Manage service catalog options for your tenant.",
+  "account": "Manage account profile details and contact information.",
+  calendar: "Configure account-wide calendar hours and blocked periods.",
+  users: "Manage account users and access levels.",
+  services: "Manage service catalog options for your account.",
   professionals: "Manage professionals and assignment settings.",
   "follow-ups": "Configure automated and manual follow-up workflows.",
   "status-config": "Configure status labels and lifecycle behavior.",
-  tags: "Create and organize reusable tenant tags.",
-  features: "Control tenant feature flags and module access.",
+  tags: "Create and organize reusable account tags.",
+  features: "Control account feature flags and module access.",
   subscription: "Review and manage subscription details.",
-  "custom-fields": "Define custom fields for tenant records.",
+  "custom-fields": "Define custom fields for account records.",
 }

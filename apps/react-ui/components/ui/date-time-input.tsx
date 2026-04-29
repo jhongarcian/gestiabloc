@@ -20,6 +20,8 @@ type DateTimeInputProps = {
   className?: string
   timezone?: string | null
   disabledDate?: (date: Date) => boolean
+  hideTime?: boolean
+  timeStepMinutes?: number
 }
 
 export function DateTimeInput({
@@ -30,6 +32,8 @@ export function DateTimeInput({
   ariaInvalid = false,
   className,
   disabledDate = () => false,
+  hideTime = false,
+  timeStepMinutes = 1,
 }: DateTimeInputProps) {
   const parsedDate = parseDateInput(value.date)
   const calendarMonth =
@@ -87,26 +91,28 @@ export function DateTimeInput({
           </Popover>
         </div>
 
-        <div className="relative">
-          <Clock3 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <Input
-            type="time"
-            step={60}
-            value={value.time}
-            disabled={disabled}
-            aria-invalid={ariaInvalid}
-            onChange={(event) => {
-              onValueChange({
-                ...value,
-                time: event.target.value,
-              })
-            }}
-            className={cn(
-              "pl-9",
-              ariaInvalid ? "border-rose-300 ring-2 ring-rose-100" : undefined,
-            )}
-          />
-        </div>
+        {!hideTime ? (
+          <div className="relative">
+            <Clock3 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Input
+              type="time"
+              step={Math.max(1, timeStepMinutes) * 60}
+              value={value.time}
+              disabled={disabled}
+              aria-invalid={ariaInvalid}
+              onChange={(event) => {
+                onValueChange({
+                  ...value,
+                  time: event.target.value,
+                })
+              }}
+              className={cn(
+                "pl-9",
+                ariaInvalid ? "border-rose-300 ring-2 ring-rose-100" : undefined,
+              )}
+            />
+          </div>
+        ) : null}
       </div>
     </div>
   )

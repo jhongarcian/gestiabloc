@@ -243,6 +243,7 @@ model User {
   assignedAppointments          Appointment[]                     @relation("AppointmentAssignedTo")
   calendarAvailabilityRules     CalendarAvailabilityRule[]
   calendarTimeBlocks            CalendarTimeBlock[]
+  calendarStaffGroupMemberships CalendarStaffGroupMember[]
   loginChallenges               LoginChallenge[]
   emailVerifications            EmailVerification[]
   passwordResetTokens           PasswordResetToken[]
@@ -355,31 +356,31 @@ model PasswordResetToken {
 }
 
 model Tenant {
-  id                String  @id @default(uuid())
-  name              String
-  slug              String  @unique
-  email             String?
-  phone             String?
-  addressLine1      String?
-  addressLine2      String?
-  city              String?
-  state             String?
-  postalCode        String?
-  country           String?
-  timezone          String?
-  calendarAppointmentSlotMinutes Int @default(30)
-  calendarMeetingDurationMinutes Int @default(30)
-  calendarMinimumScheduleNoticeMinutes Int @default(0)
-  calendarMaximumBookingsPerDay Int?
-  calendarMaximumBookingsPerSlot Int @default(1)
-  calendarPreBufferMinutes Int @default(0)
-  calendarPostBufferMinutes Int @default(0)
-  calendarBufferAvailabilityMode CalendarBufferAvailabilityMode @default(BUSY)
-  website           String?
-  taxEnabled        Boolean @default(false)
-  taxLabel          String?
-  defaultTaxRateBps Int?
-  emailVerified     Boolean @default(false)
+  id                                   String                         @id @default(uuid())
+  name                                 String
+  slug                                 String                         @unique
+  email                                String?
+  phone                                String?
+  addressLine1                         String?
+  addressLine2                         String?
+  city                                 String?
+  state                                String?
+  postalCode                           String?
+  country                              String?
+  timezone                             String?
+  calendarAppointmentSlotMinutes       Int                            @default(30)
+  calendarMeetingDurationMinutes       Int                            @default(30)
+  calendarMinimumScheduleNoticeMinutes Int                            @default(0)
+  calendarMaximumBookingsPerDay        Int?
+  calendarMaximumBookingsPerSlot       Int                            @default(1)
+  calendarPreBufferMinutes             Int                            @default(0)
+  calendarPostBufferMinutes            Int                            @default(0)
+  calendarBufferAvailabilityMode       CalendarBufferAvailabilityMode @default(BUSY)
+  website                              String?
+  taxEnabled                           Boolean                        @default(false)
+  taxLabel                             String?
+  defaultTaxRateBps                    Int?
+  emailVerified                        Boolean                        @default(false)
 
   members                          Membership[]
   files                            File[]
@@ -417,6 +418,8 @@ model Tenant {
   appointments                     Appointment[]
   calendarAvailabilityRules        CalendarAvailabilityRule[]
   calendarTimeBlocks               CalendarTimeBlock[]
+  calendarStaffGroups              CalendarStaffGroup[]
+  calendarStaffGroupMemberships    CalendarStaffGroupMember[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -762,22 +765,23 @@ model EmailVerification {
 }
 
 model Membership {
-  id            String           @id @default(uuid())
-  userId        String
-  tenantId      String
-  role          TenantRole
-  status        MembershipStatus @default(ACTIVE)
-  securityLevel SecurityLevel    @default(LOW)
-  calendarEnabled Boolean        @default(false)
+  id              String           @id @default(uuid())
+  userId          String
+  tenantId        String
+  role            TenantRole
+  status          MembershipStatus @default(ACTIVE)
+  securityLevel   SecurityLevel    @default(LOW)
+  calendarEnabled Boolean          @default(false)
   calendarColor   String?
 
-  user                    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenant                  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  assignedContacts        Contact[]      @relation("ContactAssignedToMembership")
-  assignedTasks           Task[]         @relation("TaskAssignedToMembership")
-  assignedTaskReminders   TaskReminder[] @relation("TaskReminderMembershipRecipient")
-  servicingAgentContacts  Contact[]      @relation("ContactServicingAgentMembership")
-  additionalAgentContacts Contact[]      @relation("ContactAdditionalAgentMembership")
+  user                    User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant                  Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assignedContacts        Contact[]                  @relation("ContactAssignedToMembership")
+  assignedTasks           Task[]                     @relation("TaskAssignedToMembership")
+  assignedTaskReminders   TaskReminder[]             @relation("TaskReminderMembershipRecipient")
+  servicingAgentContacts  Contact[]                  @relation("ContactServicingAgentMembership")
+  additionalAgentContacts Contact[]                  @relation("ContactAdditionalAgentMembership")
+  calendarStaffGroups     CalendarStaffGroupMember[]
 
   @@unique([userId, tenantId])
   @@index([tenantId])
@@ -1132,6 +1136,40 @@ model CalendarTimeBlock {
   @@index([tenantId, startsAt])
   @@index([tenantId, endsAt])
   @@index([tenantId, scope, userId, startsAt])
+}
+
+model CalendarStaffGroup {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant  Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  members CalendarStaffGroupMember[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, name])
+}
+
+model CalendarStaffGroupMember {
+  id        String   @id @default(uuid())
+  tenantId  String
+  groupId   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  tenant     Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group      CalendarStaffGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  membership Membership         @relation(fields: [tenantId, userId], references: [tenantId, userId], onDelete: Cascade)
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@unique([tenantId, id])
+  @@index([tenantId, groupId])
+  @@index([tenantId, userId])
 }
 
 model ContactCustomFieldValue {
