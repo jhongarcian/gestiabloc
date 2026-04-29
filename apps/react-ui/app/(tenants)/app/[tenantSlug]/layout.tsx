@@ -1,8 +1,6 @@
 import { redirect } from "next/navigation"
-import { headers } from "next/headers"
-
-import { api } from "@/lib/api"
 import { TenantShell } from "./_components/tenant-shell"
+import { getTenantMembershipContext } from "./_lib/tenant-session"
 
 export default async function TenantLayout({
   children,
@@ -11,44 +9,8 @@ export default async function TenantLayout({
   children: React.ReactNode
   params: Promise<{ tenantSlug: string }>
 }>) {
-  let user: {
-    id: string
-    name: string
-    email: string
-    image?: string | null
-    platformRole?: string | null
-    emailVerified: boolean
-    createdAt?: string
-    updatedAt?: string
-    memberships?: Array<{
-      role: string
-      status: string
-      tenant: { id: string; slug: string; name: string }
-    }>
-  } | null = null
-
-  try {
-    const cookie = (await headers()).get("cookie") ?? ""
-    const { data } = await api.get("/api/auth/me", {
-      headers: { cookie },
-    })
-    if (!data?.user?.id) {
-      redirect("/login")
-    }
-    user = data.user
-  } catch {
-    redirect("/login")
-  }
-
-  if (!user) {
-    redirect("/login")
-  }
-
   const { tenantSlug: slug } = await params
-
-  const membership =
-    user.memberships?.find((item) => item.tenant?.slug === slug) ??
-    user.memberships?.[0]
+  const { user, membership } = await getTenantMembershipContext(slug)
   const role = membership?.role ?? null
 
   if (!membership?.tenant?.slug) {

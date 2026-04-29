@@ -14,6 +14,7 @@ export type TenantUser = {
   memberships?: Array<{
     role: string
     status: string
+    securityLevel?: "LOW" | "MEDIUM" | "MAX"
     tenant: { id: string; slug: string; name: string }
   }>
 }

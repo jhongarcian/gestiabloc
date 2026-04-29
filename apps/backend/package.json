@@ -5,7 +5,11 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "db:seed": "node --import tsx prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "node --import tsx prisma/seed.ts"
   },
   "keywords": [],
   "author": "",
@@ -16,12 +20,14 @@
     "@aws-sdk/s3-presigned-post": "^3.987.0",
     "@aws-sdk/s3-request-presigner": "^3.986.0",
     "@prisma/adapter-pg": "^7.3.0",
-    "@prisma/client": "^7.3.0",
+    "@prisma/client": "^7.4.2",
+    "@vercel/blob": "^2.2.0",
     "argon2": "^0.44.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
+    "multer": "^2.0.2",
     "pg": "^8.18.0",
     "resend": "^6.9.1",
     "socket.io": "^4.8.3",
@@ -36,7 +42,7 @@
     "@types/node": "^20.19.32",
     "@types/pg": "^8.16.0",
     "@types/swagger-ui-express": "^4.1.8",
-    "prisma": "^7.3.0",
+    "prisma": "^7.4.2",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }

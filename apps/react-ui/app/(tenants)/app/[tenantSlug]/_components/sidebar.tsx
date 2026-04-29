@@ -98,7 +98,7 @@ function AppSidebarContent({
             Menu
           </SidebarGroupLabel>
           <SidebarGroupContent>
-            <SidebarMenu>
+            <SidebarMenu className="space-y-0.5">
               {menuItems.map((item) => {
                 const Icon = item.icon
                 const isActive = item.key === activeKey
@@ -109,7 +109,7 @@ function AppSidebarContent({
                       isActive={isActive}
                       tooltip={item.label}
                       className={cn(
-                        "text-indigo-50 font-semibold text-sm hover:bg-white/10 hover:text-white data-[active=true]:bg-white/20 data-[active=true]:text-white",
+                        "h-10 text-indigo-50 font-semibold text-sm hover:bg-white/10 hover:text-white data-[active=true]:bg-white/20 data-[active=true]:text-white",
                         "group-data-[collapsible=icon]:size-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:[&>span]:hidden"
                       )}
                       onClick={() => onNavigate?.(item.key, item.href)}
@@ -132,7 +132,7 @@ function AppSidebarContent({
             Support
           </SidebarGroupLabel>
           <SidebarGroupContent>
-            <SidebarMenu>
+            <SidebarMenu className="space-y-1.5">
               {supportItems.map((item) => {
                 const Icon = item.icon
                 const isActive = item.key === activeKey
@@ -143,7 +143,7 @@ function AppSidebarContent({
                       isActive={isActive}
                       tooltip={item.label}
                       className={cn(
-                        "text-indigo-50 font-semibold hover:bg-white/10 hover:text-white data-[active=true]:bg-white/20 data-[active=true]:text-white",
+                        "h-11 text-indigo-50 font-semibold hover:bg-white/10 hover:text-white data-[active=true]:bg-white/20 data-[active=true]:text-white",
                         "group-data-[collapsible=icon]:size-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:[&>span]:hidden"
                       )}
                       onClick={() => onNavigate?.(item.key, item.href)}
@@ -196,7 +196,7 @@ function AppSidebarContent({
               onClick={() => onNavigate?.("logout", "#")}
               tooltip="Logout"
               className={cn(
-                "text-indigo-50 font-semibold hover:bg-white/10 hover:text-white",
+                "text-indigo-50 font-semibold hover:bg-white/10 hover:text-white cursor-pointer",
                 "group-data-[collapsible=icon]:size-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:[&>span]:hidden"
               )}
             >

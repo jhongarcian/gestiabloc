@@ -1,0 +1,1 @@
+ALTER TYPE "ContactServiceFollowUpStepStatus" ADD VALUE IF NOT EXISTS 'POSTPONED';

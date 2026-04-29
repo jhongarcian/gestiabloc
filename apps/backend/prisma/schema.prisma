@@ -30,6 +30,12 @@ enum MembershipStatus {
   DISABLED
 }
 
+enum SecurityLevel {
+  LOW
+  MEDIUM
+  MAX
+}
+
 enum InviteStatus {
   PENDING
   ACCEPTED
@@ -60,6 +66,153 @@ enum FilePurpose {
   GENERIC
 }
 
+enum ContactGender {
+  FEMALE
+  MALE
+  NON_BINARY
+  OTHER
+  UNKNOWN
+}
+
+enum ContactSmokerStatus {
+  UNKNOWN
+  NEVER
+  CURRENT
+  FORMER
+}
+
+enum ContactCustomFieldType {
+  TEXT
+  NUMBER
+  PHONE
+  CURRENCY
+  DATE
+  SELECT
+  MULTI_SELECT
+  RADIO
+  TEXTAREA
+  CHECKBOX
+}
+
+enum ServiceProfessionalKind {
+  INTERNAL_USER
+  EXTERNAL
+}
+
+enum InstallmentFrequency {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
+enum ContactServiceStatus {
+  IN_PROGRESS
+  PENDING_PAYMENT
+  COMPLETED
+  CANCELED
+}
+
+enum ContactServiceFollowUpStepStatus {
+  PENDING
+  ACTIVE
+  COMPLETED
+  SKIPPED
+  POSTPONED
+}
+
+enum TaskLinkedEntityType {
+  SERVICE
+  PRODUCT
+}
+
+enum TaskPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum TaskActivityType {
+  CREATED
+  UPDATED
+  STATUS_CHANGED
+  ASSIGNEE_CHANGED
+  DUE_DATE_CHANGED
+  START_DATE_CHANGED
+  REMINDER_CREATED
+  REMINDER_CANCELED
+}
+
+enum NotificationType {
+  TASK_REMINDER
+  TASK_ASSIGNED
+  TASK_DUE
+  CUSTOM_FIELD_ACCESS_REQUEST
+  CUSTOM_FIELD_ACCESS_GRANTED
+}
+
+enum ContactCustomFieldAccessRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ContactRelationshipType {
+  FATHER
+  MOTHER
+  PARENT
+  SON
+  DAUGHTER
+  CHILD
+  HUSBAND
+  WIFE
+  SPOUSE
+  PARTNER
+  BROTHER
+  SISTER
+  SIBLING
+  GRANDFATHER
+  GRANDMOTHER
+  GRANDPARENT
+  GRANDSON
+  GRANDDAUGHTER
+  GRANDCHILD
+  UNCLE
+  AUNT
+  AUNT_OR_UNCLE
+  NEPHEW
+  NIECE
+  NIECE_OR_NEPHEW
+  COUSIN
+  GUARDIAN
+  WARD
+  CAREGIVER
+  DEPENDENT
+  FRIEND
+  OTHER
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELED
+  NO_SHOW
+}
+
+enum CalendarScheduleScope {
+  TENANT
+  USER
+}
+
+enum CalendarAvailabilityKind {
+  OPEN
+  BLOCK
+}
+
+enum CalendarBufferAvailabilityMode {
+  BUSY
+  UNAVAILABLE
+}
+
 model User {
   id           String       @id @default(uuid())
   email        String       @unique
@@ -67,20 +220,39 @@ model User {
   passwordHash String?
   platformRole PlatformRole @default(NONE)
 
-  otpEnabled   Boolean   @default(true)
+  otpEnabled Boolean @default(true)
 
-  sessions      Session[]
-  memberships Membership[]
-  files       File[]
-  loginChallenges LoginChallenge[]
-  emailVerifications EmailVerification[]
-  passwordResetTokens PasswordResetToken[]
+  sessions                      Session[]
+  memberships                   Membership[]
+  files                         File[]
+  notifications                 Notification[]
+  customFieldAccessRequests     ContactCustomFieldAccessRequest[] @relation("CustomFieldAccessRequester")
+  customFieldAccessDecisions    ContactCustomFieldAccessRequest[] @relation("CustomFieldAccessDecidedBy")
+  customFieldAccessGrants       ContactCustomFieldAccessGrant[]   @relation("CustomFieldAccessGrantedUser")
+  issuedCustomFieldAccessGrants ContactCustomFieldAccessGrant[]   @relation("CustomFieldAccessGrantedBy")
+  taskActivities                TaskActivity[]
+  createdTaskReminders          TaskReminder[]                    @relation("TaskReminderCreatedBy")
+  reminderAssignments           TaskReminder[]                    @relation("TaskReminderRecipient")
+  contactNotes                  ContactNote[]
+  contactServiceNotes           ContactServiceNote[]
+  serviceProfessionals          ServiceProfessional[]
+  recordedServicePayments       ContactServicePayment[]           @relation("ContactServicePaymentRecordedBy")
+  assignedServiceFollowUps      ContactServiceFollowUpStep[]      @relation("ContactServiceFollowUpAssignedUser")
+  serviceFollowUpExecutionLogs  ServiceFollowUpExecutionLog[]     @relation("ServiceFollowUpExecutionLogActor")
+  bookedAppointments            Appointment[]                     @relation("AppointmentBookedBy")
+  assignedAppointments          Appointment[]                     @relation("AppointmentAssignedTo")
+  calendarAvailabilityRules     CalendarAvailabilityRule[]
+  calendarTimeBlocks            CalendarTimeBlock[]
+  calendarStaffGroupMemberships CalendarStaffGroupMember[]
+  loginChallenges               LoginChallenge[]
+  emailVerifications            EmailVerification[]
+  passwordResetTokens           PasswordResetToken[]
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   emailVerified Boolean   @default(false)
   image         String?
-
+  lastLoginAt   DateTime?
 }
 
 model File {
@@ -92,8 +264,10 @@ model File {
   createdById String
   purpose     FilePurpose @default(GENERIC)
 
-  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdBy User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  tenant                 Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy              User                           @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  noteAttachments        ContactNoteAttachment[]
+  serviceNoteAttachments ContactServiceNoteAttachment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -101,6 +275,25 @@ model File {
   @@index([tenantId])
   @@index([createdById])
   @@index([purpose])
+}
+
+model TaskActivity {
+  id          String           @id @default(uuid())
+  tenantId    String
+  taskId      String
+  actorUserId String?
+  type        TaskActivityType
+  title       String
+  details     String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, taskId, createdAt])
+  @@index([tenantId, actorUserId, createdAt])
 }
 
 model Session {
@@ -133,14 +326,14 @@ model LoginChallenge {
 }
 
 model EmailOtp {
-  id        String     @id @default(uuid())
-  email     String
-  purpose   OtpPurpose @default(LOGIN)
+  id      String     @id @default(uuid())
+  email   String
+  purpose OtpPurpose @default(LOGIN)
 
   codeHash  String
   expiresAt DateTime
   usedAt    DateTime?
-  attempts  Int        @default(0)
+  attempts  Int       @default(0)
 
   createdAt DateTime @default(now())
 
@@ -149,11 +342,11 @@ model EmailOtp {
 }
 
 model PasswordResetToken {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   usedAt    DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -163,36 +356,406 @@ model PasswordResetToken {
 }
 
 model Tenant {
-  id   String @id @default(uuid())
-  name String
-  slug String @unique
-  email String?
-  phone String?
-  addressLine1 String?
-  addressLine2 String?
-  city String?
-  state String?
-  postalCode String?
-  country String?
-  timezone String?
-  website String?
-  emailVerified Boolean @default(false)
+  id                                   String                         @id @default(uuid())
+  name                                 String
+  slug                                 String                         @unique
+  email                                String?
+  phone                                String?
+  addressLine1                         String?
+  addressLine2                         String?
+  city                                 String?
+  state                                String?
+  postalCode                           String?
+  country                              String?
+  timezone                             String?
+  calendarAppointmentSlotMinutes       Int                            @default(30)
+  calendarMeetingDurationMinutes       Int                            @default(30)
+  calendarMinimumScheduleNoticeMinutes Int                            @default(0)
+  calendarMaximumBookingsPerDay        Int?
+  calendarMaximumBookingsPerSlot       Int                            @default(1)
+  calendarPreBufferMinutes             Int                            @default(0)
+  calendarPostBufferMinutes            Int                            @default(0)
+  calendarBufferAvailabilityMode       CalendarBufferAvailabilityMode @default(BUSY)
+  website                              String?
+  taxEnabled                           Boolean                        @default(false)
+  taxLabel                             String?
+  defaultTaxRateBps                    Int?
+  emailVerified                        Boolean                        @default(false)
 
-  members      Membership[]
-  files        File[]
-  invites      Invite[]
-  subscription TenantSubscription?
+  members                          Membership[]
+  files                            File[]
+  invites                          Invite[]
+  subscription                     TenantSubscription?
+  contacts                         Contact[]
+  tasks                            Task[]
+  contactStatusConfigs             ContactStatusConfig[]
+  taskStatusConfigs                TaskStatusConfig[]
+  taskReminders                    TaskReminder[]
+  notifications                    Notification[]
+  taskActivities                   TaskActivity[]
+  linkedEntities                   TenantLinkedEntity[]
+  services                         Service[]
+  serviceChecklistItems            ServiceChecklistItem[]
+  serviceFollowUpTemplates         ServiceFollowUpTemplate[]
+  serviceFollowUpTemplateSteps     ServiceFollowUpTemplateStep[]
+  serviceProfessionals             ServiceProfessional[]
+  contactServices                  ContactService[]
+  contactServiceChecklistItems     ContactServiceChecklistItem[]
+  contactServicePayments           ContactServicePayment[]
+  contactServiceFollowUpSteps      ContactServiceFollowUpStep[]
+  contactServiceNotes              ContactServiceNote[]
+  serviceFollowUpExecutionLogs     ServiceFollowUpExecutionLog[]
+  tenantTags                       TenantTag[]
+  contactTags                      ContactTag[]
+  contactCustomFields              ContactCustomField[]
+  contactCustomFieldValues         ContactCustomFieldValue[]
+  contactCustomFieldAccessRequests ContactCustomFieldAccessRequest[]
+  contactCustomFieldAccessGrants   ContactCustomFieldAccessGrant[]
+  contactRelationships             ContactRelationship[]
+  contactNotes                     ContactNote[]
+  contactNoteAttachments           ContactNoteAttachment[]
+  contactServiceNoteAttachments    ContactServiceNoteAttachment[]
+  appointments                     Appointment[]
+  calendarAvailabilityRules        CalendarAvailabilityRule[]
+  calendarTimeBlocks               CalendarTimeBlock[]
+  calendarStaffGroups              CalendarStaffGroup[]
+  calendarStaffGroupMemberships    CalendarStaffGroupMember[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
-model EmailVerification {
-  id        String   @id @default(uuid())
-  userId    String
-  tokenHash String   @unique
-  expiresAt DateTime
+model TenantLinkedEntity {
+  id        String               @id @default(uuid())
+  tenantId  String
+  name      String
+  type      TaskLinkedEntityType
+  isActive  Boolean              @default(true)
+  sortOrder Int                  @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, type, name])
+  @@index([tenantId, type, sortOrder])
+}
+
+model Service {
+  id                         String                @id @default(uuid())
+  tenantId                   String
+  name                       String
+  description                String?
+  fitProfile                 Json?
+  basePriceCents             Int
+  currency                   String                @default("USD")
+  isTaxExempt                Boolean               @default(false)
+  allowPartialPayments       Boolean               @default(false)
+  minimumPartialPaymentCents Int?
+  installmentCount           Int?
+  installmentFrequency       InstallmentFrequency?
+  isActive                   Boolean               @default(true)
+  sortOrder                  Int                   @default(0)
+
+  tenant                Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  checklistItems        ServiceChecklistItem[]
+  followUpTemplates     ServiceFollowUpTemplate[]
+  followUpTemplateSteps ServiceFollowUpTemplateStep[]
+  professionals         ServiceProfessional[]
+  contactServices       ContactService[]
+  appointments          Appointment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, isActive, sortOrder])
+}
+
+model ServiceChecklistItem {
+  id          String  @id @default(uuid())
+  tenantId    String
+  serviceId   String
+  label       String
+  description String?
+  isRequired  Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  tenant                Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service               Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  contactChecklistItems ContactServiceChecklistItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, sortOrder])
+}
+
+model ServiceFollowUpTemplate {
+  id          String    @id @default(uuid())
+  tenantId    String
+  serviceId   String
+  name        String
+  sortOrder   Int       @default(0)
+  isPublished Boolean   @default(false)
+  publishedAt DateTime?
+  flowNodes   Json?
+  flowEdges   Json?
+
+  tenant          Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service         Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  steps           ServiceFollowUpTemplateStep[]
+  contactServices ContactService[]
+  executionLogs   ServiceFollowUpExecutionLog[]
+  contactNotes    ContactNote[]
+  tasks           Task[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, sortOrder])
+}
+
+model ServiceFollowUpTemplateStep {
+  id               String  @id @default(uuid())
+  tenantId         String
+  serviceId        String
+  templateId       String?
+  templateNodeId   String?
+  title            String
+  notesTemplate    String?
+  dueDaysFromStart Int     @default(0)
+  sortOrder        Int     @default(0)
+
+  tenant   Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service  Service                  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  template ServiceFollowUpTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, sortOrder])
+  @@index([tenantId, templateId, sortOrder])
+  @@index([tenantId, templateId, templateNodeId])
+}
+
+model ServiceProfessional {
+  id                       String                  @id @default(uuid())
+  tenantId                 String
+  serviceId                String
+  kind                     ServiceProfessionalKind
+  userId                   String?
+  externalProfessionalName String?
+  externalContact          String?
+  notes                    String?
+  sortOrder                Int                     @default(0)
+
+  tenant                  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service                 Service          @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  user                    User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  assignedContactServices ContactService[] @relation("ContactServiceAssignedProfessional")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, sortOrder])
+  @@index([tenantId, userId])
+}
+
+model ContactService {
+  id                     String               @id @default(uuid())
+  tenantId               String
+  contactId              String
+  serviceId              String
+  followUpTemplateId     String?
+  assignedProfessionalId String?
+  status                 ContactServiceStatus @default(IN_PROGRESS)
+  startedAt              DateTime?
+  purchasedAt            DateTime?
+  completedAt            DateTime?
+  canceledAt             DateTime?
+  totalPriceCents        Int
+  currency               String               @default("USD")
+  allowPartialPayments   Boolean              @default(false)
+  notes                  String?
+
+  tenant               Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact              Contact                       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  service              Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  followUpTemplate     ServiceFollowUpTemplate?      @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
+  assignedProfessional ServiceProfessional?          @relation("ContactServiceAssignedProfessional", fields: [assignedProfessionalId], references: [id], onDelete: SetNull)
+  payments             ContactServicePayment[]
+  followUpSteps        ContactServiceFollowUpStep[]
+  checklistItems       ContactServiceChecklistItem[]
+  serviceNotes         ContactServiceNote[]
+  executionLogs        ServiceFollowUpExecutionLog[]
+  contactNotes         ContactNote[]
+  tasks                Task[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactId, createdAt])
+  @@index([tenantId, serviceId, createdAt])
+  @@index([tenantId, followUpTemplateId])
+  @@index([tenantId, assignedProfessionalId])
+  @@index([tenantId, status, createdAt])
+}
+
+model ContactServiceChecklistItem {
+  id               String    @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  checklistItemId  String
+  completedAt      DateTime?
+
+  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactService ContactService       @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  checklistItem  ServiceChecklistItem @relation(fields: [checklistItemId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, contactServiceId, checklistItemId])
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, completedAt])
+  @@index([tenantId, checklistItemId])
+}
+
+model ContactServicePayment {
+  id               String   @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  amountCents      Int
+  paidAt           DateTime
+  paymentMethod    String?
+  note             String?
+  recordedById     String?
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  recordedBy     User?          @relation("ContactServicePaymentRecordedBy", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, paidAt])
+}
+
+model ContactServiceFollowUpStep {
+  id               String                           @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  templateNodeId   String?
+  title            String
+  notesTemplate    String?
+  status           ContactServiceFollowUpStepStatus @default(PENDING)
+  availableAt      DateTime?
+  dueAt            DateTime?
+  completedAt      DateTime?
+  assignedToUserId String?
+  note             String?
+  sortOrder        Int                              @default(0)
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  assignedTo     User?          @relation("ContactServiceFollowUpAssignedUser", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  contactNotes   ContactNote[]
+  tasks          Task[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, sortOrder])
+  @@index([tenantId, contactServiceId, status, sortOrder])
+  @@index([tenantId, contactServiceId, templateNodeId])
+  @@index([tenantId, assignedToUserId, dueAt])
+}
+
+model ContactServiceNote {
+  id               String @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  createdById      String
+  title            String
+  body             String
+
+  tenant         Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactService ContactService                 @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  createdBy      User                           @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  attachments    ContactServiceNoteAttachment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, createdAt])
+  @@index([tenantId, createdById])
+}
+
+model ContactServiceNoteAttachment {
+  id       String @id @default(uuid())
+  tenantId String
+  noteId   String
+  fileId   String
+
+  tenant Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  note   ContactServiceNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  file   File               @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, noteId, fileId])
+  @@index([tenantId, noteId])
+  @@index([tenantId, fileId])
+}
+
+model ServiceFollowUpExecutionLog {
+  id               String  @id @default(uuid())
+  tenantId         String
+  templateId       String
+  contactServiceId String
+  contactId        String
+  actorUserId      String?
+  flowNodeId       String?
+  stepId           String?
+  eventType        String
+  title            String
+  details          String?
+  payload          Json?
+
+  tenant         Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template       ServiceFollowUpTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  contactService ContactService          @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  contact        Contact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  actor          User?                   @relation("ServiceFollowUpExecutionLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@index([tenantId, templateId, createdAt])
+  @@index([tenantId, contactServiceId, createdAt])
+  @@index([tenantId, contactId, createdAt])
+  @@index([tenantId, actorUserId, createdAt])
+}
+
+model EmailVerification {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
   usedAt    DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -202,18 +765,28 @@ model EmailVerification {
 }
 
 model Membership {
-  id       String           @id @default(uuid())
-  userId   String
-  tenantId String
-  role     TenantRole
-  status   MembershipStatus @default(ACTIVE)
+  id              String           @id @default(uuid())
+  userId          String
+  tenantId        String
+  role            TenantRole
+  status          MembershipStatus @default(ACTIVE)
+  securityLevel   SecurityLevel    @default(LOW)
+  calendarEnabled Boolean          @default(false)
+  calendarColor   String?
 
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user                    User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant                  Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assignedContacts        Contact[]                  @relation("ContactAssignedToMembership")
+  assignedTasks           Task[]                     @relation("TaskAssignedToMembership")
+  assignedTaskReminders   TaskReminder[]             @relation("TaskReminderMembershipRecipient")
+  servicingAgentContacts  Contact[]                  @relation("ContactServicingAgentMembership")
+  additionalAgentContacts Contact[]                  @relation("ContactAdditionalAgentMembership")
+  calendarStaffGroups     CalendarStaffGroupMember[]
 
   @@unique([userId, tenantId])
   @@index([tenantId])
   @@index([userId])
+  @@index([tenantId, securityLevel])
 }
 
 model Invite {
@@ -254,5 +827,541 @@ model TenantSubscription {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([status])
+}
 
+model ContactStatusConfig {
+  id              String  @id @default(uuid())
+  tenantId        String
+  name            String
+  bgColor         String
+  textColor       String
+  sortOrder       Int     @default(0)
+  isActive        Boolean @default(true)
+  isSystemDefault Boolean @default(false)
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contacts Contact[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+}
+
+model TaskStatusConfig {
+  id              String  @id @default(uuid())
+  tenantId        String
+  name            String
+  bgColor         String
+  textColor       String
+  sortOrder       Int     @default(0)
+  isActive        Boolean @default(true)
+  isSystemDefault Boolean @default(false)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tasks  Task[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+}
+
+model ContactCustomField {
+  id          String                 @id @default(uuid())
+  tenantId    String
+  key         String
+  label       String
+  description String?
+  fieldType   ContactCustomFieldType
+  isRequired  Boolean                @default(false)
+  isEncrypted Boolean                @default(false)
+  isSensitive Boolean                @default(false)
+  isActive    Boolean                @default(true)
+  options     Json?
+  sortOrder   Int                    @default(0)
+
+  tenant         Tenant                            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  values         ContactCustomFieldValue[]
+  accessRequests ContactCustomFieldAccessRequest[]
+  accessGrants   ContactCustomFieldAccessGrant[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, key])
+  @@index([tenantId, sortOrder])
+}
+
+model ContactCustomFieldAccessRequest {
+  id              String                                @id @default(uuid())
+  tenantId        String
+  fieldId         String
+  requesterUserId String
+  status          ContactCustomFieldAccessRequestStatus @default(PENDING)
+  decidedByUserId String?
+  decidedAt       DateTime?
+  decisionNote    String?
+
+  tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  field     ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  requester User               @relation("CustomFieldAccessRequester", fields: [requesterUserId], references: [id], onDelete: Cascade)
+  decidedBy User?              @relation("CustomFieldAccessDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, fieldId, requesterUserId, status])
+  @@index([tenantId, requesterUserId, status, createdAt])
+}
+
+model ContactCustomFieldAccessGrant {
+  id              String    @id @default(uuid())
+  tenantId        String
+  fieldId         String
+  userId          String
+  grantedByUserId String
+  expiresAt       DateTime?
+  remainingReads  Int?
+
+  tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  field     ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  user      User               @relation("CustomFieldAccessGrantedUser", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy User               @relation("CustomFieldAccessGrantedBy", fields: [grantedByUserId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, fieldId, userId])
+  @@index([tenantId, userId, createdAt])
+  @@index([tenantId, fieldId, createdAt])
+  @@index([tenantId, userId, expiresAt])
+}
+
+model TenantTag {
+  id        String @id @default(uuid())
+  tenantId  String
+  name      String
+  bgColor   String
+  textColor String
+  sortOrder Int    @default(0)
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactTags ContactTag[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+}
+
+model Task {
+  id                           String                @id @default(uuid())
+  tenantId                     String
+  contactId                    String?
+  contactServiceId             String?
+  followUpTemplateId           String?
+  contactServiceFollowUpStepId String?
+  statusConfigId               String?
+  assignedToUserId             String?
+  priority                     TaskPriority?
+  name                         String
+  description                  String?
+  dueDate                      DateTime?
+  startedAt                    DateTime?
+  linkedEntityName             String?
+  linkedEntityType             TaskLinkedEntityType?
+
+  tenant                     Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact                    Contact?                    @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  contactService             ContactService?             @relation(fields: [contactServiceId], references: [id], onDelete: SetNull)
+  followUpTemplate           ServiceFollowUpTemplate?    @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
+  contactServiceFollowUpStep ContactServiceFollowUpStep? @relation(fields: [contactServiceFollowUpStepId], references: [id], onDelete: SetNull)
+  statusConfig               TaskStatusConfig?           @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
+  assignedToMembership       Membership?                 @relation("TaskAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
+  reminders                  TaskReminder[]
+  notifications              Notification[]
+  activities                 TaskActivity[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, dueDate])
+  @@index([tenantId, statusConfigId])
+  @@index([tenantId, priority])
+  @@index([tenantId, assignedToUserId])
+  @@index([tenantId, contactId])
+  @@index([tenantId, contactServiceId])
+  @@index([tenantId, followUpTemplateId])
+  @@index([tenantId, contactServiceFollowUpStepId])
+  @@index([tenantId, createdAt])
+}
+
+model TaskReminder {
+  id              String    @id @default(uuid())
+  tenantId        String
+  taskId          String
+  recipientUserId String
+  membershipId    String?
+  createdById     String
+  remindAt        DateTime
+  message         String?
+  notifiedAt      DateTime?
+  canceledAt      DateTime?
+
+  tenant              Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  task                Task          @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  recipient           User          @relation("TaskReminderRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+  recipientMembership Membership?   @relation("TaskReminderMembershipRecipient", fields: [membershipId], references: [id], onDelete: SetNull)
+  createdBy           User          @relation("TaskReminderCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+  notification        Notification?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, taskId])
+  @@index([tenantId, recipientUserId, remindAt])
+  @@index([tenantId, notifiedAt, canceledAt, remindAt])
+}
+
+model Notification {
+  id             String           @id @default(uuid())
+  tenantId       String
+  userId         String
+  contactId      String?
+  taskId         String?
+  taskReminderId String?          @unique
+  eventKey       String?          @unique
+  type           NotificationType
+  title          String
+  body           String?
+  readAt         DateTime?
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task         Task?         @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  taskReminder TaskReminder? @relation(fields: [taskReminderId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, userId, createdAt])
+  @@index([tenantId, userId, readAt, createdAt])
+  @@index([tenantId, userId, contactId, createdAt])
+}
+
+model Appointment {
+  id               String            @id @default(uuid())
+  tenantId         String
+  contactId        String
+  serviceId        String?
+  bookedByUserId   String
+  assignedToUserId String?
+  status           AppointmentStatus @default(SCHEDULED)
+  title            String
+  notes            String?
+  startAt          DateTime
+  endAt            DateTime
+  isAllDay         Boolean           @default(false)
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact    Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  service    Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  bookedBy   User     @relation("AppointmentBookedBy", fields: [bookedByUserId], references: [id], onDelete: Restrict)
+  assignedTo User?    @relation("AppointmentAssignedTo", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, startAt])
+  @@index([tenantId, endAt])
+  @@index([tenantId, status, startAt])
+  @@index([tenantId, assignedToUserId, startAt])
+  @@index([tenantId, contactId, startAt])
+  @@index([tenantId, serviceId, startAt])
+  @@index([tenantId, bookedByUserId, startAt])
+}
+
+model CalendarAvailabilityRule {
+  id               String                   @id @default(uuid())
+  tenantId         String
+  userId           String?
+  scope            CalendarScheduleScope
+  kind             CalendarAvailabilityKind @default(OPEN)
+  dayOfWeek        Int
+  startTimeMinutes Int
+  endTimeMinutes   Int
+  label            String?
+  isActive         Boolean                  @default(true)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, scope, userId, isActive])
+  @@index([tenantId, dayOfWeek, startTimeMinutes, endTimeMinutes])
+}
+
+model CalendarTimeBlock {
+  id          String                @id @default(uuid())
+  tenantId    String
+  userId      String?
+  scope       CalendarScheduleScope
+  title       String
+  description String?
+  startsAt    DateTime
+  endsAt      DateTime
+  isAllDay    Boolean               @default(false)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, startsAt])
+  @@index([tenantId, endsAt])
+  @@index([tenantId, scope, userId, startsAt])
+}
+
+model CalendarStaffGroup {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant  Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  members CalendarStaffGroupMember[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, name])
+}
+
+model CalendarStaffGroupMember {
+  id        String   @id @default(uuid())
+  tenantId  String
+  groupId   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  tenant     Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group      CalendarStaffGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  membership Membership         @relation(fields: [tenantId, userId], references: [tenantId, userId], onDelete: Cascade)
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@unique([tenantId, id])
+  @@index([tenantId, groupId])
+  @@index([tenantId, userId])
+}
+
+model ContactCustomFieldValue {
+  id              String  @id @default(uuid())
+  tenantId        String
+  contactId       String
+  fieldId         String
+  value           Json?
+  valueCiphertext String?
+  valueIv         String?
+  valueAuthTag    String?
+  valueKeyVersion Int?
+
+  tenant  Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact Contact            @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  field   ContactCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, contactId, fieldId])
+  @@index([tenantId, contactId])
+  @@index([tenantId, fieldId])
+}
+
+model Contact {
+  id       String @id @default(uuid())
+  tenantId String
+
+  firstName  String
+  middleName String?
+  lastName   String
+
+  phone          String?
+  secondaryPhone String?
+  email          String?
+
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  country      String?
+
+  mailingAddressLine1 String?
+  mailingAddressLine2 String?
+  mailingCity         String?
+  mailingState        String?
+  mailingPostalCode   String?
+  mailingCountry      String?
+
+  statusConfigId   String?
+  assignedToUserId String?
+  ssnLast4         String?
+  ssnCiphertext    String?
+  ssnIv            String?
+  ssnAuthTag       String?
+  ssnKeyVersion    Int     @default(1)
+
+  emergencyContactName         String?
+  emergencyContactPhone        String?
+  emergencyContactRelationship String?
+
+  dateOfBirth DateTime?
+  gender      ContactGender?
+  height      String?
+  weight      String?
+  deceasedAt  DateTime?
+
+  medicarePartA Boolean?
+  medicarePartB Boolean?
+  smokerStatus  ContactSmokerStatus?
+
+  servicingAgentUserId  String?
+  additionalAgentUserId String?
+
+  leadDate        DateTime?
+  leadSource      String?
+  leadOtherSource String?
+
+  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  statusConfig ContactStatusConfig? @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
+
+  assignedToMembership         Membership?                   @relation("ContactAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
+  servicingAgentMembership     Membership?                   @relation("ContactServicingAgentMembership", fields: [tenantId, servicingAgentUserId], references: [tenantId, userId])
+  additionalAgentMembership    Membership?                   @relation("ContactAdditionalAgentMembership", fields: [tenantId, additionalAgentUserId], references: [tenantId, userId])
+  tags                         ContactTag[]
+  customFieldValues            ContactCustomFieldValue[]
+  outgoingRelationships        ContactRelationship[]         @relation("ContactRelationshipSource")
+  incomingRelationships        ContactRelationship[]         @relation("ContactRelationshipTarget")
+  notes                        ContactNote[]
+  tasks                        Task[]
+  appointments                 Appointment[]
+  serviceProcesses             ContactService[]
+  serviceFollowUpExecutionLogs ServiceFollowUpExecutionLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, lastName, firstName])
+  @@index([tenantId, statusConfigId])
+  @@index([tenantId, assignedToUserId])
+  @@index([tenantId, servicingAgentUserId])
+  @@index([tenantId, additionalAgentUserId])
+  @@index([tenantId, email])
+  @@index([tenantId, phone])
+  @@index([tenantId, ssnLast4])
+}
+
+model ContactTag {
+  id        String @id @default(uuid())
+  tenantId  String
+  contactId String
+  tagId     String
+
+  tenant  Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag     TenantTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, contactId, tagId])
+  @@index([tenantId, contactId])
+  @@index([tenantId, tagId])
+}
+
+model ContactRelationship {
+  id                         String                  @id @default(uuid())
+  tenantId                   String
+  contactId                  String
+  relatedContactId           String
+  relationshipPairKey        String
+  relationshipType           ContactRelationshipType
+  reciprocalRelationshipType ContactRelationshipType
+
+  tenant         Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact        Contact @relation("ContactRelationshipSource", fields: [contactId], references: [id], onDelete: Cascade)
+  relatedContact Contact @relation("ContactRelationshipTarget", fields: [relatedContactId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, relationshipPairKey])
+  @@index([tenantId, contactId])
+  @@index([tenantId, relatedContactId])
+}
+
+model ContactNote {
+  id                           String  @id @default(uuid())
+  tenantId                     String
+  contactId                    String
+  contactServiceId             String?
+  followUpTemplateId           String?
+  contactServiceFollowUpStepId String?
+  title                        String
+  body                         String
+  createdById                  String
+
+  tenant                     Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact                    Contact                     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contactService             ContactService?             @relation(fields: [contactServiceId], references: [id], onDelete: SetNull)
+  followUpTemplate           ServiceFollowUpTemplate?    @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
+  contactServiceFollowUpStep ContactServiceFollowUpStep? @relation(fields: [contactServiceFollowUpStepId], references: [id], onDelete: SetNull)
+  createdBy                  User                        @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  attachments                ContactNoteAttachment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactId, createdAt])
+  @@index([tenantId, contactServiceId, createdAt])
+  @@index([tenantId, followUpTemplateId, createdAt])
+  @@index([tenantId, contactServiceFollowUpStepId, createdAt])
+  @@index([tenantId, createdById])
+}
+
+model ContactNoteAttachment {
+  id       String @id @default(uuid())
+  tenantId String
+  noteId   String
+  fileId   String
+
+  tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  note   ContactNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  file   File        @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, noteId, fileId])
+  @@index([tenantId, noteId])
+  @@index([tenantId, fileId])
 }
