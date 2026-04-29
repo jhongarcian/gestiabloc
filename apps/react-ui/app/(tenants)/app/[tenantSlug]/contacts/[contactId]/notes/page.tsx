@@ -28,6 +28,8 @@ type ContactNotesResponse = {
       type: "CONTACT" | "SERVICE"
       contactServiceId?: string
       serviceName?: string
+      followUpTemplateName?: string
+      followUpStepTitle?: string
     }
     attachments: Array<{
       id: string

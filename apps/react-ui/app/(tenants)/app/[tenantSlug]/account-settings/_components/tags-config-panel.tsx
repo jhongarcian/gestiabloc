@@ -850,7 +850,7 @@ export function TagsConfigPanel({ tenantId, tenantSlug }: TagsConfigPanelProps) 
               variant="outline"
               disabled={isBusy}
               className="cursor-pointer"
-              onClick={closeDialog}
+              onClick={() => closeDialog()}
             >
               Cancel
             </Button>

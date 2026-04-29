@@ -5,6 +5,7 @@ import { Filter } from "lucide-react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { startTransition, useCallback, useEffect, useMemo, useState } from "react"
 
+import { StackedAvatarGroup } from "@/components/stacked-avatar-group"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -53,11 +54,20 @@ type ContactItem = {
   dateOfBirth: string | null
   phoneNumber: string | null
   email: string | null
+  assignedTo: {
+    userId: string
+    name: string
+    email: string
+    image: string | null
+  } | null
+  activeFollowUpServices?: Array<{
+    id: string
+    name: string
+  }>
   status: string
   statusConfigId: string | null
   statusBgColor: string | null
   statusTextColor: string | null
-  followUps: number
 }
 
 type ContactsListResponse = {
@@ -497,6 +507,7 @@ export function ContactsTable({
                 <TableHead className="min-w-36 text-xs">Date of Birth</TableHead>
                 <TableHead className="min-w-40 text-xs">Phone Number</TableHead>
                 <TableHead className="min-w-52 text-xs">Email</TableHead>
+                <TableHead className="min-w-36 text-xs">Assigned User</TableHead>
                 <TableHead className="min-w-32 text-xs">Status</TableHead>
                 <TableHead className="min-w-28 text-xs">Follow Ups</TableHead>
               </TableRow>
@@ -504,13 +515,13 @@ export function ContactsTable({
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-slate-500">
+                  <TableCell colSpan={7} className="py-8 text-center text-slate-500">
                     Loading contacts...
                   </TableCell>
                 </TableRow>
               ) : errorMessage ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-rose-600">
+                  <TableCell colSpan={7} className="py-8 text-center text-rose-600">
                     {errorMessage}
                   </TableCell>
                 </TableRow>
@@ -545,6 +556,27 @@ export function ContactsTable({
                         {formatPhoneNumber(contact.phoneNumber)}
                       </TableCell>
                       <TableCell className="text-slate-700">{contact.email ?? "—"}</TableCell>
+                      <TableCell className="text-slate-700">
+                        <StackedAvatarGroup
+                          items={
+                            contact.assignedTo
+                              ? [
+                                  {
+                                    id: contact.assignedTo.userId,
+                                    label: contact.assignedTo.name,
+                                    imageUrl: contact.assignedTo.image,
+                                    tone: "internal",
+                                  },
+                                ]
+                              : []
+                          }
+                          maxVisible={1}
+                          avatarSize="sm"
+                          enableHoverEffect={false}
+                          emptyLabel="Unassigned"
+                          className="pl-0"
+                        />
+                      </TableCell>
                       <TableCell>
                         <StatusBadge
                           label={contact.status}
@@ -552,13 +584,26 @@ export function ContactsTable({
                           textColor={contact.statusTextColor ?? undefined}
                         />
                       </TableCell>
-                      <TableCell className="text-slate-700">{contact.followUps}</TableCell>
+                      <TableCell className="text-slate-700">
+                        <StackedAvatarGroup
+                          items={(contact.activeFollowUpServices ?? []).map((service) => ({
+                            id: service.id,
+                            label: service.name,
+                            tone: "neutral",
+                          }))}
+                          maxVisible={4}
+                          avatarSize="sm"
+                          enableHoverEffect={false}
+                          emptyLabel="—"
+                          className="pl-0"
+                        />
+                      </TableCell>
                     </TableRow>
                   )
                 })
               ) : (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-slate-500">
+                  <TableCell colSpan={7} className="py-8 text-center text-slate-500">
                     No contacts to display yet.
                   </TableCell>
                 </TableRow>

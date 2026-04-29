@@ -101,6 +101,7 @@ declare global {
       url: string,
       options: { withCredentials: boolean; transports: string[] },
     ) => SocketClient
+    __tenantShellServiceBreadcrumbLabel?: string | null
   }
 }
 
@@ -259,9 +260,10 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
       acc += `/${segment}`
       const isContactIdSegment = segments[0] === "contacts" && index === 1
       const isServiceIdSegment =
-        segments[0] === "account-settings" &&
-        segments[1] === "services" &&
-        index === 2
+        (segments[0] === "account-settings" &&
+          segments[1] === "services" &&
+          index === 2) ||
+        (segments[0] === "services" && index === 1)
       const isServiceFollowUpsSegment =
         segments[0] === "account-settings" &&
         segments[1] === "services" &&
@@ -348,7 +350,9 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
     const serviceId =
       segments[0] === "account-settings" && segments[1] === "services"
         ? segments[2]
-        : null
+        : segments[0] === "services"
+          ? segments[1]
+          : null
     if (!serviceId) {
       setServiceCrumbLabel(null)
     }
@@ -375,6 +379,10 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
   }, [])
 
   useEffect(() => {
+    if (window.__tenantShellServiceBreadcrumbLabel) {
+      setServiceCrumbLabel(window.__tenantShellServiceBreadcrumbLabel)
+    }
+
     const handler = (event: Event) => {
       const customEvent = event as CustomEvent<{ label?: string | null }>
       setServiceCrumbLabel(customEvent.detail?.label ?? null)

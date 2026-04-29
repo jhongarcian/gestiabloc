@@ -1254,6 +1254,25 @@ export async function executeFollowUpFromStep(params: {
         return { activatedStepId: null, usedFlowExecution: true }
       }
 
+      if (enrolledStep.status === "COMPLETED" || enrolledStep.status === "SKIPPED") {
+        await createExecutionLog({
+          prismaTx,
+          tenantId,
+          templateId: contactService.followUpTemplate.id,
+          contactServiceId: contactService.id,
+          contactId: contactService.contactId,
+          actorUserId,
+          flowNodeId: node.id,
+          stepId: enrolledStep.id,
+          eventType: "STEP_SKIPPED_DUE_TO_EXISTING_STATUS",
+          title: `Skipped already resolved step: ${node.data?.label?.trim() || enrolledStep.id}`,
+          details: `The flow skipped this step because it was already marked as ${enrolledStep.status.toLowerCase()}.`,
+          payload: { status: enrolledStep.status },
+        })
+        pendingTargets = [...getOutgoingTargets(edges, node.id), ...pendingTargets]
+        continue
+      }
+
       const activationTime = new Date(Date.now() + delayMs)
       const nextStatus = delayMs > 0 ? "PENDING" : "ACTIVE"
 

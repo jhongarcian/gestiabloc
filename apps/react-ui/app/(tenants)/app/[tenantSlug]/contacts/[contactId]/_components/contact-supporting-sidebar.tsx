@@ -21,7 +21,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import { ContactRelationshipsSection } from "./contact-relationships-section"
 import { ContactTagsSection } from "./contact-tags-section"
 
 type RelationshipType =
@@ -235,12 +234,25 @@ export function ContactSupportingSidebar({
 
       {open ? (
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pt-3 pb-4">
-          <ContactRelationshipsSection
-            tenantId={tenantId}
-            tenantSlug={tenantSlug}
-            contactId={contactId}
-            initialRelationships={initialRelationships}
-          />
+          <Link
+            href={`/app/${tenantSlug}/contacts/${contactId}/relationships`}
+            className="flex items-start justify-between gap-3 rounded-xl border border-white/60 bg-white/40 px-3.5 py-3 text-sm text-slate-700 shadow-sm backdrop-blur-md transition hover:bg-white/60 hover:text-slate-900"
+          >
+            <div className="min-w-0 space-y-1">
+              <div className="flex items-center gap-2">
+                <Users className="h-4 w-4 text-slate-500" />
+                <span className="font-medium text-slate-900">Relationships</span>
+              </div>
+              <p className="text-xs leading-5 text-slate-500">
+                {initialRelationships.length > 0
+                  ? `${initialRelationships.length} connected contact${initialRelationships.length === 1 ? "" : "s"}`
+                  : "View and manage connected contacts"}
+              </p>
+            </div>
+            <span className="rounded-full border border-slate-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-950">
+              {initialRelationships.length}
+            </span>
+          </Link>
 
           <ContactTagsSection
             tenantId={tenantId}
@@ -287,6 +299,27 @@ export function ContactSupportingSidebar({
         <div className="flex flex-1 flex-col items-center gap-3 px-2 pt-4 pb-5">
           {COLLAPSED_ITEMS.map((item) => {
             const Icon = item.icon
+            if (item.key === "relationships") {
+              return (
+                <Tooltip key={item.key}>
+                  <TooltipTrigger asChild>
+                    <Link
+                      href={`/app/${tenantSlug}/contacts/${contactId}/relationships`}
+                      className={cn(
+                        "flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border transition",
+                        item.className,
+                      )}
+                      aria-label={item.label}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                    </Link>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    {item.label} ({initialRelationships.length})
+                  </TooltipContent>
+                </Tooltip>
+              )
+            }
             return (
               <Tooltip key={item.key}>
                 <TooltipTrigger asChild>
@@ -303,10 +336,8 @@ export function ContactSupportingSidebar({
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="left">
-                  {item.key === "relationships"
-                    ? `${item.label} (${initialRelationships.length})`
-                    : item.key === "followups"
-                      ? `${item.label} (${activeFollowUpCount})`
+                  {item.key === "followups"
+                    ? `${item.label} (${activeFollowUpCount})`
                     : item.label}
                 </TooltipContent>
               </Tooltip>

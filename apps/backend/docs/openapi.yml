@@ -11,6 +11,7 @@ tags:
   - name: Auth
   - name: Files
   - name: Account Settings
+  - name: Calendar
   - name: Contacts
   - name: Notifications
   - name: Tasks
@@ -2409,6 +2410,856 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/account-settings/{tenantId}/calendar:
+    get:
+      tags: [Account Settings]
+      summary: Get account calendar configuration
+      description: Returns account-wide booking rules, weekly availability, blocked periods, enabled staff, and reusable staff groups.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Calendar configuration returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsCalendarConfigResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags: [Account Settings]
+      summary: Update account calendar rules and weekly availability
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsCalendarConfigUpdateRequest"
+      responses:
+        "200":
+          description: Calendar configuration updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/account-settings/{tenantId}/calendar/staff:
+    patch:
+      tags: [Account Settings]
+      summary: Update which staff members are enabled on the calendar
+      description: |
+        Enables or disables staff members for calendar visibility and updates the color used
+        when rendering their appointments. Disabled users are removed from any calendar groups.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsCalendarStaffUpdateRequest"
+      responses:
+        "200":
+          description: Staff calendar settings updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: One or more users were not found in the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/account-settings/{tenantId}/calendar/groups:
+    post:
+      tags: [Account Settings]
+      summary: Create a reusable calendar staff group
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsCalendarGroupCreateRequest"
+      responses:
+        "201":
+          description: Calendar group created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsCalendarGroupMutationResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: One or more selected members are not active calendar staff
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Group name already exists for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/account-settings/{tenantId}/calendar/groups/{recordId}:
+    patch:
+      tags: [Account Settings]
+      summary: Update a reusable calendar staff group
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSettingsCalendarGroupUpdateRequest"
+      responses:
+        "200":
+          description: Calendar group updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsCalendarGroupMutationResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Group or member not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Group name already exists for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Account Settings]
+      summary: Delete a reusable calendar staff group
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      responses:
+        "200":
+          description: Calendar group deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Group not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/account-settings/{tenantId}/calendar/users/{userId}:
+    get:
+      tags: [Account Settings]
+      summary: Get calendar availability and blocks for one staff member
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User calendar settings returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsCalendarUserResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found in the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags: [Account Settings]
+      summary: Update weekly availability for one staff member
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [weeklyAvailability]
+              properties:
+                weeklyAvailability:
+                  type: array
+                  maxItems: 7
+                  items:
+                    $ref: "#/components/schemas/CalendarWeeklyAvailabilityItem"
+      responses:
+        "200":
+          description: User weekly availability updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found in the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/account-settings/{tenantId}/calendar/blocks:
+    post:
+      tags: [Account Settings]
+      summary: Create an account-wide calendar block
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CalendarBlockCreateRequest"
+      responses:
+        "201":
+          description: Account block created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarBlockMutationResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/account-settings/{tenantId}/calendar/blocks/{recordId}:
+    patch:
+      tags: [Account Settings]
+      summary: Update an account-wide calendar block
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CalendarBlockUpdateRequest"
+      responses:
+        "200":
+          description: Account block updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarBlockMutationResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Block not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Account Settings]
+      summary: Delete an account-wide calendar block
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      responses:
+        "200":
+          description: Account block deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Block not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/account-settings/{tenantId}/calendar/users/{userId}/blocks:
+    post:
+      tags: [Account Settings]
+      summary: Create a user-specific calendar block
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CalendarBlockCreateRequest"
+      responses:
+        "201":
+          description: User block created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarBlockMutationResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found in the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/account-settings/{tenantId}/calendar/users/{userId}/blocks/{recordId}:
+    delete:
+      tags: [Account Settings]
+      summary: Delete a user-specific calendar block
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      responses:
+        "200":
+          description: User block deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a tenant admin for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Block not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/appointments/{tenantId}/meta:
+    get:
+      tags: [Calendar]
+      summary: Get calendar filters and booking settings
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Calendar metadata returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarMetaResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/appointments/{tenantId}/slots:
+    get:
+      tags: [Calendar]
+      summary: Get bookable slots for one user on one local date
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: assignedToUserId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: date
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}-\d{2}$'
+      responses:
+        "200":
+          description: Slots returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarSlotsResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Assignee not found or not enabled on the calendar
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/appointments/{tenantId}:
+    get:
+      tags: [Calendar]
+      summary: List appointments for a calendar range
+      description: |
+        Supports user-mode and group-mode filtering. User-mode accepts one or more selected users.
+        Group-mode accepts one or more reusable staff groups and expands them to active, calendar-enabled members.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: view
+          schema:
+            type: string
+            enum: [month, week, day, list]
+        - in: query
+          name: filterMode
+          schema:
+            type: string
+            enum: [users, groups]
+        - in: query
+          name: assignedToUserId
+          schema:
+            type: string
+        - in: query
+          name: assignedToUserIds
+          schema:
+            type: string
+            description: Comma-separated user IDs
+        - in: query
+          name: groupIds
+          schema:
+            type: string
+            description: Comma-separated calendar group IDs
+        - in: query
+          name: contactId
+          schema:
+            type: string
+        - in: query
+          name: serviceId
+          schema:
+            type: string
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Appointments returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarEventsResponse"
+        "400":
+          description: Invalid filter mode or malformed filters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: One or more filter IDs do not belong to the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [Calendar]
+      summary: Create an appointment atomically
+      description: |
+        Books an appointment using the tenant calendar rules and atomic conflict handling.
+        If a competing booking wins the slot first, this endpoint returns `409 APPOINTMENT_TIME_UNAVAILABLE`.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCalendarAppointmentRequest"
+      responses:
+        "201":
+          description: Appointment created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateCalendarAppointmentResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact, service, or assignee not found in the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Selected slot is not available
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAppointmentConflictResponse"
+
+  /api/appointments/{tenantId}/availability:
+    post:
+      tags: [Calendar]
+      summary: Check appointment availability for one assignee and time range
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CalendarAvailabilityRequest"
+      responses:
+        "200":
+          description: Availability returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAvailabilityResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Assignee not found or not enabled on the calendar
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/appointments/{tenantId}/{appointmentId}:
+    delete:
+      tags: [Calendar]
+      summary: Delete an appointment
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: appointmentId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Appointment deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/notifications/{tenantId}:
     get:
       tags: [Notifications]
@@ -2955,6 +3806,158 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/catalog-summary:
+    get:
+      tags: [Services]
+      summary: Get services catalog summary metrics
+      description: Returns aggregate metrics for the services dashboard cards. Gross sales and services sold use the selected range. Active follow-up services and remaining balance are live totals.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: preset
+          required: false
+          schema:
+            $ref: "#/components/schemas/ServicesSummaryRangePreset"
+        - in: query
+          name: from
+          required: false
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        - in: query
+          name: to
+          required: false
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      responses:
+        "200":
+          description: Services dashboard summary returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceSummaryResponse"
+        "400":
+          description: Invalid summary range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/catalog/{serviceId}:
+    get:
+      tags: [Services]
+      summary: Get one user-facing service catalog item
+      description: Returns the read-only service overview used by tenant users on `/app/{slug}/services/{serviceId}`.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: serviceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Service overview returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceCatalogDetailResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Service not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/catalog/{serviceId}/summary:
+    get:
+      tags: [Services]
+      summary: Get one service summary metrics
+      description: Returns aggregate metrics for the single-service summary cards on `/app/{slug}/services/{serviceId}`.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: serviceId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: preset
+          required: false
+          schema:
+            $ref: "#/components/schemas/ServicesSummaryRangePreset"
+        - in: query
+          name: from
+          required: false
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        - in: query
+          name: to
+          required: false
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      responses:
+        "200":
+          description: Service summary returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceSummaryResponse"
+        "400":
+          description: Invalid summary range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Service not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services:
     get:
       tags: [Services]
@@ -3115,6 +4118,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/overview:
+    get:
+      tags: [Services]
+      summary: Get overview data for a single contact service process
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lightweight contact service overview returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactServiceOverviewResponse"
         "401":
           description: Not authenticated
           content:
@@ -4043,6 +5084,18 @@ components:
         website:
           type: string
           nullable: true
+        taxEnabled:
+          type: boolean
+          default: false
+        taxLabel:
+          type: string
+          nullable: true
+          maxLength: 80
+        defaultTaxRatePercent:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 100
     AccountSettingsTenantInfoResponse:
       type: object
       properties:
@@ -4085,6 +5138,14 @@ components:
               nullable: true
             website:
               type: string
+              nullable: true
+            taxEnabled:
+              type: boolean
+            taxLabel:
+              type: string
+              nullable: true
+            defaultTaxRatePercent:
+              type: number
               nullable: true
             emailVerified:
               type: boolean
@@ -4440,6 +5501,28 @@ components:
         email:
           type: string
           nullable: true
+        assignedTo:
+          type: object
+          nullable: true
+          properties:
+            userId:
+              type: string
+            name:
+              type: string
+            email:
+              type: string
+            image:
+              type: string
+              nullable: true
+        activeFollowUpServices:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
         status:
           type: string
         statusConfigId:
@@ -4451,8 +5534,6 @@ components:
         statusTextColor:
           type: string
           nullable: true
-        followUps:
-          type: integer
     ContactDetailsResponse:
       type: object
       properties:
@@ -4977,6 +6058,18 @@ components:
           type: string
           minLength: 1
           maxLength: 5000
+        contactServiceId:
+          type: string
+          nullable: true
+          description: Optional related contact service enrollment id. Required when linking the note to a follow-up template or step.
+        followUpTemplateId:
+          type: string
+          nullable: true
+          description: Optional related follow-up template id. Must belong to the provided contact service.
+        contactServiceFollowUpStepId:
+          type: string
+          nullable: true
+          description: Optional related contact service follow-up step id. Must belong to the provided contact service.
         attachmentFileIds:
           type: array
           maxItems: 10
@@ -5237,6 +6330,18 @@ components:
           maxLength: 160
         contactId:
           type: string
+        contactServiceId:
+          type: string
+          nullable: true
+          description: Optional related contact service enrollment id. Required when linking the task to a follow-up template or step.
+        followUpTemplateId:
+          type: string
+          nullable: true
+          description: Optional related follow-up template id. Must belong to the provided contact service.
+        contactServiceFollowUpStepId:
+          type: string
+          nullable: true
+          description: Optional related contact service follow-up step id. Must belong to the provided contact service.
         description:
           type: string
           nullable: true
@@ -5267,6 +6372,15 @@ components:
           maxLength: 160
         contactId:
           type: string
+        contactServiceId:
+          type: string
+          nullable: true
+        followUpTemplateId:
+          type: string
+          nullable: true
+        contactServiceFollowUpStepId:
+          type: string
+          nullable: true
         description:
           type: string
           nullable: true
@@ -5541,6 +6655,9 @@ components:
           minLength: 3
           maxLength: 3
           default: USD
+        isTaxExempt:
+          type: boolean
+          default: false
         allowPartialPayments:
           type: boolean
           default: false
@@ -5548,6 +6665,12 @@ components:
           type: integer
           minimum: 0
           nullable: true
+        installmentCount:
+          type: integer
+          minimum: 2
+          nullable: true
+        installmentFrequency:
+          $ref: "#/components/schemas/InstallmentFrequency"
         isActive:
           type: boolean
           default: true
@@ -5584,12 +6707,20 @@ components:
           type: string
           minLength: 3
           maxLength: 3
+        isTaxExempt:
+          type: boolean
         allowPartialPayments:
           type: boolean
         minimumPartialPaymentCents:
           type: integer
           minimum: 0
           nullable: true
+        installmentCount:
+          type: integer
+          minimum: 2
+          nullable: true
+        installmentFrequency:
+          $ref: "#/components/schemas/InstallmentFrequency"
         isActive:
           type: boolean
         sortOrder:
@@ -5621,11 +6752,18 @@ components:
           type: integer
         currency:
           type: string
+        isTaxExempt:
+          type: boolean
         allowPartialPayments:
           type: boolean
         minimumPartialPaymentCents:
           type: integer
           nullable: true
+        installmentCount:
+          type: integer
+          nullable: true
+        installmentFrequency:
+          $ref: "#/components/schemas/InstallmentFrequency"
         isActive:
           type: boolean
         sortOrder:
@@ -5697,6 +6835,34 @@ components:
                 nullable: true
               sortOrder:
                 type: integer
+              user:
+                type: object
+                nullable: true
+                properties:
+                  name:
+                    type: string
+                    nullable: true
+                  email:
+                    type: string
+                    nullable: true
+                  image:
+                    type: string
+                    nullable: true
+        tenantBilling:
+          $ref: "#/components/schemas/TenantBillingSummary"
+        configStatus:
+          type: object
+          properties:
+            overviewComplete:
+              type: boolean
+            checklistComplete:
+              type: boolean
+            followUpsComplete:
+              type: boolean
+            professionalsComplete:
+              type: boolean
+            isComplete:
+              type: boolean
     AccountSettingsServiceProfessionalSummaryItem:
       type: object
       properties:
@@ -6006,15 +7172,201 @@ components:
               type: integer
             currency:
               type: string
+            isTaxExempt:
+              type: boolean
             allowPartialPayments:
               type: boolean
             minimumPartialPaymentCents:
               type: integer
               nullable: true
+            installmentCount:
+              type: integer
+              nullable: true
+            installmentFrequency:
+              $ref: "#/components/schemas/InstallmentFrequency"
             isActive:
               type: boolean
             sortOrder:
               type: integer
+    ServicesSummaryRangePreset:
+      type: string
+      enum: [THIS_MONTH, LAST_MONTH, LAST_3_MONTHS, CUSTOM]
+    InstallmentFrequency:
+      type: string
+      nullable: true
+      enum: [WEEKLY, BIWEEKLY, MONTHLY]
+    TenantBillingSummary:
+      type: object
+      properties:
+        taxEnabled:
+          type: boolean
+        taxLabel:
+          type: string
+          nullable: true
+        defaultTaxRatePercent:
+          type: number
+          nullable: true
+    ServiceCatalogChecklistItem:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+          nullable: true
+        isRequired:
+          type: boolean
+        sortOrder:
+          type: integer
+    ServiceCatalogFollowUpTemplate:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        isPublished:
+          type: boolean
+        sortOrder:
+          type: integer
+        flowNodeCount:
+          type: integer
+        flowEdgeCount:
+          type: integer
+    ServiceCatalogProfessionalUser:
+      type: object
+      nullable: true
+      properties:
+        name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        image:
+          type: string
+          nullable: true
+    ServiceCatalogProfessional:
+      type: object
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [INTERNAL_USER, EXTERNAL]
+        userId:
+          type: string
+          nullable: true
+        externalProfessionalName:
+          type: string
+          nullable: true
+        externalContact:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+        user:
+          $ref: "#/components/schemas/ServiceCatalogProfessionalUser"
+    ServiceCatalogDetailResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        service:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            description:
+              type: string
+              nullable: true
+            basePriceCents:
+              type: integer
+            currency:
+              type: string
+            isTaxExempt:
+              type: boolean
+            allowPartialPayments:
+              type: boolean
+            minimumPartialPaymentCents:
+              type: integer
+              nullable: true
+            installmentCount:
+              type: integer
+              nullable: true
+            installmentFrequency:
+              $ref: "#/components/schemas/InstallmentFrequency"
+            isActive:
+              type: boolean
+            checklistItems:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceCatalogChecklistItem"
+            followUpTemplates:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceCatalogFollowUpTemplate"
+            professionals:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceCatalogProfessional"
+            tenantBilling:
+              $ref: "#/components/schemas/TenantBillingSummary"
+    ServiceSummaryRange:
+      type: object
+      properties:
+        preset:
+          $ref: "#/components/schemas/ServicesSummaryRangePreset"
+        from:
+          type: string
+        to:
+          type: string
+    ServiceSummaryMetrics:
+      type: object
+      properties:
+        grossSalesCents:
+          type: integer
+        servicesSold:
+          type: integer
+        activeFollowUpServices:
+          type: integer
+        remainingBalanceCents:
+          type: integer
+        range:
+          $ref: "#/components/schemas/ServiceSummaryRange"
+    ServiceSummaryResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        summary:
+          $ref: "#/components/schemas/ServiceSummaryMetrics"
+    ContactServiceAssignedProfessional:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [INTERNAL_USER, EXTERNAL]
+        userId:
+          type: string
+          nullable: true
+        externalProfessionalName:
+          type: string
+          nullable: true
+        externalContact:
+          type: string
+          nullable: true
+        user:
+          $ref: "#/components/schemas/ServiceCatalogProfessionalUser"
     ContactServiceFollowUpStepItem:
       type: object
       properties:
@@ -6084,6 +7436,8 @@ components:
         notes:
           type: string
           nullable: true
+        assignedProfessional:
+          $ref: "#/components/schemas/ContactServiceAssignedProfessional"
         contactName:
           type: string
         service:
@@ -6199,6 +7553,30 @@ components:
             image:
               type: string
               nullable: true
+    ContactServiceExecutionLogItem:
+      type: object
+      properties:
+        id:
+          type: string
+        eventType:
+          type: string
+        title:
+          type: string
+        details:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        actor:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+              nullable: true
     ContactServicesListResponse:
       type: object
       properties:
@@ -6230,6 +7608,13 @@ components:
           type: string
         followUpTemplateId:
           type: string
+          nullable: true
+        followUpAssignedToUserId:
+          type: string
+          nullable: true
+        assignedProfessionalId:
+          type: string
+          nullable: true
         purchasedAt:
           type: string
           format: date-time
@@ -6279,6 +7664,34 @@ components:
                   type: array
                   items:
                     $ref: "#/components/schemas/ContactServiceNoteItem"
+                executionLogs:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/ContactServiceExecutionLogItem"
+    ContactServiceOverviewResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        contactService:
+          allOf:
+            - $ref: "#/components/schemas/ContactServiceListItem"
+            - type: object
+              properties:
+                paymentSummary:
+                  $ref: "#/components/schemas/ContactServicePaymentSummary"
+    ContactServicePaymentSummary:
+      type: object
+      properties:
+        latestPaidAt:
+          type: string
+          format: date-time
+          nullable: true
+        totalPaymentsCount:
+          type: integer
+        scheduledPaymentsRecordedCount:
+          type: integer
     UpdateContactServiceRequest:
       type: object
       properties:
@@ -6495,6 +7908,10 @@ components:
           type: string
           nullable: true
           maxLength: 1000
+        action:
+          type: string
+          enum: [REOPEN]
+          description: Explicit recovery action for a completed, skipped, or postponed step.
         status:
           type: string
           enum: [PENDING, ACTIVE, COMPLETED, SKIPPED, POSTPONED]
@@ -6529,3 +7946,665 @@ components:
         followUpStep:
           allOf:
             - $ref: "#/components/schemas/ContactServiceFollowUpStepItem"
+    CalendarBookingRules:
+      type: object
+      properties:
+        meetingIntervalMinutes:
+          type: integer
+          enum: [15, 30, 45, 60, 120]
+        meetingDurationMinutes:
+          type: integer
+          enum: [15, 30, 45, 60, 120]
+        minimumScheduleNoticeMinutes:
+          type: integer
+          minimum: 0
+        maximumBookingsPerDay:
+          type: integer
+          nullable: true
+          minimum: 1
+        maximumBookingsPerSlot:
+          type: integer
+          minimum: 1
+        preBufferMinutes:
+          type: integer
+          minimum: 0
+        postBufferMinutes:
+          type: integer
+          minimum: 0
+        bufferAvailabilityMode:
+          type: string
+          enum: [BUSY, UNAVAILABLE]
+    CalendarWeeklyAvailabilityItem:
+      type: object
+      required: [dayOfWeek, enabled]
+      properties:
+        dayOfWeek:
+          type: integer
+          minimum: 0
+          maximum: 6
+        enabled:
+          type: boolean
+        startTime:
+          type: string
+          nullable: true
+          pattern: "^([01]\\d|2[0-3]):([0-5]\\d)$"
+        endTime:
+          type: string
+          nullable: true
+          pattern: "^([01]\\d|2[0-3]):([0-5]\\d)$"
+    CalendarBlock:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+        isAllDay:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CalendarStaffMember:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        email:
+          type: string
+          format: email
+        image:
+          type: string
+          nullable: true
+        role:
+          type: string
+        enabled:
+          type: boolean
+        color:
+          type: string
+          nullable: true
+          pattern: "^#[0-9a-fA-F]{6}$"
+    CalendarGroupMember:
+      type: object
+      properties:
+        userId:
+          type: string
+        label:
+          type: string
+        email:
+          type: string
+          format: email
+        image:
+          type: string
+          nullable: true
+        color:
+          type: string
+          nullable: true
+          pattern: "^#[0-9a-fA-F]{6}$"
+    CalendarStaffGroup:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        memberUserIds:
+          type: array
+          items:
+            type: string
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/CalendarGroupMember"
+    AccountSettingsCalendarConfigResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        timezone:
+          type: string
+          nullable: true
+        bookingRules:
+          $ref: "#/components/schemas/CalendarBookingRules"
+        weeklyAvailability:
+          type: array
+          items:
+            $ref: "#/components/schemas/CalendarWeeklyAvailabilityItem"
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/CalendarBlock"
+        staff:
+          type: array
+          items:
+            $ref: "#/components/schemas/CalendarStaffMember"
+        groups:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/CalendarStaffGroup"
+    AccountSettingsCalendarConfigUpdateRequest:
+      type: object
+      required: [bookingRules, weeklyAvailability]
+      properties:
+        bookingRules:
+          $ref: "#/components/schemas/CalendarBookingRules"
+        weeklyAvailability:
+          type: array
+          maxItems: 7
+          items:
+            $ref: "#/components/schemas/CalendarWeeklyAvailabilityItem"
+    AccountSettingsCalendarStaffUpdateRequest:
+      type: object
+      required: [staff]
+      properties:
+        staff:
+          type: array
+          maxItems: 250
+          items:
+            type: object
+            required: [userId, enabled]
+            properties:
+              userId:
+                type: string
+              enabled:
+                type: boolean
+              color:
+                type: string
+                nullable: true
+                pattern: "^#[0-9a-fA-F]{6}$"
+    AccountSettingsCalendarGroupCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        description:
+          type: string
+          nullable: true
+          maxLength: 500
+        memberUserIds:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+    AccountSettingsCalendarGroupUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        description:
+          type: string
+          nullable: true
+          maxLength: 500
+        memberUserIds:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+    AccountSettingsCalendarGroupMutationResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        group:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            description:
+              type: string
+              nullable: true
+            members:
+              type: array
+              items:
+                $ref: "#/components/schemas/CalendarGroupMember"
+    AccountSettingsCalendarUserResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        user:
+          $ref: "#/components/schemas/CalendarStaffMember"
+        weeklyAvailability:
+          type: array
+          items:
+            $ref: "#/components/schemas/CalendarWeeklyAvailabilityItem"
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/CalendarBlock"
+    CalendarBlockCreateRequest:
+      type: object
+      required: [title, startsAt, endsAt]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          nullable: true
+          maxLength: 1000
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+        isAllDay:
+          type: boolean
+    CalendarBlockUpdateRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          nullable: true
+          maxLength: 1000
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+        isAllDay:
+          type: boolean
+    CalendarBlockMutationResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        block:
+          $ref: "#/components/schemas/CalendarBlock"
+    CalendarMetaResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        settings:
+          $ref: "#/components/schemas/CalendarBookingRules"
+        filters:
+          type: object
+          properties:
+            users:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  label:
+                    type: string
+                  email:
+                    type: string
+                    format: email
+                  role:
+                    type: string
+                  image:
+                    type: string
+                    nullable: true
+                  color:
+                    type: string
+                    nullable: true
+                    pattern: "^#[0-9a-fA-F]{6}$"
+            groups:
+              type: array
+              items:
+                $ref: "#/components/schemas/CalendarStaffGroup"
+            services:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+    CalendarSlot:
+      type: object
+      properties:
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+        startLabel:
+          type: string
+        endLabel:
+          type: string
+        available:
+          type: boolean
+        reason:
+          type: string
+          nullable: true
+    CalendarSlotsResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        timezone:
+          type: string
+        meetingIntervalMinutes:
+          type: integer
+          enum: [15, 30, 45, 60, 120]
+        meetingDurationMinutes:
+          type: integer
+          enum: [15, 30, 45, 60, 120]
+        bookingRules:
+          type: object
+          properties:
+            minimumScheduleNoticeMinutes:
+              type: integer
+            maximumBookingsPerDay:
+              type: integer
+              nullable: true
+            maximumBookingsPerSlot:
+              type: integer
+            preBufferMinutes:
+              type: integer
+            postBufferMinutes:
+              type: integer
+            bufferAvailabilityMode:
+              type: string
+              enum: [BUSY, UNAVAILABLE]
+        assignee:
+          type: object
+          properties:
+            id:
+              type: string
+            label:
+              type: string
+        date:
+          type: string
+        slots:
+          type: array
+          items:
+            $ref: "#/components/schemas/CalendarSlot"
+    CalendarAppointmentItem:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        notes:
+          type: string
+          nullable: true
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+        assignedToUserId:
+          type: string
+          nullable: true
+        assignedToLabel:
+          type: string
+        assignedToImage:
+          type: string
+          nullable: true
+        assignedToColor:
+          type: string
+          nullable: true
+          pattern: "^#[0-9a-fA-F]{6}$"
+        contactId:
+          type: string
+        contactName:
+          type: string
+        serviceId:
+          type: string
+          nullable: true
+        serviceName:
+          type: string
+          nullable: true
+        status:
+          type: string
+    CalendarEventsResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CalendarAppointmentItem"
+        range:
+          type: object
+          properties:
+            from:
+              type: string
+              format: date-time
+              nullable: true
+            to:
+              type: string
+              format: date-time
+              nullable: true
+        filters:
+          type: object
+          properties:
+            view:
+              type: string
+              enum: [month, week, day, list]
+            filterMode:
+              type: string
+              enum: [users, groups]
+            assignedToUserId:
+              type: string
+              nullable: true
+            assignedToUserIds:
+              type: array
+              items:
+                type: string
+            groupIds:
+              type: array
+              items:
+                type: string
+            contactId:
+              type: string
+              nullable: true
+            serviceId:
+              type: string
+              nullable: true
+        emptyState:
+          type: object
+          properties:
+            title:
+              type: string
+            description:
+              type: string
+    CalendarAvailabilityRequest:
+      type: object
+      required: [assignedToUserId, startAt, endAt]
+      properties:
+        assignedToUserId:
+          type: string
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+        appointmentId:
+          type: string
+    CalendarAvailabilityResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        available:
+          type: boolean
+        timezone:
+          type: string
+        assignee:
+          type: object
+          properties:
+            id:
+              type: string
+            label:
+              type: string
+        reasons:
+          type: array
+          items:
+            type: string
+        windows:
+          type: object
+          properties:
+            tenantOpen:
+              type: array
+              items:
+                $ref: "#/components/schemas/CalendarWindow"
+            userOpen:
+              type: array
+              items:
+                $ref: "#/components/schemas/CalendarWindow"
+            blocked:
+              type: array
+              items:
+                $ref: "#/components/schemas/CalendarWindow"
+        conflicts:
+          type: object
+          properties:
+            appointments:
+              type: array
+              items:
+                $ref: "#/components/schemas/CalendarAvailabilityConflictAppointment"
+            blocks:
+              type: array
+              items:
+                $ref: "#/components/schemas/CalendarAvailabilityConflictBlock"
+    CalendarWindow:
+      type: object
+      properties:
+        start:
+          type: string
+        end:
+          type: string
+        label:
+          type: string
+          nullable: true
+    CalendarAvailabilityConflictAppointment:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+    CalendarAvailabilityConflictBlock:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+    CreateCalendarAppointmentRequest:
+      type: object
+      required: [contactId, assignedToUserId, startAt, endAt]
+      properties:
+        contactId:
+          type: string
+        serviceId:
+          type: string
+          nullable: true
+        assignedToUserId:
+          type: string
+        title:
+          type: string
+          nullable: true
+          maxLength: 160
+        notes:
+          type: string
+          nullable: true
+          maxLength: 4000
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+        isAllDay:
+          type: boolean
+    CreateCalendarAppointmentResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        item:
+          type: object
+          properties:
+            id:
+              type: string
+            title:
+              type: string
+            startAt:
+              type: string
+              format: date-time
+            endAt:
+              type: string
+              format: date-time
+            status:
+              type: string
+            assignedToUserId:
+              type: string
+              nullable: true
+            contactId:
+              type: string
+            serviceId:
+              type: string
+              nullable: true
+    CalendarAppointmentConflictResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: APPOINTMENT_TIME_UNAVAILABLE
+        availability:
+          $ref: "#/components/schemas/CalendarAvailabilityResponse"

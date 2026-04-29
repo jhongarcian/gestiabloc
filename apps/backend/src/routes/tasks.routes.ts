@@ -16,16 +16,29 @@ import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 const router = Router()
 const prismaWithTasks = prisma as any
 
+const stripHtmlTags = (value: string) => value.replace(/<[^>]*>/g, " ")
+const removeUnsafeControls = (value: string) =>
+  value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+const sanitizeSingleLineText = (value: string) =>
+  removeUnsafeControls(stripHtmlTags(value)).replace(/\s+/g, " ").trim()
+const sanitizeMultilineText = (value: string) =>
+  removeUnsafeControls(stripHtmlTags(value))
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .join("\n")
+    .trim()
+
 const TenantPathSchema = z.object({
-  tenantId: z.string().min(1),
+  tenantId: z.string().trim().min(1),
 })
 
 const TenantTaskPathSchema = TenantPathSchema.extend({
-  taskId: z.string().min(1),
+  taskId: z.string().trim().min(1),
 })
 
 const TenantTaskReminderPathSchema = TenantTaskPathSchema.extend({
-  reminderId: z.string().min(1),
+  reminderId: z.string().trim().min(1),
 })
 
 const TasksListQuerySchema = z.object({
@@ -45,7 +58,7 @@ const TasksListQuerySchema = z.object({
 
 const CreateTaskReminderSchema = z.object({
   remindAt: z.string().datetime(),
-  recipientUserId: z.string().min(1).optional(),
+  recipientUserId: z.string().trim().min(1).optional(),
   message: z.string().trim().max(500).nullable().optional(),
 })
 
@@ -53,6 +66,9 @@ const CreateTaskSchema = z.object({
   name: z.string().trim().min(1).max(160),
   contactId: z.string().trim().min(1),
   description: z.string().trim().max(4000).nullable().optional(),
+  contactServiceId: z.string().trim().min(1).nullable().optional(),
+  followUpTemplateId: z.string().trim().min(1).nullable().optional(),
+  contactServiceFollowUpStepId: z.string().trim().min(1).nullable().optional(),
   linkedEntityName: z.string().trim().min(1).max(120).nullable().optional(),
   linkedEntityType: z.enum(["SERVICE", "PRODUCT"]).nullable().optional(),
   statusConfigId: z.string().trim().max(80).nullable().optional(),
@@ -148,6 +164,10 @@ async function getTaskForTenant(tenantId: string, taskId: string) {
       tenantId: true,
       name: true,
       description: true,
+      contactId: true,
+      contactServiceId: true,
+      followUpTemplateId: true,
+      contactServiceFollowUpStepId: true,
       linkedEntityName: true,
       linkedEntityType: true,
       statusConfigId: true,
@@ -208,6 +228,9 @@ async function resolveTaskMutationPayload(
   const statusConfigId = payload.statusConfigId ?? null
   let statusName: string | null = null
   const contactId = "contactId" in payload ? payload.contactId ?? null : null
+  const contactServiceId = payload.contactServiceId ?? null
+  const followUpTemplateId = payload.followUpTemplateId ?? null
+  const contactServiceFollowUpStepId = payload.contactServiceFollowUpStepId ?? null
   const assignedToUserId = payload.assignedToUserId ?? null
   const linkedEntityName = payload.linkedEntityName?.trim() || null
   const linkedEntityType = payload.linkedEntityType ?? null
@@ -261,7 +284,7 @@ async function resolveTaskMutationPayload(
     }
   }
 
-  if (contactId) {
+  if (contactId && !contactServiceId) {
     const contact = await prisma.contact.findFirst({
       where: {
         id: contactId,
@@ -277,6 +300,62 @@ async function resolveTaskMutationPayload(
     }
   }
 
+  let resolvedContactServiceId: string | null = null
+  let resolvedFollowUpTemplateId: string | null = null
+  let resolvedContactServiceFollowUpStepId: string | null = null
+
+  if (contactServiceId || followUpTemplateId || contactServiceFollowUpStepId) {
+    if (!contactServiceId) {
+      return { error: "CONTACT_SERVICE_ID_REQUIRED" as const }
+    }
+
+    const contactService = await prisma.contactService.findFirst({
+      where: {
+        id: contactServiceId,
+        tenantId,
+      },
+      select: {
+        id: true,
+        contactId: true,
+        followUpTemplateId: true,
+      },
+    })
+
+    if (!contactService) {
+      return { error: "INVALID_CONTACT_SERVICE" as const }
+    }
+
+    if (contactId && contactService.contactId !== contactId) {
+      return { error: "CONTACT_SERVICE_CONTACT_MISMATCH" as const }
+    }
+
+    if (followUpTemplateId && followUpTemplateId !== contactService.followUpTemplateId) {
+      return { error: "INVALID_FOLLOW_UP_TEMPLATE" as const }
+    }
+
+    if (contactServiceFollowUpStepId) {
+      const followUpStep = await prisma.contactServiceFollowUpStep.findFirst({
+        where: {
+          id: contactServiceFollowUpStepId,
+          tenantId,
+          contactServiceId: contactService.id,
+        },
+        select: {
+          id: true,
+        },
+      })
+
+      if (!followUpStep) {
+        return { error: "INVALID_FOLLOW_UP_STEP" as const }
+      }
+
+      resolvedContactServiceFollowUpStepId = followUpStep.id
+    }
+
+    resolvedContactServiceId = contactService.id
+    resolvedFollowUpTemplateId = followUpTemplateId ?? contactService.followUpTemplateId ?? null
+  }
+
   if (linkedEntityName && !linkedEntityType) {
     return { error: "LINKED_ENTITY_TYPE_REQUIRED" as const }
   }
@@ -287,6 +366,9 @@ async function resolveTaskMutationPayload(
 
   return {
     contactId,
+    contactServiceId: resolvedContactServiceId,
+    followUpTemplateId: resolvedFollowUpTemplateId,
+    contactServiceFollowUpStepId: resolvedContactServiceFollowUpStepId,
     statusConfigId,
     statusName,
     assignedToUserId,
@@ -620,6 +702,9 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
 
     const {
       contactId,
+      contactServiceId,
+      followUpTemplateId,
+      contactServiceFollowUpStepId,
       statusConfigId,
       statusName,
       assignedToUserId,
@@ -637,14 +722,17 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
         data: {
           tenantId,
           contactId,
+          contactServiceId,
+          followUpTemplateId,
+          contactServiceFollowUpStepId,
           priority: getTaskPriorityFromDueDate(
             dueDate,
             tenantTimezone,
             isCompletedStatusName(statusName),
           ),
-          name: payload.name.trim(),
-          description: payload.description?.trim() || null,
-          linkedEntityName,
+          name: sanitizeSingleLineText(payload.name),
+          description: payload.description ? sanitizeMultilineText(payload.description) : null,
+          linkedEntityName: linkedEntityName ? sanitizeSingleLineText(linkedEntityName) : null,
           linkedEntityType,
           statusConfigId,
           assignedToUserId,
@@ -746,6 +834,22 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
 
     const mergedPayload = {
       name: payload.name ?? existingTask.name,
+      contactId:
+        payload.contactId === undefined
+          ? existingTask.contactId
+          : payload.contactId,
+      contactServiceId:
+        payload.contactServiceId === undefined
+          ? existingTask.contactServiceId
+          : payload.contactServiceId,
+      followUpTemplateId:
+        payload.followUpTemplateId === undefined
+          ? existingTask.followUpTemplateId
+          : payload.followUpTemplateId,
+      contactServiceFollowUpStepId:
+        payload.contactServiceFollowUpStepId === undefined
+          ? existingTask.contactServiceFollowUpStepId
+          : payload.contactServiceFollowUpStepId,
       description:
         payload.description === undefined
           ? existingTask.description
@@ -807,9 +911,16 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
       const updatedTask = await prismaTx.task.update({
         where: { id: existingTask.id },
         data: {
-          name: mergedPayload.name.trim(),
-          description: mergedPayload.description?.trim() || null,
-          linkedEntityName: resolvedPayload.linkedEntityName,
+          name: sanitizeSingleLineText(mergedPayload.name),
+          description: mergedPayload.description ? sanitizeMultilineText(mergedPayload.description) : null,
+          contactId: resolvedPayload.contactId,
+          contactServiceId: resolvedPayload.contactServiceId,
+          followUpTemplateId: resolvedPayload.followUpTemplateId,
+          contactServiceFollowUpStepId: resolvedPayload.contactServiceFollowUpStepId,
+          linkedEntityName:
+            resolvedPayload.linkedEntityName
+              ? sanitizeSingleLineText(resolvedPayload.linkedEntityName)
+              : null,
           linkedEntityType: resolvedPayload.linkedEntityType,
           statusConfigId: resolvedPayload.statusConfigId,
           assignedToUserId: resolvedPayload.assignedToUserId,
@@ -829,10 +940,12 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
       })
 
       if (
-        mergedPayload.name.trim() !== existingTask.name ||
-        (mergedPayload.description?.trim() || null) !==
+        sanitizeSingleLineText(mergedPayload.name) !== existingTask.name ||
+        (mergedPayload.description ? sanitizeMultilineText(mergedPayload.description) : null) !==
           (existingTask.description?.trim() || null) ||
-        (resolvedPayload.linkedEntityName ?? null) !==
+        (resolvedPayload.linkedEntityName
+          ? sanitizeSingleLineText(resolvedPayload.linkedEntityName)
+          : null) !==
           (existingTask.linkedEntityName ?? null) ||
         (resolvedPayload.linkedEntityType ?? null) !==
           (existingTask.linkedEntityType ?? null)

@@ -16,23 +16,36 @@ import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 const router = Router()
 const prismaWithContacts = prisma as any
 
+const stripHtmlTags = (value: string) => value.replace(/<[^>]*>/g, " ")
+const removeUnsafeControls = (value: string) =>
+  value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+const sanitizeSingleLineText = (value: string) =>
+  removeUnsafeControls(stripHtmlTags(value)).replace(/\s+/g, " ").trim()
+const sanitizeMultilineText = (value: string) =>
+  removeUnsafeControls(stripHtmlTags(value))
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .join("\n")
+    .trim()
+
 const TenantPathSchema = z.object({
-  tenantId: z.string().min(1),
+  tenantId: z.string().trim().min(1),
 })
 const TenantContactPathSchema = TenantPathSchema.extend({
-  contactId: z.string().min(1),
+  contactId: z.string().trim().min(1),
 })
 const TenantContactRelationshipPathSchema = TenantContactPathSchema.extend({
-  relationshipId: z.string().min(1),
+  relationshipId: z.string().trim().min(1),
 })
 const TenantContactTagPathSchema = TenantContactPathSchema.extend({
-  tagId: z.string().min(1),
+  tagId: z.string().trim().min(1),
 })
 const TenantContactNotePathSchema = TenantContactPathSchema.extend({
-  noteId: z.string().min(1),
+  noteId: z.string().trim().min(1),
 })
 const TenantFieldAccessRequestPathSchema = TenantPathSchema.extend({
-  requestId: z.string().min(1),
+  requestId: z.string().trim().min(1),
 })
 
 const ContactsListQuerySchema = z.object({
@@ -122,13 +135,16 @@ const CreateContactRelationshipSchema = z.object({
 })
 
 const ContactNoteAttachmentIdsSchema = z
-  .array(z.string().min(1))
+  .array(z.string().trim().min(1))
   .max(10)
   .default([])
 
 const CreateContactNoteSchema = z.object({
   title: z.string().trim().min(1).max(160),
   body: z.string().trim().min(1).max(5000),
+  contactServiceId: z.string().trim().min(1).nullable().optional(),
+  followUpTemplateId: z.string().trim().min(1).nullable().optional(),
+  contactServiceFollowUpStepId: z.string().trim().min(1).nullable().optional(),
   attachmentFileIds: ContactNoteAttachmentIdsSchema,
 })
 
@@ -490,6 +506,20 @@ function serializeContactNote(
     createdAt: Date
     updatedAt: Date
     createdBy: { id: string; name: string | null; email: string }
+    contactService?: {
+      id: string
+      service: {
+        name: string
+      }
+    } | null
+    followUpTemplate?: {
+      id: string
+      name: string
+    } | null
+    contactServiceFollowUpStep?: {
+      id: string
+      title: string
+    } | null
     attachments: Array<{
       id: string
       file: {
@@ -506,6 +536,8 @@ function serializeContactNote(
     type: "CONTACT" | "SERVICE"
     contactServiceId?: string
     serviceName?: string
+    followUpTemplateName?: string
+    followUpStepTitle?: string
   },
 ) {
   return {
@@ -534,6 +566,35 @@ function serializeContactNote(
       contentType: attachment.file.contentType,
       size: attachment.file.size ?? null,
     })),
+  }
+}
+
+function buildContactNoteSource(note: {
+  contactService?: {
+    id: string
+    service: {
+      name: string
+    }
+  } | null
+  followUpTemplate?: {
+    id: string
+    name: string
+  } | null
+  contactServiceFollowUpStep?: {
+    id: string
+    title: string
+  } | null
+}) {
+  if (!note.contactService && !note.followUpTemplate && !note.contactServiceFollowUpStep) {
+    return undefined
+  }
+
+  return {
+    type: "SERVICE" as const,
+    contactServiceId: note.contactService?.id,
+    serviceName: note.contactService?.service?.name,
+    followUpTemplateName: note.followUpTemplate?.name,
+    followUpStepTitle: note.contactServiceFollowUpStep?.title,
   }
 }
 
@@ -899,14 +960,209 @@ function buildRelationshipPairKey(contactId: string, relatedContactId: string) {
 }
 
 function normalizeSearchValue(value: string | null | undefined) {
-  return value?.trim().toLowerCase() ?? ""
+  return value?.trim().toLowerCase().replace(/\s+/g, " ") ?? ""
 }
 
 function normalizePhoneSearchValue(value: string | null | undefined) {
   return (value ?? "").replace(/\D/g, "")
 }
 
-function getContactSearchRank(
+function splitSearchTokens(value: string | null | undefined) {
+  return normalizeSearchValue(value)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+}
+
+function getSearchTokens(
+  value: string | null | undefined,
+  options?: { includeSingleCharacter?: boolean },
+) {
+  const includeSingleCharacter = options?.includeSingleCharacter ?? false
+
+  return splitSearchTokens(value).filter((token) => {
+    if (includeSingleCharacter) return true
+    return token.length > 1 || /\d/.test(token)
+  })
+}
+
+function getNameSearchPrefix(token: string, options?: { broad?: boolean }) {
+  const normalizedToken = normalizeSearchValue(token)
+  if (!normalizedToken) return ""
+  if (!options?.broad) return normalizedToken
+  if (normalizedToken.length <= 2) return normalizedToken
+  return normalizedToken.slice(0, 2)
+}
+
+function getTokenDistance(left: string, right: string, maxDistance = 1) {
+  if (left === right) return 0
+  if (!left || !right) return maxDistance + 1
+
+  const leftLength = left.length
+  const rightLength = right.length
+
+  if (Math.abs(leftLength - rightLength) > maxDistance) {
+    return maxDistance + 1
+  }
+
+  const matrix = Array.from({ length: leftLength + 1 }, () =>
+    Array<number>(rightLength + 1).fill(0),
+  )
+
+  for (let row = 0; row <= leftLength; row += 1) {
+    matrix[row]![0] = row
+  }
+
+  for (let column = 0; column <= rightLength; column += 1) {
+    matrix[0]![column] = column
+  }
+
+  for (let row = 1; row <= leftLength; row += 1) {
+    let rowMin = maxDistance + 1
+
+    for (let column = 1; column <= rightLength; column += 1) {
+      const cost = left[row - 1] === right[column - 1] ? 0 : 1
+
+      let nextValue = Math.min(
+        matrix[row - 1]![column]! + 1,
+        matrix[row]![column - 1]! + 1,
+        matrix[row - 1]![column - 1]! + cost,
+      )
+
+      if (
+        row > 1 &&
+        column > 1 &&
+        left[row - 1] === right[column - 2] &&
+        left[row - 2] === right[column - 1]
+      ) {
+        nextValue = Math.min(nextValue, matrix[row - 2]![column - 2]! + 1)
+      }
+
+      matrix[row]![column] = nextValue
+      rowMin = Math.min(rowMin, nextValue)
+    }
+
+    if (rowMin > maxDistance) {
+      return maxDistance + 1
+    }
+  }
+
+  return matrix[leftLength]![rightLength]!
+}
+
+function getTokenMatchStrength(contactToken: string, queryToken: string) {
+  if (!contactToken || !queryToken) return Number.POSITIVE_INFINITY
+  if (contactToken === queryToken) return 0
+  if (contactToken.startsWith(queryToken) || queryToken.startsWith(contactToken)) {
+    return 1
+  }
+  if (contactToken.includes(queryToken) || queryToken.includes(contactToken)) {
+    return 2
+  }
+  if (queryToken.length >= 4 && contactToken.length >= 4) {
+    const distance = getTokenDistance(contactToken, queryToken, 1)
+    if (distance <= 1) return 3
+  }
+  return Number.POSITIVE_INFINITY
+}
+
+function getBestTokenStrength(contactTokens: string[], queryToken: string) {
+  return contactTokens.reduce((best, candidateToken) => {
+    const strength = getTokenMatchStrength(candidateToken, queryToken)
+    return Math.min(best, strength)
+  }, Number.POSITIVE_INFINITY)
+}
+
+function compareMatchStrength(left: number, right: number) {
+  const leftFinite = Number.isFinite(left)
+  const rightFinite = Number.isFinite(right)
+
+  if (!leftFinite && !rightFinite) return 0
+  if (!leftFinite) return 1
+  if (!rightFinite) return -1
+  return left - right
+}
+
+function buildStartsWithClauses(
+  fields: string[],
+  token: string,
+  options?: { broad?: boolean },
+) {
+  const normalizedToken = normalizeSearchValue(token)
+  if (!normalizedToken) return []
+
+  const values = [
+    normalizedToken,
+    getNameSearchPrefix(normalizedToken, options),
+  ].filter(Boolean)
+
+  return fields.flatMap((field) =>
+    [...new Set(values)].map((value) => ({
+      [field]: { startsWith: value, mode: "insensitive" as const },
+    })),
+  )
+}
+
+function buildContactSearchWhere(
+  tenantId: string,
+  query: string,
+  excludeContactId?: string,
+) {
+  const normalizedQuery = normalizeSearchValue(query)
+  const queryTokens = getSearchTokens(query, { includeSingleCharacter: true })
+  const hasEmailLikeQuery = normalizedQuery.includes("@")
+  const hasPhoneLikeQuery = normalizePhoneSearchValue(query).length >= 3
+  const nameTokens = queryTokens.filter((token) => /[a-z]/i.test(token))
+
+  const andClauses: Array<Record<string, unknown>> = [{ tenantId }]
+
+  if (excludeContactId) {
+    andClauses.push({ NOT: { id: excludeContactId } })
+  }
+
+  if (!hasEmailLikeQuery && !hasPhoneLikeQuery && nameTokens.length >= 2) {
+    const firstToken = nameTokens[0]!
+    const lastToken = nameTokens[nameTokens.length - 1]!
+    const middleTokens = nameTokens.slice(1, -1)
+
+    andClauses.push({
+      OR: buildStartsWithClauses(["firstName", "middleName"], firstToken, {
+        broad: true,
+      }),
+    })
+
+    andClauses.push({
+      OR:
+        nameTokens.length === 2
+          ? buildStartsWithClauses(["lastName", "middleName"], lastToken)
+          : buildStartsWithClauses(["lastName"], lastToken),
+    })
+
+    for (const token of middleTokens) {
+      andClauses.push({
+        OR: buildStartsWithClauses(["middleName"], token),
+      })
+    }
+
+    return { AND: andClauses }
+  }
+
+  const singleTokenTerms = [...new Set([normalizedQuery, ...getSearchTokens(query)].filter(Boolean))]
+
+  andClauses.push({
+    OR: singleTokenTerms.flatMap((term) => [
+      ...buildStartsWithClauses(["firstName", "middleName", "lastName"], term, {
+        broad: true,
+      }),
+      { email: { contains: term, mode: "insensitive" as const } },
+      { phone: { contains: term, mode: "insensitive" as const } },
+    ]),
+  })
+
+  return { AND: andClauses }
+}
+
+function getContactSearchMetrics(
   contact: {
     firstName: string
     middleName: string | null
@@ -918,28 +1174,138 @@ function getContactSearchRank(
 ) {
   const normalizedQuery = normalizeSearchValue(query)
   const queryPhone = normalizePhoneSearchValue(query)
+  const queryTokens = getSearchTokens(query, { includeSingleCharacter: true })
   const firstName = normalizeSearchValue(contact.firstName)
   const middleName = normalizeSearchValue(contact.middleName)
   const lastName = normalizeSearchValue(contact.lastName)
   const fullName = [firstName, middleName, lastName].filter(Boolean).join(" ")
   const email = normalizeSearchValue(contact.email)
   const phone = normalizePhoneSearchValue(contact.phone)
+  const firstNameTokens = getSearchTokens(contact.firstName, {
+    includeSingleCharacter: true,
+  })
+  const middleNameTokens = getSearchTokens(contact.middleName, {
+    includeSingleCharacter: true,
+  })
+  const lastNameTokens = getSearchTokens(contact.lastName, {
+    includeSingleCharacter: true,
+  })
+  const emailTokens = getSearchTokens(contact.email, {
+    includeSingleCharacter: true,
+  })
+  const candidateTokens = [
+    ...firstNameTokens,
+    ...middleNameTokens,
+    ...lastNameTokens,
+    ...emailTokens,
+  ]
 
-  if (fullName === normalizedQuery) return 0
-  if (email && email === normalizedQuery) return 1
-  if (phone && queryPhone && phone === queryPhone) return 2
+  let matchedTokenCount = 0
+  let exactTokenCount = 0
+  let fuzzyTokenCount = 0
+  let aggregateTokenStrength = 0
+  let middleNameMatchedTokenCount = 0
+  let middleNameExactTokenCount = 0
+
+  for (const token of queryTokens) {
+    const bestStrength = getBestTokenStrength(candidateTokens, token)
+
+    if (bestStrength !== Number.POSITIVE_INFINITY) {
+      matchedTokenCount += 1
+      aggregateTokenStrength += bestStrength
+      if (bestStrength === 0) {
+        exactTokenCount += 1
+      }
+      if (bestStrength === 3) {
+        fuzzyTokenCount += 1
+      }
+    }
+
+    const middleNameStrength = getBestTokenStrength(middleNameTokens, token)
+    if (middleNameStrength !== Number.POSITIVE_INFINITY) {
+      middleNameMatchedTokenCount += 1
+      if (middleNameStrength === 0) {
+        middleNameExactTokenCount += 1
+      }
+    }
+  }
+
+  const firstQueryToken = queryTokens[0] ?? ""
+  const lastQueryToken = queryTokens.length > 1 ? queryTokens[queryTokens.length - 1] : ""
+  const firstNameStrength = firstQueryToken
+    ? getBestTokenStrength(firstNameTokens, firstQueryToken)
+    : Number.POSITIVE_INFINITY
+  const middleNameStrength =
+    queryTokens.length > 2
+      ? queryTokens
+          .slice(1, -1)
+          .reduce(
+            (best, token) => Math.min(best, getBestTokenStrength(middleNameTokens, token)),
+            Number.POSITIVE_INFINITY,
+          )
+      : Number.POSITIVE_INFINITY
+  const lastNameStrength = lastQueryToken
+    ? getBestTokenStrength(lastNameTokens, lastQueryToken)
+    : Number.POSITIVE_INFINITY
+  const fullNameIncludesQuery = fullName.includes(normalizedQuery)
+  const hasStructuredMultiTokenNameMatch =
+    queryTokens.length >= 2 &&
+    lastNameStrength !== Number.POSITIVE_INFINITY &&
+    (firstNameStrength !== Number.POSITIVE_INFINITY ||
+      middleNameMatchedTokenCount > 0)
+
+  let rank = 10
+
+  if (fullName === normalizedQuery) rank = 0
+  else if (email && email === normalizedQuery) rank = 1
+  else if (phone && queryPhone && phone === queryPhone) rank = 2
+  else if (
+    queryTokens.length >= 2 &&
+    matchedTokenCount === queryTokens.length &&
+    hasStructuredMultiTokenNameMatch
+  ) {
+    rank = fuzzyTokenCount > 0 ? 4 : 3
+  } else if (hasStructuredMultiTokenNameMatch) {
+    rank = 5
+  } else if (queryTokens.length > 0 && matchedTokenCount === queryTokens.length) {
+    rank = fuzzyTokenCount > 0 ? 6 : 5
+  }
   if (
-    firstName.startsWith(normalizedQuery) ||
-    lastName.startsWith(normalizedQuery)
-  )
-    return 3
-  if (fullName.startsWith(normalizedQuery)) return 4
-  if (email && email.startsWith(normalizedQuery)) return 5
-  if (phone && queryPhone && phone.startsWith(queryPhone)) return 6
-  if (fullName.includes(normalizedQuery)) return 7
-  if (email && email.includes(normalizedQuery)) return 8
-  if (phone && queryPhone && phone.includes(queryPhone)) return 9
-  return 10
+    rank === 10 &&
+    (firstName.startsWith(normalizedQuery) || lastName.startsWith(normalizedQuery))
+  ) {
+    rank = 6
+  } else if (rank === 10 && fullName.startsWith(normalizedQuery)) {
+    rank = 7
+  } else if (rank === 10 && email && email.startsWith(normalizedQuery)) {
+    rank = 8
+  } else if (rank === 10 && phone && queryPhone && phone.startsWith(queryPhone)) {
+    rank = 9
+  } else if (
+    rank === 10 &&
+    (fullName.includes(normalizedQuery) ||
+      (email && email.includes(normalizedQuery)) ||
+      (phone && queryPhone && phone.includes(queryPhone)) ||
+      matchedTokenCount > 0)
+  ) {
+    rank = 10
+  }
+
+  return {
+    rank,
+    queryTokenCount: queryTokens.length,
+    matchedTokenCount,
+    exactTokenCount,
+    fuzzyTokenCount,
+    aggregateTokenStrength,
+    firstNameStrength,
+    middleNameStrength,
+    lastNameStrength,
+    middleNameMatchedTokenCount,
+    middleNameExactTokenCount,
+    hasStructuredMultiTokenNameMatch,
+    fullNameIncludesQuery,
+  }
 }
 
 router.get("/:tenantId/statuses", requireAuth, async (req, res, next) => {
@@ -1017,19 +1383,9 @@ router.get("/:tenantId/search", requireAuth, async (req, res, next) => {
     }
 
     const contacts = await prisma.contact.findMany({
-      where: {
-        tenantId,
-        ...(excludeContactId ? { NOT: { id: excludeContactId } } : {}),
-        OR: [
-          { firstName: { contains: q, mode: "insensitive" } },
-          { middleName: { contains: q, mode: "insensitive" } },
-          { lastName: { contains: q, mode: "insensitive" } },
-          { email: { contains: q, mode: "insensitive" } },
-          { phone: { contains: q, mode: "insensitive" } },
-        ],
-      },
+      where: buildContactSearchWhere(tenantId, q, excludeContactId),
       orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
-      take: 20,
+      take: 25,
       select: {
         id: true,
         firstName: true,
@@ -1040,24 +1396,84 @@ router.get("/:tenantId/search", requireAuth, async (req, res, next) => {
       },
     })
 
-    const rankedContacts = [...contacts].sort((left, right) => {
-      const rankDiff =
-        getContactSearchRank(left, q) - getContactSearchRank(right, q)
+    const rankedContacts = contacts
+      .map((contact) => ({
+        contact,
+        metrics: getContactSearchMetrics(contact, q),
+      }))
+      .filter(({ metrics }) => {
+        if (metrics.rank <= 2) return true
+
+        if (metrics.queryTokenCount >= 2) {
+          return metrics.hasStructuredMultiTokenNameMatch
+        }
+
+        return metrics.matchedTokenCount > 0 || metrics.fullNameIncludesQuery
+      })
+      .sort((left, right) => {
+        const leftMetrics = left.metrics
+        const rightMetrics = right.metrics
+      const rankDiff = leftMetrics.rank - rightMetrics.rank
       if (rankDiff !== 0) return rankDiff
 
-      const leftFullName = [left.firstName, left.middleName, left.lastName]
+      const structuredMatchDiff =
+        Number(rightMetrics.hasStructuredMultiTokenNameMatch) -
+        Number(leftMetrics.hasStructuredMultiTokenNameMatch)
+      if (structuredMatchDiff !== 0) return structuredMatchDiff
+
+      const matchedTokenDiff =
+        rightMetrics.matchedTokenCount - leftMetrics.matchedTokenCount
+      if (matchedTokenDiff !== 0) return matchedTokenDiff
+
+      const exactTokenDiff = rightMetrics.exactTokenCount - leftMetrics.exactTokenCount
+      if (exactTokenDiff !== 0) return exactTokenDiff
+
+      const middleNameExactDiff =
+        rightMetrics.middleNameExactTokenCount - leftMetrics.middleNameExactTokenCount
+      if (middleNameExactDiff !== 0) return middleNameExactDiff
+
+      const middleNameMatchDiff =
+        rightMetrics.middleNameMatchedTokenCount - leftMetrics.middleNameMatchedTokenCount
+      if (middleNameMatchDiff !== 0) return middleNameMatchDiff
+
+      const firstNameStrengthDiff = compareMatchStrength(
+        leftMetrics.firstNameStrength,
+        rightMetrics.firstNameStrength,
+      )
+      if (firstNameStrengthDiff !== 0) return firstNameStrengthDiff
+
+      const lastNameStrengthDiff = compareMatchStrength(
+        leftMetrics.lastNameStrength,
+        rightMetrics.lastNameStrength,
+      )
+      if (lastNameStrengthDiff !== 0) return lastNameStrengthDiff
+
+      const middleNameStrengthDiff = compareMatchStrength(
+        leftMetrics.middleNameStrength,
+        rightMetrics.middleNameStrength,
+      )
+      if (middleNameStrengthDiff !== 0) return middleNameStrengthDiff
+
+      const tokenStrengthDiff =
+        leftMetrics.aggregateTokenStrength - rightMetrics.aggregateTokenStrength
+      if (tokenStrengthDiff !== 0) return tokenStrengthDiff
+
+      const fuzzyTokenDiff = leftMetrics.fuzzyTokenCount - rightMetrics.fuzzyTokenCount
+      if (fuzzyTokenDiff !== 0) return fuzzyTokenDiff
+
+      const leftFullName = [left.contact.firstName, left.contact.middleName, left.contact.lastName]
         .filter(Boolean)
         .join(" ")
-      const rightFullName = [right.firstName, right.middleName, right.lastName]
+      const rightFullName = [right.contact.firstName, right.contact.middleName, right.contact.lastName]
         .filter(Boolean)
         .join(" ")
 
       return leftFullName.localeCompare(rightFullName)
-    })
+      })
 
     return res.json({
       ok: true,
-      items: rankedContacts.slice(0, 8).map((contact) => ({
+      items: rankedContacts.slice(0, 8).map(({ contact }) => ({
         id: contact.id,
         fullName: [contact.firstName, contact.middleName, contact.lastName]
           .filter(Boolean)
@@ -1135,6 +1551,38 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
           dateOfBirth: true,
           phone: true,
           email: true,
+          assignedToMembership: {
+            select: {
+              userId: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+            },
+          },
+          serviceProcesses: {
+            where: {
+              status: {
+                in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
+              },
+              followUpSteps: {
+                some: {
+                  status: "ACTIVE",
+                },
+              },
+            },
+            select: {
+              service: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
           statusConfig: {
             select: {
               id: true,
@@ -1151,20 +1599,44 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
 
     return res.json({
       ok: true,
-      items: contacts.map((contact) => ({
-        id: contact.id,
-        fullName: [contact.firstName, contact.middleName, contact.lastName]
-          .filter(Boolean)
-          .join(" "),
-        dateOfBirth: contact.dateOfBirth,
-        phoneNumber: contact.phone ?? null,
-        email: contact.email ?? null,
-        status: contact.statusConfig?.name ?? "Unassigned",
-        statusConfigId: contact.statusConfig?.id ?? null,
-        statusBgColor: contact.statusConfig?.bgColor ?? null,
-        statusTextColor: contact.statusConfig?.textColor ?? null,
-        followUps: 0,
-      })),
+      items: contacts.map((contact) => {
+        const activeFollowUpServices = Array.from(
+          new Map(
+            contact.serviceProcesses.map((serviceProcess) => [
+              serviceProcess.service.id,
+              {
+                id: serviceProcess.service.id,
+                name: serviceProcess.service.name,
+              },
+            ]),
+          ).values(),
+        ).sort((left, right) => left.name.localeCompare(right.name))
+
+        return {
+          id: contact.id,
+          fullName: [contact.firstName, contact.middleName, contact.lastName]
+            .filter(Boolean)
+            .join(" "),
+          dateOfBirth: contact.dateOfBirth,
+          phoneNumber: contact.phone ?? null,
+          email: contact.email ?? null,
+          assignedTo: contact.assignedToMembership
+            ? {
+                userId: contact.assignedToMembership.userId,
+                name:
+                  contact.assignedToMembership.user.name?.trim() ||
+                  contact.assignedToMembership.user.email,
+                email: contact.assignedToMembership.user.email,
+                image: contact.assignedToMembership.user.image ?? null,
+              }
+            : null,
+          activeFollowUpServices,
+          status: contact.statusConfig?.name ?? "Unassigned",
+          statusConfigId: contact.statusConfig?.id ?? null,
+          statusBgColor: contact.statusConfig?.bgColor ?? null,
+          statusTextColor: contact.statusConfig?.textColor ?? null,
+        }
+      }),
       pagination: {
         page,
         pageSize,
@@ -2015,6 +2487,28 @@ router.get(
                 email: true,
               },
             },
+            contactService: {
+              select: {
+                id: true,
+                service: {
+                  select: {
+                    name: true,
+                  },
+                },
+              },
+            },
+            followUpTemplate: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            contactServiceFollowUpStep: {
+              select: {
+                id: true,
+                title: true,
+              },
+            },
             attachments: {
               orderBy: { createdAt: "asc" },
               select: {
@@ -2050,9 +2544,29 @@ router.get(
             contactService: {
               select: {
                 id: true,
+                followUpTemplate: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
                 service: {
                   select: {
                     name: true,
+                  },
+                },
+              },
+            },
+            attachments: {
+              orderBy: { createdAt: "asc" },
+              select: {
+                id: true,
+                file: {
+                  select: {
+                    id: true,
+                    key: true,
+                    contentType: true,
+                    size: true,
                   },
                 },
               },
@@ -2067,7 +2581,12 @@ router.get(
 
       const mergedNotes = [
         ...contactNotes.map((note: any) =>
-          serializeContactNote(note, membership, authed.user.id),
+          serializeContactNote(
+            note,
+            membership,
+            authed.user.id,
+            buildContactNoteSource(note),
+          ),
         ),
         ...serviceNotes.map((note: any) => ({
           id: note.id,
@@ -2088,8 +2607,16 @@ router.get(
             type: "SERVICE" as const,
             contactServiceId: note.contactService.id,
             serviceName: note.contactService.service.name,
+            followUpTemplateName: note.contactService.followUpTemplate?.name,
           },
-          attachments: [],
+          attachments: note.attachments.map((attachment: any) => ({
+            id: attachment.id,
+            fileId: attachment.file.id,
+            key: attachment.file.key,
+            fileName: fileNameFromKey(attachment.file.key),
+            contentType: attachment.file.contentType,
+            size: attachment.file.size,
+          })),
         })),
       ].sort((left, right) => {
         const leftUpdatedAt = new Date(left.updatedAt).getTime()
@@ -2144,12 +2671,25 @@ router.post(
       const membership = await requireActiveMembership(authed, res, tenantId)
       if (!membership) return
 
-      const [contact, files] = await Promise.all([
+      const [contact, files, linkedContactService] = await Promise.all([
         prisma.contact.findFirst({
           where: { id: contactId, tenantId },
           select: { id: true },
         }),
         getValidatedNoteFiles(tenantId, payload.attachmentFileIds),
+        payload.contactServiceId
+          ? prismaWithContacts.contactService.findFirst({
+              where: {
+                id: payload.contactServiceId,
+                tenantId,
+                contactId,
+              },
+              select: {
+                id: true,
+                followUpTemplateId: true,
+              },
+            })
+          : Promise.resolve(null),
       ])
 
       if (!contact) {
@@ -2160,14 +2700,63 @@ router.post(
         return res.status(400).json({ error: "INVALID_NOTE_ATTACHMENTS" })
       }
 
+      let resolvedContactServiceId: string | null = null
+      let resolvedFollowUpTemplateId: string | null = null
+      let resolvedContactServiceFollowUpStepId: string | null = null
+
+      if (payload.contactServiceId || payload.followUpTemplateId || payload.contactServiceFollowUpStepId) {
+        if (!payload.contactServiceId) {
+          return res.status(400).json({ error: "CONTACT_SERVICE_ID_REQUIRED" })
+        }
+
+        const contactService = linkedContactService
+
+        if (!contactService) {
+          return res.status(400).json({ error: "INVALID_CONTACT_SERVICE" })
+        }
+
+        if (
+          payload.followUpTemplateId &&
+          payload.followUpTemplateId !== contactService.followUpTemplateId
+        ) {
+          return res.status(400).json({ error: "INVALID_FOLLOW_UP_TEMPLATE" })
+        }
+
+        if (payload.contactServiceFollowUpStepId) {
+          const followUpStep = await prismaWithContacts.contactServiceFollowUpStep.findFirst({
+            where: {
+              id: payload.contactServiceFollowUpStepId,
+              tenantId,
+              contactServiceId: contactService.id,
+            },
+            select: {
+              id: true,
+            },
+          })
+
+          if (!followUpStep) {
+            return res.status(400).json({ error: "INVALID_FOLLOW_UP_STEP" })
+          }
+
+          resolvedContactServiceFollowUpStepId = followUpStep.id
+        }
+
+        resolvedContactServiceId = contactService.id
+        resolvedFollowUpTemplateId =
+          payload.followUpTemplateId ?? contactService.followUpTemplateId ?? null
+      }
+
       const created = await prisma.$transaction(async (tx) => {
         const txWithContacts = tx as any
         const note = await txWithContacts.contactNote.create({
           data: {
             tenantId,
             contactId,
-            title: payload.title,
-            body: payload.body,
+            contactServiceId: resolvedContactServiceId,
+            followUpTemplateId: resolvedFollowUpTemplateId,
+            contactServiceFollowUpStepId: resolvedContactServiceFollowUpStepId,
+            title: sanitizeSingleLineText(payload.title),
+            body: sanitizeMultilineText(payload.body),
             createdById: authed.user.id,
             attachments: {
               create: files.map((file: { id: string }) => ({
@@ -2188,6 +2777,28 @@ router.post(
                 id: true,
                 name: true,
                 email: true,
+              },
+            },
+            contactService: {
+              select: {
+                id: true,
+                service: {
+                  select: {
+                    name: true,
+                  },
+                },
+              },
+            },
+            followUpTemplate: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            contactServiceFollowUpStep: {
+              select: {
+                id: true,
+                title: true,
               },
             },
             attachments: {
@@ -2212,7 +2823,12 @@ router.post(
 
       return res.status(201).json({
         ok: true,
-        note: serializeContactNote(created, membership, authed.user.id),
+        note: serializeContactNote(
+          created,
+          membership,
+          authed.user.id,
+          buildContactNoteSource(created),
+        ),
       })
     } catch (error) {
       return next(error)
@@ -2334,6 +2950,28 @@ router.patch(
                 email: true,
               },
             },
+            contactService: {
+              select: {
+                id: true,
+                service: {
+                  select: {
+                    name: true,
+                  },
+                },
+              },
+            },
+            followUpTemplate: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            contactServiceFollowUpStep: {
+              select: {
+                id: true,
+                title: true,
+              },
+            },
             attachments: {
               orderBy: { createdAt: "asc" },
               select: {
@@ -2356,7 +2994,12 @@ router.patch(
 
       return res.json({
         ok: true,
-        note: serializeContactNote(updated, membership, authed.user.id),
+        note: serializeContactNote(
+          updated,
+          membership,
+          authed.user.id,
+          buildContactNoteSource(updated),
+        ),
       })
     } catch (error) {
       return next(error)

@@ -1,0 +1,4 @@
+ALTER TABLE "Tenant"
+ADD COLUMN "taxEnabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN "taxLabel" TEXT,
+ADD COLUMN "defaultTaxRateBps" INTEGER;

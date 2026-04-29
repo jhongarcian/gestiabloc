@@ -1,7 +1,17 @@
 import { type Response, Router } from "express"
 import { z } from "zod"
 
+import { decryptCustomFieldValue } from "../lib/contact-custom-field-encryption.js"
 import { prisma } from "../lib/prisma.js"
+import { generateServiceFitExplanation } from "../lib/service-fit-explanations.js"
+import { routeServiceQuestion } from "../lib/service-fit-question-router.js"
+import {
+  buildServiceFitFieldCatalog,
+  evaluateServiceFitProfile,
+  normalizeServiceFitProfile,
+  sortServiceFitEvaluations,
+  validateServiceFitProfile,
+} from "../lib/service-fit.js"
 import {
   executeFollowUpFromStart,
   executeFollowUpFromStep,
@@ -23,26 +33,195 @@ const sanitizeMultilineText = (value: string) =>
     .map((line) => line.replace(/\s+/g, " ").trim())
     .join("\n")
     .trim()
+const normalizeSearchValue = (value: string | null | undefined) =>
+  value?.trim().toLowerCase().replace(/\s+/g, " ") ?? ""
+const normalizePhoneSearchValue = (value: string | null | undefined) => (value ?? "").replace(/\D/g, "")
+const splitSearchTokens = (value: string | null | undefined) =>
+  normalizeSearchValue(value)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+const getSearchTokens = (
+  value: string | null | undefined,
+  options?: { includeSingleCharacter?: boolean },
+) => {
+  const includeSingleCharacter = options?.includeSingleCharacter ?? false
+
+  return splitSearchTokens(value).filter((token) => {
+    if (includeSingleCharacter) return true
+    return token.length > 1 || /\d/.test(token)
+  })
+}
+const getNameSearchPrefix = (token: string, options?: { broad?: boolean }) => {
+  const normalizedToken = normalizeSearchValue(token)
+  if (!normalizedToken) return ""
+  if (!options?.broad) return normalizedToken
+  if (normalizedToken.length <= 2) return normalizedToken
+  return normalizedToken.slice(0, 2)
+}
+const buildStartsWithClauses = (
+  fields: string[],
+  token: string,
+  options?: { broad?: boolean },
+) => {
+  const normalizedToken = normalizeSearchValue(token)
+  if (!normalizedToken) return []
+
+  const values = [normalizedToken, getNameSearchPrefix(normalizedToken, options)].filter(Boolean)
+
+  return fields.flatMap((field) =>
+    [...new Set(values)].map((value) => ({
+      [field]: { startsWith: value, mode: "insensitive" as const },
+    })),
+  )
+}
+const buildRelatedContactSearchWhere = (query: string) => {
+  const normalizedQuery = normalizeSearchValue(query)
+  const queryTokens = getSearchTokens(query, { includeSingleCharacter: true })
+  const hasEmailLikeQuery = normalizedQuery.includes("@")
+  const hasPhoneLikeQuery = normalizePhoneSearchValue(query).length >= 3
+  const nameTokens = queryTokens.filter((token) => /[a-z]/i.test(token))
+
+  const andClauses: Array<Record<string, unknown>> = []
+
+  if (!hasEmailLikeQuery && !hasPhoneLikeQuery && nameTokens.length >= 2) {
+    const firstToken = nameTokens[0]!
+    const lastToken = nameTokens[nameTokens.length - 1]!
+    const middleTokens = nameTokens.slice(1, -1)
+
+    andClauses.push({
+      OR: buildStartsWithClauses(["firstName", "middleName"], firstToken, {
+        broad: true,
+      }),
+    })
+
+    andClauses.push({
+      OR:
+        nameTokens.length === 2
+          ? buildStartsWithClauses(["lastName", "middleName"], lastToken)
+          : buildStartsWithClauses(["lastName"], lastToken),
+    })
+
+    for (const token of middleTokens) {
+      andClauses.push({
+        OR: buildStartsWithClauses(["middleName"], token),
+      })
+    }
+
+    return { AND: andClauses }
+  }
+
+  const singleTokenTerms = [...new Set([normalizedQuery, ...getSearchTokens(query)].filter(Boolean))]
+
+  andClauses.push({
+    OR: singleTokenTerms.flatMap((term) => [
+      ...buildStartsWithClauses(["firstName", "middleName", "lastName"], term, {
+        broad: true,
+      }),
+      { email: { contains: term, mode: "insensitive" as const } },
+      { phone: { contains: term, mode: "insensitive" as const } },
+    ]),
+  })
+
+  return { AND: andClauses }
+}
+const fileNameFromKey = (key: string) => {
+  const segments = key.split("/")
+  return segments[segments.length - 1] ?? key
+}
+const hasServiceNoteAttachmentQueryError = (error: unknown) =>
+  error instanceof Error &&
+  (error.message.includes("ContactServiceNoteAttachment") ||
+    error.message.includes("Unknown field `attachments`"))
+const serializeRelatedServiceNote = (
+  note: {
+    id: string
+    title: string
+    body: string
+    createdAt: Date
+    createdBy?: {
+      id: string
+      name: string | null
+      email?: string | null
+      image?: string | null
+    } | null
+    followUpTemplate?: {
+      id: string
+      name: string
+    } | null
+    contactServiceFollowUpStep?: {
+      id: string
+      title: string
+    } | null
+    attachments?: Array<{
+      id: string
+      file: {
+        id: string
+        key: string
+        contentType: string
+        size: number | null
+      }
+    }>
+  },
+  kind: "SERVICE_NOTE" | "FOLLOW_UP_NOTE" | "LINKED_CONTACT_NOTE",
+) => ({
+  id: note.id,
+  title: note.title,
+  body: note.body,
+  createdAt: note.createdAt,
+  kind,
+  followUpTemplateName: note.followUpTemplate?.name ?? null,
+  followUpStepTitle: note.contactServiceFollowUpStep?.title ?? null,
+  createdBy: note.createdBy
+    ? {
+        id: note.createdBy.id,
+        name:
+          note.createdBy.name?.trim() ||
+          note.createdBy.email?.trim() ||
+          "Unknown user",
+        image: note.createdBy.image ?? null,
+      }
+    : null,
+  attachments: (note.attachments ?? []).map((attachment) => ({
+    id: attachment.id,
+    fileId: attachment.file.id,
+    key: attachment.file.key,
+    fileName: fileNameFromKey(attachment.file.key),
+    contentType: attachment.file.contentType,
+    size: attachment.file.size ?? null,
+  })),
+})
 
 const TenantPathSchema = z.object({
-  tenantId: z.string().min(1),
+  tenantId: z.string().trim().min(1),
+})
+
+const TenantServicePathSchema = TenantPathSchema.extend({
+  serviceId: z.string().trim().min(1),
 })
 
 const TenantContactServicePathSchema = TenantPathSchema.extend({
-  contactServiceId: z.string().min(1),
+  contactServiceId: z.string().trim().min(1),
 })
 
 const TenantContactServicePaymentPathSchema = TenantContactServicePathSchema.extend({
-  paymentId: z.string().min(1),
+  paymentId: z.string().trim().min(1),
 })
 
 const TenantFollowUpStepPathSchema = TenantContactServicePathSchema.extend({
-  followUpStepId: z.string().min(1),
+  followUpStepId: z.string().trim().min(1),
 })
 
 const TenantContactServiceChecklistItemPathSchema = TenantContactServicePathSchema.extend({
-  checklistItemId: z.string().min(1),
+  checklistItemId: z.string().trim().min(1),
 })
+
+const ContactServiceStatusSchema = z.enum([
+  "IN_PROGRESS",
+  "PENDING_PAYMENT",
+  "COMPLETED",
+  "CANCELED",
+])
 
 const ContactServicesListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -54,8 +233,159 @@ const ContactServicesListQuerySchema = z.object({
     })
     .default(10),
   contactId: z.string().trim().min(1).optional(),
-  status: z.enum(["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELED"]).optional(),
+  status: ContactServiceStatusSchema.optional(),
 })
+
+const FitScanQuerySchema = z.object({
+  contactId: z.string().trim().min(1),
+  serviceId: z.string().trim().min(1).optional(),
+})
+
+const FitScanAssistantBodySchema = z.object({
+  contactId: z.string().trim().min(1),
+  serviceId: z.string().trim().min(1).optional(),
+  scope: z.enum(["all", "service"]).default("service"),
+  question: z.string().trim().min(1).max(500).optional().nullable(),
+})
+
+const ServiceFitRuleSourceSchema = z.enum(["core", "status", "tags", "custom", "derived"])
+const ServiceFitValueTypeSchema = z.enum(["string", "number", "date", "boolean", "stringArray"])
+const ServiceFitOperatorSchema = z.enum([
+  "equals",
+  "not_equals",
+  "contains",
+  "not_contains",
+  "greater_than",
+  "greater_than_or_equal",
+  "less_than",
+  "less_than_or_equal",
+  "between",
+  "includes_any",
+  "includes_all",
+  "excludes_all",
+  "is_true",
+  "is_false",
+  "is_empty",
+  "is_not_empty",
+])
+
+const ServiceFitPreviewSchema = z.object({
+  contactId: z.string().trim().min(1),
+  fitProfile: z.object({
+    enabled: z.boolean().default(false),
+    summary: z.string().trim().max(2000).default(""),
+    rules: z
+      .array(
+        z.object({
+          id: z.string().trim().min(1).max(120),
+          source: ServiceFitRuleSourceSchema,
+          fieldKey: z.string().trim().min(1).max(120),
+          valueType: ServiceFitValueTypeSchema,
+          operator: ServiceFitOperatorSchema,
+          compareValue: z.unknown().nullable().optional(),
+          required: z.boolean().default(false),
+          requiredGroup: z.string().trim().max(120).nullable().optional(),
+          requiredBranch: z.string().trim().max(120).nullable().optional(),
+          weight: z.coerce.number().int().min(1).max(10).default(1),
+          label: z.string().trim().max(160).nullable().optional(),
+          explanation: z.string().trim().max(300).nullable().optional(),
+        }),
+      )
+      .max(100)
+      .default([]),
+    requirementMetadata: z
+      .array(
+        z.object({
+          name: z.string().trim().min(1).max(120),
+          description: z.string().trim().max(500).default(""),
+        }),
+      )
+      .max(30)
+      .default([]),
+    optionMetadata: z
+      .array(
+        z.object({
+          requirementName: z.string().trim().min(1).max(120),
+          optionName: z.string().trim().min(1).max(120),
+          description: z.string().trim().max(500).default(""),
+        }),
+      )
+      .max(100)
+      .default([]),
+    verificationProfile: z
+      .object({
+        mode: z
+          .enum(["NONE", "WEB_SOURCES", "INTERNAL_KB", "EXTERNAL_API", "MANUAL_CONFIRMATION"])
+          .default("NONE"),
+        guidance: z.string().trim().max(2000).default(""),
+        sourceUrls: z.array(z.string().trim().url().max(500)).max(8).default([]),
+        triggerKeywords: z.array(z.string().trim().min(1).max(80)).max(12).default([]),
+      })
+      .default({
+        mode: "NONE",
+        guidance: "",
+        sourceUrls: [],
+        triggerKeywords: [],
+      }),
+    knowledgeProfile: z
+      .object({
+        overview: z.string().trim().max(4000).default(""),
+        pricingNotes: z.string().trim().max(4000).default(""),
+        workflowNotes: z.string().trim().max(4000).default(""),
+        faqNotes: z.string().trim().max(4000).default(""),
+        adapter: z.enum(["NONE", "IMMIGRATION_USCIS"]).default("NONE"),
+      })
+      .default({
+        overview: "",
+        pricingNotes: "",
+        workflowNotes: "",
+        faqNotes: "",
+        adapter: "NONE",
+      }),
+  }),
+})
+
+const ServicesCatalogSummaryPresetSchema = z.enum([
+  "THIS_MONTH",
+  "LAST_MONTH",
+  "LAST_3_MONTHS",
+  "CUSTOM",
+])
+
+const OptionalDateOnlySchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value
+    const trimmed = value.trim()
+    return trimmed.length ? trimmed : undefined
+  },
+  z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+)
+
+const ServicesCatalogSummaryQuerySchema = z
+  .object({
+    preset: ServicesCatalogSummaryPresetSchema.default("THIS_MONTH"),
+    from: OptionalDateOnlySchema,
+    to: OptionalDateOnlySchema,
+  })
+  .superRefine((value, ctx) => {
+    if (value.preset !== "CUSTOM") return
+
+    if (!value.from) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["from"],
+        message: "from is required when preset is CUSTOM",
+      })
+    }
+
+    if (!value.to) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["to"],
+        message: "to is required when preset is CUSTOM",
+      })
+    }
+  })
 
 const FollowUpsListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -73,12 +403,16 @@ const FollowUpsListQuerySchema = z.object({
   dueDatePreset: z
     .enum(["OVERDUE", "TODAY", "NEXT_7_DAYS", "NO_DUE_DATE"])
     .optional(),
+  followUpTemplateId: z.string().trim().min(1).optional(),
+  assignedToUserId: z.string().trim().min(1).optional(),
 })
 
 const CreateContactServiceSchema = z.object({
-  contactId: z.string().min(1),
-  serviceId: z.string().min(1),
-  followUpTemplateId: z.string().min(1).optional(),
+  contactId: z.string().trim().min(1),
+  serviceId: z.string().trim().min(1),
+  followUpTemplateId: z.string().trim().min(1).optional(),
+  followUpAssignedToUserId: z.string().trim().min(1).optional(),
+  assignedProfessionalId: z.string().trim().min(1).optional(),
   purchasedAt: z.string().datetime().nullable().optional(),
   startedAt: z.string().datetime().nullable().optional(),
   totalPriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
@@ -107,7 +441,7 @@ const UpdateContactServicePaymentSchema = z.object({
 })
 
 const UpdateContactServiceSchema = z.object({
-  status: z.enum(["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELED"]).optional(),
+  status: ContactServiceStatusSchema.optional(),
   startedAt: z.string().datetime().nullable().optional(),
   purchasedAt: z.string().datetime().nullable().optional(),
   completedAt: z.string().datetime().nullable().optional(),
@@ -116,15 +450,54 @@ const UpdateContactServiceSchema = z.object({
   notes: z.string().trim().max(4000).nullable().optional(),
 })
 
+const ContactServiceNoteAttachmentIdsSchema = z
+  .array(z.string().trim().min(1))
+  .max(10)
+  .default([])
+
 const CreateContactServiceNoteSchema = z.object({
   title: z.string().trim().min(1).max(160),
   body: z.string().trim().min(1).max(8000),
+  attachmentFileIds: ContactServiceNoteAttachmentIdsSchema,
 })
+
+async function getValidatedServiceNoteFiles(
+  tenantId: string,
+  attachmentFileIds: string[],
+) {
+  if (attachmentFileIds.length === 0) {
+    return []
+  }
+
+  const uniqueFileIds = [...new Set(attachmentFileIds)]
+  const files = await prisma.file.findMany({
+    where: {
+      tenantId,
+      id: { in: uniqueFileIds },
+      purpose: "GENERIC",
+    },
+    select: {
+      id: true,
+      key: true,
+      contentType: true,
+      size: true,
+    },
+  })
+
+  if (files.length !== uniqueFileIds.length) {
+    return null
+  }
+
+  return uniqueFileIds
+    .map((fileId) => files.find((file) => file.id === fileId))
+    .filter((file): file is NonNullable<typeof file> => Boolean(file))
+}
 
 const UpdateFollowUpStepSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   notesTemplate: z.string().trim().max(1000).nullable().optional(),
   status: z.enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED", "POSTPONED"]).optional(),
+  action: z.enum(["REOPEN"]).optional(),
   availableAt: z.string().datetime().nullable().optional(),
   dueAt: z.string().datetime().nullable().optional(),
   postponeTo: z.string().datetime().optional(),
@@ -188,6 +561,25 @@ const DEFAULT_TIMEZONE = "America/Chicago"
 
 function getSafeTimezone(timezone?: string | null) {
   return timezone?.trim() || DEFAULT_TIMEZONE
+}
+
+function decodeCustomFieldValue(storedValue: {
+  value: unknown
+  valueCiphertext: string | null
+  valueIv: string | null
+  valueAuthTag: string | null
+  valueKeyVersion: number | null
+}) {
+  if (storedValue.value !== null && storedValue.value !== undefined) {
+    return storedValue.value
+  }
+
+  return decryptCustomFieldValue({
+    valueCiphertext: storedValue.valueCiphertext,
+    valueIv: storedValue.valueIv,
+    valueAuthTag: storedValue.valueAuthTag,
+    valueKeyVersion: storedValue.valueKeyVersion,
+  })
 }
 
 function parseOffsetMinutes(label: string) {
@@ -260,6 +652,132 @@ function getTodayRange(timezone: string) {
   return { start, end }
 }
 
+function parseDateOnlyParts(value: string) {
+  const [year, month, day] = value.split("-").map(Number)
+  return { year, month, day }
+}
+
+function formatDateOnlyParts(value: { year: number; month: number; day: number }) {
+  return `${String(value.year).padStart(4, "0")}-${String(value.month).padStart(2, "0")}-${String(value.day).padStart(2, "0")}`
+}
+
+function getMonthRange(timezone: string, monthOffset: number) {
+  const today = getTimezoneDayParts(new Date(), timezone)
+  const monthStart = zonedDateTimeToUtc(
+    timezone,
+    today.year,
+    today.month + monthOffset,
+    1,
+    0,
+    0,
+    0,
+  )
+  const monthStartParts = getTimezoneDayParts(monthStart, timezone)
+  const nextMonthStart = zonedDateTimeToUtc(
+    timezone,
+    monthStartParts.year,
+    monthStartParts.month + 1,
+    1,
+    0,
+    0,
+    0,
+  )
+
+  return {
+    start: monthStart,
+    end: nextMonthStart,
+    from: formatDateOnlyParts(monthStartParts),
+    to: formatDateOnlyParts(getTimezoneDayParts(new Date(nextMonthStart.getTime() - 1), timezone)),
+  }
+}
+
+function getServicesCatalogSummaryRange(
+  query: z.infer<typeof ServicesCatalogSummaryQuerySchema>,
+  timezone: string,
+) {
+  if (query.preset === "THIS_MONTH") {
+    return getMonthRange(timezone, 0)
+  }
+
+  if (query.preset === "LAST_MONTH") {
+    return getMonthRange(timezone, -1)
+  }
+
+  if (query.preset === "LAST_3_MONTHS") {
+    const today = getTimezoneDayParts(new Date(), timezone)
+    const start = zonedDateTimeToUtc(timezone, today.year, today.month - 2, 1, 0, 0, 0)
+    const startParts = getTimezoneDayParts(start, timezone)
+    const end = zonedDateTimeToUtc(timezone, today.year, today.month + 1, 1, 0, 0, 0)
+
+    return {
+      start,
+      end,
+      from: formatDateOnlyParts(startParts),
+      to: formatDateOnlyParts(getTimezoneDayParts(new Date(end.getTime() - 1), timezone)),
+    }
+  }
+
+  const fromParts = parseDateOnlyParts(query.from!)
+  const toParts = parseDateOnlyParts(query.to!)
+  const start = zonedDateTimeToUtc(
+    timezone,
+    fromParts.year,
+    fromParts.month,
+    fromParts.day,
+    0,
+    0,
+    0,
+  )
+  const end = zonedDateTimeToUtc(
+    timezone,
+    toParts.year,
+    toParts.month,
+    toParts.day + 1,
+    0,
+    0,
+    0,
+  )
+  const maxRangeDays = 366
+  const totalDays = Math.ceil((end.getTime() - start.getTime()) / 86_400_000)
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    throw new z.ZodError([
+      {
+        code: z.ZodIssueCode.custom,
+        path: ["from"],
+        message: "Invalid custom date range.",
+      },
+    ])
+  }
+
+  if (end <= start) {
+    throw new z.ZodError([
+      {
+        code: z.ZodIssueCode.custom,
+        path: ["to"],
+        message: "to must be the same day or after from",
+      },
+    ])
+  }
+
+  if (totalDays > maxRangeDays) {
+    throw new z.ZodError([
+      {
+        code: z.ZodIssueCode.custom,
+        path: ["to"],
+        message: "Custom date range cannot exceed 366 days.",
+      },
+    ])
+  }
+
+  return {
+    start,
+    end,
+    from: query.from!,
+    to: query.to!,
+  }
+}
+
 async function summarizeContactServicePayments(
   prismaTx: any,
   tenantId: string,
@@ -303,10 +821,363 @@ async function summarizeContactServicePayments(
   }
 }
 
+function getServiceTotalWithTaxCents({
+  basePriceCents,
+  isTaxExempt,
+  taxEnabled,
+  defaultTaxRateBps,
+}: {
+  basePriceCents: number
+  isTaxExempt: boolean
+  taxEnabled: boolean
+  defaultTaxRateBps: number | null
+}) {
+  if (!taxEnabled || isTaxExempt || defaultTaxRateBps === null) {
+    return basePriceCents
+  }
+
+  return basePriceCents + Math.round((basePriceCents * defaultTaxRateBps) / 10_000)
+}
+
+async function loadServiceFitCatalog(tenantId: string) {
+  const [statuses, tags, customFields] = await Promise.all([
+    prisma.contactStatusConfig.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+      },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+      },
+    }),
+    prisma.tenantTag.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+      },
+    }),
+    prisma.contactCustomField.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        isSensitive: false,
+      },
+      orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+      select: {
+        id: true,
+        key: true,
+        label: true,
+        description: true,
+        fieldType: true,
+        options: true,
+      },
+    }),
+  ])
+
+  return buildServiceFitFieldCatalog({
+    statuses,
+    tags,
+    customFields: customFields.map((field: any) => ({
+      id: field.id,
+      key: field.key,
+      label: field.label,
+      description: field.description ?? null,
+      fieldType: field.fieldType,
+      options: Array.isArray(field.options) ? field.options : [],
+    })),
+  })
+}
+
+async function loadServiceFitContactSnapshot(tenantId: string, contactId: string) {
+  const [contact, tags, customFields, customFieldValues] = await Promise.all([
+    prisma.contact.findFirst({
+      where: {
+        tenantId,
+        id: contactId,
+      },
+      select: {
+        id: true,
+        firstName: true,
+        middleName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        secondaryPhone: true,
+        dateOfBirth: true,
+        addressLine1: true,
+        addressLine2: true,
+        city: true,
+        state: true,
+        postalCode: true,
+        country: true,
+        statusConfigId: true,
+      },
+    }),
+    prisma.contactTag.findMany({
+      where: {
+        tenantId,
+        contactId,
+      },
+      select: {
+        tagId: true,
+      },
+    }),
+    prisma.contactCustomField.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        isSensitive: false,
+      },
+      select: {
+        id: true,
+        key: true,
+      },
+    }),
+    prisma.contactCustomFieldValue.findMany({
+      where: {
+        tenantId,
+        contactId,
+      },
+      select: {
+        fieldId: true,
+        value: true,
+        valueCiphertext: true,
+        valueIv: true,
+        valueAuthTag: true,
+        valueKeyVersion: true,
+      },
+    }),
+  ])
+
+  if (!contact) {
+    return null
+  }
+
+  const fieldKeyById = new Map(
+    customFields.map((field: any) => [field.id, field.key] as const),
+  )
+
+  const customFieldValuesByKey: Record<string, unknown> = {}
+  for (const item of customFieldValues as Array<any>) {
+    const key = fieldKeyById.get(item.fieldId)
+    if (!key) continue
+    customFieldValuesByKey[key] = decodeCustomFieldValue(item)
+  }
+
+  return {
+    id: contact.id,
+    firstName: contact.firstName ?? null,
+    middleName: contact.middleName ?? null,
+    lastName: contact.lastName ?? null,
+    email: contact.email ?? null,
+    phoneNumber: contact.phone ?? null,
+    secondaryPhoneNumber: contact.secondaryPhone ?? null,
+    dateOfBirth: contact.dateOfBirth ?? null,
+    addressLine1: contact.addressLine1 ?? null,
+    addressLine2: contact.addressLine2 ?? null,
+    city: contact.city ?? null,
+    state: contact.state ?? null,
+    postalCode: contact.postalCode ?? null,
+    country: contact.country ?? null,
+    statusConfigId: contact.statusConfigId ?? null,
+    tagIds: tags.map((item: any) => item.tagId),
+    customFieldValues: customFieldValuesByKey,
+  }
+}
+
+async function evaluateServiceFitScan(params: {
+  tenantId: string
+  contactId: string
+  serviceId?: string
+  fitProfileOverrideByServiceId?: Record<string, unknown>
+}) {
+  const { tenantId, contactId, serviceId, fitProfileOverrideByServiceId } = params
+
+  const [tenant, catalog, contact, services] = await Promise.all([
+    prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { timezone: true },
+    }),
+    loadServiceFitCatalog(tenantId),
+    loadServiceFitContactSnapshot(tenantId, contactId),
+    prismaWithServices.service.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        ...(serviceId ? { id: serviceId } : {}),
+      },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        fitProfile: true,
+      },
+    }),
+  ])
+
+  if (!contact) {
+    return { error: "CONTACT_NOT_FOUND" as const }
+  }
+
+  const serviceIds = services.map((service: any) => service.id)
+  const existingContactServices = serviceIds.length
+    ? await prismaWithServices.contactService.findMany({
+        where: {
+          tenantId,
+          contactId,
+          serviceId: { in: serviceIds },
+        },
+        orderBy: [{ purchasedAt: "desc" }, { createdAt: "desc" }],
+        select: {
+          id: true,
+          serviceId: true,
+          status: true,
+          purchasedAt: true,
+          createdAt: true,
+        },
+      })
+    : []
+
+  const contactServicesByServiceId = new Map<string, Array<any>>()
+  for (const record of existingContactServices) {
+    const records = contactServicesByServiceId.get(record.serviceId) ?? []
+    records.push(record)
+    contactServicesByServiceId.set(record.serviceId, records)
+  }
+
+  const timezone = getSafeTimezone(tenant?.timezone)
+
+  type ContactServiceEnrollmentStatus =
+    | "IN_PROGRESS"
+    | "PENDING_PAYMENT"
+    | "COMPLETED"
+    | "CANCELED"
+
+  function summarizeContactServiceEnrollment(records: Array<{
+    id: string
+    status: ContactServiceEnrollmentStatus
+  }>) {
+    const active = records.find(
+      (record) => record.status === "IN_PROGRESS" || record.status === "PENDING_PAYMENT",
+    )
+    if (active) {
+      return {
+        hasPurchased: true,
+        hasActiveEnrollment: true,
+        currentContactServiceId: active.id,
+        currentContactServiceStatus: active.status,
+      } as const
+    }
+
+    const purchased = records.find((record) => record.status !== "CANCELED")
+    if (purchased) {
+      return {
+        hasPurchased: true,
+        hasActiveEnrollment: false,
+        currentContactServiceId: purchased.id,
+        currentContactServiceStatus: purchased.status,
+      } as const
+    }
+
+    const canceled = records[0]
+    return {
+      hasPurchased: false,
+      hasActiveEnrollment: false,
+      currentContactServiceId: canceled?.id ?? null,
+      currentContactServiceStatus: canceled?.status ?? null,
+    } as const
+  }
+
+  type FitScanItem = {
+    serviceId: string
+    serviceName: string
+    description: string | null
+    fitProfile: ReturnType<typeof normalizeServiceFitProfile>
+    eligibilityStatus: "ELIGIBLE" | "NEEDS_INFO" | "NOT_ELIGIBLE"
+    fitScore: number
+    matchedRules: Array<{ ruleId: string; label: string; reason: string }>
+    blockingRules: Array<{ ruleId: string; label: string; reason: string }>
+    missingRules: Array<{ ruleId: string; label: string; reason: string }>
+    summary: string
+    hasPurchased: boolean
+    hasActiveEnrollment: boolean
+    currentContactServiceId: string | null
+    currentContactServiceStatus: ContactServiceEnrollmentStatus | null
+  }
+
+  const items: FitScanItem[] = services
+    .map((service: any) => {
+      const rawProfile =
+        fitProfileOverrideByServiceId?.[service.id] ?? service.fitProfile
+      const profile = normalizeServiceFitProfile(rawProfile)
+      if (!profile.enabled || profile.rules.length === 0) {
+        return null
+      }
+
+      const evaluation = evaluateServiceFitProfile({
+        profile,
+        catalog,
+        contact,
+        timezone,
+      })
+      const enrollmentSummary = summarizeContactServiceEnrollment(
+        contactServicesByServiceId.get(service.id) ?? [],
+      )
+
+      return {
+        serviceId: service.id,
+        serviceName: service.name,
+        description: service.description ?? null,
+        fitProfile: profile,
+        ...enrollmentSummary,
+        ...evaluation,
+      }
+    })
+    .filter(
+      (
+        item: unknown,
+      ): item is FitScanItem => Boolean(item),
+    )
+
+  const sortedItems = sortServiceFitEvaluations(items)
+  const itemsWithExplanations = await Promise.all(
+    sortedItems.map(async (item) => {
+      const explanationResult = await generateServiceFitExplanation({
+        serviceName: item.serviceName,
+        serviceDescription: item.description ?? null,
+        fitSummary: item.fitProfile.summary || item.summary || null,
+        eligibilityStatus: item.eligibilityStatus,
+        fitScore: item.fitScore,
+        matchedRules: item.matchedRules,
+        blockingRules: item.blockingRules,
+        missingRules: item.missingRules,
+      })
+
+      return {
+        ...item,
+        explanation: explanationResult.explanation,
+        explanationSource: explanationResult.explanationSource,
+        configurationGapNotes: explanationResult.configurationGapNotes,
+        recommendedUpdates: explanationResult.recommendedUpdates,
+      }
+    }),
+  )
+
+  return {
+    items: itemsWithExplanations,
+  }
+}
+
 async function reconcileContactServiceCompletionFromFollowUps(
   prismaTx: any,
   tenantId: string,
   contactServiceId: string,
+  actorUserId?: string | null,
 ) {
   const contactService = await prismaTx.contactService.findFirst({
     where: {
@@ -317,6 +1188,14 @@ async function reconcileContactServiceCompletionFromFollowUps(
       id: true,
       status: true,
       completedAt: true,
+      totalPriceCents: true,
+      contactId: true,
+      followUpTemplateId: true,
+      service: {
+        select: {
+          name: true,
+        },
+      },
     },
   })
 
@@ -335,41 +1214,39 @@ async function reconcileContactServiceCompletionFromFollowUps(
     },
   })
 
-  const hasSteps = followUpSteps.length > 0
-  const allStepsCompleted = hasSteps
-    ? followUpSteps.every(
-        (step: { status: string | null; completedAt: Date | null }) =>
-          step.status === "COMPLETED" ||
-          step.status === "SKIPPED" ||
-          Boolean(step.completedAt),
-      )
-    : false
+  const paymentSummary = await summarizeContactServicePayments(
+    prismaTx,
+    tenantId,
+    contactServiceId,
+  )
 
-  if (allStepsCompleted) {
-    if (contactService.status !== "COMPLETED") {
-      return prismaTx.contactService.update({
-        where: { id: contactServiceId },
-        data: {
-          status: "COMPLETED",
-          completedAt: contactService.completedAt ?? new Date(),
-        },
-        select: {
-          id: true,
-          status: true,
-          completedAt: true,
-        },
-      })
-    }
-
+  if (!paymentSummary) {
     return contactService
   }
 
-  if (contactService.status === "COMPLETED") {
-    return prismaTx.contactService.update({
+  const allStepsCompleted = followUpSteps.every(
+    (step: { status: string | null; completedAt: Date | null }) =>
+      step.status === "COMPLETED" ||
+      step.status === "SKIPPED" ||
+      Boolean(step.completedAt),
+  )
+  const isPaidInFull = paymentSummary.remainingCents <= 0
+  const nextStatus = allStepsCompleted
+    ? isPaidInFull
+      ? "COMPLETED"
+      : "PENDING_PAYMENT"
+    : "IN_PROGRESS"
+
+  if (
+    contactService.status !== nextStatus ||
+    (nextStatus === "COMPLETED" && !contactService.completedAt) ||
+    (nextStatus !== "COMPLETED" && contactService.completedAt)
+  ) {
+    const updated = await prismaTx.contactService.update({
       where: { id: contactServiceId },
       data: {
-        status: "IN_PROGRESS",
-        completedAt: null,
+        status: nextStatus,
+        completedAt: nextStatus === "COMPLETED" ? contactService.completedAt ?? new Date() : null,
       },
       select: {
         id: true,
@@ -377,16 +1254,432 @@ async function reconcileContactServiceCompletionFromFollowUps(
         completedAt: true,
       },
     })
+
+    if (contactService.followUpTemplateId) {
+      await prismaTx.serviceFollowUpExecutionLog.create({
+        data: {
+          tenantId,
+          templateId: contactService.followUpTemplateId,
+          contactServiceId,
+          contactId: contactService.contactId,
+          actorUserId: actorUserId ?? null,
+          eventType: "SERVICE_STATUS_UPDATED",
+          title: `Service status updated: ${contactService.service.name}`,
+          details: `Service moved from ${contactService.status.toLowerCase().replace(/_/g, " ")} to ${nextStatus.toLowerCase().replace(/_/g, " ")}.`,
+          payload: {
+            previousStatus: contactService.status,
+            status: nextStatus,
+          },
+        },
+      })
+    }
+
+    return updated
   }
 
   return contactService
 }
 
+router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, serviceId } = TenantServicePathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const service = await prismaWithServices.service.findFirst({
+      where: {
+        id: serviceId,
+        tenantId,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        basePriceCents: true,
+        currency: true,
+        isTaxExempt: true,
+        allowPartialPayments: true,
+        minimumPartialPaymentCents: true,
+        installmentCount: true,
+        installmentFrequency: true,
+        isActive: true,
+        tenant: {
+          select: {
+            taxEnabled: true,
+            taxLabel: true,
+            defaultTaxRateBps: true,
+          },
+        },
+        checklistItems: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            label: true,
+            description: true,
+            isRequired: true,
+            sortOrder: true,
+          },
+        },
+        followUpTemplates: {
+          where: { isPublished: true },
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            name: true,
+            isPublished: true,
+            sortOrder: true,
+            flowNodes: true,
+            flowEdges: true,
+          },
+        },
+        professionals: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            kind: true,
+            userId: true,
+            externalProfessionalName: true,
+            externalContact: true,
+            sortOrder: true,
+            user: {
+              select: {
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+          },
+        },
+      },
+    })
+
+    if (!service) {
+      return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
+    }
+
+    return res.json({
+      ok: true,
+      service: {
+        id: service.id,
+        name: service.name,
+        description: service.description,
+        basePriceCents: service.basePriceCents,
+        currency: service.currency,
+        isTaxExempt: service.isTaxExempt,
+        allowPartialPayments: service.allowPartialPayments,
+        minimumPartialPaymentCents: service.minimumPartialPaymentCents,
+        installmentCount: service.installmentCount,
+        installmentFrequency: service.installmentFrequency,
+        isActive: service.isActive,
+        checklistItems: service.checklistItems,
+        followUpTemplates: service.followUpTemplates.map((template: any) => ({
+          id: template.id,
+          name: template.name,
+          isPublished: template.isPublished,
+          sortOrder: template.sortOrder,
+          flowNodeCount: Array.isArray(template.flowNodes) ? template.flowNodes.length : 0,
+          flowEdgeCount: Array.isArray(template.flowEdges) ? template.flowEdges.length : 0,
+        })),
+        professionals: service.professionals.map((professional: any) => ({
+          id: professional.id,
+          kind: professional.kind,
+          userId: professional.userId,
+          externalProfessionalName: professional.externalProfessionalName,
+          externalContact: professional.externalContact,
+          sortOrder: professional.sortOrder,
+          user: professional.user,
+        })),
+        tenantBilling: {
+          taxEnabled: service.tenant.taxEnabled,
+          taxLabel: service.tenant.taxLabel,
+          defaultTaxRatePercent:
+            service.tenant.defaultTaxRateBps !== null &&
+            service.tenant.defaultTaxRateBps !== undefined
+              ? service.tenant.defaultTaxRateBps / 100
+              : null,
+        },
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const query = ServicesCatalogSummaryQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { timezone: true },
+    })
+    const timezone = getSafeTimezone(tenant?.timezone)
+    const range = getServicesCatalogSummaryRange(query, timezone)
+    const salesDateWhere = {
+      OR: [
+        {
+          purchasedAt: {
+            gte: range.start,
+            lt: range.end,
+          },
+        },
+        {
+          purchasedAt: null,
+          createdAt: {
+            gte: range.start,
+            lt: range.end,
+          },
+        },
+      ],
+    }
+
+    const [grossSalesAggregate, servicesSold, activeFollowUpServices, openTotals, openPayments] =
+      await Promise.all([
+        prismaWithServices.contactService.aggregate({
+          where: {
+            tenantId,
+            status: {
+              not: "CANCELED",
+            },
+            ...salesDateWhere,
+          },
+          _sum: {
+            totalPriceCents: true,
+          },
+        }),
+        prismaWithServices.contactService.count({
+          where: {
+            tenantId,
+            status: {
+              not: "CANCELED",
+            },
+            ...salesDateWhere,
+          },
+        }),
+        prismaWithServices.contactService.count({
+          where: {
+            tenantId,
+            status: {
+              not: "CANCELED",
+            },
+            followUpSteps: {
+              some: {
+                status: {
+                  in: ["PENDING", "ACTIVE", "POSTPONED"] as const,
+                },
+              },
+            },
+          },
+        }),
+        prismaWithServices.contactService.aggregate({
+          where: {
+            tenantId,
+            status: {
+              not: "CANCELED",
+            },
+          },
+          _sum: {
+            totalPriceCents: true,
+          },
+        }),
+        prismaWithServices.contactServicePayment.aggregate({
+          where: {
+            tenantId,
+            contactService: {
+              tenantId,
+              status: {
+                not: "CANCELED",
+              },
+            },
+          },
+          _sum: {
+            amountCents: true,
+          },
+        }),
+      ])
+
+    const totalOpenPriceCents = openTotals._sum.totalPriceCents ?? 0
+    const totalOpenPaidCents = openPayments._sum.amountCents ?? 0
+
+    return res.json({
+      ok: true,
+      summary: {
+        grossSalesCents: grossSalesAggregate._sum.totalPriceCents ?? 0,
+        servicesSold,
+        activeFollowUpServices,
+        remainingBalanceCents: Math.max(0, totalOpenPriceCents - totalOpenPaidCents),
+        range: {
+          preset: query.preset,
+          from: range.from,
+          to: range.to,
+        },
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/catalog/:serviceId/summary", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, serviceId } = TenantServicePathSchema.parse(req.params)
+    const query = ServicesCatalogSummaryQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { timezone: true },
+    })
+    const timezone = getSafeTimezone(tenant?.timezone)
+    const range = getServicesCatalogSummaryRange(query, timezone)
+
+    const service = await prismaWithServices.service.findFirst({
+      where: {
+        id: serviceId,
+        tenantId,
+        isActive: true,
+      },
+      select: { id: true },
+    })
+
+    if (!service) {
+      return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
+    }
+
+    const salesDateWhere = {
+      OR: [
+        {
+          purchasedAt: {
+            gte: range.start,
+            lt: range.end,
+          },
+        },
+        {
+          purchasedAt: null,
+          createdAt: {
+            gte: range.start,
+            lt: range.end,
+          },
+        },
+      ],
+    }
+
+    const [grossSalesAggregate, servicesSold, activeFollowUpServices, openTotals, openPayments] =
+      await Promise.all([
+        prismaWithServices.contactService.aggregate({
+          where: {
+            tenantId,
+            serviceId,
+            status: {
+              not: "CANCELED",
+            },
+            ...salesDateWhere,
+          },
+          _sum: {
+            totalPriceCents: true,
+          },
+        }),
+        prismaWithServices.contactService.count({
+          where: {
+            tenantId,
+            serviceId,
+            status: {
+              not: "CANCELED",
+            },
+            ...salesDateWhere,
+          },
+        }),
+        prismaWithServices.contactService.count({
+          where: {
+            tenantId,
+            serviceId,
+            status: {
+              not: "CANCELED",
+            },
+            followUpSteps: {
+              some: {
+                status: {
+                  in: ["PENDING", "ACTIVE", "POSTPONED"] as const,
+                },
+              },
+            },
+          },
+        }),
+        prismaWithServices.contactService.aggregate({
+          where: {
+            tenantId,
+            serviceId,
+            status: {
+              not: "CANCELED",
+            },
+          },
+          _sum: {
+            totalPriceCents: true,
+          },
+        }),
+        prismaWithServices.contactServicePayment.aggregate({
+          where: {
+            tenantId,
+            contactService: {
+              tenantId,
+              serviceId,
+              status: {
+                not: "CANCELED",
+              },
+            },
+          },
+          _sum: {
+            amountCents: true,
+          },
+        }),
+      ])
+
+    const totalOpenPriceCents = openTotals._sum.totalPriceCents ?? 0
+    const totalOpenPaidCents = openPayments._sum.amountCents ?? 0
+
+    return res.json({
+      ok: true,
+      summary: {
+        grossSalesCents: grossSalesAggregate._sum.totalPriceCents ?? 0,
+        servicesSold,
+        activeFollowUpServices,
+        remainingBalanceCents: Math.max(0, totalOpenPriceCents - totalOpenPaidCents),
+        range: {
+          preset: query.preset,
+          from: range.from,
+          to: range.to,
+        },
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
     const { tenantId } = TenantPathSchema.parse(req.params)
-    const { page, pageSize, search, status, dueDatePreset } = FollowUpsListQuerySchema.parse(
+    const {
+      page,
+      pageSize,
+      search,
+      status,
+      dueDatePreset,
+      followUpTemplateId,
+      assignedToUserId,
+    } = FollowUpsListQuerySchema.parse(
       req.query,
     )
 
@@ -416,60 +1709,66 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
       dueDatePreset === "OVERDUE"
         ? {
             ...currentStepStatusClause,
+            ...(assignedToUserId ? { assignedToUserId } : {}),
             dueAt: { lt: now },
           }
         : dueDatePreset === "TODAY"
           ? {
               ...currentStepStatusClause,
+              ...(assignedToUserId ? { assignedToUserId } : {}),
               dueAt: { gte: todayRange.start, lt: todayRange.end },
             }
           : dueDatePreset === "NEXT_7_DAYS"
             ? {
                 ...currentStepStatusClause,
+                ...(assignedToUserId ? { assignedToUserId } : {}),
                 dueAt: { gte: todayRange.start, lt: nextSevenDaysEnd },
               }
             : dueDatePreset === "NO_DUE_DATE"
               ? {
                   ...currentStepStatusClause,
+                  ...(assignedToUserId ? { assignedToUserId } : {}),
                   dueAt: null,
                 }
               : {
                   ...currentStepStatusClause,
+                  ...(assignedToUserId ? { assignedToUserId } : {}),
                 }
 
-    const where = {
-      tenantId,
-      status: {
-        in: ["PENDING", "IN_PROGRESS"] as const,
-      },
-      followUpSteps: {
-        some: {
-          ...currentStepWhere,
-          ...(searchableValue
-            ? {
+    const searchOrClauses = searchableValue
+      ? [
+          { service: { name: { contains: searchableValue, mode: "insensitive" as const } } },
+          {
+            contact: buildRelatedContactSearchWhere(searchableValue),
+          },
+          {
+            followUpSteps: {
+              some: {
+                ...currentStepWhere,
                 OR: [
                   { title: { contains: searchableValue, mode: "insensitive" as const } },
                   { note: { contains: searchableValue, mode: "insensitive" as const } },
                 ],
-              }
-            : {}),
+              },
+            },
+          },
+        ]
+      : undefined
+
+    const where = {
+      tenantId,
+      status: {
+        in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
+      },
+      followUpSteps: {
+        some: {
+          ...currentStepWhere,
         },
       },
-      ...(searchableValue
+      ...(searchOrClauses ? { OR: searchOrClauses } : {}),
+      ...(followUpTemplateId
         ? {
-            OR: [
-              { service: { name: { contains: searchableValue, mode: "insensitive" as const } } },
-              {
-                contact: {
-                  OR: [
-                    { firstName: { contains: searchableValue, mode: "insensitive" as const } },
-                    { middleName: { contains: searchableValue, mode: "insensitive" as const } },
-                    { lastName: { contains: searchableValue, mode: "insensitive" as const } },
-                    { phone: { contains: searchableValue, mode: "insensitive" as const } },
-                  ],
-                },
-              },
-            ],
+            followUpTemplateId,
           }
         : {}),
     }
@@ -534,7 +1833,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
       where: {
         tenantId,
         status: {
-          in: ["PENDING", "IN_PROGRESS"] as const,
+          in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
         },
         followUpSteps: {
           some: {
@@ -561,7 +1860,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
         where: {
           tenantId,
           status: {
-            in: ["PENDING", "IN_PROGRESS"] as const,
+            in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
           },
           followUpSteps: {
             some: {
@@ -581,7 +1880,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
           contactService: {
             tenantId,
             status: {
-              in: ["PENDING", "IN_PROGRESS"] as const,
+              in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
             },
           },
         },
@@ -594,7 +1893,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
           contactService: {
             tenantId,
             status: {
-              in: ["PENDING", "IN_PROGRESS"] as const,
+              in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
             },
           },
         },
@@ -627,6 +1926,9 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
                 service.followUpSteps.find((step: any) => step.status === currentStatus) ?? null,
             )
             .find(Boolean) ?? null
+        const currentStepIndex = currentStep
+          ? service.followUpSteps.findIndex((step: any) => step.id === currentStep.id)
+          : -1
         const totalSteps = service.followUpSteps.length
         const completedSteps = service.followUpSteps.filter(
           (step: any) => step.status === "COMPLETED" || step.status === "SKIPPED",
@@ -658,6 +1960,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
                   currentStep.assignedTo?.name?.trim() || currentStep.assignedTo?.email || null,
                 note: currentStep.note,
                 sortOrder: currentStep.sortOrder,
+                stepNumber: currentStepIndex >= 0 ? currentStepIndex + 1 : null,
               }
             : null,
           progress: {
@@ -692,6 +1995,171 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
   }
 })
 
+router.get("/:tenantId/follow-up-template-options", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const templates = await prisma.serviceFollowUpTemplate.findMany({
+      where: {
+        tenantId,
+        isPublished: true,
+        contactServices: {
+          some: {
+            tenantId,
+            status: {
+              in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
+            },
+          },
+        },
+      },
+      orderBy: [{ name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+      },
+    })
+
+    return res.json({
+      ok: true,
+      items: templates,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/fit-scan", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const query = FitScanQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const result = await evaluateServiceFitScan({
+      tenantId,
+      contactId: query.contactId,
+      serviceId: query.serviceId,
+    })
+
+    if ("error" in result) {
+      return res.status(404).json({ error: result.error })
+    }
+
+    return res.json({
+      ok: true,
+      items: result.items,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post("/:tenantId/fit-scan/assistant", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const payload = FitScanAssistantBodySchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const scope = payload.scope === "service" && payload.serviceId ? "service" : "all"
+    const result = await evaluateServiceFitScan({
+      tenantId,
+      contactId: payload.contactId,
+      serviceId: scope === "service" ? payload.serviceId : undefined,
+    })
+
+    if ("error" in result) {
+      return res.status(404).json({ error: result.error })
+    }
+
+    if (scope === "service" && result.items.length === 0) {
+      return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
+    }
+
+    const serviceItem =
+      scope === "service"
+        ? result.items.find((item) => item.serviceId === payload.serviceId) ?? result.items[0] ?? null
+        : null
+
+    const answer = await routeServiceQuestion({
+      items: result.items,
+      scope,
+      serviceId: payload.serviceId,
+      question: payload.question ?? null,
+    })
+
+    return res.json({
+      ok: true,
+      scope: {
+        mode: scope,
+        serviceId: serviceItem?.serviceId ?? null,
+        serviceName: serviceItem?.serviceName ?? null,
+      },
+      answer,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post("/:tenantId/fit-scan/preview", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const payload = ServiceFitPreviewSchema.parse(req.body)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const catalog = await loadServiceFitCatalog(tenantId)
+    const fitProfileValidation = validateServiceFitProfile(
+      normalizeServiceFitProfile(payload.fitProfile),
+      catalog,
+    )
+
+    if (!fitProfileValidation.ok) {
+      return res.status(400).json({
+        error: "INVALID_SERVICE_FIT_PROFILE",
+        details: fitProfileValidation.error,
+      })
+    }
+
+    const [tenant, contact] = await Promise.all([
+      prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { timezone: true },
+      }),
+      loadServiceFitContactSnapshot(tenantId, payload.contactId),
+    ])
+
+    if (!contact) {
+      return res.status(404).json({ error: "CONTACT_NOT_FOUND" })
+    }
+
+    const preview = evaluateServiceFitProfile({
+      profile: fitProfileValidation.profile,
+      catalog,
+      contact,
+      timezone: getSafeTimezone(tenant?.timezone),
+    })
+
+    return res.json({
+      ok: true,
+      result: preview,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
@@ -719,43 +2187,18 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         select: {
           id: true,
           status: true,
-          startedAt: true,
           purchasedAt: true,
-          completedAt: true,
-          canceledAt: true,
           totalPriceCents: true,
           currency: true,
-          allowPartialPayments: true,
-          notes: true,
-          contact: {
-            select: {
-              firstName: true,
-              middleName: true,
-              lastName: true,
-            },
-          },
           service: {
             select: {
               id: true,
               name: true,
-              description: true,
-              basePriceCents: true,
               checklistItems: {
                 select: {
                   id: true,
-                  label: true,
-                  description: true,
-                  isRequired: true,
-                  sortOrder: true,
                 },
-                orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
               },
-            },
-          },
-          followUpTemplate: {
-            select: {
-              id: true,
-              name: true,
             },
           },
           payments: {
@@ -766,15 +2209,15 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           followUpSteps: {
             select: {
               id: true,
-              title: true,
-              notesTemplate: true,
               status: true,
-              availableAt: true,
               dueAt: true,
-              completedAt: true,
-              assignedToUserId: true,
-              note: true,
-              sortOrder: true,
+              assignedTo: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
             },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           },
@@ -806,6 +2249,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
       const prismaTx = tx as any
       const activatedIds: string[] = []
       let checklistBackfilled = false
+      let statusReconciled = false
       for (const item of items) {
         const activatedId = await syncContactServiceActiveStep({
           prismaTx,
@@ -837,11 +2281,25 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           })
           checklistBackfilled = true
         }
+
+        const reconciled = await reconcileContactServiceCompletionFromFollowUps(
+          prismaTx,
+          tenantId,
+          item.id,
+          authed.user.id,
+        )
+        if (reconciled?.status && reconciled.status !== item.status) {
+          statusReconciled = true
+        }
       }
-      return { activatedIds, checklistBackfilled }
+      return { activatedIds, checklistBackfilled, statusReconciled }
     })
 
-    if (syncResults.activatedIds.length > 0 || syncResults.checklistBackfilled) {
+    if (
+      syncResults.activatedIds.length > 0 ||
+      syncResults.checklistBackfilled ||
+      syncResults.statusReconciled
+    ) {
       items = await prismaWithServices.contactService.findMany({
         where,
         orderBy: [{ createdAt: "desc" }],
@@ -850,43 +2308,18 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         select: {
           id: true,
           status: true,
-          startedAt: true,
           purchasedAt: true,
-          completedAt: true,
-          canceledAt: true,
           totalPriceCents: true,
           currency: true,
-          allowPartialPayments: true,
-          notes: true,
-          contact: {
-            select: {
-              firstName: true,
-              middleName: true,
-              lastName: true,
-            },
-          },
           service: {
             select: {
               id: true,
               name: true,
-              description: true,
-              basePriceCents: true,
               checklistItems: {
                 select: {
                   id: true,
-                  label: true,
-                  description: true,
-                  isRequired: true,
-                  sortOrder: true,
                 },
-                orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
               },
-            },
-          },
-          followUpTemplate: {
-            select: {
-              id: true,
-              name: true,
             },
           },
           payments: {
@@ -897,15 +2330,15 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           followUpSteps: {
             select: {
               id: true,
-              title: true,
-              notesTemplate: true,
               status: true,
-              availableAt: true,
               dueAt: true,
-              completedAt: true,
-              assignedToUserId: true,
-              note: true,
-              sortOrder: true,
+              assignedTo: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
             },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           },
@@ -946,31 +2379,13 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         return {
           id: item.id,
           status: item.status,
-          startedAt: item.startedAt,
           purchasedAt: item.purchasedAt,
-          completedAt: item.completedAt,
-          canceledAt: item.canceledAt,
           totalPriceCents: item.totalPriceCents,
           paidCents,
           remainingCents: Math.max(0, item.totalPriceCents - paidCents),
           currency: item.currency,
-          allowPartialPayments: item.allowPartialPayments,
-          notes: item.notes,
-          contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
-            .filter(Boolean)
-            .join(" "),
           service: item.service,
-          followUpTemplate: item.followUpTemplate,
           followUpSteps: item.followUpSteps,
-          checklistItems: item.checklistItems.map((checklistItem: any) => ({
-            id: checklistItem.id,
-            checklistItemId: checklistItem.checklistItemId,
-            completedAt: checklistItem.completedAt,
-            label: checklistItem.checklistItem?.label ?? "",
-            description: checklistItem.checklistItem?.description ?? null,
-            isRequired: Boolean(checklistItem.checklistItem?.isRequired),
-            sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
-          })),
         }
       }),
       pagination: {
@@ -1011,7 +2426,23 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           id: true,
           basePriceCents: true,
           currency: true,
+          isTaxExempt: true,
           allowPartialPayments: true,
+          minimumPartialPaymentCents: true,
+          installmentCount: true,
+          installmentFrequency: true,
+          tenant: {
+            select: {
+              taxEnabled: true,
+              taxLabel: true,
+              defaultTaxRateBps: true,
+            },
+          },
+          professionals: {
+            select: {
+              id: true,
+            },
+          },
           checklistItems: {
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: { id: true },
@@ -1069,9 +2500,42 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       return res.status(400).json({ error: "FOLLOW_UP_TEMPLATE_HAS_NO_STEPS" })
     }
 
+    const selectedAssignedProfessional = payload.assignedProfessionalId
+      ? service.professionals.find(
+          (item: { id: string }) => item.id === payload.assignedProfessionalId,
+        ) ?? null
+      : null
+
+    if (payload.assignedProfessionalId && !selectedAssignedProfessional) {
+      return res.status(400).json({ error: "INVALID_ASSIGNED_SERVICE_PROFESSIONAL" })
+    }
+
+    if (payload.followUpAssignedToUserId) {
+      const assigneeMembership = await prisma.membership.findUnique({
+        where: {
+          userId_tenantId: {
+            userId: payload.followUpAssignedToUserId,
+            tenantId,
+          },
+        },
+        select: {
+          status: true,
+        },
+      })
+
+      if (!assigneeMembership || assigneeMembership.status !== "ACTIVE") {
+        return res.status(400).json({ error: "INVALID_FOLLOW_UP_ASSIGNEE" })
+      }
+    }
+
     const purchasedAt = payload.purchasedAt ? new Date(payload.purchasedAt) : new Date()
     const startedAt = payload.startedAt ? new Date(payload.startedAt) : new Date()
-    const totalPriceCents = service.basePriceCents
+    const totalPriceCents = getServiceTotalWithTaxCents({
+      basePriceCents: service.basePriceCents,
+      isTaxExempt: service.isTaxExempt,
+      taxEnabled: service.tenant.taxEnabled,
+      defaultTaxRateBps: service.tenant.defaultTaxRateBps ?? null,
+    })
     const initialPaymentCents = payload.initialPaymentCents ?? 0
 
     if (initialPaymentCents < 0 || initialPaymentCents > totalPriceCents) {
@@ -1095,6 +2559,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           contactId: payload.contactId,
           serviceId: payload.serviceId,
           followUpTemplateId: selectedPublishedTemplate?.id ?? null,
+          assignedProfessionalId: selectedAssignedProfessional?.id ?? null,
           status: "IN_PROGRESS",
           startedAt,
           purchasedAt,
@@ -1147,6 +2612,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
               status: index === 0 ? "ACTIVE" : "PENDING",
               availableAt: index === 0 ? startedAt : dueAt,
               dueAt,
+              assignedToUserId: payload.followUpAssignedToUserId ?? null,
               sortOrder: step.sortOrder,
             }
           }),
@@ -1163,6 +2629,13 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         })
       }
 
+      await reconcileContactServiceCompletionFromFollowUps(
+        prismaTx,
+        tenantId,
+        contactService.id,
+        authed.user.id,
+      )
+
       return contactService
     })
 
@@ -1176,7 +2649,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
 })
 
 router.get(
-  "/:tenantId/contact-services/:contactServiceId",
+  "/:tenantId/contact-services/:contactServiceId/overview",
   requireAuth,
   async (req, res, next) => {
     try {
@@ -1204,6 +2677,22 @@ router.get(
             currency: true,
             allowPartialPayments: true,
             notes: true,
+            assignedProfessional: {
+              select: {
+                id: true,
+                kind: true,
+                userId: true,
+                externalProfessionalName: true,
+                externalContact: true,
+                user: {
+                  select: {
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+              },
+            },
             contact: {
               select: {
                 firstName: true,
@@ -1217,6 +2706,17 @@ router.get(
                 name: true,
                 description: true,
                 basePriceCents: true,
+                isTaxExempt: true,
+                minimumPartialPaymentCents: true,
+                installmentCount: true,
+                installmentFrequency: true,
+                tenant: {
+                  select: {
+                    taxEnabled: true,
+                    taxLabel: true,
+                    defaultTaxRateBps: true,
+                  },
+                },
                 checklistItems: {
                   select: {
                     id: true,
@@ -1237,35 +2737,11 @@ router.get(
             },
             payments: {
               select: {
-                id: true,
                 amountCents: true,
                 paidAt: true,
-                paymentMethod: true,
                 note: true,
-                recordedBy: {
-                  select: {
-                    id: true,
-                    name: true,
-                  },
-                },
               },
               orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
-            },
-            serviceNotes: {
-              select: {
-                id: true,
-                title: true,
-                body: true,
-                createdAt: true,
-                createdBy: {
-                  select: {
-                    id: true,
-                    name: true,
-                    image: true,
-                  },
-                },
-              },
-              orderBy: [{ createdAt: "desc" }],
             },
             followUpSteps: {
               select: {
@@ -1277,6 +2753,14 @@ router.get(
                 dueAt: true,
                 completedAt: true,
                 assignedToUserId: true,
+                assignedTo: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
                 note: true,
                 sortOrder: true,
               },
@@ -1342,13 +2826,25 @@ router.get(
           })
         }
 
+        const reconciled = await reconcileContactServiceCompletionFromFollowUps(
+          prismaTx,
+          tenantId,
+          item.id,
+          authed.user.id,
+        )
+
         return {
           activatedId,
           checklistBackfilled: missingChecklistItemIds.length > 0,
+          statusReconciled: reconciled?.status !== item.status,
         }
       })
 
-      if (syncResult.activatedId || syncResult.checklistBackfilled) {
+      if (
+        syncResult.activatedId ||
+        syncResult.checklistBackfilled ||
+        syncResult.statusReconciled
+      ) {
         item = await fetchItem()
       }
 
@@ -1359,6 +2855,432 @@ router.get(
       const paidCents = item.payments.reduce(
         (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
         0,
+      )
+      const latestPaidAt = item.payments[0]?.paidAt ?? null
+      const scheduledPaymentsRecordedCount = item.payments.filter(
+        (payment: { note: string | null }) =>
+          payment.note?.trim().toLowerCase() !== "initial payment",
+      ).length
+
+      return res.json({
+        ok: true,
+        contactService: {
+          id: item.id,
+          contactId: item.contactId,
+          status: item.status,
+          startedAt: item.startedAt,
+          purchasedAt: item.purchasedAt,
+          completedAt: item.completedAt,
+          canceledAt: item.canceledAt,
+          totalPriceCents: item.totalPriceCents,
+          paidCents,
+          remainingCents: Math.max(0, item.totalPriceCents - paidCents),
+          currency: item.currency,
+          allowPartialPayments: item.allowPartialPayments,
+          notes: item.notes,
+          assignedProfessional: item.assignedProfessional,
+          contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
+            .filter(Boolean)
+            .join(" "),
+          service: {
+            id: item.service.id,
+            name: item.service.name,
+            description: item.service.description,
+            basePriceCents: item.service.basePriceCents,
+            isTaxExempt: item.service.isTaxExempt,
+            minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
+            installmentCount: item.service.installmentCount,
+            installmentFrequency: item.service.installmentFrequency,
+          },
+          tenantBilling: {
+            taxEnabled: item.service.tenant.taxEnabled,
+            taxLabel: item.service.tenant.taxLabel,
+            defaultTaxRatePercent:
+              item.service.tenant.defaultTaxRateBps !== null &&
+              item.service.tenant.defaultTaxRateBps !== undefined
+                ? item.service.tenant.defaultTaxRateBps / 100
+                : null,
+          },
+          followUpTemplate: item.followUpTemplate,
+          followUpSteps: item.followUpSteps,
+          checklistItems: item.checklistItems.map((checklistItem: any) => ({
+            id: checklistItem.id,
+            checklistItemId: checklistItem.checklistItemId,
+            completedAt: checklistItem.completedAt,
+            label: checklistItem.checklistItem?.label ?? "",
+            description: checklistItem.checklistItem?.description ?? null,
+            isRequired: Boolean(checklistItem.checklistItem?.isRequired),
+            sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
+          })),
+          paymentSummary: {
+            latestPaidAt,
+            totalPaymentsCount: item.payments.length,
+            scheduledPaymentsRecordedCount,
+          },
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.get(
+  "/:tenantId/contact-services/:contactServiceId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const serviceNotesSelectWithAttachments = {
+        select: {
+          id: true,
+          title: true,
+          body: true,
+          createdAt: true,
+          createdBy: {
+            select: {
+              id: true,
+              name: true,
+              image: true,
+            },
+          },
+          attachments: {
+            orderBy: { createdAt: "asc" as const },
+            select: {
+              id: true,
+              file: {
+                select: {
+                  id: true,
+                  key: true,
+                  contentType: true,
+                  size: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: [{ createdAt: "desc" as const }],
+      }
+
+      const serviceNotesSelectWithoutAttachments = {
+        select: {
+          id: true,
+          title: true,
+          body: true,
+          createdAt: true,
+          createdBy: {
+            select: {
+              id: true,
+              name: true,
+              image: true,
+            },
+          },
+        },
+        orderBy: [{ createdAt: "desc" as const }],
+      }
+
+      const fetchItem = async (includeServiceNoteAttachments = true) =>
+        prismaWithServices.contactService.findFirst({
+          where: {
+            id: contactServiceId,
+            tenantId,
+          },
+          select: {
+            id: true,
+            contactId: true,
+            status: true,
+            startedAt: true,
+            purchasedAt: true,
+            completedAt: true,
+            canceledAt: true,
+            totalPriceCents: true,
+            currency: true,
+            allowPartialPayments: true,
+            notes: true,
+            assignedProfessional: {
+              select: {
+                id: true,
+                kind: true,
+                userId: true,
+                externalProfessionalName: true,
+                externalContact: true,
+                user: {
+                  select: {
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+              },
+            },
+            contact: {
+              select: {
+                firstName: true,
+                middleName: true,
+                lastName: true,
+              },
+            },
+            service: {
+              select: {
+                id: true,
+                name: true,
+                description: true,
+                basePriceCents: true,
+                isTaxExempt: true,
+                minimumPartialPaymentCents: true,
+                installmentCount: true,
+                installmentFrequency: true,
+                tenant: {
+                  select: {
+                    taxEnabled: true,
+                    taxLabel: true,
+                    defaultTaxRateBps: true,
+                  },
+                },
+                checklistItems: {
+                  select: {
+                    id: true,
+                    label: true,
+                    description: true,
+                    isRequired: true,
+                    sortOrder: true,
+                  },
+                  orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+                },
+              },
+            },
+            followUpTemplate: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            payments: {
+              select: {
+                id: true,
+                amountCents: true,
+                paidAt: true,
+                paymentMethod: true,
+                note: true,
+                recordedBy: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+              },
+              orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
+            },
+            serviceNotes: includeServiceNoteAttachments
+              ? serviceNotesSelectWithAttachments
+              : serviceNotesSelectWithoutAttachments,
+            contactNotes: {
+              select: {
+                id: true,
+                title: true,
+                body: true,
+                createdAt: true,
+                createdBy: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+                followUpTemplate: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+                contactServiceFollowUpStep: {
+                  select: {
+                    id: true,
+                    title: true,
+                  },
+                },
+                attachments: {
+                  orderBy: { createdAt: "asc" },
+                  select: {
+                    id: true,
+                    file: {
+                      select: {
+                        id: true,
+                        key: true,
+                        contentType: true,
+                        size: true,
+                      },
+                    },
+                  },
+                },
+              },
+              orderBy: [{ createdAt: "desc" }],
+            },
+            executionLogs: {
+              select: {
+                id: true,
+                eventType: true,
+                title: true,
+                details: true,
+                createdAt: true,
+                actor: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+              },
+              orderBy: [{ createdAt: "desc" }],
+            },
+            followUpSteps: {
+              select: {
+                id: true,
+                title: true,
+                notesTemplate: true,
+                status: true,
+                availableAt: true,
+                dueAt: true,
+                completedAt: true,
+                assignedToUserId: true,
+                assignedTo: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+                note: true,
+                sortOrder: true,
+              },
+              orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            },
+            checklistItems: {
+              select: {
+                id: true,
+                checklistItemId: true,
+                completedAt: true,
+                checklistItem: {
+                  select: {
+                    id: true,
+                    label: true,
+                    description: true,
+                    isRequired: true,
+                    sortOrder: true,
+                  },
+                },
+              },
+              orderBy: [
+                { checklistItem: { sortOrder: "asc" } },
+                { createdAt: "asc" },
+              ],
+            },
+          },
+        })
+
+      let item: Awaited<ReturnType<typeof fetchItem>> | null
+      try {
+        item = await fetchItem(true)
+      } catch (error) {
+        if (!hasServiceNoteAttachmentQueryError(error)) {
+          throw error
+        }
+        item = await fetchItem(false)
+      }
+
+      if (!item) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const syncResult = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const activatedId = await syncContactServiceActiveStep({
+          prismaTx,
+          tenantId,
+          contactServiceId: item.id,
+        })
+
+        const serviceChecklistItemIds = (item.service?.checklistItems ?? []).map(
+          (checklistItem: { id: string }) => checklistItem.id,
+        )
+        const existingChecklistItemIds = new Set(
+          (item.checklistItems ?? []).map(
+            (checklistItem: { checklistItemId: string }) => checklistItem.checklistItemId,
+          ),
+        )
+        const missingChecklistItemIds = serviceChecklistItemIds.filter(
+          (checklistItemId: string) => !existingChecklistItemIds.has(checklistItemId),
+        )
+
+        if (missingChecklistItemIds.length) {
+          await prismaTx.contactServiceChecklistItem.createMany({
+            data: missingChecklistItemIds.map((checklistItemId: string) => ({
+              tenantId,
+              contactServiceId: item.id,
+              checklistItemId,
+            })),
+            skipDuplicates: true,
+          })
+        }
+
+        const reconciled = await reconcileContactServiceCompletionFromFollowUps(
+          prismaTx,
+          tenantId,
+          item.id,
+          authed.user.id,
+        )
+
+        return {
+          activatedId,
+          checklistBackfilled: missingChecklistItemIds.length > 0,
+          statusReconciled: reconciled?.status !== item.status,
+        }
+      })
+
+      if (
+        syncResult.activatedId ||
+        syncResult.checklistBackfilled ||
+        syncResult.statusReconciled
+      ) {
+        try {
+          item = await fetchItem(true)
+        } catch (error) {
+          if (!hasServiceNoteAttachmentQueryError(error)) {
+            throw error
+          }
+          item = await fetchItem(false)
+        }
+      }
+
+      if (!item) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const paidCents = item.payments.reduce(
+        (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
+        0,
+      )
+      const combinedNotes = [
+        ...item.serviceNotes.map((note: any) =>
+          serializeRelatedServiceNote(note, "SERVICE_NOTE"),
+        ),
+        ...item.contactNotes.map((note: any) =>
+          serializeRelatedServiceNote(
+            note,
+            note.followUpTemplate || note.contactServiceFollowUpStep
+              ? "FOLLOW_UP_NOTE"
+              : "LINKED_CONTACT_NOTE",
+          ),
+        ),
+      ].sort(
+        (left, right) =>
+          new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
       )
 
       return res.json({
@@ -1377,13 +3299,32 @@ router.get(
           currency: item.currency,
           allowPartialPayments: item.allowPartialPayments,
           notes: item.notes,
+          assignedProfessional: item.assignedProfessional,
           contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
             .filter(Boolean)
             .join(" "),
-          service: item.service,
+          service: {
+            id: item.service.id,
+            name: item.service.name,
+            description: item.service.description,
+            basePriceCents: item.service.basePriceCents,
+            isTaxExempt: item.service.isTaxExempt,
+            minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
+            installmentCount: item.service.installmentCount,
+            installmentFrequency: item.service.installmentFrequency,
+          },
+          tenantBilling: {
+            taxEnabled: item.service.tenant.taxEnabled,
+            taxLabel: item.service.tenant.taxLabel,
+            defaultTaxRatePercent:
+              item.service.tenant.defaultTaxRateBps !== null &&
+              item.service.tenant.defaultTaxRateBps !== undefined
+                ? item.service.tenant.defaultTaxRateBps / 100
+                : null,
+          },
           followUpTemplate: item.followUpTemplate,
           payments: item.payments,
-          serviceNotes: item.serviceNotes,
+          serviceNotes: combinedNotes,
           followUpSteps: item.followUpSteps,
           checklistItems: item.checklistItems.map((checklistItem: any) => ({
             id: checklistItem.id,
@@ -1421,11 +3362,23 @@ router.post(
         },
         select: {
           id: true,
+          status: true,
+          contactId: true,
+          followUpTemplateId: true,
+          service: {
+            select: {
+              name: true,
+            },
+          },
         },
       })
+      const files = await getValidatedServiceNoteFiles(tenantId, payload.attachmentFileIds)
 
       if (!existing) {
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+      if (!files) {
+        return res.status(400).json({ error: "INVALID_NOTE_ATTACHMENTS" })
       }
 
       const note = await prismaWithServices.contactServiceNote.create({
@@ -1435,6 +3388,12 @@ router.post(
           createdById: authed.user.id,
           title: sanitizeSingleLineText(payload.title),
           body: sanitizeMultilineText(payload.body),
+          attachments: {
+            create: files.map((file: { id: string }) => ({
+              tenantId,
+              fileId: file.id,
+            })),
+          },
         },
         select: {
           id: true,
@@ -1448,12 +3407,36 @@ router.post(
               image: true,
             },
           },
+          attachments: {
+            orderBy: { createdAt: "asc" },
+            select: {
+              id: true,
+              file: {
+                select: {
+                  id: true,
+                  key: true,
+                  contentType: true,
+                  size: true,
+                },
+              },
+            },
+          },
         },
       })
 
       return res.status(201).json({
         ok: true,
-        note,
+        note: {
+          ...note,
+          attachments: note.attachments.map((attachment: any) => ({
+            id: attachment.id,
+            fileId: attachment.file.id,
+            key: attachment.file.key,
+            fileName: fileNameFromKey(attachment.file.key),
+            contentType: attachment.file.contentType,
+            size: attachment.file.size ?? null,
+          })),
+        },
       })
     } catch (error) {
       return next(error)
@@ -1546,6 +3529,7 @@ router.post(
         prismaWithServices,
         tenantId,
         contactServiceId,
+        authed.user.id,
       )
 
       return res.status(201).json({
@@ -1672,6 +3656,7 @@ router.patch(
         prismaWithServices,
         tenantId,
         contactServiceId,
+        authed.user.id,
       )
 
       return res.json({
@@ -1729,6 +3714,7 @@ router.delete(
         prismaWithServices,
         tenantId,
         contactServiceId,
+        authed.user.id,
       )
 
       return res.json({
@@ -1826,6 +3812,25 @@ router.patch(
           notes: true,
         },
       })
+
+      if (payload.status !== undefined && payload.status !== existing.status && existing.followUpTemplateId) {
+        await prismaWithServices.serviceFollowUpExecutionLog.create({
+          data: {
+            tenantId,
+            templateId: existing.followUpTemplateId,
+            contactServiceId,
+            contactId: existing.contactId,
+            actorUserId: authed.user.id,
+            eventType: "SERVICE_STATUS_UPDATED",
+            title: `Service status updated: ${existing.service.name}`,
+            details: `Service moved from ${existing.status.toLowerCase().replace(/_/g, " ")} to ${updated.status.toLowerCase().replace(/_/g, " ")}.`,
+            payload: {
+              previousStatus: existing.status,
+              status: updated.status,
+            },
+          },
+        })
+      }
 
       return res.json({
         ok: true,
@@ -2010,15 +4015,43 @@ router.patch(
       if (!existing) {
         return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
       }
+      const isReopenAction = payload.action === "REOPEN"
+
+      if (isReopenAction && !["COMPLETED", "SKIPPED", "POSTPONED"].includes(existing.status)) {
+        return res.status(409).json({ error: "STEP_REOPEN_NOT_ALLOWED" })
+      }
+
+      if (isReopenAction) {
+        const laterCompletedStep = await prismaWithServices.contactServiceFollowUpStep.findFirst({
+          where: {
+            tenantId,
+            contactServiceId,
+            sortOrder: { gt: existing.sortOrder },
+            status: { in: ["COMPLETED", "SKIPPED"] },
+          },
+          select: { id: true },
+        })
+
+        if (laterCompletedStep) {
+          return res.status(409).json({ error: "STEP_REOPEN_BLOCKED_BY_LATER_COMPLETED_STEPS" })
+        }
+      }
+
       if (
-        existing.status !== "ACTIVE" &&
+        ["COMPLETED", "SKIPPED"].includes(existing.status) &&
+        !isReopenAction &&
         (payload.status !== undefined || payload.postponeTo !== undefined)
       ) {
-        return res.status(409).json({ error: "STEP_STATUS_LOCKED_UNTIL_ACTIVE" })
+        return res.status(409).json({ error: "STEP_REOPEN_REQUIRED" })
       }
 
       const statusUpdate =
-        payload.status === undefined
+        isReopenAction
+          ? {
+              status: "ACTIVE" as const,
+              completedAt: null,
+            }
+          : payload.status === undefined
           ? payload.completedAt === undefined
             ? {}
             : payload.completedAt
@@ -2048,6 +4081,32 @@ router.patch(
       let updated: any
       await prisma.$transaction(async (tx) => {
         const prismaTx = tx as any
+
+        if (isReopenAction) {
+          await prismaTx.contactServiceFollowUpStep.updateMany({
+            where: {
+              tenantId,
+              contactServiceId,
+              id: { not: followUpStepId },
+              status: "ACTIVE",
+            },
+            data: {
+              status: "PENDING",
+            },
+          })
+
+          await prismaTx.contactServiceFollowUpStep.updateMany({
+            where: {
+              tenantId,
+              contactServiceId,
+              sortOrder: { gt: existing.sortOrder },
+              status: { in: ["PENDING", "ACTIVE", "POSTPONED"] },
+            },
+            data: {
+              status: "PENDING",
+            },
+          })
+        }
 
         updated = await prismaTx.contactServiceFollowUpStep.update({
           where: {
@@ -2109,7 +4168,10 @@ router.patch(
 
         if (
           contactServiceRecord?.followUpTemplateId &&
-          (payload.status !== undefined || payload.completedAt !== undefined || payload.postponeTo !== undefined)
+          (isReopenAction ||
+            payload.status !== undefined ||
+            payload.completedAt !== undefined ||
+            payload.postponeTo !== undefined)
         ) {
           await prismaTx.serviceFollowUpExecutionLog.create({
             data: {
@@ -2121,13 +4183,16 @@ router.patch(
               flowNodeId: updated.templateNodeId ?? null,
               stepId: updated.id,
               eventType: "STEP_STATUS_UPDATED",
-              title: `Updated step status: ${updated.title}`,
-              details: `Step moved to ${updated.status.toLowerCase().replace(/_/g, " ")}.`,
+              title: isReopenAction ? `Reopened step: ${updated.title}` : `Updated step status: ${updated.title}`,
+              details: isReopenAction
+                ? "Step reopened and moved back to active."
+                : `Step moved to ${updated.status.toLowerCase().replace(/_/g, " ")}.`,
               payload: {
                 status: updated.status,
                 dueAt: updated.dueAt,
                 completedAt: updated.completedAt,
                 postponeTo: payload.postponeTo ?? null,
+                action: payload.action ?? null,
               },
             },
           })
@@ -2195,13 +4260,27 @@ router.patch(
             completedStepSortOrder: existing.sortOrder,
             completedStepTemplateNodeId: existing.templateNodeId,
             actorUserId: authed.user.id,
-            ignoreWaitNodes: true,
+            ignoreWaitNodes: false,
           })
           await syncContactServiceActiveStep({
             prismaTx,
             tenantId,
             contactServiceId,
           })
+        }
+
+        if (
+          isReopenAction ||
+          payload.status !== undefined ||
+          payload.completedAt !== undefined ||
+          payload.postponeTo !== undefined
+        ) {
+          await reconcileContactServiceCompletionFromFollowUps(
+            prismaTx,
+            tenantId,
+            contactServiceId,
+            authed.user.id,
+          )
         }
       })
 

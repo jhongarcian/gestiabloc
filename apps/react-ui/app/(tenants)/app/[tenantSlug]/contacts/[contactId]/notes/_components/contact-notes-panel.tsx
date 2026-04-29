@@ -1,5 +1,4 @@
 "use client"
-
 import Link from "next/link"
 import { isAxiosError } from "axios"
 import {
@@ -68,6 +67,8 @@ type ContactNote = {
     type: "CONTACT" | "SERVICE"
     contactServiceId?: string
     serviceName?: string
+    followUpTemplateName?: string
+    followUpStepTitle?: string
   }
   attachments: NoteAttachment[]
 }
@@ -558,35 +559,69 @@ export function ContactNotesPanel({
                       <div className="min-w-0 flex-1 space-y-2">
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div className="min-w-0 space-y-1">
-                            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                              <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2 py-1">
+                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+                              <span className="inline-flex items-center gap-1.5">
                                 <UserRound className="h-3 w-3" />
                                 <span className="font-medium text-slate-700">
                                   {note.author.name}
                                 </span>
                               </span>
-                              {note.source.type === "SERVICE" ? (
-                                <Link
-                                  href={`/app/${tenantSlug}/contacts/${contactId}/services/${note.source.contactServiceId}`}
-                                  className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-1 text-blue-700 transition hover:bg-blue-100"
-                                >
-                                  <StickyNote className="h-3 w-3" />
-                                  From service
-                                  {note.source.serviceName
-                                    ? `: ${note.source.serviceName}`
-                                    : ""}
-                                </Link>
-                              ) : null}
-                              <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2 py-1">
+                              <span className="inline-flex items-center gap-1.5">
                                 <CalendarDays className="h-3 w-3" />
                                 {formatDateTime(note.createdAt)}
                               </span>
                               {note.updatedAt !== note.createdAt ? (
-                                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2 py-1 text-amber-700">
+                                <span className="inline-flex items-center gap-1.5 text-amber-700">
                                   <Clock3 className="h-3 w-3" />
                                   Edited {formatDateTime(note.updatedAt)}
                                 </span>
                               ) : null}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+                              {note.source.type === "SERVICE" ? (
+                                <>
+                                  <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 font-medium text-slate-700">
+                                    {note.source.followUpTemplateName || note.source.followUpStepTitle
+                                      ? "follow-up note"
+                                      : "service note"}
+                                  </span>
+                                  {note.source.contactServiceId && note.source.serviceName ? (
+                                    <Link
+                                      href={`/app/${tenantSlug}/contacts/${contactId}/services/${note.source.contactServiceId}`}
+                                      className="text-blue-700 transition hover:text-blue-800 hover:underline"
+                                    >
+                                      Service: {note.source.serviceName}
+                                    </Link>
+                                  ) : note.source.serviceName ? (
+                                    <span>
+                                      Service:{" "}
+                                      <span className="font-medium text-slate-700">
+                                        {note.source.serviceName}
+                                      </span>
+                                    </span>
+                                  ) : null}
+                                  {note.source.followUpTemplateName ? (
+                                    <span>
+                                      Template:{" "}
+                                      <span className="font-medium text-slate-700">
+                                        {note.source.followUpTemplateName}
+                                      </span>
+                                    </span>
+                                  ) : null}
+                                  {note.source.followUpStepTitle ? (
+                                    <span>
+                                      Step:{" "}
+                                      <span className="font-medium text-slate-700">
+                                        {note.source.followUpStepTitle}
+                                      </span>
+                                    </span>
+                                  ) : null}
+                                </>
+                              ) : (
+                                <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 font-medium text-slate-700">
+                                  contact note
+                                </span>
+                              )}
                             </div>
 
                           </div>

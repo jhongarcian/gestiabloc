@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { ContactTagsSection } from "../../_components/contact-tags-section"
 
 type StatusOption = {
   label: string
@@ -47,6 +48,7 @@ type ContactOverviewFormProps = {
   currentUserId: string
   membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
   canApproveSensitiveFieldAccess: boolean
+  canManageTags: boolean
   initialContact: {
     firstName: string
     middleName: string | null
@@ -64,6 +66,13 @@ type ContactOverviewFormProps = {
       country: string | null
     }
     statusConfigId: string | null
+    tags: Array<{
+      id: string
+      name: string
+      bgColor: string
+      textColor: string
+      sortOrder: number
+    }>
     customFields: Array<{
       id: string
       key: string
@@ -447,6 +456,7 @@ export function ContactOverviewForm({
   currentUserId,
   membershipSecurityLevel,
   canApproveSensitiveFieldAccess,
+  canManageTags,
   initialContact,
   statusOptions,
 }: ContactOverviewFormProps) {
@@ -1404,6 +1414,14 @@ export function ContactOverviewForm({
               </div>
             </section>
           ) : null}
+
+          <ContactTagsSection
+            tenantId={tenantId}
+            contactId={contactId}
+            initialTags={initialContact.tags}
+            canManageTags={canManageTags}
+            variant="card"
+          />
 
           {isDirty ? (
             <div className="sticky bottom-4 z-20 flex justify-end">

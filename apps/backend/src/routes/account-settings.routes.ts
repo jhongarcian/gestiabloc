@@ -6,6 +6,15 @@ import { z } from "zod";
 
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { deleteBlobByUrl, uploadPublicBlob } from "../lib/blob.js";
+import {
+  buildServiceFitFieldCatalog,
+  DEFAULT_SERVICE_FIT_PROFILE,
+  normalizeServiceFitProfile,
+  SERVICE_FIT_OPERATORS,
+  SERVICE_FIT_RULE_SOURCES,
+  SERVICE_FIT_VALUE_TYPES,
+  validateServiceFitProfile,
+} from "../lib/service-fit.js";
 import { sendVerifyEmail } from "../lib/email.js";
 import { prisma } from "../lib/prisma.js";
 import { enforceSameOrigin } from "../lib/security.js";
@@ -20,6 +29,7 @@ const prismaWithContacts = prisma as any;
 const ACCOUNT_SETTINGS_SECTIONS = [
   "users",
   "account",
+  "calendar",
   "services",
   "professionals",
   "follow-ups",
@@ -33,7 +43,7 @@ const ACCOUNT_SETTINGS_SECTIONS = [
 type AccountSettingsSection = (typeof ACCOUNT_SETTINGS_SECTIONS)[number];
 
 const TenantPathSchema = z.object({
-  tenantId: z.string().min(1),
+  tenantId: z.string().trim().min(1),
 });
 
 const StatusConfigKeySchema = z.enum(["contacts", "tasks"]);
@@ -43,18 +53,18 @@ const TenantStatusConfigPathSchema = TenantPathSchema.extend({
 });
 
 const TenantRecordPathSchema = TenantPathSchema.extend({
-  recordId: z.string().min(1),
+  recordId: z.string().trim().min(1),
 });
 const TenantStatusConfigRecordPathSchema = TenantStatusConfigPathSchema.extend({
-  recordId: z.string().min(1),
+  recordId: z.string().trim().min(1),
 });
 const TenantUserPathSchema = TenantPathSchema.extend({
-  userId: z.string().min(1),
+  userId: z.string().trim().min(1),
 });
 
 const TenantScopedMutationSchema = z
   .object({
-    tenantId: z.string().min(1).optional(),
+    tenantId: z.string().trim().min(1).optional(),
   })
   .passthrough();
 
@@ -122,6 +132,20 @@ const optionalUrlField = () =>
     z.string().url().max(255).nullable().optional(),
   );
 
+const optionalPercentageField = () =>
+  z.preprocess(
+    (value) => {
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) return null;
+        return Number(trimmed);
+      }
+
+      return value;
+    },
+    z.number().min(0).max(100).nullable().optional(),
+  );
+
 const UpdateTenantInfoSchema = z.object({
   name: z.string().trim().min(1).max(120),
   email: optionalEmailField(),
@@ -134,6 +158,222 @@ const UpdateTenantInfoSchema = z.object({
   country: optionalStringField(120),
   timezone: optionalStringField(100),
   website: optionalUrlField(),
+  taxEnabled: z.boolean().optional().default(false),
+  taxLabel: optionalStringField(60),
+  defaultTaxRatePercent: optionalPercentageField(),
+}).superRefine((value, ctx) => {
+  if (value.taxEnabled && value.defaultTaxRatePercent === null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["defaultTaxRatePercent"],
+      message: "Tax rate is required when taxes are enabled.",
+    });
+  }
+});
+
+const TIME_INPUT_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const CALENDAR_SLOT_DURATION_OPTIONS = [15, 30, 45, 60, 120] as const;
+const CALENDAR_HEX_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/;
+const CALENDAR_BUFFER_MODE_OPTIONS = ["BUSY", "UNAVAILABLE"] as const;
+
+const CalendarSlotDurationMinutesSchema = z.coerce
+  .number()
+  .int()
+  .refine(
+    (value) =>
+      (CALENDAR_SLOT_DURATION_OPTIONS as readonly number[]).includes(value),
+    {
+      message: "Slot duration must be one of 15, 30, 45, 60, or 120 minutes.",
+    },
+  );
+
+const CalendarBufferAvailabilityModeSchema = z.enum(CALENDAR_BUFFER_MODE_OPTIONS);
+
+const positiveCalendarLimitField = (max: number) =>
+  z.preprocess((value) => {
+    if (value === null || value === undefined || value === "") return null;
+    if (typeof value === "string") return Number(value.trim());
+    return value;
+  }, z.number().int().min(1).max(max).nullable());
+
+const nonNegativeCalendarMinutesField = (max: number) =>
+  z.coerce.number().int().min(0).max(max);
+
+const CalendarWeeklyAvailabilityItemSchema = z
+  .object({
+    dayOfWeek: z.coerce.number().int().min(0).max(6),
+    enabled: z.boolean().default(false),
+    startTime: z.string().trim().regex(TIME_INPUT_REGEX).nullable().optional(),
+    endTime: z.string().trim().regex(TIME_INPUT_REGEX).nullable().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.enabled) {
+      return;
+    }
+
+    if (!value.startTime) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["startTime"],
+        message: "Start time is required when the day is enabled.",
+      });
+    }
+
+    if (!value.endTime) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["endTime"],
+        message: "End time is required when the day is enabled.",
+      });
+    }
+
+    if (!value.startTime || !value.endTime) {
+      return;
+    }
+
+    const [startHour, startMinute] = value.startTime.split(":").map(Number);
+    const [endHour, endMinute] = value.endTime.split(":").map(Number);
+    const startMinutes = startHour * 60 + startMinute;
+    const endMinutes = endHour * 60 + endMinute;
+
+    if (endMinutes <= startMinutes) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["endTime"],
+        message: "End time must be after start time.",
+      });
+    }
+  });
+
+const CalendarBookingRulesSchema = z.object({
+  meetingIntervalMinutes: CalendarSlotDurationMinutesSchema.default(30),
+  meetingDurationMinutes: CalendarSlotDurationMinutesSchema.default(30),
+  minimumScheduleNoticeMinutes: nonNegativeCalendarMinutesField(14 * 24 * 60).default(0),
+  maximumBookingsPerDay: positiveCalendarLimitField(500).default(null),
+  maximumBookingsPerSlot: z.coerce.number().int().min(1).max(50).default(1),
+  preBufferMinutes: nonNegativeCalendarMinutesField(8 * 60).default(0),
+  postBufferMinutes: nonNegativeCalendarMinutesField(8 * 60).default(0),
+  bufferAvailabilityMode: CalendarBufferAvailabilityModeSchema.default("BUSY"),
+});
+
+const UpdateTenantCalendarConfigSchema = z.object({
+  bookingRules: CalendarBookingRulesSchema,
+  weeklyAvailability: z
+    .array(CalendarWeeklyAvailabilityItemSchema)
+    .max(7)
+    .refine(
+      (items) => new Set(items.map((item) => item.dayOfWeek)).size === items.length,
+      "Each weekday can only appear once.",
+    ),
+});
+
+const CalendarStaffMemberSchema = z.object({
+  userId: z.string().trim().min(1),
+  enabled: z.boolean().default(false),
+  color: z.string().trim().regex(CALENDAR_HEX_COLOR_REGEX).nullable().optional(),
+});
+
+const UpdateCalendarStaffSchema = z.object({
+  staff: z
+    .array(CalendarStaffMemberSchema)
+    .max(250)
+    .refine(
+      (items) => new Set(items.map((item) => item.userId)).size === items.length,
+      "Each user can only appear once.",
+    ),
+});
+
+const CalendarStaffGroupMemberIdsSchema = z
+  .array(z.string().trim().min(1))
+  .max(100)
+  .refine(
+    (items) => new Set(items).size === items.length,
+    "Each user can only appear once in a group.",
+  );
+
+const CreateCalendarStaffGroupSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  description: optionalStringField(500),
+  memberUserIds: CalendarStaffGroupMemberIdsSchema.default([]),
+});
+
+const UpdateCalendarStaffGroupSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    description: optionalStringField(500),
+    memberUserIds: CalendarStaffGroupMemberIdsSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (Object.keys(value).length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [],
+        message: "At least one field must be updated.",
+      });
+    }
+  });
+
+const CalendarBlockSchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  description: optionalStringField(1000),
+  startsAt: z.string().datetime(),
+  endsAt: z.string().datetime(),
+  isAllDay: z.boolean().optional().default(false),
+});
+
+function validateCalendarBlockRange(
+  value: {
+    startsAt?: string;
+    endsAt?: string;
+  },
+  ctx: z.RefinementCtx,
+) {
+  const startsAt = value.startsAt ? new Date(value.startsAt) : null;
+  const endsAt = value.endsAt ? new Date(value.endsAt) : null;
+
+  if (startsAt && Number.isNaN(startsAt.getTime())) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["startsAt"],
+      message: "Start time is invalid.",
+    });
+  }
+
+  if (endsAt && Number.isNaN(endsAt.getTime())) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endsAt"],
+      message: "End time is invalid.",
+    });
+  }
+
+  if (!startsAt || !endsAt || Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+    return;
+  }
+
+  if (endsAt <= startsAt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endsAt"],
+      message: "End time must be after start time.",
+    });
+  }
+}
+
+const CreateCalendarBlockSchema = CalendarBlockSchema.superRefine((value, ctx) => {
+  validateCalendarBlockRange(value, ctx);
+});
+
+const UpdateCalendarBlockSchema = CalendarBlockSchema.partial().superRefine((value, ctx) => {
+  if (Object.keys(value).length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [],
+      message: "At least one field must be updated.",
+    });
+  }
+
+  validateCalendarBlockRange(value, ctx);
 });
 
 const UpdateMemberSecurityLevelSchema = z.object({
@@ -218,6 +458,7 @@ const FollowUpTemplatesPaginationQuerySchema = z.object({
 });
 
 const ServiceProfessionalKindSchema = z.enum(["INTERNAL_USER", "EXTERNAL"]);
+const InstallmentFrequencySchema = z.enum(["WEEKLY", "BIWEEKLY", "MONTHLY"]);
 
 const ServiceChecklistItemInputSchema = z.object({
   label: z.string().trim().min(1).max(200),
@@ -258,11 +499,81 @@ const ServiceProfessionalInputSchema = z.object({
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
 });
 
+const ServiceFitRuleSourceSchema = z.enum(SERVICE_FIT_RULE_SOURCES);
+const ServiceFitValueTypeSchema = z.enum(SERVICE_FIT_VALUE_TYPES);
+const ServiceFitOperatorSchema = z.enum(SERVICE_FIT_OPERATORS);
+
+const ServiceFitRuleInputSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  source: ServiceFitRuleSourceSchema,
+  fieldKey: z.string().trim().min(1).max(120),
+  valueType: ServiceFitValueTypeSchema,
+  operator: ServiceFitOperatorSchema,
+  compareValue: z.unknown().nullable().optional(),
+  required: z.boolean().default(false),
+  requiredGroup: optionalStringField(120),
+  requiredBranch: optionalStringField(120),
+  weight: z.coerce.number().int().min(1).max(10).default(1),
+  label: optionalStringField(160),
+  explanation: optionalStringField(300),
+});
+
+const ServiceVerificationProfileSchema = z.object({
+  mode: z
+    .enum(["NONE", "WEB_SOURCES", "INTERNAL_KB", "EXTERNAL_API", "MANUAL_CONFIRMATION"])
+    .default("NONE"),
+  guidance: z.string().trim().max(2000).default(""),
+  sourceUrls: z.array(z.string().trim().url().max(500)).max(8).default([]),
+  triggerKeywords: z.array(z.string().trim().min(1).max(80)).max(12).default([]),
+});
+
+const ServiceKnowledgeProfileSchema = z.object({
+  overview: z.string().trim().max(4000).default(""),
+  pricingNotes: z.string().trim().max(4000).default(""),
+  workflowNotes: z.string().trim().max(4000).default(""),
+  faqNotes: z.string().trim().max(4000).default(""),
+  adapter: z.enum(["NONE", "IMMIGRATION_USCIS"]).default("NONE"),
+});
+
+const ServiceFitRequirementMetadataSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).default(""),
+});
+
+const ServiceFitOptionMetadataSchema = z.object({
+  requirementName: z.string().trim().min(1).max(120),
+  optionName: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).default(""),
+});
+
+const ServiceFitProfileSchema = z.object({
+  enabled: z.boolean().default(false),
+  summary: z.string().trim().max(2000).default(""),
+  rules: z.array(ServiceFitRuleInputSchema).max(100).default([]),
+  requirementMetadata: z.array(ServiceFitRequirementMetadataSchema).max(30).default([]),
+  optionMetadata: z.array(ServiceFitOptionMetadataSchema).max(100).default([]),
+  verificationProfile: ServiceVerificationProfileSchema.default({
+    mode: "NONE",
+    guidance: "",
+    sourceUrls: [],
+    triggerKeywords: [],
+  }),
+  knowledgeProfile: ServiceKnowledgeProfileSchema.default({
+    overview: "",
+    pricingNotes: "",
+    workflowNotes: "",
+    faqNotes: "",
+    adapter: "NONE",
+  }),
+});
+
 const CreateServiceSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: optionalStringField(2000),
+  fitProfile: ServiceFitProfileSchema.optional(),
   basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000),
   currency: z.string().trim().min(3).max(3).default("USD"),
+  isTaxExempt: z.boolean().default(false),
   allowPartialPayments: z.boolean().default(false),
   minimumPartialPaymentCents: z.coerce
     .number()
@@ -271,6 +582,8 @@ const CreateServiceSchema = z.object({
     .max(1_000_000_000)
     .nullable()
     .optional(),
+  installmentCount: z.coerce.number().int().min(2).max(365).nullable().optional(),
+  installmentFrequency: InstallmentFrequencySchema.nullable().optional(),
   isActive: z.boolean().default(true),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
   checklistItems: z.array(ServiceChecklistItemInputSchema).max(100).default([]),
@@ -284,8 +597,10 @@ const CreateServiceSchema = z.object({
 const UpdateServiceSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   description: optionalStringField(2000),
+  fitProfile: ServiceFitProfileSchema.optional(),
   basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
   currency: z.string().trim().min(3).max(3).optional(),
+  isTaxExempt: z.boolean().optional(),
   allowPartialPayments: z.boolean().optional(),
   minimumPartialPaymentCents: z.coerce
     .number()
@@ -294,6 +609,8 @@ const UpdateServiceSchema = z.object({
     .max(1_000_000_000)
     .nullable()
     .optional(),
+  installmentCount: z.coerce.number().int().min(2).max(365).nullable().optional(),
+  installmentFrequency: InstallmentFrequencySchema.nullable().optional(),
   isActive: z.boolean().optional(),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
   checklistItems: z.array(ServiceChecklistItemInputSchema).max(100).optional(),
@@ -593,6 +910,59 @@ async function findServiceByName(
   });
 }
 
+async function loadServiceFitCatalog(tenantId: string) {
+  const [statuses, tags, customFields] = await Promise.all([
+    prismaWithContacts.contactStatusConfig.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+      },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+      },
+    }),
+    prismaWithContacts.tenantTag.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+      },
+    }),
+    prismaWithContacts.contactCustomField.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        isSensitive: false,
+      },
+      orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+      select: {
+        id: true,
+        key: true,
+        label: true,
+        description: true,
+        fieldType: true,
+        options: true,
+      },
+    }),
+  ]);
+
+  return buildServiceFitFieldCatalog({
+    statuses,
+    tags,
+    customFields: customFields.map((field: any) => ({
+      id: field.id,
+      key: field.key,
+      label: field.label,
+      description: field.description ?? null,
+      fieldType: field.fieldType,
+      options: Array.isArray(field.options) ? field.options : [],
+    })),
+  });
+}
+
 function normalizeServicePayload(
   payload: z.infer<typeof CreateServiceSchema> | z.infer<typeof UpdateServiceSchema>,
 ) {
@@ -603,9 +973,29 @@ function normalizeServicePayload(
 
   if (normalized.allowPartialPayments === false) {
     normalized.minimumPartialPaymentCents = null;
+    normalized.installmentCount = null;
+    normalized.installmentFrequency = null;
   }
 
   return normalized;
+}
+
+function getServiceTotalWithTaxCents({
+  basePriceCents,
+  isTaxExempt,
+  taxEnabled,
+  defaultTaxRateBps,
+}: {
+  basePriceCents: number;
+  isTaxExempt: boolean;
+  taxEnabled: boolean;
+  defaultTaxRateBps: number | null;
+}) {
+  if (!taxEnabled || isTaxExempt || defaultTaxRateBps === null) {
+    return basePriceCents;
+  }
+
+  return basePriceCents + Math.round((basePriceCents * defaultTaxRateBps) / 10_000);
 }
 
 async function validateServiceProfessionalsForTenant(
@@ -640,6 +1030,86 @@ async function validateServiceProfessionalsForTenant(
   const invalidUserId = internalUserIds.find((userId) => !activeUserIds.has(userId));
   if (invalidUserId) {
     return { ok: false as const, error: "INVALID_SERVICE_PROFESSIONAL_USER" as const };
+  }
+
+  return { ok: true as const };
+}
+
+function timeInputToMinutes(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function minutesToTimeInput(value: number) {
+  const hours = Math.floor(value / 60);
+  const minutes = value % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function normalizeCalendarGroupName(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function getSafeCalendarSlotDuration(value?: number | null) {
+  return (CALENDAR_SLOT_DURATION_OPTIONS as readonly number[]).includes(value ?? -1)
+    ? value!
+    : 30;
+}
+
+function getSafeCalendarBufferMode(value?: string | null) {
+  return (CALENDAR_BUFFER_MODE_OPTIONS as readonly string[]).includes(value ?? "")
+    ? (value as (typeof CALENDAR_BUFFER_MODE_OPTIONS)[number])
+    : "BUSY";
+}
+
+function buildWeeklyAvailabilityFromRules(
+  rules: Array<{
+    dayOfWeek: number;
+    startTimeMinutes: number;
+    endTimeMinutes: number;
+    isActive: boolean;
+  }>,
+) {
+  const rulesByDay = new Map(rules.map((rule) => [rule.dayOfWeek, rule]));
+  return Array.from({ length: 7 }, (_, dayOfWeek) => {
+    const rule = rulesByDay.get(dayOfWeek);
+    return {
+      dayOfWeek,
+      enabled: Boolean(rule?.isActive),
+      startTime: rule ? minutesToTimeInput(rule.startTimeMinutes) : "09:00",
+      endTime: rule ? minutesToTimeInput(rule.endTimeMinutes) : "17:00",
+    };
+  });
+}
+
+async function validateCalendarGroupMemberUserIds(
+  tenantId: string,
+  memberUserIds: string[],
+) {
+  if (memberUserIds.length === 0) {
+    return { ok: true as const };
+  }
+
+  const memberships = await prisma.membership.findMany({
+    where: {
+      tenantId,
+      status: "ACTIVE",
+      calendarEnabled: true,
+      userId: { in: memberUserIds },
+    },
+    select: {
+      userId: true,
+    },
+  });
+
+  const validUserIds = new Set(memberships.map((item) => item.userId));
+  const invalidUserId = memberUserIds.find((userId) => !validUserIds.has(userId));
+
+  if (invalidUserId) {
+    return {
+      ok: false as const,
+      invalidUserId,
+    };
   }
 
   return { ok: true as const };
@@ -1425,6 +1895,9 @@ router.get("/:tenantId/account", ...readMiddlewares, async (req, res, next) => {
         country: true,
         timezone: true,
         website: true,
+        taxEnabled: true,
+        taxLabel: true,
+        defaultTaxRateBps: true,
         emailVerified: true,
         createdAt: true,
         updatedAt: true,
@@ -1437,7 +1910,13 @@ router.get("/:tenantId/account", ...readMiddlewares, async (req, res, next) => {
 
     return res.json({
       ok: true,
-      tenant,
+      tenant: {
+        ...tenant,
+        defaultTaxRatePercent:
+          tenant.defaultTaxRateBps !== null && tenant.defaultTaxRateBps !== undefined
+            ? tenant.defaultTaxRateBps / 100
+            : null,
+      },
     });
   } catch (error) {
     return next(error);
@@ -1463,6 +1942,14 @@ router.patch("/:tenantId/account", ...writeMiddlewares, async (req, res, next) =
         country: payload.country ?? null,
         timezone: payload.timezone ?? null,
         website: payload.website ?? null,
+        taxEnabled: payload.taxEnabled,
+        taxLabel: payload.taxEnabled ? payload.taxLabel ?? null : null,
+        defaultTaxRateBps:
+          payload.taxEnabled &&
+          payload.defaultTaxRatePercent !== null &&
+          payload.defaultTaxRatePercent !== undefined
+            ? Math.round(payload.defaultTaxRatePercent * 100)
+            : null,
       },
       select: {
         id: true,
@@ -1477,6 +1964,9 @@ router.patch("/:tenantId/account", ...writeMiddlewares, async (req, res, next) =
         country: true,
         timezone: true,
         website: true,
+        taxEnabled: true,
+        taxLabel: true,
+        defaultTaxRateBps: true,
         emailVerified: true,
         createdAt: true,
         updatedAt: true,
@@ -1485,8 +1975,984 @@ router.patch("/:tenantId/account", ...writeMiddlewares, async (req, res, next) =
 
     return res.json({
       ok: true,
-      tenant,
+      tenant: {
+        ...tenant,
+        defaultTaxRatePercent:
+          tenant.defaultTaxRateBps !== null && tenant.defaultTaxRateBps !== undefined
+            ? tenant.defaultTaxRateBps / 100
+            : null,
+      },
     });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:tenantId/calendar", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+
+    const [tenant, rules, blocks, users, groups] = await prisma.$transaction([
+      prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: {
+          timezone: true,
+          calendarAppointmentSlotMinutes: true,
+          calendarMeetingDurationMinutes: true,
+          calendarMinimumScheduleNoticeMinutes: true,
+          calendarMaximumBookingsPerDay: true,
+          calendarMaximumBookingsPerSlot: true,
+          calendarPreBufferMinutes: true,
+          calendarPostBufferMinutes: true,
+          calendarBufferAvailabilityMode: true,
+        },
+      }),
+      prisma.calendarAvailabilityRule.findMany({
+        where: {
+          tenantId,
+          scope: "TENANT",
+          kind: "OPEN",
+          userId: null,
+        },
+        orderBy: [{ dayOfWeek: "asc" }, { startTimeMinutes: "asc" }],
+        select: {
+          id: true,
+          dayOfWeek: true,
+          startTimeMinutes: true,
+          endTimeMinutes: true,
+          isActive: true,
+        },
+      }),
+      prisma.calendarTimeBlock.findMany({
+        where: {
+          tenantId,
+          scope: "TENANT",
+          userId: null,
+        },
+        orderBy: [{ startsAt: "asc" }],
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          startsAt: true,
+          endsAt: true,
+          isAllDay: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.membership.findMany({
+        where: {
+          tenantId,
+          status: "ACTIVE",
+        },
+        orderBy: [{ user: { name: "asc" } }],
+        select: {
+          userId: true,
+          role: true,
+          calendarEnabled: true,
+          calendarColor: true,
+          user: {
+            select: {
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
+        },
+      }),
+      prisma.calendarStaffGroup.findMany({
+        where: {
+          tenantId,
+        },
+        orderBy: [{ name: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          members: {
+            orderBy: [{ userId: "asc" }],
+            select: {
+              userId: true,
+              membership: {
+                select: {
+                  calendarColor: true,
+                  user: {
+                    select: {
+                      name: true,
+                      email: true,
+                      image: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const weeklyAvailability = buildWeeklyAvailabilityFromRules(rules);
+
+    return res.json({
+      ok: true,
+      timezone: tenant?.timezone ?? null,
+      bookingRules: {
+        meetingIntervalMinutes: getSafeCalendarSlotDuration(
+          tenant?.calendarAppointmentSlotMinutes,
+        ),
+        meetingDurationMinutes: getSafeCalendarSlotDuration(
+          tenant?.calendarMeetingDurationMinutes,
+        ),
+        minimumScheduleNoticeMinutes:
+          tenant?.calendarMinimumScheduleNoticeMinutes ?? 0,
+        maximumBookingsPerDay: tenant?.calendarMaximumBookingsPerDay ?? null,
+        maximumBookingsPerSlot: tenant?.calendarMaximumBookingsPerSlot ?? 1,
+        preBufferMinutes: tenant?.calendarPreBufferMinutes ?? 0,
+        postBufferMinutes: tenant?.calendarPostBufferMinutes ?? 0,
+        bufferAvailabilityMode: getSafeCalendarBufferMode(
+          tenant?.calendarBufferAvailabilityMode,
+        ),
+      },
+      weeklyAvailability,
+      blocks: blocks.map((block) => ({
+        id: block.id,
+        title: block.title,
+        description: block.description,
+        startsAt: block.startsAt.toISOString(),
+        endsAt: block.endsAt.toISOString(),
+        isAllDay: block.isAllDay,
+        createdAt: block.createdAt.toISOString(),
+        updatedAt: block.updatedAt.toISOString(),
+      })),
+      staff: users.map((item) => ({
+        id: item.userId,
+        label: item.user.name?.trim() || item.user.email,
+        email: item.user.email,
+        image: item.user.image ?? null,
+        role: item.role,
+        enabled: item.calendarEnabled,
+        color: item.calendarColor ?? null,
+      })),
+      groups: groups.map((group) => ({
+        id: group.id,
+        name: group.name,
+        description: group.description ?? null,
+        members: group.members.map((member) => ({
+          userId: member.userId,
+          label:
+            member.membership.user.name?.trim() || member.membership.user.email,
+          email: member.membership.user.email,
+          image: member.membership.user.image ?? null,
+          color: member.membership.calendarColor ?? null,
+        })),
+      })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/calendar", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = UpdateTenantCalendarConfigSchema.parse(req.body);
+
+    const enabledDays = payload.weeklyAvailability
+      .filter((item) => item.enabled && item.startTime && item.endTime)
+      .map((item) => ({
+        tenantId,
+        userId: null,
+        scope: "TENANT" as const,
+        kind: "OPEN" as const,
+        dayOfWeek: item.dayOfWeek,
+        startTimeMinutes: timeInputToMinutes(item.startTime!),
+        endTimeMinutes: timeInputToMinutes(item.endTime!),
+        isActive: true,
+      }));
+
+    await prisma.$transaction([
+      prisma.tenant.update({
+        where: { id: tenantId },
+        data: {
+          calendarAppointmentSlotMinutes: payload.bookingRules.meetingIntervalMinutes,
+          calendarMeetingDurationMinutes: payload.bookingRules.meetingDurationMinutes,
+          calendarMinimumScheduleNoticeMinutes:
+            payload.bookingRules.minimumScheduleNoticeMinutes,
+          calendarMaximumBookingsPerDay:
+            payload.bookingRules.maximumBookingsPerDay,
+          calendarMaximumBookingsPerSlot:
+            payload.bookingRules.maximumBookingsPerSlot,
+          calendarPreBufferMinutes: payload.bookingRules.preBufferMinutes,
+          calendarPostBufferMinutes: payload.bookingRules.postBufferMinutes,
+          calendarBufferAvailabilityMode:
+            payload.bookingRules.bufferAvailabilityMode,
+        },
+      }),
+      prisma.calendarAvailabilityRule.deleteMany({
+        where: {
+          tenantId,
+          scope: "TENANT",
+          kind: "OPEN",
+          userId: null,
+        },
+      }),
+      ...(enabledDays.length > 0
+        ? [
+            prisma.calendarAvailabilityRule.createMany({
+              data: enabledDays,
+            }),
+          ]
+        : []),
+    ]);
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/calendar/staff", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = UpdateCalendarStaffSchema.parse(req.body);
+
+    const memberships = await prisma.membership.findMany({
+      where: {
+        tenantId,
+        status: "ACTIVE",
+      },
+      select: {
+        userId: true,
+      },
+    });
+
+    const activeUserIds = new Set(memberships.map((item) => item.userId));
+    const invalidUserId = payload.staff.find((item) => !activeUserIds.has(item.userId));
+    if (invalidUserId) {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    const disabledUserIds = payload.staff
+      .filter((item) => !item.enabled)
+      .map((item) => item.userId);
+
+    await prisma.$transaction([
+      ...payload.staff.map((item) =>
+        prisma.membership.update({
+          where: {
+            userId_tenantId: {
+              tenantId,
+              userId: item.userId,
+            },
+          },
+          data: {
+            calendarEnabled: item.enabled,
+            calendarColor: item.enabled ? item.color ?? null : null,
+          },
+        }),
+      ),
+      ...(disabledUserIds.length > 0
+        ? [
+            prisma.calendarStaffGroupMember.deleteMany({
+              where: {
+                tenantId,
+                userId: {
+                  in: disabledUserIds,
+                },
+              },
+            }),
+          ]
+        : []),
+    ]);
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:tenantId/calendar/groups", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = CreateCalendarStaffGroupSchema.parse(req.body);
+    const normalizedName = normalizeCalendarGroupName(payload.name);
+
+    const validMembers = await validateCalendarGroupMemberUserIds(
+      tenantId,
+      payload.memberUserIds,
+    );
+    if (!validMembers.ok) {
+      return res.status(404).json({ error: "CALENDAR_GROUP_MEMBER_NOT_FOUND" });
+    }
+
+    const existing = await prisma.calendarStaffGroup.findFirst({
+      where: {
+        tenantId,
+        name: {
+          equals: normalizedName,
+          mode: "insensitive",
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (existing) {
+      return res.status(409).json({ error: "CALENDAR_GROUP_NAME_IN_USE" });
+    }
+
+    const created = await prisma.$transaction(async (tx) => {
+      const group = await tx.calendarStaffGroup.create({
+        data: {
+          tenantId,
+          name: normalizedName,
+          description: payload.description ?? null,
+        },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+        },
+      });
+
+      if (payload.memberUserIds.length > 0) {
+        await tx.calendarStaffGroupMember.createMany({
+          data: payload.memberUserIds.map((userId) => ({
+            tenantId,
+            groupId: group.id,
+            userId,
+          })),
+        });
+      }
+
+      const members = await tx.calendarStaffGroupMember.findMany({
+        where: {
+          tenantId,
+          groupId: group.id,
+        },
+        orderBy: [{ userId: "asc" }],
+        select: {
+          userId: true,
+          membership: {
+            select: {
+              calendarColor: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      return {
+        group,
+        members,
+      };
+    });
+
+    return res.status(201).json({
+      ok: true,
+      group: {
+        id: created.group.id,
+        name: created.group.name,
+        description: created.group.description ?? null,
+        members: created.members.map((member) => ({
+          userId: member.userId,
+          label: member.membership.user.name?.trim() || member.membership.user.email,
+          email: member.membership.user.email,
+          image: member.membership.user.image ?? null,
+          color: member.membership.calendarColor ?? null,
+        })),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/calendar/groups/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+    const payload = UpdateCalendarStaffGroupSchema.parse(req.body);
+    const normalizedName = payload.name
+      ? normalizeCalendarGroupName(payload.name)
+      : undefined;
+
+    const existing = await prisma.calendarStaffGroup.findUnique({
+      where: {
+        id: recordId,
+      },
+      select: {
+        id: true,
+        tenantId: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId) {
+      return res.status(404).json({ error: "CALENDAR_GROUP_NOT_FOUND" });
+    }
+
+    if (payload.memberUserIds) {
+      const validMembers = await validateCalendarGroupMemberUserIds(
+        tenantId,
+        payload.memberUserIds,
+      );
+      if (!validMembers.ok) {
+        return res.status(404).json({ error: "CALENDAR_GROUP_MEMBER_NOT_FOUND" });
+      }
+    }
+
+    if (payload.name) {
+      const nameConflict = await prisma.calendarStaffGroup.findFirst({
+        where: {
+          tenantId,
+          NOT: { id: recordId },
+          name: {
+            equals: normalizedName!,
+            mode: "insensitive",
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (nameConflict) {
+        return res.status(409).json({ error: "CALENDAR_GROUP_NAME_IN_USE" });
+      }
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const group = await tx.calendarStaffGroup.update({
+        where: {
+          id: recordId,
+        },
+        data: {
+          ...(normalizedName !== undefined ? { name: normalizedName } : {}),
+          ...(payload.description !== undefined
+            ? { description: payload.description ?? null }
+            : {}),
+        },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+        },
+      });
+
+      if (payload.memberUserIds) {
+        await tx.calendarStaffGroupMember.deleteMany({
+          where: {
+            tenantId,
+            groupId: recordId,
+          },
+        });
+
+        if (payload.memberUserIds.length > 0) {
+          await tx.calendarStaffGroupMember.createMany({
+            data: payload.memberUserIds.map((userId) => ({
+              tenantId,
+              groupId: recordId,
+              userId,
+            })),
+          });
+        }
+      }
+
+      const members = await tx.calendarStaffGroupMember.findMany({
+        where: {
+          tenantId,
+          groupId: recordId,
+        },
+        orderBy: [{ userId: "asc" }],
+        select: {
+          userId: true,
+          membership: {
+            select: {
+              calendarColor: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      return {
+        group,
+        members,
+      };
+    });
+
+    return res.json({
+      ok: true,
+      group: {
+        id: updated.group.id,
+        name: updated.group.name,
+        description: updated.group.description ?? null,
+        members: updated.members.map((member) => ({
+          userId: member.userId,
+          label: member.membership.user.name?.trim() || member.membership.user.email,
+          email: member.membership.user.email,
+          image: member.membership.user.image ?? null,
+          color: member.membership.calendarColor ?? null,
+        })),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete("/:tenantId/calendar/groups/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+
+    const existing = await prisma.calendarStaffGroup.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId) {
+      return res.status(404).json({ error: "CALENDAR_GROUP_NOT_FOUND" });
+    }
+
+    await prisma.calendarStaffGroup.delete({
+      where: { id: recordId },
+    });
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:tenantId/calendar/users/:userId", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId, userId } = TenantUserPathSchema.parse(req.params);
+
+    const [membership, rules, blocks] = await prisma.$transaction([
+      prisma.membership.findUnique({
+        where: {
+          userId_tenantId: {
+            tenantId,
+            userId,
+          },
+        },
+        select: {
+          userId: true,
+          status: true,
+          role: true,
+          calendarEnabled: true,
+          calendarColor: true,
+          user: {
+            select: {
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
+        },
+      }),
+      prisma.calendarAvailabilityRule.findMany({
+        where: {
+          tenantId,
+          scope: "USER",
+          kind: "OPEN",
+          userId,
+        },
+        orderBy: [{ dayOfWeek: "asc" }, { startTimeMinutes: "asc" }],
+        select: {
+          id: true,
+          dayOfWeek: true,
+          startTimeMinutes: true,
+          endTimeMinutes: true,
+          isActive: true,
+        },
+      }),
+      prisma.calendarTimeBlock.findMany({
+        where: {
+          tenantId,
+          scope: "USER",
+          userId,
+        },
+        orderBy: [{ startsAt: "asc" }],
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          startsAt: true,
+          endsAt: true,
+          isAllDay: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+    ]);
+
+    if (!membership || membership.status !== "ACTIVE") {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    return res.json({
+      ok: true,
+      user: {
+        id: membership.userId,
+        label: membership.user.name?.trim() || membership.user.email,
+        email: membership.user.email,
+        image: membership.user.image ?? null,
+        role: membership.role,
+        enabled: membership.calendarEnabled,
+        color: membership.calendarColor ?? null,
+      },
+      weeklyAvailability: buildWeeklyAvailabilityFromRules(rules),
+      blocks: blocks.map((block) => ({
+        id: block.id,
+        title: block.title,
+        description: block.description,
+        startsAt: block.startsAt.toISOString(),
+        endsAt: block.endsAt.toISOString(),
+        isAllDay: block.isAllDay,
+        createdAt: block.createdAt.toISOString(),
+        updatedAt: block.updatedAt.toISOString(),
+      })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/calendar/users/:userId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, userId } = TenantUserPathSchema.parse(req.params);
+    const payload = UpdateTenantCalendarConfigSchema.pick({
+      weeklyAvailability: true,
+    }).parse(req.body);
+
+    const membership = await prisma.membership.findUnique({
+      where: {
+        userId_tenantId: {
+          tenantId,
+          userId,
+        },
+      },
+      select: {
+        userId: true,
+        status: true,
+      },
+    });
+
+    if (!membership || membership.status !== "ACTIVE") {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    const enabledDays = payload.weeklyAvailability
+      .filter((item) => item.enabled && item.startTime && item.endTime)
+      .map((item) => ({
+        tenantId,
+        userId,
+        scope: "USER" as const,
+        kind: "OPEN" as const,
+        dayOfWeek: item.dayOfWeek,
+        startTimeMinutes: timeInputToMinutes(item.startTime!),
+        endTimeMinutes: timeInputToMinutes(item.endTime!),
+        isActive: true,
+      }));
+
+    await prisma.$transaction([
+      prisma.calendarAvailabilityRule.deleteMany({
+        where: {
+          tenantId,
+          scope: "USER",
+          kind: "OPEN",
+          userId,
+        },
+      }),
+      ...(enabledDays.length > 0
+        ? [
+            prisma.calendarAvailabilityRule.createMany({
+              data: enabledDays,
+            }),
+          ]
+        : []),
+    ]);
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:tenantId/calendar/blocks", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = CreateCalendarBlockSchema.parse(req.body);
+
+    const created = await prisma.calendarTimeBlock.create({
+      data: {
+        tenantId,
+        userId: null,
+        scope: "TENANT",
+        title: payload.title.trim(),
+        description: payload.description ?? null,
+        startsAt: new Date(payload.startsAt),
+        endsAt: new Date(payload.endsAt),
+        isAllDay: payload.isAllDay,
+      },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        startsAt: true,
+        endsAt: true,
+        isAllDay: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.status(201).json({
+      ok: true,
+      block: {
+        ...created,
+        startsAt: created.startsAt.toISOString(),
+        endsAt: created.endsAt.toISOString(),
+        createdAt: created.createdAt.toISOString(),
+        updatedAt: created.updatedAt.toISOString(),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/:tenantId/calendar/blocks/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+    const payload = UpdateCalendarBlockSchema.parse(req.body);
+
+    const existing = await prisma.calendarTimeBlock.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+        scope: true,
+        userId: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId || existing.scope !== "TENANT" || existing.userId !== null) {
+      return res.status(404).json({ error: "CALENDAR_BLOCK_NOT_FOUND" });
+    }
+
+    const startsAt =
+      payload.startsAt !== undefined ? new Date(payload.startsAt) : undefined;
+    const endsAt =
+      payload.endsAt !== undefined ? new Date(payload.endsAt) : undefined;
+
+    if (
+      startsAt &&
+      endsAt &&
+      !Number.isNaN(startsAt.getTime()) &&
+      !Number.isNaN(endsAt.getTime()) &&
+      endsAt <= startsAt
+    ) {
+      return res.status(400).json({ error: "INVALID_BLOCK_RANGE" });
+    }
+
+    const updated = await prisma.calendarTimeBlock.update({
+      where: { id: recordId },
+      data: {
+        title: payload.title?.trim(),
+        description: payload.description,
+        startsAt,
+        endsAt,
+        isAllDay: payload.isAllDay,
+      },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        startsAt: true,
+        endsAt: true,
+        isAllDay: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      block: {
+        ...updated,
+        startsAt: updated.startsAt.toISOString(),
+        endsAt: updated.endsAt.toISOString(),
+        createdAt: updated.createdAt.toISOString(),
+        updatedAt: updated.updatedAt.toISOString(),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete("/:tenantId/calendar/blocks/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+
+    const existing = await prisma.calendarTimeBlock.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+        scope: true,
+        userId: true,
+      },
+    });
+
+    if (!existing || existing.tenantId !== tenantId || existing.scope !== "TENANT" || existing.userId !== null) {
+      return res.status(404).json({ error: "CALENDAR_BLOCK_NOT_FOUND" });
+    }
+
+    await prisma.calendarTimeBlock.delete({
+      where: { id: recordId },
+    });
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:tenantId/calendar/users/:userId/blocks", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, userId } = TenantUserPathSchema.parse(req.params);
+    const payload = CreateCalendarBlockSchema.parse(req.body);
+
+    const membership = await prisma.membership.findUnique({
+      where: {
+        userId_tenantId: {
+          tenantId,
+          userId,
+        },
+      },
+      select: {
+        userId: true,
+        status: true,
+      },
+    });
+
+    if (!membership || membership.status !== "ACTIVE") {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    const created = await prisma.calendarTimeBlock.create({
+      data: {
+        tenantId,
+        userId,
+        scope: "USER",
+        title: payload.title.trim(),
+        description: payload.description ?? null,
+        startsAt: new Date(payload.startsAt),
+        endsAt: new Date(payload.endsAt),
+        isAllDay: payload.isAllDay,
+      },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        startsAt: true,
+        endsAt: true,
+        isAllDay: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.status(201).json({
+      ok: true,
+      block: {
+        ...created,
+        startsAt: created.startsAt.toISOString(),
+        endsAt: created.endsAt.toISOString(),
+        createdAt: created.createdAt.toISOString(),
+        updatedAt: created.updatedAt.toISOString(),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete("/:tenantId/calendar/users/:userId/blocks/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, userId, recordId } = z
+      .object({
+        tenantId: z.string().trim().min(1),
+        userId: z.string().trim().min(1),
+        recordId: z.string().trim().min(1),
+      })
+      .parse(req.params);
+
+    const existing = await prisma.calendarTimeBlock.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        tenantId: true,
+        scope: true,
+        userId: true,
+      },
+    });
+
+    if (
+      !existing ||
+      existing.tenantId !== tenantId ||
+      existing.scope !== "USER" ||
+      existing.userId !== userId
+    ) {
+      return res.status(404).json({ error: "CALENDAR_BLOCK_NOT_FOUND" });
+    }
+
+    await prisma.calendarTimeBlock.delete({
+      where: { id: recordId },
+    });
+
+    return res.json({ ok: true });
   } catch (error) {
     return next(error);
   }
@@ -1833,6 +3299,7 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
                 select: {
                   name: true,
                   email: true,
+                  image: true,
                 },
               },
             },
@@ -1971,6 +3438,20 @@ router.get("/:tenantId/follow-up-templates", ...readMiddlewares, async (req, res
         total,
         totalPages,
       },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:tenantId/service-fit-fields", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const fields = await loadServiceFitCatalog(tenantId);
+
+    return res.json({
+      ok: true,
+      fields,
     });
   } catch (error) {
     return next(error);
@@ -2511,6 +3992,7 @@ router.get("/:tenantId/service-professionals", ...readMiddlewares, async (req, r
               select: {
                 name: true,
                 email: true,
+                image: true,
               },
             },
           },
@@ -2551,12 +4033,23 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
         tenantId: true,
         name: true,
         description: true,
+        fitProfile: true,
         basePriceCents: true,
         currency: true,
+        isTaxExempt: true,
         allowPartialPayments: true,
         minimumPartialPaymentCents: true,
+        installmentCount: true,
+        installmentFrequency: true,
         isActive: true,
         sortOrder: true,
+        tenant: {
+          select: {
+            taxEnabled: true,
+            taxLabel: true,
+            defaultTaxRateBps: true,
+          },
+        },
         checklistItems: {
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
@@ -2603,6 +4096,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
               select: {
                 name: true,
                 email: true,
+                image: true,
               },
             },
           },
@@ -2617,14 +4111,55 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
     return res.json({
       ok: true,
       service: {
-        ...service,
+        id: service.id,
+        tenantId: service.tenantId,
+        name: service.name,
+        description: service.description,
+        fitProfile: normalizeServiceFitProfile(service.fitProfile),
+        basePriceCents: service.basePriceCents,
+        currency: service.currency,
+        isTaxExempt: service.isTaxExempt,
+        allowPartialPayments: service.allowPartialPayments,
+        minimumPartialPaymentCents: service.minimumPartialPaymentCents,
+        installmentCount: service.installmentCount,
+        installmentFrequency: service.installmentFrequency,
+        isActive: service.isActive,
+        sortOrder: service.sortOrder,
+        checklistItems: service.checklistItems,
+        followUpTemplateSteps: service.followUpTemplateSteps,
+        followUpTemplates: service.followUpTemplates,
+        professionals: service.professionals,
+        tenantBilling: {
+          taxEnabled: service.tenant.taxEnabled,
+          taxLabel: service.tenant.taxLabel,
+          defaultTaxRatePercent:
+            service.tenant.defaultTaxRateBps !== null &&
+            service.tenant.defaultTaxRateBps !== undefined
+              ? service.tenant.defaultTaxRateBps / 100
+              : null,
+        },
         configStatus: {
+          overviewComplete:
+            service.name.trim().length > 0 &&
+            service.basePriceCents >= 0 &&
+            service.currency.trim().length === 3 &&
+            (!service.allowPartialPayments ||
+              (service.minimumPartialPaymentCents !== null &&
+                service.installmentCount !== null &&
+                service.installmentFrequency !== null)),
           checklistComplete: service.checklistItems.length > 0,
           followUpsComplete:
             service.followUpTemplates.length > 0 ||
             service.followUpTemplateSteps.length > 0,
           professionalsComplete: service.professionals.length > 0,
           isComplete:
+            service.name.trim().length > 0 &&
+            service.basePriceCents >= 0 &&
+            service.currency.trim().length === 3 &&
+            (!service.allowPartialPayments ||
+              (service.minimumPartialPaymentCents !== null &&
+                service.installmentCount !== null &&
+                service.installmentFrequency !== null)) &&
             service.checklistItems.length > 0 &&
             (service.followUpTemplates.length > 0 ||
               service.followUpTemplateSteps.length > 0) &&
@@ -2665,10 +4200,44 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
       return res.status(400).json({ error: professionalValidation.error });
     }
 
+    let fitProfile = DEFAULT_SERVICE_FIT_PROFILE;
+    if (payload.fitProfile) {
+      const catalog = await loadServiceFitCatalog(tenantId);
+      const validation = validateServiceFitProfile(
+        normalizeServiceFitProfile(payload.fitProfile),
+        catalog,
+      );
+
+      if (!validation.ok) {
+        return res.status(400).json({ error: "INVALID_SERVICE_FIT_PROFILE", details: validation.error });
+      }
+
+      fitProfile = validation.profile;
+    }
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        taxEnabled: true,
+        defaultTaxRateBps: true,
+      },
+    });
+
+    if (!tenant) {
+      return res.status(404).json({ error: "TENANT_NOT_FOUND" });
+    }
+
+    const maxAllowedDepositCents = getServiceTotalWithTaxCents({
+      basePriceCents: payload.basePriceCents,
+      isTaxExempt: payload.isTaxExempt,
+      taxEnabled: tenant.taxEnabled,
+      defaultTaxRateBps: tenant.defaultTaxRateBps,
+    });
+
     if (
       payload.allowPartialPayments &&
       normalizedPayload.minimumPartialPaymentCents !== null &&
-      normalizedPayload.minimumPartialPaymentCents > payload.basePriceCents
+      normalizedPayload.minimumPartialPaymentCents > maxAllowedDepositCents
     ) {
       return res.status(400).json({ error: "MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE" });
     }
@@ -2685,10 +4254,14 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
         tenantId,
         name: normalizedName,
         description: normalizedPayload.description ?? null,
+        fitProfile,
         basePriceCents: payload.basePriceCents,
         currency: normalizedPayload.currency || "USD",
+        isTaxExempt: payload.isTaxExempt,
         allowPartialPayments: payload.allowPartialPayments,
         minimumPartialPaymentCents: normalizedPayload.minimumPartialPaymentCents,
+        installmentCount: normalizedPayload.installmentCount ?? null,
+        installmentFrequency: normalizedPayload.installmentFrequency ?? null,
         isActive: payload.isActive,
         sortOrder: payload.sortOrder ?? nextSortOrder,
         checklistItems: {
@@ -2734,16 +4307,26 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
         id: true,
         name: true,
         description: true,
+        fitProfile: true,
         basePriceCents: true,
         currency: true,
+        isTaxExempt: true,
         allowPartialPayments: true,
         minimumPartialPaymentCents: true,
+        installmentCount: true,
+        installmentFrequency: true,
         isActive: true,
         sortOrder: true,
       },
     });
 
-    return res.status(201).json({ ok: true, service: created });
+    return res.status(201).json({
+      ok: true,
+      service: {
+        ...created,
+        fitProfile: normalizeServiceFitProfile(created.fitProfile),
+      },
+    });
   } catch (error) {
     return next(error);
   }
@@ -2766,7 +4349,14 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
         id: true,
         tenantId: true,
         basePriceCents: true,
+        isTaxExempt: true,
         allowPartialPayments: true,
+        tenant: {
+          select: {
+            taxEnabled: true,
+            defaultTaxRateBps: true,
+          },
+        },
       },
     });
 
@@ -2791,20 +4381,51 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
       }
     }
 
+    let nextFitProfile: z.infer<typeof ServiceFitProfileSchema> | undefined;
+    if (payload.fitProfile !== undefined) {
+      const catalog = await loadServiceFitCatalog(tenantId);
+      const validation = validateServiceFitProfile(
+        normalizeServiceFitProfile(payload.fitProfile),
+        catalog,
+      );
+
+      if (!validation.ok) {
+        return res.status(400).json({ error: "INVALID_SERVICE_FIT_PROFILE", details: validation.error });
+      }
+
+      nextFitProfile = validation.profile;
+    }
+
     const nextBasePriceCents = payload.basePriceCents ?? existing.basePriceCents;
+    const nextIsTaxExempt = payload.isTaxExempt ?? existing.isTaxExempt;
     const nextAllowPartialPayments = payload.allowPartialPayments ?? existing.allowPartialPayments;
     const nextMinimumPartial =
       payload.minimumPartialPaymentCents === undefined
         ? undefined
         : payload.minimumPartialPaymentCents;
+    const maxAllowedDepositCents = getServiceTotalWithTaxCents({
+      basePriceCents: nextBasePriceCents,
+      isTaxExempt: nextIsTaxExempt,
+      taxEnabled: existing.tenant.taxEnabled,
+      defaultTaxRateBps: existing.tenant.defaultTaxRateBps,
+    });
 
     if (
       nextAllowPartialPayments &&
       nextMinimumPartial !== undefined &&
       nextMinimumPartial !== null &&
-      nextMinimumPartial > nextBasePriceCents
+      nextMinimumPartial > maxAllowedDepositCents
     ) {
       return res.status(400).json({ error: "MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE" });
+    }
+
+    if (
+      nextAllowPartialPayments &&
+      payload.installmentCount !== undefined &&
+      payload.installmentCount !== null &&
+      payload.installmentCount < 2
+    ) {
+      return res.status(400).json({ error: "INVALID_INSTALLMENT_COUNT" });
     }
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -2842,10 +4463,14 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
         data: {
           ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
           ...(payload.description !== undefined ? { description: payload.description ?? null } : {}),
+          ...(payload.fitProfile !== undefined ? { fitProfile: nextFitProfile } : {}),
           ...(payload.basePriceCents !== undefined
             ? { basePriceCents: payload.basePriceCents }
             : {}),
           ...(payload.currency !== undefined ? { currency: payload.currency } : {}),
+          ...(payload.isTaxExempt !== undefined
+            ? { isTaxExempt: payload.isTaxExempt }
+            : {}),
           ...(payload.allowPartialPayments !== undefined
             ? { allowPartialPayments: payload.allowPartialPayments }
             : {}),
@@ -2853,6 +4478,20 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
             ? {
                 minimumPartialPaymentCents: nextAllowPartialPayments
                   ? payload.minimumPartialPaymentCents
+                  : null,
+              }
+            : {}),
+          ...(payload.installmentCount !== undefined
+            ? {
+                installmentCount: nextAllowPartialPayments
+                  ? payload.installmentCount
+                  : null,
+              }
+            : {}),
+          ...(payload.installmentFrequency !== undefined
+            ? {
+                installmentFrequency: nextAllowPartialPayments
+                  ? payload.installmentFrequency
                   : null,
               }
             : {}),
@@ -2913,17 +4552,27 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
           id: true,
           name: true,
           description: true,
+          fitProfile: true,
           basePriceCents: true,
           currency: true,
+          isTaxExempt: true,
           allowPartialPayments: true,
           minimumPartialPaymentCents: true,
+          installmentCount: true,
+          installmentFrequency: true,
           isActive: true,
           sortOrder: true,
         },
       });
     });
 
-    return res.json({ ok: true, service: updated });
+    return res.json({
+      ok: true,
+      service: {
+        ...updated,
+        fitProfile: normalizeServiceFitProfile(updated.fitProfile),
+      },
+    });
   } catch (error) {
     return next(error);
   }

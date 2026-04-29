@@ -3,6 +3,7 @@
 import { isAxiosError } from "axios"
 import { ChevronDown, Plus, Trash2 } from "lucide-react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
@@ -87,6 +88,7 @@ type ContactRelationshipsSectionProps = {
   tenantSlug: string
   contactId: string
   initialRelationships: RelationshipRecord[]
+  variant?: "sidebar" | "page"
 }
 
 const RELATIONSHIP_OPTIONS: Array<{ value: RelationshipType; label: string }> =
@@ -130,7 +132,9 @@ export function ContactRelationshipsSection({
   tenantSlug,
   contactId,
   initialRelationships,
+  variant = "sidebar",
 }: ContactRelationshipsSectionProps) {
+  const router = useRouter()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [debouncedQuery, setDebouncedQuery] = useState("")
@@ -199,7 +203,7 @@ export function ContactRelationshipsSection({
       setIsSearching(true)
       try {
         const { data } = await api.get<{ ok: boolean; items: SearchResult[] }>(
-          `/api/contacts/${tenantId}/search`,
+          `/api/contacts/${encodeURIComponent(tenantId)}/search`,
           {
             params: {
               q: debouncedQuery,
@@ -242,12 +246,16 @@ export function ContactRelationshipsSection({
       const { data } = await api.post<{
         ok: boolean
         relationship: RelationshipRecord
-      }>(`/api/contacts/${tenantId}/${contactId}/relationships`, {
+      }>(
+        `/api/contacts/${encodeURIComponent(tenantId)}/${encodeURIComponent(contactId)}/relationships`,
+        {
         relatedContactId: result.id,
         relationshipType,
-      })
+        },
+      )
 
       setRelationships((current) => [...current, data.relationship])
+      router.refresh()
       toast.success("Relationship added.")
       setOpen(false)
       resetDialog()
@@ -271,11 +279,12 @@ export function ContactRelationshipsSection({
     setIsSaving(true)
     try {
       await api.delete(
-        `/api/contacts/${tenantId}/${contactId}/relationships/${relationshipId}`,
+        `/api/contacts/${encodeURIComponent(tenantId)}/${encodeURIComponent(contactId)}/relationships/${encodeURIComponent(relationshipId)}`,
       )
       setRelationships((current) =>
         current.filter((item) => item.id !== relationshipId),
       )
+      router.refresh()
       toast.success("Relationship removed.")
     } catch {
       toast.error("Could not remove relationship.")
@@ -284,83 +293,147 @@ export function ContactRelationshipsSection({
     }
   }
 
+  const groupedContent = relationships.length > 0 ? (
+    groupedRelationships.map((group) => (
+      <div key={group.label} className="space-y-2">
+        <div className="flex items-center gap-2">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+            {group.label}
+          </p>
+          <span className="h-px flex-1 bg-slate-200" />
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {group.items.map((relationship) => (
+            <div
+              key={relationship.id}
+              className={cn(
+                "flex min-w-[220px] items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-3.5 py-3 shadow-sm transition hover:border-slate-300 hover:bg-slate-50/80",
+                variant === "page" ? "sm:min-w-[250px]" : "w-full",
+              )}
+            >
+              <div className="min-w-0 space-y-1">
+                <Link
+                  href={`/app/${tenantSlug}/contacts/${relationship.relatedContact.id}/overview`}
+                  className="block truncate text-sm font-medium text-slate-900 hover:text-blue-900"
+                >
+                  {relationship.relatedContact.fullName}
+                </Link>
+                <p className="truncate text-xs text-slate-500">
+                  {relationship.relatedContact.phoneNumber
+                    ? formatPhoneNumber(relationship.relatedContact.phoneNumber)
+                    : relationship.relatedContact.email || "No phone or email"}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleDelete(relationship.id)}
+                disabled={isSaving}
+                className="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label={`Remove relationship with ${relationship.relatedContact.fullName}`}
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    ))
+  ) : null
+
   return (
     <>
-      <details className="group rounded-lg py-1">
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-2 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-50">
-          <span className="flex items-center gap-2">
-            <ChevronDown className="h-4 w-4 text-slate-400 transition group-open:rotate-180" />
-            Relationships
-            <span className="rounded-full border border-slate-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-950">
-              {relationships.length}
-            </span>
-          </span>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              setOpen(true)
-            }}
-            className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
-            aria-label="Add relationship"
-          >
-            <Plus className="h-4 w-4" />
-          </button>
-        </summary>
-
-        {relationships.length > 0 ? (
-          <div className="mt-1 space-y-3 pl-8">
-            {groupedRelationships.map((group) => (
-              <div key={group.label} className="space-y-1.5">
-                <div className="flex items-center gap-2 px-1">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
-                    {group.label}
+      {variant === "page" ? (
+        <section className="flex flex-col gap-5">
+          <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
+                  Contact Relationships
+                </p>
+                <div className="space-y-1">
+                  <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
+                    Connected contacts
+                  </h1>
+                  <p className="text-sm text-slate-600">
+                    Review family, caregiver, and other contact links without crowding the main record.
                   </p>
-                  <span className="h-px flex-1 bg-slate-200" />
-                </div>
-
-                <div className="space-y-0.5">
-                  {group.items.map((relationship) => (
-                    <div
-                      key={relationship.id}
-                      className="flex items-start justify-between gap-3 rounded-lg px-1 py-2 transition hover:bg-slate-50/70"
-                    >
-                      <div className="min-w-0 space-y-0.5">
-                        <Link
-                          href={`/app/${tenantSlug}/contacts/${relationship.relatedContact.id}/overview`}
-                          className="block truncate text-sm font-medium text-slate-900 hover:text-blue-900"
-                        >
-                          {relationship.relatedContact.fullName}
-                        </Link>
-                        <p className="truncate text-xs text-slate-500">
-                          {relationship.relatedContact.phoneNumber
-                            ? formatPhoneNumber(relationship.relatedContact.phoneNumber)
-                            : relationship.relatedContact.email || "No phone or email"}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleDelete(relationship.id)}
-                        disabled={isSaving}
-                        className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
-                        aria-label={`Remove relationship with ${relationship.relatedContact.fullName}`}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
                 </div>
               </div>
-            ))}
 
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:self-center">
+                <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm">
+                  <span className="inline-flex items-center gap-2">
+                    <span className="font-semibold text-slate-950">{relationships.length}</span>{" "}
+                    relationships
+                  </span>
+                </div>
+                <Button
+                  type="button"
+                  className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+                  onClick={() => setOpen(true)}
+                >
+                  <Plus className="h-4 w-4" />
+                  Add relationship
+                </Button>
+              </div>
+            </div>
           </div>
-        ) : (
-          <p className="mt-1 pl-8 text-sm leading-6 text-slate-500">
-            No relationship data configured yet.
-          </p>
-        )}
-      </details>
+
+          <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+            {relationships.length > 0 ? (
+              <div className="space-y-5">{groupedContent}</div>
+            ) : (
+              <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50 px-5 py-12 text-center">
+                <p className="text-base font-medium text-slate-900">No relationships added yet.</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  Add family, caregiver, or other connected contacts to keep this record easier to understand.
+                </p>
+                <Button
+                  type="button"
+                  className="mt-5 cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+                  onClick={() => setOpen(true)}
+                >
+                  <Plus className="h-4 w-4" />
+                  Add relationship
+                </Button>
+              </div>
+            )}
+          </section>
+        </section>
+      ) : (
+        <details className="group rounded-lg py-1">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-2 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-50">
+            <span className="flex items-center gap-2">
+              <ChevronDown className="h-4 w-4 text-slate-400 transition group-open:rotate-180" />
+              Relationships
+              <span className="rounded-full border border-slate-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-950">
+                {relationships.length}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                setOpen(true)
+              }}
+              className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+              aria-label="Add relationship"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          </summary>
+
+          {relationships.length > 0 ? (
+            <div className="mt-1 space-y-3 pl-8">{groupedContent}</div>
+          ) : (
+            <p className="mt-1 pl-8 text-sm leading-6 text-slate-500">
+              No relationship data configured yet.
+            </p>
+          )}
+        </details>
+      )}
 
       <Dialog
         open={open}
