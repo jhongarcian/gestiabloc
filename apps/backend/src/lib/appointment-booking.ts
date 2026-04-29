@@ -276,7 +276,7 @@ async function acquireBookingLocks(
 
   for (const resourceKey of resourceKeys) {
     const lockKey = `${params.tenantId}:${params.localDate}:${resourceKey}`
-    await tx.$queryRaw`
+    await tx.$executeRaw`
       SELECT pg_advisory_xact_lock(
         hashtext(${BOOKING_LOCK_NAMESPACE}),
         hashtext(${lockKey})

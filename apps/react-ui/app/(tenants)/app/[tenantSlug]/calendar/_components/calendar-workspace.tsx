@@ -51,7 +51,7 @@ import {
   updateAppointment,
 } from "../_lib/calendar-api"
 import { CreateAppointmentDialog } from "./create-appointment-dialog"
-import { EditAppointmentSheet } from "./edit-appointment-sheet"
+import { EditAppointmentForm } from "./edit-appointment-sheet"
 
 type CalendarWorkspaceProps = {
   tenantId: string
@@ -738,7 +738,7 @@ export function CalendarWorkspace({
   const [isLoadingEvents, setIsLoadingEvents] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [selectedAppointment, setSelectedAppointment] = useState<CalendarEventItem | null>(null)
-  const [isEditSheetOpen, setIsEditSheetOpen] = useState(false)
+  const [isEditingAppointment, setIsEditingAppointment] = useState(false)
   const [isCancelingAppointment, setIsCancelingAppointment] = useState(false)
 
   const activeRange = useMemo(
@@ -901,7 +901,7 @@ export function CalendarWorkspace({
 
   useEffect(() => {
     if (!selectedAppointment) {
-      setIsEditSheetOpen(false)
+      setIsEditingAppointment(false)
     }
   }, [selectedAppointment])
 
@@ -1392,173 +1392,177 @@ export function CalendarWorkspace({
           open={Boolean(selectedAppointment)}
           onOpenChange={(open) => {
             if (!open) {
+              setIsEditingAppointment(false)
               setSelectedAppointment(null)
             }
           }}
         >
-          <SheetContent side="right" className="p-0 sm:max-w-lg">
+          <SheetContent side="right" className="flex h-full flex-col overflow-hidden p-0 sm:max-w-lg">
             {selectedAppointment ? (
               <>
                 <SheetHeader className="border-b border-slate-200 bg-slate-50 px-6 py-6 text-left">
                   <SheetTitle className="text-xl font-semibold text-slate-950">
-                    Appointment Details
+                    {isEditingAppointment ? "Edit Appointment" : "Appointment Details"}
                   </SheetTitle>
                   <SheetDescription className="mt-1">
-                    Review the appointment details for this booking.
+                    {isEditingAppointment
+                      ? "Update the assignment, slot, service, and notes while keeping booking conflicts protected."
+                      : "Review the appointment details for this booking."}
                   </SheetDescription>
                 </SheetHeader>
 
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                  <section className="border-b border-slate-200 px-6 py-6">
-                    <div className="space-y-4">
-                      <div className="space-y-2">
-                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                          Schedule
-                        </p>
-                        <Badge
-                          variant="secondary"
-                          className="w-fit rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-blue-950"
-                        >
-                          {formatAppointmentStatus(selectedAppointment.status)}
-                        </Badge>
-                      </div>
-
-                      <div className="flex items-center gap-4">
-                        <Avatar size="lg" className="shrink-0 border border-slate-200 shadow-sm">
-                          <AvatarImage
-                            src={selectedAppointment.assignedToImage ?? undefined}
-                            alt={selectedAppointment.assignedToLabel}
-                          />
-                          <AvatarFallback>
-                            {getInitials(selectedAppointment.assignedToLabel)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="min-w-0 flex-1">
+                {isEditingAppointment ? (
+                  <EditAppointmentForm
+                    tenantId={tenantId}
+                    tenantTimezone={tenantTimezone}
+                    appointment={selectedAppointment}
+                    meetingIntervalMinutes={meta.settings.meetingIntervalMinutes}
+                    meetingDurationMinutes={meta.settings.meetingDurationMinutes}
+                    serviceOptions={safeMetaFilters.services}
+                    assigneeOptions={safeMetaFilters.users}
+                    onCancel={() => setIsEditingAppointment(false)}
+                    onUpdated={async () => {
+                      setIsEditingAppointment(false)
+                      setSelectedAppointment(null)
+                      await loadEvents()
+                    }}
+                  />
+                ) : (
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    <section className="border-b border-slate-200 px-6 py-6">
+                      <div className="space-y-4">
+                        <div className="space-y-2">
                           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                            Assigned Staff
+                            Schedule
                           </p>
-                          <p className="mt-1 text-base font-semibold text-slate-950">
-                            {selectedAppointment.assignedToLabel}
-                          </p>
-                          {selectedAssignee?.email ? (
-                            <p className="mt-1 truncate text-sm text-slate-500">{selectedAssignee.email}</p>
-                          ) : (
-                            <p className="mt-1 text-sm text-slate-400">No email available</p>
-                          )}
+                          <Badge
+                            variant="secondary"
+                            className="w-fit rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-blue-950"
+                          >
+                            {formatAppointmentStatus(selectedAppointment.status)}
+                          </Badge>
+                        </div>
+
+                        <div className="flex items-center gap-4">
+                          <Avatar size="lg" className="shrink-0 border border-slate-200 shadow-sm">
+                            <AvatarImage
+                              src={selectedAppointment.assignedToImage ?? undefined}
+                              alt={selectedAppointment.assignedToLabel}
+                            />
+                            <AvatarFallback>
+                              {getInitials(selectedAppointment.assignedToLabel)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                              Assigned Staff
+                            </p>
+                            <p className="mt-1 text-base font-semibold text-slate-950">
+                              {selectedAppointment.assignedToLabel}
+                            </p>
+                            {selectedAssignee?.email ? (
+                              <p className="mt-1 truncate text-sm text-slate-500">{selectedAssignee.email}</p>
+                            ) : (
+                              <p className="mt-1 text-sm text-slate-400">No email available</p>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </section>
-
-                  <section className="border-b border-slate-200 px-6 py-6">
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                      Appointment
-                    </p>
-                    <div className="mt-3 space-y-4">
-                      <p className="text-lg font-semibold leading-tight text-slate-950">
-                        {selectedAppointment.title}
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-                          onClick={() => setIsEditSheetOpen(true)}
-                        >
-                          Edit appointment
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800"
-                          disabled={isCancelingAppointment}
-                          onClick={() => void onCancelAppointment()}
-                        >
-                          {isCancelingAppointment ? "Canceling..." : "Cancel appointment"}
-                        </Button>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section className="border-b border-slate-200 px-6 py-6">
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                      Schedule
-                    </p>
-                    <div className="mt-4 space-y-4">
-                      <div className="flex flex-col gap-1">
-                        <p className="text-sm font-medium text-slate-900">Start</p>
-                        <p className="text-sm text-slate-600">
-                          {formatDateTimeForDisplay(selectedAppointment.startAt, tenantTimezone)}
-                        </p>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <p className="text-sm font-medium text-slate-900">End</p>
-                        <p className="text-sm text-slate-600">
-                          {formatDateTimeForDisplay(selectedAppointment.endAt, tenantTimezone)}
-                        </p>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section className="border-b border-slate-200 px-6 py-6">
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                      Booking Details
-                    </p>
-                    <div className="mt-4 grid gap-4">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-950">
-                          {selectedAppointment.contactName}
-                        </p>
-                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                          <DetailItem
-                            label="Email"
-                            value={selectedAppointment.contactEmail ?? "No email available"}
-                          />
-                          <DetailItem
-                            label="Phone"
-                            value={selectedAppointment.contactPhone ?? "No phone available"}
-                          />
-                        </div>
-                      </div>
-                      <DetailItem
-                        label="Service"
-                        value={selectedAppointment.serviceName ?? "No service assigned"}
-                      />
-                    </div>
-                  </section>
-
-                  {selectedAppointment.notes ? (
-                    <section className="px-6 py-6">
-                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                        Notes
-                      </p>
-                      <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-slate-600">
-                        {selectedAppointment.notes}
-                      </p>
                     </section>
-                  ) : null}
-                </div>
+
+                    <section className="border-b border-slate-200 px-6 py-6">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        Appointment
+                      </p>
+                      <div className="mt-3 space-y-4">
+                        <p className="text-lg font-semibold leading-tight text-slate-950">
+                          {selectedAppointment.title}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+                            onClick={() => setIsEditingAppointment(true)}
+                          >
+                            Edit appointment
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+                            disabled={isCancelingAppointment}
+                            onClick={() => void onCancelAppointment()}
+                          >
+                            {isCancelingAppointment ? "Canceling..." : "Cancel appointment"}
+                          </Button>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="border-b border-slate-200 px-6 py-6">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        Schedule
+                      </p>
+                      <div className="mt-4 space-y-4">
+                        <div className="flex flex-col gap-1">
+                          <p className="text-sm font-medium text-slate-900">Start</p>
+                          <p className="text-sm text-slate-600">
+                            {formatDateTimeForDisplay(selectedAppointment.startAt, tenantTimezone)}
+                          </p>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <p className="text-sm font-medium text-slate-900">End</p>
+                          <p className="text-sm text-slate-600">
+                            {formatDateTimeForDisplay(selectedAppointment.endAt, tenantTimezone)}
+                          </p>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="border-b border-slate-200 px-6 py-6">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        Booking Details
+                      </p>
+                      <div className="mt-4 grid gap-4">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-950">
+                            {selectedAppointment.contactName}
+                          </p>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                            <DetailItem
+                              label="Email"
+                              value={selectedAppointment.contactEmail ?? "No email available"}
+                            />
+                            <DetailItem
+                              label="Phone"
+                              value={selectedAppointment.contactPhone ?? "No phone available"}
+                            />
+                          </div>
+                        </div>
+                        <DetailItem
+                          label="Service"
+                          value={selectedAppointment.serviceName ?? "No service assigned"}
+                        />
+                      </div>
+                    </section>
+
+                    {selectedAppointment.notes ? (
+                      <section className="px-6 py-6">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                          Notes
+                        </p>
+                        <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                          {selectedAppointment.notes}
+                        </p>
+                      </section>
+                    ) : null}
+                  </div>
+                )}
               </>
             ) : null}
           </SheetContent>
         </Sheet>
-
-        <EditAppointmentSheet
-          open={isEditSheetOpen}
-          onOpenChange={setIsEditSheetOpen}
-          tenantId={tenantId}
-          tenantTimezone={tenantTimezone}
-          appointment={selectedAppointment}
-          meetingIntervalMinutes={meta.settings.meetingIntervalMinutes}
-          meetingDurationMinutes={meta.settings.meetingDurationMinutes}
-          serviceOptions={safeMetaFilters.services}
-          assigneeOptions={safeMetaFilters.users}
-          onUpdated={async () => {
-            setIsEditSheetOpen(false)
-            setSelectedAppointment(null)
-            await loadEvents()
-          }}
-        />
 
         <div className="flex min-h-0 flex-1 flex-col p-4 md:p-6">
           {loadError ? (

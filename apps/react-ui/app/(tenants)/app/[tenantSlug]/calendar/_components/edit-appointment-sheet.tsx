@@ -11,14 +11,6 @@ import { DateTimeInput } from "@/components/ui/date-time-input"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
 import { type DateTimeDraft, formatDateTimeForDisplay, formatUtcIsoToDateTimeDraft } from "@/lib/date-time"
 import {
@@ -28,9 +20,7 @@ import {
   updateAppointment,
 } from "../_lib/calendar-api"
 
-type EditAppointmentSheetProps = {
-  open: boolean
-  onOpenChange: (open: boolean) => void
+type EditAppointmentFormProps = {
   tenantId: string
   tenantTimezone: string | null
   appointment: CalendarEventItem | null
@@ -46,6 +36,7 @@ type EditAppointmentSheetProps = {
     email: string
     color?: string | null
   }>
+  onCancel: () => void
   onUpdated?: () => Promise<void> | void
 }
 
@@ -82,9 +73,7 @@ function formatSlotDurationLabel(minutes: number) {
   return `${hours}h ${remainingMinutes}m`
 }
 
-export function EditAppointmentSheet({
-  open,
-  onOpenChange,
+export function EditAppointmentForm({
   tenantId,
   tenantTimezone,
   appointment,
@@ -92,8 +81,9 @@ export function EditAppointmentSheet({
   meetingDurationMinutes,
   serviceOptions,
   assigneeOptions,
+  onCancel,
   onUpdated,
-}: EditAppointmentSheetProps) {
+}: EditAppointmentFormProps) {
   const router = useRouter()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
@@ -135,10 +125,8 @@ export function EditAppointmentSheet({
   }, [appointment, tenantTimezone])
 
   useEffect(() => {
-    if (open) {
-      resetForm()
-    }
-  }, [open, resetForm])
+    resetForm()
+  }, [resetForm])
 
   const localDateKey = useMemo(
     () => dateDraftToLocalDateKey(appointmentDateInput.date),
@@ -146,7 +134,7 @@ export function EditAppointmentSheet({
   )
 
   useEffect(() => {
-    if (!open || !appointment) return
+    if (!appointment) return
 
     if (!assignedToUserId || !localDateKey) {
       setSelectedSlotStartAt("")
@@ -209,7 +197,7 @@ export function EditAppointmentSheet({
       cancelled = true
       window.clearTimeout(timeout)
     }
-  }, [appointment, assignedToUserId, localDateKey, open, tenantId])
+  }, [appointment, assignedToUserId, localDateKey, tenantId])
 
   const selectedSlot = useMemo(
     () =>
@@ -266,7 +254,7 @@ export function EditAppointmentSheet({
       })
 
       toast.success("Appointment updated.")
-      onOpenChange(false)
+      onCancel()
       await onUpdated?.()
       router.refresh()
     } catch (error) {
@@ -307,233 +295,222 @@ export function EditAppointmentSheet({
     }
   }
 
+  if (!appointment) {
+    return null
+  }
+
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-4xl">
-        <SheetHeader className="border-b border-slate-200 px-6 py-5">
-          <SheetTitle>Edit appointment</SheetTitle>
-          <SheetDescription>
-            Update the assignment, slot, service, and notes while keeping booking conflicts protected.
-          </SheetDescription>
-        </SheetHeader>
+    <>
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+        <div className="space-y-6">
+        <section className="space-y-1">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+            Booking rules
+          </p>
+          <p className="text-sm text-slate-700">
+            Interval: {formatSlotDurationLabel(meetingIntervalMinutes)} · Duration:{" "}
+            {formatSlotDurationLabel(meetingDurationMinutes)}
+          </p>
+          <p className="text-xs text-slate-500">
+            Rescheduling uses the same atomic booking protection as creating a new appointment.
+          </p>
+        </section>
 
-        {appointment ? (
-          <div className="space-y-6 px-6 py-6">
-            <div className="rounded-[20px] border border-blue-100 bg-blue-50/80 px-4 py-3">
-              <p className="text-sm font-medium text-blue-950">
-                Interval: {formatSlotDurationLabel(meetingIntervalMinutes)} · Duration: {formatSlotDurationLabel(meetingDurationMinutes)}
-              </p>
-              <p className="mt-1 text-xs text-blue-800">
-                Rescheduling uses the same atomic booking protection as creating a new appointment.
+        <section className="space-y-2">
+          <Label>Contact</Label>
+          <div className="space-y-1">
+            <p className="font-medium text-slate-900">{appointment.contactName}</p>
+            <p className="text-sm text-slate-500">
+              {appointment.contactEmail || appointment.contactPhone || "No contact details"}
+            </p>
+          </div>
+        </section>
+
+        <section className="space-y-2">
+          <Label htmlFor="edit-appointment-title">Title</Label>
+          <Input
+            id="edit-appointment-title"
+            placeholder={
+              selectedServiceName
+                ? `${selectedServiceName} appointment`
+                : "Optional custom title"
+            }
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            aria-invalid={Boolean(fieldErrors.title)}
+          />
+        </section>
+
+        <section className="space-y-2">
+          <Label>Service</Label>
+          <Select value={serviceId} onValueChange={setServiceId}>
+            <SelectTrigger>
+              <SelectValue placeholder="Optional service" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__NONE__">No service</SelectItem>
+              {serviceOptions.map((service) => (
+                <SelectItem key={service.id} value={service.id}>
+                  {service.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </section>
+
+        <section className="space-y-2">
+          <Label>Designated user</Label>
+          <Select value={assignedToUserId} onValueChange={setAssignedToUserId}>
+            <SelectTrigger aria-invalid={Boolean(fieldErrors.assignedToUserId)}>
+              <SelectValue placeholder="Choose user" />
+            </SelectTrigger>
+            <SelectContent>
+              {assigneeOptions.map((assignee) => (
+                <SelectItem key={assignee.id} value={assignee.id}>
+                  {assignee.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {fieldErrors.assignedToUserId ? (
+            <p className="text-sm text-rose-600">{fieldErrors.assignedToUserId}</p>
+          ) : null}
+        </section>
+
+        <section className="space-y-2">
+          <Label>Appointment date</Label>
+          <DateTimeInput
+            value={appointmentDateInput}
+            onValueChange={(value) => {
+              setAppointmentDateInput({ ...value, time: "" })
+              setSelectedSlotStartAt("")
+            }}
+            hideTime
+            ariaInvalid={Boolean(fieldErrors.date)}
+          />
+          {fieldErrors.date ? (
+            <p className="text-sm text-rose-600">{fieldErrors.date}</p>
+          ) : null}
+        </section>
+
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">
+                Time slots
+              </h3>
+              <p className="mt-1 text-sm text-slate-600">
+                {localDateKey
+                  ? "Choose from available slots for the selected day."
+                  : "Pick a date to load available slots."}
               </p>
             </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label>Contact</Label>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                  <p className="font-medium text-slate-900">{appointment.contactName}</p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {appointment.contactEmail || appointment.contactPhone || "No contact details"}
-                  </p>
-                </div>
+            {slotsState.status === "loading" ? (
+              <div className="flex items-center gap-2 text-sm text-slate-500">
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+                Loading
               </div>
+            ) : null}
+          </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="edit-appointment-title">Title</Label>
-                <Input
-                  id="edit-appointment-title"
-                  placeholder={
-                    selectedServiceName
-                      ? `${selectedServiceName} appointment`
-                      : "Optional custom title"
-                  }
-                  value={title}
-                  onChange={(event) => setTitle(event.target.value)}
-                  aria-invalid={Boolean(fieldErrors.title)}
-                />
-              </div>
-            </div>
+          {slotsState.status === "error" ? (
+            <p className="text-sm text-rose-700">{slotsState.message}</p>
+          ) : null}
 
-            <div className="grid gap-4 md:grid-cols-2">
+          {slotsState.status === "ready" ? (
+            <>
               <div className="space-y-2">
-                <Label>Service</Label>
-                <Select value={serviceId} onValueChange={setServiceId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Optional service" />
+                <Label>Available slot</Label>
+                <Select value={selectedSlotStartAt} onValueChange={setSelectedSlotStartAt}>
+                  <SelectTrigger aria-invalid={Boolean(fieldErrors.slot)}>
+                    <SelectValue placeholder="Choose a time slot" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__NONE__">No service</SelectItem>
-                    {serviceOptions.map((service) => (
-                      <SelectItem key={service.id} value={service.id}>
-                        {service.name}
+                    {availableSlots.length > 0 ? (
+                      availableSlots.map((slot) => (
+                        <SelectItem key={slot.startAt} value={slot.startAt}>
+                          {slot.startLabel} to {slot.endLabel}
+                        </SelectItem>
+                      ))
+                    ) : (
+                      <SelectItem value="__NONE__" disabled>
+                        No open slots
                       </SelectItem>
-                    ))}
+                    )}
                   </SelectContent>
                 </Select>
-              </div>
-            </div>
-
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)]">
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Designated user</Label>
-                  <Select value={assignedToUserId} onValueChange={setAssignedToUserId}>
-                    <SelectTrigger aria-invalid={Boolean(fieldErrors.assignedToUserId)}>
-                      <SelectValue placeholder="Choose user" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {assigneeOptions.map((assignee) => (
-                        <SelectItem key={assignee.id} value={assignee.id}>
-                          {assignee.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {fieldErrors.assignedToUserId ? (
-                    <p className="text-sm text-rose-600">{fieldErrors.assignedToUserId}</p>
-                  ) : null}
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Appointment date</Label>
-                  <DateTimeInput
-                    value={appointmentDateInput}
-                    onValueChange={(value) => {
-                      setAppointmentDateInput({ ...value, time: "" })
-                      setSelectedSlotStartAt("")
-                    }}
-                    hideTime
-                    ariaInvalid={Boolean(fieldErrors.date)}
-                  />
-                  {fieldErrors.date ? (
-                    <p className="text-sm text-rose-600">{fieldErrors.date}</p>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="space-y-3 rounded-[24px] border border-slate-200 bg-slate-50/70 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">
-                      Time slots
-                    </h3>
-                    <p className="mt-1 text-sm text-slate-600">
-                      {localDateKey
-                        ? "Choose from available slots for the selected day."
-                        : "Pick a date to load available slots."}
-                    </p>
-                  </div>
-                  {slotsState.status === "loading" ? (
-                    <div className="flex items-center gap-2 text-sm text-slate-500">
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                      Loading
-                    </div>
-                  ) : null}
-                </div>
-
-                {slotsState.status === "error" ? (
-                  <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                    {slotsState.message}
-                  </div>
+                {fieldErrors.slot ? (
+                  <p className="text-sm text-rose-600">{fieldErrors.slot}</p>
                 ) : null}
-
-                {slotsState.status === "ready" ? (
-                  <>
-                    <div className="space-y-2">
-                      <Label>Available slot</Label>
-                      <Select value={selectedSlotStartAt} onValueChange={setSelectedSlotStartAt}>
-                        <SelectTrigger aria-invalid={Boolean(fieldErrors.slot)}>
-                          <SelectValue placeholder="Choose a time slot" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {availableSlots.length > 0 ? (
-                            availableSlots.map((slot) => (
-                              <SelectItem key={slot.startAt} value={slot.startAt}>
-                                {slot.startLabel} to {slot.endLabel}
-                              </SelectItem>
-                            ))
-                          ) : (
-                            <SelectItem value="__NONE__" disabled>
-                              No open slots
-                            </SelectItem>
-                          )}
-                        </SelectContent>
-                      </Select>
-                      {fieldErrors.slot ? (
-                        <p className="text-sm text-rose-600">{fieldErrors.slot}</p>
-                      ) : null}
-                    </div>
-
-                    {selectedSlot ? (
-                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3">
-                        <p className="text-sm font-medium text-emerald-900">
-                          {formatDateTimeForDisplay(selectedSlot.startAt, tenantTimezone)} to{" "}
-                          {formatDateTimeForDisplay(selectedSlot.endAt, tenantTimezone)}
-                        </p>
-                        <p className="mt-1 text-xs text-emerald-800">
-                          Duration: {formatSlotDurationLabel(slotsState.data.meetingDurationMinutes)}
-                        </p>
-                      </div>
-                    ) : null}
-
-                    {unavailableSlots.length > 0 ? (
-                      <div className="space-y-2">
-                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                          Taken or blocked
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {unavailableSlots.map((slot) => (
-                            <div
-                              key={slot.startAt}
-                              className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500"
-                            >
-                              {slot.startLabel} to {slot.endLabel}
-                              {slot.reason ? ` · ${slot.reason}` : ""}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-                  </>
-                ) : (
-                  <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center">
-                    <p className="font-medium text-slate-900">No slots loaded yet.</p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      Select a user and date to load the available booking times.
-                    </p>
-                  </div>
-                )}
               </div>
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="edit-appointment-notes">Notes</Label>
-              <Textarea
-                id="edit-appointment-notes"
-                placeholder="Optional internal notes for the appointment."
-                value={notes}
-                onChange={(event) => setNotes(event.target.value)}
-                rows={5}
-              />
-            </div>
-          </div>
-        ) : null}
+              {selectedSlot ? (
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-slate-900">
+                    {formatDateTimeForDisplay(selectedSlot.startAt, tenantTimezone)} to{" "}
+                    {formatDateTimeForDisplay(selectedSlot.endAt, tenantTimezone)}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Duration: {formatSlotDurationLabel(slotsState.data.meetingDurationMinutes)}
+                  </p>
+                </div>
+              ) : null}
 
-        <SheetFooter className="border-t border-slate-200 bg-white px-6 py-4 sm:flex-row sm:justify-end">
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            Close
-          </Button>
-          <Button
-            type="button"
-            onClick={onSubmit}
-            disabled={isSubmitting || !appointment}
-            className="bg-blue-950 text-white hover:bg-blue-900"
-          >
-            {isSubmitting ? "Saving..." : "Save changes"}
-          </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
+              {unavailableSlots.length > 0 ? (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                    Taken or blocked
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {unavailableSlots.map((slot) => (
+                      <div
+                        key={slot.startAt}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500"
+                      >
+                        {slot.startLabel} to {slot.endLabel}
+                        {slot.reason ? ` · ${slot.reason}` : ""}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="py-2">
+              <p className="font-medium text-slate-900">No slots loaded yet.</p>
+              <p className="mt-1 text-sm text-slate-500">
+                Select a user and date to load the available booking times.
+              </p>
+            </div>
+          )}
+        </section>
+
+        <section className="space-y-2">
+          <Label htmlFor="edit-appointment-notes">Notes</Label>
+          <Textarea
+            id="edit-appointment-notes"
+            placeholder="Optional internal notes for the appointment."
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            rows={5}
+          />
+        </section>
+        </div>
+      </div>
+
+      <div className="border-t border-slate-200 bg-white px-6 py-4 sm:flex sm:flex-row sm:justify-end sm:gap-2">
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          onClick={onSubmit}
+          disabled={isSubmitting}
+          className="bg-blue-950 text-white hover:bg-blue-900"
+        >
+          {isSubmitting ? "Saving..." : "Save changes"}
+        </Button>
+      </div>
+    </>
   )
 }
