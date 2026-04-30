@@ -121,9 +121,11 @@ export default async function CalendarPage({
 
   return (
     <CalendarWorkspace
+      tenantSlug={tenantSlug}
       tenantId={membership.tenant.id}
       tenantTimezone={tenantTimezone}
       currentUserId={user.id}
+      canViewAuditLogs={membership.securityLevel === "MAX"}
       meta={meta}
       events={events}
     />

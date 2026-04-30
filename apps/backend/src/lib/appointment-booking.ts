@@ -24,7 +24,9 @@ type CreateAppointmentAtomicallyParams = {
   contactId: string
   serviceId: string | null
   bookedByUserId: string
+  actorDisplayName: string
   assignedToUserId: string
+  assignedToLabel: string
   title: string
   notes: string | null
   startAt: Date
@@ -35,15 +37,24 @@ type CreateAppointmentAtomicallyParams = {
 type UpdateAppointmentAtomicallyParams = {
   appointmentId: string
   tenantId: string
+  actorUserId: string
+  actorDisplayName: string
   contactId: string
   serviceId: string | null
   assignedToUserId: string
+  assignedToLabel: string
   title: string
   notes: string | null
   startAt: Date
   endAt: Date
   isAllDay: boolean
 }
+
+type AppointmentAuditActionValue =
+  | "CREATED"
+  | "REASSIGNED"
+  | "RESCHEDULED"
+  | "CANCELED"
 
 export function getSafeTimezone(timezone?: string | null) {
   return timezone?.trim() || DEFAULT_TIMEZONE
@@ -260,6 +271,46 @@ function toLocalDateKey(parts: {
   ].join("-")
 }
 
+function formatAuditDateTimeRange(
+  startAt: Date,
+  endAt: Date,
+  timezone: string,
+) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: getSafeTimezone(timezone),
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })
+
+  return `${formatter.format(startAt)} to ${formatter.format(endAt)}`
+}
+
+async function createAppointmentAuditLog(
+  tx: Prisma.TransactionClient,
+  params: {
+    tenantId: string
+    appointmentId: string
+    actorUserId: string | null
+    actorDisplayName: string
+    action: AppointmentAuditActionValue
+    message: string
+  },
+) {
+  await tx.appointmentAuditLog.create({
+    data: {
+      tenantId: params.tenantId,
+      appointmentId: params.appointmentId,
+      actorUserId: params.actorUserId,
+      actorDisplayName: params.actorDisplayName,
+      action: params.action,
+      message: params.message,
+    },
+  })
+}
+
 async function acquireBookingLocks(
   tx: Prisma.TransactionClient,
   params: {
@@ -276,11 +327,14 @@ async function acquireBookingLocks(
 
   for (const resourceKey of resourceKeys) {
     const lockKey = `${params.tenantId}:${params.localDate}:${resourceKey}`
-    await tx.$executeRaw`
-      SELECT pg_advisory_xact_lock(
-        hashtext(${BOOKING_LOCK_NAMESPACE}),
-        hashtext(${lockKey})
+    await tx.$queryRaw`
+      WITH advisory_lock AS (
+        SELECT pg_advisory_xact_lock(
+          hashtext(${BOOKING_LOCK_NAMESPACE}),
+          hashtext(${lockKey})
+        )
       )
+      SELECT 1
     `
   }
 }
@@ -912,6 +966,15 @@ export async function createAppointmentAtomically(
             },
           })
 
+          await createAppointmentAuditLog(tx, {
+            tenantId: params.tenantId,
+            appointmentId: appointment.id,
+            actorUserId: params.bookedByUserId,
+            actorDisplayName: params.actorDisplayName,
+            action: "CREATED",
+            message: `${params.actorDisplayName} created this appointment and assigned it to ${params.assignedToLabel} for ${formatAuditDateTimeRange(params.startAt, params.endAt, timezone)}.`,
+          })
+
           return {
             ok: true as const,
             appointment,
@@ -962,6 +1025,13 @@ export async function updateAppointmentAtomically(
               contactId: true,
               assignedToUserId: true,
               startAt: true,
+              endAt: true,
+              assignedTo: {
+                select: {
+                  name: true,
+                  email: true,
+                },
+              },
             },
           })
 
@@ -1062,6 +1132,38 @@ export async function updateAppointmentAtomically(
               serviceId: true,
             },
           })
+
+          const previousAssignedToLabel =
+            existing.assignedTo?.name?.trim() ||
+            existing.assignedTo?.email ||
+            "Unassigned staff"
+          const wasReassigned =
+            existing.assignedToUserId !== params.assignedToUserId
+          const wasRescheduled =
+            existing.startAt.getTime() !== params.startAt.getTime() ||
+            existing.endAt.getTime() !== params.endAt.getTime()
+
+          if (wasReassigned) {
+            await createAppointmentAuditLog(tx, {
+              tenantId: params.tenantId,
+              appointmentId: params.appointmentId,
+              actorUserId: params.actorUserId,
+              actorDisplayName: params.actorDisplayName,
+              action: "REASSIGNED",
+              message: `${params.actorDisplayName} reassigned this appointment from ${previousAssignedToLabel} to ${params.assignedToLabel}.`,
+            })
+          }
+
+          if (wasRescheduled) {
+            await createAppointmentAuditLog(tx, {
+              tenantId: params.tenantId,
+              appointmentId: params.appointmentId,
+              actorUserId: params.actorUserId,
+              actorDisplayName: params.actorDisplayName,
+              action: "RESCHEDULED",
+              message: `${params.actorDisplayName} rescheduled this appointment from ${formatAuditDateTimeRange(existing.startAt, existing.endAt, timezone)} to ${formatAuditDateTimeRange(params.startAt, params.endAt, timezone)}.`,
+            })
+          }
 
           return {
             ok: true as const,

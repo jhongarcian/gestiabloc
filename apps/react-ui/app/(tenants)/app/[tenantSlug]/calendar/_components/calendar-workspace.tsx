@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import {
   addDays,
   addMonths,
@@ -29,6 +30,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -44,7 +53,10 @@ import {
 import { cn } from "@/lib/utils"
 import { formatDateTimeForDisplay } from "@/lib/date-time"
 import {
+  getAppointmentAuditLogs,
+  type AppointmentStatus,
   getCalendarEvents,
+  type AppointmentAuditLogItem,
   type CalendarEventItem,
   type CalendarEventsResponse,
   type CalendarMetaResponse,
@@ -54,9 +66,11 @@ import { CreateAppointmentDialog } from "./create-appointment-dialog"
 import { EditAppointmentForm } from "./edit-appointment-sheet"
 
 type CalendarWorkspaceProps = {
+  tenantSlug: string
   tenantId: string
   tenantTimezone: string | null
   currentUserId: string
+  canViewAuditLogs: boolean
   meta: CalendarMetaResponse
   events: CalendarEventsResponse
 }
@@ -76,6 +90,14 @@ const VIEW_OPTIONS: Array<{ value: CalendarView; label: string }> = [
   { value: "list", label: "List" },
 ]
 
+const APPOINTMENT_STATUS_OPTIONS = [
+  { value: "SCHEDULED", label: "Scheduled" },
+  { value: "CONFIRMED", label: "Confirmed" },
+  { value: "SHOW", label: "Show" },
+  { value: "NO_SHOW", label: "No Show" },
+  { value: "CANCELED", label: "Canceled" },
+] as const
+
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
 function getInitials(value: string) {
@@ -86,11 +108,37 @@ function getInitials(value: string) {
 }
 
 function formatAppointmentStatus(status: string) {
+  if (status.trim().toUpperCase() === "NO_SHOW") {
+    return "No Show"
+  }
+
   return status
     .toLowerCase()
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ")
+}
+
+function getAppointmentStatusClass(status: string) {
+  const normalized = status.trim().toUpperCase()
+
+  if (normalized === "CANCELED") {
+    return "border-rose-200 bg-rose-50 text-rose-700"
+  }
+
+  if (normalized === "NO_SHOW") {
+    return "border-amber-200 bg-amber-50 text-amber-700"
+  }
+
+  if (normalized === "SHOW") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  }
+
+  if (normalized === "CONFIRMED") {
+    return "border-sky-200 bg-sky-50 text-sky-700"
+  }
+
+  return "border-blue-200 bg-blue-50 text-blue-950"
 }
 
 function getColorTintStyles(color?: string | null) {
@@ -130,6 +178,17 @@ function getColorTintStyles(color?: string | null) {
   }
 
   return undefined
+}
+
+function getAppointmentCardStyles(item: CalendarEventItem) {
+  if (item.status === "CANCELED") {
+    return {
+      backgroundColor: "rgba(244, 63, 94, 0.10)",
+      borderColor: "rgba(244, 63, 94, 0.24)",
+    }
+  }
+
+  return getColorTintStyles(item.assignedToColor)
 }
 
 function getDateKey(value: Date | string, timezone?: string | null) {
@@ -253,7 +312,7 @@ function CalendarEventCard({
         "w-full cursor-pointer rounded-xl border border-slate-200 bg-slate-50 text-left transition hover:border-slate-300 hover:brightness-[0.97] hover:shadow-sm",
         compact ? "px-2 py-1.5" : "p-3",
       )}
-      style={getColorTintStyles(item.assignedToColor)}
+      style={getAppointmentCardStyles(item)}
     >
       <div className="flex items-center gap-2">
         <Avatar size="sm" className="shrink-0 border border-white/80 shadow-sm">
@@ -665,27 +724,62 @@ function CalendarLoadingSkeleton({ view }: { view: CalendarView }) {
   )
 }
 
-function DetailItem({
-  label,
-  value,
+function AuditTrailDialogContent({
+  logs,
+  tenantTimezone,
+  isLoading,
+  error,
 }: {
-  label: string
-  value: string
+  logs: AppointmentAuditLogItem[]
+  tenantTimezone: string | null
+  isLoading: boolean
+  error: string | null
 }) {
   return (
     <div className="space-y-1">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
-        {label}
-      </p>
-      <p className="text-sm text-slate-700">{value}</p>
+      <DialogHeader>
+        <DialogTitle>Audit Log</DialogTitle>
+        <DialogDescription>
+          Review the appointment activity history for this booking.
+        </DialogDescription>
+      </DialogHeader>
+
+      {isLoading ? (
+        <div className="mt-4 space-y-3">
+          <Skeleton className="h-12 rounded-xl" />
+          <Skeleton className="h-12 rounded-xl" />
+        </div>
+      ) : error ? (
+        <p className="mt-4 text-sm text-rose-600">{error}</p>
+      ) : logs.length > 0 ? (
+        <div className="mt-4 space-y-4">
+          {logs.map((log) => (
+            <div
+              key={log.id}
+              className="border-b border-slate-100 pb-4 last:border-b-0 last:pb-0"
+            >
+              <p className="text-sm leading-6 text-slate-700">{log.message}</p>
+              <p className="mt-1 text-xs text-slate-400">
+                {formatDateTimeForDisplay(log.createdAt, tenantTimezone)}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-4 text-sm text-slate-500">
+          No audit activity has been recorded for this appointment.
+        </p>
+      )}
     </div>
   )
 }
 
 export function CalendarWorkspace({
+  tenantSlug,
   tenantId,
   tenantTimezone,
   currentUserId,
+  canViewAuditLogs,
   meta,
   events,
 }: CalendarWorkspaceProps) {
@@ -738,8 +832,19 @@ export function CalendarWorkspace({
   const [isLoadingEvents, setIsLoadingEvents] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [selectedAppointment, setSelectedAppointment] = useState<CalendarEventItem | null>(null)
+  const [selectedAppointmentAuditLogs, setSelectedAppointmentAuditLogs] = useState<
+    AppointmentAuditLogItem[]
+  >([])
+  const [isLoadingAppointmentAuditLogs, setIsLoadingAppointmentAuditLogs] =
+    useState(false)
+  const [appointmentAuditLogsError, setAppointmentAuditLogsError] = useState<string | null>(null)
+  const [selectedStatus, setSelectedStatus] = useState<AppointmentStatus>("SCHEDULED")
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false)
   const [isEditingAppointment, setIsEditingAppointment] = useState(false)
   const [isCancelingAppointment, setIsCancelingAppointment] = useState(false)
+  const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false)
+  const [isAuditDialogOpen, setIsAuditDialogOpen] = useState(false)
+  const drawerAppointment = selectedAppointment
 
   const activeRange = useMemo(
     () => getRangeForView(selectedView, cursorDate),
@@ -857,10 +962,10 @@ export function CalendarWorkspace({
 
   const selectedAssignee = useMemo(
     () =>
-      selectedAppointment?.assignedToUserId
-        ? safeMetaFilters.users.find((user) => user.id === selectedAppointment.assignedToUserId) ?? null
+      drawerAppointment?.assignedToUserId
+        ? safeMetaFilters.users.find((user) => user.id === drawerAppointment.assignedToUserId) ?? null
         : null,
-    [safeMetaFilters.users, selectedAppointment],
+    [drawerAppointment, safeMetaFilters.users],
   )
 
   const loadEvents = useCallback(async () => {
@@ -901,8 +1006,20 @@ export function CalendarWorkspace({
 
   useEffect(() => {
     if (!selectedAppointment) {
+      setSelectedAppointmentAuditLogs([])
+      setAppointmentAuditLogsError(null)
+      setIsLoadingAppointmentAuditLogs(false)
+      setSelectedStatus("SCHEDULED")
+      setIsUpdatingStatus(false)
       setIsEditingAppointment(false)
+      setIsCancelDialogOpen(false)
+      setIsAuditDialogOpen(false)
+      return
     }
+
+    setSelectedStatus(
+      (selectedAppointment.status as AppointmentStatus) ?? "SCHEDULED",
+    )
   }, [selectedAppointment])
 
   const eventsByDay = useMemo(
@@ -1007,18 +1124,16 @@ export function CalendarWorkspace({
   }
 
   const onCancelAppointment = async () => {
-    if (!selectedAppointment) return
-
-    const shouldCancel = window.confirm("Cancel this appointment?")
-    if (!shouldCancel) return
+    if (!drawerAppointment) return
 
     setIsCancelingAppointment(true)
     try {
-      await updateAppointment(tenantId, selectedAppointment.id, {
+      await updateAppointment(tenantId, drawerAppointment.id, {
         status: "CANCELED",
       })
 
       toast.success("Appointment canceled.")
+      setIsCancelDialogOpen(false)
       setSelectedAppointment(null)
       await loadEvents()
     } catch (error) {
@@ -1034,6 +1149,61 @@ export function CalendarWorkspace({
       }
     } finally {
       setIsCancelingAppointment(false)
+    }
+  }
+
+  const onOpenAuditLog = async () => {
+    if (!drawerAppointment || !canViewAuditLogs) return
+
+    setIsAuditDialogOpen(true)
+    setSelectedAppointmentAuditLogs([])
+    setAppointmentAuditLogsError(null)
+    setIsLoadingAppointmentAuditLogs(true)
+
+    try {
+      const response = await getAppointmentAuditLogs(tenantId, drawerAppointment.id)
+      setSelectedAppointmentAuditLogs(response.items)
+    } catch {
+      setAppointmentAuditLogsError(
+        "Could not load the audit trail for this appointment.",
+      )
+    } finally {
+      setIsLoadingAppointmentAuditLogs(false)
+    }
+  }
+
+  const onUpdateStatus = async () => {
+    if (!drawerAppointment || selectedStatus === drawerAppointment.status) return
+
+    setIsUpdatingStatus(true)
+    try {
+      const response = await updateAppointment(tenantId, drawerAppointment.id, {
+        status: selectedStatus,
+      })
+
+      setSelectedAppointment((current) =>
+        current
+          ? {
+              ...current,
+              status: response.item.status,
+            }
+          : current,
+      )
+      toast.success("Appointment status updated.")
+      await loadEvents()
+    } catch (error) {
+      if (isAxiosError(error)) {
+        const backendError = error.response?.data?.error
+        toast.error(
+          typeof backendError === "string"
+            ? backendError.replace(/_/g, " ")
+            : "Could not update appointment status.",
+        )
+      } else {
+        toast.error("Could not update appointment status.")
+      }
+    } finally {
+      setIsUpdatingStatus(false)
     }
   }
 
@@ -1397,10 +1567,10 @@ export function CalendarWorkspace({
             }
           }}
         >
-          <SheetContent side="right" className="flex h-full flex-col overflow-hidden p-0 sm:max-w-lg">
-            {selectedAppointment ? (
+          <SheetContent side="right" className="flex h-full flex-col overflow-hidden p-0 gap-0 sm:max-w-lg">
+            {drawerAppointment ? (
               <>
-                <SheetHeader className="border-b border-slate-200 bg-slate-50 px-6 py-6 text-left">
+                <SheetHeader className="border-b border-slate-200 bg-slate-50 px-6 text-left">
                   <SheetTitle className="text-xl font-semibold text-slate-950">
                     {isEditingAppointment ? "Edit Appointment" : "Appointment Details"}
                   </SheetTitle>
@@ -1415,7 +1585,7 @@ export function CalendarWorkspace({
                   <EditAppointmentForm
                     tenantId={tenantId}
                     tenantTimezone={tenantTimezone}
-                    appointment={selectedAppointment}
+                    appointment={drawerAppointment}
                     meetingIntervalMinutes={meta.settings.meetingIntervalMinutes}
                     meetingDurationMinutes={meta.settings.meetingDurationMinutes}
                     serviceOptions={safeMetaFilters.services}
@@ -1427,76 +1597,88 @@ export function CalendarWorkspace({
                       await loadEvents()
                     }}
                   />
-                ) : (
-                  <div className="min-h-0 flex-1 overflow-y-auto">
-                    <section className="border-b border-slate-200 px-6 py-6">
-                      <div className="space-y-4">
-                        <div className="space-y-2">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                            Schedule
-                          </p>
-                          <Badge
-                            variant="secondary"
-                            className="w-fit rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-blue-950"
-                          >
-                            {formatAppointmentStatus(selectedAppointment.status)}
-                          </Badge>
-                        </div>
+              ) : (
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <section className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-6 py-4">
+                    <Badge
+                      variant="secondary"
+                      className={`w-fit rounded-full border px-3 py-1 ${getAppointmentStatusClass(drawerAppointment.status)}`}
+                    >
+                      {formatAppointmentStatus(drawerAppointment.status)}
+                    </Badge>
+                    {canViewAuditLogs ? (
+                      <Button
+                        type="button"
+                        variant="link"
+                        className="p-0 text-blue-600 hover:text-blue-700"
+                        onClick={() => void onOpenAuditLog()}
+                      >
+                        View Audit Log
+                      </Button>
+                    ) : null}
+                  </section>
 
-                        <div className="flex items-center gap-4">
-                          <Avatar size="lg" className="shrink-0 border border-slate-200 shadow-sm">
-                            <AvatarImage
-                              src={selectedAppointment.assignedToImage ?? undefined}
-                              alt={selectedAppointment.assignedToLabel}
-                            />
-                            <AvatarFallback>
-                              {getInitials(selectedAppointment.assignedToLabel)}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                              Assigned Staff
-                            </p>
-                            <p className="mt-1 text-base font-semibold text-slate-950">
-                              {selectedAppointment.assignedToLabel}
-                            </p>
-                            {selectedAssignee?.email ? (
-                              <p className="mt-1 truncate text-sm text-slate-500">{selectedAssignee.email}</p>
-                            ) : (
-                              <p className="mt-1 text-sm text-slate-400">No email available</p>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </section>
-
-                    <section className="border-b border-slate-200 px-6 py-6">
-                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                        Appointment
-                      </p>
+                  <section className="border-b border-slate-200 px-6 py-6">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                      Appointment
+                    </p>
                       <div className="mt-3 space-y-4">
                         <p className="text-lg font-semibold leading-tight text-slate-950">
-                          {selectedAppointment.title}
+                          {drawerAppointment.title}
                         </p>
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-                            onClick={() => setIsEditingAppointment(true)}
-                          >
-                            Edit appointment
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800"
-                            disabled={isCancelingAppointment}
-                            onClick={() => void onCancelAppointment()}
-                          >
-                            {isCancelingAppointment ? "Canceling..." : "Cancel appointment"}
-                          </Button>
+                      {drawerAppointment.serviceName ? (
+                        <p className="text-sm text-slate-600">
+                          Related service: {drawerAppointment.serviceName}
+                        </p>
+                      ) : null}
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                            Status
+                          </p>
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                            <Select
+                              value={selectedStatus}
+                              onValueChange={(value) =>
+                                setSelectedStatus(
+                                  value as AppointmentStatus,
+                                )
+                              }
+                            >
+                              <SelectTrigger className="border-blue-200 focus-visible:ring-blue-200 sm:w-[220px]">
+                                <SelectValue placeholder="Select status" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {APPOINTMENT_STATUS_OPTIONS.map((option) => (
+                                  <SelectItem key={option.value} value={option.value}>
+                                    {option.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+                              disabled={
+                                isUpdatingStatus ||
+                                selectedStatus === drawerAppointment.status
+                              }
+                              onClick={() => void onUpdateStatus()}
+                            >
+                              {isUpdatingStatus ? "Saving..." : "Save status"}
+                            </Button>
+                          </div>
                         </div>
+                        {drawerAppointment.notes ? (
+                          <div className="space-y-2">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                              Notes
+                            </p>
+                            <p className="whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                              {drawerAppointment.notes}
+                            </p>
+                          </div>
+                        ) : null}
                       </div>
                     </section>
 
@@ -1504,65 +1686,144 @@ export function CalendarWorkspace({
                       <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                         Schedule
                       </p>
-                      <div className="mt-4 space-y-4">
+                      <div className="mt-4 flex flex-wrap gap-8">
                         <div className="flex flex-col gap-1">
                           <p className="text-sm font-medium text-slate-900">Start</p>
                           <p className="text-sm text-slate-600">
-                            {formatDateTimeForDisplay(selectedAppointment.startAt, tenantTimezone)}
+                            {formatDateTimeForDisplay(drawerAppointment.startAt, tenantTimezone)}
                           </p>
                         </div>
                         <div className="flex flex-col gap-1">
                           <p className="text-sm font-medium text-slate-900">End</p>
                           <p className="text-sm text-slate-600">
-                            {formatDateTimeForDisplay(selectedAppointment.endAt, tenantTimezone)}
+                            {formatDateTimeForDisplay(drawerAppointment.endAt, tenantTimezone)}
                           </p>
                         </div>
                       </div>
                     </section>
 
                     <section className="border-b border-slate-200 px-6 py-6">
-                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                        Booking Details
-                      </p>
-                      <div className="mt-4 grid gap-4">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-950">
-                            {selectedAppointment.contactName}
+                      <div className="flex items-center gap-4">
+                        <Avatar size="lg" className="shrink-0 border border-slate-200 shadow-sm">
+                          <AvatarImage
+                            src={drawerAppointment.assignedToImage ?? undefined}
+                            alt={drawerAppointment.assignedToLabel}
+                          />
+                          <AvatarFallback>
+                            {getInitials(drawerAppointment.assignedToLabel)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                            Assigned Staff
                           </p>
-                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                            <DetailItem
-                              label="Email"
-                              value={selectedAppointment.contactEmail ?? "No email available"}
-                            />
-                            <DetailItem
-                              label="Phone"
-                              value={selectedAppointment.contactPhone ?? "No phone available"}
-                            />
-                          </div>
+                          <p className="mt-1 text-base font-semibold text-slate-950">
+                            {drawerAppointment.assignedToLabel}
+                          </p>
+                          {selectedAssignee?.email ? (
+                            <p className="mt-1 truncate text-sm text-slate-500">
+                              {selectedAssignee.email}
+                            </p>
+                          ) : (
+                            <p className="mt-1 text-sm text-slate-400">No email available</p>
+                          )}
                         </div>
-                        <DetailItem
-                          label="Service"
-                          value={selectedAppointment.serviceName ?? "No service assigned"}
-                        />
                       </div>
                     </section>
 
-                    {selectedAppointment.notes ? (
-                      <section className="px-6 py-6">
-                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                          Notes
-                        </p>
-                        <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-slate-600">
-                          {selectedAppointment.notes}
-                        </p>
-                      </section>
-                    ) : null}
+                    <section className="px-6 py-6">
+                      <div className="flex items-center gap-4">
+                        <Avatar size="lg" className="shrink-0 border border-slate-200 shadow-sm">
+                          <AvatarFallback>
+                            {getInitials(drawerAppointment.contactName)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                            Contact
+                          </p>
+                          <Link
+                            href={`/app/${tenantSlug}/contacts/${drawerAppointment.contactId}/overview`}
+                            className="mt-1 block truncate text-base font-semibold text-slate-950 transition hover:text-blue-950 hover:underline"
+                          >
+                            {drawerAppointment.contactName}
+                          </Link>
+                          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm text-slate-500">
+                            <span>{drawerAppointment.contactEmail ?? "No email available"}</span>
+                            <span>{drawerAppointment.contactPhone ?? "No phone available"}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
                   </div>
                 )}
               </>
             ) : null}
+            {!isEditingAppointment && drawerAppointment ? (
+              <SheetFooter className="border-t border-slate-200 px-6 py-4">
+                {drawerAppointment.status !== "CANCELED" ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+                    disabled={isCancelingAppointment}
+                    onClick={() => setIsCancelDialogOpen(true)}
+                  >
+                    {isCancelingAppointment ? "Canceling..." : "Cancel appointment"}
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  className="bg-blue-950 text-white hover:bg-blue-900"
+                  onClick={() => setIsEditingAppointment(true)}
+                >
+                  Edit appointment
+                </Button>
+              </SheetFooter>
+            ) : null}
           </SheetContent>
         </Sheet>
+
+        <Dialog open={isAuditDialogOpen} onOpenChange={setIsAuditDialogOpen}>
+          <DialogContent className="sm:max-w-lg">
+            <AuditTrailDialogContent
+              logs={selectedAppointmentAuditLogs}
+              tenantTimezone={tenantTimezone}
+              isLoading={isLoadingAppointmentAuditLogs}
+              error={appointmentAuditLogsError}
+            />
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={isCancelDialogOpen} onOpenChange={setIsCancelDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Cancel appointment</DialogTitle>
+              <DialogDescription>
+                {drawerAppointment
+                  ? `Are you sure you want to cancel "${drawerAppointment.title}"?`
+                  : "Are you sure you want to cancel this appointment?"}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsCancelDialogOpen(false)}
+              >
+                Keep appointment
+              </Button>
+              <Button
+                type="button"
+                className="bg-rose-700 text-white hover:bg-rose-800"
+                disabled={isCancelingAppointment}
+                onClick={() => void onCancelAppointment()}
+              >
+                {isCancelingAppointment ? "Canceling..." : "Yes, cancel appointment"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <div className="flex min-h-0 flex-1 flex-col p-4 md:p-6">
           {loadError ? (

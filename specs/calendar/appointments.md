@@ -1,10 +1,10 @@
-# Calendar Appointments API
+# Calendar Appointments
 
 Base router: `/api/appointments/:tenantId`
 
-Source:
+Primary implementation:
 
-- [appointments.routes.ts](/Users/jhongarcian/coding/gestiabloc/apps/backend/src/routes/appointments.routes.ts)
+- [appointments.routes.ts](gestiabloc/apps/backend/src/routes/appointments.routes.ts)
 
 ## Endpoints
 
@@ -36,7 +36,7 @@ Important rules:
 - assignee must be active and calendar-enabled
 - slots are advisory UI data only
 - slot availability respects:
-  - tenant availability
+  - account availability
   - user availability
   - blocked periods
   - interval and duration rules
@@ -63,7 +63,7 @@ Filtering behavior:
 - `users` mode supports one or many users
 - `groups` mode supports one or many groups
 - user and group filters cannot be mixed in the same request
-- all filter IDs must belong to the tenant
+- all filter IDs must belong to the account
 - selected groups are expanded to active, calendar-enabled members only
 
 Response includes:
@@ -107,14 +107,14 @@ Request fields:
 
 Booking guarantees:
 
-- tenant membership required
-- contact/service/assignee must belong to the tenant
+- account membership required
+- contact/service/assignee must belong to the account
 - atomic booking transaction prevents race-condition double booking
 - losing concurrent requests return `409 APPOINTMENT_TIME_UNAVAILABLE`
 
 ### `PATCH /api/appointments/{tenantId}/{appointmentId}`
 
-Updates one appointment scoped to the tenant.
+Updates one appointment scoped to the account.
 
 Supports:
 
@@ -128,6 +128,22 @@ Allowed status values:
 - `SHOW`
 - `NO_SHOW`
 - `CANCELED`
+
+## Status workflow
+
+The intended appointment lifecycle is:
+
+- `SCHEDULED`
+- `CONFIRMED`
+- `SHOW` or `NO_SHOW`
+- `CANCELED` can happen before completion of the appointment lifecycle
+
+This allows the staff user to:
+
+- schedule a new appointment
+- confirm the appointment
+- mark whether the contact showed up
+- cancel when needed
 
 ## Error notes
 
@@ -145,7 +161,7 @@ Common errors:
 
 ## UX contract
 
-When create returns `409 APPOINTMENT_TIME_UNAVAILABLE`:
+When create or reschedule returns `409 APPOINTMENT_TIME_UNAVAILABLE`:
 
 - keep the selected contact, service, assignee, notes, and date
 - clear only the invalid slot
