@@ -289,12 +289,11 @@ paths:
   /api/files/presign-upload:
     post:
       tags: [Files]
-      summary: Get a presigned POST for a generic file upload
+      summary: Get a signed upload target for a generic file upload
       security:
         - cookieAuth: []
       description: |
-        Step 1 of 2. Use the returned `url` and `fields` to upload directly to S3 via multipart/form-data.
-        The client must send a POST request to `url` with all `fields`, a `Content-Type` field, and the `file` itself.
+        Step 1 of 2. Use the returned `bucket`, `path`, and `token` to upload directly to Supabase Storage.
       requestBody:
         required: true
         content:
@@ -303,11 +302,11 @@ paths:
               $ref: "#/components/schemas/PresignUploadRequest"
       responses:
         "200":
-          description: Presigned POST data
+          description: Signed upload target
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PresignPostResponse"
+                $ref: "#/components/schemas/SignedUploadResponse"
         "400":
           description: Invalid request or unsupported content type
           content:
@@ -4901,16 +4900,14 @@ components:
         contentType:
           type: string
           description: "Allowed types: image/png, image/jpeg, image/jpg, image/webp, application/pdf"
-    PresignPostResponse:
+    SignedUploadResponse:
       type: object
       properties:
-        url:
+        bucket:
           type: string
-        fields:
-          type: object
-          additionalProperties:
-            type: string
-        key:
+        path:
+          type: string
+        token:
           type: string
         fileId:
           type: string

@@ -19,7 +19,6 @@ import { sendVerifyEmail } from "../lib/email.js";
 import { prisma } from "../lib/prisma.js";
 import { enforceSameOrigin } from "../lib/security.js";
 import { normalizeTenantTagName } from "../lib/tag-utils.js";
-import { deleteObject } from "../lib/s3.js";
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js";
 import { requireTenantAdmin } from "../middleware/requireTenantAdmin.js";
 
@@ -805,10 +804,7 @@ async function buildUniqueCustomFieldKey(tenantId: string, label: string, exclud
 async function deleteLegacyAvatar(oldKey: string) {
   if (oldKey.startsWith("http://") || oldKey.startsWith("https://")) {
     await deleteBlobByUrl(oldKey).catch(() => {});
-    return;
   }
-
-  await deleteObject({ key: oldKey }).catch(() => {});
 }
 
 async function ensureDefaultContactStatuses(tenantId: string) {
