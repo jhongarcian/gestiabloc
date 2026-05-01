@@ -1,7 +1,7 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { Check, ChevronDown, LoaderCircle } from "lucide-react"
+import { CalendarClock, Check, ChevronDown, LoaderCircle } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
@@ -24,6 +24,12 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import { type DateTimeDraft, formatDateTimeForDisplay, formatUtcIsoToDateTimeDraft } from "@/lib/date-time"
 import { cn } from "@/lib/utils"
@@ -45,6 +51,11 @@ type CreateAppointmentDialogProps = {
   tenantId: string
   tenantTimezone: string | null
   currentUserId: string
+  initialContact?: ContactSearchItem | null
+  triggerLabel?: string
+  triggerClassName?: string
+  iconOnly?: boolean
+  triggerTooltip?: string | null
   meetingIntervalMinutes: 15 | 30 | 45 | 60 | 120
   meetingDurationMinutes: 15 | 30 | 45 | 60 | 120
   serviceOptions: Array<{
@@ -107,6 +118,11 @@ export function CreateAppointmentDialog({
   tenantId,
   tenantTimezone,
   currentUserId,
+  initialContact = null,
+  triggerLabel = "Create appointment",
+  triggerClassName,
+  iconOnly = false,
+  triggerTooltip = null,
   meetingIntervalMinutes,
   meetingDurationMinutes,
   serviceOptions,
@@ -141,9 +157,9 @@ export function CreateAppointmentDialog({
     setNotes("")
     setServiceId("__NONE__")
     setAssignedToUserId(currentUserId)
-    setContactQuery("")
+    setContactQuery(initialContact?.fullName ?? "")
     setDebouncedContactQuery("")
-    setSelectedContact(null)
+    setSelectedContact(initialContact)
     setContactResults([])
     setSelectedSlotStartAt("")
     setSlotsState({ status: "idle" })
@@ -151,7 +167,7 @@ export function CreateAppointmentDialog({
       ...formatUtcIsoToDateTimeDraft(new Date().toISOString(), tenantTimezone),
       time: "",
     })
-  }, [currentUserId, tenantTimezone])
+  }, [currentUserId, initialContact, tenantTimezone])
 
   useEffect(() => {
     if (open) {
@@ -170,6 +186,12 @@ export function CreateAppointmentDialog({
   }, [contactQuery])
 
   useEffect(() => {
+    if (initialContact) {
+      setContactResults([])
+      setIsSearchingContacts(false)
+      return
+    }
+
     const query = debouncedContactQuery
 
     if (selectedContact && query === selectedContact.fullName) {
@@ -209,7 +231,7 @@ export function CreateAppointmentDialog({
     return () => {
       cancelled = true
     }
-  }, [debouncedContactQuery, selectedContact, tenantId])
+  }, [debouncedContactQuery, initialContact, selectedContact, tenantId])
 
   const localDateKey = useMemo(
     () => dateDraftToLocalDateKey(appointmentDateInput.date),
@@ -384,11 +406,45 @@ export function CreateAppointmentDialog({
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger asChild>
-        <Button className="bg-blue-950 text-white hover:bg-blue-900">
-          Create appointment
-        </Button>
-      </SheetTrigger>
+      {triggerTooltip ? (
+        <TooltipProvider delayDuration={120}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <SheetTrigger asChild>
+                <Button
+                  aria-label={triggerTooltip}
+                  className={cn(
+                    "bg-blue-950 text-white hover:bg-blue-900",
+                    iconOnly && "rounded-full p-0",
+                    triggerClassName,
+                  )}
+                >
+                  {iconOnly ? (
+                    <CalendarClock className="h-4 w-4" />
+                  ) : (
+                    triggerLabel
+                  )}
+                </Button>
+              </SheetTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={8}>
+              {triggerTooltip}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : (
+        <SheetTrigger asChild>
+          <Button
+            className={cn(
+              "bg-blue-950 text-white hover:bg-blue-900",
+              iconOnly && "rounded-full p-0",
+              triggerClassName,
+            )}
+          >
+            {iconOnly ? <CalendarClock className="h-4 w-4" /> : triggerLabel}
+          </Button>
+        </SheetTrigger>
+      )}
       <SheetContent side="right" className="flex h-full flex-col overflow-hidden gap-0 p-0 sm:max-w-lg">
         <SheetHeader className="border-b border-slate-200 bg-slate-50 px-6 text-left">
           <SheetTitle className="text-xl font-semibold text-slate-950">Create Appointment</SheetTitle>
@@ -416,63 +472,82 @@ export function CreateAppointmentDialog({
               Contact
             </p>
             <div className="mt-3 space-y-2">
-            <Label htmlFor="appointment-contact">Contact</Label>
-            <Command className="rounded-xl border border-slate-200">
-              <CommandInput
-                id="appointment-contact"
-                placeholder="Search contact by name..."
-                value={contactQuery}
-                onValueChange={(value) => {
-                  setContactQuery(value)
+            {initialContact ? (
+              <div className="space-y-1">
+                <p className="text-base font-semibold text-slate-950">
+                  {selectedContact?.fullName ?? initialContact.fullName}
+                </p>
+                <p className="text-sm text-slate-500">
+                  {selectedContact?.email ||
+                    selectedContact?.phoneNumber ||
+                    initialContact.email ||
+                    initialContact.phoneNumber ||
+                    "No contact details"}
+                </p>
+              </div>
+            ) : (
+              <>
+                <Label htmlFor="appointment-contact">Contact</Label>
+                <Command className="rounded-xl border border-slate-200">
+                  <CommandInput
+                    id="appointment-contact"
+                    placeholder="Search contact by name..."
+                    value={contactQuery}
+                    onValueChange={(value) => {
+                      setContactQuery(value)
 
-                  if (
-                    selectedContact &&
-                    value.trim() !== selectedContact.fullName &&
-                    !isSelectingContactRef.current
-                  ) {
-                    setSelectedContact(null)
-                  }
-                }}
-              />
-              <CommandList>
-                <CommandEmpty>
-                  {isSearchingContacts ? "Searching contacts..." : "No contacts found."}
-                </CommandEmpty>
-                <CommandGroup heading="Results">
-                  {contactResults.map((contact) => (
-                    <CommandItem
-                      key={contact.id}
-                      value={`${contact.fullName} ${contact.email ?? ""} ${contact.phoneNumber ?? ""}`}
-                      onSelect={() => {
-                        isSelectingContactRef.current = true
-                        setSelectedContact(contact)
-                        setContactQuery(contact.fullName)
-                        setContactResults([])
-                        window.setTimeout(() => {
-                          isSelectingContactRef.current = false
-                        }, 0)
-                      }}
-                    >
-                      <div className="flex flex-col">
-                        <span>{contact.fullName}</span>
-                        <span className="text-xs text-slate-500">
-                          {contact.email || contact.phoneNumber || "No contact details"}
-                        </span>
-                      </div>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </CommandList>
-            </Command>
+                      if (
+                        selectedContact &&
+                        value.trim() !== selectedContact.fullName &&
+                        !isSelectingContactRef.current
+                      ) {
+                        setSelectedContact(null)
+                      }
+                    }}
+                  />
+                  <CommandList>
+                    <CommandEmpty>
+                      {isSearchingContacts ? "Searching contacts..." : "No contacts found."}
+                    </CommandEmpty>
+                    <CommandGroup heading="Results">
+                      {contactResults.map((contact) => (
+                        <CommandItem
+                          key={contact.id}
+                          value={`${contact.fullName} ${contact.email ?? ""} ${contact.phoneNumber ?? ""}`}
+                          onSelect={() => {
+                            isSelectingContactRef.current = true
+                            setSelectedContact(contact)
+                            setContactQuery(contact.fullName)
+                            setContactResults([])
+                            window.setTimeout(() => {
+                              isSelectingContactRef.current = false
+                            }, 0)
+                          }}
+                        >
+                          <div className="flex flex-col">
+                            <span>{contact.fullName}</span>
+                            <span className="text-xs text-slate-500">
+                              {contact.email || contact.phoneNumber || "No contact details"}
+                            </span>
+                          </div>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </>
+            )}
             {fieldErrors.contactId ? (
               <p className="text-sm text-rose-600">{fieldErrors.contactId}</p>
             ) : selectedContact ? (
+              !initialContact ? (
               <div className="pt-1">
                 <p className="text-base font-semibold text-slate-950">{selectedContact.fullName}</p>
                 <p className="mt-1 text-sm text-slate-500">
                   {selectedContact.email || selectedContact.phoneNumber || "No contact details"}
                 </p>
               </div>
+              ) : null
             ) : null}
             </div>
           </section>

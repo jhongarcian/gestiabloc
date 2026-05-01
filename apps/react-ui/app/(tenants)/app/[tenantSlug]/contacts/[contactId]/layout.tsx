@@ -15,6 +15,8 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
+import { CreateAppointmentDialog } from "../../calendar/_components/create-appointment-dialog"
+import { getCalendarMeta, type CalendarMetaResponse } from "../../calendar/_lib/calendar-api"
 import { ContactBreadcrumbSync } from "./_components/contact-breadcrumb-sync"
 import { ContactDetailTabs } from "./_components/contact-detail-tabs"
 import { ContactHeaderAssignee } from "./_components/contact-header-assignee"
@@ -240,7 +242,7 @@ export default async function ContactDetailsLayout({
   params: Promise<{ tenantSlug: string; contactId: string }>
 }>) {
   const { tenantSlug, contactId } = await params
-  const { tenantId, contact } = await getContactDetailsContext(tenantSlug, contactId)
+  const { tenantId, contact, currentUserId, tenantTimezone } = await getContactDetailsContext(tenantSlug, contactId)
   const cookie = (await headers()).get("cookie") ?? ""
 
   let totalSpendingCents = 0
@@ -266,9 +268,26 @@ export default async function ContactDetailsLayout({
     bgColor: string | null
     textColor: string | null
   }> = []
+  let calendarMeta: Pick<CalendarMetaResponse, "settings" | "filters"> = {
+    settings: {
+      meetingIntervalMinutes: 30,
+      meetingDurationMinutes: 30,
+      minimumScheduleNoticeMinutes: 0,
+      maximumBookingsPerDay: null,
+      maximumBookingsPerSlot: 1,
+      preBufferMinutes: 0,
+      postBufferMinutes: 0,
+      bufferAvailabilityMode: "BUSY",
+    },
+    filters: {
+      users: [],
+      groups: [],
+      services: [],
+    },
+  }
 
   try {
-    const [services, tasks, assignees, statuses] = await Promise.all([
+    const [services, tasks, assignees, statuses, metaResponse] = await Promise.all([
       loadAllContactServices(tenantId, contactId, cookie),
       loadAllContactTasks(tenantId, contactId, cookie),
       api.get<ContactAssigneesResponse>(`/api/tasks/${tenantId}/assignees`, {
@@ -277,6 +296,7 @@ export default async function ContactDetailsLayout({
       api.get<ContactStatusesResponse>(`/api/contacts/${tenantId}/statuses`, {
         headers: { cookie },
       }),
+      getCalendarMeta(tenantId, cookie),
     ])
 
     totalSpendingCents = services.reduce(
@@ -345,6 +365,20 @@ export default async function ContactDetailsLayout({
       bgColor: status.bgColor,
       textColor: status.textColor,
     }))
+    calendarMeta = {
+      settings: metaResponse.settings,
+      filters: {
+        users: Array.isArray(metaResponse.filters?.users)
+          ? metaResponse.filters.users
+          : [],
+        groups: Array.isArray(metaResponse.filters?.groups)
+          ? metaResponse.filters.groups
+          : [],
+        services: Array.isArray(metaResponse.filters?.services)
+          ? metaResponse.filters.services
+          : [],
+      },
+    }
   } catch {
     totalSpendingCents = 0
     activeTasks = 0
@@ -352,6 +386,23 @@ export default async function ContactDetailsLayout({
     activeFollowUpOwnerItems = []
     assigneeOptions = []
     statusOptions = []
+    calendarMeta = {
+      settings: {
+        meetingIntervalMinutes: 30,
+        meetingDurationMinutes: 30,
+        minimumScheduleNoticeMinutes: 0,
+        maximumBookingsPerDay: null,
+        maximumBookingsPerSlot: 1,
+        preBufferMinutes: 0,
+        postBufferMinutes: 0,
+        bufferAvailabilityMode: "BUSY",
+      },
+      filters: {
+        users: [],
+        groups: [],
+        services: [],
+      },
+    }
   }
 
   const visibleActiveFollowUpServices = activeFollowUpServices.slice(0, 3)
@@ -478,6 +529,24 @@ export default async function ContactDetailsLayout({
                 </div>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
+                <CreateAppointmentDialog
+                  tenantId={tenantId}
+                  tenantTimezone={tenantTimezone}
+                  currentUserId={currentUserId}
+                  initialContact={{
+                    id: contact.id,
+                    fullName: contact.fullName,
+                    email: contact.email,
+                    phoneNumber: contact.phoneNumber,
+                  }}
+                  meetingIntervalMinutes={calendarMeta.settings.meetingIntervalMinutes}
+                  meetingDurationMinutes={calendarMeta.settings.meetingDurationMinutes}
+                  serviceOptions={calendarMeta.filters.services}
+                  assigneeOptions={calendarMeta.filters.users}
+                  iconOnly
+                  triggerTooltip="Create appointment"
+                  triggerClassName="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
+                />
                 <ContactHeaderAssignee
                   tenantId={tenantId}
                   contactId={contactId}

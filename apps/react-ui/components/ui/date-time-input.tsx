@@ -2,6 +2,7 @@
 
 import { format } from "date-fns"
 import { CalendarIcon, Clock3 } from "lucide-react"
+import { useEffect, useState } from "react"
 
 import { Calendar } from "@/components/ui/calendar"
 import { formatDateInput, parseDateInput } from "@/components/ui/date-input"
@@ -36,8 +37,13 @@ export function DateTimeInput({
   timeStepMinutes = 1,
 }: DateTimeInputProps) {
   const parsedDate = parseDateInput(value.date)
-  const calendarMonth =
-    parsedDate && parsedDate !== null ? parsedDate : undefined
+  const [calendarMonth, setCalendarMonth] = useState<Date | undefined>(
+    parsedDate && parsedDate !== null ? parsedDate : undefined,
+  )
+
+  useEffect(() => {
+    setCalendarMonth(parsedDate && parsedDate !== null ? parsedDate : undefined)
+  }, [parsedDate?.getFullYear(), parsedDate?.getMonth(), parsedDate?.getDate()])
 
   return (
     <div className={cn("space-y-2", className)}>
@@ -79,6 +85,7 @@ export function DateTimeInput({
                 selected={parsedDate && parsedDate !== null ? parsedDate : undefined}
                 month={calendarMonth}
                 captionLayout="dropdown"
+                onMonthChange={setCalendarMonth}
                 onSelect={(date) => {
                   onValueChange({
                     date: date ? format(date, "MM/dd/yyyy") : "",

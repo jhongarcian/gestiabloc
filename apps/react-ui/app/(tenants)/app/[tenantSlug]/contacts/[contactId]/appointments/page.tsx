@@ -5,6 +5,7 @@ import { notFound } from "next/navigation"
 
 import { api } from "@/lib/api"
 import type { CalendarEventItem, CalendarMetaResponse } from "../../../calendar/_lib/calendar-api"
+import { CreateAppointmentDialog } from "../../../calendar/_components/create-appointment-dialog"
 import { getCalendarMeta } from "../../../calendar/_lib/calendar-api"
 import { getContactDetailsContext } from "../_lib/contact-details"
 import { ContactAppointmentsPanel } from "./_components/contact-appointments-panel"
@@ -21,7 +22,7 @@ export default async function ContactAppointmentsPage({
   params: Promise<{ tenantSlug: string; contactId: string }>
 }) {
   const { tenantSlug, contactId } = await params
-  const { tenantId, tenantTimezone } = await getContactDetailsContext(
+  const { tenantId, tenantTimezone, currentUserId, contact } = await getContactDetailsContext(
     tenantSlug,
     contactId,
   )
@@ -113,13 +114,32 @@ export default async function ContactAppointmentsPage({
           </div>
 
           <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm">
-            <span className="inline-flex items-center gap-2">
-              <CalendarClock className="h-4 w-4 text-slate-500" />
-              <span className="font-semibold text-slate-950">
-                {appointmentsData.items.length}
-              </span>{" "}
-              appointments
-            </span>
+            <div className="flex flex-wrap items-center gap-3">
+              <CreateAppointmentDialog
+                tenantId={tenantId}
+                tenantTimezone={tenantTimezone}
+                currentUserId={currentUserId}
+                initialContact={{
+                  id: contact.id,
+                  fullName: contact.fullName,
+                  email: contact.email,
+                  phoneNumber: contact.phoneNumber,
+                }}
+                meetingIntervalMinutes={calendarMeta.settings.meetingIntervalMinutes}
+                meetingDurationMinutes={calendarMeta.settings.meetingDurationMinutes}
+                serviceOptions={calendarMeta.filters.services}
+                assigneeOptions={calendarMeta.filters.users}
+                triggerLabel="Create appointment"
+                triggerClassName="bg-blue-950 text-white hover:bg-blue-900 rounded-full px-6 py-1.5 text-sm font-medium"
+              />
+              <span className="inline-flex items-center gap-2">
+                <CalendarClock className="h-4 w-4 text-slate-500" />
+                <span className="font-semibold text-slate-950">
+                  {appointmentsData.items.length}
+                </span>{" "}
+                appointments
+              </span>
+            </div>
           </div>
         </div>
       </div>
