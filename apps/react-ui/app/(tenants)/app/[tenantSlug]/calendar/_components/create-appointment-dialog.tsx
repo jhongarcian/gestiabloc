@@ -1,16 +1,18 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { LoaderCircle } from "lucide-react"
+import { Check, ChevronDown, LoaderCircle } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { DateTimeInput } from "@/components/ui/date-time-input"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
   Sheet,
@@ -24,6 +26,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import { type DateTimeDraft, formatDateTimeForDisplay, formatUtcIsoToDateTimeDraft } from "@/lib/date-time"
+import { cn } from "@/lib/utils"
 import { createAppointment, getAppointmentSlots, type AppointmentSlotsResponse } from "../_lib/calendar-api"
 
 type ContactSearchItem = {
@@ -52,6 +55,7 @@ type CreateAppointmentDialogProps = {
     id: string
     label: string
     email: string
+    image?: string | null
     color?: string | null
   }>
   onCreated?: () => Promise<void> | void
@@ -90,6 +94,15 @@ function formatSlotDurationLabel(minutes: number) {
   return `${hours}h ${remainingMinutes}m`
 }
 
+function getInitials(value: string) {
+  return value
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("")
+}
+
 export function CreateAppointmentDialog({
   tenantId,
   tenantTimezone,
@@ -119,6 +132,7 @@ export function CreateAppointmentDialog({
   })
   const [selectedSlotStartAt, setSelectedSlotStartAt] = useState("")
   const [slotsState, setSlotsState] = useState<SlotsState>({ status: "idle" })
+  const [assigneePickerOpen, setAssigneePickerOpen] = useState(false)
   const isSelectingContactRef = useRef(false)
 
   const resetForm = useCallback(() => {
@@ -276,6 +290,12 @@ export function CreateAppointmentDialog({
       ? serviceOptions.find((option) => option.id === serviceId)?.name ?? null
       : null
 
+  const selectedAssignee = useMemo(
+    () =>
+      assigneeOptions.find((assignee) => assignee.id === assignedToUserId) ?? null,
+    [assignedToUserId, assigneeOptions],
+  )
+
   const availableSlots =
     slotsState.status === "ready" ? slotsState.data.slots.filter((slot) => slot.available) : []
   const unavailableSlots =
@@ -369,25 +389,33 @@ export function CreateAppointmentDialog({
           Create appointment
         </Button>
       </SheetTrigger>
-      <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-4xl">
-        <SheetHeader className="border-b border-slate-200 px-6 py-5">
-          <SheetTitle>Create appointment</SheetTitle>
+      <SheetContent side="right" className="flex h-full flex-col overflow-hidden gap-0 p-0 sm:max-w-lg">
+        <SheetHeader className="border-b border-slate-200 bg-slate-50 px-6 text-left">
+          <SheetTitle className="text-xl font-semibold text-slate-950">Create Appointment</SheetTitle>
           <SheetDescription>
             Pick the contact, assign the appointment, and choose an open slot based on the calendar booking rules.
           </SheetDescription>
         </SheetHeader>
 
-        <div className="space-y-6 px-6 py-6">
-          <div className="rounded-[20px] border border-blue-100 bg-blue-50/80 px-4 py-3">
-            <p className="text-sm font-medium text-blue-950">
-              Interval: {formatSlotDurationLabel(meetingIntervalMinutes)} · Duration: {formatSlotDurationLabel(meetingDurationMinutes)}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <section className="border-b border-slate-200 px-6 py-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+              Booking Rules
             </p>
-            <p className="mt-1 text-xs text-blue-800">
+            <p className="mt-3 text-sm text-slate-700">
+              Interval: {formatSlotDurationLabel(meetingIntervalMinutes)} · Duration:{" "}
+              {formatSlotDurationLabel(meetingDurationMinutes)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
               Time slots follow the account booking rules and only open slots can be selected.
             </p>
-          </div>
+          </section>
 
-          <div className="space-y-2">
+          <section className="border-b border-slate-200 px-6 py-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+              Contact
+            </p>
+            <div className="mt-3 space-y-2">
             <Label htmlFor="appointment-contact">Contact</Label>
             <Command className="rounded-xl border border-slate-200">
               <CommandInput
@@ -439,13 +467,21 @@ export function CreateAppointmentDialog({
             {fieldErrors.contactId ? (
               <p className="text-sm text-rose-600">{fieldErrors.contactId}</p>
             ) : selectedContact ? (
-              <p className="text-sm text-slate-500">
-                Selected: <span className="font-medium text-slate-700">{selectedContact.fullName}</span>
-              </p>
+              <div className="pt-1">
+                <p className="text-base font-semibold text-slate-950">{selectedContact.fullName}</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {selectedContact.email || selectedContact.phoneNumber || "No contact details"}
+                </p>
+              </div>
             ) : null}
-          </div>
+            </div>
+          </section>
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <section className="border-b border-slate-200 px-6 py-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+              Appointment
+            </p>
+            <div className="mt-3 space-y-4">
             <div className="space-y-2">
               <Label htmlFor="appointment-title">Title</Label>
               <Input
@@ -464,7 +500,7 @@ export function CreateAppointmentDialog({
             <div className="space-y-2">
               <Label>Service</Label>
               <Select value={serviceId} onValueChange={setServiceId}>
-                <SelectTrigger>
+                <SelectTrigger className="border-blue-200 focus-visible:ring-blue-200">
                   <SelectValue placeholder="Optional service" />
                 </SelectTrigger>
                 <SelectContent>
@@ -477,24 +513,117 @@ export function CreateAppointmentDialog({
                 </SelectContent>
               </Select>
             </div>
-          </div>
+            {notes ? (
+              <div className="space-y-2">
+                <Label htmlFor="appointment-notes">Notes</Label>
+                <Textarea
+                  id="appointment-notes"
+                  placeholder="Optional internal notes for the appointment."
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value)}
+                  rows={5}
+                />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label htmlFor="appointment-notes">Notes</Label>
+                <Textarea
+                  id="appointment-notes"
+                  placeholder="Optional internal notes for the appointment."
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value)}
+                  rows={5}
+                />
+              </div>
+            )}
+            </div>
+          </section>
 
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)]">
-            <div className="space-y-4">
+          <section className="border-b border-slate-200 px-6 py-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+              Schedule
+            </p>
+            <div className="mt-3 space-y-4">
               <div className="space-y-2">
                 <Label>Designated user</Label>
-                <Select value={assignedToUserId} onValueChange={setAssignedToUserId}>
-                  <SelectTrigger aria-invalid={Boolean(fieldErrors.assignedToUserId)}>
-                    <SelectValue placeholder="Choose user" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {assigneeOptions.map((assignee) => (
-                      <SelectItem key={assignee.id} value={assignee.id}>
-                        {assignee.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={assigneePickerOpen} onOpenChange={setAssigneePickerOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      aria-invalid={Boolean(fieldErrors.assignedToUserId)}
+                      className={cn(
+                        "h-11 w-full cursor-pointer justify-between border-slate-200 px-3 text-left font-normal hover:bg-slate-50",
+                        fieldErrors.assignedToUserId && "border-rose-300 focus-visible:ring-rose-200",
+                      )}
+                    >
+                      {selectedAssignee ? (
+                        <div className="flex min-w-0 items-center gap-3">
+                          <Avatar className="h-7 w-7 shrink-0">
+                            <AvatarImage
+                              src={selectedAssignee.image ?? undefined}
+                              alt={selectedAssignee.label}
+                            />
+                            <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                              {getInitials(selectedAssignee.label)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="truncate text-sm font-medium text-slate-900">
+                            {selectedAssignee.label}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-sm text-slate-500">Choose user</span>
+                      )}
+                      <ChevronDown className="ml-3 h-4 w-4 shrink-0 text-slate-500" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-[360px] p-0">
+                    <Command>
+                      <CommandInput placeholder="Assign appointment to..." />
+                      <CommandList>
+                        <CommandEmpty>No users found.</CommandEmpty>
+                        {assigneeOptions.map((assignee) => (
+                          <CommandItem
+                            key={assignee.id}
+                            value={`${assignee.label} ${assignee.email}`}
+                            onSelect={() => {
+                              setAssignedToUserId(assignee.id)
+                              setAssigneePickerOpen(false)
+                            }}
+                            className="cursor-pointer gap-3 px-3 py-3"
+                          >
+                            <Avatar className="h-9 w-9">
+                              <AvatarImage
+                                src={assignee.image ?? undefined}
+                                alt={assignee.label}
+                              />
+                              <AvatarFallback className="bg-blue-950 text-xs font-semibold text-white">
+                                {getInitials(assignee.label)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate font-medium text-slate-900">
+                                {assignee.label}
+                              </p>
+                              <p className="truncate text-xs text-slate-500">
+                                {assignee.email}
+                              </p>
+                            </div>
+                            <Check
+                              className={cn(
+                                "h-4 w-4 text-blue-950",
+                                assignedToUserId === assignee.id
+                                  ? "opacity-100"
+                                  : "opacity-0",
+                              )}
+                            />
+                          </CommandItem>
+                        ))}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
                 {fieldErrors.assignedToUserId ? (
                   <p className="text-sm text-rose-600">{fieldErrors.assignedToUserId}</p>
                 ) : null}
@@ -515,14 +644,12 @@ export function CreateAppointmentDialog({
                   <p className="text-sm text-rose-600">{fieldErrors.date}</p>
                 ) : null}
               </div>
-            </div>
 
-            <div className="space-y-3 rounded-[24px] border border-slate-200 bg-slate-50/70 p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">
-                    Time slots
-                  </h3>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    Time Slots
+                  </p>
                   <p className="mt-1 text-sm text-slate-600">
                     {localDateKey
                       ? "Choose from available slots for the selected day."
@@ -538,9 +665,7 @@ export function CreateAppointmentDialog({
               </div>
 
               {slotsState.status === "error" ? (
-                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                  {slotsState.message}
-                </div>
+                <p className="text-sm text-rose-700">{slotsState.message}</p>
               ) : null}
 
               {slotsState.status === "ready" ? (
@@ -548,7 +673,10 @@ export function CreateAppointmentDialog({
                   <div className="space-y-2">
                     <Label>Available slot</Label>
                     <Select value={selectedSlotStartAt} onValueChange={setSelectedSlotStartAt}>
-                      <SelectTrigger aria-invalid={Boolean(fieldErrors.slot)}>
+                      <SelectTrigger
+                        aria-invalid={Boolean(fieldErrors.slot)}
+                        className="border-blue-200 focus-visible:ring-blue-200"
+                      >
                         <SelectValue placeholder="Choose a time slot" />
                       </SelectTrigger>
                       <SelectContent>
@@ -571,12 +699,12 @@ export function CreateAppointmentDialog({
                   </div>
 
                   {selectedSlot ? (
-                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3">
-                      <p className="text-sm font-medium text-emerald-900">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-slate-900">
                         {formatDateTimeForDisplay(selectedSlot.startAt, tenantTimezone)} to{" "}
                         {formatDateTimeForDisplay(selectedSlot.endAt, tenantTimezone)}
                       </p>
-                      <p className="mt-1 text-xs text-emerald-800">
+                      <p className="text-xs text-slate-500">
                         Duration: {formatSlotDurationLabel(slotsState.data.meetingDurationMinutes)}
                       </p>
                     </div>
@@ -602,7 +730,7 @@ export function CreateAppointmentDialog({
                   ) : null}
                 </>
               ) : (
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center">
+                <div className="py-2">
                   <p className="font-medium text-slate-900">No slots loaded yet.</p>
                   <p className="mt-1 text-sm text-slate-500">
                     Select a user and date to load the available booking times.
@@ -610,22 +738,16 @@ export function CreateAppointmentDialog({
                 </div>
               )}
             </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="appointment-notes">Notes</Label>
-            <Textarea
-              id="appointment-notes"
-              placeholder="Optional internal notes for the appointment."
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-              rows={5}
-            />
-          </div>
+          </section>
         </div>
 
         <SheetFooter className="border-t border-slate-200 bg-white px-6 py-4 sm:flex-row sm:justify-end">
-          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+          <Button
+            type="button"
+            variant="outline"
+            className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+            onClick={() => setOpen(false)}
+          >
             Cancel
           </Button>
           <Button

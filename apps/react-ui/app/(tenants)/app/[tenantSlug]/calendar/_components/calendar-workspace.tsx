@@ -296,12 +296,14 @@ function CalendarEventCard({
   tenantTimezone,
   compact = false,
   showContact = false,
+  showStatus = false,
   onSelect,
 }: {
   item: CalendarEventItem
   tenantTimezone: string | null
   compact?: boolean
   showContact?: boolean
+  showStatus?: boolean
   onSelect: (item: CalendarEventItem) => void
 }) {
   return (
@@ -330,6 +332,16 @@ function CalendarEventCard({
               </span>
             ) : null}
           </div>
+          {showStatus ? (
+            <div className="mt-1">
+              <Badge
+                variant="secondary"
+                className={`w-fit rounded-full border px-2 py-0.5 text-[10px] ${getAppointmentStatusClass(item.status)}`}
+              >
+                {formatAppointmentStatus(item.status)}
+              </Badge>
+            </div>
+          ) : null}
           <p className={cn("truncate leading-tight text-slate-500", compact ? "mt-0.5 text-[10px]" : "mt-1 text-xs")}>
             {compact
               ? formatTimeLabel(item.startAt, tenantTimezone)
@@ -430,11 +442,6 @@ function MonthView({
                   </p>
                 ) : null}
 
-                {dayEvents.length === 0 && isSameMonth(day, cursorDate) ? (
-                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/70 px-2.5 py-3 text-center">
-                    <p className="text-[11px] text-slate-400">No appointments</p>
-                  </div>
-                ) : null}
               </div>
             </div>
           )
@@ -490,22 +497,16 @@ function WeekView({
             </div>
 
             <div className="space-y-2">
-              {dayEvents.length > 0 ? (
-                dayEvents.map((item) => (
-                  <CalendarEventCard
-                    key={item.id}
-                    item={item}
-                    tenantTimezone={tenantTimezone}
-                    compact
-                    showContact
-                    onSelect={onSelect}
-                  />
-                ))
-              ) : (
-                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-5 text-center">
-                  <p className="text-xs text-slate-400">No appointments</p>
-                </div>
-              )}
+              {dayEvents.map((item) => (
+                <CalendarEventCard
+                  key={item.id}
+                  item={item}
+                  tenantTimezone={tenantTimezone}
+                  compact
+                  showContact
+                  onSelect={onSelect}
+                />
+              ))}
             </div>
           </div>
         )
@@ -549,6 +550,7 @@ function DayView({
               item={item}
               tenantTimezone={tenantTimezone}
               showContact
+              showStatus
               onSelect={onSelect}
             />
           ))
@@ -605,21 +607,16 @@ function ListView({
             </div>
 
             <div className="space-y-3">
-              {dayItems.length > 0 ? (
-                dayItems.map((item) => (
+              {dayItems.map((item) => (
                   <CalendarEventCard
                     key={item.id}
                     item={item}
                     tenantTimezone={tenantTimezone}
                     showContact
+                    showStatus
                     onSelect={onSelect}
                   />
-                ))
-              ) : (
-                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-5 text-center">
-                  <p className="text-sm text-slate-400">No appointments</p>
-                </div>
-              )}
+                ))}
             </div>
           </section>
         )
@@ -1194,6 +1191,14 @@ export function CalendarWorkspace({
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
+        if (
+          error.response?.status === 409 &&
+          backendError === "APPOINTMENT_TIME_UNAVAILABLE"
+        ) {
+          setSelectedStatus(drawerAppointment.status)
+          toast.error("This slot has been taken already. Choose another time.")
+          return
+        }
         toast.error(
           typeof backendError === "string"
             ? backendError.replace(/_/g, " ")
@@ -1202,6 +1207,8 @@ export function CalendarWorkspace({
       } else {
         toast.error("Could not update appointment status.")
       }
+
+      setSelectedStatus(drawerAppointment.status)
     } finally {
       setIsUpdatingStatus(false)
     }

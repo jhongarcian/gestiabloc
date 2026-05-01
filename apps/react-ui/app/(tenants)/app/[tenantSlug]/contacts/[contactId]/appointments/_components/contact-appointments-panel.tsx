@@ -317,6 +317,14 @@ export function ContactAppointmentsPanel({
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
+        if (
+          error.response?.status === 409 &&
+          backendError === "APPOINTMENT_TIME_UNAVAILABLE"
+        ) {
+          setSelectedStatus(drawerAppointment.status)
+          toast.error("This slot has been taken already. Choose another time.")
+          return
+        }
         toast.error(
           typeof backendError === "string"
             ? backendError.replace(/_/g, " ")
@@ -325,6 +333,8 @@ export function ContactAppointmentsPanel({
       } else {
         toast.error("Could not update appointment status.")
       }
+
+      setSelectedStatus(drawerAppointment.status)
     } finally {
       setIsUpdatingStatus(false)
     }
