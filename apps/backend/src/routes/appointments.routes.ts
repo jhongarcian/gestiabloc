@@ -9,6 +9,7 @@ import {
   getSafeCalendarBufferMode,
   getSafeCalendarSlotDuration,
   getSafeTimezone,
+  listCalendarBlockOccurrences,
   updateAppointmentAtomically,
 } from "../lib/appointment-booking.js"
 import { prisma } from "../lib/prisma.js"
@@ -23,6 +24,10 @@ const TenantPathSchema = z.object({
 
 const TenantAppointmentPathSchema = TenantPathSchema.extend({
   appointmentId: z.string().trim().min(1),
+})
+
+const TenantContactPathSchema = TenantPathSchema.extend({
+  contactId: z.string().trim().min(1),
 })
 
 const commaSeparatedIdsField = z.preprocess((value) => {
@@ -116,7 +121,9 @@ const UpdateAppointmentSchema = z
     startAt: z.string().datetime().optional(),
     endAt: z.string().datetime().optional(),
     isAllDay: z.boolean().optional(),
-    status: z.enum(["SCHEDULED", "CANCELED"]).optional(),
+    status: z
+      .enum(["SCHEDULED", "CONFIRMED", "SHOW", "NO_SHOW", "CANCELED"])
+      .optional(),
   })
   .superRefine((value, ctx) => {
     if (Object.keys(value).length === 0) {
@@ -143,6 +150,7 @@ async function requireActiveMembership(
     select: {
       role: true,
       status: true,
+      securityLevel: true,
     },
   })
 
@@ -152,6 +160,131 @@ async function requireActiveMembership(
   }
 
   return membership
+}
+
+function canViewAppointmentAuditLogs(membership: {
+  securityLevel: "LOW" | "MEDIUM" | "MAX"
+}) {
+  return membership.securityLevel === "MAX"
+}
+
+function getActorDisplayName(user: {
+  name?: string | null
+  email?: string | null
+}) {
+  return user.name?.trim() || user.email || "Unknown user"
+}
+
+function serializeAppointmentItem(
+  item: {
+    id: string
+    title: string
+    notes: string | null
+    startAt: Date
+    endAt: Date
+    assignedToUserId: string | null
+    status: string
+    contactId: string
+    serviceId: string | null
+    contact: {
+      firstName: string
+      lastName: string
+      email: string | null
+      phone: string | null
+    }
+    assignedTo: {
+      name: string | null
+      email: string | null
+      image: string | null
+      memberships: Array<{
+        calendarColor: string | null
+      }>
+    } | null
+    service: {
+      name: string
+    } | null
+  },
+) {
+  return {
+    id: item.id,
+    title: item.title,
+    startAt: item.startAt.toISOString(),
+    endAt: item.endAt.toISOString(),
+    assignedToUserId: item.assignedToUserId,
+    assignedToLabel:
+      item.assignedTo?.name?.trim() || item.assignedTo?.email || "Unassigned",
+    assignedToImage: item.assignedTo?.image ?? null,
+    assignedToColor: item.assignedTo?.memberships[0]?.calendarColor ?? null,
+    contactId: item.contactId,
+    contactName: `${item.contact.firstName} ${item.contact.lastName}`.trim(),
+    contactEmail: item.contact.email ?? null,
+    contactPhone: item.contact.phone ?? null,
+    serviceId: item.serviceId,
+    serviceName: item.service?.name ?? null,
+    status: item.status,
+    notes: item.notes ?? null,
+  }
+}
+
+function serializeAuditLog(
+  log: {
+    id: string
+    action: string
+    actorDisplayName: string
+    message: string
+    createdAt: Date
+  },
+) {
+  return {
+    id: log.id,
+    action: log.action,
+    actorDisplayName: log.actorDisplayName,
+    message: log.message,
+    createdAt: log.createdAt.toISOString(),
+  }
+}
+
+function serializeCalendarBlockOccurrence(item: {
+  id: string
+  title: string
+  startsAt: Date
+  endsAt: Date
+  isAllDay: boolean
+}) {
+  return {
+    id: item.id,
+    title: item.title,
+    startsAt: item.startsAt.toISOString(),
+    endsAt: item.endsAt.toISOString(),
+    isAllDay: item.isAllDay,
+  }
+}
+
+function minutesToTimeInput(minutes: number) {
+  const normalized = Math.max(0, Math.min(minutes, 24 * 60))
+  const hour = Math.floor(normalized / 60)
+  const minute = normalized % 60
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`
+}
+
+function buildWeeklyAvailabilityFromRules(
+  rules: Array<{
+    dayOfWeek: number
+    startTimeMinutes: number
+    endTimeMinutes: number
+    isActive: boolean
+  }>,
+) {
+  const rulesByDay = new Map(rules.map((rule) => [rule.dayOfWeek, rule]))
+  return Array.from({ length: 7 }, (_, dayOfWeek) => {
+    const rule = rulesByDay.get(dayOfWeek)
+    return {
+      dayOfWeek,
+      enabled: Boolean(rule?.isActive),
+      startTime: rule ? minutesToTimeInput(rule.startTimeMinutes) : "09:00",
+      endTime: rule ? minutesToTimeInput(rule.endTimeMinutes) : "17:00",
+    }
+  })
 }
 
 async function ensureActiveAssignee(tenantId: string, userId: string) {
@@ -319,7 +452,7 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    const [tenant, users, services, groups] = await prisma.$transaction([
+    const [tenant, users, services, groups, tenantAvailabilityRules] = await prisma.$transaction([
       prisma.tenant.findUnique({
         where: { id: tenantId },
         select: {
@@ -393,6 +526,21 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
           },
         },
       }),
+      prisma.calendarAvailabilityRule.findMany({
+        where: {
+          tenantId,
+          scope: "TENANT",
+          kind: "OPEN",
+          userId: null,
+        },
+        orderBy: [{ dayOfWeek: "asc" }],
+        select: {
+          dayOfWeek: true,
+          startTimeMinutes: true,
+          endTimeMinutes: true,
+          isActive: true,
+        },
+      }),
     ])
 
     return res.json({
@@ -413,6 +561,9 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
         bufferAvailabilityMode: getSafeCalendarBufferMode(
           tenant?.calendarBufferAvailabilityMode,
         ),
+      },
+      availability: {
+        weeklyAvailability: buildWeeklyAvailabilityFromRules(tenantAvailabilityRules),
       },
       filters: {
         users: users.map((item) => ({
@@ -484,64 +635,176 @@ router.get("/:tenantId/slots", requireAuth, async (req, res, next) => {
   }
 })
 
-router.get("/:tenantId", requireAuth, async (req, res, next) => {
+router.get("/:tenantId/item/:appointmentId", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
-    const { tenantId } = TenantPathSchema.parse(req.params)
-    const query = CalendarQuerySchema.parse(req.query)
+    const { tenantId, appointmentId } = TenantAppointmentPathSchema.parse(req.params)
 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: { timezone: true },
+    const appointment = await prisma.appointment.findFirst({
+      where: {
+        id: appointmentId,
+        tenantId,
+      },
+      select: {
+        id: true,
+        title: true,
+        notes: true,
+        startAt: true,
+        endAt: true,
+        assignedToUserId: true,
+        status: true,
+        contactId: true,
+        serviceId: true,
+        contact: {
+          select: {
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+          },
+        },
+        assignedTo: {
+          select: {
+            name: true,
+            email: true,
+            image: true,
+            memberships: {
+              where: {
+                tenantId,
+              },
+              select: {
+                calendarColor: true,
+              },
+              take: 1,
+            },
+          },
+        },
+        service: {
+          select: {
+            name: true,
+          },
+        },
+      },
     })
 
-    const timezone = getSafeTimezone(tenant?.timezone)
-    const defaultRange = getDefaultRange(timezone)
-    const rangeStart = query.from ? new Date(query.from) : defaultRange.start
-    const rangeEnd = query.to ? new Date(query.to) : defaultRange.end
-    const validatedFilters = await validateCalendarFilters(tenantId, query)
-
-    if (!validatedFilters.ok) {
-      return res.status(validatedFilters.status).json({
-        error: validatedFilters.error,
-      })
+    if (!appointment) {
+      return res.status(404).json({ error: "APPOINTMENT_NOT_FOUND" })
     }
 
-    const {
-      selectedUserIds,
-      selectedGroupIds,
-      resolvedAssignedToUserIds,
-    } = validatedFilters
+    const canViewLogs = canViewAppointmentAuditLogs(membership)
+    const auditLogs = canViewLogs
+      ? await prisma.appointmentAuditLog.findMany({
+          where: {
+            tenantId,
+            appointmentId,
+          },
+          orderBy: [{ createdAt: "desc" }],
+          select: {
+            id: true,
+            action: true,
+            actorDisplayName: true,
+            message: true,
+            createdAt: true,
+          },
+        })
+      : []
 
-    const shouldReturnEmptyForGroupSelection =
-      query.filterMode === "groups" &&
-      selectedGroupIds.length > 0 &&
-      resolvedAssignedToUserIds.length === 0
+    return res.json({
+      ok: true,
+      item: serializeAppointmentItem(appointment),
+      canViewAuditLogs: canViewLogs,
+      auditLogs: auditLogs.map(serializeAuditLog),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get(
+  "/:tenantId/:appointmentId/audit",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, appointmentId } = TenantAppointmentPathSchema.parse(req.params)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      if (!canViewAppointmentAuditLogs(membership)) {
+        return res.status(403).json({ error: "APPOINTMENT_AUDIT_ACCESS_DENIED" })
+      }
+
+      const appointment = await prisma.appointment.findFirst({
+        where: {
+          id: appointmentId,
+          tenantId,
+        },
+        select: {
+          id: true,
+        },
+      })
+
+      if (!appointment) {
+        return res.status(404).json({ error: "APPOINTMENT_NOT_FOUND" })
+      }
+
+      const auditLogs = await prisma.appointmentAuditLog.findMany({
+        where: {
+          tenantId,
+          appointmentId,
+        },
+        orderBy: [{ createdAt: "desc" }],
+        select: {
+          id: true,
+          action: true,
+          actorDisplayName: true,
+          message: true,
+          createdAt: true,
+        },
+      })
+
+      return res.json({
+        ok: true,
+        items: auditLogs.map(serializeAuditLog),
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.get("/:tenantId/contact/:contactId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, contactId } = TenantContactPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const contact = await prisma.contact.findFirst({
+      where: {
+        id: contactId,
+        tenantId,
+      },
+      select: {
+        id: true,
+      },
+    })
+
+    if (!contact) {
+      return res.status(404).json({ error: "CONTACT_NOT_FOUND" })
+    }
 
     const items = await prisma.appointment.findMany({
       where: {
         tenantId,
-        status: "SCHEDULED",
-        ...(shouldReturnEmptyForGroupSelection
-          ? {
-              assignedToUserId: "__NO_MATCH__",
-            }
-          : resolvedAssignedToUserIds.length > 0
-          ? {
-              assignedToUserId: {
-                in: resolvedAssignedToUserIds,
-              },
-            }
-          : {}),
-        ...(query.contactId ? { contactId: query.contactId } : {}),
-        ...(query.serviceId ? { serviceId: query.serviceId } : {}),
-        startAt: { lt: rangeEnd },
-        endAt: { gt: rangeStart },
+        contactId,
       },
-      orderBy: [{ startAt: "asc" }],
+      orderBy: [{ startAt: "desc" }],
       select: {
         id: true,
         title: true,
@@ -586,24 +849,126 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
 
     return res.json({
       ok: true,
-      items: items.map((item) => ({
-        id: item.id,
-        title: item.title,
-        startAt: item.startAt.toISOString(),
-        endAt: item.endAt.toISOString(),
-        assignedToUserId: item.assignedToUserId,
-        assignedToLabel: item.assignedTo?.name?.trim() || item.assignedTo?.email || "Unassigned",
-        assignedToImage: item.assignedTo?.image ?? null,
-        assignedToColor: item.assignedTo?.memberships[0]?.calendarColor ?? null,
-        contactId: item.contactId,
-        contactName: `${item.contact.firstName} ${item.contact.lastName}`.trim(),
-        contactEmail: item.contact.email ?? null,
-        contactPhone: item.contact.phone ?? null,
-        serviceId: item.serviceId,
-        serviceName: item.service?.name ?? null,
-        status: item.status,
-        notes: item.notes ?? null,
-      })),
+      canViewAuditLogs: canViewAppointmentAuditLogs(membership),
+      items: items.map(serializeAppointmentItem),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const query = CalendarQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { timezone: true },
+    })
+
+    const timezone = getSafeTimezone(tenant?.timezone)
+    const defaultRange = getDefaultRange(timezone)
+    const rangeStart = query.from ? new Date(query.from) : defaultRange.start
+    const rangeEnd = query.to ? new Date(query.to) : defaultRange.end
+    const validatedFilters = await validateCalendarFilters(tenantId, query)
+
+    if (!validatedFilters.ok) {
+      return res.status(validatedFilters.status).json({
+        error: validatedFilters.error,
+      })
+    }
+
+    const {
+      selectedUserIds,
+      selectedGroupIds,
+      resolvedAssignedToUserIds,
+    } = validatedFilters
+
+    const shouldReturnEmptyForGroupSelection =
+      query.filterMode === "groups" &&
+      selectedGroupIds.length > 0 &&
+      resolvedAssignedToUserIds.length === 0
+
+    const [items, blockedPeriods] = await Promise.all([
+      prisma.appointment.findMany({
+        where: {
+          tenantId,
+          ...(shouldReturnEmptyForGroupSelection
+            ? {
+                assignedToUserId: "__NO_MATCH__",
+              }
+            : resolvedAssignedToUserIds.length > 0
+            ? {
+                assignedToUserId: {
+                  in: resolvedAssignedToUserIds,
+                },
+              }
+            : {}),
+          ...(query.contactId ? { contactId: query.contactId } : {}),
+          ...(query.serviceId ? { serviceId: query.serviceId } : {}),
+          startAt: { lt: rangeEnd },
+          endAt: { gt: rangeStart },
+        },
+        orderBy: [{ startAt: "asc" }],
+        select: {
+          id: true,
+          title: true,
+          notes: true,
+          startAt: true,
+          endAt: true,
+          assignedToUserId: true,
+          status: true,
+          contactId: true,
+          serviceId: true,
+          contact: {
+            select: {
+              firstName: true,
+              lastName: true,
+              email: true,
+              phone: true,
+            },
+          },
+          assignedTo: {
+            select: {
+              name: true,
+              email: true,
+              image: true,
+              memberships: {
+                where: {
+                  tenantId,
+                },
+                select: {
+                  calendarColor: true,
+                },
+                take: 1,
+              },
+            },
+          },
+          service: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      }),
+      listCalendarBlockOccurrences(prisma, {
+        tenantId,
+        timezone,
+        rangeStart,
+        rangeEnd,
+        scope: "TENANT",
+      }),
+    ])
+
+    return res.json({
+      ok: true,
+      items: items.map(serializeAppointmentItem),
+      blockedPeriods: blockedPeriods.map(serializeCalendarBlockOccurrence),
       range: {
         from: rangeStart.toISOString(),
         to: rangeEnd.toISOString(),
@@ -751,7 +1116,9 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
       contactId: payload.contactId,
       serviceId: payload.serviceId ?? null,
       bookedByUserId: authed.user.id,
+      actorDisplayName: getActorDisplayName(authed.user),
       assignedToUserId: payload.assignedToUserId,
+      assignedToLabel: assignee.user.name?.trim() || assignee.user.email,
       title,
       notes: payload.notes ?? null,
       startAt,
@@ -813,32 +1180,55 @@ router.patch("/:tenantId/:appointmentId", requireAuth, async (req, res, next) =>
       return res.status(404).json({ error: "APPOINTMENT_NOT_FOUND" })
     }
 
-    if (payload.status === "CANCELED") {
-      const canceled = await prisma.appointment.update({
-        where: {
-          id: appointmentId,
-        },
-        data: {
-          status: "CANCELED",
-        },
-        select: {
-          id: true,
-          title: true,
-          startAt: true,
-          endAt: true,
-          status: true,
-          assignedToUserId: true,
-          contactId: true,
-          serviceId: true,
-        },
+    if (
+      payload.status &&
+      payload.status !== "SCHEDULED"
+    ) {
+      const updatedAppointment = await prisma.$transaction(async (tx) => {
+        const updated = await tx.appointment.update({
+          where: {
+            id: appointmentId,
+          },
+          data: {
+            status: payload.status,
+          },
+          select: {
+            id: true,
+            title: true,
+            startAt: true,
+            endAt: true,
+            status: true,
+            assignedToUserId: true,
+            contactId: true,
+            serviceId: true,
+          },
+        })
+
+        if (
+          payload.status === "CANCELED" &&
+          existingAppointment.status !== "CANCELED"
+        ) {
+          await tx.appointmentAuditLog.create({
+            data: {
+              tenantId,
+              appointmentId,
+              actorUserId: authed.user.id,
+              actorDisplayName: getActorDisplayName(authed.user),
+              action: "CANCELED",
+              message: `${getActorDisplayName(authed.user)} canceled this appointment.`,
+            },
+          })
+        }
+
+        return updated
       })
 
       return res.json({
         ok: true,
         item: {
-          ...canceled,
-          startAt: canceled.startAt.toISOString(),
-          endAt: canceled.endAt.toISOString(),
+          ...updatedAppointment,
+          startAt: updatedAppointment.startAt.toISOString(),
+          endAt: updatedAppointment.endAt.toISOString(),
         },
       })
     }
@@ -915,9 +1305,12 @@ router.patch("/:tenantId/:appointmentId", requireAuth, async (req, res, next) =>
     const updateResult = await updateAppointmentAtomically({
       appointmentId,
       tenantId,
+      actorUserId: authed.user.id,
+      actorDisplayName: getActorDisplayName(authed.user),
       contactId: nextContactId,
       serviceId: nextServiceId ?? null,
       assignedToUserId: nextAssignedToUserId,
+      assignedToLabel: assignee.user.name?.trim() || assignee.user.email,
       title: nextTitle,
       notes: payload.notes !== undefined ? payload.notes ?? null : existingAppointment.notes,
       startAt: nextStartAt,

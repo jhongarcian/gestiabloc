@@ -12,6 +12,14 @@ export type CalendarMetaResponse = {
     postBufferMinutes: number
     bufferAvailabilityMode: "BUSY" | "UNAVAILABLE"
   }
+  availability: {
+    weeklyAvailability: Array<{
+      dayOfWeek: number
+      enabled: boolean
+      startTime: string
+      endTime: string
+    }>
+  }
   filters: {
     users: Array<{
       id: string
@@ -40,6 +48,13 @@ export type CalendarMetaResponse = {
     }>
   }
 }
+
+export type AppointmentStatus =
+  | "SCHEDULED"
+  | "CONFIRMED"
+  | "SHOW"
+  | "NO_SHOW"
+  | "CANCELED"
 
 export type AppointmentSlotsResponse = {
   ok: boolean
@@ -85,12 +100,29 @@ export type CalendarEventItem = {
   contactPhone: string | null
   serviceId: string | null
   serviceName: string | null
-  status: string
+  status: AppointmentStatus
+}
+
+export type CalendarBlockedPeriodItem = {
+  id: string
+  title: string
+  startsAt: string
+  endsAt: string
+  isAllDay: boolean
+}
+
+export type AppointmentAuditLogItem = {
+  id: string
+  action: "CREATED" | "REASSIGNED" | "RESCHEDULED" | "CANCELED"
+  actorDisplayName: string
+  message: string
+  createdAt: string
 }
 
 export type CalendarEventsResponse = {
   ok: boolean
   items: CalendarEventItem[]
+  blockedPeriods: CalendarBlockedPeriodItem[]
   range: {
     from: string | null
     to: string | null
@@ -170,11 +202,29 @@ export type AppointmentMutationResponse = {
     title: string
     startAt: string
     endAt: string
-    status: string
+    status: AppointmentStatus
     assignedToUserId: string | null
     contactId: string
     serviceId: string | null
   }
+}
+
+export type AppointmentDetailsResponse = {
+  ok: boolean
+  item: CalendarEventItem
+  canViewAuditLogs: boolean
+  auditLogs: AppointmentAuditLogItem[]
+}
+
+export type ContactAppointmentsResponse = {
+  ok: boolean
+  canViewAuditLogs: boolean
+  items: CalendarEventItem[]
+}
+
+export type AppointmentAuditLogsResponse = {
+  ok: boolean
+  items: AppointmentAuditLogItem[]
 }
 
 export async function getCalendarMeta(tenantId: string, cookie?: string) {
@@ -258,12 +308,57 @@ export async function updateAppointment(
   tenantId: string,
   appointmentId: string,
   payload: Partial<CreateAppointmentPayload> & {
-    status?: "SCHEDULED" | "CANCELED"
+    status?: AppointmentStatus
   },
 ) {
   const { data } = await api.patch<AppointmentMutationResponse>(
     `/api/appointments/${tenantId}/${appointmentId}`,
     payload,
+  )
+
+  return data
+}
+
+export async function getAppointmentDetails(
+  tenantId: string,
+  appointmentId: string,
+  cookie?: string,
+) {
+  const { data } = await api.get<AppointmentDetailsResponse>(
+    `/api/appointments/${tenantId}/item/${appointmentId}`,
+    {
+      headers: cookie ? { cookie } : undefined,
+    },
+  )
+
+  return data
+}
+
+export async function getAppointmentAuditLogs(
+  tenantId: string,
+  appointmentId: string,
+  cookie?: string,
+) {
+  const { data } = await api.get<AppointmentAuditLogsResponse>(
+    `/api/appointments/${tenantId}/${appointmentId}/audit`,
+    {
+      headers: cookie ? { cookie } : undefined,
+    },
+  )
+
+  return data
+}
+
+export async function getContactAppointments(
+  tenantId: string,
+  contactId: string,
+  cookie?: string,
+) {
+  const { data } = await api.get<ContactAppointmentsResponse>(
+    `/api/appointments/${tenantId}/contact/${contactId}`,
+    {
+      headers: cookie ? { cookie } : undefined,
+    },
   )
 
   return data

@@ -7,8 +7,8 @@ import {
 } from "../lib/contact-custom-field-encryption.js"
 import { prisma } from "../lib/prisma.js"
 import { emitNotificationCreated } from "../lib/realtime.js"
+import { deletePrivateObject } from "../lib/private-storage.js"
 import { enforceSameOrigin } from "../lib/security.js"
-import { deleteObject } from "../lib/s3.js"
 import { normalizeTagSearchTerm, parseCsvIds } from "../lib/tag-utils.js"
 import { serializeNotification } from "../lib/task-notifications.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
@@ -492,7 +492,7 @@ async function deleteFilesIfUnreferenced(fileIds: string[]) {
 
   await Promise.all(
     orphanFiles.map((file) =>
-      deleteObject({ key: file.key }).catch(() => undefined),
+      deletePrivateObject({ path: file.key }).catch(() => undefined),
     ),
   )
 }

@@ -16,10 +16,10 @@ import {
   validateServiceFitProfile,
 } from "../lib/service-fit.js";
 import { sendVerifyEmail } from "../lib/email.js";
+import { getSafeTimezone, getTimezoneDateParts } from "../lib/appointment-booking.js";
 import { prisma } from "../lib/prisma.js";
 import { enforceSameOrigin } from "../lib/security.js";
 import { normalizeTenantTagName } from "../lib/tag-utils.js";
-import { deleteObject } from "../lib/s3.js";
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js";
 import { requireTenantAdmin } from "../middleware/requireTenantAdmin.js";
 
@@ -313,12 +313,29 @@ const UpdateCalendarStaffGroupSchema = z
     }
   });
 
+const CalendarBlockRecurrencePatternSchema = z.enum([
+  "NONE",
+  "DAILY",
+  "WEEKLY",
+  "BIWEEKLY",
+  "MONTHLY",
+]);
+
 const CalendarBlockSchema = z.object({
   title: z.string().trim().min(1).max(120),
   description: optionalStringField(1000),
   startsAt: z.string().datetime(),
   endsAt: z.string().datetime(),
   isAllDay: z.boolean().optional().default(false),
+  recurrencePattern: CalendarBlockRecurrencePatternSchema.optional().default("NONE"),
+  recurrenceUntil: z.preprocess(
+    (value) => {
+      if (typeof value !== "string") return value;
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    },
+    z.string().datetime().nullable().optional(),
+  ),
 });
 
 function validateCalendarBlockRange(
@@ -358,6 +375,71 @@ function validateCalendarBlockRange(
       message: "End time must be after start time.",
     });
   }
+}
+
+function compareLocalDateParts(
+  left: { year: number; month: number; day: number },
+  right: { year: number; month: number; day: number },
+) {
+  if (left.year !== right.year) return left.year - right.year;
+  if (left.month !== right.month) return left.month - right.month;
+  return left.day - right.day;
+}
+
+function getCalendarBlockRecurrenceValidationError(
+  params: {
+    startsAt: Date;
+    endsAt: Date;
+    recurrencePattern: z.infer<typeof CalendarBlockRecurrencePatternSchema>;
+    recurrenceUntil: Date | null;
+  },
+  timezone: string,
+) {
+  if (params.recurrencePattern === "NONE") {
+    return null;
+  }
+
+  const startParts = getTimezoneDateParts(params.startsAt, timezone);
+  const endParts = getTimezoneDateParts(params.endsAt, timezone);
+
+  if (compareLocalDateParts(startParts, endParts) !== 0) {
+    return "RECURRING_BLOCK_MUST_STAY_WITHIN_ONE_LOCAL_DAY";
+  }
+
+  if (params.recurrenceUntil) {
+    const untilParts = getTimezoneDateParts(params.recurrenceUntil, timezone);
+    if (compareLocalDateParts(untilParts, startParts) < 0) {
+      return "RECURRING_BLOCK_UNTIL_BEFORE_START_DATE";
+    }
+  }
+
+  return null;
+}
+
+function serializeCalendarBlock(block: {
+  id: string;
+  title: string;
+  description: string | null;
+  startsAt: Date;
+  endsAt: Date;
+  isAllDay: boolean;
+  recurrencePattern: z.infer<typeof CalendarBlockRecurrencePatternSchema>;
+  recurrenceUntil: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
+  return {
+    id: block.id,
+    title: block.title,
+    description: block.description,
+    startsAt: block.startsAt.toISOString(),
+    endsAt: block.endsAt.toISOString(),
+    isAllDay: block.isAllDay,
+    recurrencePattern: block.recurrencePattern,
+    recurrenceUntil: block.recurrenceUntil?.toISOString() ?? null,
+    createdAt: block.createdAt.toISOString(),
+    updatedAt: block.updatedAt.toISOString(),
+  };
 }
 
 const CreateCalendarBlockSchema = CalendarBlockSchema.superRefine((value, ctx) => {
@@ -805,10 +887,7 @@ async function buildUniqueCustomFieldKey(tenantId: string, label: string, exclud
 async function deleteLegacyAvatar(oldKey: string) {
   if (oldKey.startsWith("http://") || oldKey.startsWith("https://")) {
     await deleteBlobByUrl(oldKey).catch(() => {});
-    return;
   }
-
-  await deleteObject({ key: oldKey }).catch(() => {});
 }
 
 async function ensureDefaultContactStatuses(tenantId: string) {
@@ -2037,6 +2116,8 @@ router.get("/:tenantId/calendar", ...readMiddlewares, async (req, res, next) => 
           startsAt: true,
           endsAt: true,
           isAllDay: true,
+          recurrencePattern: true,
+          recurrenceUntil: true,
           createdAt: true,
           updatedAt: true,
         },
@@ -2115,16 +2196,7 @@ router.get("/:tenantId/calendar", ...readMiddlewares, async (req, res, next) => 
         ),
       },
       weeklyAvailability,
-      blocks: blocks.map((block) => ({
-        id: block.id,
-        title: block.title,
-        description: block.description,
-        startsAt: block.startsAt.toISOString(),
-        endsAt: block.endsAt.toISOString(),
-        isAllDay: block.isAllDay,
-        createdAt: block.createdAt.toISOString(),
-        updatedAt: block.updatedAt.toISOString(),
-      })),
+      blocks: blocks.map(serializeCalendarBlock),
       staff: users.map((item) => ({
         id: item.userId,
         label: item.user.name?.trim() || item.user.email,
@@ -2607,6 +2679,8 @@ router.get("/:tenantId/calendar/users/:userId", ...readMiddlewares, async (req, 
           startsAt: true,
           endsAt: true,
           isAllDay: true,
+          recurrencePattern: true,
+          recurrenceUntil: true,
           createdAt: true,
           updatedAt: true,
         },
@@ -2629,16 +2703,7 @@ router.get("/:tenantId/calendar/users/:userId", ...readMiddlewares, async (req, 
         color: membership.calendarColor ?? null,
       },
       weeklyAvailability: buildWeeklyAvailabilityFromRules(rules),
-      blocks: blocks.map((block) => ({
-        id: block.id,
-        title: block.title,
-        description: block.description,
-        startsAt: block.startsAt.toISOString(),
-        endsAt: block.endsAt.toISOString(),
-        isAllDay: block.isAllDay,
-        createdAt: block.createdAt.toISOString(),
-        updatedAt: block.updatedAt.toISOString(),
-      })),
+      blocks: blocks.map(serializeCalendarBlock),
     });
   } catch (error) {
     return next(error);
@@ -2714,6 +2779,26 @@ router.post("/:tenantId/calendar/blocks", ...writeMiddlewares, async (req, res, 
 
     const { tenantId } = TenantPathSchema.parse(req.params);
     const payload = CreateCalendarBlockSchema.parse(req.body);
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { timezone: true },
+    });
+    const startsAt = new Date(payload.startsAt);
+    const endsAt = new Date(payload.endsAt);
+    const recurrenceUntil = payload.recurrenceUntil ? new Date(payload.recurrenceUntil) : null;
+    const recurrenceValidationError = getCalendarBlockRecurrenceValidationError(
+      {
+        startsAt,
+        endsAt,
+        recurrencePattern: payload.recurrencePattern,
+        recurrenceUntil,
+      },
+      getSafeTimezone(tenant?.timezone),
+    );
+
+    if (recurrenceValidationError) {
+      return res.status(400).json({ error: recurrenceValidationError });
+    }
 
     const created = await prisma.calendarTimeBlock.create({
       data: {
@@ -2722,9 +2807,11 @@ router.post("/:tenantId/calendar/blocks", ...writeMiddlewares, async (req, res, 
         scope: "TENANT",
         title: payload.title.trim(),
         description: payload.description ?? null,
-        startsAt: new Date(payload.startsAt),
-        endsAt: new Date(payload.endsAt),
+        startsAt,
+        endsAt,
         isAllDay: payload.isAllDay,
+        recurrencePattern: payload.recurrencePattern,
+        recurrenceUntil,
       },
       select: {
         id: true,
@@ -2733,6 +2820,8 @@ router.post("/:tenantId/calendar/blocks", ...writeMiddlewares, async (req, res, 
         startsAt: true,
         endsAt: true,
         isAllDay: true,
+        recurrencePattern: true,
+        recurrenceUntil: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -2740,13 +2829,7 @@ router.post("/:tenantId/calendar/blocks", ...writeMiddlewares, async (req, res, 
 
     return res.status(201).json({
       ok: true,
-      block: {
-        ...created,
-        startsAt: created.startsAt.toISOString(),
-        endsAt: created.endsAt.toISOString(),
-        createdAt: created.createdAt.toISOString(),
-        updatedAt: created.updatedAt.toISOString(),
-      },
+      block: serializeCalendarBlock(created),
     });
   } catch (error) {
     return next(error);
@@ -2767,6 +2850,13 @@ router.patch("/:tenantId/calendar/blocks/:recordId", ...writeMiddlewares, async 
         tenantId: true,
         scope: true,
         userId: true,
+        title: true,
+        description: true,
+        startsAt: true,
+        endsAt: true,
+        isAllDay: true,
+        recurrencePattern: true,
+        recurrenceUntil: true,
       },
     });
 
@@ -2778,6 +2868,10 @@ router.patch("/:tenantId/calendar/blocks/:recordId", ...writeMiddlewares, async 
       payload.startsAt !== undefined ? new Date(payload.startsAt) : undefined;
     const endsAt =
       payload.endsAt !== undefined ? new Date(payload.endsAt) : undefined;
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { timezone: true },
+    });
 
     if (
       startsAt &&
@@ -2789,6 +2883,30 @@ router.patch("/:tenantId/calendar/blocks/:recordId", ...writeMiddlewares, async 
       return res.status(400).json({ error: "INVALID_BLOCK_RANGE" });
     }
 
+    const nextStartsAt = startsAt ?? existing.startsAt;
+    const nextEndsAt = endsAt ?? existing.endsAt;
+    const nextRecurrencePattern =
+      payload.recurrencePattern ?? existing.recurrencePattern;
+    const nextRecurrenceUntil =
+      payload.recurrenceUntil !== undefined
+        ? payload.recurrenceUntil
+          ? new Date(payload.recurrenceUntil)
+          : null
+        : existing.recurrenceUntil;
+    const recurrenceValidationError = getCalendarBlockRecurrenceValidationError(
+      {
+        startsAt: nextStartsAt,
+        endsAt: nextEndsAt,
+        recurrencePattern: nextRecurrencePattern,
+        recurrenceUntil: nextRecurrenceUntil,
+      },
+      getSafeTimezone(tenant?.timezone),
+    );
+
+    if (recurrenceValidationError) {
+      return res.status(400).json({ error: recurrenceValidationError });
+    }
+
     const updated = await prisma.calendarTimeBlock.update({
       where: { id: recordId },
       data: {
@@ -2797,6 +2915,13 @@ router.patch("/:tenantId/calendar/blocks/:recordId", ...writeMiddlewares, async 
         startsAt,
         endsAt,
         isAllDay: payload.isAllDay,
+        recurrencePattern: payload.recurrencePattern,
+        recurrenceUntil:
+          payload.recurrenceUntil !== undefined
+            ? payload.recurrenceUntil
+              ? new Date(payload.recurrenceUntil)
+              : null
+            : undefined,
       },
       select: {
         id: true,
@@ -2805,6 +2930,8 @@ router.patch("/:tenantId/calendar/blocks/:recordId", ...writeMiddlewares, async 
         startsAt: true,
         endsAt: true,
         isAllDay: true,
+        recurrencePattern: true,
+        recurrenceUntil: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -2812,13 +2939,7 @@ router.patch("/:tenantId/calendar/blocks/:recordId", ...writeMiddlewares, async 
 
     return res.json({
       ok: true,
-      block: {
-        ...updated,
-        startsAt: updated.startsAt.toISOString(),
-        endsAt: updated.endsAt.toISOString(),
-        createdAt: updated.createdAt.toISOString(),
-        updatedAt: updated.updatedAt.toISOString(),
-      },
+      block: serializeCalendarBlock(updated),
     });
   } catch (error) {
     return next(error);
@@ -2862,21 +2983,44 @@ router.post("/:tenantId/calendar/users/:userId/blocks", ...writeMiddlewares, asy
     const { tenantId, userId } = TenantUserPathSchema.parse(req.params);
     const payload = CreateCalendarBlockSchema.parse(req.body);
 
-    const membership = await prisma.membership.findUnique({
-      where: {
-        userId_tenantId: {
-          tenantId,
-          userId,
+    const [membership, tenant] = await prisma.$transaction([
+      prisma.membership.findUnique({
+        where: {
+          userId_tenantId: {
+            tenantId,
+            userId,
+          },
         },
-      },
-      select: {
-        userId: true,
-        status: true,
-      },
-    });
+        select: {
+          userId: true,
+          status: true,
+        },
+      }),
+      prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { timezone: true },
+      }),
+    ]);
 
     if (!membership || membership.status !== "ACTIVE") {
       return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    const startsAt = new Date(payload.startsAt);
+    const endsAt = new Date(payload.endsAt);
+    const recurrenceUntil = payload.recurrenceUntil ? new Date(payload.recurrenceUntil) : null;
+    const recurrenceValidationError = getCalendarBlockRecurrenceValidationError(
+      {
+        startsAt,
+        endsAt,
+        recurrencePattern: payload.recurrencePattern,
+        recurrenceUntil,
+      },
+      getSafeTimezone(tenant?.timezone),
+    );
+
+    if (recurrenceValidationError) {
+      return res.status(400).json({ error: recurrenceValidationError });
     }
 
     const created = await prisma.calendarTimeBlock.create({
@@ -2886,9 +3030,11 @@ router.post("/:tenantId/calendar/users/:userId/blocks", ...writeMiddlewares, asy
         scope: "USER",
         title: payload.title.trim(),
         description: payload.description ?? null,
-        startsAt: new Date(payload.startsAt),
-        endsAt: new Date(payload.endsAt),
+        startsAt,
+        endsAt,
         isAllDay: payload.isAllDay,
+        recurrencePattern: payload.recurrencePattern,
+        recurrenceUntil,
       },
       select: {
         id: true,
@@ -2897,6 +3043,8 @@ router.post("/:tenantId/calendar/users/:userId/blocks", ...writeMiddlewares, asy
         startsAt: true,
         endsAt: true,
         isAllDay: true,
+        recurrencePattern: true,
+        recurrenceUntil: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -2904,13 +3052,7 @@ router.post("/:tenantId/calendar/users/:userId/blocks", ...writeMiddlewares, asy
 
     return res.status(201).json({
       ok: true,
-      block: {
-        ...created,
-        startsAt: created.startsAt.toISOString(),
-        endsAt: created.endsAt.toISOString(),
-        createdAt: created.createdAt.toISOString(),
-        updatedAt: created.updatedAt.toISOString(),
-      },
+      block: serializeCalendarBlock(created),
     });
   } catch (error) {
     return next(error);

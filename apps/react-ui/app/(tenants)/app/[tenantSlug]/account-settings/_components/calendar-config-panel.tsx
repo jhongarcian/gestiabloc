@@ -8,7 +8,7 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { DateTimeInput } from "@/components/ui/date-time-input"
+import { DateInput } from "@/components/ui/date-input"
 import {
   Dialog,
   DialogContent,
@@ -29,7 +29,7 @@ import {
   dateTimeDraftToUtcIso,
   formatDateTimeForDisplay,
   formatUtcIsoToDateTimeDraft,
-  isDateTimeDraftComplete,
+  parseTimeInput,
 } from "@/lib/date-time"
 
 type CalendarConfigPanelProps = {
@@ -44,6 +44,13 @@ type WeeklyAvailabilityItem = {
   endTime: string
 }
 
+type CalendarBlockRecurrencePattern =
+  | "NONE"
+  | "DAILY"
+  | "WEEKLY"
+  | "BIWEEKLY"
+  | "MONTHLY"
+
 type CalendarBlockItem = {
   id: string
   title: string
@@ -51,6 +58,8 @@ type CalendarBlockItem = {
   startsAt: string
   endsAt: string
   isAllDay: boolean
+  recurrencePattern: CalendarBlockRecurrencePattern
+  recurrenceUntil: string | null
   createdAt: string
   updatedAt: string
 }
@@ -137,8 +146,16 @@ const BUFFER_MODE_OPTIONS = [
   },
 ] as const
 
+const BLOCK_RECURRENCE_OPTIONS = [
+  { value: "NONE" as const, label: "Specific date range" },
+  { value: "DAILY" as const, label: "Every day" },
+  { value: "WEEKLY" as const, label: "Every week" },
+  { value: "BIWEEKLY" as const, label: "Every 2 weeks" },
+  { value: "MONTHLY" as const, label: "Monthly" },
+] as const
+
 const DEFAULT_START_TIME = "09:00"
-const DEFAULT_END_TIME = "17:00"
+const DEFAULT_END_TIME = "10:00"
 const STAFF_COLOR_PALETTE = [
   "#1d4ed8",
   "#0f766e",
@@ -149,6 +166,42 @@ const STAFF_COLOR_PALETTE = [
   "#1e40af",
   "#4338ca",
 ] as const
+
+const BLOCK_START_TIME_OPTIONS = Array.from({ length: 24 * 4 }, (_, index) => {
+  const totalMinutes = index * 15
+  const hour = Math.floor(totalMinutes / 60)
+  const minute = totalMinutes % 60
+  const label = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`
+  return { value: label, label }
+})
+
+const BLOCK_END_TIME_OPTIONS = [
+  ...Array.from({ length: 24 * 4 - 1 }, (_, index) => {
+    const totalMinutes = (index + 1) * 15
+    const hour = Math.floor(totalMinutes / 60)
+    const minute = totalMinutes % 60
+    const label = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`
+    return { value: label, label }
+  }),
+  { value: "23:59", label: "24:00" },
+] as const
+
+function getValidEndTimeOptions(startTime: string) {
+  const parsedStartTime = parseTimeInput(startTime)
+  if (!parsedStartTime) {
+    return [...BLOCK_END_TIME_OPTIONS]
+  }
+
+  const startMinutes = parsedStartTime.hour * 60 + parsedStartTime.minute
+
+  return BLOCK_END_TIME_OPTIONS.filter((option) => {
+    const parsedOptionTime = parseTimeInput(option.value)
+    if (!parsedOptionTime) return false
+
+    const optionMinutes = parsedOptionTime.hour * 60 + parsedOptionTime.minute
+    return optionMinutes > startMinutes
+  })
+}
 
 function normalizeCalendarConfigResponse(
   data: Partial<CalendarConfigResponse> | null | undefined,
@@ -167,7 +220,13 @@ function normalizeCalendarConfigResponse(
       bufferAvailabilityMode: data?.bookingRules?.bufferAvailabilityMode ?? "BUSY",
     },
     weeklyAvailability: Array.isArray(data?.weeklyAvailability) ? data.weeklyAvailability : [],
-    blocks: Array.isArray(data?.blocks) ? data.blocks : [],
+    blocks: Array.isArray(data?.blocks)
+      ? data.blocks.map((block) => ({
+          ...block,
+          recurrencePattern: block.recurrencePattern ?? "NONE",
+          recurrenceUntil: block.recurrenceUntil ?? null,
+        }))
+      : [],
     staff: Array.isArray(data?.staff) ? data.staff : [],
     groups: Array.isArray(data?.groups) ? data.groups : [],
   }
@@ -188,7 +247,13 @@ function normalizeUserCalendarResponse(
       color: null,
     },
     weeklyAvailability: Array.isArray(data?.weeklyAvailability) ? data.weeklyAvailability : [],
-    blocks: Array.isArray(data?.blocks) ? data.blocks : [],
+    blocks: Array.isArray(data?.blocks)
+      ? data.blocks.map((block) => ({
+          ...block,
+          recurrencePattern: block.recurrencePattern ?? "NONE",
+          recurrenceUntil: block.recurrenceUntil ?? null,
+        }))
+      : [],
   }
 }
 
@@ -207,6 +272,79 @@ function buildBackendErrorMessage(error: unknown, fallback: string) {
   return typeof backendError === "string"
     ? backendError.replace(/_/g, " ")
     : fallback
+}
+
+function isDateDraftComplete(value: DateTimeDraft) {
+  return /^\d{2}\/\d{2}\/\d{4}$/.test(value.date.trim())
+}
+
+function isBlockDateTimeDraftComplete(value: DateTimeDraft, isAllDay: boolean) {
+  return isDateDraftComplete(value) && (isAllDay || parseTimeInput(value.time) !== null)
+}
+
+function buildDefaultBlockStartInput(timezone: string | null): DateTimeDraft {
+  return {
+    date: formatUtcIsoToDateTimeDraft(new Date().toISOString(), timezone).date,
+    time: DEFAULT_START_TIME,
+  }
+}
+
+function buildDefaultBlockEndInput(timezone: string | null): DateTimeDraft {
+  return {
+    date: formatUtcIsoToDateTimeDraft(new Date().toISOString(), timezone).date,
+    time: DEFAULT_END_TIME,
+  }
+}
+
+function buildBlockUtcIso(
+  value: DateTimeDraft,
+  timezone: string | null,
+  isAllDay: boolean,
+  boundary: "start" | "end",
+) {
+  return dateTimeDraftToUtcIso(
+    {
+      date: value.date,
+      time: isAllDay ? (boundary === "start" ? "00:00" : "23:59") : value.time,
+    },
+    timezone,
+  )
+}
+
+function dateDraftToUtcEndOfDayIso(value: DateTimeDraft, timezone: string | null) {
+  if (!isDateDraftComplete(value)) return null
+
+  return dateTimeDraftToUtcIso(
+    {
+      date: value.date,
+      time: "23:59",
+    },
+    timezone,
+  )
+}
+
+function formatBlockRecurrenceSummary(
+  block: Pick<CalendarBlockItem, "recurrencePattern" | "recurrenceUntil">,
+  timezone: string | null,
+) {
+  if (block.recurrencePattern === "NONE") {
+    return null
+  }
+
+  const baseLabel =
+    block.recurrencePattern === "DAILY"
+      ? "Repeats daily"
+      : block.recurrencePattern === "WEEKLY"
+        ? "Repeats weekly"
+        : block.recurrencePattern === "BIWEEKLY"
+          ? "Repeats every 2 weeks"
+          : "Repeats monthly"
+
+  if (!block.recurrenceUntil) {
+    return `${baseLabel} until removed`
+  }
+
+  return `${baseLabel} until ${formatDateTimeForDisplay(block.recurrenceUntil, timezone)}`
 }
 
 function coerceNullablePositiveInteger(value: string) {
@@ -326,6 +464,11 @@ function BlockList({
                 {formatDateTimeForDisplay(block.startsAt, timezone)} to{" "}
                 {formatDateTimeForDisplay(block.endsAt, timezone)}
               </p>
+              {formatBlockRecurrenceSummary(block, timezone) ? (
+                <p className="text-sm text-slate-500">
+                  {formatBlockRecurrenceSummary(block, timezone)}
+                </p>
+              ) : null}
               {block.description ? (
                 <p className="text-sm leading-6 text-slate-500">{block.description}</p>
               ) : null}
@@ -406,6 +549,14 @@ export function CalendarConfigPanel({
     date: "",
     time: "",
   })
+  const [accountBlockRecurrencePattern, setAccountBlockRecurrencePattern] =
+    useState<CalendarBlockRecurrencePattern>("NONE")
+  const [accountBlockRecurrenceUntilInput, setAccountBlockRecurrenceUntilInput] =
+    useState<DateTimeDraft>({
+      date: "",
+      time: "",
+    })
+  const [accountBlockIsAllDay, setAccountBlockIsAllDay] = useState(false)
 
   const [userBlockTitle, setUserBlockTitle] = useState("")
   const [userBlockDescription, setUserBlockDescription] = useState("")
@@ -417,23 +568,33 @@ export function CalendarConfigPanel({
     date: "",
     time: "",
   })
+  const [userBlockRecurrencePattern, setUserBlockRecurrencePattern] =
+    useState<CalendarBlockRecurrencePattern>("NONE")
+  const [userBlockRecurrenceUntilInput, setUserBlockRecurrenceUntilInput] =
+    useState<DateTimeDraft>({
+      date: "",
+      time: "",
+    })
+  const [userBlockIsAllDay, setUserBlockIsAllDay] = useState(false)
 
   const resetAccountBlockForm = useCallback(() => {
     setAccountBlockTitle("")
     setAccountBlockDescription("")
-    setAccountBlockStartInput(formatUtcIsoToDateTimeDraft(new Date().toISOString(), timezone))
-    setAccountBlockEndInput(
-      formatUtcIsoToDateTimeDraft(new Date(Date.now() + 60 * 60 * 1000).toISOString(), timezone),
-    )
+    setAccountBlockStartInput(buildDefaultBlockStartInput(timezone))
+    setAccountBlockEndInput(buildDefaultBlockEndInput(timezone))
+    setAccountBlockRecurrencePattern("NONE")
+    setAccountBlockRecurrenceUntilInput({ date: "", time: "" })
+    setAccountBlockIsAllDay(false)
   }, [timezone])
 
   const resetUserBlockForm = useCallback(() => {
     setUserBlockTitle("")
     setUserBlockDescription("")
-    setUserBlockStartInput(formatUtcIsoToDateTimeDraft(new Date().toISOString(), timezone))
-    setUserBlockEndInput(
-      formatUtcIsoToDateTimeDraft(new Date(Date.now() + 60 * 60 * 1000).toISOString(), timezone),
-    )
+    setUserBlockStartInput(buildDefaultBlockStartInput(timezone))
+    setUserBlockEndInput(buildDefaultBlockEndInput(timezone))
+    setUserBlockRecurrencePattern("NONE")
+    setUserBlockRecurrenceUntilInput({ date: "", time: "" })
+    setUserBlockIsAllDay(false)
   }, [timezone])
 
   const resetGroupForm = useCallback(() => {
@@ -446,6 +607,16 @@ export function CalendarConfigPanel({
   const enabledStaffMembers = useMemo(
     () => staffMembers.filter((staffMember) => staffMember.enabled),
     [staffMembers],
+  )
+
+  const accountEndTimeOptions = useMemo(
+    () => getValidEndTimeOptions(accountBlockStartInput.time),
+    [accountBlockStartInput.time],
+  )
+
+  const userEndTimeOptions = useMemo(
+    () => getValidEndTimeOptions(userBlockStartInput.time),
+    [userBlockStartInput.time],
   )
 
   const filteredStaffMembers = useMemo(() => {
@@ -465,6 +636,26 @@ export function CalendarConfigPanel({
 
     return `${activeDays.length} active day${activeDays.length === 1 ? "" : "s"} each week`
   }, [weeklyAvailability])
+
+  useEffect(() => {
+    if (accountBlockIsAllDay) return
+    if (accountEndTimeOptions.some((option) => option.value === accountBlockEndInput.time)) return
+
+    setAccountBlockEndInput((current) => ({
+      ...current,
+      time: accountEndTimeOptions[0]?.value ?? current.time,
+    }))
+  }, [accountBlockEndInput.time, accountBlockIsAllDay, accountEndTimeOptions])
+
+  useEffect(() => {
+    if (userBlockIsAllDay) return
+    if (userEndTimeOptions.some((option) => option.value === userBlockEndInput.time)) return
+
+    setUserBlockEndInput((current) => ({
+      ...current,
+      time: userEndTimeOptions[0]?.value ?? current.time,
+    }))
+  }, [userBlockEndInput.time, userBlockIsAllDay, userEndTimeOptions])
 
   const loadConfig = useCallback(async () => {
     setIsLoading(true)
@@ -726,12 +917,28 @@ export function CalendarConfigPanel({
   }
 
   const onCreateAccountBlock = async () => {
-    const startsAt = isDateTimeDraftComplete(accountBlockStartInput)
-      ? dateTimeDraftToUtcIso(accountBlockStartInput, timezone)
+    const effectiveAccountEndInput =
+      accountBlockRecurrencePattern === "NONE"
+        ? accountBlockEndInput
+        : { ...accountBlockEndInput, date: accountBlockStartInput.date }
+    const startsAt = isBlockDateTimeDraftComplete(accountBlockStartInput, accountBlockIsAllDay)
+      ? buildBlockUtcIso(accountBlockStartInput, timezone, accountBlockIsAllDay, "start")
       : null
-    const endsAt = isDateTimeDraftComplete(accountBlockEndInput)
-      ? dateTimeDraftToUtcIso(accountBlockEndInput, timezone)
+    const endsAt = isBlockDateTimeDraftComplete(
+      effectiveAccountEndInput,
+      accountBlockIsAllDay,
+    )
+      ? buildBlockUtcIso(
+          effectiveAccountEndInput,
+          timezone,
+          accountBlockIsAllDay,
+          "end",
+        )
       : null
+    const recurrenceUntil =
+      accountBlockRecurrencePattern !== "NONE"
+        ? dateDraftToUtcEndOfDayIso(accountBlockRecurrenceUntilInput, timezone)
+        : null
 
     if (!accountBlockTitle.trim()) {
       toast.error("Block title is required.")
@@ -750,6 +957,9 @@ export function CalendarConfigPanel({
         description: accountBlockDescription.trim() || null,
         startsAt,
         endsAt,
+        isAllDay: accountBlockIsAllDay,
+        recurrencePattern: accountBlockRecurrencePattern,
+        recurrenceUntil,
       })
       toast.success("Account blocked period added.")
       setIsAccountBlockDialogOpen(false)
@@ -764,12 +974,20 @@ export function CalendarConfigPanel({
   const onCreateUserBlock = async () => {
     if (!selectedUserId) return
 
-    const startsAt = isDateTimeDraftComplete(userBlockStartInput)
-      ? dateTimeDraftToUtcIso(userBlockStartInput, timezone)
+    const effectiveUserEndInput =
+      userBlockRecurrencePattern === "NONE"
+        ? userBlockEndInput
+        : { ...userBlockEndInput, date: userBlockStartInput.date }
+    const startsAt = isBlockDateTimeDraftComplete(userBlockStartInput, userBlockIsAllDay)
+      ? buildBlockUtcIso(userBlockStartInput, timezone, userBlockIsAllDay, "start")
       : null
-    const endsAt = isDateTimeDraftComplete(userBlockEndInput)
-      ? dateTimeDraftToUtcIso(userBlockEndInput, timezone)
+    const endsAt = isBlockDateTimeDraftComplete(effectiveUserEndInput, userBlockIsAllDay)
+      ? buildBlockUtcIso(effectiveUserEndInput, timezone, userBlockIsAllDay, "end")
       : null
+    const recurrenceUntil =
+      userBlockRecurrencePattern !== "NONE"
+        ? dateDraftToUtcEndOfDayIso(userBlockRecurrenceUntilInput, timezone)
+        : null
 
     if (!userBlockTitle.trim()) {
       toast.error("Block title is required.")
@@ -788,6 +1006,9 @@ export function CalendarConfigPanel({
         description: userBlockDescription.trim() || null,
         startsAt,
         endsAt,
+        isAllDay: userBlockIsAllDay,
+        recurrencePattern: userBlockRecurrencePattern,
+        recurrenceUntil,
       })
       toast.success("Staff blocked period added.")
       setIsUserBlockDialogOpen(false)
@@ -1260,7 +1481,7 @@ export function CalendarConfigPanel({
                     </DialogDescription>
                   </DialogHeader>
 
-                  <div className="grid gap-4 py-2">
+                  <div className="space-y-5 py-2">
                     <div className="space-y-2">
                       <Label htmlFor="calendar-account-block-title">Title</Label>
                       <Input
@@ -1282,22 +1503,171 @@ export function CalendarConfigPanel({
                       />
                     </div>
 
-                    <div className="grid gap-4 md:grid-cols-2">
+                    <div className="flex items-start gap-3">
+                      <Checkbox
+                        id="calendar-account-block-all-day"
+                        checked={accountBlockIsAllDay}
+                        onCheckedChange={(checked) => setAccountBlockIsAllDay(checked === true)}
+                      />
+                      <div className="space-y-1">
+                        <Label htmlFor="calendar-account-block-all-day">All day</Label>
+                        <p className="text-sm text-slate-500">
+                          Turn this on to block the full day. Turn it off to choose specific start and end times.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-4 border-t border-slate-100 pt-5 md:grid-cols-2">
                       <div className="space-y-2">
-                        <Label>Start</Label>
-                        <DateTimeInput
-                          value={accountBlockStartInput}
-                          onValueChange={setAccountBlockStartInput}
-                        />
+                        <Label>Repeat</Label>
+                        <Select
+                          value={accountBlockRecurrencePattern}
+                          onValueChange={(value) =>
+                            {
+                              const nextValue = value as CalendarBlockRecurrencePattern
+                              setAccountBlockRecurrencePattern(nextValue)
+                              if (nextValue !== "NONE") {
+                                setAccountBlockEndInput((current) => ({
+                                  ...current,
+                                  date: accountBlockStartInput.date,
+                                }))
+                              }
+                            }
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Choose recurrence" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {BLOCK_RECURRENCE_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-slate-500">
+                          Use recurring blocks for lunch breaks, weekly closures, or regular unavailable windows.
+                        </p>
                       </div>
 
                       <div className="space-y-2">
-                        <Label>End</Label>
-                        <DateTimeInput
-                          value={accountBlockEndInput}
-                          onValueChange={setAccountBlockEndInput}
+                        <Label>
+                          {accountBlockRecurrencePattern === "NONE" ? "End date" : "Repeat until"}
+                        </Label>
+                        <DateInput
+                          value={
+                            accountBlockRecurrencePattern === "NONE"
+                              ? accountBlockEndInput.date
+                              : accountBlockRecurrenceUntilInput.date
+                          }
+                          onValueChange={(value) => {
+                            if (accountBlockRecurrencePattern === "NONE") {
+                              setAccountBlockEndInput((current) => ({ ...current, date: value }))
+                              return
+                            }
+
+                            setAccountBlockRecurrenceUntilInput((current) => ({
+                              ...current,
+                              date: value,
+                            }))
+                          }}
+                          onDateChange={() => undefined}
+                          disabledDate={() => false}
                         />
+                        {accountBlockRecurrencePattern !== "NONE" ? (
+                          <p className="text-xs text-slate-500">
+                            Leave blank to keep this recurring block active until removed. Add a
+                            date to apply the recurring block only within a specific date range.
+                          </p>
+                        ) : (
+                          <p className="text-xs text-slate-500">
+                            Use a different end date only for one-time closures or multi-day blocks.
+                          </p>
+                        )}
                       </div>
+                    </div>
+
+                    <div className="grid gap-4 border-t border-slate-100 pt-5 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>
+                          {accountBlockRecurrencePattern === "NONE" ? "Start date" : "Blocked date"}
+                        </Label>
+                        <DateInput
+                          value={accountBlockStartInput.date}
+                          onValueChange={(value) => {
+                            setAccountBlockStartInput((current) => ({ ...current, date: value }))
+                            if (accountBlockRecurrencePattern !== "NONE") {
+                              setAccountBlockEndInput((current) => ({ ...current, date: value }))
+                            }
+                          }}
+                          onDateChange={() => undefined}
+                          disabledDate={() => false}
+                        />
+                        <p className="text-xs text-slate-500">
+                          {accountBlockRecurrencePattern === "NONE"
+                            ? "Choose when this blocked period begins."
+                            : "Pick the first day this recurring block should apply."}
+                        </p>
+                      </div>
+
+                      {accountBlockIsAllDay ? (
+                        <div className="space-y-2">
+                          <Label>Time</Label>
+                          <p className="text-sm font-medium text-slate-700">00:00 to 24:00</p>
+                          <p className="text-xs text-slate-500">
+                            This block covers the entire day.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label>Start time</Label>
+                            <Select
+                              value={accountBlockStartInput.time}
+                              onValueChange={(value) =>
+                                setAccountBlockStartInput((current) => ({ ...current, time: value }))
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Choose a start time" />
+                              </SelectTrigger>
+                              <SelectContent className="max-h-72">
+                                {BLOCK_START_TIME_OPTIONS.map((option) => (
+                                  <SelectItem key={option.value} value={option.value}>
+                                    {option.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label>End time</Label>
+                            <Select
+                              value={accountBlockEndInput.time}
+                              onValueChange={(value) =>
+                                setAccountBlockEndInput((current) => ({ ...current, time: value }))
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Choose an end time" />
+                              </SelectTrigger>
+                              <SelectContent className="max-h-72">
+                                {accountEndTimeOptions.map((option) => (
+                                  <SelectItem key={option.value} value={option.value}>
+                                    {option.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <p className="text-xs text-slate-500">
+                            Time options use 15-minute intervals. For example, you can block every
+                            2 weeks on Tuesday from 10:00 to 11:00.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1401,7 +1771,7 @@ export function CalendarConfigPanel({
                           </DialogDescription>
                         </DialogHeader>
 
-                        <div className="grid gap-4 py-2">
+                  <div className="space-y-5 py-2">
                           <div className="space-y-2">
                             <Label htmlFor="user-calendar-block-title">Title</Label>
                             <Input
@@ -1423,22 +1793,171 @@ export function CalendarConfigPanel({
                             />
                           </div>
 
-                          <div className="grid gap-4 md:grid-cols-2">
+                          <div className="flex items-start gap-3">
+                            <Checkbox
+                              id="user-calendar-block-all-day"
+                              checked={userBlockIsAllDay}
+                              onCheckedChange={(checked) => setUserBlockIsAllDay(checked === true)}
+                            />
+                            <div className="space-y-1">
+                              <Label htmlFor="user-calendar-block-all-day">All day</Label>
+                              <p className="text-sm text-slate-500">
+                                Turn this on to block the full day. Turn it off to choose specific start and end times.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="grid gap-4 border-t border-slate-100 pt-5 md:grid-cols-2">
                             <div className="space-y-2">
-                              <Label>Start</Label>
-                              <DateTimeInput
-                                value={userBlockStartInput}
-                                onValueChange={setUserBlockStartInput}
-                              />
+                              <Label>Repeat</Label>
+                              <Select
+                                value={userBlockRecurrencePattern}
+                                onValueChange={(value) =>
+                                  {
+                                    const nextValue = value as CalendarBlockRecurrencePattern
+                                    setUserBlockRecurrencePattern(nextValue)
+                                    if (nextValue !== "NONE") {
+                                      setUserBlockEndInput((current) => ({
+                                        ...current,
+                                        date: userBlockStartInput.date,
+                                      }))
+                                    }
+                                  }
+                                }
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Choose recurrence" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {BLOCK_RECURRENCE_OPTIONS.map((option) => (
+                                    <SelectItem key={option.value} value={option.value}>
+                                      {option.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <p className="text-xs text-slate-500">
+                                Use recurring blocks for lunches, vacations, or regular unavailable windows.
+                              </p>
                             </div>
 
                             <div className="space-y-2">
-                              <Label>End</Label>
-                              <DateTimeInput
-                                value={userBlockEndInput}
-                                onValueChange={setUserBlockEndInput}
+                              <Label>
+                                {userBlockRecurrencePattern === "NONE" ? "End date" : "Repeat until"}
+                              </Label>
+                              <DateInput
+                                value={
+                                  userBlockRecurrencePattern === "NONE"
+                                    ? userBlockEndInput.date
+                                    : userBlockRecurrenceUntilInput.date
+                                }
+                                onValueChange={(value) => {
+                                  if (userBlockRecurrencePattern === "NONE") {
+                                    setUserBlockEndInput((current) => ({ ...current, date: value }))
+                                    return
+                                  }
+
+                                  setUserBlockRecurrenceUntilInput((current) => ({
+                                    ...current,
+                                    date: value,
+                                  }))
+                                }}
+                                onDateChange={() => undefined}
+                                disabledDate={() => false}
                               />
+                              {userBlockRecurrencePattern !== "NONE" ? (
+                                <p className="text-xs text-slate-500">
+                                  Leave blank to keep this recurring block active until removed. Add a
+                                  date to apply the recurring block only within a specific date range.
+                                </p>
+                              ) : (
+                                <p className="text-xs text-slate-500">
+                                  Use a different end date only for one-time closures or multi-day blocks.
+                                </p>
+                              )}
                             </div>
+                          </div>
+
+                          <div className="grid gap-4 border-t border-slate-100 pt-5 md:grid-cols-2">
+                            <div className="space-y-2">
+                              <Label>
+                                {userBlockRecurrencePattern === "NONE" ? "Start date" : "Blocked date"}
+                              </Label>
+                              <DateInput
+                                value={userBlockStartInput.date}
+                                onValueChange={(value) => {
+                                  setUserBlockStartInput((current) => ({ ...current, date: value }))
+                                  if (userBlockRecurrencePattern !== "NONE") {
+                                    setUserBlockEndInput((current) => ({ ...current, date: value }))
+                                  }
+                                }}
+                                onDateChange={() => undefined}
+                                disabledDate={() => false}
+                              />
+                              <p className="text-xs text-slate-500">
+                                {userBlockRecurrencePattern === "NONE"
+                                  ? "Choose when this blocked period begins."
+                                  : "Pick the first day this recurring block should apply."}
+                              </p>
+                            </div>
+
+                            {userBlockIsAllDay ? (
+                              <div className="space-y-2">
+                                <Label>Time</Label>
+                                <p className="text-sm font-medium text-slate-700">00:00 to 24:00</p>
+                                <p className="text-xs text-slate-500">
+                                  This block covers the entire day.
+                                </p>
+                              </div>
+                            ) : (
+                              <div className="grid gap-4 md:grid-cols-2">
+                                <div className="space-y-2">
+                                  <Label>Start time</Label>
+                                  <Select
+                                    value={userBlockStartInput.time}
+                                    onValueChange={(value) =>
+                                      setUserBlockStartInput((current) => ({ ...current, time: value }))
+                                    }
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue placeholder="Choose a start time" />
+                                    </SelectTrigger>
+                                    <SelectContent className="max-h-72">
+                                      {BLOCK_START_TIME_OPTIONS.map((option) => (
+                                        <SelectItem key={option.value} value={option.value}>
+                                          {option.label}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+
+                                <div className="space-y-2">
+                                  <Label>End time</Label>
+                                  <Select
+                                    value={userBlockEndInput.time}
+                                    onValueChange={(value) =>
+                                      setUserBlockEndInput((current) => ({ ...current, time: value }))
+                                    }
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue placeholder="Choose an end time" />
+                                    </SelectTrigger>
+                                    <SelectContent className="max-h-72">
+                                      {userEndTimeOptions.map((option) => (
+                                        <SelectItem key={option.value} value={option.value}>
+                                          {option.label}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <p className="text-xs text-slate-500">
+                                  Time options use 15-minute intervals. For example, you can block every
+                                  2 weeks on Tuesday from 10:00 to 11:00.
+                                </p>
+                              </div>
+                            )}
                           </div>
                         </div>
 

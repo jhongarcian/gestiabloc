@@ -2,6 +2,7 @@
 
 import { format, isValid, parse } from "date-fns"
 import { CalendarIcon } from "lucide-react"
+import { useEffect, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
@@ -103,8 +104,13 @@ export function DateInput({
   disabledDate = (date) => date > new Date(),
 }: DateInputProps) {
   const parsedDate = parseDateInput(value)
-  const calendarMonth =
-    parsedDate && parsedDate !== null ? parsedDate : undefined
+  const [calendarMonth, setCalendarMonth] = useState<Date | undefined>(
+    parsedDate && parsedDate !== null ? parsedDate : undefined,
+  )
+
+  useEffect(() => {
+    setCalendarMonth(parsedDate && parsedDate !== null ? parsedDate : undefined)
+  }, [parsedDate?.getFullYear(), parsedDate?.getMonth(), parsedDate?.getDate()])
 
   return (
     <div className={cn("flex gap-2", className)}>
@@ -149,6 +155,7 @@ export function DateInput({
             selected={parsedDate && parsedDate !== null ? parsedDate : undefined}
             month={calendarMonth}
             captionLayout="dropdown"
+            onMonthChange={setCalendarMonth}
             onSelect={(date) => {
               onDateChange(date)
               onValueChange(date ? format(date, "MM/dd/yyyy") : "")
