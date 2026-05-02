@@ -20,6 +20,7 @@ type ContactDetailTab = {
 const TABS: ContactDetailTab[] = [
   { key: "overview", label: "Overview" },
   { key: "notes", label: "Notes" },
+  { key: "appointments", label: "Appointments" },
   { key: "tasks", label: "Tasks" },
   { key: "services", label: "Services" },
   { key: "ai-qualification", label: "AI Qualification", icon: Sparkles },

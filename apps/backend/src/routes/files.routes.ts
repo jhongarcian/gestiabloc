@@ -2,11 +2,11 @@ import { Router } from "express"
 import { z } from "zod"
 import multer from "multer"
 import {
-  presignPostObject,
-  s3KeyForTenantFile,
-  presignGetObject,
-  deleteObject,
-} from "../lib/s3.js"
+  createSignedDownload,
+  createSignedUpload,
+  getPrivateStorageBucket,
+  privateStorageKeyForTenantFile,
+} from "../lib/private-storage.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 import { randomUUID } from "crypto"
 import { prisma } from "../lib/prisma.js"
@@ -29,27 +29,28 @@ const ALLOWED_CONTENT_TYPES = new Set([
 ])
 
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024
-const PDF_MAX_BYTES = 20 * 1024 * 1024
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: IMAGE_MAX_BYTES },
 })
 
-function maxSizeForContentType(contentType: string) {
-  return contentType === "application/pdf" ? PDF_MAX_BYTES : IMAGE_MAX_BYTES
-}
-
 function sanitizeFilename(filename: string) {
   return filename.replace(/[^a-zA-Z0-9._-]/g, "_")
+}
+
+function isStorageObjectMissingError(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "statusCode" in error &&
+    error.statusCode === "404"
+  )
 }
 
 async function deleteLegacyAvatar(oldKey: string) {
   if (oldKey.startsWith("http://") || oldKey.startsWith("https://")) {
     await deleteBlobByUrl(oldKey).catch(() => {})
-    return
   }
-
-  await deleteObject({ key: oldKey }).catch(() => {})
 }
 
 router.post("/presign-upload", requireAuth, async (req, res) => {
@@ -71,14 +72,8 @@ router.post("/presign-upload", requireAuth, async (req, res) => {
   }
 
   const fileId = randomUUID()
-  const key = s3KeyForTenantFile(tenantId, fileId, filename)
-
-  const post = await presignPostObject({
-    key,
-    contentType,
-    maxSizeBytes: maxSizeForContentType(contentType),
-    expiresInSeconds: 60,
-  })
+  const key = privateStorageKeyForTenantFile(tenantId, fileId, filename)
+  const upload = await createSignedUpload({ path: key })
 
   await prisma.file.create({
     data: {
@@ -91,7 +86,12 @@ router.post("/presign-upload", requireAuth, async (req, res) => {
     },
   })
 
-  res.json({ ...post, key, fileId })
+  res.json({
+    bucket: getPrivateStorageBucket(),
+    fileId,
+    path: upload.path,
+    token: upload.token,
+  })
 })
 
 router.post(
@@ -200,8 +200,16 @@ router.post("/presign-download", requireAuth, async (req, res) => {
     return res.status(403).json({ error: "FORBIDDEN" })
   }
 
-  const url = await presignGetObject({ key, expiresInSeconds: 60 })
-  res.json({ url })
+  try {
+    const url = await createSignedDownload({ path: key, expiresInSeconds: 60 })
+    res.json({ url })
+  } catch (error) {
+    if (isStorageObjectMissingError(error)) {
+      return res.status(404).json({ error: "FILE_OBJECT_MISSING" })
+    }
+
+    throw error
+  }
 })
 
 export default router

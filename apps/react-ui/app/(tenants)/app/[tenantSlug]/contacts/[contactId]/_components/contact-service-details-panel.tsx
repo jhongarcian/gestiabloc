@@ -64,6 +64,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
+import { uploadPrivateFileToSignedUrl } from "@/lib/supabase-storage"
 import {
   dateTimeDraftToUtcIso,
   formatUtcIsoToDateTimeDraft,
@@ -338,34 +339,21 @@ async function uploadAttachment(tenantId: string, file: File) {
   }
 
   const { data } = await api.post<{
-    url: string
-    fields: Record<string, string>
-    key: string
+    bucket: string
     fileId: string
+    path: string
+    token: string
   }>("/api/files/presign-upload", {
     tenantId,
     filename: file.name,
     contentType,
   })
 
-  const formData = new FormData()
-  for (const [key, value] of Object.entries(data.fields)) {
-    formData.append(key, value)
-  }
-  formData.append("file", file)
-
-  const uploadResponse = await fetch(data.url, {
-    method: "POST",
-    body: formData,
-  })
-
-  if (!uploadResponse.ok) {
-    throw new Error("UPLOAD_FAILED")
-  }
+  await uploadPrivateFileToSignedUrl(data, file, contentType)
 
   return {
     fileId: data.fileId,
-    key: data.key,
+    key: data.path,
     contentType,
     fileName: file.name,
     size: file.size,

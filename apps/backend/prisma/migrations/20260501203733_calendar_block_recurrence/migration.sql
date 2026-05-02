@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "CalendarTimeBlock_tenantId_recurrencePattern_recurrenceUntil_id" RENAME TO "CalendarTimeBlock_tenantId_recurrencePattern_recurrenceUnti_idx";

@@ -1,18 +1,28 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { LoaderCircle } from "lucide-react"
+import { Check, ChevronDown, LoaderCircle } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
 import { DateTimeInput } from "@/components/ui/date-time-input"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { type DateTimeDraft, formatDateTimeForDisplay, formatUtcIsoToDateTimeDraft } from "@/lib/date-time"
+import { cn } from "@/lib/utils"
 import {
   getAppointmentSlots,
   type AppointmentSlotsResponse,
@@ -34,6 +44,7 @@ type EditAppointmentFormProps = {
     id: string
     label: string
     email: string
+    image?: string | null
     color?: string | null
   }>
   onCancel: () => void
@@ -73,6 +84,15 @@ function formatSlotDurationLabel(minutes: number) {
   return `${hours}h ${remainingMinutes}m`
 }
 
+function getInitials(value: string) {
+  return value
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("")
+}
+
 export function EditAppointmentForm({
   tenantId,
   tenantTimezone,
@@ -97,6 +117,7 @@ export function EditAppointmentForm({
   })
   const [selectedSlotStartAt, setSelectedSlotStartAt] = useState("")
   const [slotsState, setSlotsState] = useState<SlotsState>({ status: "idle" })
+  const [assigneePickerOpen, setAssigneePickerOpen] = useState(false)
 
   const resetForm = useCallback(() => {
     if (!appointment) {
@@ -211,6 +232,12 @@ export function EditAppointmentForm({
     serviceId !== "__NONE__"
       ? serviceOptions.find((option) => option.id === serviceId)?.name ?? null
       : null
+
+  const selectedAssignee = useMemo(
+    () =>
+      assigneeOptions.find((assignee) => assignee.id === assignedToUserId) ?? null,
+    [assignedToUserId, assigneeOptions],
+  )
 
   const availableSlots =
     slotsState.status === "ready" ? slotsState.data.slots.filter((slot) => slot.available) : []
@@ -360,18 +387,84 @@ export function EditAppointmentForm({
 
         <section className="space-y-2">
           <Label>Designated user</Label>
-          <Select value={assignedToUserId} onValueChange={setAssignedToUserId}>
-            <SelectTrigger aria-invalid={Boolean(fieldErrors.assignedToUserId)}>
-              <SelectValue placeholder="Choose user" />
-            </SelectTrigger>
-            <SelectContent>
-              {assigneeOptions.map((assignee) => (
-                <SelectItem key={assignee.id} value={assignee.id}>
-                  {assignee.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Popover open={assigneePickerOpen} onOpenChange={setAssigneePickerOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                aria-invalid={Boolean(fieldErrors.assignedToUserId)}
+                className={cn(
+                  "h-11 w-full cursor-pointer justify-between border-slate-200 px-3 text-left font-normal hover:bg-slate-50",
+                  fieldErrors.assignedToUserId && "border-rose-300 focus-visible:ring-rose-200",
+                )}
+              >
+                {selectedAssignee ? (
+                  <div className="flex min-w-0 items-center gap-3">
+                    <Avatar className="h-7 w-7 shrink-0">
+                      <AvatarImage
+                        src={selectedAssignee.image ?? undefined}
+                        alt={selectedAssignee.label}
+                      />
+                      <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                        {getInitials(selectedAssignee.label)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="truncate text-sm font-medium text-slate-900">
+                      {selectedAssignee.label}
+                    </span>
+                  </div>
+                ) : (
+                  <span className="text-sm text-slate-500">Choose user</span>
+                )}
+                <ChevronDown className="ml-3 h-4 w-4 shrink-0 text-slate-500" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-[360px] p-0">
+              <Command>
+                <CommandInput placeholder="Assign appointment to..." />
+                <CommandList>
+                  <CommandEmpty>No users found.</CommandEmpty>
+                  {assigneeOptions.map((assignee) => (
+                    <CommandItem
+                      key={assignee.id}
+                      value={`${assignee.label} ${assignee.email}`}
+                      onSelect={() => {
+                        setAssignedToUserId(assignee.id)
+                        setAssigneePickerOpen(false)
+                      }}
+                      className="cursor-pointer gap-3 px-3 py-3"
+                    >
+                      <Avatar className="h-9 w-9">
+                        <AvatarImage
+                          src={assignee.image ?? undefined}
+                          alt={assignee.label}
+                        />
+                        <AvatarFallback className="bg-blue-950 text-xs font-semibold text-white">
+                          {getInitials(assignee.label)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium text-slate-900">
+                          {assignee.label}
+                        </p>
+                        <p className="truncate text-xs text-slate-500">
+                          {assignee.email}
+                        </p>
+                      </div>
+                      <Check
+                        className={cn(
+                          "h-4 w-4 text-blue-950",
+                          assignedToUserId === assignee.id
+                            ? "opacity-100"
+                            : "opacity-0",
+                        )}
+                      />
+                    </CommandItem>
+                  ))}
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
           {fieldErrors.assignedToUserId ? (
             <p className="text-sm text-rose-600">{fieldErrors.assignedToUserId}</p>
           ) : null}

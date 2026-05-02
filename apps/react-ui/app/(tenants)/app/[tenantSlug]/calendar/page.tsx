@@ -15,6 +15,7 @@ function normalizeCalendarEventsResponse(
   return {
     ok: response?.ok ?? true,
     items: Array.isArray(response?.items) ? response.items : [],
+    blockedPeriods: Array.isArray(response?.blockedPeriods) ? response.blockedPeriods : [],
     range: {
       from: response?.range?.from ?? null,
       to: response?.range?.to ?? null,
@@ -69,6 +70,14 @@ export default async function CalendarPage({
       postBufferMinutes: 0,
       bufferAvailabilityMode: "BUSY",
     },
+    availability: {
+      weeklyAvailability: Array.from({ length: 7 }, (_, dayOfWeek) => ({
+        dayOfWeek,
+        enabled: dayOfWeek >= 1 && dayOfWeek <= 5,
+        startTime: "09:00",
+        endTime: "17:00",
+      })),
+    },
     filters: {
       users: [],
       groups: [],
@@ -79,6 +88,7 @@ export default async function CalendarPage({
   let events: CalendarEventsResponse = {
     ok: true,
     items: [],
+    blockedPeriods: [],
     range: {
       from: null,
       to: null,
@@ -121,9 +131,11 @@ export default async function CalendarPage({
 
   return (
     <CalendarWorkspace
+      tenantSlug={tenantSlug}
       tenantId={membership.tenant.id}
       tenantTimezone={tenantTimezone}
       currentUserId={user.id}
+      canViewAuditLogs={membership.securityLevel === "MAX"}
       meta={meta}
       events={events}
     />

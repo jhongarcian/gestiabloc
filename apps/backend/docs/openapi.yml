@@ -289,12 +289,11 @@ paths:
   /api/files/presign-upload:
     post:
       tags: [Files]
-      summary: Get a presigned POST for a generic file upload
+      summary: Get a signed upload target for a generic file upload
       security:
         - cookieAuth: []
       description: |
-        Step 1 of 2. Use the returned `url` and `fields` to upload directly to S3 via multipart/form-data.
-        The client must send a POST request to `url` with all `fields`, a `Content-Type` field, and the `file` itself.
+        Step 1 of 2. Use the returned `bucket`, `path`, and `token` to upload directly to Supabase Storage.
       requestBody:
         required: true
         content:
@@ -303,11 +302,11 @@ paths:
               $ref: "#/components/schemas/PresignUploadRequest"
       responses:
         "200":
-          description: Presigned POST data
+          description: Signed upload target
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PresignPostResponse"
+                $ref: "#/components/schemas/SignedUploadResponse"
         "400":
           description: Invalid request or unsupported content type
           content:
@@ -3228,9 +3227,9 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
 
   /api/appointments/{tenantId}/{appointmentId}:
-    delete:
+    patch:
       tags: [Calendar]
-      summary: Delete an appointment
+      summary: Update an appointment or change its status
       security:
         - cookieAuth: []
       parameters:
@@ -3240,13 +3239,19 @@ paths:
           required: true
           schema:
             type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCalendarAppointmentRequest"
       responses:
         "200":
-          description: Appointment deleted
+          description: Appointment updated
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OkResponse"
+                $ref: "#/components/schemas/CreateCalendarAppointmentResponse"
         "401":
           description: Not authenticated
           content:
@@ -3259,6 +3264,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Appointment not found in the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Selected slot is not available when moving back to scheduled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAppointmentConflictResponse"
 
   /api/notifications/{tenantId}:
     get:
@@ -4883,16 +4900,14 @@ components:
         contentType:
           type: string
           description: "Allowed types: image/png, image/jpeg, image/jpg, image/webp, application/pdf"
-    PresignPostResponse:
+    SignedUploadResponse:
       type: object
       properties:
-        url:
+        bucket:
           type: string
-        fields:
-          type: object
-          additionalProperties:
-            type: string
-        key:
+        path:
+          type: string
+        token:
           type: string
         fileId:
           type: string
@@ -8393,6 +8408,7 @@ components:
           nullable: true
         status:
           type: string
+          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED]
     CalendarEventsResponse:
       type: object
       properties:
@@ -8592,6 +8608,7 @@ components:
               format: date-time
             status:
               type: string
+              enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED]
             assignedToUserId:
               type: string
               nullable: true
@@ -8600,6 +8617,35 @@ components:
             serviceId:
               type: string
               nullable: true
+    UpdateCalendarAppointmentRequest:
+      type: object
+      properties:
+        contactId:
+          type: string
+        serviceId:
+          type: string
+          nullable: true
+        assignedToUserId:
+          type: string
+        title:
+          type: string
+          nullable: true
+          maxLength: 160
+        notes:
+          type: string
+          nullable: true
+          maxLength: 4000
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+        isAllDay:
+          type: boolean
+        status:
+          type: string
+          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED]
     CalendarAppointmentConflictResponse:
       type: object
       properties:
