@@ -1,7 +1,7 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { CalendarClock, Check, ChevronDown, LoaderCircle } from "lucide-react"
+import { CalendarClock, Check, ChevronDown, LoaderCircle, Plus } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
@@ -52,6 +52,13 @@ type CreateAppointmentDialogProps = {
   tenantTimezone: string | null
   currentUserId: string
   initialContact?: ContactSearchItem | null
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  hideTrigger?: boolean
+  initialDate?: Date | null
+  initialAssignedToUserId?: string | null
+  preferredSlotStartAt?: string | null
+  preferredSlotTime?: string | null
   triggerLabel?: string
   triggerClassName?: string
   iconOnly?: boolean
@@ -119,6 +126,13 @@ export function CreateAppointmentDialog({
   tenantTimezone,
   currentUserId,
   initialContact = null,
+  open: controlledOpen,
+  onOpenChange,
+  hideTrigger = false,
+  initialDate = null,
+  initialAssignedToUserId = null,
+  preferredSlotStartAt = null,
+  preferredSlotTime = null,
   triggerLabel = "Create appointment",
   triggerClassName,
   iconOnly = false,
@@ -130,7 +144,7 @@ export function CreateAppointmentDialog({
   onCreated,
 }: CreateAppointmentDialogProps) {
   const router = useRouter()
-  const [open, setOpen] = useState(false)
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [title, setTitle] = useState("")
@@ -150,24 +164,41 @@ export function CreateAppointmentDialog({
   const [slotsState, setSlotsState] = useState<SlotsState>({ status: "idle" })
   const [assigneePickerOpen, setAssigneePickerOpen] = useState(false)
   const isSelectingContactRef = useRef(false)
+  const open = controlledOpen ?? uncontrolledOpen
+  const setOpen = useCallback(
+    (nextOpen: boolean) => {
+      if (controlledOpen === undefined) {
+        setUncontrolledOpen(nextOpen)
+      }
+      onOpenChange?.(nextOpen)
+    },
+    [controlledOpen, onOpenChange],
+  )
 
   const resetForm = useCallback(() => {
     setFieldErrors({})
     setTitle("")
     setNotes("")
     setServiceId("__NONE__")
-    setAssignedToUserId(currentUserId)
+    setAssignedToUserId(initialAssignedToUserId ?? currentUserId)
     setContactQuery(initialContact?.fullName ?? "")
     setDebouncedContactQuery("")
     setSelectedContact(initialContact)
     setContactResults([])
-    setSelectedSlotStartAt("")
+    setSelectedSlotStartAt(preferredSlotStartAt ?? "")
     setSlotsState({ status: "idle" })
     setAppointmentDateInput({
-      ...formatUtcIsoToDateTimeDraft(new Date().toISOString(), tenantTimezone),
+      ...formatUtcIsoToDateTimeDraft((initialDate ?? new Date()).toISOString(), tenantTimezone),
       time: "",
     })
-  }, [currentUserId, initialContact, tenantTimezone])
+  }, [
+    currentUserId,
+    initialAssignedToUserId,
+    initialContact,
+    initialDate,
+    preferredSlotStartAt,
+    tenantTimezone,
+  ])
 
   useEffect(() => {
     if (open) {
@@ -266,6 +297,29 @@ export function CreateAppointmentDialog({
               return current
             }
 
+            if (
+              preferredSlotStartAt &&
+              data.slots.some(
+                (slot) => slot.startAt === preferredSlotStartAt && slot.available,
+              )
+            ) {
+              return preferredSlotStartAt
+            }
+
+            if (preferredSlotTime) {
+              const matchingSlot = data.slots.find((slot) => {
+                if (!slot.available) return false
+                return (
+                  formatUtcIsoToDateTimeDraft(slot.startAt, tenantTimezone).time ===
+                  preferredSlotTime
+                )
+              })
+
+              if (matchingSlot) {
+                return matchingSlot.startAt
+              }
+            }
+
             return data.slots.find((slot) => slot.available)?.startAt ?? ""
           })
         } catch (error) {
@@ -294,7 +348,15 @@ export function CreateAppointmentDialog({
       cancelled = true
       window.clearTimeout(timeout)
     }
-  }, [assignedToUserId, localDateKey, open, tenantId])
+  }, [
+    assignedToUserId,
+    localDateKey,
+    open,
+    preferredSlotStartAt,
+    preferredSlotTime,
+    tenantId,
+    tenantTimezone,
+  ])
 
   const selectedSlot = useMemo(
     () =>
@@ -406,7 +468,7 @@ export function CreateAppointmentDialog({
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
-      {triggerTooltip ? (
+      {!hideTrigger && triggerTooltip ? (
         <TooltipProvider delayDuration={120}>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -422,7 +484,10 @@ export function CreateAppointmentDialog({
                   {iconOnly ? (
                     <CalendarClock className="h-4 w-4" />
                   ) : (
-                    triggerLabel
+                    <>
+                      <Plus className="h-4 w-4" />
+                      <span>{triggerLabel}</span>
+                    </>
                   )}
                 </Button>
               </SheetTrigger>
@@ -432,7 +497,7 @@ export function CreateAppointmentDialog({
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
-      ) : (
+      ) : !hideTrigger ? (
         <SheetTrigger asChild>
           <Button
             className={cn(
@@ -441,10 +506,17 @@ export function CreateAppointmentDialog({
               triggerClassName,
             )}
           >
-            {iconOnly ? <CalendarClock className="h-4 w-4" /> : triggerLabel}
+            {iconOnly ? (
+              <CalendarClock className="h-4 w-4" />
+            ) : (
+              <>
+                <Plus className="h-4 w-4" />
+                <span>{triggerLabel}</span>
+              </>
+            )}
           </Button>
         </SheetTrigger>
-      )}
+      ) : null}
       <SheetContent side="right" className="flex h-full flex-col overflow-hidden gap-0 p-0 sm:max-w-lg">
         <SheetHeader className="border-b border-slate-200 bg-slate-50 px-6 text-left">
           <SheetTitle className="text-xl font-semibold text-slate-950">Create Appointment</SheetTitle>

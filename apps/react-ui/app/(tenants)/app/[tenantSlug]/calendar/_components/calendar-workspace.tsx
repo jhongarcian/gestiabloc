@@ -18,17 +18,18 @@ import {
 } from "date-fns"
 import { isAxiosError } from "axios"
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Filter,
   X,
 } from "lucide-react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
@@ -38,8 +39,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
@@ -50,11 +49,18 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { formatDateTimeForDisplay } from "@/lib/date-time"
 import {
   getAppointmentAuditLogs,
   type AppointmentStatus,
+  type CalendarBlockedPeriodItem,
   getCalendarEvents,
   type AppointmentAuditLogItem,
   type CalendarEventItem,
@@ -99,6 +105,9 @@ const APPOINTMENT_STATUS_OPTIONS = [
 ] as const
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+const DAY_VIEW_ROW_HEIGHT = 64
+const DAY_VIEW_TOTAL_MINUTES = 24 * 60
+const DAY_VIEW_HOURS = Array.from({ length: 24 }, (_, index) => index)
 
 function getInitials(value: string) {
   const parts = value.trim().split(/\s+/).filter(Boolean)
@@ -191,6 +200,18 @@ function getAppointmentCardStyles(item: CalendarEventItem) {
   return getColorTintStyles(item.assignedToColor)
 }
 
+function getCheckboxColorProps(color?: string | null) {
+  const resolvedColor = color?.trim() || "#172554"
+
+  return {
+    className:
+      "border-[var(--checkbox-color)] bg-white text-transparent data-[state=checked]:border-[var(--checkbox-color)] data-[state=checked]:bg-[var(--checkbox-color)] data-[state=checked]:text-white",
+    style: {
+      "--checkbox-color": resolvedColor,
+    } as CSSProperties,
+  }
+}
+
 function getDateKey(value: Date | string, timezone?: string | null) {
   const date = typeof value === "string" ? new Date(value) : value
 
@@ -210,6 +231,123 @@ function formatTimeLabel(value: string, timezone?: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date)
+}
+
+function getDayOfWeekInTimezone(value: Date | string, timezone?: string | null) {
+  const date = typeof value === "string" ? new Date(value) : value
+  const weekday = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone?.trim() || undefined,
+    weekday: "short",
+  }).format(date)
+
+  const dayMap: Record<string, number> = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6,
+  }
+
+  return dayMap[weekday] ?? 0
+}
+
+function formatHourLabel(hour: number) {
+  return `${String(hour).padStart(2, "0")}:00`
+}
+
+function getMinutesFromDate(value: string, timezone?: string | null) {
+  const date = new Date(value)
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone?.trim() || undefined,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date)
+
+  const getPart = (type: string) => parts.find((part) => part.type === type)?.value ?? "00"
+  return Number(getPart("hour")) * 60 + Number(getPart("minute"))
+}
+
+function buildDayViewEventLayouts(
+  items: CalendarEventItem[],
+  tenantTimezone: string | null,
+) {
+  const sorted = items
+    .map((item, index) => ({
+      index,
+      item,
+      startMinutes: getMinutesFromDate(item.startAt, tenantTimezone),
+      endMinutes: Math.max(
+        getMinutesFromDate(item.endAt, tenantTimezone),
+        getMinutesFromDate(item.startAt, tenantTimezone) + 15,
+      ),
+    }))
+    .sort((left, right) => left.startMinutes - right.startMinutes)
+
+  const layouts = new Map<
+    string,
+    {
+      topPx: number
+      heightPx: number
+      leftPercent: number
+      widthPercent: number
+    }
+  >()
+
+  let cluster: Array<{ id: string; column: number; startMinutes: number; endMinutes: number }> = []
+  let active: Array<{ id: string; column: number; endMinutes: number }> = []
+  let maxColumns = 0
+
+  const finalizeCluster = () => {
+    if (cluster.length === 0) return
+
+    const widthPercent = 100 / Math.max(maxColumns, 1)
+    for (const entry of cluster) {
+      const durationMinutes = Math.max(entry.endMinutes - entry.startMinutes, 15)
+      layouts.set(entry.id, {
+        topPx: (entry.startMinutes / 60) * DAY_VIEW_ROW_HEIGHT,
+        heightPx: (durationMinutes / 60) * DAY_VIEW_ROW_HEIGHT,
+        leftPercent: entry.column * widthPercent,
+        widthPercent,
+      })
+    }
+
+    cluster = []
+    active = []
+    maxColumns = 0
+  }
+
+  for (const entry of sorted) {
+    active = active.filter((activeEntry) => activeEntry.endMinutes > entry.startMinutes)
+
+    if (active.length === 0 && cluster.length > 0) {
+      finalizeCluster()
+    }
+
+    const usedColumns = new Set(active.map((activeEntry) => activeEntry.column))
+    let column = 0
+    while (usedColumns.has(column)) {
+      column += 1
+    }
+
+    cluster.push({
+      id: entry.item.id,
+      column,
+      startMinutes: entry.startMinutes,
+      endMinutes: entry.endMinutes,
+    })
+    active.push({
+      id: entry.item.id,
+      column,
+      endMinutes: entry.endMinutes,
+    })
+    maxColumns = Math.max(maxColumns, column + 1)
+  }
+
+  finalizeCluster()
+  return layouts
 }
 
 function getRangeForView(view: CalendarView, cursorDate: Date): CalendarRange {
@@ -291,28 +429,141 @@ function groupEventsByDay(items: CalendarEventItem[], timezone?: string | null) 
   }, {})
 }
 
+function groupBlockedPeriodsByDay(items: CalendarBlockedPeriodItem[], timezone?: string | null) {
+  return items.reduce<Record<string, CalendarBlockedPeriodItem[]>>((accumulator, item) => {
+    const key = getDateKey(item.startsAt, timezone)
+    const existing = accumulator[key] ?? []
+    accumulator[key] = [...existing, item]
+    return accumulator
+  }, {})
+}
+
+function formatBlockedPeriodLabel(item: CalendarBlockedPeriodItem, tenantTimezone: string | null) {
+  if (item.isAllDay) {
+    return `${item.title} · All day`
+  }
+
+  return `${item.title} · ${formatTimeLabel(item.startsAt, tenantTimezone)} - ${formatTimeLabel(item.endsAt, tenantTimezone)}`
+}
+
+function BlockedPeriodPill({
+  item,
+  tenantTimezone,
+}: {
+  item: CalendarBlockedPeriodItem
+  tenantTimezone: string | null
+}) {
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-tight text-amber-800">
+      {formatBlockedPeriodLabel(item, tenantTimezone)}
+    </div>
+  )
+}
+
 function CalendarEventCard({
   item,
   tenantTimezone,
   compact = false,
   showContact = false,
   showStatus = false,
+  variant = "default",
   onSelect,
+  className,
 }: {
   item: CalendarEventItem
   tenantTimezone: string | null
   compact?: boolean
   showContact?: boolean
   showStatus?: boolean
+  variant?: "default" | "day-grid" | "week-grid"
   onSelect: (item: CalendarEventItem) => void
+  className?: string
 }) {
+  if (variant === "week-grid") {
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation()
+          onSelect(item)
+        }}
+        className={cn(
+          "flex h-full w-full cursor-pointer items-center overflow-hidden rounded-2xl border border-slate-200 px-2 py-1.5 text-left transition hover:border-slate-300 hover:brightness-[0.97] hover:shadow-sm",
+          className,
+        )}
+        style={getAppointmentCardStyles(item)}
+      >
+        <p className="truncate text-xs font-semibold text-slate-900">{item.title}</p>
+      </button>
+    )
+  }
+
+  if (variant === "day-grid") {
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation()
+          onSelect(item)
+        }}
+        className={cn(
+          "flex h-full w-full cursor-pointer items-center gap-3 overflow-hidden rounded-2xl border border-slate-200 px-3 py-2 text-left transition hover:border-slate-300 hover:brightness-[0.97] hover:shadow-sm",
+          className,
+        )}
+        style={getAppointmentCardStyles(item)}
+      >
+        <TooltipProvider delayDuration={120}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="inline-flex shrink-0 self-center">
+                <Avatar size="sm" className="h-7 w-7 border border-white/80 shadow-sm">
+                  <AvatarImage
+                    src={item.assignedToImage ?? undefined}
+                    alt={item.assignedToLabel}
+                  />
+                  <AvatarFallback>{getInitials(item.assignedToLabel)}</AvatarFallback>
+                </Avatar>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={8}>
+              Assigned to {item.assignedToLabel}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+
+        <div className="min-w-0 flex flex-1 items-center gap-3 self-center">
+          <p className="truncate text-sm font-semibold text-slate-900">
+            {item.title}
+          </p>
+          <p className="shrink-0 text-xs font-medium text-slate-600">
+            {formatTimeLabel(item.startAt, tenantTimezone)} to{" "}
+            {formatTimeLabel(item.endAt, tenantTimezone)}
+          </p>
+        </div>
+
+        {showStatus ? (
+          <Badge
+            variant="secondary"
+            className={`shrink-0 self-center rounded-full border px-2 py-0.5 text-[10px] ${getAppointmentStatusClass(item.status)}`}
+          >
+            {formatAppointmentStatus(item.status)}
+          </Badge>
+        ) : null}
+      </button>
+    )
+  }
+
   return (
     <button
       type="button"
-      onClick={() => onSelect(item)}
+      onClick={(event) => {
+        event.stopPropagation()
+        onSelect(item)
+      }}
       className={cn(
         "w-full cursor-pointer rounded-xl border border-slate-200 bg-slate-50 text-left transition hover:border-slate-300 hover:brightness-[0.97] hover:shadow-sm",
         compact ? "px-2 py-1.5" : "p-3",
+        className,
       )}
       style={getAppointmentCardStyles(item)}
     >
@@ -362,13 +613,19 @@ function CalendarEventCard({
 function MonthView({
   cursorDate,
   eventsByDay,
+  blockedPeriodsByDay,
+  closedDayOfWeeks,
   tenantTimezone,
   onSelect,
+  onSelectDay,
 }: {
   cursorDate: Date
   eventsByDay: Record<string, CalendarEventItem[]>
+  blockedPeriodsByDay: Record<string, CalendarBlockedPeriodItem[]>
+  closedDayOfWeeks: Set<number>
   tenantTimezone: string | null
   onSelect: (item: CalendarEventItem) => void
+  onSelectDay: (day: Date) => void
 }) {
   const monthDays = useMemo(() => {
     const monthStart = startOfMonth(cursorDate)
@@ -399,13 +656,20 @@ function MonthView({
         {monthDays.map((day) => {
           const dayKey = getDateKey(day, tenantTimezone)
           const dayEvents = eventsByDay[dayKey] ?? []
+          const dayBlockedPeriods = blockedPeriodsByDay[dayKey] ?? []
+          const isClosedDay = closedDayOfWeeks.has(
+            getDayOfWeekInTimezone(day, tenantTimezone),
+          )
 
           return (
             <div
               key={day.toISOString()}
+              onClick={() => onSelectDay(day)}
               className={cn(
-                "min-h-[132px] border-b border-r border-slate-200 bg-white p-2 align-top",
+                "min-h-[132px] cursor-pointer border-b border-r border-slate-200 bg-white p-2 align-top transition hover:bg-slate-50/80",
+                isClosedDay && "bg-slate-100/85 hover:bg-slate-100",
                 !isSameMonth(day, cursorDate) && "bg-slate-50/80",
+                !isSameMonth(day, cursorDate) && isClosedDay && "bg-slate-200/60",
               )}
             >
               <div className="mb-2 flex items-center justify-between">
@@ -426,6 +690,20 @@ function MonthView({
               </div>
 
               <div className="space-y-1.5">
+                {dayBlockedPeriods.slice(0, 2).map((item) => (
+                  <BlockedPeriodPill
+                    key={item.id}
+                    item={item}
+                    tenantTimezone={tenantTimezone}
+                  />
+                ))}
+
+                {dayBlockedPeriods.length > 2 ? (
+                  <p className="px-1 text-[11px] font-medium text-amber-700">
+                    +{dayBlockedPeriods.length - 2} more blocked
+                  </p>
+                ) : null}
+
                 {dayEvents.slice(0, 3).map((item) => (
                   <CalendarEventCard
                     key={item.id}
@@ -454,13 +732,21 @@ function MonthView({
 function WeekView({
   cursorDate,
   eventsByDay,
+  blockedPeriodsByDay,
+  closedDayOfWeeks,
   tenantTimezone,
   onSelect,
+  onSelectDay,
+  onSelectSlot,
 }: {
   cursorDate: Date
   eventsByDay: Record<string, CalendarEventItem[]>
+  blockedPeriodsByDay: Record<string, CalendarBlockedPeriodItem[]>
+  closedDayOfWeeks: Set<number>
   tenantTimezone: string | null
   onSelect: (item: CalendarEventItem) => void
+  onSelectDay: (day: Date) => void
+  onSelectSlot: (day: Date, hour: number) => void
 }) {
   const weekDays = useMemo(
     () =>
@@ -471,18 +757,41 @@ function WeekView({
     [cursorDate],
   )
 
-  return (
-    <div className="grid gap-3 lg:grid-cols-7">
-      {weekDays.map((day) => {
-        const dayKey = getDateKey(day, tenantTimezone)
-        const dayEvents = eventsByDay[dayKey] ?? []
+  const eventLayoutsByDay = useMemo(
+    () =>
+      weekDays.reduce<Record<string, ReturnType<typeof buildDayViewEventLayouts>>>(
+        (accumulator, day) => {
+          const dayKey = getDateKey(day, tenantTimezone)
+          accumulator[dayKey] = buildDayViewEventLayouts(
+            eventsByDay[dayKey] ?? [],
+            tenantTimezone,
+          )
+          return accumulator
+        },
+        {},
+      ),
+    [eventsByDay, tenantTimezone, weekDays],
+  )
 
-        return (
-          <div
-            key={day.toISOString()}
-            className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm"
-          >
-            <div className="mb-4 border-b border-slate-100 pb-3">
+  return (
+    <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-white">
+      <div className="grid grid-cols-[72px_repeat(7,minmax(0,1fr))] border-b border-slate-200">
+        <div className="border-r border-slate-200 bg-slate-50/80" />
+        {weekDays.map((day) => {
+          const isClosedDay = closedDayOfWeeks.has(
+            getDayOfWeekInTimezone(day, tenantTimezone),
+          )
+
+          return (
+            <button
+              key={day.toISOString()}
+              type="button"
+              onClick={() => onSelectDay(day)}
+              className={cn(
+                "border-r border-slate-200 bg-slate-50/60 px-3 py-3 text-left transition hover:bg-slate-100/80 last:border-r-0",
+                isClosedDay && "bg-slate-200/70 hover:bg-slate-200/80",
+              )}
+            >
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                 {format(day, "EEE")}
               </p>
@@ -494,23 +803,117 @@ function WeekView({
               >
                 {format(day, "d")}
               </p>
-            </div>
+            </button>
+          )
+        })}
+      </div>
 
-            <div className="space-y-2">
-              {dayEvents.map((item) => (
-                <CalendarEventCard
-                  key={item.id}
-                  item={item}
-                  tenantTimezone={tenantTimezone}
-                  compact
-                  showContact
-                  onSelect={onSelect}
-                />
-              ))}
+      <div className="grid grid-cols-[72px_repeat(7,minmax(0,1fr))]">
+        <div className="border-r border-slate-200 bg-slate-50/80">
+          {DAY_VIEW_HOURS.map((hour) => (
+            <div
+              key={hour}
+              className="flex items-start justify-end border-b border-slate-100 pr-3 pt-1.5 text-xs font-medium text-slate-500"
+              style={{ height: `${DAY_VIEW_ROW_HEIGHT}px` }}
+            >
+              {formatHourLabel(hour)}
             </div>
-          </div>
-        )
-      })}
+          ))}
+        </div>
+
+        {weekDays.map((day) => {
+          const dayKey = getDateKey(day, tenantTimezone)
+          const dayEvents = eventsByDay[dayKey] ?? []
+          const dayBlockedPeriods = blockedPeriodsByDay[dayKey] ?? []
+          const dayEventLayouts = eventLayoutsByDay[dayKey]
+          const isClosedDay = closedDayOfWeeks.has(
+            getDayOfWeekInTimezone(day, tenantTimezone),
+          )
+
+          return (
+            <div
+              key={day.toISOString()}
+              className={cn(
+                "relative border-r border-slate-200 bg-white last:border-r-0",
+                isClosedDay && "bg-slate-100/85",
+                isToday(day) && "bg-blue-50/20",
+                isToday(day) && isClosedDay && "bg-slate-200/70",
+              )}
+              style={{ height: `${DAY_VIEW_HOURS.length * DAY_VIEW_ROW_HEIGHT}px` }}
+            >
+              {DAY_VIEW_HOURS.map((hour) => (
+                <button
+                  key={`${day.toISOString()}-${hour}`}
+                  type="button"
+                  onClick={() => onSelectSlot(day, hour)}
+                  className="absolute inset-x-0 border-b border-slate-100 text-left transition hover:bg-blue-50/60"
+                  style={{
+                    top: `${hour * DAY_VIEW_ROW_HEIGHT}px`,
+                    height: `${DAY_VIEW_ROW_HEIGHT}px`,
+                  }}
+                >
+                  <span className="sr-only">{`Create appointment on ${format(day, "EEEE")} at ${formatHourLabel(hour)}`}</span>
+                </button>
+              ))}
+
+              {dayBlockedPeriods.map((item) => {
+                const startMinutes = getMinutesFromDate(item.startsAt, tenantTimezone)
+                const endMinutes = Math.max(
+                  getMinutesFromDate(item.endsAt, tenantTimezone),
+                  item.isAllDay ? DAY_VIEW_TOTAL_MINUTES : startMinutes + 15,
+                )
+
+                return (
+                  <div
+                    key={item.id}
+                    className="pointer-events-none absolute inset-x-1 rounded-2xl border border-amber-200 bg-amber-50/80 px-2 py-1.5 text-xs text-amber-800"
+                    style={{
+                      top: `${(startMinutes / 60) * DAY_VIEW_ROW_HEIGHT + 2}px`,
+                      height: `${Math.max(
+                        (Math.max(endMinutes - startMinutes, 15) / 60) * DAY_VIEW_ROW_HEIGHT - 4,
+                        2,
+                      )}px`,
+                    }}
+                  >
+                    <p className="truncate font-semibold">{item.title}</p>
+                    <p className="mt-0.5 truncate text-[10px] text-amber-700">
+                      {item.isAllDay
+                        ? "All day"
+                        : `${formatTimeLabel(item.startsAt, tenantTimezone)} - ${formatTimeLabel(item.endsAt, tenantTimezone)}`}
+                    </p>
+                  </div>
+                )
+              })}
+
+              {dayEvents.map((item) => {
+                const layout = dayEventLayouts?.get(item.id)
+                if (!layout) return null
+
+                return (
+                  <div
+                    key={item.id}
+                    className="absolute px-1"
+                    style={{
+                      top: `${layout.topPx + 2}px`,
+                      left: `calc(${layout.leftPercent}% + 2px)`,
+                      width: `calc(${layout.widthPercent}% - 4px)`,
+                      height: `${Math.max(layout.heightPx - 4, 2)}px`,
+                    }}
+                  >
+                    <CalendarEventCard
+                      item={item}
+                      tenantTimezone={tenantTimezone}
+                      onSelect={onSelect}
+                      variant="week-grid"
+                      className="h-full"
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -518,17 +921,34 @@ function WeekView({
 function DayView({
   cursorDate,
   items,
+  blockedPeriods,
+  closedDayOfWeeks,
   tenantTimezone,
   onSelect,
+  onSelectSlot,
 }: {
   cursorDate: Date
   items: CalendarEventItem[]
+  blockedPeriods: CalendarBlockedPeriodItem[]
+  closedDayOfWeeks: Set<number>
   tenantTimezone: string | null
   onSelect: (item: CalendarEventItem) => void
+  onSelectSlot: (day: Date, hour: number) => void
 }) {
   const dayItems = useMemo(
     () => items.filter((item) => isSameDay(new Date(item.startAt), cursorDate)),
     [cursorDate, items],
+  )
+  const dayBlockedPeriods = useMemo(
+    () => blockedPeriods.filter((item) => isSameDay(new Date(item.startsAt), cursorDate)),
+    [blockedPeriods, cursorDate],
+  )
+  const eventLayouts = useMemo(
+    () => buildDayViewEventLayouts(dayItems, tenantTimezone),
+    [dayItems, tenantTimezone],
+  )
+  const isClosedDay = closedDayOfWeeks.has(
+    getDayOfWeekInTimezone(cursorDate, tenantTimezone),
   )
 
   return (
@@ -542,26 +962,118 @@ function DayView({
         </h3>
       </div>
 
-      <div className="space-y-3">
-        {dayItems.length > 0 ? (
-          dayItems.map((item) => (
-            <CalendarEventCard
-              key={item.id}
-              item={item}
-              tenantTimezone={tenantTimezone}
-              showContact
-              showStatus
-              onSelect={onSelect}
-            />
-          ))
-        ) : (
-          <div className="rounded-[24px] border border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center">
-            <p className="font-medium text-slate-900">No appointments for this day.</p>
-            <p className="mt-1 text-sm text-slate-500">
-              Move to another day or create a new appointment.
-            </p>
+      <div className="overflow-hidden rounded-[24px] border border-slate-200">
+        <div className="grid grid-cols-[72px_minmax(0,1fr)]">
+          <div className="border-r border-slate-200 bg-slate-50/80">
+            <div className="h-10 border-b border-slate-200" />
+            {DAY_VIEW_HOURS.map((hour) => (
+              <div
+                key={hour}
+                className="flex items-start justify-end border-b border-slate-100 pr-3 pt-1.5 text-xs font-medium text-slate-500"
+                style={{ height: `${DAY_VIEW_ROW_HEIGHT}px` }}
+              >
+                {formatHourLabel(hour)}
+              </div>
+            ))}
           </div>
-        )}
+
+          <div className={cn("relative bg-white", isClosedDay && "bg-slate-100/85")}>
+            <div className={cn(
+              "flex h-10 items-center border-b border-slate-200 bg-slate-50/60 px-4 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500",
+              isClosedDay && "bg-slate-200/70",
+            )}>
+              Click an hour to create an appointment
+            </div>
+
+            <div
+              className="relative"
+              style={{ height: `${DAY_VIEW_HOURS.length * DAY_VIEW_ROW_HEIGHT}px` }}
+            >
+              {DAY_VIEW_HOURS.map((hour) => (
+                <button
+                  key={hour}
+                  type="button"
+                  onClick={() => onSelectSlot(cursorDate, hour)}
+                  className="absolute inset-x-0 border-b border-slate-100 text-left transition hover:bg-blue-50/60"
+                  style={{
+                    top: `${hour * DAY_VIEW_ROW_HEIGHT}px`,
+                    height: `${DAY_VIEW_ROW_HEIGHT}px`,
+                  }}
+                >
+                  <span className="sr-only">{`Create appointment at ${formatHourLabel(hour)}`}</span>
+                </button>
+              ))}
+
+              {dayBlockedPeriods.map((item) => {
+                const startMinutes = getMinutesFromDate(item.startsAt, tenantTimezone)
+                const endMinutes = Math.max(
+                  getMinutesFromDate(item.endsAt, tenantTimezone),
+                  item.isAllDay ? DAY_VIEW_TOTAL_MINUTES : startMinutes + 15,
+                )
+                const top = (startMinutes / DAY_VIEW_TOTAL_MINUTES) * 100
+                const height = (Math.max(endMinutes - startMinutes, 15) / DAY_VIEW_TOTAL_MINUTES) * 100
+
+                return (
+                  <div
+                    key={item.id}
+                    className="pointer-events-none absolute inset-x-2 rounded-2xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-800"
+                    style={{
+                      top: `${(startMinutes / 60) * DAY_VIEW_ROW_HEIGHT + 2}px`,
+                      height: `${Math.max(
+                        (Math.max(endMinutes - startMinutes, 15) / 60) * DAY_VIEW_ROW_HEIGHT - 4,
+                        2,
+                      )}px`,
+                    }}
+                  >
+                    <p className="font-semibold">{item.title}</p>
+                    <p className="mt-1 text-[11px] text-amber-700">
+                      {item.isAllDay
+                        ? "All day"
+                        : `${formatTimeLabel(item.startsAt, tenantTimezone)} - ${formatTimeLabel(item.endsAt, tenantTimezone)}`}
+                    </p>
+                  </div>
+                )
+              })}
+
+              {dayItems.map((item) => {
+                const layout = eventLayouts.get(item.id)
+                if (!layout) return null
+
+                return (
+                  <div
+                    key={item.id}
+                    className="absolute px-2"
+                    style={{
+                      top: `${layout.topPx + 2}px`,
+                      left: `calc(${layout.leftPercent}% + 2px)`,
+                      width: `calc(${layout.widthPercent}% - 4px)`,
+                      height: `${Math.max(layout.heightPx - 4, 2)}px`,
+                    }}
+                  >
+                    <CalendarEventCard
+                      item={item}
+                      tenantTimezone={tenantTimezone}
+                      showContact
+                      showStatus
+                      onSelect={onSelect}
+                      variant="day-grid"
+                      className="h-full"
+                    />
+                  </div>
+                )
+              })}
+
+              {dayItems.length === 0 && dayBlockedPeriods.length === 0 ? (
+                <div className="pointer-events-none absolute inset-x-4 bottom-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50/90 px-5 py-4 text-center">
+                  <p className="font-medium text-slate-900">No appointments for this day.</p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Click any hour to create a new appointment.
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -570,13 +1082,19 @@ function DayView({
 function ListView({
   cursorDate,
   items,
+  blockedPeriods,
+  closedDayOfWeeks,
   tenantTimezone,
   onSelect,
+  onSelectDay,
 }: {
   cursorDate: Date
   items: CalendarEventItem[]
+  blockedPeriods: CalendarBlockedPeriodItem[]
+  closedDayOfWeeks: Set<number>
   tenantTimezone: string | null
   onSelect: (item: CalendarEventItem) => void
+  onSelectDay: (day: Date) => void
 }) {
   const weekDays = useMemo(
     () =>
@@ -591,11 +1109,21 @@ function ListView({
     <div className="space-y-4">
       {weekDays.map((day) => {
         const dayItems = items.filter((item) => isSameDay(new Date(item.startAt), day))
+        const dayBlockedPeriods = blockedPeriods.filter((item) =>
+          isSameDay(new Date(item.startsAt), day),
+        )
+        const isClosedDay = closedDayOfWeeks.has(
+          getDayOfWeekInTimezone(day, tenantTimezone),
+        )
 
         return (
           <section
             key={day.toISOString()}
-            className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm md:p-5"
+            onClick={() => onSelectDay(day)}
+            className={cn(
+              "cursor-pointer rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm transition hover:bg-slate-50/80 md:p-5",
+              isClosedDay && "bg-slate-100/85 hover:bg-slate-100",
+            )}
           >
             <div className="mb-4 border-b border-slate-100 pb-3">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
@@ -607,6 +1135,14 @@ function ListView({
             </div>
 
             <div className="space-y-3">
+              {dayBlockedPeriods.map((item) => (
+                <BlockedPeriodPill
+                  key={item.id}
+                  item={item}
+                  tenantTimezone={tenantTimezone}
+                />
+              ))}
+
               {dayItems.map((item) => (
                   <CalendarEventCard
                     key={item.id}
@@ -785,6 +1321,14 @@ export function CalendarWorkspace({
     groups: Array.isArray(meta.filters?.groups) ? meta.filters.groups : [],
     services: Array.isArray(meta.filters?.services) ? meta.filters.services : [],
   } satisfies CalendarMetaResponse["filters"]
+  const accountWeeklyAvailability = Array.isArray(meta.availability?.weeklyAvailability)
+    ? meta.availability.weeklyAvailability
+    : Array.from({ length: 7 }, (_, dayOfWeek) => ({
+        dayOfWeek,
+        enabled: dayOfWeek >= 1 && dayOfWeek <= 5,
+        startTime: "09:00",
+        endTime: "17:00",
+      }))
 
   const safeFilters = {
     view: events.filters?.view ?? "month",
@@ -814,17 +1358,10 @@ export function CalendarWorkspace({
     safeFilters.groupIds ?? [],
   )
   const [selectedServiceId, setSelectedServiceId] = useState<string>(safeFilters.serviceId ?? "ALL")
-  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false)
-  const [draftView, setDraftView] = useState<CalendarView>(safeFilters.view || "month")
-  const [draftFilterMode, setDraftFilterMode] = useState<CalendarFilterMode>(
-    safeFilters.filterMode || "users",
-  )
-  const [draftUserIds, setDraftUserIds] = useState<string[]>(initialSelectedUserIds)
-  const [draftGroupIds, setDraftGroupIds] = useState<string[]>(safeFilters.groupIds ?? [])
-  const [userSearch, setUserSearch] = useState("")
-  const [groupSearch, setGroupSearch] = useState("")
-  const [draftServiceId, setDraftServiceId] = useState<string>(safeFilters.serviceId ?? "ALL")
   const [cursorDate, setCursorDate] = useState<Date>(events.range.from ? new Date(events.range.from) : new Date())
+  const [miniCalendarMonth, setMiniCalendarMonth] = useState<Date>(
+    startOfMonth(events.range.from ? new Date(events.range.from) : new Date()),
+  )
   const [eventsData, setEventsData] = useState<CalendarEventsResponse>(events)
   const [isLoadingEvents, setIsLoadingEvents] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -841,6 +1378,11 @@ export function CalendarWorkspace({
   const [isCancelingAppointment, setIsCancelingAppointment] = useState(false)
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false)
   const [isAuditDialogOpen, setIsAuditDialogOpen] = useState(false)
+  const [isCreateAppointmentOpen, setIsCreateAppointmentOpen] = useState(false)
+  const [createAppointmentSeedDate, setCreateAppointmentSeedDate] = useState<Date | null>(null)
+  const [createAppointmentSeedTime, setCreateAppointmentSeedTime] = useState<string | null>(null)
+  const [isUsersSectionOpen, setIsUsersSectionOpen] = useState(true)
+  const [isGroupsSectionOpen, setIsGroupsSectionOpen] = useState(true)
   const drawerAppointment = selectedAppointment
 
   const activeRange = useMemo(
@@ -855,11 +1397,10 @@ export function CalendarWorkspace({
 
   const activeFilterCount = useMemo(() => {
     let count = 0
-    if (selectedView !== "month") count += 1
     count += selectedFilterMode === "users" ? selectedUserIds.length : selectedGroupIds.length
     if (selectedServiceId !== "ALL") count += 1
     return count
-  }, [selectedFilterMode, selectedGroupIds.length, selectedServiceId, selectedUserIds.length, selectedView])
+  }, [selectedFilterMode, selectedGroupIds.length, selectedServiceId, selectedUserIds.length])
 
   const activeFilterBadges = useMemo(() => {
     const badges: Array<{
@@ -885,8 +1426,8 @@ export function CalendarWorkspace({
             label: user.label,
             removable: true,
             onRemove: () => {
+              setSelectedFilterMode("users")
               setSelectedUserIds((current) => current.filter((value) => value !== user.id))
-              setDraftUserIds((current) => current.filter((value) => value !== user.id))
             },
           })
         }
@@ -907,15 +1448,15 @@ export function CalendarWorkspace({
             label: group.name,
             removable: true,
             onRemove: () => {
+              setSelectedFilterMode("groups")
               setSelectedGroupIds((current) => current.filter((value) => value !== group.id))
-              setDraftGroupIds((current) => current.filter((value) => value !== group.id))
             },
           })
         }
       }
     }
 
-    if (selectedServiceId !== "ALL") {
+      if (selectedServiceId !== "ALL") {
       const selectedService = safeMetaFilters.services.find((service) => service.id === selectedServiceId)
       if (selectedService) {
         badges.push({
@@ -924,7 +1465,6 @@ export function CalendarWorkspace({
           removable: true,
           onRemove: () => {
             setSelectedServiceId("ALL")
-            setDraftServiceId("ALL")
           },
         })
       }
@@ -940,22 +1480,6 @@ export function CalendarWorkspace({
     selectedServiceId,
     selectedUserIds,
   ])
-
-  const filteredUsers = useMemo(() => {
-    const query = userSearch.trim().toLowerCase()
-    if (!query) return safeMetaFilters.users
-    return safeMetaFilters.users.filter((user) =>
-      `${user.label} ${user.email}`.toLowerCase().includes(query),
-    )
-  }, [safeMetaFilters.users, userSearch])
-
-  const filteredGroups = useMemo(() => {
-    const query = groupSearch.trim().toLowerCase()
-    if (!query) return safeMetaFilters.groups
-    return safeMetaFilters.groups.filter((group) =>
-      `${group.name} ${group.description ?? ""}`.toLowerCase().includes(query),
-    )
-  }, [groupSearch, safeMetaFilters.groups])
 
   const selectedAssignee = useMemo(
     () =>
@@ -1002,6 +1526,10 @@ export function CalendarWorkspace({
   }, [loadEvents])
 
   useEffect(() => {
+    setMiniCalendarMonth(startOfMonth(cursorDate))
+  }, [cursorDate])
+
+  useEffect(() => {
     if (!selectedAppointment) {
       setSelectedAppointmentAuditLogs([])
       setAppointmentAuditLogsError(null)
@@ -1023,6 +1551,36 @@ export function CalendarWorkspace({
     () => groupEventsByDay(eventsData.items, tenantTimezone),
     [eventsData.items, tenantTimezone],
   )
+  const blockedPeriodsByDay = useMemo(
+    () => groupBlockedPeriodsByDay(eventsData.blockedPeriods ?? [], tenantTimezone),
+    [eventsData.blockedPeriods, tenantTimezone],
+  )
+  const closedDayOfWeeks = useMemo(() => {
+    const enabledDays = new Set(
+      accountWeeklyAvailability
+        .filter((item) => item.enabled)
+        .map((item) => item.dayOfWeek),
+    )
+
+    return new Set(
+      Array.from({ length: 7 }, (_, dayOfWeek) => dayOfWeek).filter(
+        (dayOfWeek) => !enabledDays.has(dayOfWeek),
+      ),
+    )
+  }, [accountWeeklyAvailability])
+
+  const onSelectDay = (day: Date) => {
+    setSelectedView("day")
+    setCursorDate(startOfDay(day))
+  }
+
+  const onSelectDayHour = (day: Date, hour: number) => {
+    const seededDate = startOfDay(day)
+    seededDate.setHours(hour, 0, 0, 0)
+    setCreateAppointmentSeedDate(seededDate)
+    setCreateAppointmentSeedTime(`${String(hour).padStart(2, "0")}:00`)
+    setIsCreateAppointmentOpen(true)
+  }
 
   const onPrevious = () => {
     setCursorDate((current) => shiftCursorDate(selectedView, current, -1))
@@ -1036,44 +1594,33 @@ export function CalendarWorkspace({
     setCursorDate(new Date())
   }
 
-  const onOpenFilters = () => {
-    setDraftView(selectedView)
-    setDraftFilterMode(selectedFilterMode)
-    setDraftUserIds(selectedUserIds)
-    setDraftGroupIds(selectedGroupIds)
-    setDraftServiceId(selectedServiceId)
-    setUserSearch("")
-    setGroupSearch("")
-    setIsFilterSheetOpen(true)
-  }
-
-  const onApplyFilters = () => {
-    const viewChanged = draftView !== selectedView
-    setSelectedView(draftView)
-    setSelectedFilterMode(draftFilterMode)
-    setSelectedUserIds(draftUserIds)
-    setSelectedGroupIds(draftGroupIds)
-    setSelectedServiceId(draftServiceId)
-    if (viewChanged) {
-      setCursorDate(new Date())
-    }
-    setIsFilterSheetOpen(false)
-  }
-
   const onClearFilters = () => {
-    setSelectedView("month")
     setSelectedFilterMode("users")
     setSelectedUserIds([])
     setSelectedGroupIds([])
     setSelectedServiceId("ALL")
-    setDraftView("month")
-    setDraftFilterMode("users")
-    setDraftUserIds([])
-    setDraftGroupIds([])
-    setDraftServiceId("ALL")
-    setUserSearch("")
-    setGroupSearch("")
-    setCursorDate(new Date())
+  }
+
+  const onSelectMiniCalendarDate = (day?: Date) => {
+    if (!day) return
+    setCursorDate(startOfDay(day))
+    setMiniCalendarMonth(startOfMonth(day))
+  }
+
+  const onToggleUser = (userId: string, checked: boolean) => {
+    setSelectedFilterMode("users")
+    setSelectedGroupIds([])
+    setSelectedUserIds((current) =>
+      checked ? [...new Set([...current, userId])] : current.filter((value) => value !== userId),
+    )
+  }
+
+  const onToggleGroup = (groupId: string, checked: boolean) => {
+    setSelectedFilterMode("groups")
+    setSelectedUserIds([])
+    setSelectedGroupIds((current) =>
+      checked ? [...new Set([...current, groupId])] : current.filter((value) => value !== groupId),
+    )
   }
 
   const renderView = () => {
@@ -1082,8 +1629,11 @@ export function CalendarWorkspace({
         <MonthView
           cursorDate={cursorDate}
           eventsByDay={eventsByDay}
+          blockedPeriodsByDay={blockedPeriodsByDay}
+          closedDayOfWeeks={closedDayOfWeeks}
           tenantTimezone={tenantTimezone}
           onSelect={setSelectedAppointment}
+          onSelectDay={onSelectDay}
         />
       )
     }
@@ -1093,8 +1643,12 @@ export function CalendarWorkspace({
         <WeekView
           cursorDate={cursorDate}
           eventsByDay={eventsByDay}
+          blockedPeriodsByDay={blockedPeriodsByDay}
+          closedDayOfWeeks={closedDayOfWeeks}
           tenantTimezone={tenantTimezone}
           onSelect={setSelectedAppointment}
+          onSelectDay={onSelectDay}
+          onSelectSlot={onSelectDayHour}
         />
       )
     }
@@ -1104,8 +1658,11 @@ export function CalendarWorkspace({
         <DayView
           cursorDate={cursorDate}
           items={eventsData.items}
+          blockedPeriods={eventsData.blockedPeriods ?? []}
+          closedDayOfWeeks={closedDayOfWeeks}
           tenantTimezone={tenantTimezone}
           onSelect={setSelectedAppointment}
+          onSelectSlot={onSelectDayHour}
         />
       )
     }
@@ -1114,8 +1671,11 @@ export function CalendarWorkspace({
       <ListView
         cursorDate={cursorDate}
         items={eventsData.items}
+        blockedPeriods={eventsData.blockedPeriods ?? []}
+        closedDayOfWeeks={closedDayOfWeeks}
         tenantTimezone={tenantTimezone}
         onSelect={setSelectedAppointment}
+        onSelectDay={onSelectDay}
       />
     )
   }
@@ -1215,52 +1775,264 @@ export function CalendarWorkspace({
   }
 
   return (
-    <section className="flex h-full min-h-0 flex-col gap-4">
+    <section className="grid h-full min-h-0 gap-4 xl:grid-cols-[292px_minmax(0,1fr)] xl:items-start">
+      <aside className="xl:sticky xl:top-6 xl:self-start">
+        <div className="flex flex-col rounded-[24px] border border-slate-200 bg-white px-4 py-4 shadow-sm md:px-5 md:py-5">
+        <CreateAppointmentDialog
+          tenantId={tenantId}
+          tenantTimezone={tenantTimezone}
+          currentUserId={currentUserId}
+          open={isCreateAppointmentOpen}
+          onOpenChange={setIsCreateAppointmentOpen}
+          initialDate={createAppointmentSeedDate}
+          initialAssignedToUserId={
+            selectedFilterMode === "users" && selectedUserIds.length === 1
+              ? selectedUserIds[0]
+              : currentUserId
+          }
+          preferredSlotTime={createAppointmentSeedTime}
+          triggerLabel="Create appointment"
+          triggerClassName="h-11 w-full justify-center gap-2 rounded-2xl px-4 text-sm font-medium"
+          meetingIntervalMinutes={meta.settings.meetingIntervalMinutes}
+          meetingDurationMinutes={meta.settings.meetingDurationMinutes}
+          serviceOptions={safeMetaFilters.services}
+          assigneeOptions={safeMetaFilters.users}
+          onCreated={loadEvents}
+        />
+
+        <div className="mt-5 pt-2">
+          <Calendar
+            mode="single"
+            selected={cursorDate}
+            month={miniCalendarMonth}
+            onMonthChange={setMiniCalendarMonth}
+            onSelect={onSelectMiniCalendarDate}
+            className="w-full"
+            classNames={{
+              root: "w-full",
+              month: "w-full gap-3",
+              table: "w-full",
+              head_row: "grid grid-cols-7",
+              row: "grid grid-cols-7 mt-2",
+              cell: "text-center",
+              day: "aspect-square",
+            }}
+          />
+        </div>
+
+        <div className="mt-5 flex min-h-0 flex-1 flex-col overflow-hidden pt-3">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-950">Calendar filters</p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+              onClick={onClearFilters}
+            >
+              Clear
+            </Button>
+          </div>
+
+          <div>
+            <button
+              type="button"
+              className="flex w-full cursor-pointer items-center justify-between py-4 text-left"
+              onClick={() => setIsUsersSectionOpen((current) => !current)}
+            >
+              <div>
+                <p className="text-sm font-semibold text-slate-950">Users</p>
+              </div>
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 text-slate-500 transition-transform",
+                  isUsersSectionOpen && "rotate-180",
+                )}
+              />
+            </button>
+
+            {isUsersSectionOpen ? (
+              <div className="py-1">
+                <label className="flex cursor-pointer items-center gap-3 py-3">
+                  <Checkbox
+                    {...getCheckboxColorProps("#172554")}
+                    checked={selectedFilterMode === "users" && selectedUserIds.length === 0}
+                    onCheckedChange={(checked) => {
+                      if (checked) {
+                        setSelectedFilterMode("users")
+                        setSelectedGroupIds([])
+                        setSelectedUserIds([])
+                      }
+                    }}
+                  />
+                  <span className="min-w-0 flex-1 text-sm font-medium text-slate-900">
+                    All team
+                  </span>
+                </label>
+
+                <div className="max-h-64 overflow-y-auto">
+                  {safeMetaFilters.users.map((user) => (
+                    <label
+                      key={user.id}
+                      className="flex cursor-pointer items-center gap-3 py-3"
+                    >
+                      <Checkbox
+                        {...getCheckboxColorProps(user.color)}
+                        checked={
+                          selectedFilterMode === "users" &&
+                          selectedUserIds.includes(user.id)
+                        }
+                        onCheckedChange={(checked) => onToggleUser(user.id, Boolean(checked))}
+                      />
+                      <span className="min-w-0 flex-1 text-sm font-medium text-slate-900">
+                        {user.label}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-2">
+            <button
+              type="button"
+              className="flex w-full cursor-pointer items-center justify-between py-4 text-left"
+              onClick={() => setIsGroupsSectionOpen((current) => !current)}
+            >
+              <div>
+                <p className="text-sm font-semibold text-slate-950">Groups</p>
+              </div>
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 text-slate-500 transition-transform",
+                  isGroupsSectionOpen && "rotate-180",
+                )}
+              />
+            </button>
+
+            {isGroupsSectionOpen ? (
+              <div className="py-1">
+                <label className="flex cursor-pointer items-center gap-3 py-3">
+                  <Checkbox
+                    checked={selectedFilterMode === "groups" && selectedGroupIds.length === 0}
+                    onCheckedChange={(checked) => {
+                      if (checked) {
+                        setSelectedFilterMode("groups")
+                        setSelectedUserIds([])
+                        setSelectedGroupIds([])
+                      }
+                    }}
+                  />
+                  <span className="min-w-0 flex-1 text-sm font-medium text-slate-900">
+                    All groups
+                  </span>
+                </label>
+
+                <div className="max-h-64 overflow-y-auto">
+                  {safeMetaFilters.groups.length > 0 ? (
+                    safeMetaFilters.groups.map((group) => (
+                      <label
+                        key={group.id}
+                        className="flex cursor-pointer items-center gap-3 py-3"
+                      >
+                        <Checkbox
+                          checked={
+                            selectedFilterMode === "groups" &&
+                            selectedGroupIds.includes(group.id)
+                          }
+                          onCheckedChange={(checked) => onToggleGroup(group.id, Boolean(checked))}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-slate-900">
+                            {group.name}
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-slate-400">
+                            {group.members.length} member
+                            {group.members.length === 1 ? "" : "s"}
+                          </p>
+                        </div>
+                      </label>
+                    ))
+                  ) : (
+                    <p className="py-4 text-sm text-slate-500">No groups created yet.</p>
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-2 py-4">
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-slate-950">Service</p>
+            </div>
+            <Select value={selectedServiceId} onValueChange={setSelectedServiceId}>
+              <SelectTrigger className="mt-3 border-blue-200 focus-visible:ring-blue-200">
+                <SelectValue placeholder="Choose service" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All services</SelectItem>
+                {safeMetaFilters.services.map((service) => (
+                  <SelectItem key={service.id} value={service.id}>
+                    {service.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        </div>
+      </aside>
+
       <div className="flex min-h-0 flex-1 flex-col rounded-[24px] bg-white shadow-sm">
         <div className="border-b border-slate-200 px-4 py-4 md:px-5">
           <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div className="space-y-1">
-                <h2 className="text-lg font-semibold tracking-tight text-slate-950">
-                  Calendar workspace
-                </h2>
-                <p className="text-sm text-slate-600">
-                  Use the pagination controls to move through the selected range and manage view, assignee, and service filters from the right-side drawer.
-                </p>
+            <div className="flex flex-col gap-3 rounded-[20px] border border-slate-200 bg-slate-50/60 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="outline" size="icon" onClick={onPrevious}>
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <Button type="button" variant="outline" onClick={onToday}>
+                  Today
+                </Button>
+                <Button type="button" variant="outline" size="icon" onClick={onNext}>
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+                <div className="ml-2">
+                  <p className="text-sm font-semibold text-slate-950">{rangeLabel}</p>
+                  <p className="text-xs text-slate-500">
+                    {eventsData.items.length} appointment
+                    {eventsData.items.length === 1 ? "" : "s"} in this range
+                  </p>
+                </div>
               </div>
 
-              <div className="flex flex-col gap-3 xl:flex-row xl:items-end">
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-                    onClick={onOpenFilters}
-                  >
-                    <Filter className="h-4 w-4" />
-                    Filters
-                    {activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-                    onClick={onClearFilters}
-                  >
-                    Clear Filters
-                  </Button>
-                </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {VIEW_OPTIONS.map((option) => {
+                  const isActive = selectedView === option.value
 
-                <CreateAppointmentDialog
-                  tenantId={tenantId}
-                  tenantTimezone={tenantTimezone}
-                  currentUserId={currentUserId}
-                  meetingIntervalMinutes={meta.settings.meetingIntervalMinutes}
-                  meetingDurationMinutes={meta.settings.meetingDurationMinutes}
-                  serviceOptions={safeMetaFilters.services}
-                  assigneeOptions={safeMetaFilters.users}
-                  onCreated={loadEvents}
-                />
+                  return (
+                    <Button
+                      key={option.value}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className={cn(
+                        "cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950",
+                        isActive && "bg-blue-950 text-white hover:bg-blue-900 hover:text-white",
+                      )}
+                      onClick={() => {
+                        if (selectedView !== option.value) {
+                          setSelectedView(option.value)
+                        }
+                      }}
+                    >
+                      {option.label}
+                    </Button>
+                  )
+                })}
               </div>
             </div>
 
@@ -1290,280 +2062,27 @@ export function CalendarWorkspace({
                   ) : null}
                 </Badge>
               ))}
-            </div>
-
-            <div className="flex flex-col gap-3 rounded-[20px] border border-slate-200 bg-slate-50/60 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex items-center gap-2">
-                <Button type="button" variant="outline" size="icon" onClick={onPrevious}>
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-                <Button type="button" variant="outline" onClick={onToday}>
-                  Today
-                </Button>
-                <Button type="button" variant="outline" size="icon" onClick={onNext}>
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-                <div className="ml-2">
-                  <p className="text-sm font-semibold text-slate-950">{rangeLabel}</p>
-                  <p className="text-xs text-slate-500">
-                    {eventsData.items.length} appointment{eventsData.items.length === 1 ? "" : "s"} in this range
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-3 lg:items-end">
-                <div className="flex flex-wrap items-center gap-2">
-                  {VIEW_OPTIONS.map((option) => {
-                    const isActive = selectedView === option.value
-
-                    return (
-                      <Button
-                        key={option.value}
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className={cn(
-                          "cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950",
-                          isActive && "bg-blue-950 text-white hover:bg-blue-900 hover:text-white",
-                        )}
-                        onClick={() => {
-                          if (selectedView !== option.value) {
-                            setSelectedView(option.value)
-                            setDraftView(option.value)
-                            setCursorDate(new Date())
-                          }
-                        }}
-                      >
-                        {option.label}
-                      </Button>
-                    )
-                  })}
-                </div>
-
-              </div>
+              {activeFilterCount === 0 ? (
+                <span className="text-sm text-slate-500">No extra filters applied.</span>
+              ) : null}
             </div>
           </div>
         </div>
 
-        <Sheet open={isFilterSheetOpen} onOpenChange={setIsFilterSheetOpen}>
-          <SheetContent side="right" className="sm:max-w-md">
-            <SheetHeader>
-              <SheetTitle>Calendar Filters</SheetTitle>
-              <SheetDescription>
-                Adjust the calendar view and narrow the schedule by assignee or service.
-              </SheetDescription>
-            </SheetHeader>
-
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-              <section className="space-y-3 py-4">
-                <div className="space-y-1">
-                  <Label className="text-sm font-semibold text-slate-900">Filter Mode</Label>
-                  <p className="text-xs text-slate-500">
-                    Choose whether the calendar should be filtered by selected users or by designated groups.
-                  </p>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { value: "users" as const, label: "Users" },
-                    { value: "groups" as const, label: "Groups" },
-                  ].map((option) => {
-                    const isActive = draftFilterMode === option.value
-
-                    return (
-                      <Button
-                        key={option.value}
-                        type="button"
-                        variant="outline"
-                        className={cn(
-                          "cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950",
-                          isActive && "bg-blue-950 text-white hover:bg-blue-900 hover:text-white",
-                        )}
-                        onClick={() => setDraftFilterMode(option.value)}
-                      >
-                        {option.label}
-                      </Button>
-                    )
-                  })}
-                </div>
-              </section>
-
-              <div className="border-t border-slate-200" />
-
-              {draftFilterMode === "users" ? (
-                <section className="space-y-3 py-4">
-                  <div className="space-y-1">
-                    <Label className="text-sm font-semibold text-slate-900">Users</Label>
-                    <p className="text-xs text-slate-500">
-                      Select one or more calendar staff members, or leave empty to show the whole team.
-                    </p>
-                  </div>
-                  <Input
-                    value={userSearch}
-                    onChange={(event) => setUserSearch(event.target.value)}
-                    placeholder="Search users..."
-                    className="border-blue-200 focus-visible:ring-blue-200"
-                  />
-                  <div className="space-y-2">
-                    <div className="max-h-72 space-y-2 overflow-y-auto">
-                      <label className="flex cursor-pointer items-center gap-3 border-b border-slate-100 py-3">
-                        <Checkbox
-                          checked={draftUserIds.length === 0}
-                          onCheckedChange={(nextChecked) => {
-                            if (nextChecked) {
-                              setDraftUserIds([])
-                            }
-                          }}
-                        />
-                        <span className="min-w-0 flex-1 text-sm font-medium text-slate-900">
-                          All team
-                        </span>
-                      </label>
-                      {filteredUsers.map((user) => {
-                        const checked = draftUserIds.includes(user.id)
-
-                        return (
-                          <label
-                            key={user.id}
-                            className="flex cursor-pointer items-center gap-3 border-b border-slate-100 py-3 last:border-b-0"
-                          >
-                            <Checkbox
-                              checked={checked}
-                              onCheckedChange={(nextChecked) =>
-                                setDraftUserIds((current) =>
-                                  nextChecked
-                                    ? [...current, user.id]
-                                    : current.filter((value) => value !== user.id),
-                                )
-                              }
-                            />
-                            <span className="min-w-0 flex-1 text-sm font-medium text-slate-900">
-                              {user.label}
-                            </span>
-                          </label>
-                        )
-                      })}
-                    </div>
-                  </div>
-                </section>
-              ) : (
-                <section className="space-y-3 py-4">
-                  <div className="space-y-1">
-                    <Label className="text-sm font-semibold text-slate-900">Groups</Label>
-                    <p className="text-xs text-slate-500">
-                      Select one or more designated teams. Appointments will show for all users in those groups.
-                    </p>
-                  </div>
-                  <Input
-                    value={groupSearch}
-                    onChange={(event) => setGroupSearch(event.target.value)}
-                    placeholder="Search groups..."
-                    className="border-blue-200 focus-visible:ring-blue-200"
-                  />
-                  <div className="space-y-2">
-                    <div className="max-h-72 space-y-2 overflow-y-auto">
-                      <label className="flex cursor-pointer items-center gap-3 border-b border-slate-100 py-3">
-                        <Checkbox
-                          checked={draftGroupIds.length === 0}
-                          onCheckedChange={(nextChecked) => {
-                            if (nextChecked) {
-                              setDraftGroupIds([])
-                            }
-                          }}
-                        />
-                        <span className="min-w-0 flex-1 text-sm font-medium text-slate-900">
-                          All groups
-                        </span>
-                      </label>
-                      {filteredGroups.length > 0 ? (
-                        filteredGroups.map((group) => {
-                          const checked = draftGroupIds.includes(group.id)
-
-                          return (
-                            <label
-                              key={group.id}
-                              className="flex cursor-pointer items-center gap-3 border-b border-slate-100 py-3 last:border-b-0"
-                            >
-                              <Checkbox
-                                checked={checked}
-                                onCheckedChange={(nextChecked) =>
-                                  setDraftGroupIds((current) =>
-                                    nextChecked
-                                      ? [...current, group.id]
-                                      : current.filter((value) => value !== group.id),
-                                  )
-                                }
-                              />
-                              <div className="min-w-0 flex-1">
-                                <p className="text-sm font-medium text-slate-900">{group.name}</p>
-                                <p className="mt-1 text-[11px] text-slate-400">
-                                  {group.members.length} member{group.members.length === 1 ? "" : "s"}
-                                </p>
-                              </div>
-                            </label>
-                          )
-                        })
-                      ) : (
-                        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center text-sm text-slate-500">
-                          No groups found.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </section>
-              )}
-
-              <div className="border-t border-slate-200" />
-
-              <section className="space-y-3 py-4">
-                <div className="space-y-1">
-                  <Label className="text-sm font-semibold text-slate-900">Service</Label>
-                  <p className="text-xs text-slate-500">
-                    Limit the schedule to appointments related to one service.
-                  </p>
-                </div>
-                <Select value={draftServiceId} onValueChange={setDraftServiceId}>
-                  <SelectTrigger className="border-blue-200 focus-visible:ring-blue-200">
-                    <SelectValue placeholder="Choose service" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ALL">All services</SelectItem>
-                    {safeMetaFilters.services.map((service) => (
-                      <SelectItem key={service.id} value={service.id}>
-                        {service.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </section>
+        <div className="flex min-h-0 flex-1 flex-col p-4 md:p-6">
+          {loadError ? (
+            <div className="rounded-[24px] border border-rose-200 bg-rose-50 px-6 py-5 text-rose-800">
+              <p className="font-medium">{loadError}</p>
+              <p className="mt-1 text-sm">
+                Try another range or refresh the page.
+              </p>
             </div>
-
-            <SheetFooter>
-              <Button
-                type="button"
-                variant="outline"
-                className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-                onClick={() => {
-                  setDraftFilterMode(selectedFilterMode)
-                  setDraftUserIds(selectedUserIds)
-                  setDraftGroupIds(selectedGroupIds)
-                  setDraftServiceId(selectedServiceId)
-                  setUserSearch("")
-                  setGroupSearch("")
-                  setIsFilterSheetOpen(false)
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                className="bg-blue-950 text-white hover:bg-blue-900"
-                onClick={onApplyFilters}
-              >
-                Apply Filters
-              </Button>
-            </SheetFooter>
-          </SheetContent>
-        </Sheet>
+          ) : isLoadingEvents ? (
+            <CalendarLoadingSkeleton view={selectedView} />
+          ) : (
+            renderView()
+          )}
+        </div>
 
         <Sheet
           open={Boolean(selectedAppointment)}
@@ -1832,20 +2351,6 @@ export function CalendarWorkspace({
           </DialogContent>
         </Dialog>
 
-        <div className="flex min-h-0 flex-1 flex-col p-4 md:p-6">
-          {loadError ? (
-            <div className="rounded-[24px] border border-rose-200 bg-rose-50 px-6 py-5 text-rose-800">
-              <p className="font-medium">{loadError}</p>
-              <p className="mt-1 text-sm">
-                Try another range or refresh the page.
-              </p>
-            </div>
-          ) : isLoadingEvents ? (
-            <CalendarLoadingSkeleton view={selectedView} />
-          ) : (
-            renderView()
-          )}
-        </div>
       </div>
     </section>
   )

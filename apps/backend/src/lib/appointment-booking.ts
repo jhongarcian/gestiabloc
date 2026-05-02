@@ -84,6 +84,31 @@ function parseOffsetMinutes(label: string) {
   return sign === "-" ? -total : total
 }
 
+function compareLocalDateOnly(
+  left: { year: number; month: number; day: number },
+  right: { year: number; month: number; day: number },
+) {
+  if (left.year !== right.year) return left.year - right.year
+  if (left.month !== right.month) return left.month - right.month
+  return left.day - right.day
+}
+
+function diffLocalDays(
+  left: { year: number; month: number; day: number },
+  right: { year: number; month: number; day: number },
+) {
+  const leftUtc = Date.UTC(left.year, left.month - 1, left.day)
+  const rightUtc = Date.UTC(right.year, right.month - 1, right.day)
+  return Math.round((rightUtc - leftUtc) / (24 * 60 * 60 * 1000))
+}
+
+function diffLocalMonths(
+  left: { year: number; month: number },
+  right: { year: number; month: number },
+) {
+  return (right.year - left.year) * 12 + (right.month - left.month)
+}
+
 function getOffsetMinutes(timezone: string, date: Date) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: getSafeTimezone(timezone),
@@ -151,6 +176,29 @@ export function zonedDateTimeToUtc(
   }
 
   return new Date(utcMs)
+}
+
+function localMinutesToUtcDate(
+  timezone: string,
+  year: number,
+  month: number,
+  day: number,
+  totalMinutes: number,
+) {
+  const dayOffset = Math.floor(totalMinutes / (24 * 60))
+  const minutesWithinDay = totalMinutes % (24 * 60)
+  const hour = Math.floor(minutesWithinDay / 60)
+  const minute = minutesWithinDay % 60
+
+  return zonedDateTimeToUtc(
+    timezone,
+    year,
+    month,
+    day + dayOffset,
+    hour,
+    minute,
+    0,
+  )
 }
 
 export function getDefaultRange(timezone: string) {
@@ -257,6 +305,257 @@ function subtractIntervals(
   }
 
   return result.filter((interval) => interval.end > interval.start)
+}
+
+type CalendarTimeBlockLike = {
+  id: string
+  title: string
+  startsAt: Date
+  endsAt: Date
+  isAllDay: boolean
+  recurrencePattern?: "NONE" | "DAILY" | "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null
+  recurrenceUntil?: Date | null
+}
+
+export type CalendarBlockOccurrence = {
+  id: string
+  title: string
+  startsAt: Date
+  endsAt: Date
+  isAllDay: boolean
+}
+
+function buildSingleBlockRangeForDay(
+  block: CalendarTimeBlockLike,
+  timezone: string,
+  year: number,
+  month: number,
+  day: number,
+) {
+  const dayStart = zonedDateTimeToUtc(timezone, year, month, day, 0, 0, 0)
+  const nextDayStart = zonedDateTimeToUtc(timezone, year, month, day + 1, 0, 0, 0)
+  const startsAt = block.startsAt > dayStart ? block.startsAt : dayStart
+  const endsAt = block.endsAt < nextDayStart ? block.endsAt : nextDayStart
+
+  if (endsAt <= startsAt) {
+    return null
+  }
+
+  const startParts = getTimezoneDateParts(startsAt, timezone)
+  const endParts = getTimezoneDateParts(endsAt, timezone)
+  const startMinutes = startParts.hour * 60 + startParts.minute
+  const endMinutes =
+    compareLocalDateOnly(endParts, { year, month, day }) === 0
+      ? endParts.hour * 60 + endParts.minute
+      : 24 * 60
+
+  if (endMinutes <= startMinutes) {
+    return null
+  }
+
+  return {
+    id: block.id,
+    title: block.title,
+    startMinutes: Math.max(0, startMinutes),
+    endMinutes: Math.min(24 * 60, endMinutes),
+    startsAt,
+    endsAt,
+  }
+}
+
+function buildRecurringBlockRangeForDay(
+  block: CalendarTimeBlockLike,
+  timezone: string,
+  year: number,
+  month: number,
+  day: number,
+) {
+  const recurrencePattern = block.recurrencePattern ?? "NONE"
+  if (recurrencePattern === "NONE") {
+    return null
+  }
+
+  const startParts = getTimezoneDateParts(block.startsAt, timezone)
+  const endParts = getTimezoneDateParts(block.endsAt, timezone)
+  const targetDate = { year, month, day }
+
+  if (compareLocalDateOnly(startParts, endParts) !== 0) {
+    return null
+  }
+
+  if (compareLocalDateOnly(targetDate, startParts) < 0) {
+    return null
+  }
+
+  if (block.recurrenceUntil) {
+    const untilParts = getTimezoneDateParts(block.recurrenceUntil, timezone)
+    if (compareLocalDateOnly(targetDate, untilParts) > 0) {
+      return null
+    }
+  }
+
+  const daysDiff = diffLocalDays(startParts, targetDate)
+  const monthsDiff = diffLocalMonths(startParts, targetDate)
+
+  const matchesPattern =
+    recurrencePattern === "DAILY"
+      ? daysDiff >= 0
+      : recurrencePattern === "WEEKLY"
+        ? daysDiff >= 0 && daysDiff % 7 === 0
+        : recurrencePattern === "BIWEEKLY"
+          ? daysDiff >= 0 && daysDiff % 14 === 0
+          : recurrencePattern === "MONTHLY"
+            ? monthsDiff >= 0 && targetDate.day === startParts.day
+            : false
+
+  if (!matchesPattern) {
+    return null
+  }
+
+  const startMinutes = block.isAllDay ? 0 : startParts.hour * 60 + startParts.minute
+  const endMinutes = block.isAllDay ? 24 * 60 : endParts.hour * 60 + endParts.minute
+
+  if (endMinutes <= startMinutes) {
+    return null
+  }
+
+  return {
+    id: block.id,
+    title: block.title,
+    startMinutes,
+    endMinutes,
+    startsAt: localMinutesToUtcDate(timezone, year, month, day, startMinutes),
+    endsAt: localMinutesToUtcDate(timezone, year, month, day, endMinutes),
+  }
+}
+
+function buildBlockRangeForDay(
+  block: CalendarTimeBlockLike,
+  timezone: string,
+  year: number,
+  month: number,
+  day: number,
+) {
+  if ((block.recurrencePattern ?? "NONE") === "NONE") {
+    return buildSingleBlockRangeForDay(block, timezone, year, month, day)
+  }
+
+  return buildRecurringBlockRangeForDay(block, timezone, year, month, day)
+}
+
+export async function listCalendarBlockOccurrences(
+  client: PrismaExecutor,
+  params: {
+    tenantId: string
+    timezone: string
+    rangeStart: Date
+    rangeEnd: Date
+    scope?: "TENANT" | "USER"
+    userId?: string | null
+  },
+) {
+  const scopeWhere =
+    params.scope === "USER"
+      ? { scope: "USER" as const, userId: params.userId ?? null }
+      : { scope: "TENANT" as const, userId: null }
+
+  const rangeStartParts = getTimezoneDateParts(params.rangeStart, params.timezone)
+  const rangeEndMinusTick = new Date(params.rangeEnd.getTime() - 1)
+  const rangeEndParts = getTimezoneDateParts(rangeEndMinusTick, params.timezone)
+  const rangeDayStart = zonedDateTimeToUtc(
+    params.timezone,
+    rangeStartParts.year,
+    rangeStartParts.month,
+    rangeStartParts.day,
+    0,
+    0,
+    0,
+  )
+
+  const blocks = await client.calendarTimeBlock.findMany({
+    where: {
+      tenantId: params.tenantId,
+      ...scopeWhere,
+      AND: [
+        {
+          OR: [
+            {
+              recurrencePattern: "NONE",
+              startsAt: { lt: params.rangeEnd },
+              endsAt: { gt: params.rangeStart },
+            },
+            {
+              recurrencePattern: { not: "NONE" },
+              startsAt: { lt: params.rangeEnd },
+              OR: [
+                { recurrenceUntil: null },
+                { recurrenceUntil: { gte: rangeDayStart } },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    orderBy: [{ startsAt: "asc" }],
+  })
+
+  const occurrences: CalendarBlockOccurrence[] = []
+  let current = zonedDateTimeToUtc(
+    params.timezone,
+    rangeStartParts.year,
+    rangeStartParts.month,
+    rangeStartParts.day,
+    0,
+    0,
+    0,
+  )
+
+  while (current < params.rangeEnd) {
+    const currentParts = getTimezoneDateParts(current, params.timezone)
+
+    for (const block of blocks) {
+      const occurrence = buildBlockRangeForDay(
+        block,
+        params.timezone,
+        currentParts.year,
+        currentParts.month,
+        currentParts.day,
+      )
+
+      if (!occurrence) continue
+      if (!overlapsRange(occurrence.startsAt, occurrence.endsAt, params.rangeStart, params.rangeEnd)) {
+        continue
+      }
+
+      occurrences.push({
+        id: `${block.id}:${toLocalDateKey(currentParts)}`,
+        title: block.title,
+        startsAt: occurrence.startsAt,
+        endsAt: occurrence.endsAt,
+        isAllDay: block.isAllDay,
+      })
+    }
+
+    if (
+      currentParts.year === rangeEndParts.year &&
+      currentParts.month === rangeEndParts.month &&
+      currentParts.day === rangeEndParts.day
+    ) {
+      break
+    }
+
+    current = zonedDateTimeToUtc(
+      params.timezone,
+      currentParts.year,
+      currentParts.month,
+      currentParts.day + 1,
+      0,
+      0,
+      0,
+    )
+  }
+
+  return occurrences.sort((left, right) => left.startsAt.getTime() - right.startsAt.getTime())
 }
 
 function toLocalDateKey(parts: {
@@ -443,12 +742,28 @@ export async function evaluateAvailability(
       client.calendarTimeBlock.findMany({
         where: {
           tenantId,
-          OR: [
-            { scope: "TENANT", userId: null },
-            { scope: "USER", userId: assignedToUserId },
+          AND: [
+            {
+              OR: [
+                { scope: "TENANT", userId: null },
+                { scope: "USER", userId: assignedToUserId },
+              ],
+            },
+            {
+              OR: [
+                {
+                  recurrencePattern: "NONE",
+                  startsAt: { lt: endAt },
+                  endsAt: { gt: startAt },
+                },
+                {
+                  recurrencePattern: { not: "NONE" },
+                  startsAt: { lt: nextDayStart },
+                  OR: [{ recurrenceUntil: null }, { recurrenceUntil: { gte: dayStart } }],
+                },
+              ],
+            },
           ],
-          startsAt: { lt: endAt },
-          endsAt: { gt: startAt },
         },
         orderBy: [{ startsAt: "asc" }],
       }),
@@ -527,7 +842,31 @@ export async function evaluateAvailability(
     reasons.push("The selected time overlaps a recurring blocked window.")
   }
 
-  if (timeBlocks.length > 0) {
+  const matchedTimeBlocks = timeBlocks
+    .map((block) =>
+      buildBlockRangeForDay(
+        block,
+        timezone,
+        startParts.year,
+        startParts.month,
+        startParts.day,
+      ),
+    )
+    .filter(
+      (
+        block,
+      ): block is {
+        id: string
+        title: string
+        startMinutes: number
+        endMinutes: number
+        startsAt: Date
+        endsAt: Date
+      } => block !== null,
+    )
+    .filter((block) => startMinutes < block.endMinutes && endMinutes > block.startMinutes)
+
+  if (matchedTimeBlocks.length > 0) {
     reasons.push("The selected time overlaps a blocked period on the calendar.")
   }
 
@@ -602,7 +941,7 @@ export async function evaluateAvailability(
         startAt: appointment.startAt.toISOString(),
         endAt: appointment.endAt.toISOString(),
       })),
-      blocks: timeBlocks.map((block) => ({
+      blocks: matchedTimeBlocks.map((block) => ({
         id: block.id,
         title: block.title,
         startsAt: block.startsAt.toISOString(),
@@ -677,12 +1016,28 @@ export async function buildAppointmentSlots(
     client.calendarTimeBlock.findMany({
       where: {
         tenantId,
-        OR: [
-          { scope: "TENANT", userId: null },
-          { scope: "USER", userId: assignedToUserId },
+        AND: [
+          {
+            OR: [
+              { scope: "TENANT", userId: null },
+              { scope: "USER", userId: assignedToUserId },
+            ],
+          },
+          {
+            OR: [
+              {
+                recurrencePattern: "NONE",
+                startsAt: { lt: nextDayStart },
+                endsAt: { gt: dayStart },
+              },
+              {
+                recurrencePattern: { not: "NONE" },
+                startsAt: { lt: nextDayStart },
+                OR: [{ recurrenceUntil: null }, { recurrenceUntil: { gte: dayStart } }],
+              },
+            ],
+          },
         ],
-        startsAt: { lt: nextDayStart },
-        endsAt: { gt: dayStart },
       },
       orderBy: [{ startsAt: "asc" }],
     }),
@@ -747,29 +1102,20 @@ export async function buildAppointmentSlots(
     recurringBlockedIntervals,
   )
 
-  const blockRanges = timeBlocks.map((block) => {
-    const blockStartParts = getTimezoneDateParts(block.startsAt, timezone)
-    const blockEndParts = getTimezoneDateParts(block.endsAt, timezone)
-    const blockStartMinutes =
-      blockStartParts.year === year &&
-      blockStartParts.month === month &&
-      blockStartParts.day === day
-        ? blockStartParts.hour * 60 + blockStartParts.minute
-        : 0
-    const blockEndMinutes =
-      blockEndParts.year === year &&
-      blockEndParts.month === month &&
-      blockEndParts.day === day
-        ? blockEndParts.hour * 60 + blockEndParts.minute
-        : 24 * 60
-
-    return {
-      id: block.id,
-      title: block.title,
-      startMinutes: Math.max(0, blockStartMinutes),
-      endMinutes: Math.min(24 * 60, blockEndMinutes),
-    }
-  })
+  const blockRanges = timeBlocks
+    .map((block) => buildBlockRangeForDay(block, timezone, year, month, day))
+    .filter(
+      (
+        block,
+      ): block is {
+        id: string
+        title: string
+        startMinutes: number
+        endMinutes: number
+        startsAt: Date
+        endsAt: Date
+      } => block !== null,
+    )
 
   const appointmentRanges = overlappingAppointments.map((appointment) => {
     const appointmentStartParts = getTimezoneDateParts(appointment.startAt, timezone)

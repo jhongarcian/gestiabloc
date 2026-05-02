@@ -9,6 +9,7 @@ import {
   getSafeCalendarBufferMode,
   getSafeCalendarSlotDuration,
   getSafeTimezone,
+  listCalendarBlockOccurrences,
   updateAppointmentAtomically,
 } from "../lib/appointment-booking.js"
 import { prisma } from "../lib/prisma.js"
@@ -243,6 +244,49 @@ function serializeAuditLog(
   }
 }
 
+function serializeCalendarBlockOccurrence(item: {
+  id: string
+  title: string
+  startsAt: Date
+  endsAt: Date
+  isAllDay: boolean
+}) {
+  return {
+    id: item.id,
+    title: item.title,
+    startsAt: item.startsAt.toISOString(),
+    endsAt: item.endsAt.toISOString(),
+    isAllDay: item.isAllDay,
+  }
+}
+
+function minutesToTimeInput(minutes: number) {
+  const normalized = Math.max(0, Math.min(minutes, 24 * 60))
+  const hour = Math.floor(normalized / 60)
+  const minute = normalized % 60
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`
+}
+
+function buildWeeklyAvailabilityFromRules(
+  rules: Array<{
+    dayOfWeek: number
+    startTimeMinutes: number
+    endTimeMinutes: number
+    isActive: boolean
+  }>,
+) {
+  const rulesByDay = new Map(rules.map((rule) => [rule.dayOfWeek, rule]))
+  return Array.from({ length: 7 }, (_, dayOfWeek) => {
+    const rule = rulesByDay.get(dayOfWeek)
+    return {
+      dayOfWeek,
+      enabled: Boolean(rule?.isActive),
+      startTime: rule ? minutesToTimeInput(rule.startTimeMinutes) : "09:00",
+      endTime: rule ? minutesToTimeInput(rule.endTimeMinutes) : "17:00",
+    }
+  })
+}
+
 async function ensureActiveAssignee(tenantId: string, userId: string) {
   const membership = await prisma.membership.findUnique({
     where: {
@@ -408,7 +452,7 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    const [tenant, users, services, groups] = await prisma.$transaction([
+    const [tenant, users, services, groups, tenantAvailabilityRules] = await prisma.$transaction([
       prisma.tenant.findUnique({
         where: { id: tenantId },
         select: {
@@ -482,6 +526,21 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
           },
         },
       }),
+      prisma.calendarAvailabilityRule.findMany({
+        where: {
+          tenantId,
+          scope: "TENANT",
+          kind: "OPEN",
+          userId: null,
+        },
+        orderBy: [{ dayOfWeek: "asc" }],
+        select: {
+          dayOfWeek: true,
+          startTimeMinutes: true,
+          endTimeMinutes: true,
+          isActive: true,
+        },
+      }),
     ])
 
     return res.json({
@@ -502,6 +561,9 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
         bufferAvailabilityMode: getSafeCalendarBufferMode(
           tenant?.calendarBufferAvailabilityMode,
         ),
+      },
+      availability: {
+        weeklyAvailability: buildWeeklyAvailabilityFromRules(tenantAvailabilityRules),
       },
       filters: {
         users: users.map((item) => ({
@@ -832,71 +894,81 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
       selectedGroupIds.length > 0 &&
       resolvedAssignedToUserIds.length === 0
 
-    const items = await prisma.appointment.findMany({
-      where: {
-        tenantId,
-        ...(shouldReturnEmptyForGroupSelection
-          ? {
-              assignedToUserId: "__NO_MATCH__",
-            }
-          : resolvedAssignedToUserIds.length > 0
-          ? {
-              assignedToUserId: {
-                in: resolvedAssignedToUserIds,
-              },
-            }
-          : {}),
-        ...(query.contactId ? { contactId: query.contactId } : {}),
-        ...(query.serviceId ? { serviceId: query.serviceId } : {}),
-        startAt: { lt: rangeEnd },
-        endAt: { gt: rangeStart },
-      },
-      orderBy: [{ startAt: "asc" }],
-      select: {
-        id: true,
-        title: true,
-        notes: true,
-        startAt: true,
-        endAt: true,
-        assignedToUserId: true,
-        status: true,
-        contactId: true,
-        serviceId: true,
-        contact: {
-          select: {
-            firstName: true,
-            lastName: true,
-            email: true,
-            phone: true,
-          },
+    const [items, blockedPeriods] = await Promise.all([
+      prisma.appointment.findMany({
+        where: {
+          tenantId,
+          ...(shouldReturnEmptyForGroupSelection
+            ? {
+                assignedToUserId: "__NO_MATCH__",
+              }
+            : resolvedAssignedToUserIds.length > 0
+            ? {
+                assignedToUserId: {
+                  in: resolvedAssignedToUserIds,
+                },
+              }
+            : {}),
+          ...(query.contactId ? { contactId: query.contactId } : {}),
+          ...(query.serviceId ? { serviceId: query.serviceId } : {}),
+          startAt: { lt: rangeEnd },
+          endAt: { gt: rangeStart },
         },
-        assignedTo: {
-          select: {
-            name: true,
-            email: true,
-            image: true,
-            memberships: {
-              where: {
-                tenantId,
+        orderBy: [{ startAt: "asc" }],
+        select: {
+          id: true,
+          title: true,
+          notes: true,
+          startAt: true,
+          endAt: true,
+          assignedToUserId: true,
+          status: true,
+          contactId: true,
+          serviceId: true,
+          contact: {
+            select: {
+              firstName: true,
+              lastName: true,
+              email: true,
+              phone: true,
+            },
+          },
+          assignedTo: {
+            select: {
+              name: true,
+              email: true,
+              image: true,
+              memberships: {
+                where: {
+                  tenantId,
+                },
+                select: {
+                  calendarColor: true,
+                },
+                take: 1,
               },
-              select: {
-                calendarColor: true,
-              },
-              take: 1,
+            },
+          },
+          service: {
+            select: {
+              name: true,
             },
           },
         },
-        service: {
-          select: {
-            name: true,
-          },
-        },
-      },
-    })
+      }),
+      listCalendarBlockOccurrences(prisma, {
+        tenantId,
+        timezone,
+        rangeStart,
+        rangeEnd,
+        scope: "TENANT",
+      }),
+    ])
 
     return res.json({
       ok: true,
       items: items.map(serializeAppointmentItem),
+      blockedPeriods: blockedPeriods.map(serializeCalendarBlockOccurrence),
       range: {
         from: rangeStart.toISOString(),
         to: rangeEnd.toISOString(),

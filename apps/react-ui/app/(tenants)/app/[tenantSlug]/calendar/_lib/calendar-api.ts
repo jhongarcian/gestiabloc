@@ -12,6 +12,14 @@ export type CalendarMetaResponse = {
     postBufferMinutes: number
     bufferAvailabilityMode: "BUSY" | "UNAVAILABLE"
   }
+  availability: {
+    weeklyAvailability: Array<{
+      dayOfWeek: number
+      enabled: boolean
+      startTime: string
+      endTime: string
+    }>
+  }
   filters: {
     users: Array<{
       id: string
@@ -95,6 +103,14 @@ export type CalendarEventItem = {
   status: AppointmentStatus
 }
 
+export type CalendarBlockedPeriodItem = {
+  id: string
+  title: string
+  startsAt: string
+  endsAt: string
+  isAllDay: boolean
+}
+
 export type AppointmentAuditLogItem = {
   id: string
   action: "CREATED" | "REASSIGNED" | "RESCHEDULED" | "CANCELED"
@@ -106,6 +122,7 @@ export type AppointmentAuditLogItem = {
 export type CalendarEventsResponse = {
   ok: boolean
   items: CalendarEventItem[]
+  blockedPeriods: CalendarBlockedPeriodItem[]
   range: {
     from: string | null
     to: string | null
