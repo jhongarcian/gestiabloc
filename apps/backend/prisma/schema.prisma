@@ -221,6 +221,14 @@ enum CalendarBufferAvailabilityMode {
   UNAVAILABLE
 }
 
+enum CalendarBlockRecurrencePattern {
+  NONE
+  DAILY
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
 model User {
   id           String       @id @default(uuid())
   email        String       @unique
@@ -1148,15 +1156,17 @@ model CalendarAvailabilityRule {
 }
 
 model CalendarTimeBlock {
-  id          String                @id @default(uuid())
-  tenantId    String
-  userId      String?
-  scope       CalendarScheduleScope
-  title       String
-  description String?
-  startsAt    DateTime
-  endsAt      DateTime
-  isAllDay    Boolean               @default(false)
+  id                String                         @id @default(uuid())
+  tenantId          String
+  userId            String?
+  scope             CalendarScheduleScope
+  title             String
+  description       String?
+  startsAt          DateTime
+  endsAt            DateTime
+  isAllDay          Boolean                        @default(false)
+  recurrencePattern CalendarBlockRecurrencePattern @default(NONE)
+  recurrenceUntil   DateTime?
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1168,6 +1178,7 @@ model CalendarTimeBlock {
   @@index([tenantId, startsAt])
   @@index([tenantId, endsAt])
   @@index([tenantId, scope, userId, startsAt])
+  @@index([tenantId, recurrencePattern, recurrenceUntil])
 }
 
 model CalendarStaffGroup {
