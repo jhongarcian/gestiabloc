@@ -27,12 +27,14 @@ import swaggerUi from "swagger-ui-express"
 import { readFileSync } from "fs"
 import { resolve } from "path"
 import { parse as parseYaml } from "yaml"
+import { getAllowedWebOrigins } from "./lib/security"
 
 const env = {
   port: Number(process.env.PORT ?? 4000),
   webOrigin: process.env.WEB_ORIGIN ?? "http://localhost:3000",
   cookieDomain: process.env.COOKIE_DOMAIN || undefined,
 }
+const allowedWebOrigins = getAllowedWebOrigins()
 
 const app = express()
 
@@ -55,7 +57,13 @@ function hasStringCode(error: unknown): error is { code: string } {
 }
 
 const corsOptions: CorsOptions = {
-  origin: env.webOrigin,
+  origin(origin, callback) {
+    if (!origin || allowedWebOrigins.includes(origin.replace(/\/$/, ""))) {
+      return callback(null, true)
+    }
+
+    return callback(new Error("Not allowed by CORS"))
+  },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   credentials: true,
 }
@@ -117,7 +125,7 @@ const server = http.createServer(app)
 
 const io = new Server(server, {
   cors: {
-    origin: env.webOrigin,
+    origin: allowedWebOrigins,
     credentials: true,
   },
   cookie: env.cookieDomain
@@ -240,7 +248,7 @@ const start = async () => {
 
   server.listen(env.port, () => {
     console.log(`Backend listening on http://localhost:${env.port}`)
-    console.log(`CORS origin: ${env.webOrigin}`)
+    console.log(`CORS origins: ${allowedWebOrigins.join(", ")}`)
   })
 }
 
