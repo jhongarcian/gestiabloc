@@ -422,6 +422,8 @@ model Tenant {
   contactServiceFollowUpSteps      ContactServiceFollowUpStep[]
   contactServiceNotes              ContactServiceNote[]
   serviceFollowUpExecutionLogs     ServiceFollowUpExecutionLog[]
+  opportunityPipelines            OpportunityPipeline[]
+  opportunityPipelineStages       OpportunityPipelineStage[]
   tenantTags                       TenantTag[]
   contactTags                      ContactTag[]
   contactCustomFields              ContactCustomField[]
@@ -979,6 +981,42 @@ model TenantTag {
   @@unique([tenantId, id])
   @@unique([tenantId, name])
   @@index([tenantId, sortOrder])
+}
+
+model OpportunityPipeline {
+  id        String @id @default(uuid())
+  tenantId  String
+  name      String
+  color     String
+  sortOrder Int    @default(0)
+
+  tenant Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  stages OpportunityPipelineStage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+}
+
+model OpportunityPipelineStage {
+  id         String @id @default(uuid())
+  tenantId   String
+  pipelineId String
+  name       String
+  sortOrder  Int    @default(0)
+
+  tenant   Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pipeline OpportunityPipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([pipelineId, name])
+  @@index([tenantId, pipelineId, sortOrder])
 }
 
 model Task {
