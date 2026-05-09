@@ -422,8 +422,9 @@ model Tenant {
   contactServiceFollowUpSteps      ContactServiceFollowUpStep[]
   contactServiceNotes              ContactServiceNote[]
   serviceFollowUpExecutionLogs     ServiceFollowUpExecutionLog[]
-  opportunityPipelines            OpportunityPipeline[]
-  opportunityPipelineStages       OpportunityPipelineStage[]
+  opportunityPipelines             OpportunityPipeline[]
+  opportunityPipelineStages        OpportunityPipelineStage[]
+  contactOpportunities             ContactOpportunity[]
   tenantTags                       TenantTag[]
   contactTags                      ContactTag[]
   contactCustomFields              ContactCustomField[]
@@ -992,6 +993,7 @@ model OpportunityPipeline {
 
   tenant Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   stages OpportunityPipelineStage[]
+  opportunities ContactOpportunity[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1010,6 +1012,7 @@ model OpportunityPipelineStage {
 
   tenant   Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   pipeline OpportunityPipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  opportunities ContactOpportunity[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1017,6 +1020,28 @@ model OpportunityPipelineStage {
   @@unique([tenantId, id])
   @@unique([pipelineId, name])
   @@index([tenantId, pipelineId, sortOrder])
+}
+
+model ContactOpportunity {
+  id         String @id @default(uuid())
+  tenantId   String
+  contactId  String
+  pipelineId String
+  stageId    String
+
+  tenant   Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact  Contact                  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  pipeline OpportunityPipeline      @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  stage    OpportunityPipelineStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, contactId, pipelineId])
+  @@index([tenantId, pipelineId, updatedAt])
+  @@index([tenantId, stageId, updatedAt])
+  @@index([tenantId, contactId, updatedAt])
 }
 
 model Task {
@@ -1346,6 +1371,7 @@ model Contact {
   tasks                        Task[]
   appointments                 Appointment[]
   serviceProcesses             ContactService[]
+  opportunities                ContactOpportunity[]
   serviceFollowUpExecutionLogs ServiceFollowUpExecutionLog[]
 
   createdAt DateTime @default(now())
