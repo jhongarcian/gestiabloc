@@ -1,6 +1,7 @@
 export const ACCOUNT_SETTINGS_TABS = [
   { key: "account", label: "Account" },
   { key: "calendar", label: "Calendar" },
+  { key: "opportunities", label: "Opportunities" },
   { key: "users", label: "Users" },
   { key: "services", label: "Services" },
   { key: "professionals", label: "Professionals" },
@@ -21,6 +22,7 @@ export const ACCOUNT_SETTINGS_SECTIONS = new Set<AccountSettingsSection>(
 export const ACCOUNT_SETTINGS_COPY: Record<AccountSettingsSection, string> = {
   "account": "Manage account profile details and contact information.",
   calendar: "Configure account-wide calendar hours and blocked periods.",
+  opportunities: "Define tenant opportunity pipelines and their stages.",
   users: "Manage account users and access levels.",
   services: "Manage service catalog options for your account.",
   professionals: "Manage professionals and assignment settings.",

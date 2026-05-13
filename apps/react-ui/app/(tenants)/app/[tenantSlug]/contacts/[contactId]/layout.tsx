@@ -13,10 +13,12 @@ import {
   type StackedAvatarGroupItem,
 } from "@/components/stacked-avatar-group"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { CreateAppointmentDialog } from "../../calendar/_components/create-appointment-dialog"
 import { getCalendarMeta, type CalendarMetaResponse } from "../../calendar/_lib/calendar-api"
+import { AddContactOpportunityDialog } from "../../opportunities/_components/add-contact-opportunity-dialog"
 import { ContactBreadcrumbSync } from "./_components/contact-breadcrumb-sync"
 import { ContactDetailTabs } from "./_components/contact-detail-tabs"
 import { ContactHeaderAssignee } from "./_components/contact-header-assignee"
@@ -91,6 +93,26 @@ type ContactStatusesResponse = {
     name: string
     bgColor: string | null
     textColor: string | null
+  }>
+}
+
+type ContactOpportunitiesResponse = {
+  ok: boolean
+  items: Array<{
+    id: string
+    pipelineId: string
+    stageId: string
+    updatedAt: string
+    pipeline: {
+      id: string
+      name: string
+      color: string
+    }
+    stage: {
+      id: string
+      name: string
+      sortOrder: number
+    }
   }>
 }
 
@@ -285,9 +307,10 @@ export default async function ContactDetailsLayout({
       services: [],
     },
   }
+  let contactOpportunityCount = 0
 
   try {
-    const [services, tasks, assignees, statuses, metaResponse] = await Promise.all([
+    const [services, tasks, assignees, statuses, metaResponse, opportunitiesResponse] = await Promise.all([
       loadAllContactServices(tenantId, contactId, cookie),
       loadAllContactTasks(tenantId, contactId, cookie),
       api.get<ContactAssigneesResponse>(`/api/tasks/${tenantId}/assignees`, {
@@ -297,6 +320,9 @@ export default async function ContactDetailsLayout({
         headers: { cookie },
       }),
       getCalendarMeta(tenantId, cookie),
+      api.get<ContactOpportunitiesResponse>(`/api/opportunities/${tenantId}/contact/${contactId}`, {
+        headers: { cookie },
+      }),
     ])
 
     totalSpendingCents = services.reduce(
@@ -379,6 +405,7 @@ export default async function ContactDetailsLayout({
           : [],
       },
     }
+    contactOpportunityCount = opportunitiesResponse.data.items.length
   } catch {
     totalSpendingCents = 0
     activeTasks = 0
@@ -403,6 +430,7 @@ export default async function ContactDetailsLayout({
         services: [],
       },
     }
+    contactOpportunityCount = 0
   }
 
   const visibleActiveFollowUpServices = activeFollowUpServices.slice(0, 3)
@@ -529,6 +557,26 @@ export default async function ContactDetailsLayout({
                 </div>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
+                <AddContactOpportunityDialog
+                  tenantId={tenantId}
+                  initialContact={{
+                    id: contact.id,
+                    fullName: contact.fullName,
+                    email: contact.email,
+                    phoneNumber: contact.phoneNumber,
+                  }}
+                  lockContact
+                  trigger={
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="cursor-pointer border-white/70 bg-white/80 text-slate-700 shadow-sm backdrop-blur hover:bg-white"
+                    >
+                      <BriefcaseBusiness className="h-4 w-4" />
+                      Add opportunity
+                    </Button>
+                  }
+                />
                 <CreateAppointmentDialog
                   tenantId={tenantId}
                   tenantTimezone={tenantTimezone}
@@ -576,7 +624,7 @@ export default async function ContactDetailsLayout({
                   </p>
                 </div>
                 <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
-                  Soon
+                  {contactOpportunityCount}
                 </p>
               </div>
               <div className="min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur">
