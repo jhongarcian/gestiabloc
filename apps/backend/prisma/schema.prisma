@@ -229,6 +229,12 @@ enum CalendarBlockRecurrencePattern {
   MONTHLY
 }
 
+enum OpportunityResult {
+  OPEN
+  WON
+  LOST
+}
+
 model User {
   id           String       @id @default(uuid())
   email        String       @unique
@@ -1028,6 +1034,9 @@ model ContactOpportunity {
   contactId  String
   pipelineId String
   stageId    String
+  valueCents Int    @default(0)
+  result     OpportunityResult @default(OPEN)
+  closedAt   DateTime?
 
   tenant   Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact  Contact                  @relation(fields: [contactId], references: [id], onDelete: Cascade)
