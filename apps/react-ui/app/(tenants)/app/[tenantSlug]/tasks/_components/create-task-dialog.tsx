@@ -2,7 +2,7 @@
 
 import { isAxiosError } from "axios"
 import { useRouter } from "next/navigation"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -28,6 +28,15 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet"
 import {
   Select,
   SelectContent,
@@ -61,6 +70,8 @@ type CreateTaskDialogProps = {
   initialContact?: ContactSearchItem | null
   lockContact?: boolean
   triggerLabel?: string
+  trigger?: ReactNode
+  presentation?: "dialog" | "drawer"
 }
 
 type FieldErrors = Partial<
@@ -112,6 +123,8 @@ export function CreateTaskDialog({
   initialContact = null,
   lockContact = false,
   triggerLabel = "Create Task",
+  trigger,
+  presentation = "dialog",
 }: CreateTaskDialogProps) {
   const router = useRouter()
   const getDefaultStartedAtDraft = useCallback(
@@ -414,309 +427,356 @@ export function CreateTaskDialog({
     }
   }, [open, tenantId])
 
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen)
-        if (!nextOpen) resetForm()
-      }}
-    >
-      <DialogTrigger asChild>
-        <Button
-          type="button"
-          className="bg-blue-950 text-white hover:bg-blue-950/90"
-        >
-          {triggerLabel}
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>Create Task</DialogTitle>
-          <DialogDescription>{dialogDescription}</DialogDescription>
-        </DialogHeader>
+  const isDrawer = presentation === "drawer"
 
-        <div className="grid gap-6">
-          <div className="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-            <div className="grid gap-2">
-              <Label htmlFor="create-task-name">Task Name</Label>
-              <Input
-                id="create-task-name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="Follow up on contract review"
-              />
-              {fieldErrors.name ? (
-                <p className="text-xs text-rose-600">{fieldErrors.name}</p>
-              ) : null}
-            </div>
-
-            <div className="grid gap-2">
-              <Label htmlFor="create-task-contact">Contact</Label>
-              {lockContact && selectedContact ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
-                  <div className="flex flex-col gap-1">
-                    <Input
-                      id="create-task-contact"
-                      value={selectedContact.fullName}
-                      readOnly
-                      disabled
-                      className="h-10 border-0 bg-transparent px-0 text-sm font-medium text-slate-950 shadow-none disabled:cursor-default disabled:opacity-100"
-                    />
-                    <p className="text-xs text-slate-500">
-                      {selectedContact.email ?? selectedContact.phoneNumber ?? "Task will stay linked to this contact."}
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                  <Command shouldFilter={false}>
-                    <CommandInput
-                      id="create-task-contact"
-                      value={contactQuery}
-                      onValueChange={(value) => {
-                        if (lockContact) return
-
-                        setContactQuery(value)
-                        setFieldErrors((prev) => ({ ...prev, contactId: undefined }))
-
-                        if (
-                          !isSelectingContactRef.current &&
-                          selectedContact &&
-                          value !== selectedContact.fullName
-                        ) {
-                          setSelectedContact(null)
-                        }
-                      }}
-                      placeholder="Search contact by name, email, or phone"
-                      disabled={lockContact}
-                    />
-                    {!lockContact && contactQuery.trim().length >= 2 && !selectedContact ? (
-                      <CommandList>
-                        <CommandEmpty>
-                          {isSearchingContacts ? "Searching contacts..." : "No contacts found."}
-                        </CommandEmpty>
-                        <CommandGroup>
-                          {contactResults.map((contact) => (
-                            <CommandItem
-                              key={contact.id}
-                              value={contact.id}
-                              onSelect={() => {
-                                isSelectingContactRef.current = true
-                                setSelectedContact(contact)
-                                setContactQuery(contact.fullName)
-                                setDebouncedContactQuery(contact.fullName)
-                                setContactResults([])
-                                setFieldErrors((prev) => ({
-                                  ...prev,
-                                  contactId: undefined,
-                                }))
-                                window.setTimeout(() => {
-                                  isSelectingContactRef.current = false
-                                }, 0)
-                              }}
-                            >
-                              <div className="flex flex-col">
-                                <span>{contact.fullName}</span>
-                                <span className="text-xs text-slate-500">
-                                  {contact.email ?? contact.phoneNumber ?? "No extra details"}
-                                </span>
-                              </div>
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      </CommandList>
-                    ) : null}
-                  </Command>
-                </div>
-              )}
-              {fieldErrors.contactId ? (
-                <p className="text-xs text-rose-600">{fieldErrors.contactId}</p>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="grid gap-2">
-              <Label htmlFor="create-task-assignee">Assignee</Label>
-              <Select
-                value={assignedToUserId}
-                onValueChange={(value) => {
-                  setAssignedToUserId(value)
-                  setFieldErrors((prev) => ({ ...prev, assignedToUserId: undefined }))
-                }}
-                disabled={isSubmitting}
-              >
-                <SelectTrigger id="create-task-assignee" className="bg-white">
-                  <SelectValue placeholder="Not assigned" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__UNASSIGNED__">Not assigned</SelectItem>
-                  {assigneeOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {fieldErrors.assignedToUserId ? (
-                <p className="text-xs text-rose-600">{fieldErrors.assignedToUserId}</p>
-              ) : null}
-            </div>
-
-            <div className="grid gap-2">
-              <Label htmlFor="create-task-status">Status</Label>
-              <TaskStatusSelect
-                id="create-task-status"
-                value={statusConfigId ?? "__none__"}
-                onValueChange={(value) => {
-                  setStatusConfigId(value === "__none__" ? undefined : value)
-                  setFieldErrors((prev) => ({ ...prev, status: undefined }))
-                }}
-                options={selectableStatuses}
-                disabled={isSubmitting}
-                noneValue="__none__"
-                noneLabel="No status"
-              />
-              {fieldErrors.status ? (
-                <p className="text-xs text-rose-600">{fieldErrors.status}</p>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="grid gap-2">
-              <Label htmlFor="create-task-linked-type">Service / Product Type</Label>
-              <Select
-                value={linkedEntityType}
-                onValueChange={(value) => {
-                  setLinkedEntityType(value as "__none__" | "SERVICE" | "PRODUCT")
-                  setFieldErrors((prev) => ({ ...prev, linkedEntity: undefined }))
-                }}
-                disabled={isSubmitting}
-              >
-                <SelectTrigger id="create-task-linked-type" className="bg-white">
-                  <SelectValue placeholder="No linked item" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">No linked item</SelectItem>
-                  <SelectItem value="SERVICE">Service</SelectItem>
-                  <SelectItem value="PRODUCT">Product</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="grid gap-2">
-              <Label htmlFor="create-task-linked-name">Service / Product Name</Label>
-              <Input
-                id="create-task-linked-name"
-                value={linkedEntityName}
-                onChange={(event) => {
-                  setLinkedEntityName(event.target.value)
-                  setFieldErrors((prev) => ({ ...prev, linkedEntity: undefined }))
-                }}
-                placeholder="Type or select from catalog"
-                list="create-task-linked-name-options"
-                disabled={isSubmitting}
-              />
-              <datalist id="create-task-linked-name-options">
-                {linkedEntityOptions
-                  .filter((option) => linkedEntityType === "__none__" || option.type === linkedEntityType)
-                  .map((option) => (
-                    <option key={option.id} value={option.name} />
-                  ))}
-              </datalist>
-            </div>
-          </div>
-          {fieldErrors.linkedEntity ? (
-            <p className="text-xs text-rose-600">{fieldErrors.linkedEntity}</p>
+  const formContent = (
+    <div className="grid gap-6">
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <div className="grid gap-2">
+          <Label htmlFor="create-task-name">Task Name</Label>
+          <Input
+            id="create-task-name"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Follow up on contract review"
+          />
+          {fieldErrors.name ? (
+            <p className="text-xs text-rose-600">{fieldErrors.name}</p>
           ) : null}
+        </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-              <div className="grid gap-2">
-              <Label htmlFor="create-task-due-date">Due Date</Label>
-              <DateTimeInput
-                id="create-task-due-date"
-                value={dueDateInput}
-                onValueChange={setDueDateInput}
-                disabled={isSubmitting}
-                ariaInvalid={Boolean(fieldErrors.dueDate)}
-                timezone={tenantTimezone}
-                disabledDate={() => false}
-              />
-              {fieldErrors.dueDate ? (
-                <p className="text-xs text-rose-600">{fieldErrors.dueDate}</p>
-              ) : null}
+        <div className="grid gap-2">
+          <Label htmlFor="create-task-contact">Contact</Label>
+          {lockContact && selectedContact ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+              <div className="flex flex-col gap-1">
+                <Input
+                  id="create-task-contact"
+                  value={selectedContact.fullName}
+                  readOnly
+                  disabled
+                  className="h-10 border-0 bg-transparent px-0 text-sm font-medium text-slate-950 shadow-none disabled:cursor-default disabled:opacity-100"
+                />
+                <p className="text-xs text-slate-500">
+                  {selectedContact.email ?? selectedContact.phoneNumber ?? "Task will stay linked to this contact."}
+                </p>
+              </div>
             </div>
-            </div>
+          ) : (
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <Command shouldFilter={false}>
+                <CommandInput
+                  id="create-task-contact"
+                  value={contactQuery}
+                  onValueChange={(value) => {
+                    if (lockContact) return
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-              <div className="grid gap-2">
-              <Label htmlFor="create-task-started-at">Start Date</Label>
-              <DateTimeInput
-                id="create-task-started-at"
-                value={startedAtInput}
-                onValueChange={setStartedAtInput}
-                disabled={isSubmitting}
-                ariaInvalid={Boolean(fieldErrors.startedAt)}
-                timezone={tenantTimezone}
-                disabledDate={() => false}
-              />
-              {fieldErrors.startedAt ? (
-                <p className="text-xs text-rose-600">{fieldErrors.startedAt}</p>
-              ) : null}
-            </div>
-            </div>
+                    setContactQuery(value)
+                    setFieldErrors((prev) => ({ ...prev, contactId: undefined }))
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-              <div className="grid gap-2">
-              <Label htmlFor="create-task-reminder-at">Reminder Date</Label>
-              <DateTimeInput
-                id="create-task-reminder-at"
-                value={reminderAtInput}
-                onValueChange={setReminderAtInput}
-                disabled={isSubmitting}
-                ariaInvalid={Boolean(fieldErrors.reminderAt)}
-                timezone={tenantTimezone}
-                disabledDate={() => false}
-              />
-              {fieldErrors.reminderAt ? (
-                <p className="text-xs text-rose-600">{fieldErrors.reminderAt}</p>
-              ) : null}
+                    if (
+                      !isSelectingContactRef.current &&
+                      selectedContact &&
+                      value !== selectedContact.fullName
+                    ) {
+                      setSelectedContact(null)
+                    }
+                  }}
+                  placeholder="Search contact by name, email, or phone"
+                  disabled={lockContact}
+                />
+                {!lockContact && contactQuery.trim().length >= 2 && !selectedContact ? (
+                  <CommandList>
+                    <CommandEmpty>
+                      {isSearchingContacts ? "Searching contacts..." : "No contacts found."}
+                    </CommandEmpty>
+                    <CommandGroup>
+                      {contactResults.map((contact) => (
+                        <CommandItem
+                          key={contact.id}
+                          value={contact.id}
+                          onSelect={() => {
+                            isSelectingContactRef.current = true
+                            setSelectedContact(contact)
+                            setContactQuery(contact.fullName)
+                            setDebouncedContactQuery(contact.fullName)
+                            setContactResults([])
+                            setFieldErrors((prev) => ({
+                              ...prev,
+                              contactId: undefined,
+                            }))
+                            window.setTimeout(() => {
+                              isSelectingContactRef.current = false
+                            }, 0)
+                          }}
+                        >
+                          <div className="flex flex-col">
+                            <span>{contact.fullName}</span>
+                            <span className="text-xs text-slate-500">
+                              {contact.email ?? contact.phoneNumber ?? "No extra details"}
+                            </span>
+                          </div>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                ) : null}
+              </Command>
             </div>
-            </div>
-          </div>
+          )}
+          {fieldErrors.contactId ? (
+            <p className="text-xs text-rose-600">{fieldErrors.contactId}</p>
+          ) : null}
+        </div>
+      </div>
 
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-2">
+          <Label htmlFor="create-task-assignee">Assignee</Label>
+          <Select
+            value={assignedToUserId}
+            onValueChange={(value) => {
+              setAssignedToUserId(value)
+              setFieldErrors((prev) => ({ ...prev, assignedToUserId: undefined }))
+            }}
+            disabled={isSubmitting}
+          >
+            <SelectTrigger id="create-task-assignee" className="bg-white">
+              <SelectValue placeholder="Not assigned" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__UNASSIGNED__">Not assigned</SelectItem>
+              {assigneeOptions.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {fieldErrors.assignedToUserId ? (
+            <p className="text-xs text-rose-600">{fieldErrors.assignedToUserId}</p>
+          ) : null}
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="create-task-status">Status</Label>
+          <TaskStatusSelect
+            id="create-task-status"
+            value={statusConfigId ?? "__none__"}
+            onValueChange={(value) => {
+              setStatusConfigId(value === "__none__" ? undefined : value)
+              setFieldErrors((prev) => ({ ...prev, status: undefined }))
+            }}
+            options={selectableStatuses}
+            disabled={isSubmitting}
+            noneValue="__none__"
+            noneLabel="No status"
+          />
+          {fieldErrors.status ? (
+            <p className="text-xs text-rose-600">{fieldErrors.status}</p>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-2">
+          <Label htmlFor="create-task-linked-type">Service / Product Type</Label>
+          <Select
+            value={linkedEntityType}
+            onValueChange={(value) => {
+              setLinkedEntityType(value as "__none__" | "SERVICE" | "PRODUCT")
+              setFieldErrors((prev) => ({ ...prev, linkedEntity: undefined }))
+            }}
+            disabled={isSubmitting}
+          >
+            <SelectTrigger id="create-task-linked-type" className="bg-white">
+              <SelectValue placeholder="No linked item" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">No linked item</SelectItem>
+              <SelectItem value="SERVICE">Service</SelectItem>
+              <SelectItem value="PRODUCT">Product</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="create-task-linked-name">Service / Product Name</Label>
+          <Input
+            id="create-task-linked-name"
+            value={linkedEntityName}
+            onChange={(event) => {
+              setLinkedEntityName(event.target.value)
+              setFieldErrors((prev) => ({ ...prev, linkedEntity: undefined }))
+            }}
+            placeholder="Type or select from catalog"
+            list="create-task-linked-name-options"
+            disabled={isSubmitting}
+          />
+          <datalist id="create-task-linked-name-options">
+            {linkedEntityOptions
+              .filter((option) => linkedEntityType === "__none__" || option.type === linkedEntityType)
+              .map((option) => (
+                <option key={option.id} value={option.name} />
+              ))}
+          </datalist>
+        </div>
+      </div>
+      {fieldErrors.linkedEntity ? (
+        <p className="text-xs text-rose-600">{fieldErrors.linkedEntity}</p>
+      ) : null}
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
           <div className="grid gap-2">
-            <Label htmlFor="create-task-description">Description</Label>
-            <Textarea
-              id="create-task-description"
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              placeholder="Optional context for the assignee or team."
-              rows={5}
+            <Label htmlFor="create-task-due-date">Due Date</Label>
+            <DateTimeInput
+              id="create-task-due-date"
+              value={dueDateInput}
+              onValueChange={setDueDateInput}
+              disabled={isSubmitting}
+              ariaInvalid={Boolean(fieldErrors.dueDate)}
+              timezone={tenantTimezone}
+              disabledDate={() => false}
             />
-            {fieldErrors.description ? (
-              <p className="text-xs text-rose-600">{fieldErrors.description}</p>
+            {fieldErrors.dueDate ? (
+              <p className="text-xs text-rose-600">{fieldErrors.dueDate}</p>
             ) : null}
           </div>
         </div>
 
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setOpen(false)}
-            disabled={isSubmitting}
-          >
-            Cancel
-          </Button>
-          <Button type="button" onClick={onSubmit} disabled={isSubmitting}>
-            {isSubmitting ? "Creating..." : "Create Task"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+          <div className="grid gap-2">
+            <Label htmlFor="create-task-started-at">Start Date</Label>
+            <DateTimeInput
+              id="create-task-started-at"
+              value={startedAtInput}
+              onValueChange={setStartedAtInput}
+              disabled={isSubmitting}
+              ariaInvalid={Boolean(fieldErrors.startedAt)}
+              timezone={tenantTimezone}
+              disabledDate={() => false}
+            />
+            {fieldErrors.startedAt ? (
+              <p className="text-xs text-rose-600">{fieldErrors.startedAt}</p>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+          <div className="grid gap-2">
+            <Label htmlFor="create-task-reminder-at">Reminder Date</Label>
+            <DateTimeInput
+              id="create-task-reminder-at"
+              value={reminderAtInput}
+              onValueChange={setReminderAtInput}
+              disabled={isSubmitting}
+              ariaInvalid={Boolean(fieldErrors.reminderAt)}
+              timezone={tenantTimezone}
+              disabledDate={() => false}
+            />
+            {fieldErrors.reminderAt ? (
+              <p className="text-xs text-rose-600">{fieldErrors.reminderAt}</p>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-2">
+        <Label htmlFor="create-task-description">Description</Label>
+        <Textarea
+          id="create-task-description"
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+          placeholder="Optional context for the assignee or team."
+          rows={5}
+        />
+        {fieldErrors.description ? (
+          <p className="text-xs text-rose-600">{fieldErrors.description}</p>
+        ) : null}
+      </div>
+    </div>
+  )
+
+  return (
+    isDrawer ? (
+      <Sheet
+        open={open}
+        onOpenChange={(nextOpen) => {
+          setOpen(nextOpen)
+          if (!nextOpen) resetForm()
+        }}
+      >
+        <SheetTrigger asChild>
+          {trigger ?? (
+            <Button
+              type="button"
+              className="bg-blue-950 text-white hover:bg-blue-950/90"
+            >
+              {triggerLabel}
+            </Button>
+          )}
+        </SheetTrigger>
+        <SheetContent side="right" className="flex h-full flex-col gap-0 p-0 sm:max-w-2xl">
+          <SheetHeader className="border-b border-slate-200 bg-slate-50 px-6 text-left">
+            <SheetTitle className="text-xl font-semibold text-slate-950">Create Task</SheetTitle>
+            <SheetDescription>{dialogDescription}</SheetDescription>
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">{formContent}</div>
+          <SheetFooter className="border-t border-slate-200 bg-white px-6 py-4 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setOpen(false)}
+              disabled={isSubmitting}
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={onSubmit} disabled={isSubmitting}>
+              {isSubmitting ? "Creating..." : "Create Task"}
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+    ) : (
+      <Dialog
+        open={open}
+        onOpenChange={(nextOpen) => {
+          setOpen(nextOpen)
+          if (!nextOpen) resetForm()
+        }}
+      >
+        <DialogTrigger asChild>
+          {trigger ?? (
+            <Button
+              type="button"
+              className="bg-blue-950 text-white hover:bg-blue-950/90"
+            >
+              {triggerLabel}
+            </Button>
+          )}
+        </DialogTrigger>
+        <DialogContent className="sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Create Task</DialogTitle>
+            <DialogDescription>{dialogDescription}</DialogDescription>
+          </DialogHeader>
+          {formContent}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setOpen(false)}
+              disabled={isSubmitting}
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={onSubmit} disabled={isSubmitting}>
+              {isSubmitting ? "Creating..." : "Create Task"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    )
   )
 }

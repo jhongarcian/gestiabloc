@@ -14,6 +14,7 @@ import contactsRoutes from "./routes/contacts.routes"
 import notificationsRoutes from "./routes/notifications.routes"
 import tasksRoutes from "./routes/tasks.routes"
 import appointmentsRoutes from "./routes/appointments.routes"
+import opportunitiesRoutes from "./routes/opportunities.routes"
 import servicesProductsRoutes from "./routes/services-products.routes"
 import servicesRoutes from "./routes/services.routes"
 import { getUserRoom, setRealtimeServer } from "./lib/realtime"
@@ -88,6 +89,7 @@ app.use("/api/contacts", contactsRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/tasks", tasksRoutes);
 app.use("/api/appointments", appointmentsRoutes);
+app.use("/api/opportunities", opportunitiesRoutes);
 app.use("/api/services-products", servicesProductsRoutes);
 app.use("/api/services", servicesRoutes);
 

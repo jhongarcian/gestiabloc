@@ -3,6 +3,7 @@ import argon2 from "argon2";
 import multer from "multer";
 import { randomUUID } from "crypto";
 import { z } from "zod";
+import { Prisma } from "../generated/prisma/index.js";
 
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { deleteBlobByUrl, uploadPublicBlob } from "../lib/blob.js";
@@ -30,6 +31,7 @@ const ACCOUNT_SETTINGS_SECTIONS = [
   "users",
   "account",
   "calendar",
+  "opportunities",
   "services",
   "professionals",
   "follow-ups",
@@ -499,6 +501,47 @@ const UpdateTenantTagSchema = z.object({
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
 });
 
+const OpportunityPipelineStageInputSchema = z.object({
+  id: z.string().trim().min(1).optional(),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .transform((value) => normalizeOpportunityStageName(value)),
+})
+
+const UpsertOpportunityPipelineSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .transform((value) => normalizeOpportunityPipelineName(value)),
+  color: z.string().trim().regex(STATUS_HEX_COLOR_REGEX),
+  stages: z.array(OpportunityPipelineStageInputSchema).min(1).max(50),
+}).superRefine((value, ctx) => {
+  if (hasDuplicateCaseInsensitiveValues(value.stages.map((stage) => stage.name))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["stages"],
+      message: "Stage names must be unique within a pipeline.",
+    });
+  }
+
+  const stageIds = value.stages
+    .map((stage) => stage.id?.trim())
+    .filter((stageId): stageId is string => Boolean(stageId));
+
+  if (new Set(stageIds).size !== stageIds.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["stages"],
+      message: "Stage identifiers must be unique within a pipeline.",
+    });
+  }
+});
+
 const ServicesPaginationQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z
@@ -518,6 +561,24 @@ const ServicesPaginationQuerySchema = z.object({
       if (value === "false" || value === false) return false;
       return undefined;
     }),
+});
+
+const OpportunitiesPaginationQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z
+    .coerce
+    .number()
+    .int()
+    .refine((value) => value === 10 || value === 25, {
+      message: "pageSize must be 10 or 25",
+    })
+    .default(10),
+});
+
+const ReorderOpportunityPipelinesSchema = z.object({
+  pipelineId: z.string().trim().min(1),
+  targetPipelineId: z.string().trim().min(1),
+  position: z.enum(["before", "after"]),
 });
 const ServiceOptionsQuerySchema = z.object({
   includeInactive: z
@@ -968,6 +1029,67 @@ async function findTenantTagByName(tenantId: string, name: string, excludeId?: s
     },
   });
 }
+
+function normalizeOpportunityPipelineName(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function normalizeOpportunityStageName(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function hasDuplicateCaseInsensitiveValues(values: string[]) {
+  const seen = new Set<string>();
+
+  for (const value of values) {
+    const normalized = value.trim().toLocaleLowerCase();
+    if (seen.has(normalized)) {
+      return true;
+    }
+    seen.add(normalized);
+  }
+
+  return false;
+}
+
+async function findOpportunityPipelineByName(
+  tenantId: string,
+  name: string,
+  excludeId?: string,
+) {
+  return prismaWithContacts.opportunityPipeline.findFirst({
+    where: {
+      tenantId,
+      name: {
+        equals: normalizeOpportunityPipelineName(name),
+        mode: "insensitive",
+      },
+      ...(excludeId ? { NOT: { id: excludeId } } : {}),
+    },
+    select: {
+      id: true,
+    },
+  });
+}
+
+const opportunityPipelineSelect = {
+  id: true,
+  name: true,
+  color: true,
+  sortOrder: true,
+  createdAt: true,
+  updatedAt: true,
+  stages: {
+    orderBy: [{ sortOrder: "asc" as const }, { name: "asc" as const }],
+    select: {
+      id: true,
+      name: true,
+      sortOrder: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  },
+} satisfies Prisma.OpportunityPipelineSelect;
 
 async function findServiceByName(
   tenantId: string,
@@ -4912,6 +5034,346 @@ router.delete("/:tenantId/tags/:recordId", ...writeMiddlewares, async (req, res,
   }
 });
 
+router.get("/:tenantId/opportunities", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const { page, pageSize } = OpportunitiesPaginationQuerySchema.parse(req.query);
+    const skip = (page - 1) * pageSize;
+
+    const [total, pipelines] = await prisma.$transaction([
+      prisma.opportunityPipeline.count({
+        where: { tenantId },
+      }),
+      prisma.opportunityPipeline.findMany({
+        where: { tenantId },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        skip,
+        take: pageSize,
+        select: opportunityPipelineSelect,
+      }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+    return res.json({
+      ok: true,
+      items: pipelines,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch(
+  "/:tenantId/opportunities/reorder",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId } = TenantPathSchema.parse(req.params);
+      const payload = ReorderOpportunityPipelinesSchema.parse(req.body);
+
+      if (payload.pipelineId === payload.targetPipelineId) {
+        return res.json({ ok: true });
+      }
+
+      const pipelines = await prismaWithContacts.opportunityPipeline.findMany({
+        where: { tenantId },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+        },
+      });
+
+      const pipelineIds = pipelines.map((pipeline: { id: string }) => pipeline.id);
+      const sourceIndex = pipelineIds.indexOf(payload.pipelineId);
+      const targetIndex = pipelineIds.indexOf(payload.targetPipelineId);
+
+      if (sourceIndex < 0 || targetIndex < 0) {
+        return res.status(404).json({ error: "PIPELINE_NOT_FOUND" });
+      }
+
+      const reorderedIds = [...pipelineIds];
+      const [movedId] = reorderedIds.splice(sourceIndex, 1);
+      const targetInsertionIndex = reorderedIds.indexOf(payload.targetPipelineId);
+      const insertAt =
+        payload.position === "before" ? targetInsertionIndex : targetInsertionIndex + 1;
+
+      reorderedIds.splice(insertAt, 0, movedId);
+
+      await prismaWithContacts.$transaction(
+        reorderedIds.map((pipelineId: string, index: number) =>
+          prismaWithContacts.opportunityPipeline.update({
+            where: {
+              tenantId_id: {
+                tenantId,
+                id: pipelineId,
+              },
+            },
+            data: {
+              sortOrder: (index + 1) * 10,
+            },
+          }),
+        ),
+      );
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post("/:tenantId/opportunities", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId } = TenantPathSchema.parse(req.params);
+    const payload = UpsertOpportunityPipelineSchema.parse(req.body);
+    const normalizedStages = payload.stages.map((stage, index) => ({
+      name: normalizeOpportunityStageName(stage.name),
+      sortOrder: (index + 1) * 10,
+    }));
+
+    const duplicatePipeline = await findOpportunityPipelineByName(tenantId, payload.name);
+    if (duplicatePipeline) {
+      return res.status(409).json({ error: "PIPELINE_NAME_ALREADY_EXISTS" });
+    }
+
+    const maxSortOrderRecord = await prismaWithContacts.opportunityPipeline.findFirst({
+      where: { tenantId },
+      orderBy: { sortOrder: "desc" },
+      select: { sortOrder: true },
+    });
+    const nextSortOrder = (maxSortOrderRecord?.sortOrder ?? 0) + 10;
+
+    const created = await prismaWithContacts.opportunityPipeline.create({
+      data: {
+        tenantId,
+        name: payload.name,
+        color: payload.color,
+        sortOrder: nextSortOrder,
+        stages: {
+          create: normalizedStages.map((stage) => ({
+            tenantId,
+            name: stage.name,
+            sortOrder: stage.sortOrder,
+          })),
+        },
+      },
+      select: opportunityPipelineSelect,
+    });
+
+    return res.status(201).json({ ok: true, pipeline: created });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get(
+  "/:tenantId/opportunities/:recordId",
+  ...readMiddlewares,
+  async (req, res, next) => {
+    try {
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+
+      const pipeline = await prismaWithContacts.opportunityPipeline.findUnique({
+        where: {
+          tenantId_id: {
+            tenantId,
+            id: recordId,
+          },
+        },
+        select: opportunityPipelineSelect,
+      });
+
+      if (!pipeline) {
+        return res.status(404).json({ error: "PIPELINE_NOT_FOUND" });
+      }
+
+      return res.json({
+        ok: true,
+        pipeline: {
+          id: pipeline.id,
+          name: pipeline.name,
+          color: pipeline.color,
+          sortOrder: pipeline.sortOrder,
+          createdAt: pipeline.createdAt,
+          updatedAt: pipeline.updatedAt,
+          stages: pipeline.stages,
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.patch("/:tenantId/opportunities/:recordId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req);
+
+    const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+    const payload = UpsertOpportunityPipelineSchema.parse(req.body);
+    const normalizedStages = payload.stages.map((stage, index) => ({
+      id: stage.id?.trim() || null,
+      name: normalizeOpportunityStageName(stage.name),
+      sortOrder: (index + 1) * 10,
+    }));
+
+    const existing = await prismaWithContacts.opportunityPipeline.findUnique({
+      where: {
+        tenantId_id: {
+          tenantId,
+          id: recordId,
+        },
+      },
+      select: {
+        id: true,
+        stages: {
+          select: {
+            id: true,
+          },
+        },
+      },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: "PIPELINE_NOT_FOUND" });
+    }
+
+    const duplicatePipeline = await findOpportunityPipelineByName(
+      tenantId,
+      payload.name,
+      recordId,
+    );
+    if (duplicatePipeline) {
+      return res.status(409).json({ error: "PIPELINE_NAME_ALREADY_EXISTS" });
+    }
+
+    const existingStageIds = new Set(
+      existing.stages.map((stage: { id: string }) => stage.id),
+    );
+    const retainedStageIds = normalizedStages
+      .map((stage) => stage.id)
+      .filter((stageId): stageId is string => Boolean(stageId));
+    const unknownStageId = retainedStageIds.find((stageId) => !existingStageIds.has(stageId));
+
+    if (unknownStageId) {
+      return res.status(404).json({ error: "PIPELINE_STAGE_NOT_FOUND" });
+    }
+
+    const updated = await prismaWithContacts.$transaction(async (tx: any) => {
+      await tx.opportunityPipeline.update({
+        where: {
+          tenantId_id: {
+            tenantId,
+            id: recordId,
+          },
+        },
+        data: {
+          name: payload.name,
+          color: payload.color,
+        },
+      });
+
+      await tx.opportunityPipelineStage.deleteMany({
+        where: {
+          tenantId,
+          pipelineId: recordId,
+          ...(retainedStageIds.length > 0
+            ? { id: { notIn: retainedStageIds } }
+            : {}),
+        },
+      });
+
+      for (const stage of normalizedStages) {
+        if (stage.id) {
+          await tx.opportunityPipelineStage.update({
+            where: { id: stage.id },
+            data: {
+              name: stage.name,
+              sortOrder: stage.sortOrder,
+            },
+          });
+          continue;
+        }
+
+        await tx.opportunityPipelineStage.create({
+          data: {
+            tenantId,
+            pipelineId: recordId,
+            name: stage.name,
+            sortOrder: stage.sortOrder,
+          },
+        });
+      }
+
+        return tx.opportunityPipeline.findUnique({
+        where: {
+          tenantId_id: {
+            tenantId,
+            id: recordId,
+          },
+        },
+        select: opportunityPipelineSelect,
+      });
+    });
+
+    return res.json({ ok: true, pipeline: updated });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete(
+  "/:tenantId/opportunities/:recordId",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+
+      const existing = await prismaWithContacts.opportunityPipeline.findUnique({
+        where: {
+          tenantId_id: {
+            tenantId,
+            id: recordId,
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (!existing) {
+        return res.status(404).json({ error: "PIPELINE_NOT_FOUND" });
+      }
+
+      await prismaWithContacts.opportunityPipeline.delete({
+        where: {
+          tenantId_id: {
+            tenantId,
+            id: recordId,
+          },
+        },
+      });
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
 router.get("/:tenantId/custom-fields", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
@@ -5187,6 +5649,7 @@ for (const section of ACCOUNT_SETTINGS_SECTIONS) {
   if (
     section !== "users" &&
     section !== "account" &&
+    section !== "opportunities" &&
     section !== "status-config" &&
     section !== "tags" &&
     section !== "custom-fields"
@@ -5200,6 +5663,7 @@ for (const section of ACCOUNT_SETTINGS_SECTIONS) {
   if (
     section === "users" ||
     section === "account" ||
+    section === "opportunities" ||
     section === "status-config" ||
     section === "tags" ||
     section === "custom-fields"
