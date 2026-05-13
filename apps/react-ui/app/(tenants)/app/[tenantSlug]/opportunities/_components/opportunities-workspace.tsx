@@ -50,6 +50,7 @@ import { CreateTaskDialog } from "../../tasks/_components/create-task-dialog"
 import { CreateAppointmentDialog } from "../../calendar/_components/create-appointment-dialog"
 import { type CalendarMetaResponse } from "../../calendar/_lib/calendar-api"
 import { AddContactOpportunityDialog } from "./add-contact-opportunity-dialog"
+import { OpportunityDetailDrawer } from "./opportunity-detail-drawer"
 
 type PipelineOption = {
   id: string
@@ -353,8 +354,8 @@ function DroppableStageColumn({
   })
 
   return (
-    <section className="flex w-[320px] shrink-0 flex-col gap-3">
-      <header className="rounded-[24px] bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
+    <section className="flex w-[340px] shrink-0 flex-col gap-3">
+      <header className="rounded-[24px] bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -408,6 +409,7 @@ function OpportunityCard({
   taskAssigneeOptions,
   calendarMeta,
   overlay = false,
+  onOpenDetail,
 }: {
   opportunity: OpportunityCardRecord
   tenantId: string
@@ -419,6 +421,7 @@ function OpportunityCard({
   taskAssigneeOptions: OpportunitiesWorkspaceProps["taskAssigneeOptions"]
   calendarMeta: OpportunitiesWorkspaceProps["calendarMeta"]
   overlay?: boolean
+  onOpenDetail?: (opportunity: OpportunityCardRecord) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: overlay ? `overlay:${opportunity.id}` : opportunity.id,
@@ -431,140 +434,161 @@ function OpportunityCard({
 
   const dragInteractionProps = overlay ? {} : { ...attributes, ...listeners }
 
+  const handleCardClick = () => {
+    if (!overlay && onOpenDetail) {
+      onOpenDetail(opportunity)
+    }
+  }
+
   return (
     <article
       ref={setNodeRef}
       style={{ transform: toTranslateString(transform) }}
       {...dragInteractionProps}
+      onClick={handleCardClick}
       className={cn(
-        "rounded-[24px] bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.08)] transition-shadow",
+        "group relative overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.08)] transition-all",
         !overlay &&
-          "cursor-grab hover:shadow-[0_14px_34px_rgba(15,23,42,0.12)] active:cursor-grabbing",
+          "cursor-pointer hover:border-slate-300 hover:shadow-[0_14px_34px_rgba(15,23,42,0.12)]",
         isDragging && !overlay && "opacity-70 shadow-md",
       )}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1 space-y-1">
-          <a
-            href={`/app/${tenantSlug}/contacts/${opportunity.contact.id}/overview`}
-            className="block truncate text-sm font-semibold text-slate-950 transition hover:text-blue-950"
-            onPointerDown={stopDragPropagation}
-          >
-            {opportunity.contact.fullName}
-          </a>
-          <p className="truncate text-xs text-slate-500">
-            {opportunity.contact.email ?? opportunity.contact.phoneNumber ?? "No contact details"}
-          </p>
-          <p className="text-sm font-semibold text-slate-950">
-            {formatUsdCents(opportunity.valueCents)}
-          </p>
-        </div>
-        {opportunity.assignedTo ? (
-          <div className="flex shrink-0 items-start">
-            <Avatar
-              className="h-8 w-8 border border-slate-200 bg-white shadow-sm"
-              title={opportunity.assignedTo.name}
-            >
-              <AvatarImage
-                src={opportunity.assignedTo.image ?? undefined}
-                alt={opportunity.assignedTo.name}
-              />
-              <AvatarFallback className="bg-blue-100 text-xs font-semibold text-blue-900">
-                {getInitials(opportunity.assignedTo.name)}
-              </AvatarFallback>
-            </Avatar>
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] opacity-0 transition-opacity group-hover:opacity-100" />
+      <div className="relative p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <a
+                href={`/app/${tenantSlug}/contacts/${opportunity.contact.id}/overview`}
+                className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-950 transition hover:text-blue-950"
+                onPointerDown={stopDragPropagation}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <span className="truncate">{opportunity.contact.fullName}</span>
+              </a>
+            </div>
+            <p className="mt-1.5 truncate text-xs text-slate-500">
+              {opportunity.contact.email ?? opportunity.contact.phoneNumber ?? "No contact details"}
+            </p>
           </div>
-        ) : null}
-      </div>
-
-      {!overlay ? (
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <ContactTagAssignDialog
-            tenantId={tenantId}
-            contactId={opportunity.contact.id}
-            canManageTags={canManageTags}
-            presentation="drawer"
-            trigger={
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 cursor-pointer rounded-full border-slate-200 text-slate-600 hover:bg-slate-50"
-                onPointerDown={stopDragPropagation}
+          {opportunity.assignedTo ? (
+            <div className="flex shrink-0 items-start">
+              <Avatar
+                className="h-9 w-9 border border-slate-200 bg-white shadow-sm"
+                title={opportunity.assignedTo.name}
               >
-                <Tags className="h-3.5 w-3.5" />
-              </Button>
-            }
-          />
-          <CreateContactNoteDialog
-            tenantId={tenantId}
-            contactId={opportunity.contact.id}
-            presentation="drawer"
-            trigger={
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 cursor-pointer rounded-full border-slate-200 text-slate-600 hover:bg-slate-50"
-                onPointerDown={stopDragPropagation}
-              >
-                <NotebookPen className="h-3.5 w-3.5" />
-              </Button>
-            }
-          />
-          <CreateTaskDialog
-            tenantId={tenantId}
-            tenantTimezone={tenantTimezone}
-            statusOptions={taskStatusOptions}
-            assigneeOptions={taskAssigneeOptions}
-            presentation="drawer"
-            initialContact={{
-              id: opportunity.contact.id,
-              fullName: opportunity.contact.fullName,
-              email: opportunity.contact.email,
-              phoneNumber: opportunity.contact.phoneNumber,
-            }}
-            lockContact
-            trigger={
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 cursor-pointer rounded-full border-slate-200 text-slate-600 hover:bg-slate-50"
-                onPointerDown={stopDragPropagation}
-              >
-                <ListTodo className="h-3.5 w-3.5" />
-              </Button>
-            }
-          />
-          <CreateAppointmentDialog
-            tenantId={tenantId}
-            tenantTimezone={tenantTimezone}
-            currentUserId={currentUserId}
-            initialContact={{
-              id: opportunity.contact.id,
-              fullName: opportunity.contact.fullName,
-              email: opportunity.contact.email,
-              phoneNumber: opportunity.contact.phoneNumber,
-            }}
-            trigger={
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 cursor-pointer rounded-full border-slate-200 text-slate-600 hover:bg-slate-50"
-                onPointerDown={stopDragPropagation}
-              >
-                <CalendarPlus className="h-3.5 w-3.5" />
-              </Button>
-            }
-            meetingIntervalMinutes={calendarMeta.settings.meetingIntervalMinutes}
-            meetingDurationMinutes={calendarMeta.settings.meetingDurationMinutes}
-            serviceOptions={calendarMeta.filters.services}
-            assigneeOptions={calendarMeta.filters.users}
-          />
+                <AvatarImage
+                  src={opportunity.assignedTo.image ?? undefined}
+                  alt={opportunity.assignedTo.name}
+                />
+                <AvatarFallback className="bg-blue-100 text-xs font-semibold text-blue-900">
+                  {getInitials(opportunity.assignedTo.name)}
+                </AvatarFallback>
+              </Avatar>
+            </div>
+          ) : null}
         </div>
-      ) : null}
+
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <div className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1.5">
+            <span className="text-sm font-semibold text-slate-950">
+              {formatUsdCents(opportunity.valueCents)}
+            </span>
+          </div>
+          {!overlay ? (
+            <div className="flex items-center gap-1.5">
+              <ContactTagAssignDialog
+                tenantId={tenantId}
+                contactId={opportunity.contact.id}
+                canManageTags={canManageTags}
+                presentation="drawer"
+                trigger={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 cursor-pointer rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                    onPointerDown={stopDragPropagation}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Tags className="h-4 w-4" />
+                  </Button>
+                }
+              />
+              <CreateContactNoteDialog
+                tenantId={tenantId}
+                contactId={opportunity.contact.id}
+                presentation="drawer"
+                trigger={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 cursor-pointer rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                    onPointerDown={stopDragPropagation}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <NotebookPen className="h-4 w-4" />
+                  </Button>
+                }
+              />
+              <CreateTaskDialog
+                tenantId={tenantId}
+                tenantTimezone={tenantTimezone}
+                statusOptions={taskStatusOptions}
+                assigneeOptions={taskAssigneeOptions}
+                presentation="drawer"
+                initialContact={{
+                  id: opportunity.contact.id,
+                  fullName: opportunity.contact.fullName,
+                  email: opportunity.contact.email,
+                  phoneNumber: opportunity.contact.phoneNumber,
+                }}
+                lockContact
+                trigger={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 cursor-pointer rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                    onPointerDown={stopDragPropagation}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <ListTodo className="h-4 w-4" />
+                  </Button>
+                }
+              />
+              <CreateAppointmentDialog
+                tenantId={tenantId}
+                tenantTimezone={tenantTimezone}
+                currentUserId={currentUserId}
+                initialContact={{
+                  id: opportunity.contact.id,
+                  fullName: opportunity.contact.fullName,
+                  email: opportunity.contact.email,
+                  phoneNumber: opportunity.contact.phoneNumber,
+                }}
+                trigger={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 cursor-pointer rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                    onPointerDown={stopDragPropagation}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <CalendarPlus className="h-4 w-4" />
+                  </Button>
+                }
+                meetingIntervalMinutes={calendarMeta.settings.meetingIntervalMinutes}
+                meetingDurationMinutes={calendarMeta.settings.meetingDurationMinutes}
+                serviceOptions={calendarMeta.filters.services}
+                assigneeOptions={calendarMeta.filters.users}
+              />
+            </div>
+          ) : null}
+        </div>
+      </div>
     </article>
   )
 }
@@ -616,22 +640,25 @@ function OutcomeDropZone({
 
 function OpportunityCardSkeleton() {
   return (
-    <article className="rounded-[24px] bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1 space-y-2">
-          <Skeleton className="h-4 w-32 rounded-md" />
-          <Skeleton className="h-3 w-44 rounded-md" />
+    <article className="overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
+      <div className="p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton className="h-4 w-32 rounded-md" />
+            <Skeleton className="h-3 w-44 rounded-md" />
+          </div>
+          <Skeleton className="h-9 w-9 rounded-full" />
         </div>
-        <div className="flex items-center gap-2">
-          <Skeleton className="h-8 w-8 rounded-full" />
-          <Skeleton className="h-8 w-8 rounded-full" />
-        </div>
-      </div>
 
-      <div className="mt-4 flex items-center gap-2">
-        <Skeleton className="h-8 w-8 rounded-full" />
-        <Skeleton className="h-8 w-8 rounded-full" />
-        <Skeleton className="h-8 w-8 rounded-full" />
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <Skeleton className="h-8 w-24 rounded-full" />
+          <div className="flex items-center gap-1.5">
+            <Skeleton className="h-8 w-8 rounded-lg" />
+            <Skeleton className="h-8 w-8 rounded-lg" />
+            <Skeleton className="h-8 w-8 rounded-lg" />
+            <Skeleton className="h-8 w-8 rounded-lg" />
+          </div>
+        </div>
       </div>
     </article>
   )
@@ -643,7 +670,7 @@ function OpportunitiesBoardSkeleton({ columnCount }: { columnCount: number }) {
       {Array.from({ length: columnCount }).map((_, index) => (
         <section
           key={`opportunities-board-skeleton-${index}`}
-          className="flex w-[320px] shrink-0 flex-col gap-3"
+          className="flex w-[340px] shrink-0 flex-col gap-3"
         >
           <header className="px-1 py-1">
             <div className="flex items-center justify-between gap-3">
@@ -695,6 +722,7 @@ export function OpportunitiesWorkspace({
   const [activeOpportunityId, setActiveOpportunityId] = useState<string | null>(null)
   const [query, setQuery] = useState(searchParam)
   const [debouncedQuery, setDebouncedQuery] = useState(searchParam)
+  const [selectedOpportunity, setSelectedOpportunity] = useState<OpportunityCardRecord | null>(null)
 
   const activeOpportunity = useMemo(() => {
     if (!activeOpportunityId || !boardPipeline) return null
@@ -716,12 +744,6 @@ export function OpportunitiesWorkspace({
     1,
     selectedPipeline?.stageCount ?? boardPipeline?.stages.length ?? 3,
   )
-
-  useEffect(() => {
-    if (query === searchParam && debouncedQuery === searchParam) return
-    setQuery(searchParam)
-    setDebouncedQuery(searchParam)
-  }, [debouncedQuery, query, searchParam])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -905,6 +927,74 @@ export function OpportunitiesWorkspace({
       if (!current || current.id !== opportunity.pipelineId) return current
       return insertOpportunityLocally(current, opportunity)
     })
+  }
+
+  const handleDrawerStageChange = async (opportunityId: string, targetStageId: string) => {
+    if (!boardPipeline) return
+
+    const previousPipeline = boardPipeline
+    setBoardPipeline(moveOpportunityLocally(boardPipeline, opportunityId, targetStageId))
+
+    setSelectedOpportunity((current) => {
+      if (!current || current.id !== opportunityId) return current
+      return { ...current, stageId: targetStageId }
+    })
+
+    try {
+      const { data } = await api.patch<MoveOpportunityResponse>(
+        `/api/opportunities/${tenantId}/${opportunityId}`,
+        { stageId: targetStageId },
+      )
+
+      setBoardPipeline((current) => {
+        if (!current) return current
+        return moveOpportunityLocally(current, opportunityId, targetStageId, data.opportunity)
+      })
+
+      setSelectedOpportunity((current) => {
+        if (!current || current.id !== opportunityId) return current
+        return data.opportunity
+      })
+    } catch (error) {
+      setBoardPipeline(previousPipeline)
+      setSelectedOpportunity((current) => {
+        if (!current || current.id !== opportunityId) return current
+        const original = findOpportunityStage(previousPipeline, opportunityId)
+        return original?.card ?? current
+      })
+      throw error
+    }
+  }
+
+  const handleDrawerCloseOpportunity = async (opportunityId: string, result: "WON" | "LOST") => {
+    if (!boardPipeline) return
+
+    const previousPipeline = boardPipeline
+    setBoardPipeline(closeOpportunityLocally(boardPipeline, opportunityId))
+    setPipelineOptions((current) =>
+      current.map((item) =>
+        item.id === boardPipeline.id
+          ? { ...item, opportunityCount: Math.max(0, item.opportunityCount - 1) }
+          : item,
+      ),
+    )
+
+    try {
+      await api.patch<MoveOpportunityResponse>(`/api/opportunities/${tenantId}/${opportunityId}`, {
+        result,
+      })
+    } catch (error) {
+      setBoardPipeline(previousPipeline)
+      setPipelineOptions((current) =>
+        current.map((item) =>
+          item.id === boardPipeline.id
+            ? { ...item, opportunityCount: item.opportunityCount + 1 }
+            : item,
+        ),
+      )
+      toast.error(formatErrorMessage(error, `Could not mark opportunity as ${result.toLowerCase()}.`))
+      throw error
+    }
   }
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -1164,6 +1254,7 @@ export function OpportunitiesWorkspace({
                             taskStatusOptions={taskStatusOptions}
                             taskAssigneeOptions={taskAssigneeOptions}
                             calendarMeta={calendarMeta}
+                            onOpenDetail={setSelectedOpportunity}
                           />
                         ))}
 
@@ -1213,7 +1304,7 @@ export function OpportunitiesWorkspace({
 
             <DragOverlay>
               {activeOpportunity ? (
-                <div className="w-[320px]">
+                <div className="w-[340px]">
                   <OpportunityCard
                     opportunity={activeOpportunity}
                     tenantId={tenantId}
@@ -1232,6 +1323,20 @@ export function OpportunitiesWorkspace({
           </DndContext>
         ) : null}
       </div>
+
+      {selectedOpportunity && boardPipeline ? (
+        <OpportunityDetailDrawer
+          opportunity={selectedOpportunity}
+          tenantSlug={tenantSlug}
+          stages={boardPipeline.stages.map((stage) => ({ id: stage.id, name: stage.name }))}
+          open={Boolean(selectedOpportunity)}
+          onOpenChange={(open) => {
+            if (!open) setSelectedOpportunity(null)
+          }}
+          onStageChange={handleDrawerStageChange}
+          onCloseOpportunity={handleDrawerCloseOpportunity}
+        />
+      ) : null}
     </section>
   )
 }
