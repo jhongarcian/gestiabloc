@@ -1120,105 +1120,102 @@ export function OpportunitiesWorkspace({
     <section className="flex h-full min-h-0 flex-col gap-4">
       <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)]">
         <div className="space-y-3 p-4 md:p-5">
-          <div className="rounded-[24px] border border-white/80 bg-white/75 p-4 shadow-sm backdrop-blur">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex min-w-0 flex-col gap-3 lg:flex-1 lg:flex-row lg:items-center">
-                <h1 className="shrink-0 text-xl font-semibold tracking-tight text-slate-950">
-                  Opportunities
-                </h1>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex min-w-0 flex-col gap-3 lg:flex-1 lg:flex-row lg:items-center">
+              <h1 className="shrink-0 text-xl font-semibold tracking-tight text-slate-950">
+                Opportunities
+              </h1>
 
-                <div className="w-full min-w-0 lg:max-w-[320px]">
-                  <Select
-                    value={selectedPipelineId}
-                    onValueChange={updatePipelineQuery}
-                    disabled={isLoadingPipelines || pipelineOptions.length === 0}
+              <div className="w-full min-w-0 lg:max-w-[320px]">
+                <Select
+                  value={selectedPipelineId}
+                  onValueChange={updatePipelineQuery}
+                  disabled={isLoadingPipelines || pipelineOptions.length === 0}
+                >
+                  <SelectTrigger className="h-12 w-full rounded-2xl border-slate-200 bg-white px-4 shadow-sm transition hover:border-slate-300 focus-visible:ring-blue-200">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {selectedPipeline ? (
+                        <span
+                          className="h-2.5 w-2.5 shrink-0 rounded-full border border-slate-200"
+                          style={{ backgroundColor: selectedPipeline.color }}
+                        />
+                      ) : null}
+                      <span className="truncate text-sm font-medium text-slate-900">
+                        {selectedPipeline?.name ??
+                          (isLoadingPipelines ? "Loading pipelines..." : "Select a pipeline")}
+                      </span>
+                    </div>
+                  </SelectTrigger>
+                  <SelectContent
+                    position="popper"
+                    side="bottom"
+                    align="start"
+                    sideOffset={8}
+                    avoidCollisions={false}
+                    className="w-[--radix-select-trigger-width] rounded-2xl border-slate-200 bg-white p-1 shadow-xl"
                   >
-                    <SelectTrigger className="h-12 w-full rounded-2xl border-slate-200 bg-white px-4 shadow-sm transition hover:border-slate-300 focus-visible:ring-blue-200">
-                      <div className="flex min-w-0 items-center gap-2">
-                        {selectedPipeline ? (
+                    {pipelineOptions.map((pipeline) => (
+                      <SelectItem key={pipeline.id} value={pipeline.id}>
+                        <div className="flex min-w-0 items-center gap-2">
                           <span
                             className="h-2.5 w-2.5 shrink-0 rounded-full border border-slate-200"
-                            style={{ backgroundColor: selectedPipeline.color }}
+                            style={{ backgroundColor: pipeline.color }}
                           />
-                        ) : null}
-                        <span className="truncate text-sm font-medium text-slate-900">
-                          {selectedPipeline?.name ??
-                            (isLoadingPipelines ? "Loading pipelines..." : "Select a pipeline")}
-                        </span>
-                      </div>
-                    </SelectTrigger>
-                    <SelectContent
-                      position="popper"
-                      side="bottom"
-                      align="start"
-                      sideOffset={8}
-                      avoidCollisions={false}
-                      className="w-[--radix-select-trigger-width] rounded-2xl border-slate-200 bg-white p-1 shadow-xl"
-                    >
-                      {pipelineOptions.map((pipeline) => (
-                        <SelectItem key={pipeline.id} value={pipeline.id}>
-                          <div className="flex min-w-0 items-center gap-2">
-                            <span
-                              className="h-2.5 w-2.5 shrink-0 rounded-full border border-slate-200"
-                              style={{ backgroundColor: pipeline.color }}
-                            />
-                            <span className="truncate font-medium text-slate-900">
-                              {pipeline.name}
-                            </span>
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <Badge className="inline-flex  shrink-0 items-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-white">
-                  {totalOpenOpportunities} opportunit{totalOpenOpportunities === 1 ? "y" : "ies"}
-                </Badge>
+                          <span className="truncate font-medium text-slate-900">
+                            {pipeline.name}
+                          </span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
-              {hasPipelines ? (
-                <AddContactOpportunityDialog
-                  tenantId={tenantId}
-                  initialPipelineId={selectedPipelineId}
-                  lockPipeline
-                  onCreated={handleOpportunityCreated}
-                  trigger={
-                    <Button className="h-10 cursor-pointer bg-blue-950 text-white hover:bg-blue-900">
-                      <Plus className="h-4 w-4" />
-                      Add opportunity
-                    </Button>
-                  }
-                />
-              ) : null}
+              <Badge className="inline-flex  shrink-0 items-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-white">
+                {totalOpenOpportunities} opportunit{totalOpenOpportunities === 1 ? "y" : "ies"}
+              </Badge>
             </div>
+
+            {hasPipelines ? (
+              <AddContactOpportunityDialog
+                tenantId={tenantId}
+                initialPipelineId={selectedPipelineId}
+                lockPipeline
+                onCreated={handleOpportunityCreated}
+                trigger={
+                  <Button className="h-10 cursor-pointer bg-blue-950 text-white hover:bg-blue-900">
+                    <Plus className="h-4 w-4" />
+                    Add opportunity
+                  </Button>
+                }
+              />
+            ) : null}
           </div>
 
-          <div className="rounded-[24px] border border-white/80 bg-white/75 p-4 shadow-sm backdrop-blur">
-            <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <Input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search by contact name or phone number"
-                  className="h-12 rounded-2xl border-slate-200 bg-white pl-9 pr-12 shadow-sm transition hover:border-slate-300 focus-visible:ring-blue-200"
-                />
-                {query ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1.5 top-1/2 h-8 w-8 -translate-y-1/2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                    onClick={() => setQuery("")}
-                  >
-                    <X className="h-4 w-4" />
-                    <span className="sr-only">Clear search</span>
-                  </Button>
-                ) : null}
-              </div>
+          <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search by contact name or phone number"
+                className="h-12 rounded-2xl border-slate-200 bg-white pl-9 pr-12 shadow-sm transition hover:border-slate-300 focus-visible:ring-blue-200"
+              />
+              {query ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1.5 top-1/2 h-8 w-8 -translate-y-1/2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  onClick={() => setQuery("")}
+                >
+                  <X className="h-4 w-4" />
+                  <span className="sr-only">Clear search</span>
+                </Button>
+              ) : null}
+            </div>
 
-              <FilterButton
+            <FilterButton
                 activeFilterCount={
                   filters.tagIds.length +
                   filters.statusConfigIds.length +
@@ -1251,7 +1248,6 @@ export function OpportunitiesWorkspace({
             </div>
           </div>
         </div>
-      </div>
 
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
         {!hasPipelines && !isLoadingPipelines ? (

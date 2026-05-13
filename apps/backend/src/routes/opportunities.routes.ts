@@ -405,8 +405,7 @@ function buildOpenOpportunityWhere(
             return {
               fieldId: filter.fieldId,
               value: {
-                contains: filter.text,
-                mode: "insensitive" as const,
+                string_contains: filter.text,
               },
             }
           }
@@ -416,13 +415,13 @@ function buildOpenOpportunityWhere(
             if (filter.min !== undefined) {
               conditions.push({
                 fieldId: filter.fieldId,
-                value: { gte: String(filter.min) },
+                value: { gte: filter.min },
               })
             }
             if (filter.max !== undefined) {
               conditions.push({
                 fieldId: filter.fieldId,
-                value: { lte: String(filter.max) },
+                value: { lte: filter.max },
               })
             }
             return conditions.length > 0 ? { AND: conditions } : null
@@ -448,21 +447,23 @@ function buildOpenOpportunityWhere(
             if (!filter.values || filter.values.length === 0) return null
             return {
               fieldId: filter.fieldId,
-              value: { in: filter.values },
+              value: { equals: filter.values[0] },
             }
           }
           case "multi_select": {
             if (!filter.values || filter.values.length === 0) return null
             return {
               fieldId: filter.fieldId,
-              value: { in: filter.values },
+              value: {
+                array_contains: filter.values,
+              },
             }
           }
           case "checkbox": {
             if (filter.checked === undefined) return null
             return {
               fieldId: filter.fieldId,
-              value: String(filter.checked),
+              value: { equals: filter.checked },
             }
           }
           default:

@@ -24,6 +24,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 
 type PipelineOption = {
@@ -112,6 +118,7 @@ type CreateOpportunityResponse = {
 type AddContactOpportunityDialogProps = {
   tenantId: string
   trigger: ReactNode
+  triggerTooltip?: string | null
   initialContact?: ContactSearchItem | null
   lockContact?: boolean
   initialPipelineId?: string | null
@@ -122,6 +129,7 @@ type AddContactOpportunityDialogProps = {
 export function AddContactOpportunityDialog({
   tenantId,
   trigger,
+  triggerTooltip = null,
   initialContact = null,
   lockContact = false,
   initialPipelineId = null,
@@ -355,7 +363,20 @@ export function AddContactOpportunityDialog({
         }
       }}
     >
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      {triggerTooltip ? (
+        <TooltipProvider delayDuration={120}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DialogTrigger asChild>{trigger}</DialogTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={8}>
+              {triggerTooltip}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : (
+        <DialogTrigger asChild>{trigger}</DialogTrigger>
+      )}
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Add opportunity</DialogTitle>
