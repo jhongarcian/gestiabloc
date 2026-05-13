@@ -2,6 +2,7 @@
 
 import { format } from "date-fns"
 import {
+  ArrowRight,
   CheckCircle2,
   ExternalLink,
   Loader2,
@@ -23,10 +24,11 @@ import {
   Sheet,
   SheetContent,
   SheetDescription,
+  SheetFooter,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
-import { Separator } from "@/components/ui/separator"
+import { cn } from "@/lib/utils"
 
 type OpportunityCardRecord = {
   id: string
@@ -78,27 +80,13 @@ function formatUsdCents(valueCents: number) {
   return currencyFormatter.format(valueCents / 100)
 }
 
-function statusBadge(result: "OPEN" | "WON" | "LOST") {
-  switch (result) {
-    case "OPEN":
-      return (
-        <Badge className="rounded-full border-blue-200 bg-blue-50 px-2.5 py-0.5 text-xs font-medium text-blue-800 hover:bg-blue-50">
-          Open
-        </Badge>
-      )
-    case "WON":
-      return (
-        <Badge className="rounded-full border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-800 hover:bg-emerald-50">
-          Won
-        </Badge>
-      )
-    case "LOST":
-      return (
-        <Badge className="rounded-full border-rose-200 bg-rose-50 px-2.5 py-0.5 text-xs font-medium text-rose-800 hover:bg-rose-50">
-          Lost
-        </Badge>
-      )
-  }
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 py-3">
+      <span className="shrink-0 text-xs text-slate-500">{label}</span>
+      <div className="min-w-0 text-right">{children}</div>
+    </div>
+  )
 }
 
 type OpportunityDetailDrawerProps = {
@@ -144,166 +132,195 @@ export function OpportunityDetailDrawer({
     }
   }
 
-  const currentStageName = stages.find((s) => s.id === opportunity.stageId)?.name ?? "Unknown"
+  const currentStageIndex = stages.findIndex((s) => s.id === opportunity.stageId)
+  const currentStageName = currentStageIndex >= 0 ? stages[currentStageIndex].name : "Unknown"
+  const isOpen = opportunity.result === "OPEN"
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="w-full overflow-y-auto sm:max-w-md"
+        className="flex h-full w-full flex-col gap-0 p-0 sm:max-w-md"
         showCloseButton
       >
-        <SheetHeader className="space-y-2 px-1">
-          <SheetTitle className="text-lg font-semibold text-slate-950">
-            Opportunity Details
+        <SheetHeader className="border-b border-slate-100 px-6 pb-4 pt-6 text-left">
+          <SheetTitle className="text-base font-semibold text-slate-950">
+            Opportunity
           </SheetTitle>
-          <SheetDescription className="text-sm text-slate-500">
-            View and manage this opportunity
+          <SheetDescription className="text-xs text-slate-400">
+            Created {format(new Date(opportunity.createdAt), "MMM d, yyyy")}
           </SheetDescription>
         </SheetHeader>
 
-        <div className="flex flex-col gap-6 px-1">
-          <div className="space-y-3">
-            <p className="text-xs font-medium uppercase tracking-wider text-slate-400">
-              Contact
-            </p>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="px-6 py-5">
             <a
               href={`/app/${tenantSlug}/contacts/${opportunity.contact.id}/overview`}
-              className="group inline-flex items-center gap-2 text-sm font-semibold text-slate-950 transition hover:text-blue-600"
+              className="group inline-flex items-center gap-1.5 text-sm font-semibold text-slate-950 transition hover:text-blue-600"
             >
               {opportunity.contact.fullName}
-              <ExternalLink className="h-3.5 w-3.5 text-slate-400 transition group-hover:text-blue-500" />
+              <ExternalLink className="h-3 w-3 text-slate-400 transition group-hover:text-blue-500" />
             </a>
-            <p className="text-xs text-slate-500">
+            <p className="mt-0.5 text-xs text-slate-400">
               {opportunity.contact.email ?? opportunity.contact.phoneNumber ?? "No contact details"}
             </p>
-          </div>
 
-          <Separator />
+            <div className="mt-5 divide-y divide-slate-100 border-t border-slate-100">
+              <Row label="Value">
+                <span className="text-sm font-semibold text-slate-950">
+                  {formatUsdCents(opportunity.valueCents)}
+                </span>
+              </Row>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <p className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                Status
-              </p>
-              {statusBadge(opportunity.result)}
+              <Row label="Status">
+                {opportunity.result === "OPEN" && (
+                  <Badge className="rounded-full border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 hover:bg-blue-50">
+                    Open
+                  </Badge>
+                )}
+                {opportunity.result === "WON" && (
+                  <Badge className="rounded-full border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 hover:bg-emerald-50">
+                    Won
+                  </Badge>
+                )}
+                {opportunity.result === "LOST" && (
+                  <Badge className="rounded-full border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-700 hover:bg-rose-50">
+                    Lost
+                  </Badge>
+                )}
+              </Row>
+
+              <Row label="Assigned to">
+                {opportunity.assignedTo ? (
+                  <div className="inline-flex items-center gap-2">
+                    <Avatar className="h-5 w-5">
+                      <AvatarImage
+                        src={opportunity.assignedTo.image ?? undefined}
+                        alt={opportunity.assignedTo.name}
+                      />
+                      <AvatarFallback className="bg-slate-100 text-[9px] font-medium text-slate-600">
+                        {getInitials(opportunity.assignedTo.name)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="text-sm text-slate-700">
+                      {opportunity.assignedTo.name}
+                    </span>
+                  </div>
+                ) : (
+                  <span className="text-sm text-slate-400">Unassigned</span>
+                )}
+              </Row>
             </div>
-            <div className="space-y-1.5">
-              <p className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                Value
-              </p>
-              <p className="text-sm font-semibold text-slate-950">
-                {formatUsdCents(opportunity.valueCents)}
-              </p>
-            </div>
-            <div className="space-y-1.5">
-              <p className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                Created
-              </p>
-              <p className="text-sm text-slate-700">
-                {format(new Date(opportunity.createdAt), "MMM d, yyyy")}
-              </p>
-            </div>
-            <div className="space-y-1.5">
-              <p className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                Assigned to
-              </p>
-              {opportunity.assignedTo ? (
-                <div className="flex items-center gap-2">
-                  <Avatar className="h-6 w-6 border border-slate-200 bg-white">
-                    <AvatarImage
-                      src={opportunity.assignedTo.image ?? undefined}
-                      alt={opportunity.assignedTo.name}
-                    />
-                    <AvatarFallback className="bg-blue-100 text-[10px] font-semibold text-blue-900">
-                      {getInitials(opportunity.assignedTo.name)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <p className="truncate text-sm text-slate-700">
-                    {opportunity.assignedTo.name}
-                  </p>
+
+            {isOpen ? (
+              <div className="mt-6 space-y-5">
+                <div className="flex items-center gap-1.5 overflow-x-auto">
+                  {stages.map((stage, index) => {
+                    const isActive = stage.id === opportunity.stageId
+                    const isPast = index < currentStageIndex
+
+                    return (
+                      <div key={stage.id} className="flex items-center gap-1.5">
+                        <div
+                          className={cn(
+                            "flex h-6 shrink-0 items-center rounded-full px-2.5 text-[11px] font-medium transition-colors",
+                            isActive && "bg-slate-900 text-white",
+                            isPast && "bg-slate-200 text-slate-600",
+                            !isActive && !isPast && "bg-slate-50 text-slate-400",
+                          )}
+                        >
+                          {stage.name}
+                        </div>
+                        {index < stages.length - 1 && (
+                          <ArrowRight
+                            className={cn(
+                              "h-3 w-3 shrink-0",
+                              isPast ? "text-slate-300" : "text-slate-200",
+                            )}
+                          />
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
-              ) : (
-                <p className="text-sm text-slate-400">Unassigned</p>
-              )}
-            </div>
-          </div>
 
-          <Separator />
+                <Select
+                  value={opportunity.stageId}
+                  onValueChange={(value) => void handleStageChange(value)}
+                  disabled={isMovingStage}
+                >
+                  <SelectTrigger className="h-9 w-full rounded-lg border-slate-200 text-sm">
+                    <SelectValue>
+                      <div className="flex items-center gap-2">
+                        {isMovingStage && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
+                        <span>{currentStageName}</span>
+                      </div>
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent
+                    position="popper"
+                    side="bottom"
+                    align="start"
+                    sideOffset={4}
+                    className="rounded-lg border-slate-200"
+                  >
+                    {stages.map((stage) => (
+                      <SelectItem key={stage.id} value={stage.id}>
+                        {stage.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-          {opportunity.result === "OPEN" ? (
-            <div className="space-y-3">
-              <p className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                Stage
-              </p>
-              <Select
-                value={opportunity.stageId}
-                onValueChange={(value) => void handleStageChange(value)}
-                disabled={isMovingStage}
-              >
-                <SelectTrigger className="h-10 w-full rounded-xl border-slate-200 bg-white text-sm">
-                  <SelectValue>
-                    <div className="flex items-center gap-2">
-                      {isMovingStage && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                      <span>{currentStageName}</span>
-                    </div>
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent
-                  position="popper"
-                  side="bottom"
-                  align="start"
-                  sideOffset={4}
-                  className="rounded-xl border-slate-200 bg-white"
-                >
-                  {stages.map((stage) => (
-                    <SelectItem key={stage.id} value={stage.id}>
-                      {stage.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          ) : null}
-
-          {opportunity.result === "OPEN" ? (
-            <div className="space-y-3">
-              <p className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                Actions
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="flex-1 cursor-pointer rounded-xl border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 hover:text-emerald-900"
-                  disabled={isClosing}
-                  onClick={() => void handleClose("WON")}
-                >
-                  {isClosing ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="mr-2 h-4 w-4" />
-                  )}
-                  Mark Won
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="flex-1 cursor-pointer rounded-xl border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100 hover:text-rose-900"
-                  disabled={isClosing}
-                  onClick={() => void handleClose("LOST")}
-                >
-                  {isClosing ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <XCircle className="mr-2 h-4 w-4" />
-                  )}
-                  Mark Lost
-                </Button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={isClosing}
+                    onClick={() => void handleClose("WON")}
+                    className={cn(
+                      "flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200",
+                      isClosing && "pointer-events-none opacity-50",
+                    )}
+                  >
+                    {isClosing ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                    )}
+                    Won
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isClosing}
+                    onClick={() => void handleClose("LOST")}
+                    className={cn(
+                      "flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200",
+                      isClosing && "pointer-events-none opacity-50",
+                    )}
+                  >
+                    {isClosing ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <XCircle className="h-3.5 w-3.5" />
+                    )}
+                    Lost
+                  </button>
+                </div>
               </div>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </div>
+
+        <SheetFooter className="border-t border-slate-100 px-6 py-3">
+          <Button
+            type="button"
+            variant="ghost"
+            className="cursor-pointer text-sm text-slate-500 hover:text-slate-700"
+            onClick={() => onOpenChange(false)}
+          >
+            Close
+          </Button>
+        </SheetFooter>
       </SheetContent>
     </Sheet>
   )

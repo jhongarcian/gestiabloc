@@ -666,7 +666,7 @@ function OpportunityCardSkeleton() {
 
 function OpportunitiesBoardSkeleton({ columnCount }: { columnCount: number }) {
   return (
-    <div className="flex min-h-0 flex-1 gap-4 overflow-x-auto p-4">
+    <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-x-auto p-4">
       {Array.from({ length: columnCount }).map((_, index) => (
         <section
           key={`opportunities-board-skeleton-${index}`}
@@ -1199,7 +1199,7 @@ export function OpportunitiesWorkspace({
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 rounded-[28px] border border-slate-200 bg-white shadow-sm">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
         {!hasPipelines && !isLoadingPipelines ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 py-16 text-center">
             <div className="rounded-full bg-blue-50 p-3 text-blue-700">
@@ -1232,8 +1232,8 @@ export function OpportunitiesWorkspace({
             onDragCancel={() => setActiveOpportunityId(null)}
             onDragEnd={(event) => void handleDragEnd(event)}
           >
-            <div className="relative flex min-h-0 flex-1">
-              <div className="flex min-h-0 flex-1 gap-4 overflow-x-auto p-4 pb-32">
+            <div className="relative flex min-h-0 min-w-0 flex-1">
+              <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-x-auto p-4 pb-32">
                 {boardPipeline.stages.map((stage) => (
                   <DroppableStageColumn
                     key={stage.id}
