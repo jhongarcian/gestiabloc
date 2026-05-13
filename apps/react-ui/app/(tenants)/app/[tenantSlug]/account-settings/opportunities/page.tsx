@@ -35,5 +35,10 @@ export default async function AccountSettingsOpportunitiesPage({
     redirect(`/app/${tenantSlug}`)
   }
 
-  return <OpportunitiesConfigPanel tenantId={membership.tenant.id} />
+  return (
+    <OpportunitiesConfigPanel
+      tenantId={membership.tenant.id}
+      tenantSlug={tenantSlug}
+    />
+  )
 }

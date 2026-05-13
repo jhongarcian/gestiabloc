@@ -27,7 +27,114 @@ const TenantContactPathSchema = TenantPathSchema.extend({
   contactId: z.string().trim().min(1),
 })
 
+function sanitizeSearchQuery(value: string) {
+  return value
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function normalizeSearchValue(value: string | null | undefined) {
+  return sanitizeSearchQuery(value ?? "").toLocaleLowerCase()
+}
+
+function getSearchTokens(value: string | null | undefined) {
+  return normalizeSearchValue(value)
+    .split(" ")
+    .map((token) => token.trim())
+    .filter(Boolean)
+}
+
+function normalizePhoneSearchValue(value: string | null | undefined) {
+  return (value ?? "").replace(/\D+/g, "")
+}
+
+function buildStartsWithClauses(
+  fields: string[],
+  value: string,
+  options?: { broad?: boolean },
+) {
+  const normalizedValue = normalizeSearchValue(value)
+  if (!normalizedValue) return []
+
+  const values = options?.broad
+    ? [...new Set([normalizedValue, ...getSearchTokens(normalizedValue)])]
+    : [normalizedValue]
+
+  return fields.flatMap((field) =>
+    [...new Set(values)].map((candidate) => ({
+      [field]: { startsWith: candidate, mode: "insensitive" as const },
+    })),
+  )
+}
+
+function buildOpportunityContactSearchWhere(query: string) {
+  const normalizedQuery = normalizeSearchValue(query)
+  if (!normalizedQuery) return undefined
+
+  const queryTokens = getSearchTokens(query)
+  const hasPhoneLikeQuery = normalizePhoneSearchValue(query).length >= 3
+  const nameTokens = queryTokens.filter((token) => /[a-z]/i.test(token))
+
+  if (!hasPhoneLikeQuery && nameTokens.length >= 2) {
+    const firstToken = nameTokens[0]!
+    const lastToken = nameTokens[nameTokens.length - 1]!
+    const middleTokens = nameTokens.slice(1, -1)
+
+    const andClauses: Array<Record<string, unknown>> = [
+      {
+        OR: buildStartsWithClauses(["firstName", "middleName"], firstToken, {
+          broad: true,
+        }),
+      },
+      {
+        OR:
+          nameTokens.length === 2
+            ? buildStartsWithClauses(["lastName", "middleName"], lastToken)
+            : buildStartsWithClauses(["lastName"], lastToken),
+      },
+    ]
+
+    for (const token of middleTokens) {
+      andClauses.push({
+        OR: buildStartsWithClauses(["middleName"], token),
+      })
+    }
+
+    return { AND: andClauses }
+  }
+
+  const singleTokenTerms = [...new Set([normalizedQuery, ...queryTokens].filter(Boolean))]
+
+  return {
+    OR: singleTokenTerms.flatMap((term) => [
+      ...buildStartsWithClauses(["firstName", "middleName", "lastName"], term, {
+        broad: true,
+      }),
+      { phone: { contains: term, mode: "insensitive" as const } },
+    ]),
+  }
+}
+
+const OpportunityBoardQuerySchema = z.object({
+  search: z.preprocess(
+    (value) => (typeof value === "string" ? sanitizeSearchQuery(value) : value),
+    z.string().max(120).optional().default(""),
+  ),
+  pageSize: z.coerce
+    .number()
+    .int()
+    .refine((value) => value === 5 || value === 10 || value === 25, {
+      message: "pageSize must be 5, 10, or 25",
+    })
+    .default(10),
+})
+
 const StageCardsPaginationSchema = z.object({
+  search: z.preprocess(
+    (value) => (typeof value === "string" ? sanitizeSearchQuery(value) : value),
+    z.string().max(120).optional().default(""),
+  ),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce
     .number()
@@ -41,11 +148,22 @@ const StageCardsPaginationSchema = z.object({
 const CreateOpportunitySchema = z.object({
   contactId: z.string().trim().min(1),
   pipelineId: z.string().trim().min(1),
+  valueCents: z.coerce.number().int().min(0).default(0),
 })
 
-const MoveOpportunitySchema = z.object({
+const MoveOpportunitySchema = z
+  .object({
   stageId: z.string().trim().min(1),
-})
+  })
+  .strict()
+
+const CloseOpportunitySchema = z
+  .object({
+    result: z.enum(["WON", "LOST"]),
+  })
+  .strict()
+
+const UpdateOpportunitySchema = z.union([MoveOpportunitySchema, CloseOpportunitySchema])
 
 async function requireActiveMembership(
   authed: AuthedRequest,
@@ -86,6 +204,9 @@ const opportunityCardSelect = {
   contactId: true,
   pipelineId: true,
   stageId: true,
+  valueCents: true,
+  result: true,
+  closedAt: true,
   createdAt: true,
   updatedAt: true,
   contact: {
@@ -119,6 +240,9 @@ function serializeOpportunityCard(
     contactId: string
     pipelineId: string
     stageId: string
+    valueCents: number
+    result: "OPEN" | "WON" | "LOST"
+    closedAt: Date | null
     createdAt: Date
     updatedAt: Date
     contact: {
@@ -145,6 +269,9 @@ function serializeOpportunityCard(
     contactId: opportunity.contactId,
     pipelineId: opportunity.pipelineId,
     stageId: opportunity.stageId,
+    valueCents: opportunity.valueCents,
+    result: opportunity.result,
+    closedAt: opportunity.closedAt,
     createdAt: opportunity.createdAt,
     updatedAt: opportunity.updatedAt,
     contact: {
@@ -164,6 +291,67 @@ function serializeOpportunityCard(
   }
 }
 
+function buildOpenOpportunityWhere(
+  params: {
+    tenantId: string
+    pipelineId?: string
+    stageId?: string
+    search?: string
+  },
+) {
+  const contactWhere = buildOpportunityContactSearchWhere(params.search ?? "")
+
+  return {
+    tenantId: params.tenantId,
+    result: "OPEN" as const,
+    ...(params.pipelineId ? { pipelineId: params.pipelineId } : {}),
+    ...(params.stageId ? { stageId: params.stageId } : {}),
+    ...(contactWhere ? { contact: contactWhere } : {}),
+  }
+}
+
+async function getPipelineOpportunityCounts(tenantId: string) {
+  const counts = await prisma.contactOpportunity.groupBy({
+    by: ["pipelineId"],
+    where: {
+      tenantId,
+      result: "OPEN",
+    },
+    _count: {
+      _all: true,
+    },
+  })
+
+  return new Map(counts.map((item) => [item.pipelineId, item._count._all]))
+}
+
+async function getPipelineStageSummaries(tenantId: string, pipelineId: string, search: string) {
+  const summaries = await prisma.contactOpportunity.groupBy({
+    by: ["stageId"],
+    where: buildOpenOpportunityWhere({
+      tenantId,
+      pipelineId,
+      search,
+    }),
+    _count: {
+      _all: true,
+    },
+    _sum: {
+      valueCents: true,
+    },
+  })
+
+  return new Map(
+    summaries.map((item) => [
+      item.stageId,
+      {
+        count: item._count._all,
+        totalValueCents: item._sum.valueCents ?? 0,
+      },
+    ]),
+  )
+}
+
 router.get("/:tenantId/pipelines", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
@@ -171,22 +359,24 @@ router.get("/:tenantId/pipelines", requireAuth, async (req, res, next) => {
 
     if (!(await requireActiveMembership(authed, res, tenantId))) return
 
-    const items = await prisma.opportunityPipeline.findMany({
-      where: { tenantId },
-      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-      select: {
-        id: true,
-        name: true,
-        color: true,
-        sortOrder: true,
-        _count: {
-          select: {
-            stages: true,
-            opportunities: true,
+    const [items, opportunityCounts] = await Promise.all([
+      prisma.opportunityPipeline.findMany({
+        where: { tenantId },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          color: true,
+          sortOrder: true,
+          _count: {
+            select: {
+              stages: true,
+            },
           },
         },
-      },
-    })
+      }),
+      getPipelineOpportunityCounts(tenantId),
+    ])
 
     return res.json({
       ok: true,
@@ -196,7 +386,7 @@ router.get("/:tenantId/pipelines", requireAuth, async (req, res, next) => {
         color: item.color,
         sortOrder: item.sortOrder,
         stageCount: item._count.stages,
-        opportunityCount: item._count.opportunities,
+        opportunityCount: opportunityCounts.get(item.id) ?? 0,
       })),
     })
   } catch (error) {
@@ -208,11 +398,12 @@ router.get("/:tenantId/pipelines/:pipelineId/board", requireAuth, async (req, re
   try {
     const authed = req as AuthedRequest
     const { tenantId, pipelineId } = TenantPipelinePathSchema.parse(req.params)
-    const { pageSize } = StageCardsPaginationSchema.parse(req.query)
+    const { pageSize, search } = OpportunityBoardQuerySchema.parse(req.query)
 
     if (!(await requireActiveMembership(authed, res, tenantId))) return
 
-    const pipeline = await prisma.opportunityPipeline.findUnique({
+    const [pipeline, stageSummaries] = await Promise.all([
+      prisma.opportunityPipeline.findUnique({
       where: {
         tenantId_id: {
           tenantId,
@@ -230,12 +421,12 @@ router.get("/:tenantId/pipelines/:pipelineId/board", requireAuth, async (req, re
             id: true,
             name: true,
             sortOrder: true,
-            _count: {
-              select: {
-                opportunities: true,
-              },
-            },
             opportunities: {
+              where: buildOpenOpportunityWhere({
+                tenantId,
+                pipelineId,
+                search,
+              }),
               orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
               take: pageSize,
               select: opportunityCardSelect,
@@ -243,7 +434,9 @@ router.get("/:tenantId/pipelines/:pipelineId/board", requireAuth, async (req, re
           },
         },
       },
-    })
+      }),
+      getPipelineStageSummaries(tenantId, pipelineId, search),
+    ])
 
     if (!pipeline) {
       return res.status(404).json({ error: "PIPELINE_NOT_FOUND" })
@@ -260,13 +453,14 @@ router.get("/:tenantId/pipelines/:pipelineId/board", requireAuth, async (req, re
           id: stage.id,
           name: stage.name,
           sortOrder: stage.sortOrder,
-          count: stage._count.opportunities,
+          count: stageSummaries.get(stage.id)?.count ?? 0,
+          totalValueCents: stageSummaries.get(stage.id)?.totalValueCents ?? 0,
           cards: stage.opportunities.map(serializeOpportunityCard),
           pagination: {
             page: 1,
             pageSize,
-            total: stage._count.opportunities,
-            totalPages: Math.max(1, Math.ceil(stage._count.opportunities / pageSize)),
+            total: stageSummaries.get(stage.id)?.count ?? 0,
+            totalPages: Math.max(1, Math.ceil((stageSummaries.get(stage.id)?.count ?? 0) / pageSize)),
           },
         })),
       },
@@ -283,11 +477,12 @@ router.get(
     try {
       const authed = req as AuthedRequest
       const { tenantId, pipelineId, stageId } = TenantStagePathSchema.parse(req.params)
-      const { page, pageSize } = StageCardsPaginationSchema.parse(req.query)
+      const { page, pageSize, search } = StageCardsPaginationSchema.parse(req.query)
 
       if (!(await requireActiveMembership(authed, res, tenantId))) return
 
-      const stage = await prisma.opportunityPipelineStage.findUnique({
+      const [stage, stageSummary] = await Promise.all([
+        prisma.opportunityPipelineStage.findUnique({
         where: {
           tenantId_id: {
             tenantId,
@@ -299,19 +494,35 @@ router.get(
           name: true,
           sortOrder: true,
           pipelineId: true,
-          _count: {
-            select: {
-              opportunities: true,
-            },
-          },
           opportunities: {
+            where: buildOpenOpportunityWhere({
+              tenantId,
+              pipelineId,
+              stageId,
+              search,
+            }),
             orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
             skip: (page - 1) * pageSize,
             take: pageSize,
             select: opportunityCardSelect,
           },
         },
-      })
+        }),
+        prisma.contactOpportunity.aggregate({
+          where: buildOpenOpportunityWhere({
+            tenantId,
+            pipelineId,
+            stageId,
+            search,
+          }),
+          _count: {
+            _all: true,
+          },
+          _sum: {
+            valueCents: true,
+          },
+        }),
+      ])
 
       if (!stage || stage.pipelineId !== pipelineId) {
         return res.status(404).json({ error: "PIPELINE_STAGE_NOT_FOUND" })
@@ -323,14 +534,15 @@ router.get(
           id: stage.id,
           name: stage.name,
           sortOrder: stage.sortOrder,
-          count: stage._count.opportunities,
+          count: stageSummary._count._all,
+          totalValueCents: stageSummary._sum.valueCents ?? 0,
         },
         items: stage.opportunities.map(serializeOpportunityCard),
         pagination: {
           page,
           pageSize,
-          total: stage._count.opportunities,
-          totalPages: Math.max(1, Math.ceil(stage._count.opportunities / pageSize)),
+          total: stageSummary._count._all,
+          totalPages: Math.max(1, Math.ceil(stageSummary._count._all / pageSize)),
         },
       })
     } catch (error) {
@@ -361,6 +573,9 @@ router.get("/:tenantId/contact/:contactId", requireAuth, async (req, res, next) 
           id: true,
           pipelineId: true,
           stageId: true,
+          valueCents: true,
+          result: true,
+          closedAt: true,
           updatedAt: true,
           pipeline: {
             select: {
@@ -390,6 +605,9 @@ router.get("/:tenantId/contact/:contactId", requireAuth, async (req, res, next) 
         id: item.id,
         pipelineId: item.pipelineId,
         stageId: item.stageId,
+        valueCents: item.valueCents,
+        result: item.result,
+        closedAt: item.closedAt,
         updatedAt: item.updatedAt,
         pipeline: item.pipeline,
         stage: item.stage,
@@ -468,6 +686,8 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
         contactId: payload.contactId,
         pipelineId: payload.pipelineId,
         stageId: firstStage.id,
+        valueCents: payload.valueCents,
+        result: "OPEN",
       },
       select: opportunityCardSelect,
     })
@@ -488,12 +708,11 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
 
     const authed = req as AuthedRequest
     const { tenantId, opportunityId } = TenantOpportunityPathSchema.parse(req.params)
-    const payload = MoveOpportunitySchema.parse(req.body)
+    const payload = UpdateOpportunitySchema.parse(req.body)
 
     if (!(await requireActiveMembership(authed, res, tenantId))) return
 
-    const [existing, targetStage] = await Promise.all([
-      prisma.contactOpportunity.findUnique({
+    const existing = await prisma.contactOpportunity.findUnique({
         where: {
           tenantId_id: {
             tenantId,
@@ -503,9 +722,20 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
         select: {
           id: true,
           pipelineId: true,
+          result: true,
         },
-      }),
-      prisma.opportunityPipelineStage.findUnique({
+      })
+
+    if (!existing) {
+      return res.status(404).json({ error: "OPPORTUNITY_NOT_FOUND" })
+    }
+
+    if (existing.result !== "OPEN") {
+      return res.status(409).json({ error: "OPPORTUNITY_CLOSED" })
+    }
+
+    if ("stageId" in payload) {
+      const targetStage = await prisma.opportunityPipelineStage.findUnique({
         where: {
           tenantId_id: {
             tenantId,
@@ -517,15 +747,30 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
           name: true,
           pipelineId: true,
         },
-      }),
-    ])
+      })
 
-    if (!existing) {
-      return res.status(404).json({ error: "OPPORTUNITY_NOT_FOUND" })
-    }
+      if (!targetStage || targetStage.pipelineId !== existing.pipelineId) {
+        return res.status(400).json({ error: "PIPELINE_STAGE_MISMATCH" })
+      }
 
-    if (!targetStage || targetStage.pipelineId !== existing.pipelineId) {
-      return res.status(400).json({ error: "PIPELINE_STAGE_MISMATCH" })
+      const updated = await prisma.contactOpportunity.update({
+        where: {
+          tenantId_id: {
+            tenantId,
+            id: opportunityId,
+          },
+        },
+        data: {
+          stageId: targetStage.id,
+        },
+        select: opportunityCardSelect,
+      })
+
+      return res.json({
+        ok: true,
+        opportunity: serializeOpportunityCard(updated),
+        stage: targetStage,
+      })
     }
 
     const updated = await prisma.contactOpportunity.update({
@@ -536,7 +781,8 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
         },
       },
       data: {
-        stageId: targetStage.id,
+        result: payload.result,
+        closedAt: new Date(),
       },
       select: opportunityCardSelect,
     })
@@ -544,7 +790,6 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
     return res.json({
       ok: true,
       opportunity: serializeOpportunityCard(updated),
-      stage: targetStage,
     })
   } catch (error) {
     return next(error)

@@ -3,7 +3,7 @@
 import { isAxiosError } from "axios"
 import { CalendarClock, Check, ChevronDown, LoaderCircle, Plus } from "lucide-react"
 import { useRouter } from "next/navigation"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -63,6 +63,7 @@ type CreateAppointmentDialogProps = {
   triggerClassName?: string
   iconOnly?: boolean
   triggerTooltip?: string | null
+  trigger?: ReactNode
   meetingIntervalMinutes: 15 | 30 | 45 | 60 | 120
   meetingDurationMinutes: 15 | 30 | 45 | 60 | 120
   serviceOptions: Array<{
@@ -137,6 +138,7 @@ export function CreateAppointmentDialog({
   triggerClassName,
   iconOnly = false,
   triggerTooltip = null,
+  trigger,
   meetingIntervalMinutes,
   meetingDurationMinutes,
   serviceOptions,
@@ -468,7 +470,9 @@ export function CreateAppointmentDialog({
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
-      {!hideTrigger && triggerTooltip ? (
+      {!hideTrigger && trigger ? (
+        <SheetTrigger asChild>{trigger}</SheetTrigger>
+      ) : !hideTrigger && triggerTooltip ? (
         <TooltipProvider delayDuration={120}>
           <Tooltip>
             <TooltipTrigger asChild>

@@ -1,24 +1,24 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   closestCenter,
   DndContext,
-  KeyboardSensor,
   PointerSensor,
   type DragEndEvent,
   useSensor,
   useSensors,
 } from "@dnd-kit/core"
 import {
-  SortableContext,
   arrayMove,
-  sortableKeyboardCoordinates,
+  SortableContext,
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
-import { GripVertical, Pencil, Plus, Target, Trash2 } from "lucide-react"
+import { CSS } from "@dnd-kit/utilities"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { startTransition, useCallback, useEffect, useMemo, useState } from "react"
+import { GripVertical, Plus } from "lucide-react"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
@@ -27,12 +27,17 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Table,
   TableBody,
@@ -44,89 +49,29 @@ import {
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
+import {
+  OpportunityPipelineEditor,
+  type OpportunityPipelineRecord,
+} from "./opportunity-pipeline-editor"
+import { Clock3, Layers3, Target } from "lucide-react"
+
 type OpportunitiesConfigPanelProps = {
   tenantId: string
-}
-
-type OpportunityStage = {
-  id: string
-  name: string
-  sortOrder: number
-  createdAt: string
-  updatedAt: string
-}
-
-type OpportunityPipeline = {
-  id: string
-  name: string
-  color: string
-  sortOrder: number
-  createdAt: string
-  updatedAt: string
-  stages: OpportunityStage[]
+  tenantSlug: string
 }
 
 type OpportunitiesResponse = {
   ok: boolean
-  pipelines: OpportunityPipeline[]
-}
-
-type EditableStage = {
-  id: string | null
-  clientId: string
-  name: string
-}
-
-type PipelineFormState = {
-  name: string
-  color: string
-  stages: EditableStage[]
-}
-
-const HEX_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/
-
-const PIPELINE_COLOR_PRESETS = [
-  "#1D4ED8",
-  "#0F766E",
-  "#7C3AED",
-  "#BE123C",
-  "#C2410C",
-  "#0F172A",
-  "#047857",
-  "#B45309",
-  "#4F46E5",
-  "#0369A1",
-] as const
-
-function createStage(name = "", id: string | null = null): EditableStage {
-  return {
-    id,
-    clientId:
-      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `stage-${Math.random().toString(36).slice(2)}`,
-    name,
+  items: OpportunityPipelineRecord[]
+  pagination: {
+    page: number
+    pageSize: number
+    total: number
+    totalPages: number
   }
 }
 
-function defaultFormState(): PipelineFormState {
-  return {
-    name: "",
-    color: PIPELINE_COLOR_PRESETS[0],
-    stages: [createStage()],
-  }
-}
-
-function buildFormFromPipeline(pipeline: OpportunityPipeline): PipelineFormState {
-  return {
-    name: pipeline.name,
-    color: pipeline.color,
-    stages:
-      pipeline.stages.length > 0
-        ? pipeline.stages.map((stage) => createStage(stage.name, stage.id))
-        : [createStage()],
-  }
-}
+const PAGE_SIZE_OPTIONS = [10, 25] as const
 
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("en-US", {
@@ -139,11 +84,15 @@ function formatDateTime(value: string) {
 }
 
 function formatErrorMessage(error: unknown, fallback: string) {
-  if (!isAxiosError(error)) {
+  if (!(error instanceof Error) && typeof error !== "object") {
     return fallback
   }
 
-  const backendError = error.response?.data?.error
+  const backendError =
+    typeof error === "object" && error !== null && "response" in error
+      ? (error as { response?: { data?: { error?: unknown } } }).response?.data?.error
+      : undefined
+
   if (typeof backendError !== "string") {
     return fallback
   }
@@ -154,97 +103,124 @@ function formatErrorMessage(error: unknown, fallback: string) {
     .replace(/\b\w/g, (char) => char.toUpperCase())
 }
 
-function toTranslateString(transform: { x: number; y: number } | null) {
-  if (!transform) return undefined
-  return `translate3d(${Math.round(transform.x)}px, ${Math.round(transform.y)}px, 0)`
+function parsePositiveInt(value: string | null, fallback: number) {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 1) return fallback
+  return parsed
 }
 
-function SortableStageRow({
+function SortablePipelineRow({
+  pipeline,
+  tenantSlug,
   disabled,
-  isOnlyStage,
-  onChange,
-  onRemove,
-  stage,
+  onOpen,
 }: {
+  pipeline: OpportunityPipelineRecord
+  tenantSlug: string
   disabled: boolean
-  isOnlyStage: boolean
-  onChange: (clientId: string, name: string) => void
-  onRemove: (clientId: string) => void
-  stage: EditableStage
+  onOpen: (href: string) => void
 }) {
   const {
     attributes,
     listeners,
-    setNodeRef,
     setActivatorNodeRef,
+    setNodeRef,
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: stage.clientId, disabled })
+  } = useSortable({ id: pipeline.id, disabled })
+
+  const href = `/app/${tenantSlug}/account-settings/opportunities/${pipeline.id}`
 
   return (
-    <div
+    <TableRow
       ref={setNodeRef}
-      style={{ transform: toTranslateString(transform), transition }}
+      tabIndex={0}
+      role="link"
+      aria-label={`Open ${pipeline.name} pipeline`}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+      }}
       className={cn(
-        "flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3",
-        isDragging && "z-10 shadow-sm",
+        "cursor-pointer transition-colors hover:bg-slate-50 focus-visible:bg-slate-50",
+        isDragging && "bg-slate-50",
       )}
+      onClick={() => {
+        onOpen(href)
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault()
+          onOpen(href)
+        }
+      }}
     >
-      <button
-        ref={setActivatorNodeRef}
-        type="button"
-        aria-label={`Reorder ${stage.name || "stage"}`}
-        disabled={disabled}
-        className={cn(
-          "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500",
-          disabled
-            ? "cursor-not-allowed opacity-50"
-            : "cursor-grab hover:bg-slate-100 active:cursor-grabbing",
-        )}
-        {...attributes}
-        {...listeners}
-      >
-        <GripVertical className="h-4 w-4" />
-      </button>
-
-      <Input
-        value={stage.name}
-        onChange={(event) => onChange(stage.clientId, event.target.value)}
-        placeholder="Stage name"
-        disabled={disabled}
-      />
-
-      <Button
-        type="button"
-        variant="outline"
-        size="icon"
-        disabled={disabled || isOnlyStage}
-        onClick={() => onRemove(stage.clientId)}
-      >
-        <Trash2 className="h-4 w-4" />
-      </Button>
-    </div>
+      <TableCell className="w-12">
+        <button
+          ref={setActivatorNodeRef}
+          type="button"
+          aria-label={`Reorder ${pipeline.name}`}
+          disabled={disabled}
+          className={cn(
+            "inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500",
+            disabled
+              ? "cursor-not-allowed opacity-50"
+              : "cursor-grab hover:bg-slate-100 active:cursor-grabbing",
+          )}
+          onClick={(event) => event.stopPropagation()}
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical className="h-4 w-4" />
+        </button>
+      </TableCell>
+      <TableCell className="font-medium text-slate-900">
+        {pipeline.name}
+      </TableCell>
+      <TableCell>
+        <div className="flex items-center gap-2">
+          <span
+            className="h-3 w-3 rounded-full border border-slate-200"
+            style={{ backgroundColor: pipeline.color }}
+          />
+          <span className="font-mono text-xs text-slate-600">
+            {pipeline.color}
+          </span>
+        </div>
+      </TableCell>
+      <TableCell className="font-medium text-slate-900">
+        {pipeline.stages.length} stage
+        {pipeline.stages.length === 1 ? "" : "s"}
+      </TableCell>
+      <TableCell className="text-slate-700">
+        {formatDateTime(pipeline.updatedAt)}
+      </TableCell>
+    </TableRow>
   )
 }
 
 export function OpportunitiesConfigPanel({
   tenantId,
+  tenantSlug,
 }: OpportunitiesConfigPanelProps) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
   const [isLoading, setIsLoading] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isReordering, setIsReordering] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [pipelines, setPipelines] = useState<OpportunityPipeline[]>([])
-  const [isDialogOpen, setIsDialogOpen] = useState(false)
-  const [editingPipeline, setEditingPipeline] = useState<OpportunityPipeline | null>(null)
-  const [form, setForm] = useState<PipelineFormState>(defaultFormState)
-
+  const [data, setData] = useState<OpportunitiesResponse | null>(null)
+  const [pipelines, setPipelines] = useState<OpportunityPipelineRecord[]>([])
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
+  const [page, setPage] = useState(() => parsePositiveInt(searchParams.get("page"), 1))
+  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(() => {
+    const parsed = parsePositiveInt(searchParams.get("pageSize"), 10)
+    return parsed === 25 ? 25 : 10
+  })
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
-    }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
     }),
   )
 
@@ -255,406 +231,342 @@ export function OpportunitiesConfigPanel({
     try {
       const { data } = await api.get<OpportunitiesResponse>(
         `/api/account-settings/${tenantId}/opportunities`,
+        {
+          params: {
+            page,
+            pageSize,
+          },
+        },
       )
-      const sorted = [...data.pipelines].sort(
-        (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
-      )
-      setPipelines(sorted)
+
+      setPipelines(data.items)
+      setData(data)
     } catch (error) {
       setErrorMessage(formatErrorMessage(error, "Could not load opportunity pipelines."))
     } finally {
       setIsLoading(false)
     }
-  }, [tenantId])
+  }, [page, pageSize, tenantId])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const stageCount = useMemo(
-    () => pipelines.reduce((total, pipeline) => total + pipeline.stages.length, 0),
+  useEffect(() => {
+    const nextParams = new URLSearchParams(searchParams.toString())
+
+    if (page > 1) {
+      nextParams.set("page", String(page))
+    } else {
+      nextParams.delete("page")
+    }
+
+    if (pageSize !== 10) {
+      nextParams.set("pageSize", String(pageSize))
+    } else {
+      nextParams.delete("pageSize")
+    }
+
+    const nextQuery = nextParams.toString()
+    const currentQuery = searchParams.toString()
+    if (nextQuery === currentQuery) {
+      return
+    }
+
+    startTransition(() => {
+      router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, {
+        scroll: false,
+      })
+    })
+  }, [page, pageSize, pathname, router, searchParams])
+
+  const total = data?.pagination.total ?? 0
+  const totalPages = data?.pagination.totalPages ?? 1
+  const startIndex = (page - 1) * pageSize
+  const canGoPrevious = page > 1
+  const canGoNext = page < totalPages
+  const visibleStageCount = useMemo(
+    () => pipelines.reduce((totalStages, pipeline) => totalStages + pipeline.stages.length, 0),
     [pipelines],
   )
-
-  const openCreateDialog = () => {
-    setEditingPipeline(null)
-    setForm(defaultFormState())
-    setIsDialogOpen(true)
-  }
-
-  const openEditDialog = (pipeline: OpportunityPipeline) => {
-    setEditingPipeline(pipeline)
-    setForm(buildFormFromPipeline(pipeline))
-    setIsDialogOpen(true)
-  }
-
-  const closeDialog = (open: boolean) => {
-    setIsDialogOpen(open)
-    if (!open) {
-      setEditingPipeline(null)
-      setForm(defaultFormState())
-    }
-  }
-
-  const handleStageChange = (clientId: string, name: string) => {
-    setForm((prev) => ({
-      ...prev,
-      stages: prev.stages.map((stage) =>
-        stage.clientId === clientId ? { ...stage, name } : stage,
-      ),
-    }))
-  }
-
-  const handleStageRemove = (clientId: string) => {
-    setForm((prev) => {
-      if (prev.stages.length === 1) {
-        toast.error("At least one stage is required.")
-        return prev
-      }
-
-      return {
-        ...prev,
-        stages: prev.stages.filter((stage) => stage.clientId !== clientId),
-      }
-    })
-  }
-
-  const handleStageDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event
-
-    if (!over || active.id === over.id) {
-      return
+  const summaryLabel = useMemo(() => {
+    if (!total) {
+      return "No pipelines configured"
     }
 
-    setForm((prev) => {
-      const oldIndex = prev.stages.findIndex((stage) => stage.clientId === active.id)
-      const newIndex = prev.stages.findIndex((stage) => stage.clientId === over.id)
+    const start = startIndex + 1
+    const end = start + pipelines.length - 1
+    return `Showing ${start}-${end} of ${total} pipelines`
+  }, [pipelines.length, startIndex, total])
 
-      if (oldIndex === -1 || newIndex === -1) {
-        return prev
-      }
+  const persistReorder = useCallback(
+    async (
+      reordered: OpportunityPipelineRecord[],
+      movement: {
+        activeId: string
+        overId: string
+        position: "before" | "after"
+      },
+    ) => {
+      setPipelines(reordered)
+      setIsReordering(true)
 
-      return {
-        ...prev,
-        stages: arrayMove(prev.stages, oldIndex, newIndex),
-      }
-    })
-  }
-
-  const handleSave = async () => {
-    const trimmedName = form.name.trim()
-    const trimmedStages = form.stages.map((stage) => ({
-      ...stage,
-      name: stage.name.trim(),
-    }))
-
-    if (!trimmedName) {
-      toast.error("Pipeline name is required.")
-      return
-    }
-
-    if (!HEX_COLOR_REGEX.test(form.color)) {
-      toast.error("Pipeline color must be a valid hex value.")
-      return
-    }
-
-    if (trimmedStages.length === 0) {
-      toast.error("Add at least one stage.")
-      return
-    }
-
-    if (trimmedStages.some((stage) => !stage.name)) {
-      toast.error("Every stage needs a name.")
-      return
-    }
-
-    const normalizedStageNames = trimmedStages.map((stage) => stage.name.toLocaleLowerCase())
-    if (new Set(normalizedStageNames).size !== normalizedStageNames.length) {
-      toast.error("Stage names must be unique within a pipeline.")
-      return
-    }
-
-    setIsSubmitting(true)
-    setErrorMessage(null)
-
-    try {
-      const payload = {
-        name: trimmedName,
-        color: form.color.toUpperCase(),
-        stages: trimmedStages.map((stage) => ({
-          ...(stage.id ? { id: stage.id } : {}),
-          name: stage.name,
-        })),
-      }
-
-      if (editingPipeline) {
-        await api.patch(
-          `/api/account-settings/${tenantId}/opportunities/${editingPipeline.id}`,
-          payload,
+      try {
+        await api.patch(`/api/account-settings/${tenantId}/opportunities/reorder`, {
+          pipelineId: movement.activeId,
+          targetPipelineId: movement.overId,
+          position: movement.position,
+        })
+        await load()
+        toast.success("Pipeline order updated.")
+      } catch (error) {
+        const backendError = isAxiosError(error) ? error.response?.data?.error : undefined
+        toast.error(
+          typeof backendError === "string"
+            ? backendError.replace(/_/g, " ").toLowerCase()
+            : "Could not save pipeline order.",
         )
-        toast.success("Pipeline updated.")
-      } else {
-        await api.post(`/api/account-settings/${tenantId}/opportunities`, payload)
-        toast.success("Pipeline created.")
+        await load()
+      } finally {
+        setIsReordering(false)
       }
+    },
+    [load, tenantId],
+  )
 
-      closeDialog(false)
-      await load()
-    } catch (error) {
-      const message = formatErrorMessage(
-        error,
-        editingPipeline ? "Could not update pipeline." : "Could not create pipeline.",
-      )
-      setErrorMessage(message)
-      toast.error(message)
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event
+      if (!over || active.id === over.id || isReordering) return
+
+      const oldIndex = pipelines.findIndex((pipeline) => pipeline.id === active.id)
+      const newIndex = pipelines.findIndex((pipeline) => pipeline.id === over.id)
+      if (oldIndex < 0 || newIndex < 0) return
+
+      const position: "before" | "after" = oldIndex < newIndex ? "after" : "before"
+      void persistReorder(arrayMove(pipelines, oldIndex, newIndex), {
+        activeId: String(active.id),
+        overId: String(over.id),
+        position,
+      })
+    },
+    [isReordering, persistReorder, pipelines],
+  )
 
   return (
     <>
-      <section className="flex h-full min-h-0 flex-col gap-4">
-        <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <Target className="h-4 w-4 text-slate-500" />
-              <h2 className="text-base font-semibold text-slate-950">
-                Opportunity Pipelines
-              </h2>
-            </div>
-            <p className="text-sm text-slate-600">
-              Create tenant-specific pipelines, assign a color to each one, and manage
-              stage order by dragging stages inside the editor.
-            </p>
-          </div>
+      <div className="flex h-full min-h-0 flex-col gap-4">
+        <section className="overflow-hidden rounded-[28px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_46%,#fff7ed_100%)]">
+          <div className="grid gap-6 p-5 lg:grid-cols-[minmax(0,1.3fr)_280px] lg:p-7">
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
+                  Opportunities Admin
+                </p>
+                <h2 className="max-w-2xl text-2xl font-semibold tracking-tight text-slate-950">
+                  Configure how {tenantSlug} tracks pipeline progress.
+                </h2>
+                <p className="max-w-2xl text-sm leading-6 text-slate-600">
+                  Create opportunity pipelines, control their stage flow, and keep tenant-specific
+                  lifecycle rules aligned with the rest of the admin workspace.
+                </p>
+              </div>
 
-          <div className="flex items-center gap-2">
-            <Badge variant="outline">{pipelines.length} pipelines</Badge>
-            <Badge variant="outline">{stageCount} stages</Badge>
-            <Button type="button" onClick={openCreateDialog}>
+              <div className="flex flex-wrap gap-2">
+                <Badge
+                  variant="secondary"
+                  className="rounded-full border border-white/70 bg-white/85 px-3 py-1 text-slate-700"
+                >
+                  <Target className="mr-1.5 h-3.5 w-3.5" />
+                  {summaryLabel}
+                </Badge>
+                <Badge
+                  variant="secondary"
+                  className="rounded-full border border-white/70 bg-white/85 px-3 py-1 text-slate-700"
+                >
+                  <Clock3 className="mr-1.5 h-3.5 w-3.5" />
+                  {pageSize} rows per page
+                </Badge>
+              </div>
+            </div>
+
+            <div className="grid gap-3">
+              <div className="rounded-[24px] border border-white/70 bg-white/85 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+                  Total Pipelines
+                </p>
+                <p className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">
+                  {total}
+                </p>
+              </div>
+              <div className="rounded-[24px] border border-slate-300/60 bg-slate-950 p-4 text-white shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-200/90">
+                  Visible Stages
+                </p>
+                <p className="mt-2 text-3xl font-semibold tracking-tight">
+                  {visibleStageCount}
+                </p>
+                <p className="mt-2 text-xs text-slate-300">
+                  Across the pipelines shown on this page
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="flex min-h-0 flex-1 flex-col rounded-[24px] border border-slate-200 bg-slate-50/70 p-4 shadow-sm md:p-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-lg font-semibold tracking-tight text-slate-950">
+                Opportunity Pipelines
+              </h3>
+              <p className="text-sm text-slate-600">
+                Open a pipeline to edit its stages, color theme, and lifecycle structure.
+              </p>
+            </div>
+
+            <Button
+              type="button"
+              onClick={() => setIsCreateDialogOpen(true)}
+              className="bg-slate-950 text-white hover:bg-slate-800"
+            >
               <Plus className="h-4 w-4" />
               Create pipeline
             </Button>
           </div>
-        </div>
 
-        {errorMessage ? (
-          <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-            {errorMessage}
-          </div>
-        ) : null}
-
-        <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-slate-200">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Pipeline</TableHead>
-                <TableHead>Color</TableHead>
-                <TableHead>Stages</TableHead>
-                <TableHead>Updated</TableHead>
-                <TableHead className="text-right">Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="py-10 text-center text-sm text-slate-500">
-                    Loading opportunity pipelines...
-                  </TableCell>
-                </TableRow>
-              ) : pipelines.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="py-10 text-center text-sm text-slate-500">
-                    No pipelines configured yet.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                pipelines.map((pipeline) => (
-                  <TableRow key={pipeline.id}>
-                    <TableCell className="font-medium text-slate-900">
-                      {pipeline.name}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="h-3 w-3 rounded-full border border-slate-200"
-                          style={{ backgroundColor: pipeline.color }}
-                        />
-                        <span className="font-mono text-xs text-slate-600">
-                          {pipeline.color}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="max-w-[26rem] whitespace-normal">
-                      <div className="flex flex-wrap gap-1.5">
-                        {pipeline.stages.map((stage) => (
-                          <Badge key={stage.id} variant="secondary">
-                            {stage.name}
-                          </Badge>
-                        ))}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-sm text-slate-600">
-                      {formatDateTime(pipeline.updatedAt)}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => openEditDialog(pipeline)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                        Edit
-                      </Button>
-                    </TableCell>
+          <div className="mt-5 min-h-0 flex-1 overflow-auto rounded-[20px] border border-slate-200 bg-white">
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEnd}
+            >
+              <Table className="[&_td]:py-2 [&_th]:h-8">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-12" />
+                    <TableHead className="min-w-44 text-xs">Pipeline</TableHead>
+                    <TableHead className="min-w-36 text-xs">Color</TableHead>
+                    <TableHead className="min-w-44 text-xs">Stages</TableHead>
+                    <TableHead className="min-w-36 text-xs">Updated</TableHead>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </section>
+                </TableHeader>
+                <TableBody>
+                  {isLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-8 text-center text-slate-500">
+                        Loading opportunity pipelines...
+                      </TableCell>
+                    </TableRow>
+                  ) : errorMessage ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-8 text-center text-rose-600">
+                        {errorMessage}
+                      </TableCell>
+                    </TableRow>
+                  ) : pipelines.length ? (
+                    <SortableContext
+                      items={pipelines.map((pipeline) => pipeline.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {pipelines.map((pipeline) => (
+                        <SortablePipelineRow
+                          key={pipeline.id}
+                          pipeline={pipeline}
+                          tenantSlug={tenantSlug}
+                          disabled={isReordering}
+                          onOpen={(href) => router.push(href)}
+                        />
+                      ))}
+                    </SortableContext>
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-8 text-center text-slate-500">
+                        No pipelines configured yet.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </DndContext>
+          </div>
 
-      <Dialog open={isDialogOpen} onOpenChange={closeDialog}>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs text-slate-500">
+              Drag rows to control the same pipeline order shown in the opportunities selector.
+            </p>
+            <div className="flex items-center gap-2 text-sm text-slate-600">
+              <span>Rows per page</span>
+              <Select
+                value={String(pageSize)}
+                onValueChange={(value) => {
+                  const next = Number(value)
+                  if (next === 10 || next === 25) {
+                    setPageSize(next)
+                    setPage(1)
+                  }
+                }}
+              >
+                <SelectTrigger size="sm" className="w-20">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <SelectItem key={size} value={String(size)}>
+                      {size}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-2 self-end sm:self-auto">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+                disabled={!canGoPrevious || isLoading}
+                onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+              >
+                Previous
+              </Button>
+              <span className="px-1 text-sm text-slate-600">
+                Page {page} of {totalPages}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+                disabled={!canGoNext || isLoading}
+                onClick={() => setPage((prev) => prev + 1)}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>
-              {editingPipeline ? "Edit pipeline" : "Create pipeline"}
-            </DialogTitle>
+            <DialogTitle>Create pipeline</DialogTitle>
             <DialogDescription>
               Each pipeline needs at least one stage. Drag the handle to reorder stages.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="grid gap-5">
-            <div className="grid gap-2">
-              <Label htmlFor="pipeline-name">Pipeline name</Label>
-              <Input
-                id="pipeline-name"
-                value={form.name}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, name: event.target.value }))
-                }
-                placeholder="New lead intake"
-                disabled={isSubmitting}
-              />
-            </div>
-
-            <div className="grid gap-3">
-              <Label htmlFor="pipeline-color">Pipeline color</Label>
-
-              <div className="flex flex-wrap gap-2">
-                {PIPELINE_COLOR_PRESETS.map((color) => (
-                  <button
-                    key={color}
-                    type="button"
-                    aria-label={`Use ${color} for pipeline color`}
-                    disabled={isSubmitting}
-                    onClick={() => setForm((prev) => ({ ...prev, color }))}
-                    className={cn(
-                      "h-9 w-9 rounded-full border-2 transition",
-                      form.color === color
-                        ? "border-slate-950 ring-2 ring-slate-200"
-                        : "border-transparent hover:border-slate-300",
-                    )}
-                    style={{ backgroundColor: color }}
-                  />
-                ))}
-              </div>
-
-              <div className="flex items-center gap-3">
-                <input
-                  id="pipeline-color"
-                  type="color"
-                  value={HEX_COLOR_REGEX.test(form.color) ? form.color : "#1D4ED8"}
-                  onChange={(event) =>
-                    setForm((prev) => ({ ...prev, color: event.target.value.toUpperCase() }))
-                  }
-                  disabled={isSubmitting}
-                  className="h-11 w-14 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
-                />
-                <Input
-                  value={form.color}
-                  onChange={(event) =>
-                    setForm((prev) => ({ ...prev, color: event.target.value.toUpperCase() }))
-                  }
-                  placeholder="#1D4ED8"
-                  disabled={isSubmitting}
-                />
-              </div>
-            </div>
-
-            <div className="grid gap-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <Label>Stages</Label>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Drag stages into the order your team should see in the pipeline.
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() =>
-                    setForm((prev) => ({
-                      ...prev,
-                      stages: [...prev.stages, createStage()],
-                    }))
-                  }
-                  disabled={isSubmitting}
-                >
-                  <Plus className="h-4 w-4" />
-                  Add stage
-                </Button>
-              </div>
-
-              <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleStageDragEnd}
-              >
-                <SortableContext
-                  items={form.stages.map((stage) => stage.clientId)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
-                    {form.stages.map((stage) => (
-                      <SortableStageRow
-                        key={stage.clientId}
-                        stage={stage}
-                        disabled={isSubmitting}
-                        isOnlyStage={form.stages.length === 1}
-                        onChange={handleStageChange}
-                        onRemove={handleStageRemove}
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => closeDialog(false)}
-              disabled={isSubmitting}
-            >
-              Cancel
-            </Button>
-            <Button type="button" onClick={handleSave} disabled={isSubmitting}>
-              {isSubmitting
-                ? editingPipeline
-                  ? "Saving..."
-                  : "Creating..."
-                : editingPipeline
-                  ? "Save changes"
-                  : "Create pipeline"}
-            </Button>
-          </DialogFooter>
+          <OpportunityPipelineEditor
+            tenantId={tenantId}
+            onCancel={() => setIsCreateDialogOpen(false)}
+            onSaved={async () => {
+              setIsCreateDialogOpen(false)
+              setPage(1)
+              await load()
+            }}
+          />
         </DialogContent>
       </Dialog>
     </>

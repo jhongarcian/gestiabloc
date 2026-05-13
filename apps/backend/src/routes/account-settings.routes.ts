@@ -574,6 +574,12 @@ const OpportunitiesPaginationQuerySchema = z.object({
     })
     .default(10),
 });
+
+const ReorderOpportunityPipelinesSchema = z.object({
+  pipelineId: z.string().trim().min(1),
+  targetPipelineId: z.string().trim().min(1),
+  position: z.enum(["before", "after"]),
+});
 const ServiceOptionsQuerySchema = z.object({
   includeInactive: z
     .union([z.enum(["true", "false"]), z.boolean()])
@@ -5063,6 +5069,67 @@ router.get("/:tenantId/opportunities", ...readMiddlewares, async (req, res, next
     return next(error);
   }
 });
+
+router.patch(
+  "/:tenantId/opportunities/reorder",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId } = TenantPathSchema.parse(req.params);
+      const payload = ReorderOpportunityPipelinesSchema.parse(req.body);
+
+      if (payload.pipelineId === payload.targetPipelineId) {
+        return res.json({ ok: true });
+      }
+
+      const pipelines = await prismaWithContacts.opportunityPipeline.findMany({
+        where: { tenantId },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+        },
+      });
+
+      const pipelineIds = pipelines.map((pipeline: { id: string }) => pipeline.id);
+      const sourceIndex = pipelineIds.indexOf(payload.pipelineId);
+      const targetIndex = pipelineIds.indexOf(payload.targetPipelineId);
+
+      if (sourceIndex < 0 || targetIndex < 0) {
+        return res.status(404).json({ error: "PIPELINE_NOT_FOUND" });
+      }
+
+      const reorderedIds = [...pipelineIds];
+      const [movedId] = reorderedIds.splice(sourceIndex, 1);
+      const targetInsertionIndex = reorderedIds.indexOf(payload.targetPipelineId);
+      const insertAt =
+        payload.position === "before" ? targetInsertionIndex : targetInsertionIndex + 1;
+
+      reorderedIds.splice(insertAt, 0, movedId);
+
+      await prismaWithContacts.$transaction(
+        reorderedIds.map((pipelineId: string, index: number) =>
+          prismaWithContacts.opportunityPipeline.update({
+            where: {
+              tenantId_id: {
+                tenantId,
+                id: pipelineId,
+              },
+            },
+            data: {
+              sortOrder: (index + 1) * 10,
+            },
+          }),
+        ),
+      );
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 router.post("/:tenantId/opportunities", ...writeMiddlewares, async (req, res, next) => {
   try {
