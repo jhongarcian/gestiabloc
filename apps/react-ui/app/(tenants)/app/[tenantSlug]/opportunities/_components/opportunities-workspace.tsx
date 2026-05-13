@@ -17,7 +17,6 @@ import {
   Blocks,
   CalendarPlus,
   CheckCircle2,
-  Filter,
   ListTodo,
   Loader2,
   NotebookPen,
@@ -51,6 +50,14 @@ import { CreateAppointmentDialog } from "../../calendar/_components/create-appoi
 import { type CalendarMetaResponse } from "../../calendar/_lib/calendar-api"
 import { AddContactOpportunityDialog } from "./add-contact-opportunity-dialog"
 import { OpportunityDetailDrawer } from "./opportunity-detail-drawer"
+import {
+  FilterButton,
+  OpportunityFilterDrawer,
+  type OpportunityFilters,
+  type FilterOption,
+  type AssigneeOption,
+  type CustomFieldOption,
+} from "./opportunity-filter-drawer"
 
 type PipelineOption = {
   id: string
@@ -158,6 +165,12 @@ type OpportunitiesWorkspaceProps = {
     image: string | null
   }>
   calendarMeta: Pick<CalendarMetaResponse, "settings" | "filters">
+  opportunityFilterOptions: {
+    statuses: FilterOption[]
+    tags: FilterOption[]
+    assignees: AssigneeOption[]
+    customFields: CustomFieldOption[]
+  }
 }
 
 const STAGE_PAGE_SIZE = 10
@@ -704,6 +717,7 @@ export function OpportunitiesWorkspace({
   taskStatusOptions,
   taskAssigneeOptions,
   calendarMeta,
+  opportunityFilterOptions,
 }: OpportunitiesWorkspaceProps) {
   const router = useRouter()
   const pathname = usePathname()
@@ -723,6 +737,13 @@ export function OpportunitiesWorkspace({
   const [query, setQuery] = useState(searchParam)
   const [debouncedQuery, setDebouncedQuery] = useState(searchParam)
   const [selectedOpportunity, setSelectedOpportunity] = useState<OpportunityCardRecord | null>(null)
+  const [isFilterOpen, setIsFilterOpen] = useState(false)
+  const [filters, setFilters] = useState<OpportunityFilters>({
+    tagIds: [],
+    statusConfigIds: [],
+    assignedToUserIds: [],
+    customFieldFilters: [],
+  })
 
   const activeOpportunity = useMemo(() => {
     if (!activeOpportunityId || !boardPipeline) return null
@@ -845,6 +866,19 @@ export function OpportunitiesWorkspace({
             params: {
               pageSize: STAGE_PAGE_SIZE,
               search: debouncedQuery || undefined,
+              tagIds: filters.tagIds.length > 0 ? filters.tagIds.join(",") : undefined,
+              statusConfigIds:
+                filters.statusConfigIds.length > 0
+                  ? filters.statusConfigIds.join(",")
+                  : undefined,
+              assignedToUserIds:
+                filters.assignedToUserIds.length > 0
+                  ? filters.assignedToUserIds.join(",")
+                  : undefined,
+              customFieldFilters:
+                filters.customFieldFilters.length > 0
+                  ? JSON.stringify(filters.customFieldFilters)
+                  : undefined,
             },
           },
         )
@@ -866,7 +900,7 @@ export function OpportunitiesWorkspace({
     return () => {
       cancelled = true
     }
-  }, [debouncedQuery, selectedPipelineId, tenantId])
+  }, [debouncedQuery, filters, selectedPipelineId, tenantId])
 
   const handleLoadMore = async (stageId: string) => {
     if (!selectedPipelineId || !boardPipeline) return
@@ -885,6 +919,19 @@ export function OpportunitiesWorkspace({
             page: nextPage,
             pageSize: stage.pagination.pageSize,
             search: debouncedQuery || undefined,
+            tagIds: filters.tagIds.length > 0 ? filters.tagIds.join(",") : undefined,
+            statusConfigIds:
+              filters.statusConfigIds.length > 0
+                ? filters.statusConfigIds.join(",")
+                : undefined,
+            assignedToUserIds:
+              filters.assignedToUserIds.length > 0
+                ? filters.assignedToUserIds.join(",")
+                : undefined,
+            customFieldFilters:
+              filters.customFieldFilters.length > 0
+                ? JSON.stringify(filters.customFieldFilters)
+                : undefined,
           },
         },
       )
@@ -1171,17 +1218,24 @@ export function OpportunitiesWorkspace({
                 ) : null}
               </div>
 
-              <Button
-                type="button"
-                variant="outline"
-                className="h-12 cursor-pointer rounded-2xl border-blue-200 bg-white px-4 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-                onClick={() => {
-                  toast.info("Opportunity filters are not available yet.")
-                }}
-              >
-                <Filter className="h-4 w-4" />
-                Filters
-              </Button>
+              <FilterButton
+                activeFilterCount={
+                  filters.tagIds.length +
+                  filters.statusConfigIds.length +
+                  filters.assignedToUserIds.length +
+                  filters.customFieldFilters.filter((f) => {
+                    if (f.type === "text") return Boolean(f.text)
+                    if (f.type === "number" || f.type === "currency")
+                      return f.min !== undefined || f.max !== undefined
+                    if (f.type === "date") return Boolean(f.dateFrom || f.dateTo)
+                    if (f.type === "select" || f.type === "multi_select")
+                      return Boolean(f.values && f.values.length > 0)
+                    if (f.type === "checkbox") return f.checked !== undefined
+                    return false
+                  }).length
+                }
+                onClick={() => setIsFilterOpen(true)}
+              />
 
               <Button
                 type="button"
@@ -1337,6 +1391,17 @@ export function OpportunitiesWorkspace({
           onCloseOpportunity={handleDrawerCloseOpportunity}
         />
       ) : null}
+
+      <OpportunityFilterDrawer
+        open={isFilterOpen}
+        onOpenChange={setIsFilterOpen}
+        tagOptions={opportunityFilterOptions.tags}
+        statusOptions={opportunityFilterOptions.statuses}
+        assigneeOptions={opportunityFilterOptions.assignees}
+        customFieldOptions={opportunityFilterOptions.customFields}
+        currentFilters={filters}
+        onApply={setFilters}
+      />
     </section>
   )
 }

@@ -28,6 +28,37 @@ type TaskAssigneesResponse = {
   }>
 }
 
+type OpportunityFiltersResponse = {
+  ok: boolean
+  filters: {
+    statuses: Array<{
+      id: string
+      name: string
+      bgColor: string | null
+      textColor: string | null
+    }>
+    tags: Array<{
+      id: string
+      name: string
+      bgColor: string | null
+      textColor: string | null
+    }>
+    assignees: Array<{
+      userId: string
+      name: string
+      email: string
+      image: string | null
+    }>
+    customFields: Array<{
+      id: string
+      key: string
+      label: string
+      fieldType: string
+      options: string[]
+    }>
+  }
+}
+
 export default async function OpportunitiesPage({
   params,
 }: {
@@ -64,9 +95,15 @@ export default async function OpportunitiesPage({
       services: [],
     },
   }
+  let opportunityFilterOptions: OpportunityFiltersResponse["filters"] = {
+    statuses: [],
+    tags: [],
+    assignees: [],
+    customFields: [],
+  }
 
   try {
-    const [taskStatusesResponse, taskAssigneesResponse, calendarMetaResponse] =
+    const [taskStatusesResponse, taskAssigneesResponse, calendarMetaResponse, filtersResponse] =
       await Promise.all([
         api.get<TaskStatusOptionsResponse>(`/api/tasks/${membership.tenant.id}/statuses`, {
           headers: { cookie },
@@ -75,6 +112,10 @@ export default async function OpportunitiesPage({
           headers: { cookie },
         }),
         getCalendarMeta(membership.tenant.id, cookie),
+        api.get<OpportunityFiltersResponse>(
+          `/api/opportunities/${membership.tenant.id}/filters`,
+          { headers: { cookie } },
+        ),
       ])
 
     taskStatusOptions = taskStatusesResponse.data.items.map((status) => ({
@@ -98,6 +139,7 @@ export default async function OpportunitiesPage({
           : [],
       },
     }
+    opportunityFilterOptions = filtersResponse.data.filters
   } catch {
     taskStatusOptions = []
     taskAssigneeOptions = []
@@ -118,6 +160,12 @@ export default async function OpportunitiesPage({
         services: [],
       },
     }
+    opportunityFilterOptions = {
+      statuses: [],
+      tags: [],
+      assignees: [],
+      customFields: [],
+    }
   }
 
   return (
@@ -130,6 +178,7 @@ export default async function OpportunitiesPage({
       taskStatusOptions={taskStatusOptions}
       taskAssigneeOptions={taskAssigneeOptions}
       calendarMeta={calendarMeta}
+      opportunityFilterOptions={opportunityFilterOptions}
     />
   )
 }
