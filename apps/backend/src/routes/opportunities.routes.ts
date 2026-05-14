@@ -116,23 +116,35 @@ function buildOpportunityContactSearchWhere(query: string) {
   }
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 const parseCsvIds = (value: string | undefined | null): string[] => {
   if (!value || typeof value !== "string") return []
   return value
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean)
+    .filter((id) => UUID_REGEX.test(id)) // Only allow valid UUIDs
+    .slice(0, 100) // Limit to 100 IDs max
+}
+
+const sanitizeString = (value: string): string => {
+  return value
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "") // Remove control characters
+    .replace(/\s+/g, " ") // Normalize whitespace
+    .trim()
+    .slice(0, 500) // Limit length
 }
 
 const CustomFieldFilterSchema = z.object({
-  fieldId: z.string().trim().min(1),
+  fieldId: z.string().trim().min(1).max(100),
   type: z.enum(["text", "number", "currency", "date", "select", "multi_select", "checkbox"]),
-  text: z.string().trim().optional(),
-  min: z.number().optional(),
-  max: z.number().optional(),
-  dateFrom: z.string().trim().optional(),
-  dateTo: z.string().trim().optional(),
-  values: z.array(z.string()).optional(),
+  text: z.string().transform(sanitizeString).pipe(z.string().max(200)).optional(),
+  min: z.number().min(-1000000000).max(1000000000).optional(),
+  max: z.number().min(-1000000000).max(1000000000).optional(),
+  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format").optional(),
+  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format").optional(),
+  values: z.array(z.string().transform(sanitizeString).pipe(z.string().max(200))).max(50).optional(),
   checked: z.boolean().optional(),
 })
 
@@ -161,7 +173,7 @@ const OpportunityBoardQuerySchema = z.object({
         }
       }
       return value
-    }, z.array(CustomFieldFilterSchema))
+    }, z.array(CustomFieldFilterSchema).max(20))
     .optional()
     .default([]),
 })
@@ -171,7 +183,7 @@ const StageCardsPaginationSchema = z.object({
     (value) => (typeof value === "string" ? sanitizeSearchQuery(value) : value),
     z.string().max(120).optional().default(""),
   ),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(10000).default(1),
   pageSize: z.coerce
     .number()
     .int()
@@ -192,7 +204,7 @@ const StageCardsPaginationSchema = z.object({
         }
       }
       return value
-    }, z.array(CustomFieldFilterSchema))
+    }, z.array(CustomFieldFilterSchema).max(20))
     .optional()
     .default([]),
 })
@@ -1119,6 +1131,47 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
     return res.json({
       ok: true,
       opportunity: serializeOpportunityCard(updated),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.delete("/:tenantId/:opportunityId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, opportunityId } = TenantOpportunityPathSchema.parse(req.params)
+
+    if (!(await requireActiveMembership(authed, res, tenantId))) return
+
+    const existing = await prisma.contactOpportunity.findUnique({
+      where: {
+        tenantId_id: {
+          tenantId,
+          id: opportunityId,
+        },
+      },
+      select: {
+        id: true,
+      },
+    })
+
+    if (!existing) {
+      return res.status(404).json({ error: "OPPORTUNITY_NOT_FOUND" })
+    }
+
+    await prisma.contactOpportunity.delete({
+      where: {
+        tenantId_id: {
+          tenantId,
+          id: opportunityId,
+        },
+      },
+    })
+
+    return res.json({
+      ok: true,
+      message: "Opportunity deleted successfully.",
     })
   } catch (error) {
     return next(error)
