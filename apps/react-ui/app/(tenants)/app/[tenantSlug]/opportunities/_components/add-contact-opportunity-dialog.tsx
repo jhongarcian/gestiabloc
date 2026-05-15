@@ -117,7 +117,8 @@ type CreateOpportunityResponse = {
 
 type AddContactOpportunityDialogProps = {
   tenantId: string
-  trigger: ReactNode
+  trigger?: ReactNode
+  triggerLabel?: string
   triggerTooltip?: string | null
   initialContact?: ContactSearchItem | null
   lockContact?: boolean
@@ -129,6 +130,7 @@ type AddContactOpportunityDialogProps = {
 export function AddContactOpportunityDialog({
   tenantId,
   trigger,
+  triggerLabel = "Add opportunity",
   triggerTooltip = null,
   initialContact = null,
   lockContact = false,
@@ -150,6 +152,14 @@ export function AddContactOpportunityDialog({
   const [disabledPipelineIds, setDisabledPipelineIds] = useState<string[]>([])
   const [formError, setFormError] = useState<string | null>(null)
   const isSelectingContactRef = useRef(false)
+  const triggerNode = trigger ?? (
+    <Button
+      type="button"
+      className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+    >
+      {triggerLabel}
+    </Button>
+  )
 
   const selectedPipeline = useMemo(
     () => pipelineOptions.find((item) => item.id === selectedPipelineId) ?? null,
@@ -367,7 +377,7 @@ export function AddContactOpportunityDialog({
         <TooltipProvider delayDuration={120}>
           <Tooltip>
             <TooltipTrigger asChild>
-              <DialogTrigger asChild>{trigger}</DialogTrigger>
+              <DialogTrigger asChild>{triggerNode}</DialogTrigger>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={8}>
               {triggerTooltip}
@@ -375,7 +385,7 @@ export function AddContactOpportunityDialog({
           </Tooltip>
         </TooltipProvider>
       ) : (
-        <DialogTrigger asChild>{trigger}</DialogTrigger>
+        <DialogTrigger asChild>{triggerNode}</DialogTrigger>
       )}
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
