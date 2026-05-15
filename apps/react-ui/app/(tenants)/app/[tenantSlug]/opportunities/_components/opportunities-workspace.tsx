@@ -17,7 +17,6 @@ import {
   Blocks,
   CalendarPlus,
   CheckCircle2,
-  Filter,
   ListTodo,
   Loader2,
   NotebookPen,
@@ -50,6 +49,15 @@ import { CreateTaskDialog } from "../../tasks/_components/create-task-dialog"
 import { CreateAppointmentDialog } from "../../calendar/_components/create-appointment-dialog"
 import { type CalendarMetaResponse } from "../../calendar/_lib/calendar-api"
 import { AddContactOpportunityDialog } from "./add-contact-opportunity-dialog"
+import { OpportunityDetailDrawer } from "./opportunity-detail-drawer"
+import {
+  FilterButton,
+  OpportunityFilterDrawer,
+  type OpportunityFilters,
+  type FilterOption,
+  type AssigneeOption,
+  type CustomFieldOption,
+} from "./opportunity-filter-drawer"
 
 type PipelineOption = {
   id: string
@@ -157,6 +165,12 @@ type OpportunitiesWorkspaceProps = {
     image: string | null
   }>
   calendarMeta: Pick<CalendarMetaResponse, "settings" | "filters">
+  opportunityFilterOptions: {
+    statuses: FilterOption[]
+    tags: FilterOption[]
+    assignees: AssigneeOption[]
+    customFields: CustomFieldOption[]
+  }
 }
 
 const STAGE_PAGE_SIZE = 10
@@ -353,8 +367,8 @@ function DroppableStageColumn({
   })
 
   return (
-    <section className="flex w-[320px] shrink-0 flex-col gap-3">
-      <header className="rounded-[24px] bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
+    <section className="flex w-[340px] shrink-0 flex-col gap-3">
+      <header className="rounded-[24px] bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -408,6 +422,7 @@ function OpportunityCard({
   taskAssigneeOptions,
   calendarMeta,
   overlay = false,
+  onOpenDetail,
 }: {
   opportunity: OpportunityCardRecord
   tenantId: string
@@ -419,6 +434,7 @@ function OpportunityCard({
   taskAssigneeOptions: OpportunitiesWorkspaceProps["taskAssigneeOptions"]
   calendarMeta: OpportunitiesWorkspaceProps["calendarMeta"]
   overlay?: boolean
+  onOpenDetail?: (opportunity: OpportunityCardRecord) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: overlay ? `overlay:${opportunity.id}` : opportunity.id,
@@ -431,140 +447,161 @@ function OpportunityCard({
 
   const dragInteractionProps = overlay ? {} : { ...attributes, ...listeners }
 
+  const handleCardClick = () => {
+    if (!overlay && onOpenDetail) {
+      onOpenDetail(opportunity)
+    }
+  }
+
   return (
     <article
       ref={setNodeRef}
       style={{ transform: toTranslateString(transform) }}
       {...dragInteractionProps}
+      onClick={handleCardClick}
       className={cn(
-        "rounded-[24px] bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.08)] transition-shadow",
+        "group relative overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.08)] transition-all",
         !overlay &&
-          "cursor-grab hover:shadow-[0_14px_34px_rgba(15,23,42,0.12)] active:cursor-grabbing",
+          "cursor-pointer hover:border-slate-300 hover:shadow-[0_14px_34px_rgba(15,23,42,0.12)]",
         isDragging && !overlay && "opacity-70 shadow-md",
       )}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1 space-y-1">
-          <a
-            href={`/app/${tenantSlug}/contacts/${opportunity.contact.id}/overview`}
-            className="block truncate text-sm font-semibold text-slate-950 transition hover:text-blue-950"
-            onPointerDown={stopDragPropagation}
-          >
-            {opportunity.contact.fullName}
-          </a>
-          <p className="truncate text-xs text-slate-500">
-            {opportunity.contact.email ?? opportunity.contact.phoneNumber ?? "No contact details"}
-          </p>
-          <p className="text-sm font-semibold text-slate-950">
-            {formatUsdCents(opportunity.valueCents)}
-          </p>
-        </div>
-        {opportunity.assignedTo ? (
-          <div className="flex shrink-0 items-start">
-            <Avatar
-              className="h-8 w-8 border border-slate-200 bg-white shadow-sm"
-              title={opportunity.assignedTo.name}
-            >
-              <AvatarImage
-                src={opportunity.assignedTo.image ?? undefined}
-                alt={opportunity.assignedTo.name}
-              />
-              <AvatarFallback className="bg-blue-100 text-xs font-semibold text-blue-900">
-                {getInitials(opportunity.assignedTo.name)}
-              </AvatarFallback>
-            </Avatar>
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] opacity-0 transition-opacity group-hover:opacity-100" />
+      <div className="relative p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <a
+                href={`/app/${tenantSlug}/contacts/${opportunity.contact.id}/overview`}
+                className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-950 transition hover:text-blue-950"
+                onPointerDown={stopDragPropagation}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <span className="truncate">{opportunity.contact.fullName}</span>
+              </a>
+            </div>
+            <p className="mt-1.5 truncate text-xs text-slate-500">
+              {opportunity.contact.email ?? opportunity.contact.phoneNumber ?? "No contact details"}
+            </p>
           </div>
-        ) : null}
-      </div>
-
-      {!overlay ? (
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <ContactTagAssignDialog
-            tenantId={tenantId}
-            contactId={opportunity.contact.id}
-            canManageTags={canManageTags}
-            presentation="drawer"
-            trigger={
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 cursor-pointer rounded-full border-slate-200 text-slate-600 hover:bg-slate-50"
-                onPointerDown={stopDragPropagation}
+          {opportunity.assignedTo ? (
+            <div className="flex shrink-0 items-start">
+              <Avatar
+                className="h-9 w-9 border border-slate-200 bg-white shadow-sm"
+                title={opportunity.assignedTo.name}
               >
-                <Tags className="h-3.5 w-3.5" />
-              </Button>
-            }
-          />
-          <CreateContactNoteDialog
-            tenantId={tenantId}
-            contactId={opportunity.contact.id}
-            presentation="drawer"
-            trigger={
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 cursor-pointer rounded-full border-slate-200 text-slate-600 hover:bg-slate-50"
-                onPointerDown={stopDragPropagation}
-              >
-                <NotebookPen className="h-3.5 w-3.5" />
-              </Button>
-            }
-          />
-          <CreateTaskDialog
-            tenantId={tenantId}
-            tenantTimezone={tenantTimezone}
-            statusOptions={taskStatusOptions}
-            assigneeOptions={taskAssigneeOptions}
-            presentation="drawer"
-            initialContact={{
-              id: opportunity.contact.id,
-              fullName: opportunity.contact.fullName,
-              email: opportunity.contact.email,
-              phoneNumber: opportunity.contact.phoneNumber,
-            }}
-            lockContact
-            trigger={
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 cursor-pointer rounded-full border-slate-200 text-slate-600 hover:bg-slate-50"
-                onPointerDown={stopDragPropagation}
-              >
-                <ListTodo className="h-3.5 w-3.5" />
-              </Button>
-            }
-          />
-          <CreateAppointmentDialog
-            tenantId={tenantId}
-            tenantTimezone={tenantTimezone}
-            currentUserId={currentUserId}
-            initialContact={{
-              id: opportunity.contact.id,
-              fullName: opportunity.contact.fullName,
-              email: opportunity.contact.email,
-              phoneNumber: opportunity.contact.phoneNumber,
-            }}
-            trigger={
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 cursor-pointer rounded-full border-slate-200 text-slate-600 hover:bg-slate-50"
-                onPointerDown={stopDragPropagation}
-              >
-                <CalendarPlus className="h-3.5 w-3.5" />
-              </Button>
-            }
-            meetingIntervalMinutes={calendarMeta.settings.meetingIntervalMinutes}
-            meetingDurationMinutes={calendarMeta.settings.meetingDurationMinutes}
-            serviceOptions={calendarMeta.filters.services}
-            assigneeOptions={calendarMeta.filters.users}
-          />
+                <AvatarImage
+                  src={opportunity.assignedTo.image ?? undefined}
+                  alt={opportunity.assignedTo.name}
+                />
+                <AvatarFallback className="bg-blue-100 text-xs font-semibold text-blue-900">
+                  {getInitials(opportunity.assignedTo.name)}
+                </AvatarFallback>
+              </Avatar>
+            </div>
+          ) : null}
         </div>
-      ) : null}
+
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <div className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1.5">
+            <span className="text-sm font-semibold text-slate-950">
+              {formatUsdCents(opportunity.valueCents)}
+            </span>
+          </div>
+          {!overlay ? (
+            <div className="flex items-center gap-1.5">
+              <ContactTagAssignDialog
+                tenantId={tenantId}
+                contactId={opportunity.contact.id}
+                canManageTags={canManageTags}
+                presentation="drawer"
+                trigger={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 cursor-pointer rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                    onPointerDown={stopDragPropagation}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Tags className="h-4 w-4" />
+                  </Button>
+                }
+              />
+              <CreateContactNoteDialog
+                tenantId={tenantId}
+                contactId={opportunity.contact.id}
+                presentation="drawer"
+                trigger={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 cursor-pointer rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                    onPointerDown={stopDragPropagation}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <NotebookPen className="h-4 w-4" />
+                  </Button>
+                }
+              />
+              <CreateTaskDialog
+                tenantId={tenantId}
+                tenantTimezone={tenantTimezone}
+                statusOptions={taskStatusOptions}
+                assigneeOptions={taskAssigneeOptions}
+                presentation="drawer"
+                initialContact={{
+                  id: opportunity.contact.id,
+                  fullName: opportunity.contact.fullName,
+                  email: opportunity.contact.email,
+                  phoneNumber: opportunity.contact.phoneNumber,
+                }}
+                lockContact
+                trigger={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 cursor-pointer rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                    onPointerDown={stopDragPropagation}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <ListTodo className="h-4 w-4" />
+                  </Button>
+                }
+              />
+              <CreateAppointmentDialog
+                tenantId={tenantId}
+                tenantTimezone={tenantTimezone}
+                currentUserId={currentUserId}
+                initialContact={{
+                  id: opportunity.contact.id,
+                  fullName: opportunity.contact.fullName,
+                  email: opportunity.contact.email,
+                  phoneNumber: opportunity.contact.phoneNumber,
+                }}
+                trigger={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 cursor-pointer rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                    onPointerDown={stopDragPropagation}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <CalendarPlus className="h-4 w-4" />
+                  </Button>
+                }
+                meetingIntervalMinutes={calendarMeta.settings.meetingIntervalMinutes}
+                meetingDurationMinutes={calendarMeta.settings.meetingDurationMinutes}
+                serviceOptions={calendarMeta.filters.services}
+                assigneeOptions={calendarMeta.filters.users}
+              />
+            </div>
+          ) : null}
+        </div>
+      </div>
     </article>
   )
 }
@@ -616,22 +653,25 @@ function OutcomeDropZone({
 
 function OpportunityCardSkeleton() {
   return (
-    <article className="rounded-[24px] bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1 space-y-2">
-          <Skeleton className="h-4 w-32 rounded-md" />
-          <Skeleton className="h-3 w-44 rounded-md" />
+    <article className="overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
+      <div className="p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton className="h-4 w-32 rounded-md" />
+            <Skeleton className="h-3 w-44 rounded-md" />
+          </div>
+          <Skeleton className="h-9 w-9 rounded-full" />
         </div>
-        <div className="flex items-center gap-2">
-          <Skeleton className="h-8 w-8 rounded-full" />
-          <Skeleton className="h-8 w-8 rounded-full" />
-        </div>
-      </div>
 
-      <div className="mt-4 flex items-center gap-2">
-        <Skeleton className="h-8 w-8 rounded-full" />
-        <Skeleton className="h-8 w-8 rounded-full" />
-        <Skeleton className="h-8 w-8 rounded-full" />
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <Skeleton className="h-8 w-24 rounded-full" />
+          <div className="flex items-center gap-1.5">
+            <Skeleton className="h-8 w-8 rounded-lg" />
+            <Skeleton className="h-8 w-8 rounded-lg" />
+            <Skeleton className="h-8 w-8 rounded-lg" />
+            <Skeleton className="h-8 w-8 rounded-lg" />
+          </div>
+        </div>
       </div>
     </article>
   )
@@ -639,11 +679,11 @@ function OpportunityCardSkeleton() {
 
 function OpportunitiesBoardSkeleton({ columnCount }: { columnCount: number }) {
   return (
-    <div className="flex min-h-0 flex-1 gap-4 overflow-x-auto p-4">
+    <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-x-auto p-4">
       {Array.from({ length: columnCount }).map((_, index) => (
         <section
           key={`opportunities-board-skeleton-${index}`}
-          className="flex w-[320px] shrink-0 flex-col gap-3"
+          className="flex w-[340px] shrink-0 flex-col gap-3"
         >
           <header className="px-1 py-1">
             <div className="flex items-center justify-between gap-3">
@@ -677,6 +717,7 @@ export function OpportunitiesWorkspace({
   taskStatusOptions,
   taskAssigneeOptions,
   calendarMeta,
+  opportunityFilterOptions,
 }: OpportunitiesWorkspaceProps) {
   const router = useRouter()
   const pathname = usePathname()
@@ -695,6 +736,14 @@ export function OpportunitiesWorkspace({
   const [activeOpportunityId, setActiveOpportunityId] = useState<string | null>(null)
   const [query, setQuery] = useState(searchParam)
   const [debouncedQuery, setDebouncedQuery] = useState(searchParam)
+  const [selectedOpportunity, setSelectedOpportunity] = useState<OpportunityCardRecord | null>(null)
+  const [isFilterOpen, setIsFilterOpen] = useState(false)
+  const [filters, setFilters] = useState<OpportunityFilters>({
+    tagIds: [],
+    statusConfigIds: [],
+    assignedToUserIds: [],
+    customFieldFilters: [],
+  })
 
   const activeOpportunity = useMemo(() => {
     if (!activeOpportunityId || !boardPipeline) return null
@@ -716,12 +765,6 @@ export function OpportunitiesWorkspace({
     1,
     selectedPipeline?.stageCount ?? boardPipeline?.stages.length ?? 3,
   )
-
-  useEffect(() => {
-    if (query === searchParam && debouncedQuery === searchParam) return
-    setQuery(searchParam)
-    setDebouncedQuery(searchParam)
-  }, [debouncedQuery, query, searchParam])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -823,6 +866,19 @@ export function OpportunitiesWorkspace({
             params: {
               pageSize: STAGE_PAGE_SIZE,
               search: debouncedQuery || undefined,
+              tagIds: filters.tagIds.length > 0 ? filters.tagIds.join(",") : undefined,
+              statusConfigIds:
+                filters.statusConfigIds.length > 0
+                  ? filters.statusConfigIds.join(",")
+                  : undefined,
+              assignedToUserIds:
+                filters.assignedToUserIds.length > 0
+                  ? filters.assignedToUserIds.join(",")
+                  : undefined,
+              customFieldFilters:
+                filters.customFieldFilters.length > 0
+                  ? JSON.stringify(filters.customFieldFilters)
+                  : undefined,
             },
           },
         )
@@ -844,7 +900,7 @@ export function OpportunitiesWorkspace({
     return () => {
       cancelled = true
     }
-  }, [debouncedQuery, selectedPipelineId, tenantId])
+  }, [debouncedQuery, filters, selectedPipelineId, tenantId])
 
   const handleLoadMore = async (stageId: string) => {
     if (!selectedPipelineId || !boardPipeline) return
@@ -863,6 +919,19 @@ export function OpportunitiesWorkspace({
             page: nextPage,
             pageSize: stage.pagination.pageSize,
             search: debouncedQuery || undefined,
+            tagIds: filters.tagIds.length > 0 ? filters.tagIds.join(",") : undefined,
+            statusConfigIds:
+              filters.statusConfigIds.length > 0
+                ? filters.statusConfigIds.join(",")
+                : undefined,
+            assignedToUserIds:
+              filters.assignedToUserIds.length > 0
+                ? filters.assignedToUserIds.join(",")
+                : undefined,
+            customFieldFilters:
+              filters.customFieldFilters.length > 0
+                ? JSON.stringify(filters.customFieldFilters)
+                : undefined,
           },
         },
       )
@@ -905,6 +974,116 @@ export function OpportunitiesWorkspace({
       if (!current || current.id !== opportunity.pipelineId) return current
       return insertOpportunityLocally(current, opportunity)
     })
+  }
+
+  const handleDrawerStageChange = async (opportunityId: string, targetStageId: string) => {
+    if (!boardPipeline) return
+
+    const previousPipeline = boardPipeline
+    setBoardPipeline(moveOpportunityLocally(boardPipeline, opportunityId, targetStageId))
+
+    setSelectedOpportunity((current) => {
+      if (!current || current.id !== opportunityId) return current
+      return { ...current, stageId: targetStageId }
+    })
+
+    try {
+      const { data } = await api.patch<MoveOpportunityResponse>(
+        `/api/opportunities/${tenantId}/${opportunityId}`,
+        { stageId: targetStageId },
+      )
+
+      setBoardPipeline((current) => {
+        if (!current) return current
+        return moveOpportunityLocally(current, opportunityId, targetStageId, data.opportunity)
+      })
+
+      setSelectedOpportunity((current) => {
+        if (!current || current.id !== opportunityId) return current
+        return data.opportunity
+      })
+    } catch (error) {
+      setBoardPipeline(previousPipeline)
+      setSelectedOpportunity((current) => {
+        if (!current || current.id !== opportunityId) return current
+        const original = findOpportunityStage(previousPipeline, opportunityId)
+        return original?.card ?? current
+      })
+      throw error
+    }
+  }
+
+  const handleDrawerCloseOpportunity = async (opportunityId: string, result: "WON" | "LOST") => {
+    if (!boardPipeline) return
+
+    const previousPipeline = boardPipeline
+    setBoardPipeline(closeOpportunityLocally(boardPipeline, opportunityId))
+    setPipelineOptions((current) =>
+      current.map((item) =>
+        item.id === boardPipeline.id
+          ? { ...item, opportunityCount: Math.max(0, item.opportunityCount - 1) }
+          : item,
+      ),
+    )
+
+    try {
+      await api.patch<MoveOpportunityResponse>(`/api/opportunities/${tenantId}/${opportunityId}`, {
+        result,
+      })
+    } catch (error) {
+      setBoardPipeline(previousPipeline)
+      setPipelineOptions((current) =>
+        current.map((item) =>
+          item.id === boardPipeline.id
+            ? { ...item, opportunityCount: item.opportunityCount + 1 }
+            : item,
+        ),
+      )
+      toast.error(formatErrorMessage(error, `Could not mark opportunity as ${result.toLowerCase()}.`))
+      throw error
+    }
+  }
+
+  const handleDrawerValueChange = async (opportunityId: string, newValueCents: number) => {
+    if (!boardPipeline) return
+
+    const updateValueInPipeline = (pipeline: BoardPipelineRecord): BoardPipelineRecord => ({
+      ...pipeline,
+      stages: pipeline.stages.map((stage) => ({
+        ...stage,
+        cards: stage.cards.map((card) =>
+          card.id === opportunityId ? { ...card, valueCents: newValueCents } : card,
+        ),
+        totalValueCents: stage.cards.reduce((sum, card) => {
+          if (card.id === opportunityId) return sum + newValueCents
+          return sum + card.valueCents
+        }, 0),
+      })),
+    })
+
+    const previousPipeline = boardPipeline
+    setBoardPipeline(updateValueInPipeline(boardPipeline))
+    setSelectedOpportunity((current) => {
+      if (!current || current.id !== opportunityId) return current
+      return { ...current, valueCents: newValueCents }
+    })
+
+    try {
+      await api.patch(`/api/opportunities/${tenantId}/${opportunityId}`, {
+        valueCents: newValueCents,
+      })
+    } catch (error) {
+      setBoardPipeline(previousPipeline)
+      setSelectedOpportunity((current) => {
+        if (!current || current.id !== opportunityId) return current
+        return { ...current, valueCents: previousPipeline.stages.reduce((sum, stage) => {
+          const card = stage.cards.find((c) => c.id === opportunityId)
+          return card ? card.valueCents : sum
+        }, 0) }
+      })
+      toast.error(formatErrorMessage(error, "Could not update opportunity value."))
+      throw error
+    }
   }
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -983,115 +1162,119 @@ export function OpportunitiesWorkspace({
     <section className="flex h-full min-h-0 flex-col gap-4">
       <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)]">
         <div className="space-y-3 p-4 md:p-5">
-          <div className="rounded-[24px] border border-white/80 bg-white/75 p-4 shadow-sm backdrop-blur">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex min-w-0 flex-col gap-3 lg:flex-1 lg:flex-row lg:items-center">
-                <h1 className="shrink-0 text-xl font-semibold tracking-tight text-slate-950">
-                  Opportunities
-                </h1>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex min-w-0 flex-col gap-3 lg:flex-1 lg:flex-row lg:items-center">
+              <h1 className="shrink-0 text-xl font-semibold tracking-tight text-slate-950">
+                Opportunities
+              </h1>
 
-                <div className="w-full min-w-0 lg:max-w-[320px]">
-                  <Select
-                    value={selectedPipelineId}
-                    onValueChange={updatePipelineQuery}
-                    disabled={isLoadingPipelines || pipelineOptions.length === 0}
+              <div className="w-full min-w-0 lg:max-w-[320px]">
+                <Select
+                  value={selectedPipelineId}
+                  onValueChange={updatePipelineQuery}
+                  disabled={isLoadingPipelines || pipelineOptions.length === 0}
+                >
+                  <SelectTrigger className="h-12 w-full rounded-2xl border-slate-200 bg-white px-4 shadow-sm transition hover:border-slate-300 focus-visible:ring-blue-200">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {selectedPipeline ? (
+                        <span
+                          className="h-2.5 w-2.5 shrink-0 rounded-full border border-slate-200"
+                          style={{ backgroundColor: selectedPipeline.color }}
+                        />
+                      ) : null}
+                      <span className="truncate text-sm font-medium text-slate-900">
+                        {selectedPipeline?.name ??
+                          (isLoadingPipelines ? "Loading pipelines..." : "Select a pipeline")}
+                      </span>
+                    </div>
+                  </SelectTrigger>
+                  <SelectContent
+                    position="popper"
+                    side="bottom"
+                    align="start"
+                    sideOffset={8}
+                    avoidCollisions={false}
+                    className="w-[--radix-select-trigger-width] rounded-2xl border-slate-200 bg-white p-1 shadow-xl"
                   >
-                    <SelectTrigger className="h-12 w-full rounded-2xl border-slate-200 bg-white px-4 shadow-sm transition hover:border-slate-300 focus-visible:ring-blue-200">
-                      <div className="flex min-w-0 items-center gap-2">
-                        {selectedPipeline ? (
+                    {pipelineOptions.map((pipeline) => (
+                      <SelectItem key={pipeline.id} value={pipeline.id}>
+                        <div className="flex min-w-0 items-center gap-2">
                           <span
                             className="h-2.5 w-2.5 shrink-0 rounded-full border border-slate-200"
-                            style={{ backgroundColor: selectedPipeline.color }}
+                            style={{ backgroundColor: pipeline.color }}
                           />
-                        ) : null}
-                        <span className="truncate text-sm font-medium text-slate-900">
-                          {selectedPipeline?.name ??
-                            (isLoadingPipelines ? "Loading pipelines..." : "Select a pipeline")}
-                        </span>
-                      </div>
-                    </SelectTrigger>
-                    <SelectContent
-                      position="popper"
-                      side="bottom"
-                      align="start"
-                      sideOffset={8}
-                      avoidCollisions={false}
-                      className="w-[--radix-select-trigger-width] rounded-2xl border-slate-200 bg-white p-1 shadow-xl"
-                    >
-                      {pipelineOptions.map((pipeline) => (
-                        <SelectItem key={pipeline.id} value={pipeline.id}>
-                          <div className="flex min-w-0 items-center gap-2">
-                            <span
-                              className="h-2.5 w-2.5 shrink-0 rounded-full border border-slate-200"
-                              style={{ backgroundColor: pipeline.color }}
-                            />
-                            <span className="truncate font-medium text-slate-900">
-                              {pipeline.name}
-                            </span>
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <Badge className="inline-flex  shrink-0 items-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-white">
-                  {totalOpenOpportunities} opportunit{totalOpenOpportunities === 1 ? "y" : "ies"}
-                </Badge>
+                          <span className="truncate font-medium text-slate-900">
+                            {pipeline.name}
+                          </span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
-              {hasPipelines ? (
-                <AddContactOpportunityDialog
-                  tenantId={tenantId}
-                  initialPipelineId={selectedPipelineId}
-                  lockPipeline
-                  onCreated={handleOpportunityCreated}
-                  trigger={
-                    <Button className="h-10 cursor-pointer bg-blue-950 text-white hover:bg-blue-900">
-                      <Plus className="h-4 w-4" />
-                      Add opportunity
-                    </Button>
-                  }
-                />
-              ) : null}
+              <Badge className="inline-flex  shrink-0 items-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-white">
+                {totalOpenOpportunities} opportunit{totalOpenOpportunities === 1 ? "y" : "ies"}
+              </Badge>
             </div>
+
+            {hasPipelines ? (
+              <AddContactOpportunityDialog
+                tenantId={tenantId}
+                initialPipelineId={selectedPipelineId}
+                lockPipeline
+                onCreated={handleOpportunityCreated}
+                trigger={
+                  <Button className="h-10 cursor-pointer bg-blue-950 text-white hover:bg-blue-900">
+                    <Plus className="h-4 w-4" />
+                    Add opportunity
+                  </Button>
+                }
+              />
+            ) : null}
           </div>
 
-          <div className="rounded-[24px] border border-white/80 bg-white/75 p-4 shadow-sm backdrop-blur">
-            <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <Input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search by contact name or phone number"
-                  className="h-12 rounded-2xl border-slate-200 bg-white pl-9 pr-12 shadow-sm transition hover:border-slate-300 focus-visible:ring-blue-200"
-                />
-                {query ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1.5 top-1/2 h-8 w-8 -translate-y-1/2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                    onClick={() => setQuery("")}
-                  >
-                    <X className="h-4 w-4" />
-                    <span className="sr-only">Clear search</span>
-                  </Button>
-                ) : null}
-              </div>
+          <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search by contact name or phone number"
+                className="h-12 rounded-2xl border-slate-200 bg-white pl-9 pr-12 shadow-sm transition hover:border-slate-300 focus-visible:ring-blue-200"
+              />
+              {query ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1.5 top-1/2 h-8 w-8 -translate-y-1/2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  onClick={() => setQuery("")}
+                >
+                  <X className="h-4 w-4" />
+                  <span className="sr-only">Clear search</span>
+                </Button>
+              ) : null}
+            </div>
 
-              <Button
-                type="button"
-                variant="outline"
-                className="h-12 cursor-pointer rounded-2xl border-blue-200 bg-white px-4 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-                onClick={() => {
-                  toast.info("Opportunity filters are not available yet.")
-                }}
-              >
-                <Filter className="h-4 w-4" />
-                Filters
-              </Button>
+            <FilterButton
+                activeFilterCount={
+                  filters.tagIds.length +
+                  filters.statusConfigIds.length +
+                  filters.assignedToUserIds.length +
+                  filters.customFieldFilters.filter((f) => {
+                    if (f.type === "text") return Boolean(f.text)
+                    if (f.type === "number" || f.type === "currency")
+                      return f.min !== undefined || f.max !== undefined
+                    if (f.type === "date") return Boolean(f.dateFrom || f.dateTo)
+                    if (f.type === "select" || f.type === "multi_select")
+                      return Boolean(f.values && f.values.length > 0)
+                    if (f.type === "checkbox") return f.checked !== undefined
+                    return false
+                  }).length
+                }
+                onClick={() => setIsFilterOpen(true)}
+              />
 
               <Button
                 type="button"
@@ -1107,9 +1290,8 @@ export function OpportunitiesWorkspace({
             </div>
           </div>
         </div>
-      </div>
 
-      <div className="flex min-h-0 flex-1 rounded-[28px] border border-slate-200 bg-white shadow-sm">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
         {!hasPipelines && !isLoadingPipelines ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 py-16 text-center">
             <div className="rounded-full bg-blue-50 p-3 text-blue-700">
@@ -1142,8 +1324,8 @@ export function OpportunitiesWorkspace({
             onDragCancel={() => setActiveOpportunityId(null)}
             onDragEnd={(event) => void handleDragEnd(event)}
           >
-            <div className="relative flex min-h-0 flex-1">
-              <div className="flex min-h-0 flex-1 gap-4 overflow-x-auto p-4 pb-32">
+            <div className="relative flex min-h-0 min-w-0 flex-1">
+              <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-x-auto p-4 pb-32">
                 {boardPipeline.stages.map((stage) => (
                   <DroppableStageColumn
                     key={stage.id}
@@ -1164,6 +1346,7 @@ export function OpportunitiesWorkspace({
                             taskStatusOptions={taskStatusOptions}
                             taskAssigneeOptions={taskAssigneeOptions}
                             calendarMeta={calendarMeta}
+                            onOpenDetail={setSelectedOpportunity}
                           />
                         ))}
 
@@ -1213,7 +1396,7 @@ export function OpportunitiesWorkspace({
 
             <DragOverlay>
               {activeOpportunity ? (
-                <div className="w-[320px]">
+                <div className="w-[340px]">
                   <OpportunityCard
                     opportunity={activeOpportunity}
                     tenantId={tenantId}
@@ -1232,6 +1415,32 @@ export function OpportunitiesWorkspace({
           </DndContext>
         ) : null}
       </div>
+
+      {selectedOpportunity && boardPipeline ? (
+        <OpportunityDetailDrawer
+          opportunity={selectedOpportunity}
+          tenantSlug={tenantSlug}
+          stages={boardPipeline.stages.map((stage) => ({ id: stage.id, name: stage.name }))}
+          open={Boolean(selectedOpportunity)}
+          onOpenChange={(open) => {
+            if (!open) setSelectedOpportunity(null)
+          }}
+          onStageChange={handleDrawerStageChange}
+          onCloseOpportunity={handleDrawerCloseOpportunity}
+          onValueChange={handleDrawerValueChange}
+        />
+      ) : null}
+
+      <OpportunityFilterDrawer
+        open={isFilterOpen}
+        onOpenChange={setIsFilterOpen}
+        tagOptions={opportunityFilterOptions.tags}
+        statusOptions={opportunityFilterOptions.statuses}
+        assigneeOptions={opportunityFilterOptions.assignees}
+        customFieldOptions={opportunityFilterOptions.customFields}
+        currentFilters={filters}
+        onApply={setFilters}
+      />
     </section>
   )
 }

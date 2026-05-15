@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Sparkles, type LucideIcon } from "lucide-react"
+import { Sparkles, Target, type LucideIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
@@ -19,6 +19,7 @@ type ContactDetailTab = {
 
 const TABS: ContactDetailTab[] = [
   { key: "overview", label: "Overview" },
+  { key: "opportunities", label: "Opportunities", icon: Target },
   { key: "notes", label: "Notes" },
   { key: "appointments", label: "Appointments" },
   { key: "tasks", label: "Tasks" },

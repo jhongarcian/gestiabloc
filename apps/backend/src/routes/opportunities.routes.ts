@@ -116,6 +116,38 @@ function buildOpportunityContactSearchWhere(query: string) {
   }
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const parseCsvIds = (value: string | undefined | null): string[] => {
+  if (!value || typeof value !== "string") return []
+  return value
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .filter((id) => UUID_REGEX.test(id)) // Only allow valid UUIDs
+    .slice(0, 100) // Limit to 100 IDs max
+}
+
+const sanitizeString = (value: string): string => {
+  return value
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "") // Remove control characters
+    .replace(/\s+/g, " ") // Normalize whitespace
+    .trim()
+    .slice(0, 500) // Limit length
+}
+
+const CustomFieldFilterSchema = z.object({
+  fieldId: z.string().trim().min(1).max(100),
+  type: z.enum(["text", "number", "currency", "date", "select", "multi_select", "checkbox"]),
+  text: z.string().transform(sanitizeString).pipe(z.string().max(200)).optional(),
+  min: z.number().min(-1000000000).max(1000000000).optional(),
+  max: z.number().min(-1000000000).max(1000000000).optional(),
+  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format").optional(),
+  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format").optional(),
+  values: z.array(z.string().transform(sanitizeString).pipe(z.string().max(200))).max(50).optional(),
+  checked: z.boolean().optional(),
+})
+
 const OpportunityBoardQuerySchema = z.object({
   search: z.preprocess(
     (value) => (typeof value === "string" ? sanitizeSearchQuery(value) : value),
@@ -128,6 +160,22 @@ const OpportunityBoardQuerySchema = z.object({
       message: "pageSize must be 5, 10, or 25",
     })
     .default(10),
+  tagIds: z.string().trim().max(2000).optional().default(""),
+  statusConfigIds: z.string().trim().max(2000).optional().default(""),
+  assignedToUserIds: z.string().trim().max(2000).optional().default(""),
+  customFieldFilters: z
+    .preprocess((value) => {
+      if (typeof value === "string") {
+        try {
+          return JSON.parse(value)
+        } catch {
+          return []
+        }
+      }
+      return value
+    }, z.array(CustomFieldFilterSchema).max(20))
+    .optional()
+    .default([]),
 })
 
 const StageCardsPaginationSchema = z.object({
@@ -135,7 +183,7 @@ const StageCardsPaginationSchema = z.object({
     (value) => (typeof value === "string" ? sanitizeSearchQuery(value) : value),
     z.string().max(120).optional().default(""),
   ),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(10000).default(1),
   pageSize: z.coerce
     .number()
     .int()
@@ -143,6 +191,22 @@ const StageCardsPaginationSchema = z.object({
       message: "pageSize must be 5, 10, or 25",
     })
     .default(10),
+  tagIds: z.string().trim().max(2000).optional().default(""),
+  statusConfigIds: z.string().trim().max(2000).optional().default(""),
+  assignedToUserIds: z.string().trim().max(2000).optional().default(""),
+  customFieldFilters: z
+    .preprocess((value) => {
+      if (typeof value === "string") {
+        try {
+          return JSON.parse(value)
+        } catch {
+          return []
+        }
+      }
+      return value
+    }, z.array(CustomFieldFilterSchema).max(20))
+    .optional()
+    .default([]),
 })
 
 const CreateOpportunitySchema = z.object({
@@ -163,7 +227,13 @@ const CloseOpportunitySchema = z
   })
   .strict()
 
-const UpdateOpportunitySchema = z.union([MoveOpportunitySchema, CloseOpportunitySchema])
+const UpdateValueSchema = z
+  .object({
+    valueCents: z.coerce.number().int().min(0),
+  })
+  .strict()
+
+const UpdateOpportunitySchema = z.union([MoveOpportunitySchema, CloseOpportunitySchema, UpdateValueSchema])
 
 async function requireActiveMembership(
   authed: AuthedRequest,
@@ -297,16 +367,149 @@ function buildOpenOpportunityWhere(
     pipelineId?: string
     stageId?: string
     search?: string
+    tagIds?: string[]
+    statusConfigIds?: string[]
+    assignedToUserIds?: string[]
+    customFieldFilters?: Array<{
+      fieldId: string
+      type: string
+      text?: string
+      min?: number
+      max?: number
+      dateFrom?: string
+      dateTo?: string
+      values?: string[]
+      checked?: boolean
+    }>
   },
 ) {
   const contactWhere = buildOpportunityContactSearchWhere(params.search ?? "")
+
+  const tagIds = params.tagIds ?? []
+  const statusConfigIds = params.statusConfigIds ?? []
+  const assignedToUserIds = params.assignedToUserIds ?? []
+  const customFieldFilters = params.customFieldFilters ?? []
+
+  const contactFilters: Record<string, unknown> = {}
+
+  if (tagIds.length > 0) {
+    contactFilters.tags = {
+      some: {
+        tagId: {
+          in: tagIds,
+        },
+      },
+    }
+  }
+
+  if (statusConfigIds.length > 0) {
+    contactFilters.statusConfigId = {
+      in: statusConfigIds,
+    }
+  }
+
+  if (assignedToUserIds.length > 0) {
+    contactFilters.assignedToUserId = {
+      in: assignedToUserIds,
+    }
+  }
+
+  if (customFieldFilters.length > 0) {
+    const customFieldConditions = customFieldFilters
+      .map((filter) => {
+        switch (filter.type) {
+          case "text": {
+            if (!filter.text) return null
+            return {
+              fieldId: filter.fieldId,
+              value: {
+                string_contains: filter.text,
+              },
+            }
+          }
+          case "number":
+          case "currency": {
+            const conditions: Array<Record<string, unknown>> = []
+            if (filter.min !== undefined) {
+              conditions.push({
+                fieldId: filter.fieldId,
+                value: { gte: filter.min },
+              })
+            }
+            if (filter.max !== undefined) {
+              conditions.push({
+                fieldId: filter.fieldId,
+                value: { lte: filter.max },
+              })
+            }
+            return conditions.length > 0 ? { AND: conditions } : null
+          }
+          case "date": {
+            const conditions: Array<Record<string, unknown>> = []
+            if (filter.dateFrom) {
+              conditions.push({
+                fieldId: filter.fieldId,
+                value: { gte: filter.dateFrom },
+              })
+            }
+            if (filter.dateTo) {
+              conditions.push({
+                fieldId: filter.fieldId,
+                value: { lte: filter.dateTo },
+              })
+            }
+            return conditions.length > 0 ? { AND: conditions } : null
+          }
+          case "select":
+          case "radio": {
+            if (!filter.values || filter.values.length === 0) return null
+            return {
+              fieldId: filter.fieldId,
+              value: { equals: filter.values[0] },
+            }
+          }
+          case "multi_select": {
+            if (!filter.values || filter.values.length === 0) return null
+            return {
+              fieldId: filter.fieldId,
+              value: {
+                array_contains: filter.values,
+              },
+            }
+          }
+          case "checkbox": {
+            if (filter.checked === undefined) return null
+            return {
+              fieldId: filter.fieldId,
+              value: { equals: filter.checked },
+            }
+          }
+          default:
+            return null
+        }
+      })
+      .filter(Boolean)
+
+    if (customFieldConditions.length > 0) {
+      contactFilters.customFieldValues = {
+        some: {
+          OR: customFieldConditions,
+        },
+      }
+    }
+  }
+
+  const hasContactFilters = Object.keys(contactFilters).length > 0
 
   return {
     tenantId: params.tenantId,
     result: "OPEN" as const,
     ...(params.pipelineId ? { pipelineId: params.pipelineId } : {}),
     ...(params.stageId ? { stageId: params.stageId } : {}),
-    ...(contactWhere ? { contact: contactWhere } : {}),
+    contact: {
+      ...contactWhere,
+      ...(hasContactFilters ? contactFilters : {}),
+    },
   }
 }
 
@@ -325,13 +528,24 @@ async function getPipelineOpportunityCounts(tenantId: string) {
   return new Map(counts.map((item) => [item.pipelineId, item._count._all]))
 }
 
-async function getPipelineStageSummaries(tenantId: string, pipelineId: string, search: string) {
+async function getPipelineStageSummaries(
+  tenantId: string,
+  pipelineId: string,
+  search: string,
+  filters?: {
+    tagIds?: string[]
+    statusConfigIds?: string[]
+    assignedToUserIds?: string[]
+    customFieldFilters?: Array<{ fieldId: string; value: string }>
+  },
+) {
   const summaries = await prisma.contactOpportunity.groupBy({
     by: ["stageId"],
     where: buildOpenOpportunityWhere({
       tenantId,
       pipelineId,
       search,
+      ...filters,
     }),
     _count: {
       _all: true,
@@ -398,9 +612,27 @@ router.get("/:tenantId/pipelines/:pipelineId/board", requireAuth, async (req, re
   try {
     const authed = req as AuthedRequest
     const { tenantId, pipelineId } = TenantPipelinePathSchema.parse(req.params)
-    const { pageSize, search } = OpportunityBoardQuerySchema.parse(req.query)
+    const {
+      pageSize,
+      search,
+      tagIds: tagIdsRaw,
+      statusConfigIds: statusConfigIdsRaw,
+      assignedToUserIds: assignedToUserIdsRaw,
+      customFieldFilters,
+    } = OpportunityBoardQuerySchema.parse(req.query)
+
+    const tagIds = parseCsvIds(tagIdsRaw)
+    const statusConfigIds = parseCsvIds(statusConfigIdsRaw)
+    const assignedToUserIds = parseCsvIds(assignedToUserIdsRaw)
 
     if (!(await requireActiveMembership(authed, res, tenantId))) return
+
+    const filters = {
+      tagIds,
+      statusConfigIds,
+      assignedToUserIds,
+      customFieldFilters,
+    }
 
     const [pipeline, stageSummaries] = await Promise.all([
       prisma.opportunityPipeline.findUnique({
@@ -426,6 +658,7 @@ router.get("/:tenantId/pipelines/:pipelineId/board", requireAuth, async (req, re
                 tenantId,
                 pipelineId,
                 search,
+                ...filters,
               }),
               orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
               take: pageSize,
@@ -435,7 +668,7 @@ router.get("/:tenantId/pipelines/:pipelineId/board", requireAuth, async (req, re
         },
       },
       }),
-      getPipelineStageSummaries(tenantId, pipelineId, search),
+      getPipelineStageSummaries(tenantId, pipelineId, search, filters),
     ])
 
     if (!pipeline) {
@@ -477,9 +710,28 @@ router.get(
     try {
       const authed = req as AuthedRequest
       const { tenantId, pipelineId, stageId } = TenantStagePathSchema.parse(req.params)
-      const { page, pageSize, search } = StageCardsPaginationSchema.parse(req.query)
+      const {
+        page,
+        pageSize,
+        search,
+        tagIds: tagIdsRaw,
+        statusConfigIds: statusConfigIdsRaw,
+        assignedToUserIds: assignedToUserIdsRaw,
+        customFieldFilters,
+      } = StageCardsPaginationSchema.parse(req.query)
+
+      const tagIds = parseCsvIds(tagIdsRaw)
+      const statusConfigIds = parseCsvIds(statusConfigIdsRaw)
+      const assignedToUserIds = parseCsvIds(assignedToUserIdsRaw)
 
       if (!(await requireActiveMembership(authed, res, tenantId))) return
+
+      const filters = {
+        tagIds,
+        statusConfigIds,
+        assignedToUserIds,
+        customFieldFilters,
+      }
 
       const [stage, stageSummary] = await Promise.all([
         prisma.opportunityPipelineStage.findUnique({
@@ -500,6 +752,7 @@ router.get(
               pipelineId,
               stageId,
               search,
+              ...filters,
             }),
             orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
             skip: (page - 1) * pageSize,
@@ -514,6 +767,7 @@ router.get(
             pipelineId,
             stageId,
             search,
+            ...filters,
           }),
           _count: {
             _all: true,
@@ -550,6 +804,99 @@ router.get(
     }
   },
 )
+
+router.get("/:tenantId/filters", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    if (!(await requireActiveMembership(authed, res, tenantId))) return
+
+    const [statuses, tags, assignees, customFields] = await Promise.all([
+      prisma.contactStatusConfig.findMany({
+        where: { tenantId, isActive: true },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          bgColor: true,
+          textColor: true,
+        },
+      }),
+      prisma.tenantTag.findMany({
+        where: { tenantId },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          bgColor: true,
+          textColor: true,
+        },
+      }),
+      prisma.membership.findMany({
+        where: {
+          tenantId,
+          status: "ACTIVE",
+        },
+        orderBy: [{ user: { name: "asc" } }],
+        select: {
+          userId: true,
+          user: {
+            select: {
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
+        },
+      }),
+      prisma.contactCustomField.findMany({
+        where: { tenantId, isActive: true },
+        orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+        select: {
+          id: true,
+          key: true,
+          label: true,
+          fieldType: true,
+          options: true,
+        },
+      }),
+    ])
+
+    return res.json({
+      ok: true,
+      filters: {
+        statuses: statuses.map((status) => ({
+          id: status.id,
+          name: status.name,
+          bgColor: status.bgColor,
+          textColor: status.textColor,
+        })),
+        tags: tags.map((tag) => ({
+          id: tag.id,
+          name: tag.name,
+          bgColor: tag.bgColor,
+          textColor: tag.textColor,
+        })),
+        assignees: assignees.map((membership) => ({
+          userId: membership.userId,
+          name: membership.user.name,
+          email: membership.user.email,
+          image: membership.user.image,
+        })),
+        customFields: customFields.map((field) => ({
+          id: field.id,
+          key: field.key,
+          label: field.label,
+          fieldType: field.fieldType,
+          options: Array.isArray(field.options) ? field.options : [],
+        })),
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
 
 router.get("/:tenantId/contact/:contactId", requireAuth, async (req, res, next) => {
   try {
@@ -773,6 +1120,26 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
       })
     }
 
+    if ("valueCents" in payload) {
+      const updated = await prisma.contactOpportunity.update({
+        where: {
+          tenantId_id: {
+            tenantId,
+            id: opportunityId,
+          },
+        },
+        data: {
+          valueCents: payload.valueCents,
+        },
+        select: opportunityCardSelect,
+      })
+
+      return res.json({
+        ok: true,
+        opportunity: serializeOpportunityCard(updated),
+      })
+    }
+
     const updated = await prisma.contactOpportunity.update({
       where: {
         tenantId_id: {
@@ -790,6 +1157,47 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
     return res.json({
       ok: true,
       opportunity: serializeOpportunityCard(updated),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.delete("/:tenantId/:opportunityId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, opportunityId } = TenantOpportunityPathSchema.parse(req.params)
+
+    if (!(await requireActiveMembership(authed, res, tenantId))) return
+
+    const existing = await prisma.contactOpportunity.findUnique({
+      where: {
+        tenantId_id: {
+          tenantId,
+          id: opportunityId,
+        },
+      },
+      select: {
+        id: true,
+      },
+    })
+
+    if (!existing) {
+      return res.status(404).json({ error: "OPPORTUNITY_NOT_FOUND" })
+    }
+
+    await prisma.contactOpportunity.delete({
+      where: {
+        tenantId_id: {
+          tenantId,
+          id: opportunityId,
+        },
+      },
+    })
+
+    return res.json({
+      ok: true,
+      message: "Opportunity deleted successfully.",
     })
   } catch (error) {
     return next(error)

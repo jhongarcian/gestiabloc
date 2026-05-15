@@ -1,16 +1,6 @@
 "use client"
 
-import { isAxiosError } from "axios"
 import {
-  closestCenter,
-  DndContext,
-  PointerSensor,
-  type DragEndEvent,
-  useSensor,
-  useSensors,
-} from "@dnd-kit/core"
-import {
-  arrayMove,
   SortableContext,
   useSortable,
   verticalListSortingStrategy,
@@ -18,10 +8,8 @@ import {
 import { CSS } from "@dnd-kit/utilities"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { startTransition, useCallback, useEffect, useMemo, useState } from "react"
-import { GripVertical, Plus } from "lucide-react"
-import { toast } from "sonner"
+import { GripVertical, Plus, Search, X } from "lucide-react"
 
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -30,14 +18,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
   Table,
   TableBody,
@@ -53,7 +35,6 @@ import {
   OpportunityPipelineEditor,
   type OpportunityPipelineRecord,
 } from "./opportunity-pipeline-editor"
-import { Clock3, Layers3, Target } from "lucide-react"
 
 type OpportunitiesConfigPanelProps = {
   tenantId: string
@@ -112,12 +93,10 @@ function parsePositiveInt(value: string | null, fallback: number) {
 function SortablePipelineRow({
   pipeline,
   tenantSlug,
-  disabled,
   onOpen,
 }: {
   pipeline: OpportunityPipelineRecord
   tenantSlug: string
-  disabled: boolean
   onOpen: (href: string) => void
 }) {
   const {
@@ -128,7 +107,7 @@ function SortablePipelineRow({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: pipeline.id, disabled })
+  } = useSortable({ id: pipeline.id })
 
   const href = `/app/${tenantSlug}/account-settings/opportunities/${pipeline.id}`
 
@@ -156,44 +135,34 @@ function SortablePipelineRow({
         }
       }}
     >
-      <TableCell className="w-12">
+      <TableCell className="w-10">
         <button
           ref={setActivatorNodeRef}
           type="button"
           aria-label={`Reorder ${pipeline.name}`}
-          disabled={disabled}
-          className={cn(
-            "inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500",
-            disabled
-              ? "cursor-not-allowed opacity-50"
-              : "cursor-grab hover:bg-slate-100 active:cursor-grabbing",
-          )}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 transition-colors cursor-grab hover:bg-slate-50 hover:text-slate-600 active:cursor-grabbing"
           onClick={(event) => event.stopPropagation()}
           {...attributes}
           {...listeners}
         >
-          <GripVertical className="h-4 w-4" />
+          <GripVertical className="h-3.5 w-3.5" />
         </button>
       </TableCell>
-      <TableCell className="font-medium text-slate-900">
-        {pipeline.name}
-      </TableCell>
       <TableCell>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <span
-            className="h-3 w-3 rounded-full border border-slate-200"
+            className="h-3 w-3 shrink-0 rounded-full border border-slate-200"
             style={{ backgroundColor: pipeline.color }}
           />
-          <span className="font-mono text-xs text-slate-600">
-            {pipeline.color}
-          </span>
+          <span className="font-medium text-slate-900">{pipeline.name}</span>
         </div>
       </TableCell>
-      <TableCell className="font-medium text-slate-900">
-        {pipeline.stages.length} stage
-        {pipeline.stages.length === 1 ? "" : "s"}
+      <TableCell>
+        <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700">
+          {pipeline.stages.length} stage{pipeline.stages.length === 1 ? "" : "s"}
+        </span>
       </TableCell>
-      <TableCell className="text-slate-700">
+      <TableCell className="text-slate-600">
         {formatDateTime(pipeline.updatedAt)}
       </TableCell>
     </TableRow>
@@ -208,21 +177,25 @@ export function OpportunitiesConfigPanel({
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const [isLoading, setIsLoading] = useState(false)
-  const [isReordering, setIsReordering] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [data, setData] = useState<OpportunitiesResponse | null>(null)
   const [pipelines, setPipelines] = useState<OpportunityPipelineRecord[]>([])
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
+  const [query, setQuery] = useState(() => searchParams.get("search") ?? "")
+  const [debouncedQuery, setDebouncedQuery] = useState(query)
   const [page, setPage] = useState(() => parsePositiveInt(searchParams.get("page"), 1))
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(() => {
     const parsed = parsePositiveInt(searchParams.get("pageSize"), 10)
     return parsed === 25 ? 25 : 10
   })
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 6 },
-    }),
-  )
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setDebouncedQuery(query.trim())
+    }, 350)
+
+    return () => window.clearTimeout(timeout)
+  }, [query])
 
   const load = useCallback(async () => {
     setIsLoading(true)
@@ -235,6 +208,7 @@ export function OpportunitiesConfigPanel({
           params: {
             page,
             pageSize,
+            search: debouncedQuery || undefined,
           },
         },
       )
@@ -246,7 +220,7 @@ export function OpportunitiesConfigPanel({
     } finally {
       setIsLoading(false)
     }
-  }, [page, pageSize, tenantId])
+  }, [page, pageSize, debouncedQuery, tenantId])
 
   useEffect(() => {
     void load()
@@ -254,6 +228,12 @@ export function OpportunitiesConfigPanel({
 
   useEffect(() => {
     const nextParams = new URLSearchParams(searchParams.toString())
+
+    if (debouncedQuery) {
+      nextParams.set("search", debouncedQuery)
+    } else {
+      nextParams.delete("search")
+    }
 
     if (page > 1) {
       nextParams.set("page", String(page))
@@ -278,189 +258,106 @@ export function OpportunitiesConfigPanel({
         scroll: false,
       })
     })
-  }, [page, pageSize, pathname, router, searchParams])
+  }, [page, pageSize, debouncedQuery, pathname, router, searchParams])
 
   const total = data?.pagination.total ?? 0
   const totalPages = data?.pagination.totalPages ?? 1
   const startIndex = (page - 1) * pageSize
   const canGoPrevious = page > 1
   const canGoNext = page < totalPages
-  const visibleStageCount = useMemo(
-    () => pipelines.reduce((totalStages, pipeline) => totalStages + pipeline.stages.length, 0),
-    [pipelines],
-  )
+
   const summaryLabel = useMemo(() => {
     if (!total) {
-      return "No pipelines configured"
+      return "No pipelines found"
     }
 
     const start = startIndex + 1
-    const end = start + pipelines.length - 1
+    const end = Math.min(start + pipelines.length - 1, total)
     return `Showing ${start}-${end} of ${total} pipelines`
   }, [pipelines.length, startIndex, total])
-
-  const persistReorder = useCallback(
-    async (
-      reordered: OpportunityPipelineRecord[],
-      movement: {
-        activeId: string
-        overId: string
-        position: "before" | "after"
-      },
-    ) => {
-      setPipelines(reordered)
-      setIsReordering(true)
-
-      try {
-        await api.patch(`/api/account-settings/${tenantId}/opportunities/reorder`, {
-          pipelineId: movement.activeId,
-          targetPipelineId: movement.overId,
-          position: movement.position,
-        })
-        await load()
-        toast.success("Pipeline order updated.")
-      } catch (error) {
-        const backendError = isAxiosError(error) ? error.response?.data?.error : undefined
-        toast.error(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ").toLowerCase()
-            : "Could not save pipeline order.",
-        )
-        await load()
-      } finally {
-        setIsReordering(false)
-      }
-    },
-    [load, tenantId],
-  )
-
-  const handleDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event
-      if (!over || active.id === over.id || isReordering) return
-
-      const oldIndex = pipelines.findIndex((pipeline) => pipeline.id === active.id)
-      const newIndex = pipelines.findIndex((pipeline) => pipeline.id === over.id)
-      if (oldIndex < 0 || newIndex < 0) return
-
-      const position: "before" | "after" = oldIndex < newIndex ? "after" : "before"
-      void persistReorder(arrayMove(pipelines, oldIndex, newIndex), {
-        activeId: String(active.id),
-        overId: String(over.id),
-        position,
-      })
-    },
-    [isReordering, persistReorder, pipelines],
-  )
 
   return (
     <>
       <div className="flex h-full min-h-0 flex-col gap-4">
-        <section className="overflow-hidden rounded-[28px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_46%,#fff7ed_100%)]">
-          <div className="grid gap-6 p-5 lg:grid-cols-[minmax(0,1.3fr)_280px] lg:p-7">
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
-                  Opportunities Admin
-                </p>
-                <h2 className="max-w-2xl text-2xl font-semibold tracking-tight text-slate-950">
-                  Configure how {tenantSlug} tracks pipeline progress.
-                </h2>
-                <p className="max-w-2xl text-sm leading-6 text-slate-600">
-                  Create opportunity pipelines, control their stage flow, and keep tenant-specific
-                  lifecycle rules aligned with the rest of the admin workspace.
-                </p>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <Badge
-                  variant="secondary"
-                  className="rounded-full border border-white/70 bg-white/85 px-3 py-1 text-slate-700"
-                >
-                  <Target className="mr-1.5 h-3.5 w-3.5" />
-                  {summaryLabel}
-                </Badge>
-                <Badge
-                  variant="secondary"
-                  className="rounded-full border border-white/70 bg-white/85 px-3 py-1 text-slate-700"
-                >
-                  <Clock3 className="mr-1.5 h-3.5 w-3.5" />
-                  {pageSize} rows per page
-                </Badge>
-              </div>
-            </div>
-
-            <div className="grid gap-3">
-              <div className="rounded-[24px] border border-white/70 bg-white/85 p-4 shadow-sm">
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
-                  Total Pipelines
-                </p>
-                <p className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">
-                  {total}
-                </p>
-              </div>
-              <div className="rounded-[24px] border border-slate-300/60 bg-slate-950 p-4 text-white shadow-sm">
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-200/90">
-                  Visible Stages
-                </p>
-                <p className="mt-2 text-3xl font-semibold tracking-tight">
-                  {visibleStageCount}
-                </p>
-                <p className="mt-2 text-xs text-slate-300">
-                  Across the pipelines shown on this page
-                </p>
-              </div>
-            </div>
+        {/* Header */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">
+              Opportunity Pipelines
+            </h2>
+            <p className="text-sm text-slate-500">
+              {summaryLabel}
+            </p>
           </div>
-        </section>
+          <Button
+            type="button"
+            onClick={() => setIsCreateDialogOpen(true)}
+            className="bg-blue-950 text-white hover:bg-blue-950/90"
+          >
+            <Plus className="h-4 w-4" />
+            Create pipeline
+          </Button>
+        </div>
 
-        <section className="flex min-h-0 flex-1 flex-col rounded-[24px] border border-slate-200 bg-slate-50/70 p-4 shadow-sm md:p-5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h3 className="text-lg font-semibold tracking-tight text-slate-950">
-                Opportunity Pipelines
-              </h3>
-              <p className="text-sm text-slate-600">
-                Open a pipeline to edit its stages, color theme, and lifecycle structure.
-              </p>
+        {/* Table Module */}
+        <div className="flex min-h-0 flex-1 flex-col rounded-xl bg-white p-2 md:p-4">
+          {/* Search and Controls */}
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Input
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value)
+                  setPage(1)
+                }}
+                placeholder="Search pipelines..."
+                className="h-9 pl-9 pr-9"
+              />
+              {query ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  onClick={() => {
+                    setQuery("")
+                    setPage(1)
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                  <span className="sr-only">Clear search</span>
+                </Button>
+              ) : null}
             </div>
 
-            <Button
-              type="button"
-              onClick={() => setIsCreateDialogOpen(true)}
-              className="bg-slate-950 text-white hover:bg-slate-800"
-            >
-              <Plus className="h-4 w-4" />
-              Create pipeline
-            </Button>
+            <p className="text-xs text-slate-500">
+              Drag rows to reorder pipelines
+            </p>
           </div>
 
-          <div className="mt-5 min-h-0 flex-1 overflow-auto rounded-[20px] border border-slate-200 bg-white">
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={handleDragEnd}
-            >
+          {/* Table */}
+          <div className="flex min-h-0 flex-1 flex-col rounded-lg bg-white">
+            <div className="min-h-0 flex-1 overflow-auto">
               <Table className="[&_td]:py-2 [&_th]:h-8">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-12" />
+                    <TableHead className="w-10" />
                     <TableHead className="min-w-44 text-xs">Pipeline</TableHead>
-                    <TableHead className="min-w-36 text-xs">Color</TableHead>
-                    <TableHead className="min-w-44 text-xs">Stages</TableHead>
+                    <TableHead className="min-w-32 text-xs">Stages</TableHead>
                     <TableHead className="min-w-36 text-xs">Updated</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {isLoading ? (
                     <TableRow>
-                      <TableCell colSpan={5} className="py-8 text-center text-slate-500">
-                        Loading opportunity pipelines...
+                      <TableCell colSpan={4} className="py-8 text-center text-slate-500">
+                        Loading pipelines...
                       </TableCell>
                     </TableRow>
                   ) : errorMessage ? (
                     <TableRow>
-                      <TableCell colSpan={5} className="py-8 text-center text-rose-600">
+                      <TableCell colSpan={4} className="py-8 text-center text-rose-600">
                         {errorMessage}
                       </TableCell>
                     </TableRow>
@@ -474,27 +371,24 @@ export function OpportunitiesConfigPanel({
                           key={pipeline.id}
                           pipeline={pipeline}
                           tenantSlug={tenantSlug}
-                          disabled={isReordering}
                           onOpen={(href) => router.push(href)}
                         />
                       ))}
                     </SortableContext>
                   ) : (
                     <TableRow>
-                      <TableCell colSpan={5} className="py-8 text-center text-slate-500">
-                        No pipelines configured yet.
+                      <TableCell colSpan={4} className="py-8 text-center text-slate-500">
+                        {debouncedQuery ? "No pipelines match your search." : "No pipelines configured yet."}
                       </TableCell>
                     </TableRow>
                   )}
                 </TableBody>
               </Table>
-            </DndContext>
+            </div>
           </div>
 
+          {/* Pagination */}
           <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs text-slate-500">
-              Drag rows to control the same pipeline order shown in the opportunities selector.
-            </p>
             <div className="flex items-center gap-2 text-sm text-slate-600">
               <span>Rows per page</span>
               <Select
@@ -507,7 +401,7 @@ export function OpportunitiesConfigPanel({
                   }
                 }}
               >
-                <SelectTrigger size="sm" className="w-20">
+                <SelectTrigger className="h-8 w-16">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -520,12 +414,12 @@ export function OpportunitiesConfigPanel({
               </Select>
             </div>
 
-            <div className="flex items-center gap-2 self-end sm:self-auto">
+            <div className="flex items-center gap-2">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+                className="h-8 border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
                 disabled={!canGoPrevious || isLoading}
                 onClick={() => setPage((prev) => Math.max(1, prev - 1))}
               >
@@ -538,7 +432,7 @@ export function OpportunitiesConfigPanel({
                 type="button"
                 variant="outline"
                 size="sm"
-                className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+                className="h-8 border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
                 disabled={!canGoNext || isLoading}
                 onClick={() => setPage((prev) => prev + 1)}
               >
@@ -546,7 +440,7 @@ export function OpportunitiesConfigPanel({
               </Button>
             </div>
           </div>
-        </section>
+        </div>
       </div>
 
       <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
