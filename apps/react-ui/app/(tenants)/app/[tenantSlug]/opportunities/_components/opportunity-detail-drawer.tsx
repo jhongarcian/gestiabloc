@@ -3,9 +3,12 @@
 import { format } from "date-fns"
 import {
   ArrowRight,
+  Check,
   CheckCircle2,
   ExternalLink,
   Loader2,
+  Pencil,
+  X,
   XCircle,
 } from "lucide-react"
 import { useState } from "react"
@@ -13,6 +16,7 @@ import { useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -97,6 +101,7 @@ type OpportunityDetailDrawerProps = {
   onOpenChange: (open: boolean) => void
   onStageChange: (opportunityId: string, targetStageId: string) => Promise<void>
   onCloseOpportunity: (opportunityId: string, result: "WON" | "LOST") => Promise<void>
+  onValueChange?: (opportunityId: string, newValueCents: number) => Promise<void>
 }
 
 export function OpportunityDetailDrawer({
@@ -107,9 +112,13 @@ export function OpportunityDetailDrawer({
   onOpenChange,
   onStageChange,
   onCloseOpportunity,
+  onValueChange,
 }: OpportunityDetailDrawerProps) {
   const [isMovingStage, setIsMovingStage] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
+  const [isEditingValue, setIsEditingValue] = useState(false)
+  const [editValue, setEditValue] = useState("")
+  const [isSavingValue, setIsSavingValue] = useState(false)
 
   const handleStageChange = async (targetStageId: string) => {
     if (targetStageId === opportunity.stageId) return
@@ -129,6 +138,32 @@ export function OpportunityDetailDrawer({
       onOpenChange(false)
     } finally {
       setIsClosing(false)
+    }
+  }
+
+  const handleStartEditValue = () => {
+    setEditValue(String(opportunity.valueCents / 100))
+    setIsEditingValue(true)
+  }
+
+  const handleCancelEditValue = () => {
+    setIsEditingValue(false)
+    setEditValue("")
+  }
+
+  const handleSaveValue = async () => {
+    if (!onValueChange) return
+
+    const parsedValue = parseFloat(editValue)
+    if (isNaN(parsedValue) || parsedValue < 0) return
+
+    const newValueCents = Math.round(parsedValue * 100)
+    setIsSavingValue(true)
+    try {
+      await onValueChange(opportunity.id, newValueCents)
+      setIsEditingValue(false)
+    } finally {
+      setIsSavingValue(false)
     }
   }
 
@@ -167,9 +202,70 @@ export function OpportunityDetailDrawer({
 
             <div className="mt-5 divide-y divide-slate-100 border-t border-slate-100">
               <Row label="Value">
-                <span className="text-sm font-semibold text-slate-950">
-                  {formatUsdCents(opportunity.valueCents)}
-                </span>
+                {isEditingValue ? (
+                  <div className="flex items-center gap-2">
+                    <div className="relative">
+                      <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-sm text-slate-400">
+                        $
+                      </span>
+                      <Input
+                        type="number"
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        className="h-8 w-28 pl-6 text-sm"
+                        min="0"
+                        step="0.01"
+                        disabled={isSavingValue}
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void handleSaveValue()
+                          if (e.key === "Escape") handleCancelEditValue()
+                        }}
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-emerald-600 hover:text-emerald-700"
+                      disabled={isSavingValue}
+                      onClick={() => void handleSaveValue()}
+                    >
+                      {isSavingValue ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Check className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-slate-400 hover:text-slate-600"
+                      disabled={isSavingValue}
+                      onClick={handleCancelEditValue}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="inline-flex items-center gap-2">
+                    <span className="text-sm font-semibold text-slate-950">
+                      {formatUsdCents(opportunity.valueCents)}
+                    </span>
+                    {onValueChange && isOpen && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-slate-400 hover:text-slate-600"
+                        onClick={handleStartEditValue}
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                )}
               </Row>
 
               <Row label="Status">

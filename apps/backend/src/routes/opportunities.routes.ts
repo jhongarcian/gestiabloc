@@ -227,7 +227,13 @@ const CloseOpportunitySchema = z
   })
   .strict()
 
-const UpdateOpportunitySchema = z.union([MoveOpportunitySchema, CloseOpportunitySchema])
+const UpdateValueSchema = z
+  .object({
+    valueCents: z.coerce.number().int().min(0),
+  })
+  .strict()
+
+const UpdateOpportunitySchema = z.union([MoveOpportunitySchema, CloseOpportunitySchema, UpdateValueSchema])
 
 async function requireActiveMembership(
   authed: AuthedRequest,
@@ -1111,6 +1117,26 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
         ok: true,
         opportunity: serializeOpportunityCard(updated),
         stage: targetStage,
+      })
+    }
+
+    if ("valueCents" in payload) {
+      const updated = await prisma.contactOpportunity.update({
+        where: {
+          tenantId_id: {
+            tenantId,
+            id: opportunityId,
+          },
+        },
+        data: {
+          valueCents: payload.valueCents,
+        },
+        select: opportunityCardSelect,
+      })
+
+      return res.json({
+        ok: true,
+        opportunity: serializeOpportunityCard(updated),
       })
     }
 

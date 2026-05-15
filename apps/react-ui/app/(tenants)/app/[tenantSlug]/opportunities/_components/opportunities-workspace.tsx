@@ -1044,6 +1044,48 @@ export function OpportunitiesWorkspace({
     }
   }
 
+  const handleDrawerValueChange = async (opportunityId: string, newValueCents: number) => {
+    if (!boardPipeline) return
+
+    const updateValueInPipeline = (pipeline: BoardPipelineRecord): BoardPipelineRecord => ({
+      ...pipeline,
+      stages: pipeline.stages.map((stage) => ({
+        ...stage,
+        cards: stage.cards.map((card) =>
+          card.id === opportunityId ? { ...card, valueCents: newValueCents } : card,
+        ),
+        totalValueCents: stage.cards.reduce((sum, card) => {
+          if (card.id === opportunityId) return sum + newValueCents
+          return sum + card.valueCents
+        }, 0),
+      })),
+    })
+
+    const previousPipeline = boardPipeline
+    setBoardPipeline(updateValueInPipeline(boardPipeline))
+    setSelectedOpportunity((current) => {
+      if (!current || current.id !== opportunityId) return current
+      return { ...current, valueCents: newValueCents }
+    })
+
+    try {
+      await api.patch(`/api/opportunities/${tenantId}/${opportunityId}`, {
+        valueCents: newValueCents,
+      })
+    } catch (error) {
+      setBoardPipeline(previousPipeline)
+      setSelectedOpportunity((current) => {
+        if (!current || current.id !== opportunityId) return current
+        return { ...current, valueCents: previousPipeline.stages.reduce((sum, stage) => {
+          const card = stage.cards.find((c) => c.id === opportunityId)
+          return card ? card.valueCents : sum
+        }, 0) }
+      })
+      toast.error(formatErrorMessage(error, "Could not update opportunity value."))
+      throw error
+    }
+  }
+
   const handleDragEnd = async (event: DragEndEvent) => {
     setActiveOpportunityId(null)
 
@@ -1385,6 +1427,7 @@ export function OpportunitiesWorkspace({
           }}
           onStageChange={handleDrawerStageChange}
           onCloseOpportunity={handleDrawerCloseOpportunity}
+          onValueChange={handleDrawerValueChange}
         />
       ) : null}
 

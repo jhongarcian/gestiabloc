@@ -104,7 +104,17 @@ export function ContactOpportunitiesPageContent({
   const handleDelete = async (opportunityId: string) => {
     try {
       await api.delete(`/api/opportunities/${tenantId}/${opportunityId}`)
-      // Refresh the page to show updated data
+      window.location.reload()
+    } catch {
+      // Error handled silently
+    }
+  }
+
+  const handleValueChange = async (opportunityId: string, newValueCents: number) => {
+    try {
+      await api.patch(`/api/opportunities/${tenantId}/${opportunityId}`, {
+        valueCents: newValueCents,
+      })
       window.location.reload()
     } catch {
       // Error handled silently
@@ -304,6 +314,7 @@ export function ContactOpportunitiesPageContent({
         stages={stages}
         open={isDrawerOpen}
         onOpenChange={setIsDrawerOpen}
+        onValueChange={handleValueChange}
       />
     </section>
   )
