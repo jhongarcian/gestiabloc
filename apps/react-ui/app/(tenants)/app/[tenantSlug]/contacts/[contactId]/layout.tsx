@@ -2,10 +2,10 @@ import { headers } from "next/headers"
 import Link from "next/link"
 import {
   ArrowLeft,
-  BriefcaseBusiness,
   CalendarClock,
   CircleDollarSign,
   ListTodo,
+  Target,
 } from "lucide-react"
 
 import {
@@ -566,14 +566,15 @@ export default async function ContactDetailsLayout({
                     phoneNumber: contact.phoneNumber,
                   }}
                   lockContact
+                  triggerTooltip="Create opportunity"
                   trigger={
                     <Button
                       type="button"
                       variant="outline"
-                      className="cursor-pointer border-white/70 bg-white/80 text-slate-700 shadow-sm backdrop-blur hover:bg-white"
+                      aria-label="Create opportunity"
+                      className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-white/70 bg-blue-950 p-0 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
                     >
-                      <BriefcaseBusiness className="h-4 w-4" />
-                      Add opportunity
+                      <Target className="h-4 w-4" />
                     </Button>
                   }
                 />
@@ -618,7 +619,7 @@ export default async function ContactDetailsLayout({
               </div>
               <div className="min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur">
                 <div className="flex items-center gap-2 text-slate-400">
-                  <BriefcaseBusiness className="h-4 w-4" />
+                  <Target className="h-4 w-4" />
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
                     Opportunities
                   </p>
