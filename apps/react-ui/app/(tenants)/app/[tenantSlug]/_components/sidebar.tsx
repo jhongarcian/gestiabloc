@@ -35,6 +35,7 @@ import {
   ListChecks,
   HelpCircle,
   LogOut,
+  ArrowUpCircle,
 } from "lucide-react"
 
 type SidebarItem = {
@@ -66,6 +67,9 @@ type SidebarContentProps = {
   onNavigate?: (key: string, href: string) => void
   menuItems: SidebarLink[]
   supportItems: SidebarLink[]
+  planKey?: string
+  isAdmin?: boolean
+  basePath?: string
 }
 
 function AppSidebarContent({
@@ -73,6 +77,9 @@ function AppSidebarContent({
   onNavigate,
   menuItems,
   supportItems,
+  planKey,
+  isAdmin,
+  basePath,
 }: SidebarContentProps) {
   return (
     <>
@@ -166,28 +173,33 @@ function AppSidebarContent({
 
       <SidebarFooter className="p-4 group-data-[collapsible=icon]:px-0">
         <div className="group-data-[collapsible=icon]:hidden">
-          <div className="relative overflow-hidden rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-lg">
-            <div className="absolute -right-4 -top-4 h-24 w-24 rounded-full bg-white/10 blur-2xl transition-all group-hover:bg-white/20" />
+          {isAdmin && planKey && planKey !== "BUSINESS" ? (
+            <div className="relative overflow-hidden rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-lg">
+              <div className="absolute -right-4 -top-4 h-24 w-24 rounded-full bg-white/10 blur-2xl transition-all group-hover:bg-white/20" />
 
-            <div className="relative z-10 flex items-start gap-3">
+              <div className="relative z-10 flex items-start gap-3">
 
-              <div className="flex-1">
-                <h4 className="mb-1 text-sm font-bold">Trial Plan</h4>
-                <p className="mb-3 text-xs text-indigo-100/90">
-                  Upgrade to unlock all features
-                </p>
+                <div className="flex-1">
+                  <h4 className="mb-1 text-sm font-bold">
+                    {planKey === "STARTER" ? "Basic Plan" : "Pro Plan"}
+                  </h4>
+                  <p className="mb-3 text-xs text-indigo-100/90">
+                    Upgrade to unlock more features
+                  </p>
 
-                <Button
-                  type="button"
-                  variant="secondary"
-                  className="h-9 w-full border-0 bg-white/20 text-white hover:bg-white/30"
-                  onClick={() => onNavigate?.("upgrade", "#")}
-                >
-                  Upgrade to Pro
-                </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="h-9 w-full border-0 bg-white/20 text-white hover:bg-white/30"
+                    onClick={() => onNavigate?.("subscription", (basePath ?? "") + "/account-settings/subscription")}
+                  >
+                    <ArrowUpCircle className="mr-1.5 h-4 w-4" />
+                    {planKey === "STARTER" ? "Upgrade to Pro" : "Upgrade to Business"}
+                  </Button>
+                </div>
               </div>
             </div>
-          </div>
+          ) : null}
         </div>
 
         <SidebarMenu className="mt-2  group-data-[collapsible=icon]:flex  group-data-[collapsible=icon]:justify-center  group-data-[collapsible=icon]:items-center">
@@ -220,6 +232,8 @@ type AppSidebarProps = {
   activeKey?: string
   onNavigate?: (key: string, href: string) => void
   className?: string
+  planKey?: string
+  isAdmin?: boolean
 }
 
 export function AppSidebar({
@@ -227,6 +241,8 @@ export function AppSidebar({
   activeKey,
   onNavigate,
   className,
+  planKey,
+  isAdmin,
 }: AppSidebarProps) {
   const pathname = usePathname() ?? ""
   const { isMobile, setOpenMobile } = useSidebar()
@@ -296,6 +312,9 @@ export function AppSidebar({
           onNavigate={handleNavigate}
           menuItems={menuItems}
           supportItems={supportItems}
+          planKey={planKey}
+          isAdmin={isAdmin}
+          basePath={basePath}
         />
       </div>
     </Sidebar>

@@ -23,6 +23,7 @@ import { enforceSameOrigin } from "../lib/security.js";
 import { normalizeTenantTagName } from "../lib/tag-utils.js";
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js";
 import { requireTenantAdmin } from "../middleware/requireTenantAdmin.js";
+import { getPlanDetails } from "../lib/subscription-plans.js";
 
 const router = Router();
 const prismaWithContacts = prisma as any;
@@ -5598,6 +5599,64 @@ router.delete(
   },
 );
 
+router.get("/:tenantId/subscription", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId } = TenantPathSchema.parse(req.params);
+
+    const [subscription, activeMemberCount, totalMemberCount, storageAgg] =
+      await prisma.$transaction([
+        prisma.tenantSubscription.findUnique({
+          where: { tenantId },
+          select: {
+            planKey: true,
+            seatLimit: true,
+            status: true,
+            currentPeriodEnd: true,
+            stripeCustomerId: true,
+            stripeSubscriptionId: true,
+          },
+        }),
+        prisma.membership.count({ where: { tenantId, status: "ACTIVE" } }),
+        prisma.membership.count({ where: { tenantId } }),
+        prisma.file.aggregate({
+          where: { tenantId },
+          _sum: { size: true },
+        }),
+      ]);
+
+    if (!subscription) {
+      return res.status(404).json({ error: "SUBSCRIPTION_NOT_FOUND" });
+    }
+
+    const planDetails = getPlanDetails(subscription.planKey);
+    const storageUsedBytes = storageAgg._sum.size ?? 0;
+
+    return res.json({
+      ok: true,
+      subscription: {
+        planKey: subscription.planKey,
+        seatLimit: subscription.seatLimit,
+        status: subscription.status,
+        currentPeriodEnd: subscription.currentPeriodEnd,
+        stripeCustomerId: subscription.stripeCustomerId,
+        stripeSubscriptionId: subscription.stripeSubscriptionId,
+        seatUsage: {
+          used: activeMemberCount,
+          limit: subscription.seatLimit,
+          available: Math.max(0, subscription.seatLimit - activeMemberCount),
+        },
+        storageUsedBytes,
+        storageLimitBytes: planDetails.storageBytes,
+        aiActionsPerMonth: planDetails.aiActionsPerMonth,
+        memberCount: totalMemberCount,
+        activeMemberCount,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 const handleSectionListNotImplemented = (section: AccountSettingsSection) => (
   req: Request,
   res: Response,
@@ -5652,7 +5711,8 @@ for (const section of ACCOUNT_SETTINGS_SECTIONS) {
     section !== "opportunities" &&
     section !== "status-config" &&
     section !== "tags" &&
-    section !== "custom-fields"
+    section !== "custom-fields" &&
+    section !== "subscription"
   ) {
     router.get(
       "/:tenantId/" + section,
@@ -5666,7 +5726,8 @@ for (const section of ACCOUNT_SETTINGS_SECTIONS) {
     section === "opportunities" ||
     section === "status-config" ||
     section === "tags" ||
-    section === "custom-fields"
+    section === "custom-fields" ||
+    section === "subscription"
   ) {
     continue;
   }

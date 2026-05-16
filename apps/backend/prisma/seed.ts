@@ -2,6 +2,10 @@ import "dotenv/config"
 
 import argon2 from "argon2"
 
+import {
+  getSeatLimitForPlan,
+  trialPeriodDays,
+} from "../src/lib/subscription-plans.js"
 import { prisma } from "../src/lib/prisma.js"
 
 const VALID_PLANS = ["STARTER", "PRO", "BUSINESS"] as const
@@ -103,12 +107,6 @@ async function main() {
     type: argon2.argon2id,
   })
 
-  const seatLimitByPlan: Record<PlanKey, number> = {
-    STARTER: 3,
-    PRO: 10,
-    BUSINESS: 25,
-  }
-
   const result = await prisma.$transaction(async (tx) => {
     const existingUser = await tx.user.findUnique({
       where: { email: adminEmail },
@@ -161,20 +159,20 @@ async function main() {
         where: { tenantId: existingTenantBySlug.id },
         update: {
           planKey,
-          seatLimit: seatLimitByPlan[planKey],
+          seatLimit: getSeatLimitForPlan(planKey),
           status: paidNow ? "ACTIVE" : "TRIALING",
           currentPeriodEnd: paidNow
             ? null
-            : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            : new Date(Date.now() + trialPeriodDays * 24 * 60 * 60 * 1000),
         },
         create: {
           tenantId: existingTenantBySlug.id,
           planKey,
-          seatLimit: seatLimitByPlan[planKey],
+          seatLimit: getSeatLimitForPlan(planKey),
           status: paidNow ? "ACTIVE" : "TRIALING",
           currentPeriodEnd: paidNow
             ? null
-            : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            : new Date(Date.now() + trialPeriodDays * 24 * 60 * 60 * 1000),
         },
       })
 
@@ -232,11 +230,11 @@ async function main() {
       data: {
         tenantId: tenant.id,
         planKey,
-        seatLimit: seatLimitByPlan[planKey],
+        seatLimit: getSeatLimitForPlan(planKey),
         status: paidNow ? "ACTIVE" : "TRIALING",
         currentPeriodEnd: paidNow
           ? null
-          : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          : new Date(Date.now() + trialPeriodDays * 24 * 60 * 60 * 1000),
       },
       select: { id: true },
     })

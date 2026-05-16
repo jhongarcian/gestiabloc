@@ -93,3 +93,36 @@ export async function getMe(): Promise<MeResponse> {
   const { data } = await api.get("/api/auth/me")
   return data
 }
+
+export type SubscriptionResponse = {
+  ok: boolean
+  subscription: {
+    planKey: PlanKey
+    seatLimit: number
+    status: "NONE" | "TRIALING" | "ACTIVE" | "PAST_DUE" | "CANCELED"
+    currentPeriodEnd: string | null
+    stripeCustomerId: string | null
+    stripeSubscriptionId: string | null
+    seatUsage: {
+      used: number
+      limit: number
+      available: number
+    }
+    storageUsedBytes: number
+    storageLimitBytes: number
+    aiActionsPerMonth: number
+    memberCount: number
+    activeMemberCount: number
+  }
+}
+
+export async function getTenantSubscription(
+  tenantId: string,
+  cookie: string,
+): Promise<SubscriptionResponse> {
+  const { data } = await api.get(
+    `/api/account-settings/${tenantId}/subscription`,
+    { headers: { cookie } },
+  )
+  return data
+}

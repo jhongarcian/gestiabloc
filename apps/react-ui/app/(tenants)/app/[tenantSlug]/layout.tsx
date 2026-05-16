@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { TenantShell } from "./_components/tenant-shell"
-import { getTenantMembershipContext } from "./_lib/tenant-session"
+import { getTenantMembershipContext, getTenantSubscriptionContext } from "./_lib/tenant-session"
 
 export default async function TenantLayout({
   children,
@@ -10,7 +10,7 @@ export default async function TenantLayout({
   params: Promise<{ tenantSlug: string }>
 }>) {
   const { tenantSlug: slug } = await params
-  const { user, membership } = await getTenantMembershipContext(slug)
+  const { cookie, user, membership, tenantId } = await getTenantMembershipContext(slug)
   const role = membership?.role ?? null
 
   if (!membership?.tenant?.slug) {
@@ -20,6 +20,8 @@ export default async function TenantLayout({
   if (!slug || slug !== membership.tenant.slug) {
     redirect(`/app/${membership.tenant.slug}`)
   }
+
+  const subscription = await getTenantSubscriptionContext(tenantId, cookie)
 
   return (
     <TenantShell
@@ -36,6 +38,7 @@ export default async function TenantLayout({
         updatedAt: user.updatedAt,
         memberships: user.memberships ?? [],
       }}
+      subscription={subscription}
     >
       {children}
     </TenantShell>

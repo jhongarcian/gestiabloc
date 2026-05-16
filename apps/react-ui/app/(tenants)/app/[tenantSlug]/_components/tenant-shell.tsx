@@ -53,6 +53,18 @@ type TenantShellProps = {
   tenantSlug: string
   children: React.ReactNode
   user: TenantUser & { role?: string | null }
+  subscription?: {
+    planKey: string
+    seatLimit: number
+    status: string
+    currentPeriodEnd: string | null
+    seatUsage: { used: number; limit: number; available: number }
+    storageUsedBytes: number
+    storageLimitBytes: number
+    aiActionsPerMonth: number
+    memberCount: number
+    activeMemberCount: number
+  } | null
 }
 
 type NotificationItem = {
@@ -190,7 +202,7 @@ const notificationMeta = (
   }
 }
 
-export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
+export function TenantShell({ tenantSlug, children, user, subscription }: TenantShellProps) {
   const router = useRouter()
   const pathname = usePathname() ?? ""
   const socketRef = useRef<SocketClient | null>(null)
@@ -693,6 +705,8 @@ export function TenantShell({ tenantSlug, children, user }: TenantShellProps) {
           tenantSlug={tenantSlug}
           className="md:h-full"
           onNavigate={handleSidebarNavigate}
+          planKey={subscription?.planKey}
+          isAdmin={canAccessAccountSettings}
         />
       ) : null}
 
