@@ -1,4 +1,5 @@
 import axios from "axios"
+import type { PlanKey } from "@/lib/subscription-plans"
 
 const baseURL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:4000"
 
@@ -11,8 +12,8 @@ export const api = axios.create({
 
 export type TenantSignupPayload = {
   tenantName: string
-  planKey: "STARTER" | "PRO" | "BUSINESS"
-  paidNow: boolean
+  planKey: PlanKey
+  paidNow?: boolean
   adminName: string
   adminEmail: string
   adminPassword: string

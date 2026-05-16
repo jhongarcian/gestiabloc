@@ -1,10 +1,10 @@
 "use client"
 
+import Link from "next/link"
 import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { tenantSignup } from "@/lib/api"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { isAxiosError } from "axios"
@@ -23,18 +23,25 @@ import {
 } from "lucide-react"
 import Image from "next/image"
 import signup_image from "@/public/illustrations/signup.png"
+import {
+  getPlanByKey,
+  isPlanKey,
+  subscriptionPlans,
+  type PlanKey,
+} from "@/lib/subscription-plans"
 
 export default function SignUpPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const requestedPlan = searchParams.get("plan")
   const [status, setStatus] = useState<
     "idle" | "loading" | "success" | "error"
   >("idle")
   const [error, setError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
-  const [planKey, setPlanKey] = useState<"STARTER" | "PRO" | "BUSINESS">(
-    "STARTER",
+  const [planKey, setPlanKey] = useState<PlanKey>(
+    isPlanKey(requestedPlan) ? requestedPlan : "STARTER",
   )
-  const [paidNow, setPaidNow] = useState(false)
   const [adminPassword, setAdminPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
@@ -47,6 +54,7 @@ export default function SignUpPage() {
   const hasSymbol = /[^A-Za-z0-9]/.test(adminPassword)
 
   const isLoading = status === "loading"
+  const selectedPlan = getPlanByKey(planKey)
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -62,7 +70,7 @@ export default function SignUpPage() {
       adminPassword,
       tenantName: String(formData.get("tenantName") || "").trim(),
       planKey,
-      paidNow,
+      paidNow: false,
     }
 
     const clientErrors: Record<string, string> = {}
@@ -175,13 +183,13 @@ export default function SignUpPage() {
 
               <div className="space-y-6 text-center">
                 <h2 className="text-3xl lg:text-4xl font-bold text-slate-900 leading-tight">
-                  Join thousands of teams{" "}
-                  <span className="text-indigo-600">already using</span>{" "}
-                  Gestiabloc
+                  Build the workspace your{" "}
+                  <span className="text-indigo-600">agency team</span> can grow
+                  into
                 </h2>
                 <p className="text-slate-500 text-lg">
-                  Start your journey today with a flexible plan that grows with
-                  your business needs.
+                  Pick a plan, create the admin account, and start organizing
+                  clients, follow-ups, and team activity in one place.
                 </p>
               </div>
             </div>
@@ -194,13 +202,25 @@ export default function SignUpPage() {
                   Create your account
                 </h2>
                 <p className="text-slate-500">
-                  Start your 7-day free trial. No credit card required.
+                  Start your 7-day free trial and attach the right plan to your
+                  workspace from day one.
                 </p>
                 <p className="mt-3 text-sm text-slate-500">
                   Already have a workspace?{" "}
-                  <a className="text-indigo-600 hover:underline" href="/login">
+                  <Link className="text-indigo-600 hover:underline" href="/login">
                     Sign in
-                  </a>
+                  </Link>
+                </p>
+              </div>
+
+              <div className="mb-8 rounded-2xl border border-amber-200 bg-amber-50/80 p-4 text-sm text-slate-700">
+                <p className="font-semibold text-slate-900">
+                  Selected plan: {selectedPlan.name}
+                </p>
+                <p className="mt-1 leading-6">
+                  {selectedPlan.description} This signup flow records your plan
+                  choice and starts the workspace on a 7-day trial while billing
+                  checkout is finalized.
                 </p>
               </div>
 
@@ -517,144 +537,78 @@ export default function SignUpPage() {
                   </h3>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    <label className="cursor-pointer relative group">
-                      <input
-                        type="radio"
-                        name="planKey"
-                        value="STARTER"
-                        checked={planKey === "STARTER"}
-                        onChange={() => setPlanKey("STARTER")}
-                        className="peer sr-only"
-                      />
-                      <div className="p-4 rounded-xl bg-white border border-slate-200 hover:border-indigo-300 transition-all h-full flex flex-col justify-between peer-checked:border-indigo-500 peer-checked:ring-2 peer-checked:ring-indigo-200">
-                        <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs opacity-0 scale-50 transition-all duration-300 peer-checked:opacity-100 peer-checked:scale-100">
-                          <Check className="h-3 w-3" />
-                        </div>
+                    {subscriptionPlans.map((plan) => (
+                      <label key={plan.key} className="cursor-pointer relative group">
+                        <input
+                          type="radio"
+                          name="planKey"
+                          value={plan.key}
+                          checked={planKey === plan.key}
+                          onChange={() => setPlanKey(plan.key)}
+                          className="peer sr-only"
+                        />
+                        <div className="p-4 rounded-xl bg-white border border-slate-200 hover:border-indigo-300 transition-all h-full flex flex-col justify-between relative overflow-hidden peer-checked:border-indigo-500 peer-checked:ring-2 peer-checked:ring-indigo-200">
+                          {plan.featured ? (
+                            <div className="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-lg z-10">
+                              POPULAR
+                            </div>
+                          ) : null}
 
-                        <div>
-                          <div className="w-10 h-10 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center mb-3">
-                            <Rocket className="h-5 w-5" />
+                          <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs opacity-0 scale-50 transition-all duration-300 peer-checked:opacity-100 peer-checked:scale-100">
+                            <Check className="h-3 w-3" />
                           </div>
-                          <h3 className="font-bold text-slate-800">Starter</h3>
-                          <p className="text-xs text-slate-500 mt-1">
-                            For small teams getting started.
-                          </p>
-                        </div>
 
-                        <div className="mt-4 pt-4 border-t border-slate-100">
-                          <span className="text-lg font-bold text-slate-900">
-                            $0
-                          </span>
-                          <span className="text-xs text-slate-500">
-                            /mo per user
-                          </span>
-                        </div>
-                      </div>
-                    </label>
-
-                    <label className="cursor-pointer relative group">
-                      <input
-                        type="radio"
-                        name="planKey"
-                        value="PRO"
-                        checked={planKey === "PRO"}
-                        onChange={() => setPlanKey("PRO")}
-                        className="peer sr-only"
-                      />
-                      <div className="p-4 rounded-xl bg-white border border-slate-200 hover:border-indigo-300 transition-all h-full flex flex-col justify-between relative overflow-hidden peer-checked:border-indigo-500 peer-checked:ring-2 peer-checked:ring-indigo-200">
-                        <div className="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-lg z-10">
-                          POPULAR
-                        </div>
-
-                        <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs opacity-0 scale-50 transition-all duration-300 peer-checked:opacity-100 peer-checked:scale-100">
-                          <Check className="h-3 w-3" />
-                        </div>
-
-                        <div>
-                          <div className="w-10 h-10 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center mb-3">
-                            <Bolt className="h-5 w-5" />
+                          <div>
+                            <div
+                              className={`w-10 h-10 rounded-lg flex items-center justify-center mb-3 ${
+                                plan.key === "STARTER"
+                                  ? "bg-orange-100 text-orange-600"
+                                  : plan.key === "PRO"
+                                    ? "bg-indigo-100 text-indigo-600"
+                                    : "bg-emerald-100 text-emerald-600"
+                              }`}
+                            >
+                              {plan.key === "STARTER" ? (
+                                <Rocket className="h-5 w-5" />
+                              ) : plan.key === "PRO" ? (
+                                <Bolt className="h-5 w-5" />
+                              ) : (
+                                <Building2 className="h-5 w-5" />
+                              )}
+                            </div>
+                            <h3 className="font-bold text-slate-800">
+                              {plan.name}
+                            </h3>
+                            <p className="text-xs text-slate-500 mt-1">
+                              {plan.audience}
+                            </p>
                           </div>
-                          <h3 className="font-bold text-slate-800">
-                            Pro Business
-                          </h3>
-                          <p className="text-xs text-slate-500 mt-1">
-                            For growing teams needing power.
-                          </p>
-                        </div>
 
-                        <div className="mt-4 pt-4 border-t border-slate-100">
-                          <span className="text-lg font-bold text-slate-900">
-                            $29
-                          </span>
-                          <span className="text-xs text-slate-500">
-                            /mo per user
-                          </span>
-                        </div>
-                      </div>
-                    </label>
-
-                    <label className="cursor-pointer relative group">
-                      <input
-                        type="radio"
-                        name="planKey"
-                        value="BUSINESS"
-                        checked={planKey === "BUSINESS"}
-                        onChange={() => setPlanKey("BUSINESS")}
-                        className="peer sr-only"
-                      />
-                      <div className="p-4 rounded-xl bg-white border border-slate-200 hover:border-indigo-300 transition-all h-full flex flex-col justify-between peer-checked:border-indigo-500 peer-checked:ring-2 peer-checked:ring-indigo-200">
-                        <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs opacity-0 scale-50 transition-all duration-300 peer-checked:opacity-100 peer-checked:scale-100">
-                          <Check className="h-3 w-3" />
-                        </div>
-
-                        <div>
-                          <div className="w-10 h-10 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center mb-3">
-                            <Building2 className="h-5 w-5" />
+                          <div className="mt-4 pt-4 border-t border-slate-100">
+                            <span className="text-lg font-bold text-slate-900">
+                              {plan.monthlyPrice}
+                            </span>
+                            <span className="text-xs text-slate-500">
+                              /month
+                            </span>
+                            <p className="mt-2 text-xs text-slate-500">
+                              {plan.seatLimit} seats included
+                            </p>
                           </div>
-                          <h3 className="font-bold text-slate-800">
-                            Enterprise
-                          </h3>
-                          <p className="text-xs text-slate-500 mt-1">
-                            Custom solutions for large orgs.
-                          </p>
                         </div>
-
-                        <div className="mt-4 pt-4 border-t border-slate-100">
-                          <span className="text-lg font-bold text-slate-900">
-                            $99
-                          </span>
-                          <span className="text-xs text-slate-500">
-                            /mo per user
-                          </span>
-                        </div>
-                      </div>
-                    </label>
+                      </label>
+                    ))}
                   </div>
 
-                  <div className="bg-white border border-slate-200 rounded-xl p-4 flex items-start gap-3 shadow-sm">
-                    <Checkbox
-                      id="pay-now"
-                      checked={paidNow}
-                      onCheckedChange={(value) => setPaidNow(Boolean(value))}
-                      className="mt-0.5 h-5 w-5 rounded border-2 border-slate-300 data-[state=checked]:bg-indigo-600 data-[state=checked]:border-indigo-600"
-                    />
-
-                    <div className="flex-1">
-                      <Label
-                        htmlFor="pay-now"
-                        className="text-sm font-bold text-slate-800 cursor-pointer select-none"
-                      >
-                        Pay now &amp; Skip Trial
-                      </Label>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Get an immediate 20% discount on your first year by
-                        skipping the 7-day trial period.
-                      </p>
-                    </div>
-
-                    <div className="text-green-600 bg-green-50 px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wide">
-                      Save 20%
-                    </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+                    <p className="text-sm font-bold text-slate-800">
+                      Billing note
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      Your selected plan is saved during registration. The
+                      workspace starts in trial mode first, so there is no card
+                      charge inside this step yet.
+                    </p>
                   </div>
                 </div>
 
@@ -686,13 +640,13 @@ export default function SignUpPage() {
 
                   <p className="text-xs text-center text-slate-400 mt-4">
                     By clicking &quot;Create Account&quot;, you agree to our{" "}
-                    <a href="#" className="text-indigo-600 hover:underline">
+                    <Link href="#" className="text-indigo-600 hover:underline">
                       Terms of Service
-                    </a>{" "}
+                    </Link>{" "}
                     and{" "}
-                    <a href="#" className="text-indigo-600 hover:underline">
+                    <Link href="#" className="text-indigo-600 hover:underline">
                       Privacy Policy
-                    </a>
+                    </Link>
                     .
                   </p>
                 </div>
