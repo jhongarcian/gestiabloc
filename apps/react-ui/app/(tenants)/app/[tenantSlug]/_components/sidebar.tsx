@@ -2,7 +2,7 @@
 "use client"
 
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { useSelectedLayoutSegments } from "next/navigation"
 import type { ComponentType } from "react"
 import { useCallback, useMemo } from "react"
 
@@ -244,20 +244,16 @@ export function AppSidebar({
   planKey,
   isAdmin,
 }: AppSidebarProps) {
-  const pathname = usePathname() ?? ""
+  const selectedSegments = useSelectedLayoutSegments()
   const { isMobile, setOpenMobile } = useSidebar()
-
-  const resolvedTenantSlug = useMemo(() => {
-    if (tenantSlug) {
-      return tenantSlug
-    }
-    const match = pathname.match(/^\/app\/([^/]+)/)
-    return match?.[1] ?? ""
-  }, [tenantSlug, pathname])
+  const segments = useMemo(
+    () => selectedSegments.filter((segment) => !segment.startsWith("(")),
+    [selectedSegments],
+  )
 
   const basePath = useMemo(
-    () => `/app/${resolvedTenantSlug}`,
-    [resolvedTenantSlug],
+    () => `/app/${tenantSlug}`,
+    [tenantSlug],
   )
   const resolveHref = useCallback(
     (path: string) => (path ? `${basePath}${path}` : basePath),
@@ -275,18 +271,16 @@ export function AppSidebar({
   )
 
   const derivedActiveKey = useMemo(() => {
-    if (!pathname.startsWith(basePath)) {
-      return "dashboard"
-    }
-    const rest = pathname.slice(basePath.length)
-    if (!rest || rest === "/") {
+    const firstSegment = segments[0]
+
+    if (!firstSegment) {
       return "dashboard"
     }
     const match = [...menuItems, ...supportItems].find(
-      (item) => item.path && rest.startsWith(item.path),
+      (item) => item.path.replace(/^\//, "") === firstSegment,
     )
     return match?.key ?? "dashboard"
-  }, [pathname, basePath, menuItems, supportItems])
+  }, [segments, menuItems, supportItems])
 
   const handleNavigate = useCallback(
     (key: string, href: string) => {

@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { usePathname, useRouter } from "next/navigation"
+import { useRouter, useSelectedLayoutSegments } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
@@ -204,7 +204,7 @@ const notificationMeta = (
 
 export function TenantShell({ tenantSlug, children, user, subscription }: TenantShellProps) {
   const router = useRouter()
-  const pathname = usePathname() ?? ""
+  const selectedSegments = useSelectedLayoutSegments()
   const socketRef = useRef<SocketClient | null>(null)
   const [profileOpen, setProfileOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -225,37 +225,30 @@ export function TenantShell({ tenantSlug, children, user, subscription }: Tenant
   const backendUrl =
     process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:4000"
 
-  const resolvedTenantSlug = useMemo(() => {
-    if (tenantSlug) return tenantSlug
-    const match = pathname.match(/^\/app\/([^/]+)/)
-    return match?.[1] ?? ""
-  }, [tenantSlug, pathname])
+  const segments = useMemo(
+    () => selectedSegments.filter((segment) => !segment.startsWith("(")),
+    [selectedSegments],
+  )
 
   const tenantId = useMemo(
     () =>
       currentUser.memberships?.find(
-        (item) => item.tenant?.slug === resolvedTenantSlug,
+        (item) => item.tenant?.slug === tenantSlug,
       )?.tenant?.id ?? null,
-    [currentUser.memberships, resolvedTenantSlug],
+    [currentUser.memberships, tenantSlug],
   )
 
   const basePath = useMemo(
-    () => `/app/${resolvedTenantSlug}`,
-    [resolvedTenantSlug],
+    () => `/app/${tenantSlug}`,
+    [tenantSlug],
   )
   const isFlowBuilderRoute = useMemo(
     () =>
-      pathname.includes("/account-settings/services/") &&
-      pathname.includes("/follow-up-templates/"),
-    [pathname],
+      segments[0] === "account-settings" &&
+      segments[1] === "services" &&
+      segments[3] === "follow-up-templates",
+    [segments],
   )
-  const segments = useMemo(() => {
-    if (!pathname.startsWith(basePath)) {
-      return []
-    }
-    const rest = pathname.slice(basePath.length)
-    return rest.split("/").filter(Boolean)
-  }, [pathname, basePath])
 
   const crumbs = useMemo(() => {
     const items = [
@@ -315,7 +308,7 @@ export function TenantShell({ tenantSlug, children, user, subscription }: Tenant
     }
 
     const tenantId = currentUser.memberships?.find(
-      (item) => item.tenant?.slug === resolvedTenantSlug,
+      (item) => item.tenant?.slug === tenantSlug,
     )?.tenant?.id
 
     if (!tenantId) return
@@ -335,7 +328,7 @@ export function TenantShell({ tenantSlug, children, user, subscription }: Tenant
     }
 
     void load()
-  }, [currentUser.image, currentUser.memberships, resolvedTenantSlug])
+  }, [currentUser.image, currentUser.memberships, tenantSlug])
 
   useEffect(() => {
     const handler = (event: Event) => {
