@@ -1,7 +1,7 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { CalendarClock, Check, ChevronDown, LoaderCircle, Plus } from "lucide-react"
+import { CalendarClock, Check, ChevronDown, LoaderCircle, Plus, X } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
@@ -165,7 +165,7 @@ export function CreateAppointmentDialog({
   const [selectedSlotStartAt, setSelectedSlotStartAt] = useState("")
   const [slotsState, setSlotsState] = useState<SlotsState>({ status: "idle" })
   const [assigneePickerOpen, setAssigneePickerOpen] = useState(false)
-  const isSelectingContactRef = useRef(false)
+  const contactInputRef = useRef<HTMLInputElement>(null)
   const open = controlledOpen ?? uncontrolledOpen
   const setOpen = useCallback(
     (nextOpen: boolean) => {
@@ -183,10 +183,11 @@ export function CreateAppointmentDialog({
     setNotes("")
     setServiceId("__NONE__")
     setAssignedToUserId(initialAssignedToUserId ?? currentUserId)
-    setContactQuery(initialContact?.fullName ?? "")
+    setContactQuery("")
     setDebouncedContactQuery("")
     setSelectedContact(initialContact)
     setContactResults([])
+    setIsSearchingContacts(false)
     setSelectedSlotStartAt(preferredSlotStartAt ?? "")
     setSlotsState({ status: "idle" })
     setAppointmentDateInput({
@@ -219,17 +220,13 @@ export function CreateAppointmentDialog({
   }, [contactQuery])
 
   useEffect(() => {
-    if (initialContact) {
+    if (initialContact || selectedContact) {
       setContactResults([])
       setIsSearchingContacts(false)
       return
     }
 
     const query = debouncedContactQuery
-
-    if (selectedContact && query === selectedContact.fullName) {
-      return
-    }
 
     if (query.length < 2) {
       setContactResults([])
@@ -566,50 +563,48 @@ export function CreateAppointmentDialog({
                 <Label htmlFor="appointment-contact">Contact</Label>
                 <Command className="rounded-xl border border-slate-200">
                   <CommandInput
+                    ref={contactInputRef}
                     id="appointment-contact"
                     placeholder="Search contact by name..."
                     value={contactQuery}
+                    disabled={Boolean(selectedContact)}
                     onValueChange={(value) => {
                       setContactQuery(value)
-
-                      if (
-                        selectedContact &&
-                        value.trim() !== selectedContact.fullName &&
-                        !isSelectingContactRef.current
-                      ) {
-                        setSelectedContact(null)
-                      }
                     }}
                   />
-                  <CommandList>
-                    <CommandEmpty>
-                      {isSearchingContacts ? "Searching contacts..." : "No contacts found."}
-                    </CommandEmpty>
-                    <CommandGroup heading="Results">
-                      {contactResults.map((contact) => (
-                        <CommandItem
-                          key={contact.id}
-                          value={`${contact.fullName} ${contact.email ?? ""} ${contact.phoneNumber ?? ""}`}
-                          onSelect={() => {
-                            isSelectingContactRef.current = true
-                            setSelectedContact(contact)
-                            setContactQuery(contact.fullName)
-                            setContactResults([])
-                            window.setTimeout(() => {
-                              isSelectingContactRef.current = false
-                            }, 0)
-                          }}
-                        >
-                          <div className="flex flex-col">
-                            <span>{contact.fullName}</span>
-                            <span className="text-xs text-slate-500">
-                              {contact.email || contact.phoneNumber || "No contact details"}
-                            </span>
-                          </div>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
+                  {!selectedContact && contactQuery.trim().length >= 2 ? (
+                    <CommandList>
+                      <CommandEmpty>
+                        {isSearchingContacts ? "Searching contacts..." : "No contacts found."}
+                      </CommandEmpty>
+                      <CommandGroup heading="Results">
+                        {contactResults.map((contact) => (
+                          <CommandItem
+                            key={contact.id}
+                            value={`${contact.fullName} ${contact.email ?? ""} ${contact.phoneNumber ?? ""}`}
+                            onSelect={() => {
+                              setSelectedContact(contact)
+                              setContactQuery("")
+                              setDebouncedContactQuery("")
+                              setContactResults([])
+                              setIsSearchingContacts(false)
+                              setFieldErrors((current) => ({
+                                ...current,
+                                contactId: undefined,
+                              }))
+                            }}
+                          >
+                            <div className="flex flex-col">
+                              <span>{contact.fullName}</span>
+                              <span className="text-xs text-slate-500">
+                                {contact.email || contact.phoneNumber || "No contact details"}
+                              </span>
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  ) : null}
                 </Command>
               </>
             )}
@@ -617,12 +612,33 @@ export function CreateAppointmentDialog({
               <p className="text-sm text-rose-600">{fieldErrors.contactId}</p>
             ) : selectedContact ? (
               !initialContact ? (
-              <div className="pt-1">
-                <p className="text-base font-semibold text-slate-950">{selectedContact.fullName}</p>
-                <p className="mt-1 text-sm text-slate-500">
-                  {selectedContact.email || selectedContact.phoneNumber || "No contact details"}
-                </p>
-              </div>
+                <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-slate-950">
+                      {selectedContact.fullName}
+                    </p>
+                    <p className="mt-1 truncate text-xs text-slate-500">
+                      {selectedContact.email || selectedContact.phoneNumber || "No contact details"}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Remove ${selectedContact.fullName}`}
+                    className="text-slate-500 hover:bg-white hover:text-slate-950"
+                    onClick={() => {
+                      setSelectedContact(null)
+                      setContactQuery("")
+                      setDebouncedContactQuery("")
+                      setContactResults([])
+                      setIsSearchingContacts(false)
+                      window.requestAnimationFrame(() => contactInputRef.current?.focus())
+                    }}
+                  >
+                    <X />
+                  </Button>
+                </div>
               ) : null
             ) : null}
             </div>

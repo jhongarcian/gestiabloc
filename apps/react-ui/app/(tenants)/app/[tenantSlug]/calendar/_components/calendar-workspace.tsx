@@ -105,6 +105,7 @@ const APPOINTMENT_STATUS_OPTIONS = [
 ] as const
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+const WEEK_STARTS_ON = 0 as const
 const DAY_VIEW_ROW_HEIGHT = 64
 const DAY_VIEW_TOTAL_MINUTES = 24 * 60
 const DAY_VIEW_HOURS = Array.from({ length: 24 }, (_, index) => index)
@@ -359,7 +360,7 @@ function getRangeForView(view: CalendarView, cursorDate: Date): CalendarRange {
     }
   }
 
-  if (view === "day") {
+  if (view === "day" || view === "list") {
     const start = startOfDay(cursorDate)
     return {
       start,
@@ -367,7 +368,7 @@ function getRangeForView(view: CalendarView, cursorDate: Date): CalendarRange {
     }
   }
 
-  const start = startOfWeek(cursorDate)
+  const start = startOfWeek(cursorDate, { weekStartsOn: WEEK_STARTS_ON })
   return {
     start,
     end: addWeeks(start, 1),
@@ -379,7 +380,7 @@ function shiftCursorDate(view: CalendarView, cursorDate: Date, direction: -1 | 1
     return addMonths(cursorDate, direction)
   }
 
-  if (view === "day") {
+  if (view === "day" || view === "list") {
     return addDays(cursorDate, direction)
   }
 
@@ -397,7 +398,7 @@ function formatRangeLabel(view: CalendarView, cursorDate: Date, timezone?: strin
     }).format(cursorDate)
   }
 
-  if (view === "day") {
+  if (view === "day" || view === "list") {
     return new Intl.DateTimeFormat("en-US", {
       timeZone,
       weekday: "long",
@@ -407,7 +408,7 @@ function formatRangeLabel(view: CalendarView, cursorDate: Date, timezone?: strin
     }).format(cursorDate)
   }
 
-  const start = startOfWeek(cursorDate)
+  const start = startOfWeek(cursorDate, { weekStartsOn: WEEK_STARTS_ON })
   const end = addDays(start, 6)
   const startMonth = format(start, "MMM")
   const endMonth = format(end, "MMM")
@@ -630,8 +631,8 @@ function MonthView({
   const monthDays = useMemo(() => {
     const monthStart = startOfMonth(cursorDate)
     const monthEnd = endOfMonth(cursorDate)
-    const gridStart = startOfWeek(monthStart)
-    const gridEnd = endOfWeek(monthEnd)
+    const gridStart = startOfWeek(monthStart, { weekStartsOn: WEEK_STARTS_ON })
+    const gridEnd = endOfWeek(monthEnd, { weekStartsOn: WEEK_STARTS_ON })
 
     return eachDayOfInterval({
       start: gridStart,
@@ -751,8 +752,11 @@ function WeekView({
   const weekDays = useMemo(
     () =>
       eachDayOfInterval({
-        start: startOfWeek(cursorDate),
-        end: addDays(startOfWeek(cursorDate), 6),
+        start: startOfWeek(cursorDate, { weekStartsOn: WEEK_STARTS_ON }),
+        end: addDays(
+          startOfWeek(cursorDate, { weekStartsOn: WEEK_STARTS_ON }),
+          6,
+        ),
       }),
     [cursorDate],
   )
@@ -788,7 +792,7 @@ function WeekView({
               type="button"
               onClick={() => onSelectDay(day)}
               className={cn(
-                "border-r border-slate-200 bg-slate-50/60 px-3 py-3 text-left transition hover:bg-slate-100/80 last:border-r-0",
+                "cursor-pointer border-r border-slate-200 bg-slate-50/60 px-3 py-3 text-left transition hover:bg-slate-100/80 last:border-r-0",
                 isClosedDay && "bg-slate-200/70 hover:bg-slate-200/80",
               )}
             >
@@ -846,7 +850,7 @@ function WeekView({
                   key={`${day.toISOString()}-${hour}`}
                   type="button"
                   onClick={() => onSelectSlot(day, hour)}
-                  className="absolute inset-x-0 border-b border-slate-100 text-left transition hover:bg-blue-50/60"
+                  className="absolute inset-x-0 cursor-pointer border-b border-slate-100 text-left transition hover:bg-blue-50/60"
                   style={{
                     top: `${hour * DAY_VIEW_ROW_HEIGHT}px`,
                     height: `${DAY_VIEW_ROW_HEIGHT}px`,
@@ -994,7 +998,7 @@ function DayView({
                   key={hour}
                   type="button"
                   onClick={() => onSelectSlot(cursorDate, hour)}
-                  className="absolute inset-x-0 border-b border-slate-100 text-left transition hover:bg-blue-50/60"
+                  className="absolute inset-x-0 cursor-pointer border-b border-slate-100 text-left transition hover:bg-blue-50/60"
                   style={{
                     top: `${hour * DAY_VIEW_ROW_HEIGHT}px`,
                     height: `${DAY_VIEW_ROW_HEIGHT}px`,
@@ -1096,68 +1100,56 @@ function ListView({
   onSelect: (item: CalendarEventItem) => void
   onSelectDay: (day: Date) => void
 }) {
-  const weekDays = useMemo(
-    () =>
-      eachDayOfInterval({
-        start: startOfWeek(cursorDate),
-        end: addDays(startOfWeek(cursorDate), 6),
-      }),
-    [cursorDate],
+  const dayItems = useMemo(
+    () => items.filter((item) => isSameDay(new Date(item.startAt), cursorDate)),
+    [cursorDate, items],
+  )
+  const dayBlockedPeriods = useMemo(
+    () => blockedPeriods.filter((item) => isSameDay(new Date(item.startsAt), cursorDate)),
+    [blockedPeriods, cursorDate],
+  )
+  const isClosedDay = closedDayOfWeeks.has(
+    getDayOfWeekInTimezone(cursorDate, tenantTimezone),
   )
 
   return (
-    <div className="space-y-4">
-      {weekDays.map((day) => {
-        const dayItems = items.filter((item) => isSameDay(new Date(item.startAt), day))
-        const dayBlockedPeriods = blockedPeriods.filter((item) =>
-          isSameDay(new Date(item.startsAt), day),
-        )
-        const isClosedDay = closedDayOfWeeks.has(
-          getDayOfWeekInTimezone(day, tenantTimezone),
-        )
+    <section
+      onClick={() => onSelectDay(cursorDate)}
+      className={cn(
+        "cursor-pointer rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm transition hover:bg-slate-50/80 md:p-5",
+        isClosedDay && "bg-slate-100/85 hover:bg-slate-100",
+      )}
+    >
+      <div className="mb-4 border-b border-slate-100 pb-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+          {format(cursorDate, "EEEE")}
+        </p>
+        <h3 className="mt-1 text-lg font-semibold text-slate-950">
+          {format(cursorDate, "MMMM d")}
+        </h3>
+      </div>
 
-        return (
-          <section
-            key={day.toISOString()}
-            onClick={() => onSelectDay(day)}
-            className={cn(
-              "cursor-pointer rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm transition hover:bg-slate-50/80 md:p-5",
-              isClosedDay && "bg-slate-100/85 hover:bg-slate-100",
-            )}
-          >
-            <div className="mb-4 border-b border-slate-100 pb-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                {format(day, "EEEE")}
-              </p>
-              <h3 className="mt-1 text-lg font-semibold text-slate-950">
-                {format(day, "MMMM d")}
-              </h3>
-            </div>
+      <div className="space-y-3">
+        {dayBlockedPeriods.map((item) => (
+          <BlockedPeriodPill
+            key={item.id}
+            item={item}
+            tenantTimezone={tenantTimezone}
+          />
+        ))}
 
-            <div className="space-y-3">
-              {dayBlockedPeriods.map((item) => (
-                <BlockedPeriodPill
-                  key={item.id}
-                  item={item}
-                  tenantTimezone={tenantTimezone}
-                />
-              ))}
-
-              {dayItems.map((item) => (
-                  <CalendarEventCard
-                    key={item.id}
-                    item={item}
-                    tenantTimezone={tenantTimezone}
-                    showContact
-                    showStatus
-                    onSelect={onSelect}
-                  />
-                ))}
-            </div>
-          </section>
-        )
-      })}
-    </div>
+        {dayItems.map((item) => (
+          <CalendarEventCard
+            key={item.id}
+            item={item}
+            tenantTimezone={tenantTimezone}
+            showContact
+            showStatus
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -1237,23 +1229,16 @@ function CalendarLoadingSkeleton({ view }: { view: CalendarView }) {
   }
 
   return (
-    <div className="space-y-4">
-      {Array.from({ length: 5 }).map((_, index) => (
-        <section
-          key={index}
-          className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm md:p-5"
-        >
-          <div className="mb-4 border-b border-slate-100 pb-3">
-            <Skeleton className="h-3 w-20 rounded-md" />
-            <Skeleton className="mt-2 h-7 w-32 rounded-md" />
-          </div>
-          <div className="space-y-3">
-            <Skeleton className="h-20 rounded-2xl" />
-            <Skeleton className="h-20 rounded-2xl" />
-          </div>
-        </section>
-      ))}
-    </div>
+    <section className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+      <div className="mb-4 border-b border-slate-100 pb-3">
+        <Skeleton className="h-3 w-20 rounded-md" />
+        <Skeleton className="mt-2 h-7 w-32 rounded-md" />
+      </div>
+      <div className="space-y-3">
+        <Skeleton className="h-20 rounded-2xl" />
+        <Skeleton className="h-20 rounded-2xl" />
+      </div>
+    </section>
   )
 }
 
@@ -1358,9 +1343,9 @@ export function CalendarWorkspace({
     safeFilters.groupIds ?? [],
   )
   const [selectedServiceId, setSelectedServiceId] = useState<string>(safeFilters.serviceId ?? "ALL")
-  const [cursorDate, setCursorDate] = useState<Date>(events.range.from ? new Date(events.range.from) : new Date())
+  const [cursorDate, setCursorDate] = useState<Date>(() => startOfDay(new Date()))
   const [miniCalendarMonth, setMiniCalendarMonth] = useState<Date>(
-    startOfMonth(events.range.from ? new Date(events.range.from) : new Date()),
+    () => startOfMonth(cursorDate),
   )
   const [eventsData, setEventsData] = useState<CalendarEventsResponse>(events)
   const [isLoadingEvents, setIsLoadingEvents] = useState(false)
@@ -1591,7 +1576,7 @@ export function CalendarWorkspace({
   }
 
   const onToday = () => {
-    setCursorDate(new Date())
+    setCursorDate(startOfDay(new Date()))
   }
 
   const onClearFilters = () => {
