@@ -106,6 +106,7 @@ const APPOINTMENT_STATUS_OPTIONS = [
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 const WEEK_STARTS_ON = 0 as const
+const DAY_VIEW_HEADER_HEIGHT = 40
 const DAY_VIEW_ROW_HEIGHT = 64
 const DAY_VIEW_TOTAL_MINUTES = 24 * 60
 const DAY_VIEW_HOURS = Array.from({ length: 24 }, (_, index) => index)
@@ -234,6 +235,14 @@ function formatTimeLabel(value: string, timezone?: string | null) {
   }).format(date)
 }
 
+function formatCurrentTimeLabel(value: Date, timezone?: string | null) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone?.trim() || undefined,
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(value)
+}
+
 function getDayOfWeekInTimezone(value: Date | string, timezone?: string | null) {
   const date = typeof value === "string" ? new Date(value) : value
   const weekday = new Intl.DateTimeFormat("en-US", {
@@ -269,6 +278,35 @@ function getMinutesFromDate(value: string, timezone?: string | null) {
 
   const getPart = (type: string) => parts.find((part) => part.type === type)?.value ?? "00"
   return Number(getPart("hour")) * 60 + Number(getPart("minute"))
+}
+
+function useCurrentMinute() {
+  const [currentTime, setCurrentTime] = useState(() => new Date())
+
+  useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout>
+    let isCancelled = false
+
+    const scheduleNextMinute = () => {
+      const millisecondsUntilNextMinute = 60_000 - (Date.now() % 60_000)
+
+      timeoutId = setTimeout(() => {
+        if (isCancelled) return
+
+        setCurrentTime(new Date())
+        scheduleNextMinute()
+      }, millisecondsUntilNextMinute)
+    }
+
+    scheduleNextMinute()
+
+    return () => {
+      isCancelled = true
+      clearTimeout(timeoutId)
+    }
+  }, [])
+
+  return currentTime
 }
 
 function buildDayViewEventLayouts(
@@ -939,6 +977,7 @@ function DayView({
   onSelect: (item: CalendarEventItem) => void
   onSelectSlot: (day: Date, hour: number) => void
 }) {
+  const currentTime = useCurrentMinute()
   const dayItems = useMemo(
     () => items.filter((item) => isSameDay(new Date(item.startAt), cursorDate)),
     [cursorDate, items],
@@ -954,6 +993,12 @@ function DayView({
   const isClosedDay = closedDayOfWeeks.has(
     getDayOfWeekInTimezone(cursorDate, tenantTimezone),
   )
+  const isCurrentDay =
+    getDateKey(cursorDate, tenantTimezone) === getDateKey(currentTime, tenantTimezone)
+  const currentTimeMinutes = getMinutesFromDate(
+    currentTime.toISOString(),
+    tenantTimezone,
+  )
 
   return (
     <div className="space-y-4">
@@ -968,7 +1013,7 @@ function DayView({
 
       <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-white">
         <div className="grid grid-cols-[72px_minmax(0,1fr)]">
-          <div className="border-r border-slate-200 bg-slate-50/80">
+          <div className="relative border-r border-slate-200 bg-slate-50/80">
             <div className="h-10 border-b border-slate-200" />
             {DAY_VIEW_HOURS.map((hour) => (
               <div
@@ -979,6 +1024,20 @@ function DayView({
                 {formatHourLabel(hour)}
               </div>
             ))}
+
+            {isCurrentDay ? (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-0 z-40 flex -translate-y-1/2 justify-center"
+                style={{
+                  top: `${DAY_VIEW_HEADER_HEIGHT + (currentTimeMinutes / 60) * DAY_VIEW_ROW_HEIGHT}px`,
+                }}
+              >
+                <span className="shrink-0 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold leading-none tabular-nums text-rose-700 shadow-sm ring-2 ring-white">
+                  {formatCurrentTimeLabel(currentTime, tenantTimezone)}
+                </span>
+              </div>
+            ) : null}
           </div>
 
           <div className={cn("relative bg-white", isClosedDay && "bg-slate-100/85")}>
@@ -1014,8 +1073,6 @@ function DayView({
                   getMinutesFromDate(item.endsAt, tenantTimezone),
                   item.isAllDay ? DAY_VIEW_TOTAL_MINUTES : startMinutes + 15,
                 )
-                const top = (startMinutes / DAY_VIEW_TOTAL_MINUTES) * 100
-                const height = (Math.max(endMinutes - startMinutes, 15) / DAY_VIEW_TOTAL_MINUTES) * 100
 
                 return (
                   <div
@@ -1038,6 +1095,19 @@ function DayView({
                   </div>
                 )
               })}
+
+              {isCurrentDay ? (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-x-0 z-40 flex -translate-y-1/2 items-center"
+                  style={{
+                    top: `${(currentTimeMinutes / 60) * DAY_VIEW_ROW_HEIGHT}px`,
+                  }}
+                >
+                  <span className="-ml-1 h-2 w-2 shrink-0 rounded-full bg-rose-300 ring-2 ring-white" />
+                  <span className="h-px flex-1 bg-rose-300" />
+                </div>
+              ) : null}
 
               {dayItems.map((item) => {
                 const layout = eventLayouts.get(item.id)
