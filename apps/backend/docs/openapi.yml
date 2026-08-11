@@ -689,6 +689,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/{contactId}/summary:
+    get:
+      tags: [Contacts]
+      summary: Get contact overview summary metrics
+      description: Returns aggregate payment, opportunity, task, and next-appointment metrics for the contact profile.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Contact overview summary returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactOverviewSummaryResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/contacts/{tenantId}/custom-field-access-requests:
     post:
       tags: [Contacts]
@@ -5632,6 +5671,45 @@ components:
             updatedAt:
               type: string
               format: date-time
+    ContactOverviewSummaryResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        summary:
+          type: object
+          properties:
+            totalSpendingCents:
+              type: integer
+              minimum: 0
+            lastPaymentAt:
+              type: string
+              format: date-time
+              nullable: true
+            opportunityCount:
+              type: integer
+              minimum: 0
+            openOpportunityCount:
+              type: integer
+              minimum: 0
+            activeTaskCount:
+              type: integer
+              minimum: 0
+            overdueTaskCount:
+              type: integer
+              minimum: 0
+            nextAppointment:
+              type: object
+              nullable: true
+              properties:
+                id:
+                  type: string
+                title:
+                  type: string
+                startAt:
+                  type: string
+                  format: date-time
     ContactsListResponse:
       type: object
       properties:

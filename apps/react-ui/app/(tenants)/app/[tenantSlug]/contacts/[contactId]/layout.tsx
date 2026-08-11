@@ -3,8 +3,6 @@ import Link from "next/link"
 import {
   ArrowLeft,
   CalendarClock,
-  CircleDollarSign,
-  ListTodo,
   Target,
 } from "lucide-react"
 
@@ -20,61 +18,14 @@ import { CreateAppointmentDialog } from "../../calendar/_components/create-appoi
 import { getCalendarMeta, type CalendarMetaResponse } from "../../calendar/_lib/calendar-api"
 import { AddContactOpportunityDialog } from "../../opportunities/_components/add-contact-opportunity-dialog"
 import { ContactBreadcrumbSync } from "./_components/contact-breadcrumb-sync"
-import { ContactDetailTabs } from "./_components/contact-detail-tabs"
+import { ContactDetailNavigation } from "./_components/contact-detail-navigation"
 import { ContactHeaderAssignee } from "./_components/contact-header-assignee"
 import { ContactHeaderStatus } from "./_components/contact-header-status"
 import {
   formatContactDate,
   getContactDetailsContext,
 } from "./_lib/contact-details"
-
-type ContactServicesPageResponse = {
-  ok: boolean
-  items: Array<{
-    id: string
-    status: string
-    totalPriceCents: number
-    paidCents: number
-    service: {
-      id: string
-      name: string
-    }
-    followUpSteps: Array<{
-      id: string
-      title: string
-      status: string
-      dueAt?: string | null
-      availableAt?: string | null
-      completedAt: string | null
-      assignedToUserId?: string | null
-      assignedTo?: {
-        id: string
-        name: string | null
-        email: string | null
-        image: string | null
-      } | null
-    }>
-  }>
-  pagination: {
-    page: number
-    pageSize: number
-    total: number
-    totalPages: number
-  }
-}
-
-type ContactTasksPageResponse = {
-  ok: boolean
-  items: Array<{
-    status: string
-  }>
-  pagination: {
-    page: number
-    pageSize: number
-    total: number
-    totalPages: number
-  }
-}
+import { getAllContactServices } from "./_lib/contact-overview-metrics"
 
 type ContactAssigneesResponse = {
   ok: boolean
@@ -94,119 +45,6 @@ type ContactStatusesResponse = {
     bgColor: string | null
     textColor: string | null
   }>
-}
-
-type ContactOpportunitiesResponse = {
-  ok: boolean
-  items: Array<{
-    id: string
-    pipelineId: string
-    stageId: string
-    updatedAt: string
-    pipeline: {
-      id: string
-      name: string
-      color: string
-    }
-    stage: {
-      id: string
-      name: string
-      sortOrder: number
-    }
-  }>
-}
-
-async function loadAllContactServices(
-  tenantId: string,
-  contactId: string,
-  cookie: string,
-) {
-  const firstPage = await api.get<ContactServicesPageResponse>(
-    `/api/services/${tenantId}/contact-services`,
-    {
-      headers: { cookie },
-      params: {
-        contactId,
-        page: 1,
-        pageSize: 25,
-      },
-    },
-  )
-
-  const totalPages = firstPage.data.pagination.totalPages
-  if (totalPages <= 1) {
-    return firstPage.data.items
-  }
-
-  const restPages = await Promise.all(
-    Array.from({ length: totalPages - 1 }, (_, index) =>
-      api.get<ContactServicesPageResponse>(
-        `/api/services/${tenantId}/contact-services`,
-        {
-          headers: { cookie },
-          params: {
-            contactId,
-            page: index + 2,
-            pageSize: 25,
-          },
-        },
-      ),
-    ),
-  )
-
-  return [
-    ...firstPage.data.items,
-    ...restPages.flatMap((response) => response.data.items),
-  ]
-}
-
-async function loadAllContactTasks(
-  tenantId: string,
-  contactId: string,
-  cookie: string,
-) {
-  const firstPage = await api.get<ContactTasksPageResponse>(
-    `/api/tasks/${tenantId}`,
-    {
-      headers: { cookie },
-      params: {
-        contactId,
-        page: 1,
-        pageSize: 25,
-      },
-    },
-  )
-
-  const totalPages = firstPage.data.pagination.totalPages
-  if (totalPages <= 1) {
-    return firstPage.data.items
-  }
-
-  const restPages = await Promise.all(
-    Array.from({ length: totalPages - 1 }, (_, index) =>
-      api.get<ContactTasksPageResponse>(`/api/tasks/${tenantId}`, {
-        headers: { cookie },
-        params: {
-          contactId,
-          page: index + 2,
-          pageSize: 25,
-        },
-      }),
-    ),
-  )
-
-  return [
-    ...firstPage.data.items,
-    ...restPages.flatMap((response) => response.data.items),
-  ]
-}
-
-function formatUsdAmount(cents: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(cents / 100)
 }
 
 function formatShortDate(value: string | null | undefined) {
@@ -267,8 +105,6 @@ export default async function ContactDetailsLayout({
   const { tenantId, contact, currentUserId, tenantTimezone } = await getContactDetailsContext(tenantSlug, contactId)
   const cookie = (await headers()).get("cookie") ?? ""
 
-  let totalSpendingCents = 0
-  let activeTasks = 0
   let activeFollowUpServices: Array<{
     id: string
     name: string
@@ -307,12 +143,9 @@ export default async function ContactDetailsLayout({
       services: [],
     },
   }
-  let contactOpportunityCount = 0
-
   try {
-    const [services, tasks, assignees, statuses, metaResponse, opportunitiesResponse] = await Promise.all([
-      loadAllContactServices(tenantId, contactId, cookie),
-      loadAllContactTasks(tenantId, contactId, cookie),
+    const [services, assignees, statuses, metaResponse] = await Promise.all([
+      getAllContactServices(tenantId, contactId, cookie),
       api.get<ContactAssigneesResponse>(`/api/tasks/${tenantId}/assignees`, {
         headers: { cookie },
       }),
@@ -320,15 +153,8 @@ export default async function ContactDetailsLayout({
         headers: { cookie },
       }),
       getCalendarMeta(tenantId, cookie),
-      api.get<ContactOpportunitiesResponse>(`/api/opportunities/${tenantId}/contact/${contactId}`, {
-        headers: { cookie },
-      }),
     ])
 
-    totalSpendingCents = services.reduce(
-      (sum, service) => sum + service.paidCents,
-      0,
-    )
     activeFollowUpServices = services
       .filter((service) => ACTIVE_CONTACT_SERVICE_STATUSES.has(service.status))
       .map((service) => {
@@ -383,7 +209,6 @@ export default async function ContactDetailsLayout({
           ]),
       ).values(),
     )
-    activeTasks = tasks.filter((task) => task.status !== "Completed").length
     assigneeOptions = assignees.data.items
     statusOptions = statuses.data.items.map((status) => ({
       value: status.id,
@@ -405,10 +230,7 @@ export default async function ContactDetailsLayout({
           : [],
       },
     }
-    contactOpportunityCount = opportunitiesResponse.data.items.length
   } catch {
-    totalSpendingCents = 0
-    activeTasks = 0
     activeFollowUpServices = []
     activeFollowUpOwnerItems = []
     assigneeOptions = []
@@ -430,7 +252,6 @@ export default async function ContactDetailsLayout({
         services: [],
       },
     }
-    contactOpportunityCount = 0
   }
 
   const visibleActiveFollowUpServices = activeFollowUpServices.slice(0, 3)
@@ -447,11 +268,6 @@ export default async function ContactDetailsLayout({
     0,
     sortedRelationships.length - visibleHeaderRelationships.length,
   )
-  const upcomingAppointmentDateLabel = new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-  }).format(new Date("2026-04-04T09:00:00.000Z"))
-
   return (
     <section className="flex h-full min-h-0 flex-col gap-4">
       <ContactBreadcrumbSync label={contact.fullName} />
@@ -605,52 +421,6 @@ export default async function ContactDetailsLayout({
               </div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <div className="min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur">
-                <div className="flex items-center gap-2 text-slate-400">
-                  <CircleDollarSign className="h-4 w-4" />
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                    Total Spending
-                  </p>
-                </div>
-                <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
-                  {formatUsdAmount(totalSpendingCents)}
-                </p>
-              </div>
-              <div className="min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur">
-                <div className="flex items-center gap-2 text-slate-400">
-                  <Target className="h-4 w-4" />
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                    Opportunities
-                  </p>
-                </div>
-                <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
-                  {contactOpportunityCount}
-                </p>
-              </div>
-              <div className="min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur">
-                <div className="flex items-center gap-2 text-slate-400">
-                  <ListTodo className="h-4 w-4" />
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                    Active Tasks
-                  </p>
-                </div>
-                <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
-                  {activeTasks}
-                </p>
-              </div>
-              <div className="min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur">
-                <div className="flex items-center gap-2 text-slate-400">
-                  <CalendarClock className="h-4 w-4" />
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                    Next Appointment
-                  </p>
-                </div>
-                <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
-                  {upcomingAppointmentDateLabel}
-                </p>
-              </div>
-            </div>
           </div>
         </header>
 
@@ -778,11 +548,11 @@ export default async function ContactDetailsLayout({
           </section>
         ) : null}
 
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-visible rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-4 py-4 md:px-5">
-            <ContactDetailTabs tenantSlug={tenantSlug} contactId={contactId} />
+        <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-visible rounded-2xl border border-slate-200 bg-[#f1f7ff] shadow-sm lg:grid-cols-[14rem_minmax(0,1fr)]">
+          <ContactDetailNavigation tenantSlug={tenantSlug} contactId={contactId} />
+          <div className="min-h-0 min-w-0 flex-1 rounded-b-2xl bg-background p-5 md:p-6 lg:rounded-l-none lg:rounded-r-2xl lg:border-l">
+            {children}
           </div>
-          <div className="min-h-0 flex-1 p-5 md:p-6">{children}</div>
         </div>
       </div>
     </section>

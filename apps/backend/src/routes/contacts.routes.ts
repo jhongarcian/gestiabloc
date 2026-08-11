@@ -2065,6 +2065,137 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
   }
 })
 
+router.get("/:tenantId/:contactId/summary", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, contactId } = TenantContactPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const contact = await prisma.contact.findFirst({
+      where: {
+        id: contactId,
+        tenantId,
+      },
+      select: {
+        id: true,
+      },
+    })
+
+    if (!contact) {
+      return res.status(404).json({ error: "CONTACT_NOT_FOUND" })
+    }
+
+    const now = new Date()
+    const activeTaskWhere = {
+      tenantId,
+      contactId,
+      OR: [
+        { statusConfigId: null },
+        {
+          statusConfig: {
+            is: {
+              name: {
+                not: "Completed",
+                mode: "insensitive" as const,
+              },
+            },
+          },
+        },
+      ],
+    }
+
+    const [
+      paymentSummary,
+      opportunityCount,
+      openOpportunityCount,
+      activeTaskCount,
+      overdueTaskCount,
+      nextAppointment,
+    ] = await Promise.all([
+      prismaWithContacts.contactServicePayment.aggregate({
+        where: {
+          tenantId,
+          contactService: {
+            tenantId,
+            contactId,
+          },
+        },
+        _sum: {
+          amountCents: true,
+        },
+        _max: {
+          paidAt: true,
+        },
+      }),
+      prismaWithContacts.contactOpportunity.count({
+        where: {
+          tenantId,
+          contactId,
+        },
+      }),
+      prismaWithContacts.contactOpportunity.count({
+        where: {
+          tenantId,
+          contactId,
+          result: "OPEN",
+        },
+      }),
+      prismaWithContacts.task.count({
+        where: activeTaskWhere,
+      }),
+      prismaWithContacts.task.count({
+        where: {
+          ...activeTaskWhere,
+          dueDate: {
+            lt: now,
+          },
+        },
+      }),
+      prismaWithContacts.appointment.findFirst({
+        where: {
+          tenantId,
+          contactId,
+          status: {
+            in: ["SCHEDULED", "CONFIRMED"],
+          },
+          startAt: {
+            gte: now,
+          },
+        },
+        orderBy: [{ startAt: "asc" }],
+        select: {
+          id: true,
+          title: true,
+          startAt: true,
+        },
+      }),
+    ])
+
+    return res.json({
+      ok: true,
+      summary: {
+        totalSpendingCents: paymentSummary._sum.amountCents ?? 0,
+        lastPaymentAt: paymentSummary._max.paidAt?.toISOString() ?? null,
+        opportunityCount,
+        openOpportunityCount,
+        activeTaskCount,
+        overdueTaskCount,
+        nextAppointment: nextAppointment
+          ? {
+              id: nextAppointment.id,
+              title: nextAppointment.title,
+              startAt: nextAppointment.startAt.toISOString(),
+            }
+          : null,
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.post("/:tenantId/custom-field-access-requests", requireAuth, async (req, res, next) => {
   try {
     enforceSameOrigin(req)
