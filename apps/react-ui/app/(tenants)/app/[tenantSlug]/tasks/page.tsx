@@ -23,6 +23,7 @@ type TaskAssigneesResponse = {
     value: string
     label: string
     email: string
+    image: string | null
   }>
 }
 
@@ -66,6 +67,7 @@ export default async function TasksPage({
     label: string
     value: string
     email?: string
+    image?: string | null
   }> = []
   let summary: TaskSummaryResponse["summary"] = {
     totalTasks: 0,
@@ -106,6 +108,7 @@ export default async function TasksPage({
       label: assignee.label,
       value: assignee.value,
       email: assignee.email,
+      image: assignee.image,
     }))
   } catch {
     // The page should remain usable if the task metadata endpoints are unavailable.

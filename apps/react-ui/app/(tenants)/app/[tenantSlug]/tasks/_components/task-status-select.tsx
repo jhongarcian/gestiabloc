@@ -3,6 +3,7 @@
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -27,6 +28,7 @@ type TaskStatusSelectProps = {
   placeholder?: string
   triggerClassName?: string
   contentClassName?: string
+  ariaInvalid?: boolean
 }
 
 export function TaskStatusSelect({
@@ -40,6 +42,7 @@ export function TaskStatusSelect({
   placeholder = "Select a status",
   triggerClassName,
   contentClassName,
+  ariaInvalid = false,
 }: TaskStatusSelectProps) {
   const selectedStatus = options.find((option) => option.value === value)
 
@@ -47,6 +50,7 @@ export function TaskStatusSelect({
     <Select value={value} onValueChange={onValueChange} disabled={disabled}>
       <SelectTrigger
         id={id}
+        aria-invalid={ariaInvalid}
         className={cn(
           "h-11 w-full rounded-xl border-0 px-3 shadow-none",
           selectedStatus ? "border-transparent" : undefined,
@@ -69,32 +73,34 @@ export function TaskStatusSelect({
       <SelectContent
         className={cn("rounded-2xl border-slate-200 p-1.5 shadow-lg", contentClassName)}
       >
-        <SelectItem value={noneValue} className="rounded-xl py-2.5">
-          <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
-            {noneLabel}
-          </span>
-        </SelectItem>
-        {options.map((option) => (
-          <SelectItem
-            key={option.value}
-            value={option.value}
-            className="rounded-xl py-2.5"
-          >
-            <span
-              className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
-              style={
-                option.bgColor && option.textColor
-                  ? {
-                      backgroundColor: option.bgColor,
-                      color: option.textColor,
-                    }
-                  : undefined
-              }
-            >
-              {option.label}
+        <SelectGroup>
+          <SelectItem value={noneValue} className="rounded-xl py-2.5">
+            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
+              {noneLabel}
             </span>
           </SelectItem>
-        ))}
+          {options.map((option) => (
+            <SelectItem
+              key={option.value}
+              value={option.value}
+              className="rounded-xl py-2.5"
+            >
+              <span
+                className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                style={
+                  option.bgColor && option.textColor
+                    ? {
+                        backgroundColor: option.bgColor,
+                        color: option.textColor,
+                      }
+                    : undefined
+                }
+              >
+                {option.label}
+              </span>
+            </SelectItem>
+          ))}
+        </SelectGroup>
       </SelectContent>
     </Select>
   )

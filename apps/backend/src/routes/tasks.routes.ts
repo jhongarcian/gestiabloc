@@ -63,7 +63,7 @@ const CreateTaskReminderSchema = z.object({
   message: z.string().trim().max(500).nullable().optional(),
 })
 
-const CreateTaskSchema = z.object({
+const TaskMutationSchema = z.object({
   name: z.string().trim().min(1).max(160),
   contactId: z.string().trim().min(1),
   description: z.string().trim().max(4000).nullable().optional(),
@@ -79,7 +79,40 @@ const CreateTaskSchema = z.object({
   reminderAt: z.string().datetime().nullable().optional(),
 })
 
-const UpdateTaskSchema = CreateTaskSchema.partial()
+const CreateTaskSchema = TaskMutationSchema.superRefine((task, context) => {
+  const startedAt = new Date(task.startedAt).getTime()
+  const dueDate = task.dueDate ? new Date(task.dueDate).getTime() : null
+  const reminderAt = task.reminderAt ? new Date(task.reminderAt).getTime() : null
+
+  if (dueDate !== null && dueDate < startedAt) {
+    context.addIssue({
+      code: "custom",
+      path: ["dueDate"],
+      message: "Due date cannot be before the start date.",
+    })
+  }
+
+  if (reminderAt !== null && dueDate === null) {
+    context.addIssue({
+      code: "custom",
+      path: ["dueDate"],
+      message: "Set a due date before adding a reminder.",
+    })
+  } else if (
+    reminderAt !== null &&
+    dueDate !== null &&
+    dueDate >= startedAt &&
+    (reminderAt < startedAt || reminderAt > dueDate)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["reminderAt"],
+      message: "Reminder must be between the start and due dates.",
+    })
+  }
+})
+
+const UpdateTaskSchema = TaskMutationSchema.partial()
 
 async function requireActiveMembership(
   req: AuthedRequest,

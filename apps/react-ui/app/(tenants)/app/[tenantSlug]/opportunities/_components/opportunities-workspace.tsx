@@ -559,7 +559,6 @@ function OpportunityCard({
                 tenantTimezone={tenantTimezone}
                 statusOptions={taskStatusOptions}
                 assigneeOptions={taskAssigneeOptions}
-                presentation="drawer"
                 initialContact={{
                   id: opportunity.contact.id,
                   fullName: opportunity.contact.fullName,

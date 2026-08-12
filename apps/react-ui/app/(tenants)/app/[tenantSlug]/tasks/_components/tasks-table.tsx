@@ -31,6 +31,7 @@ type SelectOption = {
   bgColor?: string
   textColor?: string
   email?: string
+  image?: string | null
 }
 
 type TasksTableProps = {
