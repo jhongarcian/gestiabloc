@@ -30,6 +30,9 @@ const sanitizeMultilineText = (value: string) =>
     .join("\n")
     .trim()
 
+const getUserFullName = (user: { name: string; email: string }) =>
+  user.name.replace(/\s+/g, " ").trim() || user.email
+
 const TenantPathSchema = z.object({
   tenantId: z.string().trim().min(1),
 })
@@ -428,7 +431,7 @@ router.get("/:tenantId/assignees", requireAuth, async (req, res, next) => {
       ok: true,
       items: assignees.map((assignee) => ({
         value: assignee.userId,
-        label: assignee.user.name?.trim() || assignee.user.email,
+        label: getUserFullName(assignee.user),
         email: assignee.user.email,
         image: assignee.user.image ?? null,
       })),
@@ -613,6 +616,8 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
               user: {
                 select: {
                   name: true,
+                  email: true,
+                  image: true,
                 },
               },
             },
@@ -640,7 +645,10 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
         assignedToUserId: task.assignedToUserId ?? null,
         priority: task.priority ?? null,
         dueDate: task.dueDate,
-        assignedPersonName: task.assignedToMembership?.user?.name ?? null,
+        assignedPersonName: task.assignedToMembership?.user
+          ? getUserFullName(task.assignedToMembership.user)
+          : null,
+        assignedPersonImage: task.assignedToMembership?.user?.image ?? null,
         startedAt: task.startedAt,
         status: task.statusConfig?.name ?? "Unassigned",
         statusConfigId: task.statusConfig?.id ?? null,
