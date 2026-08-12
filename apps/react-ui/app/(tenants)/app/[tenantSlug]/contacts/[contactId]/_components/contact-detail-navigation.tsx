@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation"
 import {
   Briefcase,
   Calendar,
+  ChevronRight,
   Clock3,
   Contact2,
   ListTodo,
@@ -27,11 +28,11 @@ import {
 import {
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
+import { cn } from "@/lib/utils"
 
 type ContactDetailNavigationProps = {
   tenantSlug: string
@@ -77,13 +78,19 @@ export function ContactDetailNavigation({
     <>
       <nav
         aria-label="Contact detail sections"
-        className="rounded-t-2xl border-b border-blue-100 bg-[#f1f7ff] p-4 md:p-5 lg:hidden"
+        className="relative overflow-hidden rounded-t-2xl bg-[#f1f7ff] p-4 text-slate-900 md:p-5 lg:hidden"
       >
-        <div className="flex flex-col gap-2">
-          <p
-            id="contact-section-select-label"
-            className="text-xs font-semibold uppercase tracking-wider text-slate-400"
-          >
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-14 -bottom-20 size-48 rounded-full bg-[#60a5fa]/20 blur-3xl"
+        />
+
+        <div className="relative flex flex-col gap-2">
+          <p id="contact-section-select-label" className="sr-only">
             Contact record
           </p>
           <Select
@@ -91,7 +98,7 @@ export function ContactDetailNavigation({
             onValueChange={handleMobileSectionChange}
           >
             <SelectTrigger
-              className="h-10 w-full border-white/80 bg-white/85 text-slate-700 shadow-sm focus-visible:border-slate-300 focus-visible:ring-slate-200/70 [&_svg]:text-slate-500"
+              className="h-11 w-full rounded-xl border-white/90 bg-white/75 text-slate-700 shadow-sm focus-visible:border-blue-300 focus-visible:ring-blue-200/60 [&_svg]:text-blue-700"
               aria-labelledby="contact-section-select-label"
             >
               <SelectValue />
@@ -115,17 +122,23 @@ export function ContactDetailNavigation({
         </div>
       </nav>
 
-      <aside className="hidden w-56 shrink-0 rounded-l-2xl bg-[#f1f7ff] text-slate-700 lg:block">
+      <aside className="relative hidden w-56 shrink-0 self-start overflow-hidden rounded-l-2xl bg-[#f1f7ff] text-slate-700 lg:sticky lg:top-20 lg:block">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-20 bottom-10 size-52 rounded-full bg-[#60a5fa]/20 blur-3xl"
+        />
+
         <nav
           aria-label="Contact detail sections"
-          className="sticky top-20 px-2 py-2"
+          className="px-3 pt-6 pb-4"
         >
-          <SidebarGroup>
-            <SidebarGroupLabel className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-              Contact record
-            </SidebarGroupLabel>
+          <SidebarGroup className="px-0 py-0">
             <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5">
+              <SidebarMenu className="gap-1">
                 {CONTACT_SECTIONS.map((section) => {
                   const Icon = section.icon
                   const href = `${baseHref}/${section.key}`
@@ -136,14 +149,29 @@ export function ContactDetailNavigation({
                       <SidebarMenuButton
                         asChild
                         isActive={isActive}
-                        className="h-10 text-sm font-semibold text-slate-600 hover:bg-blue-100/70 hover:text-slate-950 data-[active=true]:bg-blue-950 data-[active=true]:text-white data-[active=true]:shadow-sm data-[active=true]:hover:bg-blue-900"
+                        className="min-h-11 gap-3 rounded-xl px-2.5 text-sm text-slate-600 hover:bg-blue-100/70 hover:text-slate-950 focus-visible:ring-blue-500/40 data-[active=true]:bg-blue-950 data-[active=true]:font-semibold data-[active=true]:text-white data-[active=true]:hover:bg-blue-900"
                       >
                         <Link
                           href={href}
                           aria-current={isActive ? "page" : undefined}
                         >
-                          <Icon aria-hidden="true" className="opacity-95" />
-                          <span>{section.label}</span>
+                          <span
+                            className={cn(
+                              "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+                              isActive
+                                ? "border-white/80 bg-white text-blue-950"
+                                : "border-blue-200/80 bg-white/65 text-slate-600",
+                            )}
+                          >
+                            <Icon className="size-3.5" aria-hidden="true" />
+                          </span>
+                          <span className="truncate">{section.label}</span>
+                          {isActive ? (
+                            <ChevronRight
+                              className="ml-auto size-4 text-blue-200"
+                              aria-hidden="true"
+                            />
+                          ) : null}
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
