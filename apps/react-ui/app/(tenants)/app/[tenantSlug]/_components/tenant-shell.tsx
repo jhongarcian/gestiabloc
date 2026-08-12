@@ -51,6 +51,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 
 type TenantShellProps = {
   tenantSlug: string
+  tenantName: string
   children: React.ReactNode
   user: TenantUser & { role?: string | null }
   subscription?: {
@@ -202,7 +203,13 @@ const notificationMeta = (
   }
 }
 
-export function TenantShell({ tenantSlug, children, user, subscription }: TenantShellProps) {
+export function TenantShell({
+  tenantSlug,
+  tenantName,
+  children,
+  user,
+  subscription,
+}: TenantShellProps) {
   const router = useRouter()
   const selectedSegments = useSelectedLayoutSegments()
   const socketRef = useRef<SocketClient | null>(null)
@@ -696,6 +703,7 @@ export function TenantShell({ tenantSlug, children, user, subscription }: Tenant
       {!isFlowBuilderRoute ? (
         <AppSidebar
           tenantSlug={tenantSlug}
+          tenantName={tenantName}
           className="md:h-full"
           onNavigate={handleSidebarNavigate}
           planKey={subscription?.planKey}

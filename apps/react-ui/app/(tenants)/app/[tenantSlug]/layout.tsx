@@ -26,6 +26,7 @@ export default async function TenantLayout({
   return (
     <TenantShell
       tenantSlug={slug}
+      tenantName={membership.tenant.name?.trim() || slug}
       user={{
         id: user.id,
         name: user.name,
