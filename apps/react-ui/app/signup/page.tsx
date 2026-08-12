@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useState } from "react"
+import { Suspense, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { tenantSignup } from "@/lib/api"
 import { Button } from "@/components/ui/button"
@@ -31,6 +31,20 @@ import {
 } from "@/lib/subscription-plans"
 
 export default function SignUpPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-slate-100 text-sm text-slate-500">
+          Loading signup…
+        </div>
+      }
+    >
+      <SignUpContent />
+    </Suspense>
+  )
+}
+
+function SignUpContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const requestedPlan = searchParams.get("plan")

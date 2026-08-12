@@ -286,9 +286,6 @@ export default async function ContactDetailsLayout({
                       <ArrowLeft className="h-3 w-3" />
                       Contacts
                     </Link>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
-                      Contact Record
-                    </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <h1 className="truncate text-[1.7rem] font-semibold tracking-tight text-slate-950">

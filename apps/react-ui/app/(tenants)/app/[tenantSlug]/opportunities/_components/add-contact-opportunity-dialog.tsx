@@ -113,6 +113,10 @@ type CreateOpportunityResponse = {
     id: string
     name: string
   }
+  automation?: {
+    matchedCount: number
+    executedCount: number
+  }
 }
 
 type AddContactOpportunityDialogProps = {
@@ -344,7 +348,11 @@ export function AddContactOpportunityDialog({
         valueCents,
       })
 
-      toast.success("Opportunity added.")
+      toast.success(
+        (data.automation?.executedCount ?? 0) > 0
+          ? `Opportunity added and ${data.automation!.executedCount} automation${data.automation!.executedCount === 1 ? "" : "s"} ran.`
+          : "Opportunity added.",
+      )
       setOpen(false)
       reset()
       await onCreated?.(data.opportunity)
@@ -356,7 +364,8 @@ export function AddContactOpportunityDialog({
       if (backendError === "OPPORTUNITY_ALREADY_EXISTS") {
         setFormError("This contact is already enrolled in that pipeline.")
       } else {
-        toast.error("Could not add opportunity.")
+        const backendMessage = isAxiosError(error) ? error.response?.data?.message : undefined
+        toast.error(typeof backendMessage === "string" ? backendMessage : "Could not add opportunity.")
       }
     } finally {
       setIsSubmitting(false)

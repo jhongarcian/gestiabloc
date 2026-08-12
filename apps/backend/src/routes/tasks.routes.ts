@@ -11,6 +11,7 @@ import {
 } from "../lib/task-priority.js"
 import { createTaskActivity } from "../lib/task-activity.js"
 import { createTaskAssignmentNotification } from "../lib/task-notifications.js"
+import { ensureDefaultTaskStatuses } from "../lib/tenant-defaults.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
@@ -79,53 +80,6 @@ const CreateTaskSchema = z.object({
 })
 
 const UpdateTaskSchema = CreateTaskSchema.partial()
-
-const TASK_DEFAULT_STATUSES = [
-  {
-    name: "To Do",
-    bgColor: "#E2E8F0",
-    textColor: "#334155",
-    sortOrder: 10,
-  },
-  {
-    name: "In Progress",
-    bgColor: "#DBEAFE",
-    textColor: "#1E3A8A",
-    sortOrder: 20,
-  },
-  {
-    name: "Completed",
-    bgColor: "#DCFCE7",
-    textColor: "#166534",
-    sortOrder: 30,
-  },
-] as const
-
-async function ensureDefaultTaskStatuses(tenantId: string) {
-  await prismaWithTasks.taskStatusConfig.updateMany({
-    where: {
-      tenantId,
-      name: { in: TASK_DEFAULT_STATUSES.map((item) => item.name) },
-      isSystemDefault: false,
-    },
-    data: {
-      isSystemDefault: true,
-    },
-  })
-
-  await prismaWithTasks.taskStatusConfig.createMany({
-    data: TASK_DEFAULT_STATUSES.map((item) => ({
-      tenantId,
-      name: item.name,
-      bgColor: item.bgColor,
-      textColor: item.textColor,
-      sortOrder: item.sortOrder,
-      isActive: true,
-      isSystemDefault: true,
-    })),
-    skipDuplicates: true,
-  })
-}
 
 async function requireActiveMembership(
   req: AuthedRequest,
@@ -387,7 +341,7 @@ router.get("/:tenantId/statuses", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    await ensureDefaultTaskStatuses(tenantId)
+    await ensureDefaultTaskStatuses(prismaWithTasks, tenantId)
 
     const statuses = await prismaWithTasks.taskStatusConfig.findMany({
       where: { tenantId, isActive: true },

@@ -5,12 +5,14 @@ import {
   decryptCustomFieldValue,
   encryptCustomFieldValue,
 } from "../lib/contact-custom-field-encryption.js"
+import { normalizeCustomFieldValue } from "../lib/contact-custom-field-values.js"
 import { prisma } from "../lib/prisma.js"
 import { emitNotificationCreated } from "../lib/realtime.js"
 import { deletePrivateObject } from "../lib/private-storage.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { normalizeTagSearchTerm, parseCsvIds } from "../lib/tag-utils.js"
 import { serializeNotification } from "../lib/task-notifications.js"
+import { ensureDefaultContactStatuses } from "../lib/tenant-defaults.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
@@ -269,27 +271,6 @@ const UpdateContactStatusSchema = z.object({
   statusConfigId: optionalStringField(80),
 })
 
-const CONTACT_DEFAULT_STATUSES = [
-  {
-    name: "Active",
-    bgColor: "#DCFCE7",
-    textColor: "#166534",
-    sortOrder: 10,
-  },
-  {
-    name: "Inactive",
-    bgColor: "#E2E8F0",
-    textColor: "#334155",
-    sortOrder: 20,
-  },
-  {
-    name: "Pending",
-    bgColor: "#FEF3C7",
-    textColor: "#92400E",
-    sortOrder: 30,
-  },
-] as const
-
 const NOTIFICATION_SELECT = {
   id: true,
   tenantId: true,
@@ -347,32 +328,6 @@ function isGrantActive(
     return grant.expiresAt.getTime() > now.getTime()
   }
   return false
-}
-
-async function ensureDefaultContactStatuses(tenantId: string) {
-  await prismaWithContacts.contactStatusConfig.updateMany({
-    where: {
-      tenantId,
-      name: { in: CONTACT_DEFAULT_STATUSES.map((item) => item.name) },
-      isSystemDefault: false,
-    },
-    data: {
-      isSystemDefault: true,
-    },
-  })
-
-  await prismaWithContacts.contactStatusConfig.createMany({
-    data: CONTACT_DEFAULT_STATUSES.map((item) => ({
-      tenantId,
-      name: item.name,
-      bgColor: item.bgColor,
-      textColor: item.textColor,
-      sortOrder: item.sortOrder,
-      isActive: true,
-      isSystemDefault: true,
-    })),
-    skipDuplicates: true,
-  })
 }
 
 async function requireActiveMembership(
@@ -596,171 +551,6 @@ function buildContactNoteSource(note: {
     followUpTemplateName: note.followUpTemplate?.name,
     followUpStepTitle: note.contactServiceFollowUpStep?.title,
   }
-}
-
-function normalizeCustomFieldValue(
-  field: {
-    id: string
-    label: string
-    fieldType:
-      | "TEXT"
-      | "NUMBER"
-      | "PHONE"
-      | "CURRENCY"
-      | "DATE"
-      | "SELECT"
-      | "MULTI_SELECT"
-      | "RADIO"
-      | "TEXTAREA"
-      | "CHECKBOX"
-    isRequired: boolean
-    options: string[]
-  },
-  rawValue: unknown,
-) {
-  if (field.fieldType === "CHECKBOX") {
-    const value = typeof rawValue === "boolean" ? rawValue : false
-    if (field.isRequired && value !== true) {
-      return { ok: false as const, message: `${field.label} is required.` }
-    }
-    return { ok: true as const, value }
-  }
-
-  if (field.fieldType === "MULTI_SELECT") {
-    const value = Array.isArray(rawValue)
-      ? rawValue.filter(
-          (item): item is string =>
-            typeof item === "string" && item.trim().length > 0,
-        )
-      : []
-
-    if (value.some((item) => !field.options.includes(item))) {
-      return {
-        ok: false as const,
-        message: `${field.label} has invalid option values.`,
-      }
-    }
-    if (field.isRequired && value.length === 0) {
-      return { ok: false as const, message: `${field.label} is required.` }
-    }
-    return { ok: true as const, value: value.length > 0 ? value : null }
-  }
-
-  if (field.fieldType === "NUMBER") {
-    if (rawValue === null || rawValue === undefined || rawValue === "") {
-      if (field.isRequired) {
-        return { ok: false as const, message: `${field.label} is required.` }
-      }
-      return { ok: true as const, value: null }
-    }
-
-    const numericValue =
-      typeof rawValue === "number"
-        ? rawValue
-        : typeof rawValue === "string"
-          ? Number(rawValue)
-          : Number.NaN
-
-    if (Number.isNaN(numericValue)) {
-      return { ok: false as const, message: `${field.label} must be a number.` }
-    }
-
-    return { ok: true as const, value: numericValue }
-  }
-
-  if (field.fieldType === "CURRENCY") {
-    if (rawValue === null || rawValue === undefined || rawValue === "") {
-      if (field.isRequired) {
-        return { ok: false as const, message: `${field.label} is required.` }
-      }
-      return { ok: true as const, value: null }
-    }
-
-    const numericValue =
-      typeof rawValue === "number"
-        ? rawValue
-        : typeof rawValue === "string"
-          ? Number(rawValue)
-          : Number.NaN
-
-    if (Number.isNaN(numericValue)) {
-      return {
-        ok: false as const,
-        message: `${field.label} must be a valid amount.`,
-      }
-    }
-
-    return { ok: true as const, value: numericValue }
-  }
-
-  if (field.fieldType === "PHONE") {
-    const textValue =
-      typeof rawValue === "string" && rawValue.trim().length > 0
-        ? rawValue.trim()
-        : null
-
-    if (field.isRequired && !textValue) {
-      return { ok: false as const, message: `${field.label} is required.` }
-    }
-
-    if (textValue && !/^\+[1-9]\d{7,14}$/.test(textValue)) {
-      return {
-        ok: false as const,
-        message: `${field.label} must be a valid phone number.`,
-      }
-    }
-
-    return { ok: true as const, value: textValue }
-  }
-
-  if (field.fieldType === "DATE") {
-    if (rawValue === null || rawValue === undefined || rawValue === "") {
-      if (field.isRequired) {
-        return { ok: false as const, message: `${field.label} is required.` }
-      }
-      return { ok: true as const, value: null }
-    }
-
-    if (typeof rawValue !== "string") {
-      return {
-        ok: false as const,
-        message: `${field.label} must be a valid date.`,
-      }
-    }
-
-    const parsedDate = new Date(rawValue)
-    if (Number.isNaN(parsedDate.getTime())) {
-      return {
-        ok: false as const,
-        message: `${field.label} must be a valid date.`,
-      }
-    }
-
-    return { ok: true as const, value: parsedDate.toISOString() }
-  }
-
-  const textValue =
-    typeof rawValue === "string" && rawValue.trim().length > 0
-      ? rawValue.trim()
-      : null
-
-  if (
-    (field.fieldType === "SELECT" || field.fieldType === "RADIO") &&
-    textValue
-  ) {
-    if (!field.options.includes(textValue)) {
-      return {
-        ok: false as const,
-        message: `${field.label} has an invalid option.`,
-      }
-    }
-  }
-
-  if (field.isRequired && !textValue) {
-    return { ok: false as const, message: `${field.label} is required.` }
-  }
-
-  return { ok: true as const, value: textValue }
 }
 
 function decodeCustomFieldValue(
@@ -1316,7 +1106,7 @@ router.get("/:tenantId/statuses", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    await ensureDefaultContactStatuses(tenantId)
+    await ensureDefaultContactStatuses(prismaWithContacts, tenantId)
 
     const statuses = await prismaWithContacts.contactStatusConfig.findMany({
       where: { tenantId, isActive: true },
@@ -3365,7 +3155,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    await ensureDefaultContactStatuses(tenantId)
+    await ensureDefaultContactStatuses(prismaWithContacts, tenantId)
 
     let resolvedStatusConfigId = payload.statusConfigId ?? null
     if (resolvedStatusConfigId) {

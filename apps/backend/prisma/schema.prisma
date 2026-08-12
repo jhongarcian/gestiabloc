@@ -57,6 +57,13 @@ enum SubscriptionStatus {
   CANCELED
 }
 
+enum TenantOnboardingStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  SKIPPED
+  COMPLETED
+}
+
 enum OtpPurpose {
   LOGIN
 }
@@ -235,6 +242,54 @@ enum OpportunityResult {
   LOST
 }
 
+enum AutomationTriggerType {
+  OPPORTUNITY_CREATED
+  OPPORTUNITY_STAGE_CHANGED
+}
+
+enum AutomationConditionSource {
+  OPPORTUNITY_VALUE
+  CONTACT_STATUS
+  CONTACT_CUSTOM_FIELD
+  CONTACT_ASSIGNEE
+  CONTACT_TAGS
+}
+
+enum AutomationOperator {
+  EQUALS
+  NOT_EQUALS
+  CONTAINS
+  NOT_CONTAINS
+  GREATER_THAN
+  GREATER_THAN_OR_EQUAL
+  LESS_THAN
+  LESS_THAN_OR_EQUAL
+  BETWEEN
+  INCLUDES_ANY
+  INCLUDES_ALL
+  EXCLUDES_ALL
+  IS_TRUE
+  IS_FALSE
+  IS_EMPTY
+  IS_NOT_EMPTY
+}
+
+enum AutomationActionType {
+  SET_CONTACT_CUSTOM_FIELD
+  CLEAR_CONTACT_CUSTOM_FIELD
+  SET_CONTACT_STATUS
+  CLEAR_CONTACT_STATUS
+  SET_CONTACT_ASSIGNEE
+  CLEAR_CONTACT_ASSIGNEE
+  ADD_CONTACT_TAG
+  REMOVE_CONTACT_TAG
+}
+
+enum AutomationExecutionStatus {
+  SUCCEEDED
+  FAILED
+}
+
 model User {
   id           String       @id @default(uuid())
   email        String       @unique
@@ -404,6 +459,12 @@ model Tenant {
   taxLabel                             String?
   defaultTaxRateBps                    Int?
   emailVerified                        Boolean                        @default(false)
+  onboardingStatus                     TenantOnboardingStatus         @default(NOT_STARTED)
+  onboardingCurrentStep                String                         @default("welcome")
+  onboardingStartedAt                  DateTime?
+  onboardingSkippedAt                  DateTime?
+  onboardingCompletedAt                DateTime?
+  onboardingChecklistDismissedAt       DateTime?
 
   members                          Membership[]
   files                            File[]
@@ -447,6 +508,7 @@ model Tenant {
   calendarTimeBlocks               CalendarTimeBlock[]
   calendarStaffGroups              CalendarStaffGroup[]
   calendarStaffGroupMemberships    CalendarStaffGroupMember[]
+  automations                      Automation[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1051,6 +1113,111 @@ model ContactOpportunity {
   @@index([tenantId, pipelineId, updatedAt])
   @@index([tenantId, stageId, updatedAt])
   @@index([tenantId, contactId, updatedAt])
+}
+
+model Automation {
+  id            String                @id @default(uuid())
+  tenantId      String
+  name          String
+  isEnabled     Boolean               @default(false)
+  triggerType   AutomationTriggerType
+  pipelineId    String
+  sourceStageId String?
+  targetStageId String?
+  sortOrder     Int                   @default(0)
+
+  tenant     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conditions AutomationCondition[]
+  actions    AutomationAction[]
+  executions AutomationExecution[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, isEnabled, sortOrder])
+  @@index([tenantId, pipelineId, triggerType, isEnabled])
+  @@index([tenantId, sourceStageId])
+  @@index([tenantId, targetStageId])
+}
+
+model AutomationCondition {
+  id             String                    @id @default(uuid())
+  tenantId       String
+  automationId   String
+  source         AutomationConditionSource
+  operator       AutomationOperator
+  customFieldId  String?
+  statusConfigId String?
+  assignedUserId String?
+  tagId          String?
+  compareValue   Json?
+  sortOrder      Int                       @default(0)
+
+  automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, automationId, sortOrder])
+  @@index([tenantId, customFieldId])
+  @@index([tenantId, statusConfigId])
+  @@index([tenantId, assignedUserId])
+  @@index([tenantId, tagId])
+}
+
+model AutomationAction {
+  id             String               @id @default(uuid())
+  tenantId       String
+  automationId   String
+  type           AutomationActionType
+  customFieldId  String?
+  statusConfigId String?
+  assignedUserId String?
+  tagId          String?
+  value          Json?
+  sortOrder      Int                  @default(0)
+
+  automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, automationId, sortOrder])
+  @@index([tenantId, customFieldId])
+  @@index([tenantId, statusConfigId])
+  @@index([tenantId, assignedUserId])
+  @@index([tenantId, tagId])
+}
+
+model AutomationExecution {
+  id             String                    @id @default(uuid())
+  tenantId       String
+  automationId   String?
+  automationName String
+  triggerType    AutomationTriggerType
+  status         AutomationExecutionStatus
+  opportunityId  String?
+  contactId      String?
+  sourceStageId  String?
+  targetStageId  String?
+  actorUserId    String?
+  actionCount    Int                       @default(0)
+  errorCode      String?
+  errorMessage   String?
+
+  automation Automation? @relation(fields: [automationId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, automationId, createdAt])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, opportunityId, createdAt])
 }
 
 model Task {

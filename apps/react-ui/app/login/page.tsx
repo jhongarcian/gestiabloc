@@ -7,6 +7,7 @@ import Link from "next/link"
 import Image from "next/image"
 
 import { getMe, login, verifyOtp } from "@/lib/api"
+import { getTenantEntryPath } from "@/lib/onboarding"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -29,7 +30,6 @@ import {
   Lock,
   Mail,
   Shield,
-  Star,
 } from "lucide-react"
 
 type Step = "login" | "otp"
@@ -73,9 +73,9 @@ export default function LoginPage() {
         setOtpExpiresAt(Date.now() + 5 * 60 * 1000)
       } else {
         const me = await getMe()
-        const tenantSlug = me.user.memberships[0]?.tenant?.slug
-        if (tenantSlug) {
-          router.push(`/app/${tenantSlug}`)
+        const membership = me.user.memberships[0]
+        if (membership?.tenant?.slug) {
+          router.push(getTenantEntryPath(membership))
         } else {
           setError("No tenant workspace found for this account.")
         }
@@ -112,9 +112,9 @@ export default function LoginPage() {
     try {
       await verifyOtp({ challengeToken, code: otp.trim() })
       const me = await getMe()
-      const tenantSlug = me.user.memberships[0]?.tenant?.slug
-      if (tenantSlug) {
-        router.push(`/app/${tenantSlug}`)
+      const membership = me.user.memberships[0]
+      if (membership?.tenant?.slug) {
+        router.push(getTenantEntryPath(membership))
       } else {
         setError("No tenant workspace found for this account.")
       }

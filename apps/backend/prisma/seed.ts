@@ -7,6 +7,7 @@ import {
   trialPeriodDays,
 } from "../src/lib/subscription-plans.js"
 import { prisma } from "../src/lib/prisma.js"
+import { ensureTenantOperationalDefaults } from "../src/lib/tenant-defaults.js"
 
 const VALID_PLANS = ["STARTER", "PRO", "BUSINESS"] as const
 
@@ -176,6 +177,8 @@ async function main() {
         },
       })
 
+      await ensureTenantOperationalDefaults(tx, existingTenantBySlug.id)
+
       return {
         tenantId: existingTenantBySlug.id,
         userId: existingUser.id,
@@ -202,6 +205,9 @@ async function main() {
         slug: tenantSlug,
         email: adminEmail,
         emailVerified: true,
+        onboardingStatus: "COMPLETED",
+        onboardingCurrentStep: "ready",
+        onboardingCompletedAt: new Date(),
       },
       select: { id: true },
     })
@@ -238,6 +244,8 @@ async function main() {
       },
       select: { id: true },
     })
+
+    await ensureTenantOperationalDefaults(tx, tenant.id)
 
     return {
       tenantId: tenant.id,

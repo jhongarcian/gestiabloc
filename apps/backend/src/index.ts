@@ -15,6 +15,8 @@ import notificationsRoutes from "./routes/notifications.routes"
 import tasksRoutes from "./routes/tasks.routes"
 import appointmentsRoutes from "./routes/appointments.routes"
 import opportunitiesRoutes from "./routes/opportunities.routes"
+import automationsRoutes from "./routes/automations.routes"
+import onboardingRoutes from "./routes/onboarding.routes"
 import servicesProductsRoutes from "./routes/services-products.routes"
 import servicesRoutes from "./routes/services.routes"
 import { getUserRoom, setRealtimeServer } from "./lib/realtime"
@@ -83,7 +85,9 @@ const openApiSpec = parseYaml(readFileSync(openApiPath, "utf-8"))
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec))
 
 app.use("/api/auth", authRoutes)
+app.use("/api/onboarding", onboardingRoutes)
 app.use("/api/files", filesRoutes);
+app.use("/api/account-settings", automationsRoutes);
 app.use("/api/account-settings", accountSettingsRoutes);
 app.use("/api/contacts", contactsRoutes);
 app.use("/api/notifications", notificationsRoutes);

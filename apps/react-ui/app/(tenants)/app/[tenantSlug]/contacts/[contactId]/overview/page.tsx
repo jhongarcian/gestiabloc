@@ -162,9 +162,6 @@ export default async function ContactOverviewPage({
       <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
-              Contact Overview
-            </p>
             <div className="space-y-1">
               <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
                 Profile details

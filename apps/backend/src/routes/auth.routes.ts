@@ -16,6 +16,7 @@ import {
   sendVerifyEmail,
 } from "../lib/email.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
+import { ensureTenantOperationalDefaults } from "../lib/tenant-defaults.js"
 
 const router = Router()
 
@@ -269,6 +270,8 @@ router.post("/tenant/signup", async (req, res, next) => {
         },
       })
 
+      await ensureTenantOperationalDefaults(tx, tenant.id)
+
       return { tenantId: tenant.id, userId: user.id }
     })
 
@@ -475,7 +478,16 @@ router.get("/me", requireAuth, async (req, res) => {
           role: true,
           status: true,
           securityLevel: true,
-          tenant: { select: { id: true, slug: true, name: true, timezone: true } },
+          tenant: {
+            select: {
+              id: true,
+              slug: true,
+              name: true,
+              timezone: true,
+              onboardingStatus: true,
+              onboardingCurrentStep: true,
+            },
+          },
         },
       },
     },
@@ -531,7 +543,16 @@ router.patch("/me", requireAuth, async (req, res, next) => {
             role: true,
             status: true,
             securityLevel: true,
-            tenant: { select: { id: true, slug: true, name: true, timezone: true } },
+            tenant: {
+              select: {
+                id: true,
+                slug: true,
+                name: true,
+                timezone: true,
+                onboardingStatus: true,
+                onboardingCurrentStep: true,
+              },
+            },
           },
         },
       },

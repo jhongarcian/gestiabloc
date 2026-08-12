@@ -84,9 +84,142 @@ export type MeResponse = {
       role: string
       status: string
       securityLevel: "LOW" | "MEDIUM" | "MAX"
-      tenant: { id: string; slug: string; name: string; timezone?: string | null }
+      tenant: {
+        id: string
+        slug: string
+        name: string
+        timezone?: string | null
+        onboardingStatus?: TenantOnboardingStatus
+        onboardingCurrentStep?: OnboardingStep
+      }
     }>
   }
+}
+
+export type TenantOnboardingStatus =
+  | "NOT_STARTED"
+  | "IN_PROGRESS"
+  | "SKIPPED"
+  | "COMPLETED"
+
+export type OnboardingStep =
+  | "welcome"
+  | "business-profile"
+  | "workflow"
+  | "ready"
+
+export type OnboardingStatusRecord = {
+  id: string
+  name: string
+  bgColor: string
+  textColor: string
+  sortOrder: number
+  isActive: boolean
+  isSystemDefault: boolean
+}
+
+export type OnboardingPipeline = {
+  id: string
+  name: string
+  color: string
+  sortOrder: number
+  stages: Array<{ id: string; name: string; sortOrder: number }>
+}
+
+export type OnboardingResponse = {
+  ok: boolean
+  onboarding: {
+    status: TenantOnboardingStatus
+    currentStep: OnboardingStep
+    startedAt: string | null
+    skippedAt: string | null
+    completedAt: string | null
+    checklistDismissedAt: string | null
+  }
+  profile: {
+    id: string
+    slug: string
+    name: string
+    email: string | null
+    phone: string | null
+    website: string | null
+    addressLine1: string | null
+    addressLine2: string | null
+    city: string | null
+    state: string | null
+    postalCode: string | null
+    country: string | null
+    timezone: string | null
+  }
+  defaults: {
+    contactStatuses: OnboardingStatusRecord[]
+    taskStatuses: OnboardingStatusRecord[]
+    pipeline: OnboardingPipeline
+  }
+  readiness: {
+    serviceCount: number
+    memberCount: number
+  }
+}
+
+export async function getOnboarding(
+  tenantId: string,
+  cookie?: string,
+): Promise<OnboardingResponse> {
+  const { data } = await api.get(`/api/onboarding/${tenantId}`, {
+    ...(cookie ? { headers: { cookie } } : {}),
+  })
+  return data
+}
+
+export type OnboardingProfilePayload = Omit<
+  OnboardingResponse["profile"],
+  "id" | "slug"
+>
+
+export async function updateOnboardingProfile(
+  tenantId: string,
+  payload: OnboardingProfilePayload,
+) {
+  const { data } = await api.patch(
+    `/api/onboarding/${tenantId}/profile`,
+    payload,
+  )
+  return data as { ok: boolean; profile: OnboardingResponse["profile"] }
+}
+
+export async function updateOnboardingWorkflow(
+  tenantId: string,
+  payload: {
+    pipelineId: string
+    name: string
+    stages: Array<{ id: string; name: string }>
+  },
+) {
+  const { data } = await api.patch(
+    `/api/onboarding/${tenantId}/workflow`,
+    payload,
+  )
+  return data as { ok: boolean; pipeline: OnboardingPipeline }
+}
+
+export type OnboardingStateAction =
+  | { action: "start" }
+  | { action: "advance"; step: OnboardingStep }
+  | { action: "skip" }
+  | { action: "resume" }
+  | { action: "complete" }
+  | { action: "dismissChecklist" }
+
+export async function updateOnboardingState(
+  tenantId: string,
+  payload: OnboardingStateAction,
+) {
+  const { data } = await api.patch(
+    `/api/onboarding/${tenantId}/state`,
+    payload,
+  )
+  return data as Pick<OnboardingResponse, "ok" | "onboarding">
 }
 
 export async function getMe(): Promise<MeResponse> {

@@ -24,6 +24,11 @@ import { normalizeTenantTagName } from "../lib/tag-utils.js";
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js";
 import { requireTenantAdmin } from "../middleware/requireTenantAdmin.js";
 import { getPlanDetails } from "../lib/subscription-plans.js";
+import { findEnabledAutomationReference } from "../lib/automation-references.js";
+import {
+  ensureDefaultContactStatuses,
+  ensureDefaultTaskStatuses,
+} from "../lib/tenant-defaults.js";
 
 const router = Router();
 const prismaWithContacts = prisma as any;
@@ -812,48 +817,6 @@ const avatarUpload = multer({
   limits: { fileSize: IMAGE_MAX_BYTES },
 });
 
-const CONTACT_DEFAULT_STATUSES = [
-  {
-    name: "Active",
-    bgColor: "#DCFCE7",
-    textColor: "#166534",
-    sortOrder: 10,
-  },
-  {
-    name: "Inactive",
-    bgColor: "#E2E8F0",
-    textColor: "#334155",
-    sortOrder: 20,
-  },
-  {
-    name: "Pending",
-    bgColor: "#FEF3C7",
-    textColor: "#92400E",
-    sortOrder: 30,
-  },
-] as const;
-
-const TASK_DEFAULT_STATUSES = [
-  {
-    name: "To Do",
-    bgColor: "#E2E8F0",
-    textColor: "#334155",
-    sortOrder: 10,
-  },
-  {
-    name: "In Progress",
-    bgColor: "#DBEAFE",
-    textColor: "#1E3A8A",
-    sortOrder: 20,
-  },
-  {
-    name: "Completed",
-    bgColor: "#DCFCE7",
-    textColor: "#166534",
-    sortOrder: 30,
-  },
-] as const;
-
 function sanitizeFilename(filename: string) {
   return filename.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -952,68 +915,16 @@ async function deleteLegacyAvatar(oldKey: string) {
   }
 }
 
-async function ensureDefaultContactStatuses(tenantId: string) {
-  await prismaWithContacts.contactStatusConfig.updateMany({
-    where: {
-      tenantId,
-      name: { in: CONTACT_DEFAULT_STATUSES.map((item) => item.name) },
-      isSystemDefault: false,
-    },
-    data: {
-      isSystemDefault: true,
-    },
-  });
-
-  await prismaWithContacts.contactStatusConfig.createMany({
-    data: CONTACT_DEFAULT_STATUSES.map((item) => ({
-      tenantId,
-      name: item.name,
-      bgColor: item.bgColor,
-      textColor: item.textColor,
-      sortOrder: item.sortOrder,
-      isActive: true,
-      isSystemDefault: true,
-    })),
-    skipDuplicates: true,
-  });
-}
-
-async function ensureDefaultTaskStatuses(tenantId: string) {
-  await prismaWithContacts.taskStatusConfig.updateMany({
-    where: {
-      tenantId,
-      name: { in: TASK_DEFAULT_STATUSES.map((item) => item.name) },
-      isSystemDefault: false,
-    },
-    data: {
-      isSystemDefault: true,
-    },
-  });
-
-  await prismaWithContacts.taskStatusConfig.createMany({
-    data: TASK_DEFAULT_STATUSES.map((item) => ({
-      tenantId,
-      name: item.name,
-      bgColor: item.bgColor,
-      textColor: item.textColor,
-      sortOrder: item.sortOrder,
-      isActive: true,
-      isSystemDefault: true,
-    })),
-    skipDuplicates: true,
-  });
-}
-
 async function ensureDefaultStatusesForConfigKey(
   tenantId: string,
   configKey: z.infer<typeof StatusConfigKeySchema>,
 ) {
   if (configKey === "contacts") {
-    await ensureDefaultContactStatuses(tenantId);
+    await ensureDefaultContactStatuses(prismaWithContacts, tenantId);
     return;
   }
 
-  await ensureDefaultTaskStatuses(tenantId);
+  await ensureDefaultTaskStatuses(prismaWithContacts, tenantId);
 }
 
 async function findTenantTagByName(tenantId: string, name: string, excludeId?: string) {
@@ -1803,6 +1714,18 @@ router.delete("/:tenantId/users/:userId", ...writeMiddlewares, async (req, res, 
 
     if (!membership) {
       return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    const referencedAutomation = await findEnabledAutomationReference(
+      prismaWithContacts,
+      tenantId,
+      { kind: "user", id: userId },
+    );
+    if (referencedAutomation) {
+      return res.status(409).json({
+        error: "AUTOMATION_REFERENCE_CONFLICT",
+        automation: referencedAutomation,
+      });
     }
 
     if (membership.role === "TENANT_ADMIN") {
@@ -3227,8 +3150,8 @@ router.get("/:tenantId/status-config", ...readMiddlewares, async (req, res, next
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
 
-    await ensureDefaultContactStatuses(tenantId);
-    await ensureDefaultTaskStatuses(tenantId);
+    await ensureDefaultContactStatuses(prismaWithContacts, tenantId);
+    await ensureDefaultTaskStatuses(prismaWithContacts, tenantId);
 
     const contactStatuses = await prismaWithContacts.contactStatusConfig.findMany({
       where: { tenantId },
@@ -3400,6 +3323,20 @@ router.patch(
           .json({ error: "DEFAULT_STATUS_NAME_CANNOT_BE_CHANGED" });
       }
 
+      if (configKey === "contacts" && payload.isActive === false) {
+        const referencedAutomation = await findEnabledAutomationReference(
+          prismaWithContacts,
+          tenantId,
+          { kind: "status", id: recordId },
+        );
+        if (referencedAutomation) {
+          return res.status(409).json({
+            error: "AUTOMATION_REFERENCE_CONFLICT",
+            automation: referencedAutomation,
+          });
+        }
+      }
+
       const updated = await statusModel.update({
         where: { id: recordId },
         data: {
@@ -3457,6 +3394,20 @@ router.delete(
 
       if (existing.isSystemDefault) {
         return res.status(409).json({ error: "CANNOT_DELETE_DEFAULT_STATUS" });
+      }
+
+      if (configKey === "contacts") {
+        const referencedAutomation = await findEnabledAutomationReference(
+          prismaWithContacts,
+          tenantId,
+          { kind: "status", id: recordId },
+        );
+        if (referencedAutomation) {
+          return res.status(409).json({
+            error: "AUTOMATION_REFERENCE_CONFLICT",
+            automation: referencedAutomation,
+          });
+        }
       }
 
       if (configKey === "contacts") {
@@ -5025,6 +4976,18 @@ router.delete("/:tenantId/tags/:recordId", ...writeMiddlewares, async (req, res,
       return res.status(404).json({ error: "TAG_NOT_FOUND" });
     }
 
+    const referencedAutomation = await findEnabledAutomationReference(
+      prismaWithContacts,
+      tenantId,
+      { kind: "tag", id: recordId },
+    );
+    if (referencedAutomation) {
+      return res.status(409).json({
+        error: "AUTOMATION_REFERENCE_CONFLICT",
+        automation: referencedAutomation,
+      });
+    }
+
     await prismaWithContacts.tenantTag.delete({
       where: { id: recordId },
     });
@@ -5259,7 +5222,7 @@ router.patch("/:tenantId/opportunities/:recordId", ...writeMiddlewares, async (r
       return res.status(409).json({ error: "PIPELINE_NAME_ALREADY_EXISTS" });
     }
 
-    const existingStageIds = new Set(
+    const existingStageIds = new Set<string>(
       existing.stages.map((stage: { id: string }) => stage.id),
     );
     const retainedStageIds = normalizedStages
@@ -5269,6 +5232,23 @@ router.patch("/:tenantId/opportunities/:recordId", ...writeMiddlewares, async (r
 
     if (unknownStageId) {
       return res.status(404).json({ error: "PIPELINE_STAGE_NOT_FOUND" });
+    }
+
+    const removedStageIds = [...existingStageIds].filter(
+      (stageId) => !retainedStageIds.includes(stageId),
+    );
+    if (removedStageIds.length > 0) {
+      const referencedAutomation = await findEnabledAutomationReference(
+        prismaWithContacts,
+        tenantId,
+        { kind: "stage", ids: removedStageIds },
+      );
+      if (referencedAutomation) {
+        return res.status(409).json({
+          error: "AUTOMATION_REFERENCE_CONFLICT",
+          automation: referencedAutomation,
+        });
+      }
     }
 
     const updated = await prismaWithContacts.$transaction(async (tx: any) => {
@@ -5357,6 +5337,18 @@ router.delete(
 
       if (!existing) {
         return res.status(404).json({ error: "PIPELINE_NOT_FOUND" });
+      }
+
+      const referencedAutomation = await findEnabledAutomationReference(
+        prismaWithContacts,
+        tenantId,
+        { kind: "pipeline", id: recordId },
+      );
+      if (referencedAutomation) {
+        return res.status(409).json({
+          error: "AUTOMATION_REFERENCE_CONFLICT",
+          automation: referencedAutomation,
+        });
       }
 
       await prismaWithContacts.opportunityPipeline.delete({
@@ -5498,12 +5490,39 @@ router.patch(
           tenantId: true,
           label: true,
           fieldType: true,
+          isRequired: true,
+          isEncrypted: true,
+          isSensitive: true,
+          isActive: true,
           options: true,
         },
       });
 
       if (!existing || existing.tenantId !== tenantId) {
         return res.status(404).json({ error: "CUSTOM_FIELD_NOT_FOUND" });
+      }
+
+      if (
+        (payload.isActive === false && existing.isActive) ||
+        (payload.isEncrypted === true && !existing.isEncrypted) ||
+        (payload.isSensitive === true && !existing.isSensitive) ||
+        (payload.isRequired === true && !existing.isRequired) ||
+        (payload.fieldType !== undefined && payload.fieldType !== existing.fieldType) ||
+        (payload.options !== undefined &&
+          JSON.stringify(payload.options) !==
+            JSON.stringify(Array.isArray(existing.options) ? existing.options : []))
+      ) {
+        const referencedAutomation = await findEnabledAutomationReference(
+          prismaWithContacts,
+          tenantId,
+          { kind: "customField", id: recordId },
+        );
+        if (referencedAutomation) {
+          return res.status(409).json({
+            error: "AUTOMATION_REFERENCE_CONFLICT",
+            automation: referencedAutomation,
+          });
+        }
       }
 
       const nextFieldType = payload.fieldType ?? existing.fieldType;
@@ -5586,6 +5605,18 @@ router.delete(
 
       if (!existing || existing.tenantId !== tenantId) {
         return res.status(404).json({ error: "CUSTOM_FIELD_NOT_FOUND" });
+      }
+
+      const referencedAutomation = await findEnabledAutomationReference(
+        prismaWithContacts,
+        tenantId,
+        { kind: "customField", id: recordId },
+      );
+      if (referencedAutomation) {
+        return res.status(409).json({
+          error: "AUTOMATION_REFERENCE_CONFLICT",
+          automation: referencedAutomation,
+        });
       }
 
       await prismaWithContacts.contactCustomField.delete({
