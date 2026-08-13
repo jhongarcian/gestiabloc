@@ -1,7 +1,7 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { CalendarClock, Check, ChevronDown, LoaderCircle, Plus } from "lucide-react"
+import { CalendarClock, Check, ChevronDown, LoaderCircle, Plus, X } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
@@ -52,6 +52,7 @@ type CreateAppointmentDialogProps = {
   tenantTimezone: string | null
   currentUserId: string
   initialContact?: ContactSearchItem | null
+  lockContact?: boolean
   open?: boolean
   onOpenChange?: (open: boolean) => void
   hideTrigger?: boolean
@@ -127,6 +128,7 @@ export function CreateAppointmentDialog({
   tenantTimezone,
   currentUserId,
   initialContact = null,
+  lockContact = false,
   open: controlledOpen,
   onOpenChange,
   hideTrigger = false,
@@ -165,7 +167,7 @@ export function CreateAppointmentDialog({
   const [selectedSlotStartAt, setSelectedSlotStartAt] = useState("")
   const [slotsState, setSlotsState] = useState<SlotsState>({ status: "idle" })
   const [assigneePickerOpen, setAssigneePickerOpen] = useState(false)
-  const isSelectingContactRef = useRef(false)
+  const contactInputRef = useRef<HTMLInputElement>(null)
   const open = controlledOpen ?? uncontrolledOpen
   const setOpen = useCallback(
     (nextOpen: boolean) => {
@@ -183,10 +185,11 @@ export function CreateAppointmentDialog({
     setNotes("")
     setServiceId("__NONE__")
     setAssignedToUserId(initialAssignedToUserId ?? currentUserId)
-    setContactQuery(initialContact?.fullName ?? "")
+    setContactQuery("")
     setDebouncedContactQuery("")
     setSelectedContact(initialContact)
     setContactResults([])
+    setIsSearchingContacts(false)
     setSelectedSlotStartAt(preferredSlotStartAt ?? "")
     setSlotsState({ status: "idle" })
     setAppointmentDateInput({
@@ -219,17 +222,13 @@ export function CreateAppointmentDialog({
   }, [contactQuery])
 
   useEffect(() => {
-    if (initialContact) {
+    if (initialContact || selectedContact) {
       setContactResults([])
       setIsSearchingContacts(false)
       return
     }
 
     const query = debouncedContactQuery
-
-    if (selectedContact && query === selectedContact.fullName) {
-      return
-    }
 
     if (query.length < 2) {
       setContactResults([])
@@ -328,11 +327,14 @@ export function CreateAppointmentDialog({
           if (cancelled) return
 
           if (isAxiosError(error)) {
+            const backendError = error.response?.data?.error
             setSlotsState({
               status: "error",
               message:
-                typeof error.response?.data?.error === "string"
-                  ? error.response.data.error.replace(/_/g, " ")
+                backendError === "ASSIGNEE_NOT_FOUND"
+                  ? "Calendar availability is not configured for this user."
+                  : typeof backendError === "string"
+                    ? backendError.replace(/_/g, " ")
                   : "Could not load time slots.",
             })
             return
@@ -525,7 +527,9 @@ export function CreateAppointmentDialog({
         <SheetHeader className="border-b border-slate-200 bg-slate-50 px-6 text-left">
           <SheetTitle className="text-xl font-semibold text-slate-950">Create Appointment</SheetTitle>
           <SheetDescription>
-            Pick the contact, assign the appointment, and choose an open slot based on the calendar booking rules.
+            {lockContact
+              ? "Assign this contact and choose an open slot based on the calendar booking rules."
+              : "Pick the contact, assign the appointment, and choose an open slot based on the calendar booking rules."}
           </SheetDescription>
         </SheetHeader>
 
@@ -543,7 +547,8 @@ export function CreateAppointmentDialog({
             </p>
           </section>
 
-          <section className="border-b border-slate-200 px-6 py-6">
+          {!lockContact ? (
+            <section className="border-b border-slate-200 px-6 py-6">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
               Contact
             </p>
@@ -566,50 +571,48 @@ export function CreateAppointmentDialog({
                 <Label htmlFor="appointment-contact">Contact</Label>
                 <Command className="rounded-xl border border-slate-200">
                   <CommandInput
+                    ref={contactInputRef}
                     id="appointment-contact"
                     placeholder="Search contact by name..."
                     value={contactQuery}
+                    disabled={Boolean(selectedContact)}
                     onValueChange={(value) => {
                       setContactQuery(value)
-
-                      if (
-                        selectedContact &&
-                        value.trim() !== selectedContact.fullName &&
-                        !isSelectingContactRef.current
-                      ) {
-                        setSelectedContact(null)
-                      }
                     }}
                   />
-                  <CommandList>
-                    <CommandEmpty>
-                      {isSearchingContacts ? "Searching contacts..." : "No contacts found."}
-                    </CommandEmpty>
-                    <CommandGroup heading="Results">
-                      {contactResults.map((contact) => (
-                        <CommandItem
-                          key={contact.id}
-                          value={`${contact.fullName} ${contact.email ?? ""} ${contact.phoneNumber ?? ""}`}
-                          onSelect={() => {
-                            isSelectingContactRef.current = true
-                            setSelectedContact(contact)
-                            setContactQuery(contact.fullName)
-                            setContactResults([])
-                            window.setTimeout(() => {
-                              isSelectingContactRef.current = false
-                            }, 0)
-                          }}
-                        >
-                          <div className="flex flex-col">
-                            <span>{contact.fullName}</span>
-                            <span className="text-xs text-slate-500">
-                              {contact.email || contact.phoneNumber || "No contact details"}
-                            </span>
-                          </div>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
+                  {!selectedContact && contactQuery.trim().length >= 2 ? (
+                    <CommandList>
+                      <CommandEmpty>
+                        {isSearchingContacts ? "Searching contacts..." : "No contacts found."}
+                      </CommandEmpty>
+                      <CommandGroup heading="Results">
+                        {contactResults.map((contact) => (
+                          <CommandItem
+                            key={contact.id}
+                            value={`${contact.fullName} ${contact.email ?? ""} ${contact.phoneNumber ?? ""}`}
+                            onSelect={() => {
+                              setSelectedContact(contact)
+                              setContactQuery("")
+                              setDebouncedContactQuery("")
+                              setContactResults([])
+                              setIsSearchingContacts(false)
+                              setFieldErrors((current) => ({
+                                ...current,
+                                contactId: undefined,
+                              }))
+                            }}
+                          >
+                            <div className="flex flex-col">
+                              <span>{contact.fullName}</span>
+                              <span className="text-xs text-slate-500">
+                                {contact.email || contact.phoneNumber || "No contact details"}
+                              </span>
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  ) : null}
                 </Command>
               </>
             )}
@@ -617,16 +620,38 @@ export function CreateAppointmentDialog({
               <p className="text-sm text-rose-600">{fieldErrors.contactId}</p>
             ) : selectedContact ? (
               !initialContact ? (
-              <div className="pt-1">
-                <p className="text-base font-semibold text-slate-950">{selectedContact.fullName}</p>
-                <p className="mt-1 text-sm text-slate-500">
-                  {selectedContact.email || selectedContact.phoneNumber || "No contact details"}
-                </p>
-              </div>
+                <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-slate-950">
+                      {selectedContact.fullName}
+                    </p>
+                    <p className="mt-1 truncate text-xs text-slate-500">
+                      {selectedContact.email || selectedContact.phoneNumber || "No contact details"}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Remove ${selectedContact.fullName}`}
+                    className="text-slate-500 hover:bg-white hover:text-slate-950"
+                    onClick={() => {
+                      setSelectedContact(null)
+                      setContactQuery("")
+                      setDebouncedContactQuery("")
+                      setContactResults([])
+                      setIsSearchingContacts(false)
+                      window.requestAnimationFrame(() => contactInputRef.current?.focus())
+                    }}
+                  >
+                    <X />
+                  </Button>
+                </div>
               ) : null
             ) : null}
             </div>
-          </section>
+            </section>
+          ) : null}
 
           <section className="border-b border-slate-200 px-6 py-6">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
@@ -733,7 +758,9 @@ export function CreateAppointmentDialog({
                     <Command>
                       <CommandInput placeholder="Assign appointment to..." />
                       <CommandList>
-                        <CommandEmpty>No users found.</CommandEmpty>
+                        <CommandEmpty>
+                          No users have calendar availability configured.
+                        </CommandEmpty>
                         {assigneeOptions.map((assignee) => (
                           <CommandItem
                             key={assignee.id}

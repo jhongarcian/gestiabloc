@@ -142,6 +142,10 @@ type StageCardsResponse = {
 type MoveOpportunityResponse = {
   ok: boolean
   opportunity: OpportunityCardRecord
+  automation?: {
+    matchedCount: number
+    executedCount: number
+  }
 }
 
 type OpportunityOutcome = "WON" | "LOST"
@@ -206,6 +210,11 @@ function stopDragPropagation(event: { stopPropagation: () => void }) {
 function formatErrorMessage(error: unknown, fallback: string) {
   if (!isAxiosError(error)) {
     return fallback
+  }
+
+  const backendMessage = error.response?.data?.message
+  if (typeof backendMessage === "string" && backendMessage.trim()) {
+    return backendMessage
   }
 
   const backendError = error.response?.data?.error
@@ -550,7 +559,6 @@ function OpportunityCard({
                 tenantTimezone={tenantTimezone}
                 statusOptions={taskStatusOptions}
                 assigneeOptions={taskAssigneeOptions}
-                presentation="drawer"
                 initialContact={{
                   id: opportunity.contact.id,
                   fullName: opportunity.contact.fullName,
@@ -1002,6 +1010,9 @@ export function OpportunitiesWorkspace({
         if (!current || current.id !== opportunityId) return current
         return data.opportunity
       })
+      if ((data.automation?.executedCount ?? 0) > 0) {
+        toast.success(`${data.automation!.executedCount} automation${data.automation!.executedCount === 1 ? "" : "s"} ran.`)
+      }
     } catch (error) {
       setBoardPipeline(previousPipeline)
       setSelectedOpportunity((current) => {
@@ -1146,6 +1157,9 @@ export function OpportunitiesWorkspace({
         if (!current) return current
         return moveOpportunityLocally(current, opportunityId, targetStageId, data.opportunity)
       })
+      if ((data.automation?.executedCount ?? 0) > 0) {
+        toast.success(`${data.automation!.executedCount} automation${data.automation!.executedCount === 1 ? "" : "s"} ran.`)
+      }
     } catch (error) {
       setBoardPipeline(previousPipeline)
       toast.error(formatErrorMessage(error, "Could not move opportunity."))

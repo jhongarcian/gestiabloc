@@ -196,11 +196,14 @@ export function EditAppointmentForm({
           if (cancelled) return
 
           if (isAxiosError(error)) {
+            const backendError = error.response?.data?.error
             setSlotsState({
               status: "error",
               message:
-                typeof error.response?.data?.error === "string"
-                  ? error.response.data.error.replace(/_/g, " ")
+                backendError === "ASSIGNEE_NOT_FOUND"
+                  ? "Calendar availability is not configured for this user."
+                  : typeof backendError === "string"
+                    ? backendError.replace(/_/g, " ")
                   : "Could not load time slots.",
             })
             return

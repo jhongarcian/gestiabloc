@@ -3,6 +3,10 @@ import argon2 from "argon2"
 import { z } from "zod"
 
 import { prisma } from "../lib/prisma.js"
+import {
+  getSeatLimitForPlan,
+  trialPeriodDays,
+} from "../lib/subscription-plans.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { generateOtp6, randomToken, sha256 } from "../lib/crypto.js"
 import { clearSessionCookie, setSessionCookie } from "../lib/cookies.js"
@@ -12,6 +16,7 @@ import {
   sendVerifyEmail,
 } from "../lib/email.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
+import { ensureTenantOperationalDefaults } from "../lib/tenant-defaults.js"
 
 const router = Router()
 
@@ -225,12 +230,6 @@ router.post("/tenant/signup", async (req, res, next) => {
       type: argon2.argon2id,
     })
 
-    const seatLimitByPlan: Record<string, number> = {
-      STARTER: 3,
-      PRO: 10,
-      BUSINESS: 25,
-    }
-
     const result = await prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
         data: {
@@ -263,13 +262,15 @@ router.post("/tenant/signup", async (req, res, next) => {
         data: {
           tenantId: tenant.id,
           planKey,
-          seatLimit: seatLimitByPlan[planKey] ?? 3,
+          seatLimit: getSeatLimitForPlan(planKey),
           status: paidNow ? "ACTIVE" : "TRIALING",
           currentPeriodEnd: paidNow
             ? null
-            : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            : new Date(Date.now() + trialPeriodDays * 24 * 60 * 60 * 1000),
         },
       })
+
+      await ensureTenantOperationalDefaults(tx, tenant.id)
 
       return { tenantId: tenant.id, userId: user.id }
     })
@@ -477,7 +478,16 @@ router.get("/me", requireAuth, async (req, res) => {
           role: true,
           status: true,
           securityLevel: true,
-          tenant: { select: { id: true, slug: true, name: true, timezone: true } },
+          tenant: {
+            select: {
+              id: true,
+              slug: true,
+              name: true,
+              timezone: true,
+              onboardingStatus: true,
+              onboardingCurrentStep: true,
+            },
+          },
         },
       },
     },
@@ -533,7 +543,16 @@ router.patch("/me", requireAuth, async (req, res, next) => {
             role: true,
             status: true,
             securityLevel: true,
-            tenant: { select: { id: true, slug: true, name: true, timezone: true } },
+            tenant: {
+              select: {
+                id: true,
+                slug: true,
+                name: true,
+                timezone: true,
+                onboardingStatus: true,
+                onboardingCurrentStep: true,
+              },
+            },
           },
         },
       },

@@ -2366,6 +2366,32 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
       })
     }
 
+    const summaryWhere = {
+      tenantId,
+      ...(contactId ? { contactId } : {}),
+    }
+    const [enrolled, completed, priceAggregate, paymentAggregate] = await Promise.all([
+      prismaWithServices.contactService.count({ where: summaryWhere }),
+      prismaWithServices.contactService.count({
+        where: { ...summaryWhere, status: "COMPLETED" },
+      }),
+      prismaWithServices.contactService.aggregate({
+        where: summaryWhere,
+        _sum: { totalPriceCents: true },
+      }),
+      prismaWithServices.contactServicePayment.aggregate({
+        where: {
+          tenantId,
+          contactService: {
+            is: summaryWhere,
+          },
+        },
+        _sum: { amountCents: true },
+      }),
+    ])
+
+    const totalPriceCents = priceAggregate._sum.totalPriceCents ?? 0
+    const totalPaidCents = paymentAggregate._sum.amountCents ?? 0
     const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
     return res.json({
@@ -2393,6 +2419,12 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         pageSize,
         total,
         totalPages,
+      },
+      summary: {
+        enrolled,
+        completed,
+        totalPaidCents,
+        totalRemainingCents: Math.max(0, totalPriceCents - totalPaidCents),
       },
     })
   } catch (error) {

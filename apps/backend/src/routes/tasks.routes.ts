@@ -11,6 +11,7 @@ import {
 } from "../lib/task-priority.js"
 import { createTaskActivity } from "../lib/task-activity.js"
 import { createTaskAssignmentNotification } from "../lib/task-notifications.js"
+import { ensureDefaultTaskStatuses } from "../lib/tenant-defaults.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
@@ -28,6 +29,9 @@ const sanitizeMultilineText = (value: string) =>
     .map((line) => line.replace(/\s+/g, " ").trim())
     .join("\n")
     .trim()
+
+const getUserFullName = (user: { name: string; email: string }) =>
+  user.name.replace(/\s+/g, " ").trim() || user.email
 
 const TenantPathSchema = z.object({
   tenantId: z.string().trim().min(1),
@@ -62,7 +66,7 @@ const CreateTaskReminderSchema = z.object({
   message: z.string().trim().max(500).nullable().optional(),
 })
 
-const CreateTaskSchema = z.object({
+const TaskMutationSchema = z.object({
   name: z.string().trim().min(1).max(160),
   contactId: z.string().trim().min(1),
   description: z.string().trim().max(4000).nullable().optional(),
@@ -78,54 +82,40 @@ const CreateTaskSchema = z.object({
   reminderAt: z.string().datetime().nullable().optional(),
 })
 
-const UpdateTaskSchema = CreateTaskSchema.partial()
+const CreateTaskSchema = TaskMutationSchema.superRefine((task, context) => {
+  const startedAt = new Date(task.startedAt).getTime()
+  const dueDate = task.dueDate ? new Date(task.dueDate).getTime() : null
+  const reminderAt = task.reminderAt ? new Date(task.reminderAt).getTime() : null
 
-const TASK_DEFAULT_STATUSES = [
-  {
-    name: "To Do",
-    bgColor: "#E2E8F0",
-    textColor: "#334155",
-    sortOrder: 10,
-  },
-  {
-    name: "In Progress",
-    bgColor: "#DBEAFE",
-    textColor: "#1E3A8A",
-    sortOrder: 20,
-  },
-  {
-    name: "Completed",
-    bgColor: "#DCFCE7",
-    textColor: "#166534",
-    sortOrder: 30,
-  },
-] as const
+  if (dueDate !== null && dueDate < startedAt) {
+    context.addIssue({
+      code: "custom",
+      path: ["dueDate"],
+      message: "Due date cannot be before the start date.",
+    })
+  }
 
-async function ensureDefaultTaskStatuses(tenantId: string) {
-  await prismaWithTasks.taskStatusConfig.updateMany({
-    where: {
-      tenantId,
-      name: { in: TASK_DEFAULT_STATUSES.map((item) => item.name) },
-      isSystemDefault: false,
-    },
-    data: {
-      isSystemDefault: true,
-    },
-  })
+  if (reminderAt !== null && dueDate === null) {
+    context.addIssue({
+      code: "custom",
+      path: ["dueDate"],
+      message: "Set a due date before adding a reminder.",
+    })
+  } else if (
+    reminderAt !== null &&
+    dueDate !== null &&
+    dueDate >= startedAt &&
+    (reminderAt < startedAt || reminderAt > dueDate)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["reminderAt"],
+      message: "Reminder must be between the start and due dates.",
+    })
+  }
+})
 
-  await prismaWithTasks.taskStatusConfig.createMany({
-    data: TASK_DEFAULT_STATUSES.map((item) => ({
-      tenantId,
-      name: item.name,
-      bgColor: item.bgColor,
-      textColor: item.textColor,
-      sortOrder: item.sortOrder,
-      isActive: true,
-      isSystemDefault: true,
-    })),
-    skipDuplicates: true,
-  })
-}
+const UpdateTaskSchema = TaskMutationSchema.partial()
 
 async function requireActiveMembership(
   req: AuthedRequest,
@@ -387,7 +377,7 @@ router.get("/:tenantId/statuses", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    await ensureDefaultTaskStatuses(tenantId)
+    await ensureDefaultTaskStatuses(prismaWithTasks, tenantId)
 
     const statuses = await prismaWithTasks.taskStatusConfig.findMany({
       where: { tenantId, isActive: true },
@@ -441,7 +431,7 @@ router.get("/:tenantId/assignees", requireAuth, async (req, res, next) => {
       ok: true,
       items: assignees.map((assignee) => ({
         value: assignee.userId,
-        label: assignee.user.name?.trim() || assignee.user.email,
+        label: getUserFullName(assignee.user),
         email: assignee.user.email,
         image: assignee.user.image ?? null,
       })),
@@ -626,6 +616,8 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
               user: {
                 select: {
                   name: true,
+                  email: true,
+                  image: true,
                 },
               },
             },
@@ -653,7 +645,10 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
         assignedToUserId: task.assignedToUserId ?? null,
         priority: task.priority ?? null,
         dueDate: task.dueDate,
-        assignedPersonName: task.assignedToMembership?.user?.name ?? null,
+        assignedPersonName: task.assignedToMembership?.user
+          ? getUserFullName(task.assignedToMembership.user)
+          : null,
+        assignedPersonImage: task.assignedToMembership?.user?.image ?? null,
         startedAt: task.startedAt,
         status: task.statusConfig?.name ?? "Unassigned",
         statusConfigId: task.statusConfig?.id ?? null,

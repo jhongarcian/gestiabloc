@@ -16,6 +16,8 @@ tags:
   - name: Notifications
   - name: Tasks
   - name: Services
+  - name: Automations
+  - name: Onboarding
 paths:
   /api/auth/register:
     post:
@@ -671,6 +673,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/contacts/{tenantId}/{contactId}/summary:
+    get:
+      tags: [Contacts]
+      summary: Get contact overview summary metrics
+      description: Returns aggregate payment, opportunity, task, and next-appointment metrics for the contact profile.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Contact overview summary returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactOverviewSummaryResponse"
         "401":
           description: Not authenticated
           content:
@@ -4627,6 +4668,238 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/account-settings/{tenantId}/automations/catalog:
+    get:
+      tags: [Automations]
+      summary: Get the opportunity automation builder catalog
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Pipelines, stages, statuses, members, tags, and eligible custom fields
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/account-settings/{tenantId}/automations:
+    get:
+      tags: [Automations]
+      summary: List opportunity automations in execution order
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Automation list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+    post:
+      tags: [Automations]
+      summary: Create an opportunity automation
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutomationMutationRequest"
+      responses:
+        "201":
+          description: Automation created
+        "400":
+          description: Invalid automation configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/account-settings/{tenantId}/automations/reorder:
+    patch:
+      tags: [Automations]
+      summary: Replace the tenant automation execution order
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [automationIds]
+              properties:
+                automationIds:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Order updated
+  /api/account-settings/{tenantId}/automations/{automationId}:
+    get:
+      tags: [Automations]
+      summary: Get one opportunity automation
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AutomationIdPathParam"
+      responses:
+        "200":
+          description: Automation details
+    patch:
+      tags: [Automations]
+      summary: Replace an opportunity automation configuration
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AutomationIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutomationMutationRequest"
+      responses:
+        "200":
+          description: Automation updated
+    delete:
+      tags: [Automations]
+      summary: Delete an opportunity automation while preserving its history
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AutomationIdPathParam"
+      responses:
+        "200":
+          description: Automation deleted
+  /api/account-settings/{tenantId}/automation-executions:
+    get:
+      tags: [Automations]
+      summary: List paginated automation execution history
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: automationId
+          schema:
+            type: string
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [SUCCEEDED, FAILED]
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Execution history
+  /api/onboarding/{tenantId}:
+    get:
+      tags: [Onboarding]
+      summary: Get the tenant onboarding guide, prepared defaults, and readiness counts
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Tenant onboarding data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingResponse"
+        "403":
+          description: Active tenant administrator membership required
+  /api/onboarding/{tenantId}/profile:
+    patch:
+      tags: [Onboarding]
+      summary: Update core business profile fields without changing tax or calendar settings
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnboardingProfileRequest"
+      responses:
+        "200":
+          description: Business profile updated
+        "400":
+          description: Invalid profile values
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/onboarding/{tenantId}/workflow:
+    patch:
+      tags: [Onboarding]
+      summary: Rename the onboarding opportunity pipeline and its existing stages
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnboardingWorkflowRequest"
+      responses:
+        "200":
+          description: Starter workflow updated
+        "400":
+          description: Stage set or names are invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Pipeline name already exists
+  /api/onboarding/{tenantId}/state:
+    patch:
+      tags: [Onboarding]
+      summary: Advance, defer, resume, complete, or dismiss tenant onboarding
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnboardingStateRequest"
+      responses:
+        "200":
+          description: Onboarding state updated
+        "400":
+          description: Invalid state action or step
 components:
   securitySchemes:
     cookieAuth:
@@ -4637,6 +4910,12 @@ components:
     TenantIdPathParam:
       in: path
       name: tenantId
+      required: true
+      schema:
+        type: string
+    AutomationIdPathParam:
+      in: path
+      name: automationId
       required: true
       schema:
         type: string
@@ -4692,6 +4971,217 @@ components:
         enum: [10, 25]
         default: 10
   schemas:
+    OnboardingProfileRequest:
+      type: object
+      required:
+        - name
+        - email
+        - phone
+        - website
+        - addressLine1
+        - addressLine2
+        - city
+        - state
+        - postalCode
+        - country
+        - timezone
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        email:
+          type: string
+          format: email
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        website:
+          type: string
+          format: uri
+          nullable: true
+        addressLine1:
+          type: string
+          nullable: true
+        addressLine2:
+          type: string
+          nullable: true
+        city:
+          type: string
+          nullable: true
+        state:
+          type: string
+          nullable: true
+        postalCode:
+          type: string
+          nullable: true
+        country:
+          type: string
+          nullable: true
+        timezone:
+          type: string
+          nullable: true
+    OnboardingWorkflowRequest:
+      type: object
+      required: [pipelineId, name, stages]
+      properties:
+        pipelineId:
+          type: string
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        stages:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+                minLength: 1
+                maxLength: 80
+    OnboardingStateRequest:
+      oneOf:
+        - type: object
+          required: [action]
+          properties:
+            action:
+              type: string
+              enum: [start, skip, resume, complete, dismissChecklist]
+        - type: object
+          required: [action, step]
+          properties:
+            action:
+              type: string
+              enum: [advance]
+            step:
+              type: string
+              enum: [welcome, business-profile, workflow, ready]
+    OnboardingResponse:
+      type: object
+      required: [ok, onboarding, profile, defaults, readiness]
+      properties:
+        ok:
+          type: boolean
+        onboarding:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [NOT_STARTED, IN_PROGRESS, SKIPPED, COMPLETED]
+            currentStep:
+              type: string
+              enum: [welcome, business-profile, workflow, ready]
+            startedAt:
+              type: string
+              format: date-time
+              nullable: true
+            skippedAt:
+              type: string
+              format: date-time
+              nullable: true
+            completedAt:
+              type: string
+              format: date-time
+              nullable: true
+            checklistDismissedAt:
+              type: string
+              format: date-time
+              nullable: true
+        profile:
+          allOf:
+            - $ref: "#/components/schemas/OnboardingProfileRequest"
+            - type: object
+              properties:
+                id:
+                  type: string
+                slug:
+                  type: string
+        defaults:
+          type: object
+          additionalProperties: true
+        readiness:
+          type: object
+          properties:
+            serviceCount:
+              type: integer
+            memberCount:
+              type: integer
+    AutomationMutationRequest:
+      type: object
+      required: [name, isEnabled, trigger, conditions, actions]
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        isEnabled:
+          type: boolean
+        trigger:
+          type: object
+          additionalProperties: true
+        conditions:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/AutomationConditionRequest"
+        actions:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: true
+    AutomationConditionRequest:
+      type: object
+      required: [source, operator]
+      properties:
+        source:
+          type: string
+          enum:
+            - OPPORTUNITY_VALUE
+            - CONTACT_STATUS
+            - CONTACT_CUSTOM_FIELD
+            - CONTACT_ASSIGNEE
+            - CONTACT_TAGS
+        operator:
+          type: string
+          enum:
+            - EQUALS
+            - NOT_EQUALS
+            - CONTAINS
+            - NOT_CONTAINS
+            - GREATER_THAN
+            - GREATER_THAN_OR_EQUAL
+            - LESS_THAN
+            - LESS_THAN_OR_EQUAL
+            - BETWEEN
+            - INCLUDES_ANY
+            - INCLUDES_ALL
+            - EXCLUDES_ALL
+            - IS_TRUE
+            - IS_FALSE
+            - IS_EMPTY
+            - IS_NOT_EMPTY
+        customFieldId:
+          type: string
+          nullable: true
+        statusConfigId:
+          type: string
+          nullable: true
+        assignedUserId:
+          type: string
+          nullable: true
+        tagId:
+          type: string
+          nullable: true
+        compareValue:
+          nullable: true
     OkResponse:
       type: object
       properties:
@@ -4889,6 +5379,15 @@ components:
                         type: string
                       name:
                         type: string
+                      timezone:
+                        type: string
+                        nullable: true
+                      onboardingStatus:
+                        type: string
+                        enum: [NOT_STARTED, IN_PROGRESS, SKIPPED, COMPLETED]
+                      onboardingCurrentStep:
+                        type: string
+                        enum: [welcome, business-profile, workflow, ready]
     PresignUploadRequest:
       type: object
       required: [tenantId, filename, contentType]
@@ -5632,6 +6131,45 @@ components:
             updatedAt:
               type: string
               format: date-time
+    ContactOverviewSummaryResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        summary:
+          type: object
+          properties:
+            totalSpendingCents:
+              type: integer
+              minimum: 0
+            lastPaymentAt:
+              type: string
+              format: date-time
+              nullable: true
+            opportunityCount:
+              type: integer
+              minimum: 0
+            openOpportunityCount:
+              type: integer
+              minimum: 0
+            activeTaskCount:
+              type: integer
+              minimum: 0
+            overdueTaskCount:
+              type: integer
+              minimum: 0
+            nextAppointment:
+              type: object
+              nullable: true
+              properties:
+                id:
+                  type: string
+                title:
+                  type: string
+                startAt:
+                  type: string
+                  format: date-time
     ContactsListResponse:
       type: object
       properties:

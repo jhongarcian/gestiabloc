@@ -2,7 +2,7 @@
 "use client"
 
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { useSelectedLayoutSegments } from "next/navigation"
 import type { ComponentType } from "react"
 import { useCallback, useMemo } from "react"
 
@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/sidebar"
 
 import {
-  Heart,
+  PanelsTopLeft,
   LayoutGrid,
   Contact2,
   CreditCard,
@@ -35,6 +35,7 @@ import {
   ListChecks,
   HelpCircle,
   LogOut,
+  ArrowUpCircle,
 } from "lucide-react"
 
 type SidebarItem = {
@@ -63,42 +64,54 @@ const SUPPORT_ITEMS: SidebarItem[] = [
 
 type SidebarContentProps = {
   activeKey: string
+  tenantName: string
   onNavigate?: (key: string, href: string) => void
   menuItems: SidebarLink[]
   supportItems: SidebarLink[]
+  planKey?: string
+  isAdmin?: boolean
+  basePath: string
 }
 
 function AppSidebarContent({
   activeKey,
+  tenantName,
   onNavigate,
   menuItems,
   supportItems,
+  planKey,
+  isAdmin,
+  basePath,
 }: SidebarContentProps) {
   return (
     <>
-      <SidebarHeader className="px-4 py-3">
-        <div className="flex items-center gap-3 group-data-[collapsible=icon]:justify-center">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/20 text-white shadow-lg px-2">
-            <Heart className="h-4 w-4" />
-          </div>
-          <div className="group-data-[collapsible=icon]:hidden">
-            <h1 className="text-xl font-bold tracking-tight text-white">
+      <SidebarHeader className="px-4 pt-5 pb-3 group-data-[collapsible=icon]:px-1">
+        <Link
+          href={basePath}
+          className="flex items-center gap-3 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-white/60 group-data-[collapsible=icon]:justify-center"
+          onClick={() => onNavigate?.("dashboard", basePath)}
+        >
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-white">
+            <PanelsTopLeft className="size-5" aria-hidden="true" />
+          </span>
+          <span className="min-w-0 group-data-[collapsible=icon]:hidden">
+            <span className="block truncate text-base font-semibold tracking-tight text-white">
               Gestiabloc
-            </h1>
-            <p className="text-xs font-medium text-indigo-200">
-              Agency Panel
-            </p>
-          </div>
-        </div>
+            </span>
+            <span className="mt-0.5 block truncate text-xs leading-5 text-slate-300">
+              {tenantName}
+            </span>
+          </span>
+        </Link>
       </SidebarHeader>
 
-      <SidebarContent className="px-2 group-data-[collapsible=icon]:px-0">
-        <SidebarGroup>
-          <SidebarGroupLabel className="text-xs font-semibold uppercase tracking-wider text-indigo-200">
-            Menu
+      <SidebarContent className="px-3 group-data-[collapsible=icon]:px-0">
+        <SidebarGroup className="px-0 py-3">
+          <SidebarGroupLabel className="px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-100/80">
+            Workspace
           </SidebarGroupLabel>
           <SidebarGroupContent>
-            <SidebarMenu className="space-y-0.5">
+            <SidebarMenu className="gap-1">
               {menuItems.map((item) => {
                 const Icon = item.icon
                 const isActive = item.key === activeKey
@@ -109,14 +122,23 @@ function AppSidebarContent({
                       isActive={isActive}
                       tooltip={item.label}
                       className={cn(
-                        "h-10 text-indigo-50 font-semibold text-sm hover:bg-white/10 hover:text-white data-[active=true]:bg-white/20 data-[active=true]:text-white",
-                        "group-data-[collapsible=icon]:size-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:[&>span]:hidden"
+                        "min-h-11 gap-3 rounded-xl px-2.5 text-sm text-slate-300 hover:bg-white/10 hover:text-white focus-visible:ring-white/60 data-[active=true]:bg-white/10 data-[active=true]:font-semibold data-[active=true]:text-white",
+                        "group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-11! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:[&>span:last-child]:hidden",
                       )}
                       onClick={() => onNavigate?.(item.key, item.href)}
                       aria-current={isActive ? "page" : undefined}
                     >
                       <Link href={item.href}>
-                        <Icon className="h-4 w-4 opacity-95" />
+                        <span
+                          className={cn(
+                            "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+                            isActive
+                              ? "border-white bg-white text-slate-950"
+                              : "border-white/15 bg-white/5 text-slate-300",
+                          )}
+                        >
+                          <Icon className="size-3.5" aria-hidden="true" />
+                        </span>
                         <span>{item.label}</span>
                       </Link>
                     </SidebarMenuButton>
@@ -127,12 +149,12 @@ function AppSidebarContent({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarGroup className="group-data-[collapsible=icon]:mt-auto">
-          <SidebarGroupLabel className="text-xs font-semibold uppercase tracking-wider text-indigo-200">
+        <SidebarGroup className="mt-auto px-0 py-3">
+          <SidebarGroupLabel className="px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-100/80">
             Support
           </SidebarGroupLabel>
           <SidebarGroupContent>
-            <SidebarMenu className="space-y-1.5">
+            <SidebarMenu className="gap-1">
               {supportItems.map((item) => {
                 const Icon = item.icon
                 const isActive = item.key === activeKey
@@ -143,14 +165,23 @@ function AppSidebarContent({
                       isActive={isActive}
                       tooltip={item.label}
                       className={cn(
-                        "h-11 text-indigo-50 font-semibold hover:bg-white/10 hover:text-white data-[active=true]:bg-white/20 data-[active=true]:text-white",
-                        "group-data-[collapsible=icon]:size-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:[&>span]:hidden"
+                        "min-h-11 gap-3 rounded-xl px-2.5 text-sm text-slate-300 hover:bg-white/10 hover:text-white focus-visible:ring-white/60 data-[active=true]:bg-white/10 data-[active=true]:font-semibold data-[active=true]:text-white",
+                        "group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-11! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:[&>span:last-child]:hidden",
                       )}
                       onClick={() => onNavigate?.(item.key, item.href)}
                       aria-current={isActive ? "page" : undefined}
                     >
                       <Link href={item.href}>
-                        <Icon className="h-4 w-4 opacity-95" />
+                        <span
+                          className={cn(
+                            "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+                            isActive
+                              ? "border-white bg-white text-slate-950"
+                              : "border-white/15 bg-white/5 text-slate-300",
+                          )}
+                        >
+                          <Icon className="size-3.5" aria-hidden="true" />
+                        </span>
                         <span>{item.label}</span>
                       </Link>
                     </SidebarMenuButton>
@@ -164,43 +195,48 @@ function AppSidebarContent({
 
       <SidebarSeparator className="mx-4 bg-white/10" />
 
-      <SidebarFooter className="p-4 group-data-[collapsible=icon]:px-0">
+      <SidebarFooter className="p-4 pt-3 group-data-[collapsible=icon]:px-0">
         <div className="group-data-[collapsible=icon]:hidden">
-          <div className="relative overflow-hidden rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-lg">
-            <div className="absolute -right-4 -top-4 h-24 w-24 rounded-full bg-white/10 blur-2xl transition-all group-hover:bg-white/20" />
+          {isAdmin && planKey && planKey !== "BUSINESS" ? (
+            <div className="rounded-xl border border-white/15 bg-white/5 p-4 text-white">
+              <div className="flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <h4 className="text-sm font-semibold">
+                    {planKey === "STARTER" ? "Basic Plan" : "Pro Plan"}
+                  </h4>
+                  <p className="mt-1 mb-3 text-xs leading-5 text-slate-300">
+                    Upgrade to unlock more features
+                  </p>
 
-            <div className="relative z-10 flex items-start gap-3">
-
-              <div className="flex-1">
-                <h4 className="mb-1 text-sm font-bold">Trial Plan</h4>
-                <p className="mb-3 text-xs text-indigo-100/90">
-                  Upgrade to unlock all features
-                </p>
-
-                <Button
-                  type="button"
-                  variant="secondary"
-                  className="h-9 w-full border-0 bg-white/20 text-white hover:bg-white/30"
-                  onClick={() => onNavigate?.("upgrade", "#")}
-                >
-                  Upgrade to Pro
-                </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => onNavigate?.("subscription", `${basePath}/account-settings/subscription`)}
+                  >
+                    <ArrowUpCircle data-icon="inline-start" />
+                    {planKey === "STARTER" ? "Upgrade to Pro" : "Upgrade to Business"}
+                  </Button>
+                </div>
               </div>
             </div>
-          </div>
+          ) : null}
         </div>
 
-        <SidebarMenu className="mt-2  group-data-[collapsible=icon]:flex  group-data-[collapsible=icon]:justify-center  group-data-[collapsible=icon]:items-center">
+        <SidebarMenu className="mt-2 group-data-[collapsible=icon]:flex group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:justify-center">
           <SidebarMenuItem>
             <SidebarMenuButton
               onClick={() => onNavigate?.("logout", "#")}
               tooltip="Logout"
               className={cn(
-                "text-indigo-50 font-semibold hover:bg-white/10 hover:text-white cursor-pointer",
-                "group-data-[collapsible=icon]:size-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:[&>span]:hidden"
+                "min-h-11 cursor-pointer gap-3 rounded-xl px-2.5 text-sm text-slate-300 hover:bg-white/10 hover:text-white focus-visible:ring-white/60",
+                "group-data-[collapsible=icon]:size-11! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:[&>span:last-child]:hidden",
               )}
             >
-              <LogOut className="h-4 w-4 opacity-95" />
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full border border-white/15 bg-white/5 text-slate-300">
+                <LogOut className="size-3.5" aria-hidden="true" />
+              </span>
               <span>Logout</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
@@ -217,31 +253,33 @@ function AppSidebarContent({
  */
 type AppSidebarProps = {
   tenantSlug: string
+  tenantName: string
   activeKey?: string
   onNavigate?: (key: string, href: string) => void
   className?: string
+  planKey?: string
+  isAdmin?: boolean
 }
 
 export function AppSidebar({
   tenantSlug,
+  tenantName,
   activeKey,
   onNavigate,
   className,
+  planKey,
+  isAdmin,
 }: AppSidebarProps) {
-  const pathname = usePathname() ?? ""
+  const selectedSegments = useSelectedLayoutSegments()
   const { isMobile, setOpenMobile } = useSidebar()
-
-  const resolvedTenantSlug = useMemo(() => {
-    if (tenantSlug) {
-      return tenantSlug
-    }
-    const match = pathname.match(/^\/app\/([^/]+)/)
-    return match?.[1] ?? ""
-  }, [tenantSlug, pathname])
+  const segments = useMemo(
+    () => selectedSegments.filter((segment) => !segment.startsWith("(")),
+    [selectedSegments],
+  )
 
   const basePath = useMemo(
-    () => `/app/${resolvedTenantSlug}`,
-    [resolvedTenantSlug],
+    () => `/app/${tenantSlug}`,
+    [tenantSlug],
   )
   const resolveHref = useCallback(
     (path: string) => (path ? `${basePath}${path}` : basePath),
@@ -259,18 +297,16 @@ export function AppSidebar({
   )
 
   const derivedActiveKey = useMemo(() => {
-    if (!pathname.startsWith(basePath)) {
-      return "dashboard"
-    }
-    const rest = pathname.slice(basePath.length)
-    if (!rest || rest === "/") {
+    const firstSegment = segments[0]
+
+    if (!firstSegment) {
       return "dashboard"
     }
     const match = [...menuItems, ...supportItems].find(
-      (item) => item.path && rest.startsWith(item.path),
+      (item) => item.path.replace(/^\//, "") === firstSegment,
     )
     return match?.key ?? "dashboard"
-  }, [pathname, basePath, menuItems, supportItems])
+  }, [segments, menuItems, supportItems])
 
   const handleNavigate = useCallback(
     (key: string, href: string) => {
@@ -290,13 +326,28 @@ export function AppSidebar({
         className,
       )}
     >
-      <div className="flex h-full flex-col bg-linear-to-br from-blue-950  to-blue-950 text-white shadow-xl">
-        <AppSidebarContent
-          activeKey={activeKey ?? derivedActiveKey}
-          onNavigate={handleNavigate}
-          menuItems={menuItems}
-          supportItems={supportItems}
+      <div className="relative isolate flex h-full flex-col overflow-hidden bg-[#0b1730] text-white">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.08)_1px,transparent_1px)] [background-size:42px_42px]"
         />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-24 bottom-10 size-64 rounded-full bg-[#2f68ff]/25 blur-3xl"
+        />
+
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <AppSidebarContent
+            activeKey={activeKey ?? derivedActiveKey}
+            tenantName={tenantName}
+            onNavigate={handleNavigate}
+            menuItems={menuItems}
+            supportItems={supportItems}
+            planKey={planKey}
+            isAdmin={isAdmin}
+            basePath={basePath}
+          />
+        </div>
       </div>
     </Sidebar>
   )
