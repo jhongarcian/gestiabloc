@@ -52,6 +52,7 @@ type CreateAppointmentDialogProps = {
   tenantTimezone: string | null
   currentUserId: string
   initialContact?: ContactSearchItem | null
+  lockContact?: boolean
   open?: boolean
   onOpenChange?: (open: boolean) => void
   hideTrigger?: boolean
@@ -127,6 +128,7 @@ export function CreateAppointmentDialog({
   tenantTimezone,
   currentUserId,
   initialContact = null,
+  lockContact = false,
   open: controlledOpen,
   onOpenChange,
   hideTrigger = false,
@@ -325,11 +327,14 @@ export function CreateAppointmentDialog({
           if (cancelled) return
 
           if (isAxiosError(error)) {
+            const backendError = error.response?.data?.error
             setSlotsState({
               status: "error",
               message:
-                typeof error.response?.data?.error === "string"
-                  ? error.response.data.error.replace(/_/g, " ")
+                backendError === "ASSIGNEE_NOT_FOUND"
+                  ? "Calendar availability is not configured for this user."
+                  : typeof backendError === "string"
+                    ? backendError.replace(/_/g, " ")
                   : "Could not load time slots.",
             })
             return
@@ -522,7 +527,9 @@ export function CreateAppointmentDialog({
         <SheetHeader className="border-b border-slate-200 bg-slate-50 px-6 text-left">
           <SheetTitle className="text-xl font-semibold text-slate-950">Create Appointment</SheetTitle>
           <SheetDescription>
-            Pick the contact, assign the appointment, and choose an open slot based on the calendar booking rules.
+            {lockContact
+              ? "Assign this contact and choose an open slot based on the calendar booking rules."
+              : "Pick the contact, assign the appointment, and choose an open slot based on the calendar booking rules."}
           </SheetDescription>
         </SheetHeader>
 
@@ -540,7 +547,8 @@ export function CreateAppointmentDialog({
             </p>
           </section>
 
-          <section className="border-b border-slate-200 px-6 py-6">
+          {!lockContact ? (
+            <section className="border-b border-slate-200 px-6 py-6">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
               Contact
             </p>
@@ -642,7 +650,8 @@ export function CreateAppointmentDialog({
               ) : null
             ) : null}
             </div>
-          </section>
+            </section>
+          ) : null}
 
           <section className="border-b border-slate-200 px-6 py-6">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
@@ -749,7 +758,9 @@ export function CreateAppointmentDialog({
                     <Command>
                       <CommandInput placeholder="Assign appointment to..." />
                       <CommandList>
-                        <CommandEmpty>No users found.</CommandEmpty>
+                        <CommandEmpty>
+                          No users have calendar availability configured.
+                        </CommandEmpty>
                         {assigneeOptions.map((assignee) => (
                           <CommandItem
                             key={assignee.id}

@@ -401,6 +401,7 @@ export default async function ContactDetailsLayout({
                     email: contact.email,
                     phoneNumber: contact.phoneNumber,
                   }}
+                  lockContact
                   meetingIntervalMinutes={calendarMeta.settings.meetingIntervalMinutes}
                   meetingDurationMinutes={calendarMeta.settings.meetingDurationMinutes}
                   serviceOptions={calendarMeta.filters.services}
