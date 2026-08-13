@@ -9,6 +9,8 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleDollarSign,
   CircleHelp,
   Clock3,
@@ -16,7 +18,6 @@ import {
   Plus,
   Sparkles,
   Settings2,
-  UserRound,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -24,6 +25,13 @@ import { toast } from "sonner"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import {
   Command,
   CommandEmpty,
@@ -61,6 +69,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
   TableBody,
@@ -122,6 +131,12 @@ type ContactServicesResponse = {
     pageSize: number
     total: number
     totalPages: number
+  }
+  summary: {
+    enrolled: number
+    completed: number
+    totalPaidCents: number
+    totalRemainingCents: number
   }
 }
 
@@ -280,10 +295,59 @@ const optionalStringIdSchema = z.preprocess(
 )
 
 const SERVICE_STATUS_STYLES: Record<ContactServiceItem["status"], string> = {
-  IN_PROGRESS: "bg-sky-100 text-sky-800 hover:bg-sky-100",
-  PENDING_PAYMENT: "bg-orange-100 text-orange-800 hover:bg-orange-100",
-  COMPLETED: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
-  CANCELED: "bg-rose-100 text-rose-800 hover:bg-rose-100",
+  IN_PROGRESS: "border-sky-100 bg-sky-50 text-sky-700 hover:bg-sky-50",
+  PENDING_PAYMENT: "border-orange-100 bg-orange-50 text-orange-700 hover:bg-orange-50",
+  COMPLETED: "border-emerald-100 bg-emerald-50 text-emerald-700 hover:bg-emerald-50",
+  CANCELED: "border-rose-100 bg-rose-50 text-rose-700 hover:bg-rose-50",
+}
+
+function EmptyServiceRows({ count }: { count: number }) {
+  return Array.from({ length: count }, (_, index) => (
+    <TableRow
+      key={`empty-service-row-${index}`}
+      aria-hidden="true"
+      className="h-14 hover:bg-transparent"
+    >
+      <TableCell colSpan={8} className="px-4 py-0" />
+    </TableRow>
+  ))
+}
+
+function LoadingServiceRows({ count }: { count: number }) {
+  return Array.from({ length: count }, (_, index) => (
+    <TableRow
+      key={`loading-service-row-${index}`}
+      className="h-14 hover:bg-transparent"
+    >
+      <TableCell className="px-4 py-0">
+        <Skeleton className="h-4 w-4/5" />
+      </TableCell>
+      <TableCell className="px-4 py-0">
+        <Skeleton className="h-5 w-24 rounded-full" />
+      </TableCell>
+      <TableCell className="px-4 py-0">
+        <Skeleton className="h-4 w-20" />
+      </TableCell>
+      <TableCell className="px-4 py-0">
+        <Skeleton className="h-4 w-20" />
+      </TableCell>
+      <TableCell className="px-4 py-0">
+        <div className="flex items-center gap-2.5">
+          <Skeleton className="size-7 rounded-full" />
+          <Skeleton className="h-4 w-24" />
+        </div>
+      </TableCell>
+      <TableCell className="px-4 py-0">
+        <Skeleton className="h-4 w-20" />
+      </TableCell>
+      <TableCell className="px-4 py-0">
+        <Skeleton className="h-4 w-20" />
+      </TableCell>
+      <TableCell className="px-4 py-0">
+        <Skeleton className="h-2.5 w-28 rounded-full" />
+      </TableCell>
+    </TableRow>
+  ))
 }
 
 function getInitials(value: string) {
@@ -775,6 +839,7 @@ export function ContactServicesPanel({
     totalPages: 1,
   })
   const [isLoading, setIsLoading] = useState(false)
+  const [summary, setSummary] = useState<ContactServicesResponse["summary"] | null>(null)
   const [fitRecommendations, setFitRecommendations] = useState<ServiceFitScanItem[]>([])
   const [isLoadingFitRecommendations, setIsLoadingFitRecommendations] = useState(false)
   const [hasRunFitScan, setHasRunFitScan] = useState(false)
@@ -845,8 +910,10 @@ export function ContactServicesPanel({
       })
       setItems(data.items)
       setPagination(data.pagination)
+      setSummary(data.summary)
     } catch {
       setItems([])
+      setSummary(null)
       setPagination({
         page,
         pageSize,
@@ -1274,18 +1341,12 @@ export function ContactServicesPanel({
     setCreateStep((current) => (current === 1 ? 1 : ((current - 1) as 1 | 2 | 3 | 4)))
   }
 
-  const totals = useMemo(() => {
-    const enrolled = items.length
-    const completed = items.filter((item) => item.status === "COMPLETED").length
-    const totalPaidCents = items.reduce((sum, item) => sum + item.paidCents, 0)
-    const totalRemainingCents = items.reduce((sum, item) => sum + item.remainingCents, 0)
-    return {
-      enrolled,
-      completed,
-      totalPaidCents,
-      totalRemainingCents,
-    }
-  }, [items])
+  const totals = summary ?? {
+    enrolled: 0,
+    completed: 0,
+    totalPaidCents: 0,
+    totalRemainingCents: 0,
+  }
 
   const showingLabel = useMemo(() => {
     if (!pagination.total) return "Showing 0 services"
@@ -1293,6 +1354,19 @@ export function ContactServicesPanel({
     const end = Math.min(pagination.total, start + items.length - 1)
     return `Showing ${start}-${end} of ${pagination.total} services`
   }, [items.length, pagination.page, pagination.pageSize, pagination.total])
+
+  const canGoPrevious = page > 1
+  const canGoNext = page < pagination.totalPages
+  const placeholderRowCount =
+    items.length === 0 ? pageSize - 1 : Math.max(0, pageSize - items.length)
+  const visiblePages = useMemo(() => {
+    const count = Math.min(5, pagination.totalPages)
+    const first = Math.max(
+      1,
+      Math.min(page - 2, pagination.totalPages - count + 1),
+    )
+    return Array.from({ length: count }, (_, index) => first + index)
+  }, [page, pagination.totalPages])
 
   const getServiceProgress = (item: ContactServiceItem) => {
     const total = item.followUpSteps.length
@@ -1417,137 +1491,163 @@ export function ContactServicesPanel({
   const shortlistedFitRecommendations = fitRecommendations.filter(
     (item) => item.eligibilityStatus === "ELIGIBLE" || item.eligibilityStatus === "NEEDS_INFO",
   )
-  const topRecommendationCount = shortlistedFitRecommendations.length
-
   return (
     <section className="flex flex-col gap-5">
       <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Contact Services</p>
-            <div className="space-y-1">
-              <h1 className="text-2xl font-semibold tracking-tight text-slate-950">Services and enrollments</h1>
-              <p className="text-sm text-slate-600">Enroll purchased services and manage their follow-up enrollment records.</p>
+          <div className="flex min-w-0 flex-col gap-2">
+            <p className="text-xs font-semibold text-blue-700">Contact services</p>
+            <div className="flex flex-col gap-1">
+              <h1 className="text-2xl font-semibold text-slate-950">
+                Services and enrollments
+              </h1>
+              <p className="text-sm text-slate-600">
+                Enroll purchased services and manage their follow-up records.
+              </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 md:self-center">
-            <Button type="button" onClick={() => openCreateDialog()} className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90">
-              <Plus className="h-4 w-4" />
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center md:self-center">
+            <Button asChild variant="outline" className="bg-white/80 hover:bg-white">
+              <Link href={`/app/${tenantSlug}/contacts/${contactId}/ai-qualification`}>
+                <Sparkles data-icon="inline-start" />
+                Open AI Qualification
+              </Link>
+            </Button>
+            <Button
+              type="button"
+              onClick={() => openCreateDialog()}
+              className="bg-blue-950 text-white hover:bg-blue-900"
+            >
+              <Plus data-icon="inline-start" />
               Purchase service
             </Button>
           </div>
         </div>
-      </div>
 
-      <section className="rounded-[20px] border border-slate-200 bg-white p-5">
-        <div className="rounded-[24px] border border-amber-200 bg-[linear-gradient(135deg,#fff9ed_0%,#f8fafc_60%,#eef2ff_100%)] p-5">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div className="space-y-2">
-              <div className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-white/80 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">
-                <Sparkles className="h-3.5 w-3.5" />
-                AI Qualification
-              </div>
-              <div className="space-y-1">
-                <h2 className="text-lg font-semibold text-slate-900">Assistant-led qualification workspace</h2>
-                <p className="max-w-2xl text-sm text-slate-600">
-                  Run the dedicated AI Qualification tab when you want a full assistant-style report
-                  on what this contact qualifies for, what is missing, and what you can do next.
-                </p>
-              </div>
-              {hasRunFitScan && !isLoadingFitRecommendations ? (
-                <p className="text-sm text-slate-500">
-                  {topRecommendationCount > 0
-                    ? `${topRecommendationCount} likely fits are ready from the latest qualification scan.`
-                    : "The last qualification scan found no services ready to move forward yet."}
-                </p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <Card className="min-w-0 gap-0 rounded-[22px] border-white/80 bg-white/70 py-0 shadow-sm backdrop-blur transition hover:-translate-y-0.5 hover:border-slate-200 hover:bg-white hover:shadow-md">
+            <CardHeader className="gap-0 px-4 pt-4 pb-0">
+              <CardTitle className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                <BriefcaseBusiness className="size-4 text-slate-400" />
+                Enrolled services
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pt-2 pb-4">
+              {isLoading ? (
+                <Skeleton className="h-7 w-16" />
               ) : (
-                <p className="text-sm text-slate-500">
-                  Qualification results stay available in the purchase flow once you open it.
+                <p className="truncate text-xl font-semibold tracking-tight text-slate-950">
+                  {totals.enrolled}
                 </p>
               )}
-            </div>
+              <CardDescription className="mt-1 text-xs">
+                Active and historical enrollments for this contact.
+              </CardDescription>
+            </CardContent>
+          </Card>
 
-            <Button asChild className="cursor-pointer bg-slate-950 text-white hover:bg-slate-900">
-              <Link href={`/app/${tenantSlug}/contacts/${contactId}/ai-qualification`}>
-                Open AI Qualification
-              </Link>
-            </Button>
-          </div>
-        </div>
-      </section>
+          <Card className="min-w-0 gap-0 rounded-[22px] border-white/80 bg-white/70 py-0 shadow-sm backdrop-blur transition hover:-translate-y-0.5 hover:border-slate-200 hover:bg-white hover:shadow-md">
+            <CardHeader className="gap-0 px-4 pt-4 pb-0">
+              <CardTitle className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                <CheckCircle2 className="size-4 text-slate-400" />
+                Completed services
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pt-2 pb-4">
+              {isLoading ? (
+                <Skeleton className="h-7 w-16" />
+              ) : (
+                <p className="truncate text-xl font-semibold tracking-tight text-emerald-700">
+                  {totals.completed}
+                </p>
+              )}
+              <CardDescription className="mt-1 text-xs">
+                Enrollments that are fully completed.
+              </CardDescription>
+            </CardContent>
+          </Card>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-slate-400">
-            <BriefcaseBusiness className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-              Enrolled Services
-            </p>
-          </div>
-          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
-            {totals.enrolled}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">Active and historical service enrollments for this contact.</p>
-        </div>
-        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-slate-400">
-            <CheckCircle2 className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-              Completed Services
-            </p>
-          </div>
-          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-emerald-700">
-            {totals.completed}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">Enrollments already finished or fully closed out.</p>
-        </div>
-        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-slate-400">
-            <CircleDollarSign className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-              Current Spending
-            </p>
-          </div>
-          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
-            {currencyFormatter(totals.totalPaidCents, "USD")}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">Amount already collected across purchased services.</p>
-        </div>
-        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-slate-400">
-            <Clock3 className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-              Remaining Balance
-            </p>
-          </div>
-          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-amber-700">
-            {currencyFormatter(totals.totalRemainingCents, "USD")}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">Open balance that still needs to be collected.</p>
+          <Card className="min-w-0 gap-0 rounded-[22px] border-white/80 bg-white/70 py-0 shadow-sm backdrop-blur transition hover:-translate-y-0.5 hover:border-slate-200 hover:bg-white hover:shadow-md">
+            <CardHeader className="gap-0 px-4 pt-4 pb-0">
+              <CardTitle className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                <CircleDollarSign className="size-4 text-slate-400" />
+                Current spending
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pt-2 pb-4">
+              {isLoading ? (
+                <Skeleton className="h-7 w-28" />
+              ) : (
+                <p className="truncate text-xl font-semibold tracking-tight text-slate-950">
+                  {currencyFormatter(totals.totalPaidCents, "USD")}
+                </p>
+              )}
+              <CardDescription className="mt-1 text-xs">
+                Total collected across purchased services.
+              </CardDescription>
+            </CardContent>
+          </Card>
+
+          <Card className="min-w-0 gap-0 rounded-[22px] border-white/80 bg-white/70 py-0 shadow-sm backdrop-blur transition hover:-translate-y-0.5 hover:border-slate-200 hover:bg-white hover:shadow-md">
+            <CardHeader className="gap-0 px-4 pt-4 pb-0">
+              <CardTitle className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                <Clock3 className="size-4 text-slate-400" />
+                Remaining balance
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pt-2 pb-4">
+              {isLoading ? (
+                <Skeleton className="h-7 w-28" />
+              ) : (
+                <p className="truncate text-xl font-semibold tracking-tight text-amber-700">
+                  {currencyFormatter(totals.totalRemainingCents, "USD")}
+                </p>
+              )}
+              <CardDescription className="mt-1 text-xs">
+                Open balance that still needs to be collected.
+              </CardDescription>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
-      <div className="min-h-[560px] overflow-hidden rounded-[20px] border border-slate-200 bg-white">
-        <div className="border-b border-slate-200 px-4 py-3 text-sm text-slate-600 sm:px-5">
-          {showingLabel}
+      <div className="flex min-h-[660px] w-full flex-col gap-4 rounded-xl bg-white p-3 md:p-4">
+        <div className="flex flex-col gap-0.5">
+          <h2 className="text-lg font-semibold text-foreground">Enrolled services</h2>
+          <p className="text-sm text-muted-foreground">{showingLabel}</p>
         </div>
+
         <TooltipProvider>
-          <div className="min-h-[430px] overflow-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Service</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Created At</TableHead>
-                  <TableHead>Next Follow-up</TableHead>
-                  <TableHead>
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-auto">
+              <Table
+                className="min-w-[1120px] table-fixed border-separate border-spacing-0"
+                aria-label="Enrolled services"
+                aria-busy={isLoading}
+              >
+                <TableHeader className="drop-shadow-sm [&_tr]:border-0">
+                  <TableRow className="h-14 border-0 hover:bg-transparent">
+                    <TableHead className="w-[20%] rounded-l-xl border-y border-l bg-background px-4">
+                      Service
+                    </TableHead>
+                    <TableHead className="w-[12%] border-y bg-background px-4">
+                      Status
+                    </TableHead>
+                    <TableHead className="w-[11%] border-y bg-background px-4">
+                      Purchased
+                    </TableHead>
+                    <TableHead className="w-[13%] border-y bg-background px-4">
+                      Next follow-up
+                    </TableHead>
+                    <TableHead className="w-[15%] border-y bg-background px-4">
                     <div className="flex items-center gap-1">
                       <span>Owner</span>
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <button
                             type="button"
-                            className="inline-flex h-4 w-4 items-center justify-center text-slate-400 transition hover:text-slate-600"
+                            className="inline-flex size-4 cursor-pointer items-center justify-center text-slate-400 transition hover:text-slate-600"
                             onClick={(event) => event.stopPropagation()}
                             aria-label="Owner column help"
                           >
@@ -1559,167 +1659,222 @@ export function ContactServicesPanel({
                         </TooltipContent>
                       </Tooltip>
                     </div>
-                  </TableHead>
-                  <TableHead>Paid</TableHead>
-                  <TableHead>Balance</TableHead>
-                  <TableHead>Progress</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={8} className="h-24 text-center text-slate-500">Loading services...</TableCell>
-                </TableRow>
-              ) : hasItems ? (
-                items.map((item) => (
-                  <TableRow
-                    key={item.id}
-                    className="relative"
-                  >
-                    <TableCell className="font-medium text-slate-900">
-                      <Link
-                        href={`/app/${tenantSlug}/contacts/${contactId}/services/${item.id}`}
-                        aria-label={`Open ${item.service.name}`}
-                        className="absolute inset-0 z-10"
-                      />
-                      <span className="relative">{item.service.name}</span>
-                    </TableCell>
-                    <TableCell>
-                      <Badge className={`capitalize ${SERVICE_STATUS_STYLES[item.status]}`}>
-                        {toSentence(item.status)}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-slate-600">{formatDate(item.purchasedAt)}</TableCell>
-                    <TableCell className="text-slate-600">{formatDate(getNextFollowUpDate(item))}</TableCell>
-                    <TableCell>
-                      {(() => {
+                    </TableHead>
+                    <TableHead className="w-[9%] border-y bg-background px-4">Paid</TableHead>
+                    <TableHead className="w-[9%] border-y bg-background px-4">Balance</TableHead>
+                    <TableHead className="w-[11%] rounded-r-xl border-y border-r bg-background px-4">
+                      Progress
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow aria-hidden="true" className="h-2 border-0 hover:bg-transparent">
+                    <TableCell colSpan={8} className="p-0" />
+                  </TableRow>
+
+                  {isLoading ? (
+                    <LoadingServiceRows count={pageSize} />
+                  ) : (
+                    <>
+                      {items.map((item) => {
                         const assignee = getCurrentFollowUpAssignee(item)
-                        const label = assignee?.name?.trim() || assignee?.email?.trim() || "Unassigned"
+                        const assigneeLabel =
+                          assignee?.name?.trim() || assignee?.email?.trim() || "Unassigned"
+                        const progress = getServiceProgress(item)
 
                         return (
-                          <div className="flex items-center gap-2">
-                            {assignee ? (
-                              <Avatar className="h-7 w-7 shrink-0 border border-slate-200">
-                                <AvatarImage src={assignee.image ?? undefined} alt={label} />
-                                <AvatarFallback className="bg-blue-100 text-[10px] font-semibold text-blue-900">
-                                  {getInitials(label)}
-                                </AvatarFallback>
-                              </Avatar>
-                            ) : (
-                              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                                <UserRound className="h-3.5 w-3.5" />
-                              </span>
-                            )}
-                            <span className="truncate text-sm text-slate-600">{label}</span>
-                          </div>
-                        )
-                      })()}
-                    </TableCell>
-                    <TableCell>{currencyFormatter(item.paidCents, item.currency)}</TableCell>
-                    <TableCell>{currencyFormatter(item.remainingCents, item.currency)}</TableCell>
-                    <TableCell className="relative z-20">
-                      {(() => {
-                        const progress = getServiceProgress(item)
-                        return (
-                          <Popover>
-                            <PopoverTrigger asChild>
-                              <button
-                                type="button"
-                                className="w-[190px] cursor-pointer"
-                                onClick={(event) => event.stopPropagation()}
+                          <TableRow
+                            key={item.id}
+                            className="relative h-14 cursor-pointer hover:bg-blue-50/50 focus-within:bg-blue-50/50"
+                          >
+                            <TableCell className="px-4 py-0">
+                              <Link
+                                href={`/app/${tenantSlug}/contacts/${contactId}/services/${item.id}`}
+                                className="block truncate font-medium text-foreground transition-colors before:absolute before:inset-0 before:z-10 before:rounded-md hover:text-blue-800 focus-visible:outline-none focus-visible:before:ring-2 focus-visible:before:ring-ring focus-visible:before:ring-offset-1"
+                                title={item.service.name}
+                                aria-label={`Open ${item.service.name}`}
                               >
-                                <div className="flex items-center gap-3">
-                                  <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-slate-200">
-                                    <div
-                                      className="h-full rounded-full bg-emerald-500 transition-all"
-                                      style={{ width: `${progress.percentage}%` }}
+                                {item.service.name}
+                              </Link>
+                            </TableCell>
+                            <TableCell className="px-4 py-0">
+                              <Badge
+                                variant="outline"
+                                className={cn("capitalize", SERVICE_STATUS_STYLES[item.status])}
+                              >
+                                {toSentence(item.status)}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="px-4 py-0 text-foreground">
+                              {formatDate(item.purchasedAt)}
+                            </TableCell>
+                            <TableCell className="px-4 py-0 text-foreground">
+                              {formatDate(getNextFollowUpDate(item))}
+                            </TableCell>
+                            <TableCell className="px-4 py-0">
+                              <div className="flex min-w-0 items-center gap-2.5">
+                                <Avatar size="sm">
+                                  {assignee?.image ? (
+                                    <AvatarImage
+                                      src={assignee.image}
+                                      alt={`${assigneeLabel} profile photo`}
                                     />
-                                  </div>
-                                  <span className="w-10 text-right text-xs font-medium text-slate-600">
-                                    {progress.percentage}%
-                                  </span>
-                                </div>
-                              </button>
-                            </PopoverTrigger>
-                            <PopoverContent
-                              className="w-56"
-                              align="start"
-                              onClick={(event) => event.stopPropagation()}
-                            >
-                              <div className="space-y-1">
-                                <p className="text-sm font-semibold text-slate-900">
-                                  {progress.percentage}% Completed
-                                </p>
-                                <p className="text-xs text-slate-600">
-                                  {progress.completed} completed, {progress.remaining} remaining out of{" "}
-                                  {progress.total} follow-ups.
-                                </p>
+                                  ) : null}
+                                  <AvatarFallback>
+                                    {assignee ? getInitials(assigneeLabel) : "—"}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <span
+                                  className="truncate text-foreground"
+                                  title={assigneeLabel}
+                                >
+                                  {assigneeLabel}
+                                </span>
                               </div>
-                            </PopoverContent>
-                          </Popover>
+                            </TableCell>
+                            <TableCell className="px-4 py-0 text-foreground">
+                              {currencyFormatter(item.paidCents, item.currency)}
+                            </TableCell>
+                            <TableCell className="px-4 py-0 text-foreground">
+                              {currencyFormatter(item.remainingCents, item.currency)}
+                            </TableCell>
+                            <TableCell className="relative z-20 px-4 py-0">
+                              <Popover>
+                                <PopoverTrigger asChild>
+                                  <button
+                                    type="button"
+                                    className="flex w-full cursor-pointer items-center gap-2"
+                                    onClick={(event) => event.stopPropagation()}
+                                    aria-label={`${progress.percentage}% of follow-ups completed`}
+                                  >
+                                    <span className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
+                                      <span
+                                        className="block h-full rounded-full bg-emerald-500 transition-all"
+                                        style={{ width: `${progress.percentage}%` }}
+                                      />
+                                    </span>
+                                    <span className="w-9 text-right text-xs font-medium tabular-nums text-slate-600">
+                                      {progress.percentage}%
+                                    </span>
+                                  </button>
+                                </PopoverTrigger>
+                                <PopoverContent
+                                  className="w-56"
+                                  align="start"
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  <div className="flex flex-col gap-1">
+                                    <p className="text-sm font-semibold text-slate-900">
+                                      {progress.percentage}% completed
+                                    </p>
+                                    <p className="text-xs text-slate-600">
+                                      {progress.completed} completed and {progress.remaining} remaining
+                                      out of {progress.total} follow-ups.
+                                    </p>
+                                  </div>
+                                </PopoverContent>
+                              </Popover>
+                            </TableCell>
+                          </TableRow>
                         )
-                      })()}
-                    </TableCell>
-                  </TableRow>
-                ))
-              ) : (
-                <TableRow>
-                  <TableCell colSpan={8} className="h-24 text-center text-slate-500">No services enrolled yet.</TableCell>
-                </TableRow>
-              )}
-              </TableBody>
-            </Table>
+                      })}
+
+                      {!hasItems ? (
+                        <TableRow className="h-14 hover:bg-transparent">
+                          <TableCell colSpan={8} className="px-4 py-0 text-center">
+                            <span className="text-sm text-muted-foreground">
+                              No services enrolled yet.
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+
+                      <EmptyServiceRows count={placeholderRowCount} />
+                    </>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="flex flex-col items-center gap-3 px-1 py-4 sm:flex-row sm:justify-between">
+              <div className="flex items-center gap-3">
+                <p className="text-sm text-muted-foreground">{showingLabel}</p>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span>Rows</span>
+                  <Select
+                    value={String(pageSize)}
+                    onValueChange={(value) => {
+                      const nextPageSize = Number(value)
+                      if (nextPageSize === 10 || nextPageSize === 25) {
+                        setPageSize(nextPageSize)
+                        setPage(1)
+                      }
+                    }}
+                  >
+                    <SelectTrigger size="sm" className="w-20" aria-label="Rows per page">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {PAGE_SIZE_OPTIONS.map((option) => (
+                          <SelectItem key={option} value={String(option)}>
+                            {option}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <nav
+                className="flex items-center gap-2 self-end sm:self-auto"
+                aria-label="Enrolled services pagination"
+              >
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Previous page"
+                  disabled={!canGoPrevious || isLoading}
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                >
+                  <ChevronLeft />
+                </Button>
+
+                {visiblePages.map((pageNumber) => (
+                  <Button
+                    key={pageNumber}
+                    type="button"
+                    variant={pageNumber === page ? "default" : "outline"}
+                    size="icon-sm"
+                    aria-label={
+                      pageNumber === page
+                        ? `Current page, page ${pageNumber}`
+                        : `Go to page ${pageNumber}`
+                    }
+                    aria-current={pageNumber === page ? "page" : undefined}
+                    disabled={isLoading}
+                    onClick={() => setPage(pageNumber)}
+                  >
+                    {pageNumber}
+                  </Button>
+                ))}
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Next page"
+                  disabled={!canGoNext || isLoading}
+                  onClick={() => setPage((current) => current + 1)}
+                >
+                  <ChevronRight />
+                </Button>
+              </nav>
+            </div>
           </div>
         </TooltipProvider>
-        <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3 sm:px-5">
-          <div className="flex items-center gap-3 text-sm text-slate-600">
-            <span>Rows per page</span>
-            <Select
-              value={String(pageSize)}
-              onValueChange={(value) => {
-                const nextPageSize = Number(value) as (typeof PAGE_SIZE_OPTIONS)[number]
-                setPageSize(nextPageSize)
-                setPage(1)
-              }}
-            >
-              <SelectTrigger className="h-9 w-[88px] cursor-pointer rounded-xl border-slate-200 bg-white">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PAGE_SIZE_OPTIONS.map((option) => (
-                  <SelectItem key={option} value={String(option)} className="cursor-pointer">
-                    {option}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex items-center gap-3 text-sm text-slate-600">
-            <Button
-              type="button"
-              variant="outline"
-              className="h-9 cursor-pointer rounded-xl border-slate-200 bg-white"
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
-              disabled={page <= 1 || isLoading}
-            >
-              Previous
-            </Button>
-            <span>
-              Page {pagination.page} of {Math.max(1, pagination.totalPages)}
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-9 cursor-pointer rounded-xl border-slate-200 bg-white"
-              onClick={() =>
-                setPage((current) => Math.min(Math.max(1, pagination.totalPages), current + 1))
-              }
-              disabled={page >= Math.max(1, pagination.totalPages) || isLoading}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
       </div>
 
       <Dialog
