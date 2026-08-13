@@ -12,6 +12,7 @@ import {
   CircleDollarSign,
   CircleHelp,
   Clock3,
+  Loader2,
   Plus,
   Sparkles,
   Settings2,
@@ -26,6 +27,7 @@ import { Button } from "@/components/ui/button"
 import {
   Command,
   CommandEmpty,
+  CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
@@ -38,8 +40,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Popover,
   PopoverContent,
@@ -48,6 +56,7 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -327,15 +336,15 @@ function FlowStepCard({
   return (
     <div
       className={cn(
-        "rounded-2xl border border-slate-200 bg-white p-4",
+        "flex flex-col gap-4 border-t border-slate-200 pt-5",
         disabled ? "opacity-60" : undefined,
       )}
     >
-      <div className="mb-3 flex items-start gap-3">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-950 text-xs font-semibold text-white">
+      <div className="flex items-start gap-3">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-blue-950 text-xs font-semibold text-white">
           {stepNumber}
         </div>
-        <div className="space-y-1">
+        <div className="flex min-w-0 flex-col gap-1">
           <p className="text-sm font-semibold text-slate-900">{title}</p>
           <p className="text-xs leading-5 text-slate-500">{description}</p>
         </div>
@@ -345,16 +354,114 @@ function FlowStepCard({
   )
 }
 
+function ServicePicker({
+  services,
+  value,
+  onValueChange,
+  disabled,
+  isLoading,
+  ariaInvalid,
+}: {
+  services: Array<{ id: string; name: string }>
+  value: string
+  onValueChange: (value: string) => void
+  disabled?: boolean
+  isLoading?: boolean
+  ariaInvalid?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const selectedService = useMemo(
+    () => services.find((service) => service.id === value) ?? null,
+    [services, value],
+  )
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          id="contact-service-transaction-service"
+          type="button"
+          variant="outline"
+          disabled={disabled}
+          aria-invalid={ariaInvalid}
+          aria-expanded={open}
+          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <Avatar size="sm" className="ring-2 ring-blue-50">
+              <AvatarFallback className="bg-blue-50 font-semibold text-blue-950">
+                {selectedService ? getInitials(selectedService.name) : "—"}
+              </AvatarFallback>
+            </Avatar>
+            <span className="truncate font-medium text-slate-800">
+              {selectedService?.name ?? (isLoading ? "Loading services..." : "Select a service")}
+            </span>
+          </span>
+          {isLoading ? (
+            <Loader2 data-icon="inline-end" className="ml-auto animate-spin text-slate-400" />
+          ) : (
+            <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
+          )}
+        </Button>
+      </PopoverTrigger>
+
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] p-0"
+      >
+        <Command>
+          <CommandInput placeholder="Search services..." />
+          <CommandList>
+            <CommandEmpty>No services found.</CommandEmpty>
+            <CommandGroup heading="Services">
+              {services.map((service) => (
+                <CommandItem
+                  key={service.id}
+                  value={`${service.name} ${service.id}`}
+                  onSelect={() => {
+                    onValueChange(service.id)
+                    setOpen(false)
+                  }}
+                  className="cursor-pointer gap-3 py-2.5"
+                >
+                  <Avatar size="sm" className="ring-2 ring-blue-50">
+                    <AvatarFallback className="bg-blue-50 font-semibold text-blue-950">
+                      {getInitials(service.name)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="min-w-0 flex-1 truncate font-medium text-slate-900">
+                    {service.name}
+                  </span>
+                  <Check
+                    className={cn(
+                      "text-blue-800",
+                      selectedService?.id === service.id ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function AssignedProfessionalPicker({
   professionals,
   value,
   onValueChange,
   disabled,
+  id,
+  ariaInvalid,
 }: {
   professionals: ServiceProfessional[]
   value: string
   onValueChange: (value: string) => void
   disabled?: boolean
+  id?: string
+  ariaInvalid?: boolean
 }) {
   const [open, setOpen] = useState(false)
 
@@ -371,81 +478,77 @@ function AssignedProfessionalPicker({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
+          id={id}
           type="button"
           variant="outline"
           disabled={disabled}
-          className="h-10 w-full justify-between rounded-xl border-slate-200 bg-white px-3 text-left font-normal shadow-sm hover:bg-slate-50"
+          aria-invalid={ariaInvalid}
+          aria-expanded={open}
+          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
         >
-          <div className="flex min-w-0 items-center gap-2">
-            {selectedProfessional ? (
-              <>
-                <Avatar className="h-6 w-6 shrink-0 border border-white shadow-sm">
-                  {selectedProfessional.user?.image ? (
-                    <AvatarImage
-                      src={selectedProfessional.user.image}
-                      alt={selectedLabel}
-                      className="object-cover"
-                    />
-                  ) : null}
-                  <AvatarFallback
-                    className={cn(
-                      "text-[11px] font-semibold",
-                      PROFESSIONAL_TONE_STYLES[getProfessionalTone(selectedProfessional)]
-                        .fallbackClassName,
-                    )}
-                  >
-                    {getInitials(selectedLabel)}
-                  </AvatarFallback>
-                </Avatar>
-                <span className="truncate text-[13px] font-medium text-slate-900">
-                  {selectedLabel}
-                </span>
-              </>
-            ) : (
-              <>
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                  <UserRound className="h-3.5 w-3.5" />
-                </span>
-                <span className="truncate text-[13px] text-slate-500">Unassigned</span>
-              </>
-            )}
-          </div>
-          <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 text-slate-500" />
+          <span className="flex min-w-0 items-center gap-2.5">
+            <Avatar size="sm" className="ring-2 ring-blue-50">
+              {selectedProfessional?.user?.image ? (
+                <AvatarImage
+                  src={selectedProfessional.user.image}
+                  alt={`${selectedLabel} profile photo`}
+                  className="object-cover"
+                />
+              ) : null}
+              <AvatarFallback
+                className={cn(
+                  "font-semibold",
+                  selectedProfessional
+                    ? PROFESSIONAL_TONE_STYLES[getProfessionalTone(selectedProfessional)]
+                        .fallbackClassName
+                    : "bg-slate-100 text-slate-500",
+                )}
+              >
+                {selectedProfessional ? getInitials(selectedLabel) : "—"}
+              </AvatarFallback>
+            </Avatar>
+            <span className="truncate font-medium text-slate-800">
+              {selectedProfessional ? selectedLabel : "No assigned professional"}
+            </span>
+          </span>
+          <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
         </Button>
       </PopoverTrigger>
 
-      <PopoverContent align="start" className="w-[360px] p-0">
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] p-0"
+      >
         <Command>
-          <CommandInput placeholder="Assign professional..." />
+          <CommandInput placeholder="Search professionals..." />
           <CommandList>
             <CommandEmpty>No professionals found.</CommandEmpty>
-            <CommandItem
-              onSelect={() => {
-                onValueChange("")
-                setOpen(false)
-              }}
-              className="cursor-pointer gap-2.5 px-3 py-2"
-            >
-              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                <UserRound className="h-3.5 w-3.5" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[13px] font-medium text-slate-900">
+            <CommandGroup heading="Assignment">
+              <CommandItem
+                value="No assigned professional unassigned"
+                onSelect={() => {
+                  onValueChange("")
+                  setOpen(false)
+                }}
+                className="cursor-pointer gap-3 py-2.5"
+              >
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
                   No assigned professional
-                </p>
-                <p className="truncate text-[11px] text-slate-500">
-                  Create the transaction without assigning anyone yet.
-                </p>
-              </div>
-              <Check
-                className={cn(
-                  "h-3.5 w-3.5 text-blue-950",
-                  selectedProfessional ? "opacity-0" : "opacity-100",
-                )}
-              />
-            </CommandItem>
+                </span>
+                <Check
+                  className={cn(
+                    "text-blue-800",
+                    selectedProfessional ? "opacity-0" : "opacity-100",
+                  )}
+                />
+              </CommandItem>
 
-            {professionals.map((professional) => {
+              {professionals.map((professional) => {
               const label = getProfessionalLabel(professional)
               const meta = getProfessionalMeta(professional)
               const toneStyles =
@@ -454,22 +557,23 @@ function AssignedProfessionalPicker({
               return (
                 <CommandItem
                   key={professional.id}
+                  value={`${label} ${meta} ${professional.id}`}
                   onSelect={() => {
                     onValueChange(professional.id)
                     setOpen(false)
                   }}
-                  className="cursor-pointer gap-2.5 px-3 py-2"
+                  className="cursor-pointer gap-3 py-2.5"
                 >
                   <Avatar
                     className={cn(
-                      "h-8 w-8 border shadow-sm",
+                      "size-8 border shadow-sm",
                       toneStyles.surfaceClassName,
                     )}
                   >
                     {professional.user?.image ? (
                       <AvatarImage
                         src={professional.user.image}
-                        alt={label}
+                        alt={`${label} profile photo`}
                         className="object-cover"
                       />
                     ) : null}
@@ -480,14 +584,14 @@ function AssignedProfessionalPicker({
                     </AvatarFallback>
                   </Avatar>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[13px] font-medium text-slate-900">
+                    <p className="truncate text-sm font-medium text-slate-900">
                       {label}
                     </p>
-                    <p className="truncate text-[11px] text-slate-500">{meta}</p>
+                    <p className="truncate text-xs text-slate-500">{meta}</p>
                   </div>
                   <Check
                     className={cn(
-                      "h-3.5 w-3.5 text-blue-950",
+                      "text-blue-800",
                       selectedProfessional?.id === professional.id
                         ? "opacity-100"
                         : "opacity-0",
@@ -495,7 +599,8 @@ function AssignedProfessionalPicker({
                   />
                 </CommandItem>
               )
-            })}
+              })}
+            </CommandGroup>
           </CommandList>
         </Command>
       </PopoverContent>
@@ -508,11 +613,15 @@ function FollowUpAssigneePicker({
   value,
   disabled,
   onValueChange,
+  id,
+  ariaInvalid,
 }: {
   assignees: TenantAssigneeOption[]
   value: string
   disabled?: boolean
   onValueChange: (value: string) => void
+  id?: string
+  ariaInvalid?: boolean
 }) {
   const [open, setOpen] = useState(false)
 
@@ -525,111 +634,122 @@ function FollowUpAssigneePicker({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
+          id={id}
           type="button"
           variant="outline"
-          className="h-10 w-full justify-between rounded-xl border-slate-200 bg-white px-3 text-left font-normal shadow-sm hover:bg-slate-50"
+          aria-invalid={ariaInvalid}
+          aria-expanded={open}
+          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
           disabled={disabled}
         >
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2.5">
             {selectedAssignee ? (
               <>
-                <Avatar className="h-6 w-6 shrink-0 border border-white shadow-sm">
+                <Avatar size="sm" className="ring-2 ring-blue-50">
                   {selectedAssignee.image ? (
                     <AvatarImage
                       src={selectedAssignee.image}
-                      alt={selectedAssignee.label}
+                      alt={`${selectedAssignee.label} profile photo`}
                       className="object-cover"
                     />
                   ) : null}
-                  <AvatarFallback className="bg-blue-100 text-[11px] font-semibold text-blue-900">
+                  <AvatarFallback className="bg-blue-950 font-semibold text-white">
                     {getInitials(selectedAssignee.label)}
                   </AvatarFallback>
                 </Avatar>
-                <span className="truncate text-[13px] font-medium text-slate-900">
+                <span className="truncate font-medium text-slate-800">
                   {selectedAssignee.label}
                 </span>
               </>
             ) : (
               <>
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                  <UserRound className="h-3.5 w-3.5" />
-                </span>
-                <span className="truncate text-[13px] text-slate-500">Unassigned</span>
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="truncate font-medium text-slate-700">No follow-up owner</span>
               </>
             )}
           </div>
-          <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 text-slate-500" />
+          <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
         </Button>
       </PopoverTrigger>
 
-      <PopoverContent align="start" className="w-[360px] p-0">
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] p-0"
+      >
         <Command>
-          <CommandInput placeholder="Assign follow-up to..." />
+          <CommandInput placeholder="Search team members..." />
           <CommandList>
             <CommandEmpty>No users found.</CommandEmpty>
-            <CommandItem
-              onSelect={() => {
-                onValueChange("")
-                setOpen(false)
-              }}
-              className="cursor-pointer gap-2.5 px-3 py-2"
-            >
-              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                <UserRound className="h-3.5 w-3.5" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[13px] font-medium text-slate-900">
-                  No follow-up owner
-                </p>
-                <p className="truncate text-[11px] text-slate-500">
-                  Leave the enrolled follow-up steps unassigned.
-                </p>
-              </div>
-              <Check
-                className={cn(
-                  "h-3.5 w-3.5 text-blue-950",
-                  selectedAssignee ? "opacity-0" : "opacity-100",
-                )}
-              />
-            </CommandItem>
-
-            {assignees.map((assignee) => (
+            <CommandGroup heading="Assignment">
               <CommandItem
-                key={assignee.value}
+                value="No follow-up owner unassigned"
                 onSelect={() => {
-                  onValueChange(assignee.value)
+                  onValueChange("")
                   setOpen(false)
                 }}
-                className="cursor-pointer gap-2.5 px-3 py-2"
+                className="cursor-pointer gap-3 py-2.5"
               >
-                <Avatar className="h-8 w-8 border border-blue-200 bg-blue-50 shadow-sm">
-                  {assignee.image ? (
-                    <AvatarImage
-                      src={assignee.image}
-                      alt={assignee.label}
-                      className="object-cover"
-                    />
-                  ) : null}
-                  <AvatarFallback className="bg-blue-100 text-xs font-semibold text-blue-900">
-                    {getInitials(assignee.label)}
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
                   </AvatarFallback>
                 </Avatar>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13px] font-medium text-slate-900">
-                    {assignee.label}
-                  </p>
-                  <p className="truncate text-[11px] text-slate-500">{assignee.email}</p>
-                </div>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
+                  No follow-up owner
+                </span>
                 <Check
                   className={cn(
-                    "h-3.5 w-3.5 text-blue-950",
-                    selectedAssignee?.value === assignee.value
-                      ? "opacity-100"
-                      : "opacity-0",
+                    "text-blue-800",
+                    selectedAssignee ? "opacity-0" : "opacity-100",
                   )}
                 />
               </CommandItem>
-            ))}
+
+              {assignees.map((assignee) => (
+                <CommandItem
+                  key={assignee.value}
+                  value={`${assignee.label} ${assignee.email} ${assignee.value}`}
+                  onSelect={() => {
+                    onValueChange(assignee.value)
+                    setOpen(false)
+                  }}
+                  className="cursor-pointer gap-3 py-2.5"
+                >
+                  <Avatar size="sm" className="ring-2 ring-blue-50">
+                    {assignee.image ? (
+                      <AvatarImage
+                        src={assignee.image}
+                        alt={`${assignee.label} profile photo`}
+                        className="object-cover"
+                      />
+                    ) : null}
+                    <AvatarFallback className="bg-blue-950 font-semibold text-white">
+                      {getInitials(assignee.label)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-medium text-slate-900">
+                      {assignee.label}
+                    </span>
+                    <span className="truncate text-xs text-slate-500">
+                      {assignee.email}
+                    </span>
+                  </span>
+                  <Check
+                    className={cn(
+                      "text-blue-800",
+                      selectedAssignee?.value === assignee.value
+                        ? "opacity-100"
+                        : "opacity-0",
+                    )}
+                  />
+                </CommandItem>
+              ))}
+            </CommandGroup>
           </CommandList>
         </Command>
       </PopoverContent>
@@ -692,7 +812,7 @@ export function ContactServicesPanel({
 
   const hasItems = items.length > 0
 
-  const resetCreate = () => {
+  const resetCreate = useCallback(() => {
     setCreateStep(1)
     setCreateServiceId("")
     setCreateTemplateId("")
@@ -703,15 +823,15 @@ export function ContactServicesPanel({
     setCreateNotes("")
     setCreateServiceDetails(null)
     setCreateErrors({})
-  }
+  }, [])
 
-  const openCreateDialog = (serviceId?: string) => {
+  const openCreateDialog = useCallback((serviceId?: string) => {
     resetCreate()
     setIsCreateOpen(true)
     if (serviceId) {
       setCreateServiceId(serviceId)
     }
-  }
+  }, [resetCreate])
 
   const loadServices = useCallback(async () => {
     setIsLoading(true)
@@ -889,6 +1009,7 @@ export function ContactServicesPanel({
     hasAppliedInitialCreateState,
     initialCreateOpen,
     initialCreateServiceId,
+    openCreateDialog,
   ])
 
   const clearCreateError = (
@@ -1601,19 +1722,38 @@ export function ContactServicesPanel({
         </div>
       </div>
 
-      <Dialog open={isCreateOpen} onOpenChange={(open) => {
-        setIsCreateOpen(open)
-        if (!open) resetCreate()
-      }}>
-        <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>Create service transaction</DialogTitle>
-            <DialogDescription>
-              This transaction is already tied to the current contact.
-            </DialogDescription>
+      <Dialog
+        open={isCreateOpen}
+        onOpenChange={(open) => {
+          if (!open && isSaving) return
+          setIsCreateOpen(open)
+          if (!open) resetCreate()
+        }}
+      >
+        <DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 bg-white p-0 shadow-2xl sm:max-w-3xl [&>button]:cursor-pointer">
+          <DialogHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
+            />
+            <div className="relative pr-10">
+              <div className="flex max-w-2xl min-w-0 flex-col gap-1.5">
+                <p className="text-xs font-semibold text-blue-700">Service purchase</p>
+                <DialogTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                  Purchase a service
+                </DialogTitle>
+                <DialogDescription className="max-w-xl text-sm leading-6 text-slate-600">
+                  Choose the service, assign delivery and follow-up ownership, then confirm payment.
+                </DialogDescription>
+              </div>
+            </div>
           </DialogHeader>
-          <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto py-1 pr-1">
-            <div className="flex items-center gap-2">
+          <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+            <div className="grid grid-cols-4 gap-2" aria-label={`Step ${createStep} of 4`}>
               {[
                 { value: 1, label: "Service" },
                 { value: 2, label: "Follow up" },
@@ -1624,66 +1764,58 @@ export function ContactServicesPanel({
                 const isComplete = createStep > item.value
 
                 return (
-                  <div key={item.value} className="flex items-center gap-2">
+                  <div key={item.value} className="flex min-w-0 flex-col gap-1.5">
                     <div
-                      className={
+                      className={cn(
+                        "h-1.5 rounded-full",
                         isActive
-                          ? "flex h-8 min-w-8 items-center justify-center rounded-full bg-blue-950 px-3 text-xs font-semibold text-white"
+                          ? "bg-blue-950"
                           : isComplete
-                            ? "flex h-8 min-w-8 items-center justify-center rounded-full bg-blue-100 px-3 text-xs font-semibold text-blue-900"
-                            : "flex h-8 min-w-8 items-center justify-center rounded-full bg-slate-100 px-3 text-xs font-semibold text-slate-500"
-                      }
-                    >
-                      {item.value}
-                    </div>
+                            ? "bg-blue-300"
+                            : "bg-slate-200",
+                      )}
+                      aria-hidden="true"
+                    />
                     <span
-                      className={
-                        isActive
-                          ? "text-sm font-medium text-slate-900"
-                          : "text-sm text-slate-500"
-                      }
+                      className={cn(
+                        "truncate text-xs font-medium",
+                        isActive ? "text-slate-950" : "text-slate-500",
+                      )}
                     >
-                      {item.label}
+                      {item.value}. {item.label}
                     </span>
-                    {item.value < 4 ? <div className="mx-1 h-px w-6 bg-slate-200" /> : null}
                   </div>
                 )
               })}
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <div className="space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                  Current transaction
+            <div className="mt-5 flex items-center justify-between gap-4 border-b border-slate-200 pb-4">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <p className="text-xs font-medium text-slate-500">Selected service</p>
+                <p className="truncate text-sm font-semibold text-slate-950">
+                  {createServiceDetails?.name ?? "Choose a service to continue"}
                 </p>
-                <p className="text-sm text-slate-600">
-                  Contact: <span className="font-medium text-slate-900">Current contact</span>
-                </p>
-                {createServiceDetails ? (
-                  <p className="text-sm text-slate-600">
-                    Service:{" "}
-                    <span className="font-medium text-slate-900">
-                      {createServiceDetails.name}
-                    </span>
-                  </p>
-                ) : null}
               </div>
+              <span className="shrink-0 text-xs font-medium tabular-nums text-slate-500">
+                Step {createStep} of 4
+              </span>
             </div>
 
             {createStep === 1 ? (
-              <section className="space-y-3">
-                <div className="rounded-2xl border border-blue-100 bg-blue-50/70 p-3.5">
-                  <p className="text-sm font-semibold text-blue-950">
-                    Start by choosing the service
-                  </p>
-                  <p className="mt-1 text-sm leading-5 text-blue-900/80">
+              <section className="mt-6 flex flex-col gap-5">
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs font-semibold text-blue-700">Service and delivery</p>
+                  <h3 className="text-base font-semibold text-slate-950">
+                    Choose what this contact is purchasing
+                  </h3>
+                  <p className="text-sm leading-6 text-slate-600">
                     This decides the price, payment rules, checklist items, and the professionals available for this transaction.
                   </p>
                 </div>
 
                 {hasRunFitScan && shortlistedFitRecommendations.length ? (
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div className="space-y-1">
+                    <div className="flex flex-col gap-1">
                       <p className="text-sm font-semibold text-slate-900">
                         Recommended for this contact
                       </p>
@@ -1710,7 +1842,7 @@ export function ContactServicesPanel({
                           }}
                         >
                           <div className="flex items-start justify-between gap-2">
-                            <div className="space-y-1">
+                            <div className="flex min-w-0 flex-col gap-1">
                               <p className="text-sm font-semibold text-slate-900">
                                 {item.serviceName}
                               </p>
@@ -1741,9 +1873,16 @@ export function ContactServicesPanel({
                   title="Which service is this contact buying?"
                   description="Pick the service first. Then review its payment setup and optionally assign the professional delivering it."
                 >
-                  <div className="grid gap-2">
-                    <Label htmlFor="contact-service-transaction-service">Service</Label>
-                    <Select
+                  <Field
+                    data-invalid={Boolean(createErrors.serviceId)}
+                    data-disabled={isLoadingServiceOptions || isSaving}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="contact-service-transaction-service">
+                      Service
+                    </FieldLabel>
+                    <ServicePicker
+                      services={serviceOptions}
                       value={createServiceId}
                       onValueChange={(value) => {
                         clearCreateError("serviceId")
@@ -1751,27 +1890,15 @@ export function ContactServicesPanel({
                         setCreateTemplateId("")
                         setCreateAssignedProfessionalId("")
                       }}
-                      disabled={isLoadingServiceOptions}
-                    >
-                      <SelectTrigger id="contact-service-transaction-service" className="cursor-pointer">
-                        <SelectValue
-                          placeholder={
-                            isLoadingServiceOptions ? "Loading services..." : "Select a service"
-                          }
-                        />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {serviceOptions.map((service) => (
-                          <SelectItem key={service.id} value={service.id} className="cursor-pointer">
-                            {service.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {createErrors.serviceId ? (
-                      <p className="text-xs text-rose-600">{createErrors.serviceId}</p>
-                    ) : null}
-                  </div>
+                      disabled={isLoadingServiceOptions || isSaving}
+                      isLoading={isLoadingServiceOptions}
+                      ariaInvalid={Boolean(createErrors.serviceId)}
+                    />
+                    <FieldDescription>
+                      Search by service name. Selecting a service loads its price, workflow, and professionals.
+                    </FieldDescription>
+                    <FieldError>{createErrors.serviceId}</FieldError>
+                  </Field>
                 </FlowStepCard>
 
                 <FlowStepCard
@@ -1780,52 +1907,56 @@ export function ContactServicesPanel({
                   description="Optional. Use this when someone should own or deliver the service from the start."
                   disabled={!createServiceId}
                 >
-                  <div className="grid gap-2">
-                    <Label htmlFor="contact-service-transaction-professional">Professional</Label>
+                  <Field
+                    data-invalid={Boolean(createErrors.assignedProfessionalId)}
+                    data-disabled={!createServiceDetails || isLoadingServiceDetails || isSaving}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="contact-service-transaction-professional">
+                      Professional <span className="font-normal text-slate-500">(optional)</span>
+                    </FieldLabel>
                     <AssignedProfessionalPicker
+                      id="contact-service-transaction-professional"
                       professionals={createServiceDetails?.professionals ?? []}
                       value={createAssignedProfessionalId}
                       onValueChange={(value) => {
                         clearCreateError("assignedProfessionalId")
                         setCreateAssignedProfessionalId(value)
                       }}
-                      disabled={!createServiceDetails}
+                      disabled={!createServiceDetails || isLoadingServiceDetails || isSaving}
+                      ariaInvalid={Boolean(createErrors.assignedProfessionalId)}
                     />
                     {!createServiceId ? (
-                      <p className="text-xs text-slate-500">
+                      <FieldDescription>
                         Choose a service first to load the professionals linked to it.
-                      </p>
+                      </FieldDescription>
+                    ) : isLoadingServiceDetails ? (
+                      <FieldDescription>Loading service professionals...</FieldDescription>
                     ) : createServiceDetails && createServiceDetails.professionals.length === 0 ? (
-                      <p className="text-xs text-slate-500">
+                      <FieldDescription>
                         This service does not have professionals configured yet.
-                      </p>
+                      </FieldDescription>
                     ) : (
-                      <p className="text-xs text-slate-500">
+                      <FieldDescription>
                         You can leave this unassigned and decide later.
-                      </p>
+                      </FieldDescription>
                     )}
-                    {createErrors.assignedProfessionalId ? (
-                      <p className="text-xs text-rose-600">
-                        {createErrors.assignedProfessionalId}
-                      </p>
-                    ) : null}
-                  </div>
+                    <FieldError>{createErrors.assignedProfessionalId}</FieldError>
+                  </Field>
                 </FlowStepCard>
 
                 {createServiceDetails ? (
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                      Service snapshot
-                    </p>
-                    <p className="mt-1 text-sm font-medium text-slate-900">
+                  <div className="flex flex-col gap-1 border-l-2 border-blue-200 py-1 pl-4">
+                    <p className="text-xs font-semibold text-blue-700">Service summary</p>
+                    <p className="text-sm font-medium text-slate-900">
                       {createServiceDetails.name}
                     </p>
-                    <p className="mt-2 text-sm text-slate-600">
+                    <p className="text-sm text-slate-600">
                       {currencyFormatter(createServiceTotalCents ?? createServiceDetails.basePriceCents, createServiceDetails.currency)}
                     </p>
                     {createServiceTotalCents !== null &&
                     createServiceTotalCents !== createServiceDetails.basePriceCents ? (
-                      <p className="mt-1 text-xs text-slate-500">
+                      <p className="text-xs text-slate-500">
                         Includes {createServiceDetails.tenantBilling.taxLabel || "tax"} at{" "}
                         {(createServiceDetails.tenantBilling.defaultTaxRatePercent ?? 0)
                           .toFixed(2)
@@ -1833,7 +1964,7 @@ export function ContactServicesPanel({
                         %.
                       </p>
                     ) : null}
-                    <p className="mt-1 text-sm text-slate-500">
+                    <p className="text-sm text-slate-500">
                       {createServiceDetails.allowPartialPayments
                         ? createServiceDetails.installmentCount && createServiceDetails.installmentFrequency
                           ? `Minimum deposit ${currencyFormatter(createServiceDetails.minimumPartialPaymentCents ?? 0, createServiceDetails.currency)} · ${createServiceDetails.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[createServiceDetails.installmentFrequency].toLowerCase()} installments`
@@ -1846,12 +1977,13 @@ export function ContactServicesPanel({
             ) : null}
 
             {createStep === 2 ? (
-              <section className="space-y-3">
-                <div className="rounded-2xl border border-violet-100 bg-violet-50/70 p-3.5">
-                  <p className="text-sm font-semibold text-violet-950">
-                    Set up the follow-up workflow
-                  </p>
-                  <p className="mt-1 text-sm leading-5 text-violet-900/80">
+              <section className="mt-6 flex flex-col gap-5">
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs font-semibold text-blue-700">Follow-up workflow</p>
+                  <h3 className="text-base font-semibold text-slate-950">
+                    Set up the service follow-up
+                  </h3>
+                  <p className="text-sm leading-6 text-slate-600">
                     Choose which follow-up template should start and who should be in charge of the follow-up work.
                   </p>
                 </div>
@@ -1862,47 +1994,57 @@ export function ContactServicesPanel({
                   description="Use the default published template or choose a different published template for this transaction."
                   disabled={!createServiceId}
                 >
-                  <div className="grid gap-2">
-                    <Label htmlFor="contact-service-transaction-template">Follow-Up Template</Label>
+                  <Field
+                    data-invalid={Boolean(createErrors.templateId)}
+                    data-disabled={!createServiceDetails || isSaving}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="contact-service-transaction-template">
+                      Follow-up template
+                    </FieldLabel>
                     <Select
                       value={createTemplateId || "default"}
                       onValueChange={(value) => {
                         clearCreateError("templateId")
                         setCreateTemplateId(value === "default" ? "" : value)
                       }}
-                      disabled={!createServiceDetails}
+                      disabled={!createServiceDetails || isSaving}
                     >
-                      <SelectTrigger id="contact-service-transaction-template" className="cursor-pointer">
+                      <SelectTrigger
+                        id="contact-service-transaction-template"
+                        aria-invalid={Boolean(createErrors.templateId)}
+                        className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none data-[size=default]:h-11"
+                      >
                         <SelectValue placeholder="Use default template selection" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="default" className="cursor-pointer">
-                          Use default published template
-                        </SelectItem>
-                        {(createServiceDetails?.followUpTemplates ?? []).map((template) => (
-                          <SelectItem key={template.id} value={template.id} className="cursor-pointer">
-                            {template.name}
+                        <SelectGroup>
+                          <SelectItem value="default" className="cursor-pointer">
+                            Use default published template
                           </SelectItem>
-                        ))}
+                          {(createServiceDetails?.followUpTemplates ?? []).map((template) => (
+                            <SelectItem key={template.id} value={template.id} className="cursor-pointer">
+                              {template.name}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                     {!createServiceId ? (
-                      <p className="text-xs text-slate-500">
+                      <FieldDescription>
                         Choose a service first to load its available follow-up templates.
-                      </p>
+                      </FieldDescription>
                     ) : (createServiceDetails?.followUpTemplates.length ?? 0) === 0 ? (
-                      <p className="text-xs text-slate-500">
+                      <FieldDescription>
                         No published templates are available for this service. The transaction can still proceed if the service has default follow-up steps.
-                      </p>
+                      </FieldDescription>
                     ) : (
-                      <p className="text-xs text-slate-500">
+                      <FieldDescription>
                         Leaving this on default uses the service&apos;s standard published template.
-                      </p>
+                      </FieldDescription>
                     )}
-                    {createErrors.templateId ? (
-                      <p className="text-xs text-rose-600">{createErrors.templateId}</p>
-                    ) : null}
-                  </div>
+                    <FieldError>{createErrors.templateId}</FieldError>
+                  </Field>
                 </FlowStepCard>
 
                 <FlowStepCard
@@ -1911,45 +2053,50 @@ export function ContactServicesPanel({
                   description="Optional. This user will be assigned to the follow-up steps created from the selected template."
                   disabled={!createServiceId}
                 >
-                  <div className="grid gap-2">
-                    <Label htmlFor="contact-service-transaction-follow-up-owner">Follow-Up Owner</Label>
+                  <Field
+                    data-invalid={Boolean(createErrors.followUpAssignedToUserId)}
+                    data-disabled={!createServiceId || isLoadingAssignees || isSaving}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="contact-service-transaction-follow-up-owner">
+                      Follow-up owner <span className="font-normal text-slate-500">(optional)</span>
+                    </FieldLabel>
                     <FollowUpAssigneePicker
+                      id="contact-service-transaction-follow-up-owner"
                       assignees={followUpAssigneeOptions}
                       value={createFollowUpAssignedToUserId}
                       onValueChange={(value) => {
                         clearCreateError("followUpAssignedToUserId")
                         setCreateFollowUpAssignedToUserId(value)
                       }}
-                      disabled={!createServiceId || isLoadingAssignees}
+                      disabled={!createServiceId || isLoadingAssignees || isSaving}
+                      ariaInvalid={Boolean(createErrors.followUpAssignedToUserId)}
                     />
                     {!createServiceId ? (
-                      <p className="text-xs text-slate-500">
+                      <FieldDescription>
                         Choose a service first before assigning follow-up ownership.
-                      </p>
+                      </FieldDescription>
                     ) : isLoadingAssignees ? (
-                      <p className="text-xs text-slate-500">Loading tenant users...</p>
+                      <FieldDescription>Loading tenant users...</FieldDescription>
                     ) : (
-                      <p className="text-xs text-slate-500">
+                      <FieldDescription>
                         You can leave this unassigned and route follow-up later.
-                      </p>
+                      </FieldDescription>
                     )}
-                    {createErrors.followUpAssignedToUserId ? (
-                      <p className="text-xs text-rose-600">
-                        {createErrors.followUpAssignedToUserId}
-                      </p>
-                    ) : null}
-                  </div>
+                    <FieldError>{createErrors.followUpAssignedToUserId}</FieldError>
+                  </Field>
                 </FlowStepCard>
               </section>
             ) : null}
 
             {createStep === 3 ? (
-              <section className="grid gap-4">
-                <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4">
-                  <p className="text-sm font-semibold text-emerald-950">
+              <section className="mt-6 grid gap-4">
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs font-semibold text-blue-700">Service checklist</p>
+                  <h3 className="text-base font-semibold text-slate-950">
                     Review what needs to be completed for this service
-                  </p>
-                  <p className="mt-1 text-sm leading-6 text-emerald-900/80">
+                  </h3>
+                  <p className="text-sm leading-6 text-slate-600">
                     These checklist items will be attached to the current contact when the transaction is created.
                   </p>
                 </div>
@@ -1979,7 +2126,7 @@ export function ContactServicesPanel({
                               {index + 1}
                             </TableCell>
                             <TableCell className="align-middle">
-                              <div className="space-y-0.5">
+                              <div className="flex flex-col gap-0.5">
                                 <p className="text-sm font-medium text-slate-900">{item.label}</p>
                                 {item.description ? (
                                   <p className="text-sm text-slate-500">{item.description}</p>
@@ -2017,10 +2164,25 @@ export function ContactServicesPanel({
             ) : null}
 
             {createStep === 4 ? (
-              <section className="grid gap-4">
-                <div className="grid gap-4 lg:grid-cols-2">
-                  <div className="grid gap-2">
-                    <Label htmlFor="contact-service-transaction-payment-type">Payment Type</Label>
+              <section className="mt-6 grid gap-5">
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs font-semibold text-blue-700">Payment</p>
+                  <h3 className="text-base font-semibold text-slate-950">
+                    Confirm the purchase details
+                  </h3>
+                  <p className="text-sm leading-6 text-slate-600">
+                    Review the service cost, choose how payment will be handled, and add any final context.
+                  </p>
+                </div>
+                <FieldGroup className="grid gap-4 sm:grid-cols-2">
+                  <Field
+                    data-invalid={Boolean(createErrors.paymentMode)}
+                    data-disabled={isSaving}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="contact-service-transaction-payment-type">
+                      Payment type
+                    </FieldLabel>
                     <Select
                       value={createPaymentMode}
                       onValueChange={(value) => {
@@ -2028,34 +2190,41 @@ export function ContactServicesPanel({
                         clearCreateError("initialPaymentUsd")
                         setCreatePaymentMode(value as "FULL" | "PARTIAL" | "LATER")
                       }}
+                      disabled={isSaving}
                     >
-                      <SelectTrigger id="contact-service-transaction-payment-type" className="cursor-pointer">
+                      <SelectTrigger
+                        id="contact-service-transaction-payment-type"
+                        aria-invalid={Boolean(createErrors.paymentMode)}
+                        className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none data-[size=default]:h-11"
+                      >
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="FULL" className="cursor-pointer">Pay in Full</SelectItem>
-                        <SelectItem
-                          value="PARTIAL"
-                          disabled={!createServiceDetails?.allowPartialPayments}
-                          className="cursor-pointer"
-                        >
-                          Partial Payment
-                        </SelectItem>
-                        <SelectItem value="LATER" className="cursor-pointer">Pay Later</SelectItem>
+                        <SelectGroup>
+                          <SelectItem value="FULL" className="cursor-pointer">Pay in full</SelectItem>
+                          <SelectItem
+                            value="PARTIAL"
+                            disabled={!createServiceDetails?.allowPartialPayments}
+                            className="cursor-pointer"
+                          >
+                            Partial payment
+                          </SelectItem>
+                          <SelectItem value="LATER" className="cursor-pointer">Pay later</SelectItem>
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                     {!createServiceDetails?.allowPartialPayments ? (
-                      <p className="text-xs text-slate-500">
+                      <FieldDescription>
                         This service supports full payment or pay later only.
-                      </p>
+                      </FieldDescription>
                     ) : null}
-                    {createErrors.paymentMode ? (
-                      <p className="text-xs text-rose-600">{createErrors.paymentMode}</p>
-                    ) : null}
-                  </div>
+                    <FieldError>{createErrors.paymentMode}</FieldError>
+                  </Field>
 
-                  <div className="grid gap-2">
-                    <Label htmlFor="contact-service-transaction-cost">Service Cost</Label>
+                  <Field className="gap-2">
+                    <FieldLabel htmlFor="contact-service-transaction-cost">
+                      Service cost
+                    </FieldLabel>
                     <Input
                       id="contact-service-transaction-cost"
                       value={
@@ -2064,10 +2233,10 @@ export function ContactServicesPanel({
                           : ""
                       }
                       readOnly
-                      className="bg-slate-50 text-slate-600"
+                      className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 text-slate-600 shadow-none"
                     />
-                  </div>
-                </div>
+                  </Field>
+                </FieldGroup>
 
                 <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
                   {createServiceDetails?.allowPartialPayments ? (
@@ -2113,11 +2282,15 @@ export function ContactServicesPanel({
                   </div>
                 ) : null}
 
-                <div className="grid gap-4 lg:grid-cols-2">
-                  <div className="grid gap-2">
-                    <Label htmlFor="contact-service-transaction-payment-now">
+                <FieldGroup className="grid gap-4 sm:grid-cols-2">
+                  <Field
+                    data-invalid={Boolean(createErrors.initialPaymentUsd)}
+                    data-disabled={isSaving}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="contact-service-transaction-payment-now">
                       {createPaymentMode === "PARTIAL" ? "Partial Payment Amount" : "Payment Now"}
-                    </Label>
+                    </FieldLabel>
                     <Input
                       id="contact-service-transaction-payment-now"
                       value={
@@ -2134,27 +2307,36 @@ export function ContactServicesPanel({
                         setCreateInitialPaymentUsd(event.target.value)
                       }}
                       readOnly={createPaymentMode !== "PARTIAL"}
+                      disabled={isSaving}
+                      aria-invalid={Boolean(createErrors.initialPaymentUsd)}
                       inputMode="decimal"
                       placeholder="0.00"
-                      className={createPaymentMode === "PARTIAL" ? undefined : "bg-slate-50 text-slate-600"}
+                      className={cn(
+                        "h-11 rounded-xl border-slate-200 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100",
+                        createPaymentMode === "PARTIAL"
+                          ? "bg-slate-50/60"
+                          : "bg-slate-50 text-slate-600",
+                      )}
                     />
                     {createPaymentMode === "PARTIAL" &&
                     createServiceDetails?.minimumPartialPaymentCents ? (
-                      <p className="text-xs text-slate-500">
+                      <FieldDescription>
                         Minimum partial payment:{" "}
                         {currencyFormatter(
                           createServiceDetails.minimumPartialPaymentCents,
                           createServiceDetails.currency,
                         )}
-                      </p>
+                      </FieldDescription>
                     ) : null}
-                    {createErrors.initialPaymentUsd ? (
-                      <p className="text-xs text-rose-600">{createErrors.initialPaymentUsd}</p>
-                    ) : null}
-                  </div>
+                    <FieldError>{createErrors.initialPaymentUsd}</FieldError>
+                  </Field>
 
-                  <div className="grid gap-2">
-                    <Label htmlFor="contact-service-transaction-notes">Notes</Label>
+                  <Field
+                    data-invalid={Boolean(createErrors.notes)}
+                    data-disabled={isSaving}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="contact-service-transaction-notes">Notes</FieldLabel>
                     <Textarea
                       id="contact-service-transaction-notes"
                       value={createNotes}
@@ -2163,59 +2345,61 @@ export function ContactServicesPanel({
                         setCreateNotes(event.target.value)
                       }}
                       rows={3}
+                      disabled={isSaving}
+                      aria-invalid={Boolean(createErrors.notes)}
                       placeholder="Add context for this service purchase"
+                      className="min-h-28 resize-y rounded-xl border-slate-200 bg-slate-50/60 px-4 py-3 leading-6 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
                     />
-                    {createErrors.notes ? (
-                      <p className="text-xs text-rose-600">{createErrors.notes}</p>
-                    ) : null}
-                  </div>
-                </div>
+                    <FieldError>{createErrors.notes}</FieldError>
+                  </Field>
+                </FieldGroup>
               </section>
             ) : null}
           </div>
-          <DialogFooter className="shrink-0 gap-2 border-t border-slate-200 pt-4 sm:justify-between">
-            <div className="text-sm text-slate-500">
+          <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
+            <div className="text-sm text-slate-500 sm:mr-auto">
               {createStep === 1 ? "Choose the service first." : "Review the details before continuing."}
             </div>
-            <div className="flex items-center gap-2">
-              {createStep > 1 ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={onPreviousCreateStep}
-                  className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
-                >
-                  Back
-                </Button>
-              ) : null}
+            {createStep > 1 ? (
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setIsCreateOpen(false)}
+                onClick={onPreviousCreateStep}
                 disabled={isSaving}
-                className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
               >
-                Cancel
+                Back
               </Button>
-              {createStep < 4 ? (
-                <Button
-                  type="button"
-                  onClick={onNextCreateStep}
-                  className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
-                >
-                  Next
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  onClick={() => void onCreate()}
-                  disabled={isSaving}
-                  className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
-                >
-                  {isSaving ? "Creating..." : "Create transaction"}
-                </Button>
-              )}
-            </div>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsCreateOpen(false)}
+              disabled={isSaving}
+            >
+              Cancel
+            </Button>
+            {createStep < 4 ? (
+              <Button
+                type="button"
+                onClick={onNextCreateStep}
+                disabled={isSaving}
+                className="min-w-28 bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+              >
+                Next
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                onClick={() => void onCreate()}
+                disabled={isSaving}
+                className="min-w-40 bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+              >
+                {isSaving ? (
+                  <Loader2 data-icon="inline-start" className="animate-spin" />
+                ) : null}
+                {isSaving ? "Creating..." : "Purchase service"}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
