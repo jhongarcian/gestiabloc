@@ -36,14 +36,6 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet"
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import {
@@ -71,6 +63,7 @@ type CreateTaskDialogProps = {
   onCreated?: () => Promise<void> | void
   initialContact?: ContactSearchItem | null
   lockContact?: boolean
+  hideContact?: boolean
   triggerLabel?: string
   trigger?: ReactNode
 }
@@ -102,18 +95,29 @@ type ContactSearchResponse = {
   items: ContactSearchItem[]
 }
 
-type LinkedEntityOption = {
+type LinkedServiceOption = {
   id: string
   name: string
-  type: "SERVICE" | "PRODUCT"
+  type: "SERVICE"
 }
 
-type LinkedEntityOptionsResponse = {
+type LinkedServiceOptionsResponse = {
   ok: boolean
-  items: LinkedEntityOption[]
+  items: LinkedServiceOption[]
 }
 
 const ALL_STATUS_VALUE = "ALL"
+const SERVICE_SEARCH_LIMIT = 5
+const SERVICE_SEARCH_DEBOUNCE_MS = 250
+
+function sanitizeServiceSearchInput(value: string) {
+  return value
+    .normalize("NFKC")
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .replace(/\s+/g, " ")
+    .replace(/^\s+/, "")
+    .slice(0, 120)
+}
 
 function getInitials(name: string) {
   const initials = name
@@ -153,6 +157,7 @@ export function CreateTaskDialog({
   onCreated,
   initialContact = null,
   lockContact = false,
+  hideContact = false,
   triggerLabel = "Create Task",
   trigger,
 }: CreateTaskDialogProps) {
@@ -177,11 +182,13 @@ export function CreateTaskDialog({
   const [assignedToUserId, setAssignedToUserId] = useState<string>("__UNASSIGNED__")
   const [assigneePickerOpen, setAssigneePickerOpen] = useState(false)
   const [statusConfigId, setStatusConfigId] = useState<string | undefined>(undefined)
-  const [linkedEntityType, setLinkedEntityType] = useState<"__none__" | "SERVICE" | "PRODUCT">(
-    "__none__",
-  )
-  const [linkedEntityName, setLinkedEntityName] = useState("")
-  const [linkedEntityOptions, setLinkedEntityOptions] = useState<LinkedEntityOption[]>([])
+  const [selectedLinkedService, setSelectedLinkedService] =
+    useState<LinkedServiceOption | null>(null)
+  const [servicePickerOpen, setServicePickerOpen] = useState(false)
+  const [serviceQuery, setServiceQuery] = useState("")
+  const [debouncedServiceQuery, setDebouncedServiceQuery] = useState("")
+  const [linkedServiceOptions, setLinkedServiceOptions] = useState<LinkedServiceOption[]>([])
+  const [isSearchingServices, setIsSearchingServices] = useState(false)
   const [dueDateInput, setDueDateInput] = useState<DateTimeDraft>({ date: "", time: "" })
   const [startedAtInput, setStartedAtInput] = useState<DateTimeDraft>({ date: "", time: "" })
   const [reminderAtInput, setReminderAtInput] = useState<DateTimeDraft>({
@@ -201,6 +208,7 @@ export function CreateTaskDialog({
   const dialogDescription = lockContact
     ? "Create, assign, and schedule work already attached to this contact."
     : "Create, assign, and schedule work for a tenant contact."
+  const shouldHideContact = hideContact && Boolean(initialContact)
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -266,8 +274,12 @@ export function CreateTaskDialog({
     setAssignedToUserId("__UNASSIGNED__")
     setAssigneePickerOpen(false)
     setStatusConfigId(undefined)
-    setLinkedEntityType("__none__")
-    setLinkedEntityName("")
+    setSelectedLinkedService(null)
+    setServicePickerOpen(false)
+    setServiceQuery("")
+    setDebouncedServiceQuery("")
+    setLinkedServiceOptions([])
+    setIsSearchingServices(false)
     setDueDateInput({ date: "", time: "" })
     setStartedAtInput(getDefaultStartedAtDraft())
     setReminderAtInput({ date: "", time: "" })
@@ -325,13 +337,6 @@ export function CreateTaskDialog({
       }
     }
 
-    if (
-      (linkedEntityType === "__none__" && linkedEntityName.trim()) ||
-      (linkedEntityType !== "__none__" && !linkedEntityName.trim())
-    ) {
-      nextErrors.linkedEntity = "Select a type and enter a matching name."
-    }
-
     setFieldErrors(nextErrors)
     return Object.keys(nextErrors).length === 0
   }
@@ -356,8 +361,8 @@ export function CreateTaskDialog({
         assignedToUserId:
           assignedToUserId === "__UNASSIGNED__" ? null : assignedToUserId,
         statusConfigId: statusConfigId ?? null,
-        linkedEntityName: linkedEntityName.trim() || null,
-        linkedEntityType: linkedEntityType === "__none__" ? null : linkedEntityType,
+        linkedEntityName: selectedLinkedService?.name ?? null,
+        linkedEntityType: selectedLinkedService ? "SERVICE" : null,
         dueDate,
         startedAt,
         reminderAt,
@@ -434,9 +439,9 @@ export function CreateTaskDialog({
         ) {
           setFieldErrors((prev) => ({
             ...prev,
-            linkedEntity: "Select a type and enter a matching name.",
+            linkedEntity: "Select a service or leave this field empty.",
           }))
-          toast.error("Service/Product information is incomplete.")
+          toast.error("Service information is incomplete.")
         } else if (typeof backendError === "string") {
           toast.error(backendError.replace(/_/g, " "))
         } else {
@@ -463,23 +468,45 @@ export function CreateTaskDialog({
   }, [getDefaultStartedAtDraft, open, startedAtInput])
 
   useEffect(() => {
-    if (!open) return
+    if (!servicePickerOpen) return
+
+    const timeout = window.setTimeout(() => {
+      setDebouncedServiceQuery(sanitizeServiceSearchInput(serviceQuery).trim())
+    }, SERVICE_SEARCH_DEBOUNCE_MS)
+
+    return () => {
+      window.clearTimeout(timeout)
+    }
+  }, [servicePickerOpen, serviceQuery])
+
+  useEffect(() => {
+    if (!servicePickerOpen) return
 
     let cancelled = false
     void (async () => {
+      setIsSearchingServices(true)
+
       try {
-        const { data } = await api.get<LinkedEntityOptionsResponse>(
+        const { data } = await api.get<LinkedServiceOptionsResponse>(
           `/api/services-products/${tenantId}/options`,
           {
-            params: { limit: 100 },
+            params: {
+              q: debouncedServiceQuery || undefined,
+              type: "SERVICE",
+              limit: SERVICE_SEARCH_LIMIT,
+            },
           },
         )
         if (!cancelled) {
-          setLinkedEntityOptions(data.items)
+          setLinkedServiceOptions(data.items.slice(0, SERVICE_SEARCH_LIMIT))
         }
       } catch {
         if (!cancelled) {
-          setLinkedEntityOptions([])
+          setLinkedServiceOptions([])
+        }
+      } finally {
+        if (!cancelled) {
+          setIsSearchingServices(false)
         }
       }
     })()
@@ -487,7 +514,7 @@ export function CreateTaskDialog({
     return () => {
       cancelled = true
     }
-  }, [open, tenantId])
+  }, [debouncedServiceQuery, servicePickerOpen, tenantId])
 
   const startDateKey = getDraftDateKey(startedAtInput)
   const dueDateKey = getDraftDateKey(dueDateInput)
@@ -503,7 +530,9 @@ export function CreateTaskDialog({
             What needs to happen?
           </h3>
           <p className="text-sm leading-6 text-slate-600">
-            Give the task a clear name, connect it to a contact, and add useful context.
+            {shouldHideContact
+              ? "Give the task a clear name and add the context your team needs."
+              : "Give the task a clear name, connect it to a contact, and add useful context."}
           </p>
         </div>
 
@@ -521,20 +550,19 @@ export function CreateTaskDialog({
                 setName(event.target.value)
                 setFieldErrors((current) => ({ ...current, name: undefined }))
               }}
-              placeholder="Follow up on contract review"
               disabled={isSubmitting}
               aria-invalid={Boolean(fieldErrors.name)}
               className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
             />
-            <FieldDescription>Use a short action your team can recognize quickly.</FieldDescription>
             <FieldError>{fieldErrors.name}</FieldError>
           </Field>
 
-          <Field
-            data-invalid={Boolean(fieldErrors.contactId)}
-            data-disabled={isSubmitting}
-            className="gap-2"
-          >
+          {!shouldHideContact ? (
+            <Field
+              data-invalid={Boolean(fieldErrors.contactId)}
+              data-disabled={isSubmitting}
+              className="gap-2"
+            >
             <FieldLabel htmlFor="create-task-contact">Contact</FieldLabel>
             {lockContact && selectedContact ? (
               <div
@@ -621,7 +649,8 @@ export function CreateTaskDialog({
                 : "Type at least two characters to find a contact."}
             </FieldDescription>
             <FieldError>{fieldErrors.contactId}</FieldError>
-          </Field>
+            </Field>
+          ) : null}
 
           <Field
             data-invalid={Boolean(fieldErrors.description)}
@@ -639,13 +668,11 @@ export function CreateTaskDialog({
                   description: undefined,
                 }))
               }}
-              placeholder="Add optional instructions, context, or expected next steps."
               rows={4}
               disabled={isSubmitting}
               aria-invalid={Boolean(fieldErrors.description)}
               className="min-h-28 resize-y rounded-xl border-slate-200 bg-slate-50/60 px-4 py-3 leading-6 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
             />
-            <FieldDescription>Optional details for the assignee or team.</FieldDescription>
             <FieldError>{fieldErrors.description}</FieldError>
           </Field>
         </FieldGroup>
@@ -819,80 +846,159 @@ export function CreateTaskDialog({
             Related work
           </p>
           <h3 className="text-base font-semibold text-slate-950">
-            Connect a service or product
+            Connect a service
           </h3>
           <p className="text-sm leading-6 text-slate-600">
-            Optionally associate this task with an item from the tenant catalog.
+            Optionally associate this task with a service from the tenant catalog.
           </p>
         </div>
 
         <Field
           data-invalid={Boolean(fieldErrors.linkedEntity)}
           data-disabled={isSubmitting}
-          className="gap-3"
+          className="gap-2"
         >
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-2">
-              <FieldLabel htmlFor="create-task-linked-type">Item type</FieldLabel>
-              <Select
-                value={linkedEntityType}
-                onValueChange={(value) => {
-                  setLinkedEntityType(value as "__none__" | "SERVICE" | "PRODUCT")
-                  setFieldErrors((current) => ({
-                    ...current,
-                    linkedEntity: undefined,
-                  }))
-                }}
-                disabled={isSubmitting}
-              >
-                <SelectTrigger
-                  id="create-task-linked-type"
-                  aria-invalid={Boolean(fieldErrors.linkedEntity)}
-                  className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
-                >
-                  <SelectValue placeholder="No linked item" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="__none__">No linked item</SelectItem>
-                    <SelectItem value="SERVICE">Service</SelectItem>
-                    <SelectItem value="PRODUCT">Product</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <FieldLabel htmlFor="create-task-linked-name">Item name</FieldLabel>
-              <Input
-                id="create-task-linked-name"
-                value={linkedEntityName}
-                onChange={(event) => {
-                  setLinkedEntityName(event.target.value)
-                  setFieldErrors((current) => ({
-                    ...current,
-                    linkedEntity: undefined,
-                  }))
-                }}
-                placeholder="Type or select from catalog"
-                list="create-task-linked-name-options"
+          <FieldLabel htmlFor="create-task-linked-service">
+            Service <span className="font-normal text-slate-500">(optional)</span>
+          </FieldLabel>
+          <Popover
+            open={servicePickerOpen}
+            onOpenChange={(nextOpen) => {
+              setServicePickerOpen(nextOpen)
+              if (!nextOpen) {
+                setServiceQuery("")
+                setDebouncedServiceQuery("")
+              }
+            }}
+          >
+            <PopoverTrigger asChild>
+              <Button
+                id="create-task-linked-service"
+                type="button"
+                variant="outline"
                 disabled={isSubmitting}
                 aria-invalid={Boolean(fieldErrors.linkedEntity)}
-                className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
-              />
-              <datalist id="create-task-linked-name-options">
-                {linkedEntityOptions
-                  .filter(
-                    (option) =>
-                      linkedEntityType === "__none__" || option.type === linkedEntityType,
-                  )
-                  .map((option) => (
-                    <option key={option.id} value={option.name} />
-                  ))}
-              </datalist>
-            </div>
-          </div>
-          <FieldDescription>Select both a type and matching name, or leave both empty.</FieldDescription>
+                aria-expanded={servicePickerOpen}
+                className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+              >
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <Avatar size="sm" className="ring-2 ring-blue-50">
+                    <AvatarFallback className="bg-blue-50 font-semibold text-blue-950">
+                      {selectedLinkedService
+                        ? getInitials(selectedLinkedService.name)
+                        : "—"}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="truncate font-medium text-slate-800">
+                    {selectedLinkedService?.name ?? "No linked service"}
+                  </span>
+                </span>
+                <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="start"
+              className="w-[var(--radix-popover-trigger-width)] p-0"
+            >
+              <Command shouldFilter={false}>
+                <CommandInput
+                  value={serviceQuery}
+                  onValueChange={(value) => {
+                    setServiceQuery(sanitizeServiceSearchInput(value))
+                    setFieldErrors((current) => ({
+                      ...current,
+                      linkedEntity: undefined,
+                    }))
+                  }}
+                  placeholder="Search services..."
+                  disabled={isSubmitting}
+                />
+                <CommandList>
+                  <CommandGroup heading="Services">
+                    <CommandItem
+                      value="No linked service"
+                      onSelect={() => {
+                        setSelectedLinkedService(null)
+                        setServicePickerOpen(false)
+                        setServiceQuery("")
+                        setDebouncedServiceQuery("")
+                        setFieldErrors((current) => ({
+                          ...current,
+                          linkedEntity: undefined,
+                        }))
+                      }}
+                      className="cursor-pointer gap-3 py-2.5"
+                    >
+                      <Avatar size="sm">
+                        <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                          —
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="min-w-0 flex-1 font-medium text-slate-700">
+                        No linked service
+                      </span>
+                      <Check
+                        className={
+                          selectedLinkedService === null
+                            ? "text-blue-800 opacity-100"
+                            : "opacity-0"
+                        }
+                      />
+                    </CommandItem>
+
+                    {isSearchingServices ||
+                    serviceQuery.trim() !== debouncedServiceQuery ? (
+                      <CommandItem value="Searching services" disabled>
+                        <Loader2 className="animate-spin" />
+                        Searching services...
+                      </CommandItem>
+                    ) : linkedServiceOptions.length > 0 ? (
+                      linkedServiceOptions.map((service) => (
+                        <CommandItem
+                          key={service.id}
+                          value={service.id}
+                          onSelect={() => {
+                            setSelectedLinkedService(service)
+                            setServicePickerOpen(false)
+                            setServiceQuery("")
+                            setDebouncedServiceQuery("")
+                            setFieldErrors((current) => ({
+                              ...current,
+                              linkedEntity: undefined,
+                            }))
+                          }}
+                          className="cursor-pointer gap-3 py-2.5"
+                        >
+                          <Avatar size="sm" className="ring-2 ring-blue-50">
+                            <AvatarFallback className="bg-blue-50 font-semibold text-blue-950">
+                              {getInitials(service.name)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="min-w-0 flex-1 truncate font-medium text-slate-900">
+                            {service.name}
+                          </span>
+                          <Check
+                            className={
+                              selectedLinkedService?.id === service.id
+                                ? "text-blue-800 opacity-100"
+                                : "opacity-0"
+                            }
+                          />
+                        </CommandItem>
+                      ))
+                    ) : (
+                      <CommandItem value="No services found" disabled>
+                        No services found.
+                      </CommandItem>
+                    )}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+          <FieldDescription>
+            Search active services; up to five matches are shown.
+          </FieldDescription>
           <FieldError>{fieldErrors.linkedEntity}</FieldError>
         </Field>
       </section>
@@ -909,18 +1015,23 @@ export function CreateTaskDialog({
           </p>
         </div>
 
-        <FieldGroup className="grid gap-x-4 gap-y-4 md:grid-cols-2">
+        <FieldGroup className="grid gap-x-4 gap-y-4 sm:grid-cols-2">
           <Field
             data-invalid={Boolean(fieldErrors.startedAt)}
             data-disabled={isSubmitting}
-            className="min-w-0 gap-2 md:pr-4"
+            className="min-w-0 gap-2"
           >
-            <FieldLabel htmlFor="create-task-started-at" className="justify-between gap-2">
-              Start date
-              <span className="text-[11px] font-medium text-blue-700">Required</span>
-            </FieldLabel>
+            <div className="grid grid-cols-[minmax(0,1.35fr)_minmax(7.5rem,0.8fr)] gap-0">
+              <FieldLabel htmlFor="create-task-started-at">
+                Start date <span className="text-rose-500" aria-hidden="true">*</span>
+              </FieldLabel>
+              <FieldLabel htmlFor="create-task-started-at-time">
+                Time <span className="text-rose-500" aria-hidden="true">*</span>
+              </FieldLabel>
+            </div>
             <DateTimeInput
               id="create-task-started-at"
+              timeId="create-task-started-at-time"
               value={startedAtInput}
               onValueChange={(value) => {
                 setStartedAtInput(value)
@@ -935,6 +1046,7 @@ export function CreateTaskDialog({
               ariaInvalid={Boolean(fieldErrors.startedAt)}
               timezone={tenantTimezone}
               disabledDate={() => false}
+              layout="joined"
             />
             <FieldError>{fieldErrors.startedAt}</FieldError>
           </Field>
@@ -942,14 +1054,18 @@ export function CreateTaskDialog({
           <Field
             data-invalid={Boolean(fieldErrors.dueDate)}
             data-disabled={isSubmitting}
-            className="min-w-0 gap-2 border-t border-slate-200 pt-3 md:border-t-0 md:border-l md:pt-0 md:pl-4"
+            className="min-w-0 gap-2"
           >
-            <FieldLabel htmlFor="create-task-due-date" className="justify-between gap-2">
-              Due date
-              <span className="text-[11px] font-normal text-slate-500">Optional</span>
-            </FieldLabel>
+            <div className="grid grid-cols-[minmax(0,1.35fr)_minmax(7.5rem,0.8fr)] gap-0">
+              <FieldLabel htmlFor="create-task-due-date">
+                Due date
+                <span className="text-xs font-normal text-slate-500">Optional</span>
+              </FieldLabel>
+              <FieldLabel htmlFor="create-task-due-date-time">Time</FieldLabel>
+            </div>
             <DateTimeInput
               id="create-task-due-date"
+              timeId="create-task-due-date-time"
               value={dueDateInput}
               onValueChange={(value) => {
                 setDueDateInput(value)
@@ -965,6 +1081,7 @@ export function CreateTaskDialog({
               disabledDate={(date) =>
                 startDateKey !== null && getDateKey(date) < startDateKey
               }
+              layout="joined"
             />
             <FieldError>{fieldErrors.dueDate}</FieldError>
           </Field>
@@ -972,14 +1089,18 @@ export function CreateTaskDialog({
           <Field
             data-invalid={Boolean(fieldErrors.reminderAt)}
             data-disabled={isSubmitting}
-            className="min-w-0 gap-2 border-t border-slate-200 pt-4 md:col-span-2 md:max-w-[calc(50%-0.5rem)]"
+            className="min-w-0 gap-2 border-t border-slate-200 pt-4 sm:col-span-2 sm:max-w-[calc(50%-0.5rem)]"
           >
-            <FieldLabel htmlFor="create-task-reminder-at" className="justify-between gap-2">
-              Reminder
-              <span className="text-[11px] font-normal text-slate-500">Optional</span>
-            </FieldLabel>
+            <div className="grid grid-cols-[minmax(0,1.35fr)_minmax(7.5rem,0.8fr)] gap-0">
+              <FieldLabel htmlFor="create-task-reminder-at">
+                Reminder date
+                <span className="text-xs font-normal text-slate-500">Optional</span>
+              </FieldLabel>
+              <FieldLabel htmlFor="create-task-reminder-at-time">Time</FieldLabel>
+            </div>
             <DateTimeInput
               id="create-task-reminder-at"
+              timeId="create-task-reminder-at-time"
               value={reminderAtInput}
               onValueChange={(value) => {
                 setReminderAtInput(value)
@@ -995,6 +1116,7 @@ export function CreateTaskDialog({
                   (dueDateKey !== null && dateKey > dueDateKey)
                 )
               }}
+              layout="joined"
             />
             <FieldError>{fieldErrors.reminderAt}</FieldError>
           </Field>

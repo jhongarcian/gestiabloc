@@ -52,7 +52,7 @@ export function TaskStatusSelect({
         id={id}
         aria-invalid={ariaInvalid}
         className={cn(
-          "h-11 w-full rounded-xl border-0 px-3 shadow-none",
+          "h-11 w-full rounded-xl border-0 px-3 shadow-none data-[size=default]:h-11",
           selectedStatus ? "border-transparent" : undefined,
           triggerClassName,
         )}

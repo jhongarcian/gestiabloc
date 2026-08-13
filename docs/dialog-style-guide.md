@@ -152,7 +152,10 @@ Form rules:
 - Keep API field names unchanged when only the user-facing label changes.
 - For people selectors, show the assignee avatar and name in both the trigger and option list. Use `AvatarImage` when a profile image exists and always provide an `AvatarFallback` with one or two initials.
 - Give the primary choice more width than adjacent compact state fields when they share a row; for example, assignee can use roughly three-fifths of an ownership row while status uses the remainder.
+- Follow `docs/assignee-input-style-guide.md` for full-name display, avatar fallbacks, searchable assignment, and unassigned states.
+- Follow `docs/status-input-style-guide.md` for configured status colors, neutral states, option grouping, and control sizing.
 - Group Start and Due in the first responsive schedule row because they define the timeline. Place Reminder beneath them as a secondary field, mark required versus optional in the label, and stack every field on smaller screens. Due must be at or after Start; when a reminder is present, require Due and keep Reminder within the inclusive Start–Due window.
+- Follow `docs/date-time-input-style-guide.md` for joined Date/Time controls, timeline layout, timezone handling, and chronological validation.
 
 ## Content sections
 

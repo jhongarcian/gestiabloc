@@ -253,6 +253,7 @@ export default async function ContactTasksPage({
                 email: contact.email,
               }}
               lockContact
+              hideContact
               triggerLabel="Create task"
             />
           </div>
