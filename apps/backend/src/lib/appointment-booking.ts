@@ -307,6 +307,67 @@ function subtractIntervals(
   return result.filter((interval) => interval.end > interval.start)
 }
 
+type CalendarAvailabilityRuleLike = {
+  userId: string | null
+  scope: "TENANT" | "USER"
+  kind: "OPEN" | "BLOCK"
+  startTimeMinutes: number
+  endTimeMinutes: number
+  label: string | null
+}
+
+function resolveDailyAvailability(
+  rules: CalendarAvailabilityRuleLike[],
+  assignedToUserId: string,
+) {
+  const tenantOpenRules = rules.filter(
+    (rule) => rule.scope === "TENANT" && rule.kind === "OPEN" && rule.userId === null,
+  )
+  const userOpenRules = rules.filter(
+    (rule) =>
+      rule.scope === "USER" &&
+      rule.kind === "OPEN" &&
+      rule.userId === assignedToUserId,
+  )
+  const blockRules = rules.filter(
+    (rule) =>
+      rule.kind === "BLOCK" &&
+      ((rule.scope === "TENANT" && rule.userId === null) ||
+        (rule.scope === "USER" && rule.userId === assignedToUserId)),
+  )
+
+  const tenantIntervals = mergeIntervals(
+    tenantOpenRules.map((rule) => ({
+      start: rule.startTimeMinutes,
+      end: rule.endTimeMinutes,
+    })),
+  )
+  const userIntervals = mergeIntervals(
+    userOpenRules.map((rule) => ({
+      start: rule.startTimeMinutes,
+      end: rule.endTimeMinutes,
+    })),
+  )
+  const blockedIntervals = mergeIntervals(
+    blockRules.map((rule) => ({
+      start: rule.startTimeMinutes,
+      end: rule.endTimeMinutes,
+    })),
+  )
+
+  return {
+    tenantOpenRules,
+    userOpenRules,
+    blockRules,
+    tenantIntervals,
+    userIntervals,
+    openIntervals: subtractIntervals(
+      intersectIntervals(tenantIntervals, userIntervals),
+      blockedIntervals,
+    ),
+  }
+}
+
 type CalendarTimeBlockLike = {
   id: string
   title: string
@@ -816,24 +877,24 @@ export async function evaluateAvailability(
     ])
 
   const activeRules = rules.filter((rule) => rule.dayOfWeek === startParts.dayOfWeek)
-  const tenantOpenRules = activeRules.filter(
-    (rule) => rule.scope === "TENANT" && rule.kind === "OPEN",
-  )
-  const userOpenRules = activeRules.filter(
-    (rule) => rule.scope === "USER" && rule.kind === "OPEN" && rule.userId === assignedToUserId,
-  )
-  const blockRules = activeRules.filter((rule) => rule.kind === "BLOCK")
+  const {
+    tenantOpenRules,
+    userOpenRules,
+    blockRules,
+    tenantIntervals,
+    userIntervals,
+  } = resolveDailyAvailability(activeRules, assignedToUserId)
 
-  const fitsRule = (rule: { startTimeMinutes: number; endTimeMinutes: number }) =>
-    startMinutes >= rule.startTimeMinutes && endMinutes <= rule.endTimeMinutes
+  const fitsInterval = (interval: { start: number; end: number }) =>
+    startMinutes >= interval.start && endMinutes <= interval.end
   const overlapsRule = (rule: { startTimeMinutes: number; endTimeMinutes: number }) =>
     startMinutes < rule.endTimeMinutes && endMinutes > rule.startTimeMinutes
 
-  if (tenantOpenRules.length > 0 && !tenantOpenRules.some(fitsRule)) {
+  if (!tenantIntervals.some(fitsInterval)) {
     reasons.push("The selected time is outside the tenant calendar open hours.")
   }
 
-  if (userOpenRules.length > 0 && !userOpenRules.some(fitsRule)) {
+  if (!userIntervals.some(fitsInterval)) {
     reasons.push("The selected time is outside the assignee's open hours.")
   }
 
@@ -1070,37 +1131,7 @@ export async function buildAppointmentSlots(
     }),
   ])
 
-  const tenantOpenRules = rules.filter(
-    (rule) => rule.scope === "TENANT" && rule.kind === "OPEN",
-  )
-  const userOpenRules = rules.filter(
-    (rule) => rule.scope === "USER" && rule.kind === "OPEN" && rule.userId === assignedToUserId,
-  )
-  const blockRules = rules.filter((rule) => rule.kind === "BLOCK")
-
-  const tenantIntervals = tenantOpenRules.length > 0
-    ? tenantOpenRules.map((rule) => ({
-        start: rule.startTimeMinutes,
-        end: rule.endTimeMinutes,
-      }))
-    : [{ start: 0, end: 24 * 60 }]
-
-  const userIntervals = userOpenRules.length > 0
-    ? userOpenRules.map((rule) => ({
-        start: rule.startTimeMinutes,
-        end: rule.endTimeMinutes,
-      }))
-    : tenantIntervals
-
-  const recurringBlockedIntervals = blockRules.map((rule) => ({
-    start: rule.startTimeMinutes,
-    end: rule.endTimeMinutes,
-  }))
-
-  const openIntervals = subtractIntervals(
-    intersectIntervals(mergeIntervals(tenantIntervals), mergeIntervals(userIntervals)),
-    recurringBlockedIntervals,
-  )
+  const { openIntervals } = resolveDailyAvailability(rules, assignedToUserId)
 
   const blockRanges = timeBlocks
     .map((block) => buildBlockRangeForDay(block, timezone, year, month, day))

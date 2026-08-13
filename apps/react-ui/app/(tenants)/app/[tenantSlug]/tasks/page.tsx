@@ -23,6 +23,7 @@ type TaskAssigneesResponse = {
     value: string
     label: string
     email: string
+    image: string | null
   }>
 }
 
@@ -66,6 +67,7 @@ export default async function TasksPage({
     label: string
     value: string
     email?: string
+    image?: string | null
   }> = []
   let summary: TaskSummaryResponse["summary"] = {
     totalTasks: 0,
@@ -106,6 +108,7 @@ export default async function TasksPage({
       label: assignee.label,
       value: assignee.value,
       email: assignee.email,
+      image: assignee.image,
     }))
   } catch {
     // The page should remain usable if the task metadata endpoints are unavailable.
@@ -128,16 +131,14 @@ export default async function TasksPage({
     <section className="flex h-full min-h-0 flex-col gap-4">
       <TaskInsights summary={summary} />
 
-      <div className="flex min-h-0 flex-1 rounded-xl bg-white p-2 md:p-4">
-        <div className="flex h-full w-full min-h-0 flex-col">
-          <TasksTable
-            tenantSlug={tenantSlug}
-            tenantId={membership.tenant.id}
-            tenantTimezone={tenantTimezone}
-            statusOptions={statusOptions}
-            assigneeOptions={assigneeOptions}
-          />
-        </div>
+      <div className="flex min-h-0 flex-1">
+        <TasksTable
+          tenantSlug={tenantSlug}
+          tenantId={membership.tenant.id}
+          tenantTimezone={tenantTimezone}
+          statusOptions={statusOptions}
+          assigneeOptions={assigneeOptions}
+        />
       </div>
     </section>
   )

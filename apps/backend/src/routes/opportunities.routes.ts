@@ -2,6 +2,11 @@ import { type Response, Router } from "express"
 import { z } from "zod"
 
 import { prisma } from "../lib/prisma.js"
+import {
+  AutomationExecutionError,
+  executeOpportunityAutomations,
+  recordAutomationFailure,
+} from "../lib/opportunity-automations.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
@@ -536,7 +541,7 @@ async function getPipelineStageSummaries(
     tagIds?: string[]
     statusConfigIds?: string[]
     assignedToUserIds?: string[]
-    customFieldFilters?: Array<{ fieldId: string; value: string }>
+    customFieldFilters?: Array<z.infer<typeof CustomFieldFilterSchema>>
   },
 ) {
   const summaries = await prisma.contactOpportunity.groupBy({
@@ -1027,22 +1032,71 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
       return res.status(409).json({ error: "OPPORTUNITY_ALREADY_EXISTS" })
     }
 
-    const created = await prisma.contactOpportunity.create({
-      data: {
-        tenantId,
-        contactId: payload.contactId,
-        pipelineId: payload.pipelineId,
-        stageId: firstStage.id,
-        valueCents: payload.valueCents,
-        result: "OPEN",
-      },
-      select: opportunityCardSelect,
-    })
+    let createdResult
+    try {
+      createdResult = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const created = await prismaTx.contactOpportunity.create({
+          data: {
+            tenantId,
+            contactId: payload.contactId,
+            pipelineId: payload.pipelineId,
+            stageId: firstStage.id,
+            valueCents: payload.valueCents,
+            result: "OPEN",
+          },
+          select: { id: true },
+        })
+        const automation = await executeOpportunityAutomations(prismaTx, {
+          tenantId,
+          actorUserId: authed.user.id,
+          triggerType: "OPPORTUNITY_CREATED",
+          opportunityId: created.id,
+          contactId: payload.contactId,
+          pipelineId: payload.pipelineId,
+          valueCents: payload.valueCents,
+          sourceStageId: null,
+          targetStageId: firstStage.id,
+        })
+        const opportunity = await prismaTx.contactOpportunity.findUnique({
+          where: { tenantId_id: { tenantId, id: created.id } },
+          select: opportunityCardSelect,
+        })
+        return { opportunity, automation }
+      })
+    } catch (error) {
+      if (error instanceof AutomationExecutionError) {
+        await recordAutomationFailure(prisma as any, {
+          tenantId,
+          actorUserId: authed.user.id,
+          triggerType: "OPPORTUNITY_CREATED",
+          opportunityId: "",
+          contactId: payload.contactId,
+          pipelineId: payload.pipelineId,
+          valueCents: payload.valueCents,
+          sourceStageId: null,
+          targetStageId: firstStage.id,
+        }, error).catch(() => undefined)
+        return res.status(error.status).json({
+          error: error.code,
+          automationId: error.automationId,
+          automationName: error.automationName,
+          actionIndex: error.actionIndex,
+          message: error.message,
+        })
+      }
+      throw error
+    }
+
+    if (!createdResult.opportunity) {
+      throw new Error("Opportunity creation did not return a record.")
+    }
 
     return res.status(201).json({
       ok: true,
-      opportunity: serializeOpportunityCard(created),
+      opportunity: serializeOpportunityCard(createdResult.opportunity),
       stage: firstStage,
+      automation: createdResult.automation,
     })
   } catch (error) {
     return next(error)
@@ -1066,11 +1120,7 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
             id: opportunityId,
           },
         },
-        select: {
-          id: true,
-          pipelineId: true,
-          result: true,
-        },
+        select: opportunityCardSelect,
       })
 
     if (!existing) {
@@ -1100,23 +1150,79 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
         return res.status(400).json({ error: "PIPELINE_STAGE_MISMATCH" })
       }
 
-      const updated = await prisma.contactOpportunity.update({
-        where: {
-          tenantId_id: {
-            tenantId,
-            id: opportunityId,
-          },
-        },
-        data: {
-          stageId: targetStage.id,
-        },
-        select: opportunityCardSelect,
-      })
+      if (existing.stageId === targetStage.id) {
+        return res.json({
+          ok: true,
+          opportunity: serializeOpportunityCard(existing),
+          stage: targetStage,
+          automation: { matchedCount: 0, executedCount: 0 },
+        })
+      }
+
+      const event = {
+        tenantId,
+        actorUserId: authed.user.id,
+        triggerType: "OPPORTUNITY_STAGE_CHANGED" as const,
+        opportunityId,
+        contactId: existing.contactId,
+        pipelineId: existing.pipelineId,
+        valueCents: existing.valueCents,
+        sourceStageId: existing.stageId,
+        targetStageId: targetStage.id,
+      }
+      let moveResult
+      try {
+        moveResult = await prisma.$transaction(async (tx) => {
+          const prismaTx = tx as any
+          const changed = await prismaTx.contactOpportunity.updateMany({
+            where: {
+              tenantId,
+              id: opportunityId,
+              result: "OPEN",
+              stageId: existing.stageId,
+            },
+            data: { stageId: targetStage.id },
+          })
+          if (changed.count !== 1) {
+            const current = await prismaTx.contactOpportunity.findUnique({
+              where: { tenantId_id: { tenantId, id: opportunityId } },
+              select: opportunityCardSelect,
+            })
+            return { current, concurrent: true, automation: { matchedCount: 0, executedCount: 0 } }
+          }
+          const automation = await executeOpportunityAutomations(prismaTx, event)
+          const current = await prismaTx.contactOpportunity.findUnique({
+            where: { tenantId_id: { tenantId, id: opportunityId } },
+            select: opportunityCardSelect,
+          })
+          return { current, concurrent: false, automation }
+        })
+      } catch (error) {
+        if (error instanceof AutomationExecutionError) {
+          await recordAutomationFailure(prisma as any, event, error).catch(() => undefined)
+          return res.status(error.status).json({
+            error: error.code,
+            automationId: error.automationId,
+            automationName: error.automationName,
+            actionIndex: error.actionIndex,
+            message: error.message,
+          })
+        }
+        throw error
+      }
+
+      if (!moveResult.current) {
+        return res.status(404).json({ error: "OPPORTUNITY_NOT_FOUND" })
+      }
+      if (moveResult.concurrent) {
+        return res.status(409).json({ error: "OPPORTUNITY_STAGE_CHANGED_CONCURRENTLY" })
+      }
 
       return res.json({
         ok: true,
-        opportunity: serializeOpportunityCard(updated),
+        opportunity: serializeOpportunityCard(moveResult.current),
         stage: targetStage,
+        automation: moveResult.automation,
       })
     }
 

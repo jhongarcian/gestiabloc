@@ -1,7 +1,15 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
+import { Loader2 } from "lucide-react"
+import {
+  type FormEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -15,10 +23,17 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Label } from "@/components/ui/label"
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -31,6 +46,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
 type PipelineOption = {
   id: string
@@ -113,6 +129,10 @@ type CreateOpportunityResponse = {
     id: string
     name: string
   }
+  automation?: {
+    matchedCount: number
+    executedCount: number
+  }
 }
 
 type AddContactOpportunityDialogProps = {
@@ -125,6 +145,12 @@ type AddContactOpportunityDialogProps = {
   initialPipelineId?: string | null
   lockPipeline?: boolean
   onCreated?: (opportunity: CreatedOpportunity) => Promise<void> | void
+}
+
+type OpportunityFormErrors = {
+  contact?: string
+  pipeline?: string
+  value?: string
 }
 
 export function AddContactOpportunityDialog({
@@ -150,7 +176,7 @@ export function AddContactOpportunityDialog({
   const [isSearchingContacts, setIsSearchingContacts] = useState(false)
   const [valueInput, setValueInput] = useState("")
   const [disabledPipelineIds, setDisabledPipelineIds] = useState<string[]>([])
-  const [formError, setFormError] = useState<string | null>(null)
+  const [formErrors, setFormErrors] = useState<OpportunityFormErrors>({})
   const isSelectingContactRef = useRef(false)
   const triggerNode = trigger ?? (
     <Button
@@ -314,37 +340,48 @@ export function AddContactOpportunityDialog({
     setContactResults([])
     setValueInput("")
     setDisabledPipelineIds([])
-    setFormError(null)
+    setFormErrors({})
   }
 
-  const handleSubmit = async () => {
-    if (!selectedContact?.id) {
-      setFormError("Select a contact.")
-      return
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    const nextErrors: OpportunityFormErrors = {}
+    const contactId = selectedContact?.id
+
+    if (!contactId) {
+      nextErrors.contact = "Select a contact."
     }
 
     if (!selectedPipelineId) {
-      setFormError("Select a pipeline.")
-      return
+      nextErrors.pipeline = "Select a pipeline."
     }
 
     const valueCents = parseValueCents(valueInput)
     if (valueCents === null) {
-      setFormError("Enter a valid value using up to 2 decimal places.")
+      nextErrors.value = "Enter a valid value using up to two decimal places."
+    }
+
+    if (!contactId || !selectedPipelineId || valueCents === null) {
+      setFormErrors(nextErrors)
       return
     }
 
-    setFormError(null)
+    setFormErrors({})
     setIsSubmitting(true)
 
     try {
       const { data } = await api.post<CreateOpportunityResponse>(`/api/opportunities/${tenantId}`, {
-        contactId: selectedContact.id,
+        contactId,
         pipelineId: selectedPipelineId,
         valueCents,
       })
 
-      toast.success("Opportunity added.")
+      toast.success(
+        (data.automation?.executedCount ?? 0) > 0
+          ? `Opportunity added and ${data.automation!.executedCount} automation${data.automation!.executedCount === 1 ? "" : "s"} ran.`
+          : "Opportunity added.",
+      )
       setOpen(false)
       reset()
       await onCreated?.(data.opportunity)
@@ -354,9 +391,12 @@ export function AddContactOpportunityDialog({
         : undefined
 
       if (backendError === "OPPORTUNITY_ALREADY_EXISTS") {
-        setFormError("This contact is already enrolled in that pipeline.")
+        setFormErrors({
+          pipeline: "This contact is already enrolled in that pipeline.",
+        })
       } else {
-        toast.error("Could not add opportunity.")
+        const backendMessage = isAxiosError(error) ? error.response?.data?.message : undefined
+        toast.error(typeof backendMessage === "string" ? backendMessage : "Could not add opportunity.")
       }
     } finally {
       setIsSubmitting(false)
@@ -367,8 +407,9 @@ export function AddContactOpportunityDialog({
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
+        if (!nextOpen && isSubmitting) return
         setOpen(nextOpen)
-        if (!nextOpen && !isSubmitting) {
+        if (!nextOpen) {
           reset()
         }
       }}
@@ -387,162 +428,268 @@ export function AddContactOpportunityDialog({
       ) : (
         <DialogTrigger asChild>{triggerNode}</DialogTrigger>
       )}
-      <DialogContent className="sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Add opportunity</DialogTitle>
-          <DialogDescription>
-            Enroll a contact into a pipeline. New opportunities start in the first stage.
-          </DialogDescription>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 bg-white p-0 shadow-2xl sm:max-w-2xl [&>button]:cursor-pointer">
+        <DialogHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
+          />
+          <div className="relative pr-10">
+            <div className="flex max-w-xl min-w-0 flex-col gap-1.5">
+              <p className="text-xs font-semibold text-blue-700">Sales pipeline</p>
+              <DialogTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                Add opportunity
+              </DialogTitle>
+              <DialogDescription className="max-w-xl text-sm leading-6 text-slate-600">
+                {lockContact
+                  ? "Add this contact to the right pipeline so your team can track the next steps and value."
+                  : "Enroll a contact in the right pipeline so your team can track the next steps and value."}
+              </DialogDescription>
+            </div>
+          </div>
         </DialogHeader>
 
-        <div className="grid gap-5">
-          <div className="grid gap-2">
-            <Label htmlFor="add-opportunity-pipeline">Pipeline</Label>
-            {lockPipeline && selectedPipeline ? (
-              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
-                <p className="text-sm font-medium text-slate-950">{selectedPipeline.name}</p>
-              </div>
-            ) : (
-              <Select
-                value={selectedPipelineId}
-                onValueChange={setSelectedPipelineId}
-                disabled={isLoadingPipelines}
-              >
-                <SelectTrigger id="add-opportunity-pipeline">
-                  <SelectValue placeholder={isLoadingPipelines ? "Loading pipelines..." : "Select pipeline"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {pipelineOptions.map((pipeline) => {
-                    const disabled = disabledPipelineIds.includes(pipeline.id)
-
-                    return (
-                      <SelectItem
-                        key={pipeline.id}
-                        value={pipeline.id}
-                        disabled={disabled}
+        <form onSubmit={handleSubmit} className="contents">
+          <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+            <div className="flex flex-col gap-7">
+              {!lockContact ? (
+                <FieldGroup className="gap-5">
+                  <Field
+                    data-invalid={Boolean(formErrors.contact)}
+                    data-disabled={isSubmitting}
+                    className="gap-2"
+                  >
+                    <FieldLabel
+                      htmlFor="add-opportunity-contact"
+                      className="text-slate-800"
+                    >
+                      Contact
+                    </FieldLabel>
+                    <div className="min-h-11 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/60 shadow-none focus-within:border-blue-400 focus-within:ring-3 focus-within:ring-blue-100">
+                      <Command
+                        shouldFilter={false}
+                        className="rounded-xl bg-transparent [&_[data-slot=command-input-wrapper]]:h-11 [&_[data-slot=command-list]]:border-t"
                       >
-                        {pipeline.name}
-                        {disabled ? " (Already added)" : ""}
-                      </SelectItem>
-                    )
-                  })}
-                </SelectContent>
-              </Select>
-            )}
+                        <CommandInput
+                          id="add-opportunity-contact"
+                          value={contactQuery}
+                          disabled={isSubmitting}
+                          aria-invalid={Boolean(formErrors.contact)}
+                          onValueChange={(value) => {
+                            setContactQuery(value)
+                            setFormErrors((current) => ({
+                              ...current,
+                              contact: undefined,
+                            }))
+
+                            if (
+                              !isSelectingContactRef.current &&
+                              selectedContact &&
+                              value !== selectedContact.fullName
+                            ) {
+                              setSelectedContact(null)
+                            }
+                          }}
+                          placeholder="Search by name, email, or phone"
+                        />
+                        {contactQuery.trim().length >= 2 && !selectedContact ? (
+                          <CommandList>
+                            <CommandEmpty>
+                              {isSearchingContacts
+                                ? "Searching contacts..."
+                                : "No contacts found."}
+                            </CommandEmpty>
+                            <CommandGroup>
+                              {contactResults.map((contact) => (
+                                <CommandItem
+                                  key={contact.id}
+                                  value={contact.id}
+                                  disabled={isSubmitting}
+                                  onSelect={() => {
+                                    isSelectingContactRef.current = true
+                                    setSelectedContact(contact)
+                                    setContactQuery(contact.fullName)
+                                    setDebouncedContactQuery(contact.fullName)
+                                    setContactResults([])
+                                    setFormErrors((current) => ({
+                                      ...current,
+                                      contact: undefined,
+                                    }))
+                                    window.setTimeout(() => {
+                                      isSelectingContactRef.current = false
+                                    }, 0)
+                                  }}
+                                >
+                                  <div className="flex min-w-0 flex-col gap-0.5">
+                                    <span className="truncate font-medium">
+                                      {contact.fullName}
+                                    </span>
+                                    <span className="truncate text-xs text-slate-500">
+                                      {contact.email ??
+                                        contact.phoneNumber ??
+                                        "No contact details"}
+                                    </span>
+                                  </div>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        ) : null}
+                      </Command>
+                    </div>
+                    <FieldDescription className="text-xs">
+                      Choose the person this opportunity belongs to.
+                    </FieldDescription>
+                    <FieldError>{formErrors.contact}</FieldError>
+                  </Field>
+                </FieldGroup>
+              ) : null}
+
+              <section
+                className={cn(
+                  "flex flex-col gap-4",
+                  !lockContact && "border-t border-slate-200 pt-6",
+                )}
+              >
+                <div className="flex flex-col gap-1">
+                  <h3 className="text-sm font-semibold text-slate-950">Opportunity details</h3>
+                  <p className="text-sm text-slate-500">
+                    Choose where the opportunity starts and record its expected value.
+                  </p>
+                </div>
+
+                <FieldGroup className="gap-5">
+                  <Field
+                    data-invalid={Boolean(formErrors.pipeline)}
+                    data-disabled={isSubmitting || isLoadingPipelines}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="add-opportunity-pipeline" className="text-slate-800">
+                      Pipeline
+                    </FieldLabel>
+                    {lockPipeline ? (
+                      <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-slate-50/60 px-4">
+                        <p className="truncate text-sm font-medium text-slate-950">
+                          {selectedPipeline?.name ??
+                            (isLoadingPipelines ? "Loading pipeline..." : "Pipeline unavailable")}
+                        </p>
+                      </div>
+                    ) : (
+                      <Select
+                        value={selectedPipelineId}
+                        onValueChange={(value) => {
+                          setSelectedPipelineId(value)
+                          setFormErrors((current) => ({
+                            ...current,
+                            pipeline: undefined,
+                          }))
+                        }}
+                        disabled={isSubmitting || isLoadingPipelines}
+                      >
+                        <SelectTrigger
+                          id="add-opportunity-pipeline"
+                          aria-invalid={Boolean(formErrors.pipeline)}
+                          className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100 data-[size=default]:h-11"
+                        >
+                          <SelectValue
+                            placeholder={
+                              isLoadingPipelines
+                                ? "Loading pipelines..."
+                                : "Select pipeline"
+                            }
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            {pipelineOptions.map((pipeline) => {
+                              const disabled = disabledPipelineIds.includes(pipeline.id)
+
+                              return (
+                                <SelectItem
+                                  key={pipeline.id}
+                                  value={pipeline.id}
+                                  disabled={disabled}
+                                >
+                                  {pipeline.name}
+                                  {disabled ? " (Already added)" : ""}
+                                </SelectItem>
+                              )
+                            })}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    )}
+                    <FieldDescription className="text-xs">
+                      New opportunities begin in the first stage.
+                    </FieldDescription>
+                    <FieldError>{formErrors.pipeline}</FieldError>
+                  </Field>
+
+                  <Field
+                    data-invalid={Boolean(formErrors.value)}
+                    data-disabled={isSubmitting}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="add-opportunity-value" className="text-slate-800">
+                      Value <span className="font-normal text-slate-500">(optional)</span>
+                    </FieldLabel>
+                    <Input
+                      id="add-opportunity-value"
+                      value={valueInput}
+                      onChange={(event) => {
+                        setValueInput(event.target.value)
+                        setFormErrors((current) => ({
+                          ...current,
+                          value: undefined,
+                        }))
+                      }}
+                      disabled={isSubmitting}
+                      aria-invalid={Boolean(formErrors.value)}
+                      placeholder="$0.00"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                    />
+                    <FieldDescription className="text-xs">
+                      Expected amount in USD. Blank saves as $0.
+                    </FieldDescription>
+                    <FieldError>{formErrors.value}</FieldError>
+                  </Field>
+                </FieldGroup>
+              </section>
+            </div>
           </div>
 
-          <div className="grid gap-2">
-            <Label htmlFor="add-opportunity-value">Value (USD)</Label>
-            <Input
-              id="add-opportunity-value"
-              value={valueInput}
-              onChange={(event) => {
-                setValueInput(event.target.value)
-                setFormError(null)
-              }}
-              placeholder="0.00"
-              inputMode="decimal"
-              autoComplete="off"
-            />
-            <p className="text-xs text-slate-500">
-              Optional. Leave blank to create the opportunity with a value of $0.
-            </p>
-          </div>
-
-          <div className="grid gap-2">
-            <Label htmlFor="add-opportunity-contact">Contact</Label>
-            {lockContact && selectedContact ? (
-              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
-                <p className="text-sm font-medium text-slate-950">{selectedContact.fullName}</p>
-                <p className="mt-1 text-xs text-slate-500">
-                  {selectedContact.email ?? selectedContact.phoneNumber ?? "No contact details"}
-                </p>
-              </div>
-            ) : (
-              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                <Command shouldFilter={false}>
-                  <CommandInput
-                    id="add-opportunity-contact"
-                    value={contactQuery}
-                    onValueChange={(value) => {
-                      setContactQuery(value)
-                      setFormError(null)
-
-                      if (
-                        !isSelectingContactRef.current &&
-                        selectedContact &&
-                        value !== selectedContact.fullName
-                      ) {
-                        setSelectedContact(null)
-                      }
-                    }}
-                    placeholder="Search contact by name, email, or phone"
-                  />
-                  {contactQuery.trim().length >= 2 && !selectedContact ? (
-                    <CommandList>
-                      <CommandEmpty>
-                        {isSearchingContacts ? "Searching contacts..." : "No contacts found."}
-                      </CommandEmpty>
-                      <CommandGroup>
-                        {contactResults.map((contact) => (
-                          <CommandItem
-                            key={contact.id}
-                            value={contact.id}
-                            onSelect={() => {
-                              isSelectingContactRef.current = true
-                              setSelectedContact(contact)
-                              setContactQuery(contact.fullName)
-                              setDebouncedContactQuery(contact.fullName)
-                              setContactResults([])
-                              setFormError(null)
-                              window.setTimeout(() => {
-                                isSelectingContactRef.current = false
-                              }, 0)
-                            }}
-                          >
-                            <div className="flex flex-col">
-                              <span>{contact.fullName}</span>
-                              <span className="text-xs text-slate-500">
-                                {contact.email ?? contact.phoneNumber ?? "No extra details"}
-                              </span>
-                            </div>
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  ) : null}
-                </Command>
-              </div>
-            )}
-          </div>
-
-          {formError ? <p className="text-sm text-rose-600">{formError}</p> : null}
-        </div>
-
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            className="cursor-pointer"
-            disabled={isSubmitting}
-            onClick={() => setOpen(false)}
-          >
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
-            disabled={
-              isSubmitting ||
-              (!lockContact && !selectedContact) ||
-              (!lockPipeline && !selectedPipelineId) ||
-              disabledPipelineIds.includes(selectedPipelineId)
-            }
-            onClick={() => void handleSubmit()}
-          >
-            Add opportunity
-          </Button>
-        </DialogFooter>
+          <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isSubmitting}
+              onClick={() => setOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              className="min-w-36 bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+              disabled={
+                isSubmitting ||
+                isLoadingPipelines ||
+                (lockContact && !selectedContact) ||
+                disabledPipelineIds.includes(selectedPipelineId)
+              }
+            >
+              {isSubmitting ? (
+                <Loader2 data-icon="inline-start" className="animate-spin" />
+              ) : null}
+              {isSubmitting ? "Creating..." : "Add opportunity"}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
