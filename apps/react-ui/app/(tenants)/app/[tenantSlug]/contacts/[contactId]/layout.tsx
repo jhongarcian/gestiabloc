@@ -3,7 +3,6 @@ import Link from "next/link"
 import {
   ArrowLeft,
   CalendarClock,
-  Target,
 } from "lucide-react"
 
 import {
@@ -11,7 +10,6 @@ import {
   type StackedAvatarGroupItem,
 } from "@/components/stacked-avatar-group"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { CreateAppointmentDialog } from "../../calendar/_components/create-appointment-dialog"
@@ -281,27 +279,14 @@ export default async function ContactDetailsLayout({
                     <Link
                       href={`/app/${tenantSlug}/contacts`}
                       aria-label="Back to contacts"
-                      className="inline-flex h-6 items-center gap-1 rounded-full border border-slate-200 bg-white/85 px-2 text-[11px] font-medium text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
+                      title="Back to contacts"
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white/85 text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
                     >
-                      <ArrowLeft className="h-3 w-3" />
-                      Contacts
+                      <ArrowLeft className="h-4 w-4" />
                     </Link>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h1 className="truncate text-[1.7rem] font-semibold tracking-tight text-slate-950">
+                    <h1 className="truncate text-2xl font-semibold tracking-tight text-slate-950">
                       {contact.fullName}
                     </h1>
-                    <ContactHeaderStatus
-                      tenantId={tenantId}
-                      contactId={contactId}
-                      initialStatus={{
-                        label: contact.status,
-                        value: contact.statusConfigId,
-                        bgColor: contact.statusBgColor,
-                        textColor: contact.statusTextColor,
-                      }}
-                      statusOptions={statusOptions}
-                    />
                   </div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5 text-xs text-slate-500">
                     <span>{formatPhoneNumber(contact.phoneNumber)}</span>
@@ -379,17 +364,9 @@ export default async function ContactDetailsLayout({
                     phoneNumber: contact.phoneNumber,
                   }}
                   lockContact
+                  iconOnly
                   triggerTooltip="Create opportunity"
-                  trigger={
-                    <Button
-                      type="button"
-                      variant="outline"
-                      aria-label="Create opportunity"
-                      className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-white/70 bg-blue-950 p-0 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
-                    >
-                      <Target className="h-4 w-4" />
-                    </Button>
-                  }
+                  triggerClassName="inline-flex h-8 w-8 items-center justify-center border-white/70 shadow-sm backdrop-blur transition hover:bg-blue-900"
                 />
                 <CreateAppointmentDialog
                   tenantId={tenantId}
@@ -409,6 +386,17 @@ export default async function ContactDetailsLayout({
                   iconOnly
                   triggerTooltip="Create appointment"
                   triggerClassName="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
+                />
+                <ContactHeaderStatus
+                  tenantId={tenantId}
+                  contactId={contactId}
+                  initialStatus={{
+                    label: contact.status,
+                    value: contact.statusConfigId,
+                    bgColor: contact.statusBgColor,
+                    textColor: contact.statusTextColor,
+                  }}
+                  statusOptions={statusOptions}
                 />
                 <ContactHeaderAssignee
                   tenantId={tenantId}
@@ -546,9 +534,9 @@ export default async function ContactDetailsLayout({
           </section>
         ) : null}
 
-        <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-visible rounded-2xl border border-slate-200 bg-[#f1f7ff] shadow-sm lg:grid-cols-[14rem_minmax(0,1fr)]">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-visible rounded-2xl border border-slate-200 bg-[#f1f7ff] shadow-sm">
           <ContactDetailNavigation tenantSlug={tenantSlug} contactId={contactId} />
-          <div className="min-h-0 min-w-0 flex-1 rounded-b-2xl bg-background p-5 md:p-6 lg:rounded-l-none lg:rounded-r-2xl lg:border-l">
+          <div className="min-h-0 min-w-0 flex-1 rounded-b-2xl bg-background p-5 md:p-6">
             {children}
           </div>
         </div>

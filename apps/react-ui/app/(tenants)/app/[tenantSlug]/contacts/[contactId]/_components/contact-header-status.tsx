@@ -88,21 +88,23 @@ export function ContactHeaderStatus({
         <Button
           type="button"
           variant="ghost"
-          className="h-8 max-w-[220px] cursor-pointer rounded-full px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-black/5"
-          style={
-            status.bgColor && status.textColor
-              ? {
-                  backgroundColor: status.bgColor,
-                  color: status.textColor,
-                }
-              : undefined
-          }
+          className="h-8 max-w-[220px] cursor-pointer rounded-full border border-white/70 bg-white/70 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/90"
         >
-          <span className="truncate">{status.label}</span>
+          <span
+            aria-hidden="true"
+            className={cn(
+              "size-2.5 shrink-0 rounded-full ring-2 ring-white",
+              !status.bgColor && "bg-slate-400",
+            )}
+            style={status.bgColor ? { backgroundColor: status.bgColor } : undefined}
+          />
+          <span className="truncate text-xs font-medium text-slate-700">
+            {status.label}
+          </span>
           {isSaving ? (
-            <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin" />
+            <Loader2 className="ml-1 size-3.5 shrink-0 animate-spin text-slate-500" />
           ) : (
-            <ChevronDown className="ml-1 h-3.5 w-3.5 shrink-0" />
+            <ChevronDown className="ml-1 size-3.5 shrink-0 text-slate-500" />
           )}
         </Button>
       </PopoverTrigger>
