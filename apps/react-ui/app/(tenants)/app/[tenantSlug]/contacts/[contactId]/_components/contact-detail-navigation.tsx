@@ -48,7 +48,7 @@ export function ContactDetailNavigation({
         className="pointer-events-none absolute -right-16 -bottom-24 size-48 rounded-full bg-blue-300/20 blur-3xl"
       />
 
-      <div className="relative overflow-x-auto px-3 py-3 [scrollbar-width:none] md:px-5 [&::-webkit-scrollbar]:hidden">
+      <div className="relative overflow-x-auto px-4 py-3 [scrollbar-width:none] md:px-5 [&::-webkit-scrollbar]:hidden">
         <div className="flex min-w-max items-center gap-1">
           {CONTACT_SECTIONS.map((section) => {
             const href = `${baseHref}/${section.key}`

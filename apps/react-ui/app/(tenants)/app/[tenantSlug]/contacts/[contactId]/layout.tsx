@@ -521,7 +521,7 @@ export default async function ContactDetailsLayout({
                 Service progress
               </h2>
             </div>
-            <div className="grid gap-3 px-3 pb-3 pt-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-3 px-4 pb-3 pt-2 sm:grid-cols-2 md:px-5 lg:grid-cols-4">
               {visibleActiveFollowUpServices.map((service) => (
                 <Link
                   key={service.id}
@@ -606,7 +606,7 @@ export default async function ContactDetailsLayout({
         </header>
 
         <ContactDetailNavigation tenantSlug={tenantSlug} contactId={contactId} />
-        <div className="min-h-0 min-w-0 flex-1 bg-background p-5 md:p-6">
+        <div className="min-h-0 min-w-0 flex-1 bg-background px-4 py-5 md:px-5 md:py-6">
           {children}
         </div>
       </div>
