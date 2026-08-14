@@ -37,7 +37,7 @@ export function ContactDetailNavigation({
   return (
     <nav
       aria-label="Contact detail sections"
-      className="relative min-w-0 overflow-hidden rounded-t-2xl border-b border-blue-100 bg-[#f1f7ff]"
+      className="relative min-w-0 shrink-0 overflow-hidden border-y border-blue-100 bg-[#f1f7ff]"
     >
       <div
         aria-hidden="true"

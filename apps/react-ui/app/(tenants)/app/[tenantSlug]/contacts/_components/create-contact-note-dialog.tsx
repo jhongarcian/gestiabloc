@@ -9,6 +9,7 @@ import {
   Upload,
   X,
 } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { type ChangeEvent, type ReactNode, useRef, useState } from "react"
 import { toast } from "sonner"
 
@@ -34,6 +35,12 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import { uploadPrivateFileToSignedUrl } from "@/lib/supabase-storage"
 
@@ -48,6 +55,7 @@ type CreateContactNoteDialogProps = {
   trigger: ReactNode
   onCreated?: () => Promise<void> | void
   presentation?: "dialog" | "drawer"
+  triggerTooltip?: string
 }
 
 const MAX_ATTACHMENTS = 10
@@ -135,7 +143,9 @@ export function CreateContactNoteDialog({
   trigger,
   onCreated,
   presentation = "dialog",
+  triggerTooltip,
 }: CreateContactNoteDialogProps) {
+  const router = useRouter()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [open, setOpen] = useState(false)
   const [title, setTitle] = useState("")
@@ -228,7 +238,11 @@ export function CreateContactNoteDialog({
       toast.success("Note added.")
       setOpen(false)
       resetDialog()
-      await onCreated?.()
+      if (onCreated) {
+        await onCreated()
+      } else {
+        router.refresh()
+      }
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
@@ -398,7 +412,20 @@ export function CreateContactNoteDialog({
           }
         }}
       >
-        <SheetTrigger asChild>{trigger}</SheetTrigger>
+        {triggerTooltip ? (
+          <TooltipProvider delayDuration={120}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <SheetTrigger asChild>{trigger}</SheetTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>
+                {triggerTooltip}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : (
+          <SheetTrigger asChild>{trigger}</SheetTrigger>
+        )}
         <SheetContent side="right" className="flex h-full flex-col gap-0 p-0 sm:max-w-2xl">
           <SheetHeader className="border-b border-slate-200 bg-slate-50 px-6 text-left">
             <SheetTitle className="text-xl font-semibold text-slate-950">Add note</SheetTitle>
@@ -442,7 +469,20 @@ export function CreateContactNoteDialog({
         }
       }}
     >
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      {triggerTooltip ? (
+        <TooltipProvider delayDuration={120}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DialogTrigger asChild>{trigger}</DialogTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={8}>
+              {triggerTooltip}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : (
+        <DialogTrigger asChild>{trigger}</DialogTrigger>
+      )}
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Add note</DialogTitle>

@@ -846,7 +846,6 @@ export function ContactServicesPanel({
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [createStep, setCreateStep] = useState<1 | 2 | 3 | 4>(1)
   const [isSaving, setIsSaving] = useState(false)
-  const [hasAppliedInitialCreateState, setHasAppliedInitialCreateState] = useState(false)
   const [isLoadingServiceOptions, setIsLoadingServiceOptions] = useState(false)
   const [isLoadingServiceDetails, setIsLoadingServiceDetails] = useState(false)
   const [isLoadingAssignees, setIsLoadingAssignees] = useState(false)
@@ -897,6 +896,14 @@ export function ContactServicesPanel({
       setCreateServiceId(serviceId)
     }
   }, [resetCreate])
+
+  const closeCreateDialog = useCallback(() => {
+    setIsCreateOpen(false)
+    resetCreate()
+    if (initialCreateOpen) {
+      router.replace(`/app/${tenantSlug}/contacts/${contactId}/services`)
+    }
+  }, [contactId, initialCreateOpen, resetCreate, router, tenantSlug])
 
   const loadServices = useCallback(async () => {
     setIsLoading(true)
@@ -1064,16 +1071,10 @@ export function ContactServicesPanel({
   }, [createAssignedProfessionalId, createServiceDetails, createTemplateId])
 
   useEffect(() => {
-    if (hasAppliedInitialCreateState) return
-    if (!initialCreateOpen) {
-      setHasAppliedInitialCreateState(true)
-      return
-    }
+    if (!initialCreateOpen) return
 
     openCreateDialog(initialCreateServiceId ?? undefined)
-    setHasAppliedInitialCreateState(true)
   }, [
-    hasAppliedInitialCreateState,
     initialCreateOpen,
     initialCreateServiceId,
     openCreateDialog,
@@ -1881,8 +1882,11 @@ export function ContactServicesPanel({
         open={isCreateOpen}
         onOpenChange={(open) => {
           if (!open && isSaving) return
-          setIsCreateOpen(open)
-          if (!open) resetCreate()
+          if (open) {
+            setIsCreateOpen(true)
+          } else {
+            closeCreateDialog()
+          }
         }}
       >
         <DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 bg-white p-0 shadow-2xl sm:max-w-3xl [&>button]:cursor-pointer">
@@ -2528,7 +2532,7 @@ export function ContactServicesPanel({
             <Button
               type="button"
               variant="outline"
-              onClick={() => setIsCreateOpen(false)}
+              onClick={closeCreateDialog}
               disabled={isSaving}
             >
               Cancel
