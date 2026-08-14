@@ -85,11 +85,11 @@ export function StackedAvatarGroup({
   return (
     <TooltipProvider delayDuration={120}>
       <AvatarGroup className={cn("w-fit overflow-visible pl-2", className)}>
-        {visibleItems.map((item) => {
+        {visibleItems.map((item, index) => {
           const toneStyles = TONE_STYLES[item.tone ?? "neutral"]
 
           return (
-            <Tooltip key={item.id}>
+            <Tooltip key={`stacked-avatar-${index}-${item.id || "unknown"}`}>
               <TooltipTrigger asChild>
                 <div className={cn("-ml-2 first:ml-0", interactiveClassName)}>
                   <Avatar

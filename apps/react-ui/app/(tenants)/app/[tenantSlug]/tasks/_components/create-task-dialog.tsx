@@ -37,6 +37,12 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import {
   type DateTimeDraft,
@@ -66,6 +72,7 @@ type CreateTaskDialogProps = {
   hideContact?: boolean
   triggerLabel?: string
   trigger?: ReactNode
+  triggerTooltip?: string
 }
 
 type FieldErrors = Partial<
@@ -160,6 +167,7 @@ export function CreateTaskDialog({
   hideContact = false,
   triggerLabel = "Create Task",
   trigger,
+  triggerTooltip,
 }: CreateTaskDialogProps) {
   const router = useRouter()
   const getDefaultStartedAtDraft = useCallback(
@@ -1125,6 +1133,15 @@ export function CreateTaskDialog({
     </div>
   )
 
+  const triggerNode = trigger ?? (
+    <Button
+      type="button"
+      className="bg-blue-950 text-white hover:bg-blue-900"
+    >
+      {triggerLabel}
+    </Button>
+  )
+
   return (
     <Sheet
       open={open}
@@ -1134,16 +1151,20 @@ export function CreateTaskDialog({
         if (!nextOpen) resetForm()
       }}
     >
-      <SheetTrigger asChild>
-        {trigger ?? (
-          <Button
-            type="button"
-            className="bg-blue-950 text-white hover:bg-blue-900"
-          >
-            {triggerLabel}
-          </Button>
-        )}
-      </SheetTrigger>
+      {triggerTooltip ? (
+        <TooltipProvider delayDuration={120}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <SheetTrigger asChild>{triggerNode}</SheetTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={8}>
+              {triggerTooltip}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : (
+        <SheetTrigger asChild>{triggerNode}</SheetTrigger>
+      )}
       <SheetContent
         side="right"
         className="flex h-full w-full flex-col gap-0 overflow-hidden border-l border-slate-200 bg-white p-0 sm:max-w-2xl [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:opacity-100 [&>button]:shadow-sm [&>button]:backdrop-blur"

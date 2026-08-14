@@ -2,21 +2,30 @@ import { headers } from "next/headers"
 import Link from "next/link"
 import {
   ArrowLeft,
-  CalendarClock,
-  Target,
+  ChevronRight,
+  ListTodo,
+  NotebookPen,
+  ShoppingBag,
 } from "lucide-react"
 
 import {
   StackedAvatarGroup,
   type StackedAvatarGroupItem,
 } from "@/components/stacked-avatar-group"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { CreateAppointmentDialog } from "../../calendar/_components/create-appointment-dialog"
 import { getCalendarMeta, type CalendarMetaResponse } from "../../calendar/_lib/calendar-api"
+import { CreateContactNoteDialog } from "../_components/create-contact-note-dialog"
 import { AddContactOpportunityDialog } from "../../opportunities/_components/add-contact-opportunity-dialog"
+import { CreateTaskDialog } from "../../tasks/_components/create-task-dialog"
 import { ContactBreadcrumbSync } from "./_components/contact-breadcrumb-sync"
 import { ContactDetailNavigation } from "./_components/contact-detail-navigation"
 import { ContactHeaderAssignee } from "./_components/contact-header-assignee"
@@ -44,6 +53,18 @@ type ContactStatusesResponse = {
     name: string
     bgColor: string | null
     textColor: string | null
+  }>
+}
+
+type TaskStatusesResponse = {
+  ok: boolean
+  items: Array<{
+    id: string
+    name: string
+    bgColor: string
+    textColor: string
+    isActive: boolean
+    sortOrder: number
   }>
 }
 
@@ -114,17 +135,20 @@ export default async function ContactDetailsLayout({
     currentStepTitle: string | null
     currentStepDueAt: string | null
     isOverdue: boolean
-    ownerName: string | null
-    ownerId: string | null
-    ownerImage: string | null
+    collaborators: StackedAvatarGroupItem[]
   }> = []
-  let activeFollowUpOwnerItems: StackedAvatarGroupItem[] = []
   let assigneeOptions: ContactAssigneesResponse["items"] = []
   let statusOptions: Array<{
     value: string
     label: string
     bgColor: string | null
     textColor: string | null
+  }> = []
+  let taskStatusOptions: Array<{
+    value: string
+    label: string
+    bgColor?: string
+    textColor?: string
   }> = []
   let calendarMeta: Pick<CalendarMetaResponse, "settings" | "filters"> = {
     settings: {
@@ -144,7 +168,7 @@ export default async function ContactDetailsLayout({
     },
   }
   try {
-    const [services, assignees, statuses, metaResponse] = await Promise.all([
+    const [services, assignees, statuses, metaResponse, taskStatusesResponse] = await Promise.all([
       getAllContactServices(tenantId, contactId, cookie),
       api.get<ContactAssigneesResponse>(`/api/tasks/${tenantId}/assignees`, {
         headers: { cookie },
@@ -153,6 +177,11 @@ export default async function ContactDetailsLayout({
         headers: { cookie },
       }),
       getCalendarMeta(tenantId, cookie),
+      api
+        .get<TaskStatusesResponse>(`/api/tasks/${tenantId}/statuses`, {
+          headers: { cookie },
+        })
+        .catch(() => null),
     ])
 
     activeFollowUpServices = services
@@ -171,6 +200,27 @@ export default async function ContactDetailsLayout({
           service.followUpSteps.find((step) => step.status === "POSTPONED") ??
           service.followUpSteps.find((step) => step.status === "PENDING") ??
           null
+        const collaborators = Array.from(
+          new Map(
+            service.followUpSteps
+              .filter((step) => step.assignedTo)
+              .map((step) => {
+                const assignee = step.assignedTo!
+                const label =
+                  assignee.name?.trim() || assignee.email?.trim() || "Assigned user"
+
+                return [
+                  assignee.id,
+                  {
+                    id: assignee.id,
+                    label,
+                    imageUrl: assignee.image,
+                    tone: "internal" as const,
+                  },
+                ]
+              }),
+          ).values(),
+        )
 
         return hasActiveFollowUp
           ? {
@@ -182,35 +232,21 @@ export default async function ContactDetailsLayout({
               currentStepTitle: currentStep?.title ?? null,
               currentStepDueAt: currentStep?.dueAt ?? null,
               isOverdue: isPastDue(currentStep?.dueAt ?? null),
-              ownerName:
-                currentStep?.assignedTo?.name?.trim() ||
-                currentStep?.assignedTo?.email?.trim() ||
-                null,
-              ownerId: currentStep?.assignedTo?.id ?? null,
-              ownerImage: currentStep?.assignedTo?.image ?? null,
+              collaborators,
             }
           : null
       })
       .filter(
         (service): service is NonNullable<typeof service> => service !== null,
       )
-    activeFollowUpOwnerItems = Array.from(
-      new Map(
-        activeFollowUpServices
-          .filter((service) => service.ownerName)
-          .map((service) => [
-            service.ownerId ?? service.ownerName ?? service.id,
-            {
-              id: service.ownerId ?? service.ownerName ?? service.id,
-              label: service.ownerName ?? "Assigned user",
-              imageUrl: service.ownerImage,
-              tone: "internal" as const,
-            },
-          ]),
-      ).values(),
-    )
     assigneeOptions = assignees.data.items
     statusOptions = statuses.data.items.map((status) => ({
+      value: status.id,
+      label: status.name,
+      bgColor: status.bgColor,
+      textColor: status.textColor,
+    }))
+    taskStatusOptions = (taskStatusesResponse?.data.items ?? []).map((status) => ({
       value: status.id,
       label: status.name,
       bgColor: status.bgColor,
@@ -232,9 +268,9 @@ export default async function ContactDetailsLayout({
     }
   } catch {
     activeFollowUpServices = []
-    activeFollowUpOwnerItems = []
     assigneeOptions = []
     statusOptions = []
+    taskStatusOptions = []
     calendarMeta = {
       settings: {
         meetingIntervalMinutes: 30,
@@ -254,7 +290,7 @@ export default async function ContactDetailsLayout({
     }
   }
 
-  const visibleActiveFollowUpServices = activeFollowUpServices.slice(0, 3)
+  const visibleActiveFollowUpServices = activeFollowUpServices.slice(0, 4)
   const remainingActiveFollowUpServicesCount = Math.max(
     0,
     activeFollowUpServices.length - visibleActiveFollowUpServices.length,
@@ -271,37 +307,24 @@ export default async function ContactDetailsLayout({
   return (
     <section className="flex h-full min-h-0 flex-col gap-4">
       <ContactBreadcrumbSync label={contact.fullName} />
-      <div className="flex min-h-0 flex-1 flex-col gap-4">
-        <header className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_46%,#fff7ed_100%)]">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-slate-200/80 bg-white shadow-sm">
+        <header className="shrink-0 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_46%,#fff7ed_100%)]">
           <div className="space-y-4 p-4 md:p-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="min-w-0 space-y-2">
                 <div className="min-w-0 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <Link
                       href={`/app/${tenantSlug}/contacts`}
                       aria-label="Back to contacts"
-                      className="inline-flex h-6 items-center gap-1 rounded-full border border-slate-200 bg-white/85 px-2 text-[11px] font-medium text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
+                      title="Back to contacts"
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white/85 text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
                     >
-                      <ArrowLeft className="h-3 w-3" />
-                      Contacts
+                      <ArrowLeft className="h-4 w-4" />
                     </Link>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h1 className="truncate text-[1.7rem] font-semibold tracking-tight text-slate-950">
+                    <h1 className="truncate text-2xl font-semibold tracking-tight text-slate-950">
                       {contact.fullName}
                     </h1>
-                    <ContactHeaderStatus
-                      tenantId={tenantId}
-                      contactId={contactId}
-                      initialStatus={{
-                        label: contact.status,
-                        value: contact.statusConfigId,
-                        bgColor: contact.statusBgColor,
-                        textColor: contact.statusTextColor,
-                      }}
-                      statusOptions={statusOptions}
-                    />
                   </div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5 text-xs text-slate-500">
                     <span>{formatPhoneNumber(contact.phoneNumber)}</span>
@@ -379,17 +402,9 @@ export default async function ContactDetailsLayout({
                     phoneNumber: contact.phoneNumber,
                   }}
                   lockContact
+                  iconOnly
                   triggerTooltip="Create opportunity"
-                  trigger={
-                    <Button
-                      type="button"
-                      variant="outline"
-                      aria-label="Create opportunity"
-                      className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-white/70 bg-blue-950 p-0 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
-                    >
-                      <Target className="h-4 w-4" />
-                    </Button>
-                  }
+                  triggerClassName="inline-flex h-8 w-8 items-center justify-center border-white/70 shadow-sm backdrop-blur transition hover:bg-blue-900"
                 />
                 <CreateAppointmentDialog
                   tenantId={tenantId}
@@ -410,6 +425,79 @@ export default async function ContactDetailsLayout({
                   triggerTooltip="Create appointment"
                   triggerClassName="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
                 />
+                <CreateTaskDialog
+                  tenantId={tenantId}
+                  tenantTimezone={tenantTimezone}
+                  statusOptions={taskStatusOptions}
+                  assigneeOptions={assigneeOptions}
+                  initialContact={{
+                    id: contact.id,
+                    fullName: contact.fullName,
+                    email: contact.email,
+                    phoneNumber: contact.phoneNumber,
+                  }}
+                  lockContact
+                  hideContact
+                  triggerTooltip="Create task"
+                  trigger={
+                    <Button
+                      type="button"
+                      size="icon"
+                      aria-label="Create task"
+                      className="h-8 w-8 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
+                    >
+                      <ListTodo className="size-4" aria-hidden="true" />
+                    </Button>
+                  }
+                />
+                <CreateContactNoteDialog
+                  tenantId={tenantId}
+                  contactId={contactId}
+                  presentation="drawer"
+                  triggerTooltip="Add note"
+                  trigger={
+                    <Button
+                      type="button"
+                      size="icon"
+                      aria-label="Add note"
+                      className="h-8 w-8 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
+                    >
+                      <NotebookPen className="size-4" aria-hidden="true" />
+                    </Button>
+                  }
+                />
+                <TooltipProvider delayDuration={120}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        asChild
+                        size="icon"
+                        className="h-8 w-8 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
+                      >
+                        <Link
+                          href={`/app/${tenantSlug}/contacts/${contactId}/services?create=1`}
+                          aria-label="Purchase service"
+                        >
+                          <ShoppingBag className="size-4" aria-hidden="true" />
+                        </Link>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={8}>
+                      Purchase service
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <ContactHeaderStatus
+                  tenantId={tenantId}
+                  contactId={contactId}
+                  initialStatus={{
+                    label: contact.status,
+                    value: contact.statusConfigId,
+                    bgColor: contact.statusBgColor,
+                    textColor: contact.statusTextColor,
+                  }}
+                  statusOptions={statusOptions}
+                />
                 <ContactHeaderAssignee
                   tenantId={tenantId}
                   contactId={contactId}
@@ -418,139 +506,108 @@ export default async function ContactDetailsLayout({
                 />
               </div>
             </div>
-
           </div>
-        </header>
 
         {activeFollowUpServices.length > 0 ? (
-          <section className="overflow-hidden rounded-[24px]  bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-4 py-4 md:px-5">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div className="space-y-1">
-                  <h2 className="text-lg font-semibold tracking-tight text-slate-950">
-                    Services currently in progress
-                  </h2>
-                </div>
-                {activeFollowUpOwnerItems.length > 0 ? (
-                  <div className="flex items-center gap-2 self-start rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1.5 sm:self-center">
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                      Involved
-                    </span>
-                    <StackedAvatarGroup
-                      items={activeFollowUpOwnerItems}
-                      avatarSize="sm"
-                      maxVisible={5}
-                      className="pl-0"
-                    />
-                  </div>
-                ) : null}
-              </div>
+          <section
+            aria-labelledby="service-progress-title"
+            className="border-t border-slate-200/70"
+          >
+            <div className="px-4 pt-3 md:px-5">
+              <h2
+                id="service-progress-title"
+                className="text-sm font-semibold text-slate-800"
+              >
+                Service progress
+              </h2>
             </div>
-
-            <div className="grid gap-3 p-4 md:p-5 lg:grid-cols-2 xl:grid-cols-3">
+            <div className="grid gap-3 px-4 pb-3 pt-2 sm:grid-cols-2 md:px-5 lg:grid-cols-4">
               {visibleActiveFollowUpServices.map((service) => (
-                <div
+                <Link
                   key={service.id}
+                  href={`/app/${tenantSlug}/contacts/${contactId}/services/${service.id}`}
+                  aria-label={`Open ${service.name} service details`}
                   className={
                     service.isOverdue
-                      ? "rounded-[20px] border border-rose-200 bg-rose-50/80 px-4 py-3.5 shadow-sm"
-                      : "rounded-[20px] border border-slate-200 bg-slate-50/60 px-4 py-3.5 shadow-sm"
+                      ? "group relative overflow-hidden rounded-[20px] border border-rose-200 bg-[linear-gradient(145deg,#fff7f7_0%,#ffffff_55%,#fff1f2_100%)] p-3.5 shadow-sm transition hover:-translate-y-0.5 hover:border-rose-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 focus-visible:ring-offset-2"
+                      : "group relative overflow-hidden rounded-[20px] border border-blue-100 bg-[linear-gradient(145deg,#f8fbff_0%,#ffffff_55%,#eff6ff_100%)] p-3.5 shadow-sm transition hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2"
                   }
                 >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="truncate text-base font-semibold tracking-tight text-slate-950">
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute -right-16 -top-16 size-40 rounded-full bg-blue-200/30 blur-3xl"
+                  />
+
+                  <div className="relative flex flex-col gap-2.5">
+                    <div className="flex min-w-0 items-center justify-between gap-2">
+                      <h3 className="min-w-0 truncate text-sm font-semibold tracking-tight text-slate-950">
                         {service.name}
-                      </p>
-                      <p className="mt-0.5 truncate text-[13px] font-medium text-slate-600">
-                        Next:{" "}
-                        {service.currentStepTitle ?? "Follow-up in progress"}
-                      </p>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <Badge className="border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] text-sky-700 hover:bg-sky-50">
-                        In Progress
-                      </Badge>
-                      {service.isOverdue ? (
-                        <Badge className="border-rose-200 bg-rose-100 px-2 py-0.5 text-[11px] text-rose-700 hover:bg-rose-100">
-                          Overdue
-                        </Badge>
-                      ) : null}
-                      {service.ownerName ? (
+                      </h3>
+                      {service.collaborators.length > 0 ? (
                         <StackedAvatarGroup
-                          items={[
-                            {
-                              id: service.ownerId ?? service.id,
-                              label: service.ownerName,
-                              imageUrl: service.ownerImage,
-                              tone: "internal",
-                            },
-                          ]}
+                          items={service.collaborators}
                           avatarSize="sm"
-                          maxVisible={1}
-                          className="pl-0"
+                          maxVisible={4}
+                          className="shrink-0 pl-0"
                         />
                       ) : null}
                     </div>
-                  </div>
 
-                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200/80">
                     <div
-                      className="h-full rounded-full bg-teal-500 transition-[width]"
-                      style={{ width: `${service.percentage}%` }}
-                    />
-                  </div>
-
-                  <div className="mt-3 flex items-center justify-between gap-4">
-                    <p className="text-[13px] font-semibold text-slate-950">
-                      {service.percentage}% Complete
-                    </p>
-                    <div
-                      className={
-                        service.isOverdue
-                          ? "flex items-center gap-1.5 text-[13px] font-medium text-rose-700"
-                          : "flex items-center gap-1.5 text-[13px] text-slate-600"
-                      }
+                      className="relative h-7 overflow-hidden rounded-full border border-blue-100 bg-blue-100/60"
+                      role="progressbar"
+                      aria-label={`${service.name} follow-up progress`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={service.percentage}
                     >
-                      <CalendarClock className="h-3.5 w-3.5" />
-                      <span>
-                        Due: {formatShortDate(service.currentStepDueAt)}
+                      <span
+                        className="absolute inset-y-0 left-0 rounded-full bg-[linear-gradient(90deg,#1e3a8a_0%,#2563eb_100%)] transition-[width]"
+                        style={{ width: `${service.percentage}%` }}
+                      />
+                      <span className="absolute inset-y-1 left-1 flex items-center rounded-full bg-blue-950 px-2 text-[10px] font-semibold text-white shadow-sm tabular-nums">
+                        {service.percentage}%
+                      </span>
+                      <span
+                        className={
+                          service.isOverdue
+                            ? "absolute inset-0 flex items-center justify-end px-3 text-[11px] font-semibold text-rose-700"
+                            : "absolute inset-0 flex items-center justify-end px-3 text-[11px] font-semibold text-blue-950"
+                        }
+                      >
+                        {service.currentStepDueAt
+                          ? service.isOverdue
+                            ? `Past due ${formatShortDate(service.currentStepDueAt)}`
+                            : `Due ${formatShortDate(service.currentStepDueAt)}`
+                          : "No due date"}
                       </span>
                     </div>
                   </div>
-                </div>
+                </Link>
               ))}
 
               {remainingActiveFollowUpServicesCount > 0 ? (
                 <Link
                   href={`/app/${tenantSlug}/contacts/${contactId}/follow-ups`}
-                  className="rounded-[20px] border border-dashed border-slate-300 bg-slate-50/60 px-4 py-3.5 shadow-sm transition hover:bg-slate-50"
+                  className="group flex min-h-24 items-center justify-between gap-3 rounded-[20px] border border-dashed border-blue-200 bg-blue-50/45 p-3.5 transition hover:border-blue-300 hover:bg-blue-50"
                 >
-                  <div className="flex h-full flex-col justify-between gap-4">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                        More Active Follow Ups
-                      </p>
-                      <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
-                        +{remainingActiveFollowUpServicesCount}
-                      </p>
-                    </div>
-                    <p className="text-sm leading-5 text-slate-600">
-                      Open the follow-ups tab to review the remaining active
-                      services.
+                  <div>
+                    <p className="text-xs font-semibold text-blue-700">More follow-ups</p>
+                    <p className="mt-0.5 text-2xl font-semibold tracking-[-0.04em] text-slate-950 tabular-nums">
+                      +{remainingActiveFollowUpServicesCount}
                     </p>
                   </div>
+                  <ChevronRight className="size-4 text-blue-950 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
                 </Link>
               ) : null}
             </div>
           </section>
         ) : null}
+        </header>
 
-        <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-visible rounded-2xl border border-slate-200 bg-[#f1f7ff] shadow-sm lg:grid-cols-[14rem_minmax(0,1fr)]">
-          <ContactDetailNavigation tenantSlug={tenantSlug} contactId={contactId} />
-          <div className="min-h-0 min-w-0 flex-1 rounded-b-2xl bg-background p-5 md:p-6 lg:rounded-l-none lg:rounded-r-2xl lg:border-l">
-            {children}
-          </div>
+        <ContactDetailNavigation tenantSlug={tenantSlug} contactId={contactId} />
+        <div className="min-h-0 min-w-0 flex-1 bg-background px-4 py-5 md:px-5 md:py-6">
+          {children}
         </div>
       </div>
     </section>

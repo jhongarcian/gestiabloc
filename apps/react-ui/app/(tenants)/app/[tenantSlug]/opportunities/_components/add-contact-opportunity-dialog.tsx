@@ -1,7 +1,7 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { Loader2 } from "lucide-react"
+import { Loader2, Target } from "lucide-react"
 import {
   type FormEvent,
   type ReactNode,
@@ -140,6 +140,8 @@ type AddContactOpportunityDialogProps = {
   trigger?: ReactNode
   triggerLabel?: string
   triggerTooltip?: string | null
+  triggerClassName?: string
+  iconOnly?: boolean
   initialContact?: ContactSearchItem | null
   lockContact?: boolean
   initialPipelineId?: string | null
@@ -158,6 +160,8 @@ export function AddContactOpportunityDialog({
   trigger,
   triggerLabel = "Add opportunity",
   triggerTooltip = null,
+  triggerClassName,
+  iconOnly = false,
   initialContact = null,
   lockContact = false,
   initialPipelineId = null,
@@ -181,9 +185,15 @@ export function AddContactOpportunityDialog({
   const triggerNode = trigger ?? (
     <Button
       type="button"
-      className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+      variant={iconOnly ? "outline" : "default"}
+      aria-label={iconOnly ? (triggerTooltip ?? triggerLabel) : undefined}
+      className={cn(
+        "cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90",
+        iconOnly && "rounded-full p-0",
+        triggerClassName,
+      )}
     >
-      {triggerLabel}
+      {iconOnly ? <Target className="h-4 w-4" /> : triggerLabel}
     </Button>
   )
 

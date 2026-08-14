@@ -107,7 +107,7 @@ Use the existing contact palette. New colors should communicate a state, not add
 | Footer surface | `bg-slate-50/80` |
 | Error | `text-rose-700`, `border-rose-200` |
 
-Reserve rose for errors and destructive actions. Do not introduce purple gradients or unrelated accent colors.
+Reserve rose for errors, destructive actions, and required-field markers. Do not introduce purple gradients or unrelated accent colors.
 
 ## Form hierarchy
 
@@ -121,7 +121,7 @@ Use shadcn `FieldGroup` and `Field` for form layout. Each control needs a visibl
     className="gap-2"
   >
     <FieldLabel htmlFor="dialog-title" className="text-slate-800">
-      Title
+      Title <span className="text-rose-600" aria-hidden="true">*</span>
     </FieldLabel>
     <Input
       id="dialog-title"
@@ -129,6 +129,7 @@ Use shadcn `FieldGroup` and `Field` for form layout. Each control needs a visibl
       onChange={(event) => setTitle(event.target.value)}
       disabled={isSaving}
       aria-invalid={Boolean(errors.title)}
+      aria-required="true"
       className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
     />
     <FieldDescription className="text-xs">
@@ -142,6 +143,10 @@ Use shadcn `FieldGroup` and `Field` for form layout. Each control needs a visibl
 Form rules:
 
 - Use `FieldGroup` with `gap-*`; do not use `space-y-*`.
+- Mark only required fields with a red `*` using `text-rose-600`.
+- Put `aria-hidden="true"` on the visual asterisk and `aria-required="true"` on its control so assistive technology receives the requirement without reading the symbol.
+- Leave optional field labels unmarked. Do not append `(optional)` or another optional indicator to labels.
+- Use a short `FieldDescription` only when an optional field has behavior that is not clear from its label.
 - Put `data-invalid` on `Field` and `aria-invalid` on the control.
 - Put `data-disabled` on `Field` and `disabled` on the control.
 - Use `h-11 rounded-xl` for standard text inputs in medium and large dialogs.
@@ -154,7 +159,7 @@ Form rules:
 - Give the primary choice more width than adjacent compact state fields when they share a row; for example, assignee can use roughly three-fifths of an ownership row while status uses the remainder.
 - Follow `docs/assignee-input-style-guide.md` for full-name display, avatar fallbacks, searchable assignment, and unassigned states.
 - Follow `docs/status-input-style-guide.md` for configured status colors, neutral states, option grouping, and control sizing.
-- Group Start and Due in the first responsive schedule row because they define the timeline. Place Reminder beneath them as a secondary field, mark required versus optional in the label, and stack every field on smaller screens. Due must be at or after Start; when a reminder is present, require Due and keep Reminder within the inclusive Start–Due window.
+- Group Start and Due in the first responsive schedule row because they define the timeline. Place Reminder beneath them as a secondary field, mark only required controls with a red `*`, leave optional labels unmarked, and stack every field on smaller screens. Due must be at or after Start; when a reminder is present, require Due and keep Reminder within the inclusive Start–Due window.
 - Follow `docs/date-time-input-style-guide.md` for joined Date/Time controls, timeline layout, timezone handling, and chronological validation.
 
 ## Content sections
@@ -381,6 +386,8 @@ Example close guard:
 - `DialogTitle` or `SheetTitle` is always present, matching the overlay primitive.
 - `DialogDescription` or `SheetDescription` explains the result of the workflow.
 - Every control has a visible `FieldLabel` or an appropriate accessible name.
+- Required labels use a red visual `*` with `aria-hidden="true"`, and their controls use `aria-required="true"`.
+- Optional labels do not include `(optional)` or another optional marker.
 - Invalid controls use both `data-invalid` and `aria-invalid`.
 - Error messages use `FieldError` or `role="alert"`.
 - Decorative backgrounds use `aria-hidden="true"`.
@@ -432,13 +439,16 @@ Example close guard:
         <div className="flex flex-col gap-7">
           <FieldGroup className="gap-5">
             <Field data-invalid={Boolean(errors.name)} data-disabled={isSaving} className="gap-2">
-              <FieldLabel htmlFor="record-name">Name</FieldLabel>
+              <FieldLabel htmlFor="record-name">
+                Name <span className="text-rose-600" aria-hidden="true">*</span>
+              </FieldLabel>
               <Input
                 id="record-name"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 disabled={isSaving}
                 aria-invalid={Boolean(errors.name)}
+                aria-required="true"
                 className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
               />
               <FieldDescription>Use a name your team will recognize.</FieldDescription>
@@ -484,6 +494,7 @@ Before considering a dialog complete, verify:
 - [ ] Only the middle row scrolls vertically.
 - [ ] Long multi-section workflows use a full-height sheet with a persistent header and footer.
 - [ ] Fields use `FieldGroup` and `Field`.
+- [ ] Required fields use an accessible red `*`; optional labels remain unmarked.
 - [ ] Labels use product language rather than API names.
 - [ ] Validation appears beside the relevant control.
 - [ ] Secondary content is visually grouped without card overload.

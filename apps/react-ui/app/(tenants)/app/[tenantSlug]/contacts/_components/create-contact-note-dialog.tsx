@@ -9,6 +9,7 @@ import {
   Upload,
   X,
 } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { type ChangeEvent, type ReactNode, useRef, useState } from "react"
 import { toast } from "sonner"
 
@@ -22,8 +23,15 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import { Progress } from "@/components/ui/progress"
 import {
   Sheet,
   SheetContent,
@@ -34,12 +42,26 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import { uploadPrivateFileToSignedUrl } from "@/lib/supabase-storage"
+import { cn } from "@/lib/utils"
 
 type PendingUpload = {
   id: string
   file: File
+}
+
+type SaveProgress = {
+  phase: "uploading" | "saving"
+  completed: number
+  total: number
+  currentFileName: string | null
 }
 
 type CreateContactNoteDialogProps = {
@@ -48,9 +70,17 @@ type CreateContactNoteDialogProps = {
   trigger: ReactNode
   onCreated?: () => Promise<void> | void
   presentation?: "dialog" | "drawer"
+  triggerTooltip?: string
 }
 
 const MAX_ATTACHMENTS = 10
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
 
 function inferContentType(file: File) {
   if (file.type) {
@@ -135,13 +165,16 @@ export function CreateContactNoteDialog({
   trigger,
   onCreated,
   presentation = "dialog",
+  triggerTooltip,
 }: CreateContactNoteDialogProps) {
+  const router = useRouter()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [open, setOpen] = useState(false)
   const [title, setTitle] = useState("")
   const [body, setBody] = useState("")
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([])
   const [isSaving, setIsSaving] = useState(false)
+  const [saveProgress, setSaveProgress] = useState<SaveProgress | null>(null)
   const [fieldErrors, setFieldErrors] = useState<{
     title?: string
     body?: string
@@ -153,6 +186,7 @@ export function CreateContactNoteDialog({
     setBody("")
     setPendingUploads([])
     setFieldErrors({})
+    setSaveProgress(null)
     if (fileInputRef.current) {
       fileInputRef.current.value = ""
     }
@@ -196,7 +230,7 @@ export function CreateContactNoteDialog({
     }
 
     if (!body.trim()) {
-      nextErrors.body = "Body is required."
+      nextErrors.body = "Note details are required."
     }
 
     if (pendingUploads.length > MAX_ATTACHMENTS) {
@@ -215,9 +249,35 @@ export function CreateContactNoteDialog({
     setIsSaving(true)
     try {
       const uploadedFiles = []
-      for (const pendingUpload of pendingUploads) {
+      setSaveProgress({
+        phase: pendingUploads.length > 0 ? "uploading" : "saving",
+        completed: 0,
+        total: pendingUploads.length,
+        currentFileName: pendingUploads[0]?.file.name ?? null,
+      })
+
+      for (const [index, pendingUpload] of pendingUploads.entries()) {
+        setSaveProgress({
+          phase: "uploading",
+          completed: index,
+          total: pendingUploads.length,
+          currentFileName: pendingUpload.file.name,
+        })
         uploadedFiles.push(await uploadAttachment(tenantId, pendingUpload.file))
+        setSaveProgress({
+          phase: "uploading",
+          completed: index + 1,
+          total: pendingUploads.length,
+          currentFileName: pendingUploads[index + 1]?.file.name ?? null,
+        })
       }
+
+      setSaveProgress({
+        phase: "saving",
+        completed: pendingUploads.length,
+        total: pendingUploads.length,
+        currentFileName: null,
+      })
 
       await api.post(`/api/contacts/${tenantId}/${contactId}/notes`, {
         title: title.trim(),
@@ -228,7 +288,11 @@ export function CreateContactNoteDialog({
       toast.success("Note added.")
       setOpen(false)
       resetDialog()
-      await onCreated?.()
+      if (onCreated) {
+        await onCreated()
+      } else {
+        router.refresh()
+      }
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
@@ -244,61 +308,105 @@ export function CreateContactNoteDialog({
       }
     } finally {
       setIsSaving(false)
+      setSaveProgress(null)
     }
   }
 
   const isDrawer = presentation === "drawer"
 
+  const progressPercent = saveProgress
+    ? saveProgress.phase === "saving" || saveProgress.total === 0
+      ? 100
+      : Math.round((saveProgress.completed / saveProgress.total) * 100)
+    : 0
+
   const content = (
-    <div className="space-y-6">
-      <section className="space-y-5">
-        <div className="grid gap-5">
-          <div className="grid gap-2">
-            <Label htmlFor="create-contact-note-title">Title</Label>
+    <div className="flex flex-col gap-7">
+      <section className="flex flex-col gap-4">
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-semibold text-blue-700">Note details</p>
+          <h3 className="text-base font-semibold text-slate-950">Capture the context</h3>
+          <p className="text-sm leading-6 text-slate-600">
+            Write a clear update your team can understand later.
+          </p>
+        </div>
+
+        <FieldGroup className="gap-5">
+          <Field
+            data-invalid={Boolean(fieldErrors.title)}
+            data-disabled={isSaving}
+            className="gap-2"
+          >
+            <FieldLabel htmlFor="create-contact-note-title">
+              Title <span className="text-rose-500" aria-hidden="true">*</span>
+            </FieldLabel>
             <Input
               id="create-contact-note-title"
               value={title}
-              onChange={(event) => setTitle(event.target.value)}
+              onChange={(event) => {
+                setTitle(event.target.value)
+                setFieldErrors((current) => ({ ...current, title: undefined }))
+              }}
               maxLength={160}
               placeholder="Example: Medicare paperwork pending"
               disabled={isSaving}
+              aria-invalid={Boolean(fieldErrors.title)}
+              className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
             />
-            <div className="flex items-center justify-between text-xs text-slate-500">
-              <span>{fieldErrors.title ?? "Use a clear internal title."}</span>
-              <span>{title.length}/160</span>
+            <div className="flex items-start justify-between gap-4">
+              <FieldDescription className="text-xs">
+                Use a clear internal title.
+              </FieldDescription>
+              <span className="shrink-0 text-xs tabular-nums text-slate-500">
+                {title.length}/160
+              </span>
             </div>
-          </div>
+            <FieldError>{fieldErrors.title}</FieldError>
+          </Field>
 
-          <div className="grid gap-2">
-            <Label htmlFor="create-contact-note-body">Body</Label>
+          <Field
+            data-invalid={Boolean(fieldErrors.body)}
+            data-disabled={isSaving}
+            className="gap-2"
+          >
+            <FieldLabel htmlFor="create-contact-note-body">
+              Note details <span className="text-rose-500" aria-hidden="true">*</span>
+            </FieldLabel>
             <Textarea
               id="create-contact-note-body"
               value={body}
-              onChange={(event) => setBody(event.target.value)}
+              onChange={(event) => {
+                setBody(event.target.value)
+                setFieldErrors((current) => ({ ...current, body: undefined }))
+              }}
               maxLength={5000}
               placeholder="Add the context the team should know about this contact..."
-              className="min-h-[180px]"
+              className="min-h-40 resize-y rounded-xl border-slate-200 bg-slate-50/60 px-4 py-3 leading-6 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
               disabled={isSaving}
+              aria-invalid={Boolean(fieldErrors.body)}
             />
-            <div className="flex items-center justify-between text-xs text-slate-500">
-              <span>{fieldErrors.body ?? "Include the important details or follow-up context."}</span>
-              <span>{body.length}/5000</span>
+            <div className="flex items-start justify-between gap-4">
+              <FieldDescription className="text-xs">
+                Include important details or follow-up context.
+              </FieldDescription>
+              <span className="shrink-0 text-xs tabular-nums text-slate-500">
+                {body.length}/5000
+              </span>
             </div>
-          </div>
-        </div>
+            <FieldError>{fieldErrors.body}</FieldError>
+          </Field>
+        </FieldGroup>
       </section>
 
-      <section className="space-y-4 border-t border-slate-100 pt-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Attachments
-            </p>
-            <h3 className="mt-1 text-base font-semibold text-slate-950">
-              Images and documents
+      <section className="flex flex-col gap-4 border-t border-slate-200 pt-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex flex-col gap-1">
+            <p className="text-xs font-semibold text-blue-700">Attachments</p>
+            <h3 className="text-base font-semibold text-slate-950">
+              Add supporting files
             </h3>
-            <p className="mt-1 text-sm text-slate-500">
-              Supported files: PNG, JPG, WEBP, and PDF.
+            <p className="text-sm leading-6 text-slate-600">
+              Add up to {MAX_ATTACHMENTS} PNG, JPG, WEBP, or PDF files.
             </p>
           </div>
 
@@ -307,9 +415,9 @@ export function CreateContactNoteDialog({
             variant="outline"
             onClick={() => fileInputRef.current?.click()}
             disabled={isSaving}
-            className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
+            className="cursor-pointer border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
           >
-            <Upload className="h-4 w-4" />
+            <Upload data-icon="inline-start" />
             Add files
           </Button>
         </div>
@@ -324,65 +432,122 @@ export function CreateContactNoteDialog({
           disabled={isSaving}
         />
 
-        {fieldErrors.attachments ? (
-          <p className="mt-3 text-sm text-rose-600">{fieldErrors.attachments}</p>
-        ) : null}
+        <Field
+          data-invalid={Boolean(fieldErrors.attachments)}
+          data-disabled={isSaving}
+          className="gap-3"
+        >
+          <FieldError>{fieldErrors.attachments}</FieldError>
 
-        <div className="mt-4 space-y-3">
-          {pendingUploads.map((attachment) => {
-            const contentType = inferContentType(attachment.file)
-            const AttachmentIcon = attachmentIcon(contentType)
-            const tone = attachmentTone(contentType)
-
-            return (
-              <div
-                key={attachment.id}
-                className={`flex items-center justify-between gap-3 rounded-xl border border-dashed px-3 py-3 ${tone.chip}`}
-              >
-                <div className="min-w-0 flex items-center gap-3">
-                  <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/80">
-                    <AttachmentIcon className={`h-4 w-4 ${tone.icon}`} />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-slate-900">
-                      {attachment.file.name}
+          {isSaving && saveProgress ? (
+            <div
+              className="flex flex-col gap-3 rounded-2xl border border-blue-200 bg-white p-4 shadow-sm"
+              aria-live="polite"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex min-w-0 items-start gap-2.5">
+                  <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-blue-800" />
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <p className="text-sm font-semibold text-slate-900">
+                      {saveProgress.phase === "uploading"
+                        ? `Uploading ${Math.min(
+                            saveProgress.completed + 1,
+                            saveProgress.total,
+                          )} of ${saveProgress.total}`
+                        : "Saving the note"}
                     </p>
-                    <p className="text-xs text-slate-500">
-                      Will upload when you save
+                    <p className="truncate text-xs text-slate-500">
+                      {saveProgress.currentFileName ?? "Finishing your changes..."}
                     </p>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPendingUploads((current) =>
-                      current.filter((item) => item.id !== attachment.id),
-                    )
-                  }
-                  disabled={isSaving}
-                  className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full text-slate-400 transition hover:bg-white hover:text-rose-600"
-                  aria-label={`Remove ${attachment.file.name}`}
-                >
-                  <X className="h-4 w-4" />
-                </button>
+                <span className="shrink-0 text-xs font-semibold tabular-nums text-blue-900">
+                  {progressPercent}%
+                </span>
               </div>
-            )
-          })}
-
-          {pendingUploads.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center">
-              <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-500">
-                <Paperclip className="h-4 w-4" />
-              </span>
-              <p className="mt-3 text-sm font-medium text-slate-700">
-                No files attached yet
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                Attach images or PDFs if this note needs supporting files.
-              </p>
+              <Progress
+                value={progressPercent}
+                aria-label="Attachment upload progress"
+                className="bg-blue-100 [&_[data-slot=progress-indicator]]:bg-blue-950"
+              />
             </div>
           ) : null}
-        </div>
+
+          <div className="flex flex-col gap-3">
+            {pendingUploads.map((attachment, index) => {
+              const contentType = inferContentType(attachment.file)
+              const AttachmentIcon = attachmentIcon(contentType)
+              const tone = attachmentTone(contentType)
+              const isComplete = Boolean(
+                saveProgress &&
+                  (saveProgress.phase === "saving" || index < saveProgress.completed),
+              )
+              const isUploading = Boolean(
+                saveProgress?.phase === "uploading" &&
+                  index === saveProgress.completed &&
+                  saveProgress.currentFileName === attachment.file.name,
+              )
+              const stateLabel = isComplete
+                ? "Upload complete"
+                : isUploading
+                  ? "Uploading now"
+                  : "Ready to upload"
+
+              return (
+                <div
+                  key={attachment.id}
+                  className={cn(
+                    "flex items-center justify-between gap-3 rounded-xl border border-dashed px-3 py-3",
+                    tone.chip,
+                  )}
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl bg-white/80">
+                      <AttachmentIcon className={cn("size-4", tone.icon)} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-slate-900">
+                        {attachment.file.name}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {formatFileSize(attachment.file.size)} · {stateLabel}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() =>
+                      setPendingUploads((current) =>
+                        current.filter((item) => item.id !== attachment.id),
+                      )
+                    }
+                    disabled={isSaving}
+                    className="cursor-pointer text-slate-400 hover:bg-white hover:text-rose-600"
+                    aria-label={`Remove ${attachment.file.name}`}
+                  >
+                    <X />
+                  </Button>
+                </div>
+              )
+            })}
+
+            {pendingUploads.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/60 px-4 py-7 text-center">
+                <span className="mx-auto inline-flex size-10 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm">
+                  <Paperclip className="size-4" />
+                </span>
+                <p className="mt-3 text-sm font-medium text-slate-700">
+                  No files attached
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Supporting files are optional.
+                </p>
+              </div>
+            ) : null}
+          </div>
+        </Field>
       </section>
     </div>
   )
@@ -392,28 +557,63 @@ export function CreateContactNoteDialog({
       <Sheet
         open={open}
         onOpenChange={(nextOpen) => {
+          if (!nextOpen && isSaving) return
           setOpen(nextOpen)
-          if (!nextOpen && !isSaving) {
-            resetDialog()
-          }
+          if (!nextOpen) resetDialog()
         }}
       >
-        <SheetTrigger asChild>{trigger}</SheetTrigger>
-        <SheetContent side="right" className="flex h-full flex-col gap-0 p-0 sm:max-w-2xl">
-          <SheetHeader className="border-b border-slate-200 bg-slate-50 px-6 text-left">
-            <SheetTitle className="text-xl font-semibold text-slate-950">Add note</SheetTitle>
-            <SheetDescription>
-              Add a title, note body, and any supporting files for this contact.
-            </SheetDescription>
+        {triggerTooltip ? (
+          <TooltipProvider delayDuration={120}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <SheetTrigger asChild>{trigger}</SheetTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>
+                {triggerTooltip}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : (
+          <SheetTrigger asChild>{trigger}</SheetTrigger>
+        )}
+        <SheetContent
+          side="right"
+          className="flex h-full w-full flex-col gap-0 overflow-hidden border-l border-slate-200 bg-white p-0 sm:max-w-2xl [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:opacity-100 [&>button]:shadow-sm [&>button]:backdrop-blur"
+        >
+          <SheetHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
+            />
+            <div className="relative pr-10">
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <p className="text-xs font-semibold text-blue-700">Contact activity</p>
+                <SheetTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                  Add note
+                </SheetTitle>
+                <SheetDescription className="max-w-xl text-sm leading-6 text-slate-600">
+                  Capture the context your team needs and keep supporting files with the contact.
+                </SheetDescription>
+              </div>
+            </div>
           </SheetHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">{content}</div>
-          <SheetFooter className="border-t border-slate-200 bg-white px-6 py-4 sm:flex-row sm:justify-end">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+            {content}
+          </div>
+          <SheetFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:flex-row sm:justify-end sm:px-7">
             <Button
               type="button"
               variant="outline"
-              onClick={() => setOpen(false)}
+              onClick={() => {
+                setOpen(false)
+                resetDialog()
+              }}
               disabled={isSaving}
-              className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
+              className="cursor-pointer border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
             >
               Cancel
             </Button>
@@ -421,10 +621,16 @@ export function CreateContactNoteDialog({
               type="button"
               onClick={() => void handleSave()}
               disabled={isSaving}
-              className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+              className="min-w-32 cursor-pointer bg-blue-950 text-white shadow-sm hover:bg-blue-900"
             >
-              {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              Save note
+              {isSaving ? (
+                <Loader2 data-icon="inline-start" className="animate-spin" />
+              ) : null}
+              {isSaving
+                ? saveProgress?.phase === "uploading"
+                  ? "Uploading..."
+                  : "Saving..."
+                : "Save note"}
             </Button>
           </SheetFooter>
         </SheetContent>
@@ -436,13 +642,25 @@ export function CreateContactNoteDialog({
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
+        if (!nextOpen && isSaving) return
         setOpen(nextOpen)
-        if (!nextOpen && !isSaving) {
-          resetDialog()
-        }
+        if (!nextOpen) resetDialog()
       }}
     >
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      {triggerTooltip ? (
+        <TooltipProvider delayDuration={120}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DialogTrigger asChild>{trigger}</DialogTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={8}>
+              {triggerTooltip}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : (
+        <DialogTrigger asChild>{trigger}</DialogTrigger>
+      )}
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Add note</DialogTitle>
