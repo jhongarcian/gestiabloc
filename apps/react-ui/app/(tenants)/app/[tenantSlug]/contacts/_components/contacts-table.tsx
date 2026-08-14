@@ -1,16 +1,31 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { Filter } from "lucide-react"
+import { ChevronLeft, ChevronRight, Filter } from "lucide-react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { startTransition, useCallback, useEffect, useMemo, useState } from "react"
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react"
 
 import { StackedAvatarGroup } from "@/components/stacked-avatar-group"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Sheet,
   SheetContent,
@@ -19,6 +34,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
   TableBody,
@@ -113,8 +129,9 @@ function StatusBadge({
   textColor?: string
 }) {
   return (
-    <span
-      className="inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold tracking-wide bg-slate-100 text-slate-700"
+    <Badge
+      variant="secondary"
+      className="bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-700"
       style={
         bgColor && textColor
           ? { backgroundColor: bgColor, color: textColor }
@@ -122,8 +139,15 @@ function StatusBadge({
       }
     >
       {label}
-    </span>
+    </Badge>
   )
+}
+
+function getInitials(value: string) {
+  const parts = value.trim().split(/\s+/).filter(Boolean).slice(0, 2)
+
+  if (parts.length === 0) return "?"
+  return parts.map((part) => part[0]?.toUpperCase() ?? "").join("")
 }
 
 const formatDate = (value: string | null) => {
@@ -148,7 +172,9 @@ export function ContactsTable({
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const [query, setQuery] = useState(() => searchParams.get("search") ?? "")
-  const [debouncedQuery, setDebouncedQuery] = useState(() => (searchParams.get("search") ?? "").trim())
+  const [debouncedQuery, setDebouncedQuery] = useState(() =>
+    (searchParams.get("search") ?? "").trim(),
+  )
   const [statusFilters, setStatusFilters] = useState<string[]>(() => {
     const multi = parseCsvParam(searchParams.get("statusConfigIds"))
     if (multi.length) return multi
@@ -166,11 +192,13 @@ export function ContactsTable({
   const [page, setPage] = useState(() =>
     parsePositiveInt(searchParams.get("page"), 1),
   )
-  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(() => {
-    const parsed = parsePositiveInt(searchParams.get("pageSize"), 10)
-    return parsed === 25 ? 25 : 10
-  })
-  const [isLoading, setIsLoading] = useState(false)
+  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(
+    () => {
+      const parsed = parsePositiveInt(searchParams.get("pageSize"), 10)
+      return parsed === 25 ? 25 : 10
+    },
+  )
+  const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [data, setData] = useState<ContactsListResponse | null>(null)
 
@@ -237,7 +265,8 @@ export function ContactsTable({
     const nextParams = new URLSearchParams()
 
     if (debouncedQuery) nextParams.set("search", debouncedQuery)
-    if (statusFilters.length) nextParams.set("statusConfigIds", statusFilters.join(","))
+    if (statusFilters.length)
+      nextParams.set("statusConfigIds", statusFilters.join(","))
     if (tagFilters.length) nextParams.set("tagIds", tagFilters.join(","))
     if (page > 1) nextParams.set("page", String(page))
     if (pageSize !== 10) nextParams.set("pageSize", String(pageSize))
@@ -274,7 +303,9 @@ export function ContactsTable({
             page,
             pageSize,
             search: debouncedQuery || undefined,
-            statusConfigIds: statusFilters.length ? statusFilters.join(",") : undefined,
+            statusConfigIds: statusFilters.length
+              ? statusFilters.join(",")
+              : undefined,
             tagIds: tagFilters.length ? tagFilters.join(",") : undefined,
           },
         },
@@ -307,6 +338,20 @@ export function ContactsTable({
   const canGoPrevious = page > 1
   const canGoNext = page < totalPages
   const activeFilterCount = statusFilters.length + tagFilters.length
+  const hasActiveQueryOrFilters = Boolean(query.trim()) || activeFilterCount > 0
+  const placeholderRowCount =
+    contacts.length === 0
+      ? pageSize - 1
+      : Math.max(0, pageSize - contacts.length)
+  const visiblePageCount = Math.min(5, totalPages)
+  const firstVisiblePage = Math.max(
+    1,
+    Math.min(page - 2, totalPages - visiblePageCount + 1),
+  )
+  const visiblePages = Array.from(
+    { length: visiblePageCount },
+    (_, index) => firstVisiblePage + index,
+  )
 
   const summaryLabel = useMemo(() => {
     if (!total) return "No contacts found"
@@ -316,48 +361,61 @@ export function ContactsTable({
   }, [contacts.length, startIndex, total])
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900">Contacts</h2>
-          <p className="text-sm text-slate-500">{summaryLabel}</p>
+    <div className="flex h-full min-h-0 flex-col gap-5">
+      <header className="shrink-0 rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="flex min-w-0 flex-col gap-2">
+            <div className="flex flex-col gap-1">
+              <h1 className="text-2xl font-semibold text-slate-950">
+                Contacts
+              </h1>
+            </div>
+          </div>
+
+          <div className="md:self-center">
+            <CreateContactDialog
+              tenantId={tenantId}
+              statusOptions={statusOptions}
+              onCreated={loadContacts}
+            />
+          </div>
         </div>
 
-        <CreateContactDialog
-          tenantId={tenantId}
-          statusOptions={statusOptions}
-          onCreated={loadContacts}
-        />
-      </div>
-
-      <div className="flex flex-col gap-2 rounded-lg bg-white py-1">
-        <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+        <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(280px,1fr)_auto_auto]">
           <Input
+            type="search"
             placeholder="Search by name, email, or phone"
             value={query}
             onChange={(event) => {
               setQuery(event.target.value)
               setPage(1)
             }}
+            aria-label="Search contacts"
+            className="h-11 rounded-xl border-white/80 bg-white/85 px-4 shadow-sm backdrop-blur placeholder:text-slate-400 focus-visible:border-blue-300 focus-visible:ring-blue-100"
           />
           <Button
             type="button"
             variant="outline"
-            className="cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+            className="h-11 cursor-pointer rounded-xl border-white/80 bg-white/85 px-4 text-blue-950 shadow-sm backdrop-blur hover:bg-white hover:text-blue-950"
             onClick={() => {
               setDraftStatusFilters(statusFilters)
               setDraftTagFilters(tagFilters)
               setIsFilterSheetOpen(true)
             }}
           >
-            <Filter className="h-4 w-4" />
+            <Filter data-icon="inline-start" />
             Filters
-            {activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
+            {activeFilterCount > 0 ? (
+              <Badge className="min-w-5 bg-blue-950 px-1.5 text-white">
+                {activeFilterCount}
+              </Badge>
+            ) : null}
           </Button>
           <Button
             type="button"
             variant="outline"
-            className="cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+            disabled={!hasActiveQueryOrFilters}
+            className="h-11 cursor-pointer rounded-xl border-white/80 bg-white/70 px-4 text-slate-700 shadow-sm backdrop-blur hover:bg-white hover:text-slate-950"
             onClick={() => {
               setQuery("")
               setDebouncedQuery("")
@@ -366,10 +424,10 @@ export function ContactsTable({
               setPage(1)
             }}
           >
-            Clear Filters
+            Clear filters
           </Button>
         </div>
-      </div>
+      </header>
 
       <Sheet open={isFilterSheetOpen} onOpenChange={setIsFilterSheetOpen}>
         <SheetContent side="right" className="sm:max-w-md">
@@ -383,8 +441,12 @@ export function ContactsTable({
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pb-4">
             <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
               <div className="space-y-1">
-                <Label className="text-sm font-semibold text-slate-900">Status</Label>
-                <p className="text-xs text-slate-500">Show contacts matching any selected status.</p>
+                <Label className="text-sm font-semibold text-slate-900">
+                  Status
+                </Label>
+                <p className="text-xs text-slate-500">
+                  Show contacts matching any selected status.
+                </p>
               </div>
 
               {selectableStatusOptions.length ? (
@@ -402,7 +464,9 @@ export function ContactsTable({
                             setDraftStatusFilters((prev) =>
                               nextChecked
                                 ? [...prev, option.value]
-                                : prev.filter((value) => value !== option.value),
+                                : prev.filter(
+                                    (value) => value !== option.value,
+                                  ),
                             )
                           }}
                         />
@@ -410,7 +474,10 @@ export function ContactsTable({
                           className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
                           style={
                             option.bgColor && option.textColor
-                              ? { backgroundColor: option.bgColor, color: option.textColor }
+                              ? {
+                                  backgroundColor: option.bgColor,
+                                  color: option.textColor,
+                                }
                               : undefined
                           }
                         >
@@ -421,14 +488,20 @@ export function ContactsTable({
                   })}
                 </div>
               ) : (
-                <p className="text-xs text-slate-500">No status filters available.</p>
+                <p className="text-xs text-slate-500">
+                  No status filters available.
+                </p>
               )}
             </section>
 
             <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
               <div className="space-y-1">
-                <Label className="text-sm font-semibold text-slate-900">Tags</Label>
-                <p className="text-xs text-slate-500">Show contacts matching any selected tag.</p>
+                <Label className="text-sm font-semibold text-slate-900">
+                  Tags
+                </Label>
+                <p className="text-xs text-slate-500">
+                  Show contacts matching any selected tag.
+                </p>
               </div>
 
               {tagFilterOptions.length ? (
@@ -446,7 +519,9 @@ export function ContactsTable({
                             setDraftTagFilters((prev) =>
                               nextChecked
                                 ? [...prev, option.value]
-                                : prev.filter((value) => value !== option.value),
+                                : prev.filter(
+                                    (value) => value !== option.value,
+                                  ),
                             )
                           }}
                         />
@@ -454,7 +529,10 @@ export function ContactsTable({
                           className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
                           style={
                             option.bgColor && option.textColor
-                              ? { backgroundColor: option.bgColor, color: option.textColor }
+                              ? {
+                                  backgroundColor: option.bgColor,
+                                  color: option.textColor,
+                                }
                               : undefined
                           }
                         >
@@ -465,7 +543,9 @@ export function ContactsTable({
                   })}
                 </div>
               ) : (
-                <p className="text-xs text-slate-500">No tag filters available.</p>
+                <p className="text-xs text-slate-500">
+                  No tag filters available.
+                </p>
               )}
             </section>
           </div>
@@ -498,30 +578,86 @@ export function ContactsTable({
         </SheetContent>
       </Sheet>
 
-      <div className="flex min-h-0 flex-1 flex-col rounded-lg bg-white">
-        <div className="min-h-0 flex-1 overflow-auto">
-          <Table className="[&_td]:py-2 [&_th]:h-8">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="min-w-44 text-xs">Full Name</TableHead>
-                <TableHead className="min-w-36 text-xs">Date of Birth</TableHead>
-                <TableHead className="min-w-40 text-xs">Phone Number</TableHead>
-                <TableHead className="min-w-52 text-xs">Email</TableHead>
-                <TableHead className="min-w-36 text-xs">Assigned User</TableHead>
-                <TableHead className="min-w-32 text-xs">Status</TableHead>
-                <TableHead className="min-w-28 text-xs">Follow Ups</TableHead>
+      <section
+        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-sm"
+        aria-label="Contact list"
+      >
+        <div className="min-h-0 flex-1 overflow-auto px-4 pt-4">
+          <Table
+            className="min-w-[1120px] table-fixed border-separate border-spacing-0"
+            aria-label="Contacts"
+          >
+            <TableHeader className="drop-shadow-sm [&_tr]:border-0">
+              <TableRow className="h-14 border-0 hover:bg-transparent">
+                <TableHead className="w-[16%] rounded-l-xl border-y border-l bg-slate-50 px-4 text-xs text-slate-600">
+                  Full name
+                </TableHead>
+                <TableHead className="w-[12%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Date of birth
+                </TableHead>
+                <TableHead className="w-[14%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Phone number
+                </TableHead>
+                <TableHead className="w-[20%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Email
+                </TableHead>
+                <TableHead className="w-[18%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Assigned user
+                </TableHead>
+                <TableHead className="w-[10%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Status
+                </TableHead>
+                <TableHead className="w-[10%] rounded-r-xl border-y border-r bg-slate-50 px-4 text-xs text-slate-600">
+                  Follow-ups
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
+              <TableRow
+                aria-hidden="true"
+                className="h-2 border-0 hover:bg-transparent"
+              >
+                <TableCell colSpan={7} className="p-0" />
+              </TableRow>
+
               {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-slate-500">
-                    Loading contacts...
-                  </TableCell>
-                </TableRow>
+                Array.from({ length: pageSize }, (_, index) => (
+                  <TableRow
+                    key={`contact-skeleton-${index}`}
+                    className="h-14 hover:bg-transparent"
+                  >
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-4 w-4/5" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-4 w-24" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-4 w-28" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-4 w-4/5" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <div className="flex items-center gap-2.5">
+                        <Skeleton className="size-6 rounded-full" />
+                        <Skeleton className="h-4 w-24" />
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-5 w-16 rounded-full" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-6 w-20" />
+                    </TableCell>
+                  </TableRow>
+                ))
               ) : errorMessage ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-rose-600">
+                <TableRow className="h-14 hover:bg-transparent">
+                  <TableCell
+                    colSpan={7}
+                    className="px-4 py-0 text-center text-rose-600"
+                  >
                     {errorMessage}
                   </TableCell>
                 </TableRow>
@@ -535,7 +671,7 @@ export function ContactsTable({
                       tabIndex={0}
                       role="link"
                       aria-label={`Open ${contact.fullName} details`}
-                      className="cursor-pointer transition-colors hover:bg-slate-50 focus-visible:bg-slate-50"
+                      className="h-14 cursor-pointer outline-none hover:bg-blue-50/50 focus-visible:bg-blue-50/50 focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-inset"
                       onClick={() => {
                         router.push(href)
                       }}
@@ -546,51 +682,69 @@ export function ContactsTable({
                         }
                       }}
                     >
-                      <TableCell className="font-medium text-slate-900">
-                        {contact.fullName}
+                      <TableCell className="px-4 py-0">
+                        <span
+                          className="block truncate font-medium text-slate-950"
+                          title={contact.fullName}
+                        >
+                          {contact.fullName}
+                        </span>
                       </TableCell>
-                      <TableCell className="text-slate-700">
+                      <TableCell className="px-4 py-0 text-slate-700">
                         {formatDate(contact.dateOfBirth)}
                       </TableCell>
-                      <TableCell className="text-slate-700">
+                      <TableCell className="px-4 py-0 text-slate-700">
                         {formatPhoneNumber(contact.phoneNumber)}
                       </TableCell>
-                      <TableCell className="text-slate-700">{contact.email ?? "—"}</TableCell>
-                      <TableCell className="text-slate-700">
-                        <StackedAvatarGroup
-                          items={
-                            contact.assignedTo
-                              ? [
-                                  {
-                                    id: contact.assignedTo.userId,
-                                    label: contact.assignedTo.name,
-                                    imageUrl: contact.assignedTo.image,
-                                    tone: "internal",
-                                  },
-                                ]
-                              : []
-                          }
-                          maxVisible={1}
-                          avatarSize="sm"
-                          enableHoverEffect={false}
-                          emptyLabel="Unassigned"
-                          className="pl-0"
-                        />
+                      <TableCell className="px-4 py-0">
+                        <span
+                          className="block truncate text-slate-700"
+                          title={contact.email ?? undefined}
+                        >
+                          {contact.email ?? "—"}
+                        </span>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="px-4 py-0">
+                        {contact.assignedTo ? (
+                          <div className="flex min-w-0 items-center gap-2.5">
+                            <Avatar size="sm">
+                              {contact.assignedTo.image ? (
+                                <AvatarImage
+                                  src={contact.assignedTo.image}
+                                  alt={`${contact.assignedTo.name} profile photo`}
+                                />
+                              ) : null}
+                              <AvatarFallback>
+                                {getInitials(contact.assignedTo.name)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span
+                              className="truncate text-slate-700"
+                              title={contact.assignedTo.name}
+                            >
+                              {contact.assignedTo.name}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500">Unassigned</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
                         <StatusBadge
                           label={contact.status}
                           bgColor={contact.statusBgColor ?? undefined}
                           textColor={contact.statusTextColor ?? undefined}
                         />
                       </TableCell>
-                      <TableCell className="text-slate-700">
+                      <TableCell className="px-4 py-0 text-slate-700">
                         <StackedAvatarGroup
-                          items={(contact.activeFollowUpServices ?? []).map((service) => ({
-                            id: service.id,
-                            label: service.name,
-                            tone: "neutral",
-                          }))}
+                          items={(contact.activeFollowUpServices ?? []).map(
+                            (service) => ({
+                              id: service.id,
+                              label: service.name,
+                              tone: "neutral",
+                            }),
+                          )}
                           maxVisible={4}
                           avatarSize="sm"
                           enableHoverEffect={false}
@@ -602,69 +756,120 @@ export function ContactsTable({
                   )
                 })
               ) : (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-slate-500">
-                    No contacts to display yet.
+                <TableRow className="h-14 hover:bg-transparent">
+                  <TableCell
+                    colSpan={7}
+                    className="px-4 py-0 text-center text-slate-500"
+                  >
+                    {hasActiveQueryOrFilters
+                      ? "No contacts match the current search and filters."
+                      : "No contacts to display yet."}
                   </TableCell>
                 </TableRow>
               )}
+
+              {!isLoading && !errorMessage
+                ? Array.from({ length: placeholderRowCount }, (_, index) => (
+                    <TableRow
+                      key={`empty-contact-row-${index}`}
+                      aria-hidden="true"
+                      className="h-14 hover:bg-transparent"
+                    >
+                      <TableCell colSpan={7} className="px-4 py-0" />
+                    </TableRow>
+                  ))
+                : null}
             </TableBody>
           </Table>
         </div>
-      </div>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2 text-sm text-slate-600">
-          <span>Rows per page</span>
-          <Select
-            value={String(pageSize)}
-            onValueChange={(value) => {
-              const next = Number(value)
-              if (next === 10 || next === 25) {
-                setPageSize(next)
-                setPage(1)
-              }
-            }}
-          >
-            <SelectTrigger size="sm" className="w-20">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PAGE_SIZE_OPTIONS.map((size) => (
-                <SelectItem key={size} value={String(size)}>
-                  {size}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        <footer className="flex flex-col gap-4 border-t border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+            {isLoading ? (
+              <Skeleton className="h-4 w-36" />
+            ) : (
+              <p className="text-sm text-slate-500">{summaryLabel}</p>
+            )}
+            <div className="flex items-center gap-2 text-sm text-slate-600">
+              <span>Rows per page</span>
+              <Select
+                value={String(pageSize)}
+                onValueChange={(value) => {
+                  const next = Number(value)
+                  if (next === 10 || next === 25) {
+                    setPageSize(next)
+                    setPage(1)
+                  }
+                }}
+              >
+                <SelectTrigger size="sm" className="w-20 rounded-lg">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {PAGE_SIZE_OPTIONS.map((size) => (
+                      <SelectItem key={size} value={String(size)}>
+                        {size}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
 
-        <div className="flex items-center gap-2 self-end sm:self-auto">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-            disabled={!canGoPrevious || isLoading}
-            onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+          <nav
+            className="flex items-center gap-2 self-end sm:self-auto"
+            aria-label="Contact list pagination"
           >
-            Previous
-          </Button>
-          <span className="px-1 text-sm text-slate-600">
-            Page {page} of {totalPages}
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-            disabled={!canGoNext || isLoading}
-            onClick={() => setPage((prev) => prev + 1)}
-          >
-            Next
-          </Button>
-        </div>
-      </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-sm"
+              aria-label="Previous page"
+              disabled={!canGoPrevious || isLoading}
+              onClick={() => setPage((previous) => Math.max(1, previous - 1))}
+            >
+              <ChevronLeft />
+            </Button>
+
+            {visiblePages.map((pageNumber) => (
+              <Button
+                key={pageNumber}
+                type="button"
+                variant={pageNumber === page ? "default" : "outline"}
+                size="icon-sm"
+                aria-label={
+                  pageNumber === page
+                    ? `Page ${pageNumber}`
+                    : `Go to page ${pageNumber}`
+                }
+                aria-current={pageNumber === page ? "page" : undefined}
+                disabled={isLoading || pageNumber === page}
+                className={
+                  pageNumber === page
+                    ? "bg-blue-950 text-white hover:bg-blue-900 disabled:opacity-100"
+                    : undefined
+                }
+                onClick={() => setPage(pageNumber)}
+              >
+                {pageNumber}
+              </Button>
+            ))}
+
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-sm"
+              aria-label="Next page"
+              disabled={!canGoNext || isLoading}
+              onClick={() => setPage((previous) => previous + 1)}
+            >
+              <ChevronRight />
+            </Button>
+          </nav>
+        </footer>
+      </section>
     </div>
   )
 }

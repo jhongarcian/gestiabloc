@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
-import { ChevronDown, Plus, Search, X } from "lucide-react"
+import { ChevronDown, Loader2, Plus, Search, X } from "lucide-react"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -14,7 +15,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
 
 type ContactTag = {
@@ -59,6 +67,7 @@ export function ContactTagsSection({
   const [assignedTags, setAssignedTags] = useState<ContactTag[]>(sortTags(initialTags))
   const [open, setOpen] = useState(false)
   const [isBusy, setIsBusy] = useState(false)
+  const [assigningTagId, setAssigningTagId] = useState<string | null>(null)
   const [isSearching, setIsSearching] = useState(false)
   const [searchInput, setSearchInput] = useState("")
   const [debouncedSearch, setDebouncedSearch] = useState("")
@@ -146,6 +155,7 @@ export function ContactTagsSection({
     }
 
     setIsBusy(true)
+    setAssigningTagId(tag.id)
 
     try {
       await api.post(
@@ -167,6 +177,7 @@ export function ContactTagsSection({
       toast.error(message)
     } finally {
       setIsBusy(false)
+      setAssigningTagId(null)
     }
   }
 
@@ -188,6 +199,18 @@ export function ContactTagsSection({
 
   const triggerAdd = () => {
     setOpen(true)
+  }
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen && isBusy) return
+
+    setOpen(nextOpen)
+    if (!nextOpen) {
+      setSearchInput("")
+      setDebouncedSearch("")
+      setPage(1)
+      setSearchError(null)
+    }
   }
 
   const tagsContent = assignedTags.length ? (
@@ -241,10 +264,11 @@ export function ContactTagsSection({
               <Button
                 type="button"
                 size="sm"
-                className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+                disabled={isBusy}
+                className="cursor-pointer rounded-xl bg-blue-950 text-white shadow-sm hover:bg-blue-900"
                 onClick={triggerAdd}
               >
-                <Plus className="h-4 w-4" />
+                <Plus data-icon="inline-start" />
                 Add tag
               </Button>
             ) : null}
@@ -263,18 +287,21 @@ export function ContactTagsSection({
               </span>
             </span>
             {canManageTags ? (
-              <button
+              <Button
                 type="button"
+                variant="outline"
+                size="icon-sm"
+                disabled={isBusy}
                 onClick={(event) => {
                   event.preventDefault()
                   event.stopPropagation()
                   triggerAdd()
                 }}
-                className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+                className="cursor-pointer rounded-full border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
                 aria-label="Add tag"
               >
-                <Plus className="h-4 w-4" />
-              </button>
+                <Plus />
+              </Button>
             ) : null}
           </summary>
 
@@ -283,116 +310,178 @@ export function ContactTagsSection({
       )}
 
       {canManageTags ? (
-        <Dialog
-          open={open}
-          onOpenChange={(open) => {
-            setOpen(open)
-            if (!open) {
-              setSearchInput("")
-              setDebouncedSearch("")
-              setPage(1)
-              setSearchError(null)
-            }
-          }}
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Add Tag</DialogTitle>
-              <DialogDescription>
-                Search tenant tags and add one to this contact. Results are paginated and
-                already-assigned tags are excluded.
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="space-y-4">
-              <div className="relative">
-                <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <Input
-                  value={searchInput}
-                  onChange={(event) => setSearchInput(event.target.value)}
-                  placeholder="Search tags"
-                  className="pl-9"
-                />
-              </div>
-
-              <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
-                {isSearching ? (
-                  <p className="px-2 py-4 text-sm text-slate-500">Loading tags...</p>
-                ) : searchError ? (
-                  <p className="px-2 py-4 text-sm text-rose-600">{searchError}</p>
-                ) : availableTags.length ? (
-                  availableTags.map((tag) => (
-                    <div
-                      key={tag.id}
-                      className="flex items-center justify-between gap-3 rounded-md bg-white px-3 py-2"
-                    >
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span
-                          className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
-                          style={{
-                            backgroundColor: tag.bgColor,
-                            color: tag.textColor,
-                          }}
-                        >
-                          {tag.name}
-                        </span>
-                      </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        disabled={isBusy}
-                        className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
-                        onClick={() => void handleAssign(tag)}
-                      >
-                        Add
-                      </Button>
-                    </div>
-                  ))
-                ) : (
-                  <p className="px-2 py-4 text-sm text-slate-500">
-                    No matching tags available.
-                  </p>
-                )}
-              </div>
-
-              <div className="flex items-center justify-between text-xs text-slate-500">
-                <span>
-                  Page {pagination.page} of {pagination.totalPages}
-                </span>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={page <= 1 || isSearching}
-                    className="cursor-pointer"
-                    onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={page >= pagination.totalPages || isSearching}
-                    className="cursor-pointer"
-                    onClick={() => setPage((prev) => prev + 1)}
-                  >
-                    Next
-                  </Button>
+        <Dialog open={open} onOpenChange={handleOpenChange}>
+          <DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 bg-white p-0 shadow-2xl sm:max-w-xl [&>button]:cursor-pointer">
+            <DialogHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+              />
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
+              />
+              <div className="relative pr-10">
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  <p className="text-xs font-semibold text-blue-700">Contact details</p>
+                  <DialogTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                    Add a tag
+                  </DialogTitle>
+                  <DialogDescription className="max-w-md text-sm leading-6 text-slate-600">
+                    Find a tenant tag and attach it to this contact for easier organization.
+                  </DialogDescription>
                 </div>
               </div>
+            </DialogHeader>
+
+            <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+              <FieldGroup className="gap-6">
+                <Field data-disabled={isBusy} className="gap-2">
+                  <FieldLabel htmlFor="contact-tag-search" className="text-slate-800">
+                    Search tags
+                  </FieldLabel>
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      id="contact-tag-search"
+                      value={searchInput}
+                      onChange={(event) => setSearchInput(event.target.value)}
+                      placeholder="Enter a tag name"
+                      disabled={isBusy}
+                      autoComplete="off"
+                      className="h-11 rounded-xl border-slate-200 bg-slate-50/60 pr-4 pl-10 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                    />
+                  </div>
+                  <FieldDescription className="text-xs">
+                    Tags already assigned to this contact are hidden from the results.
+                  </FieldDescription>
+                </Field>
+
+                <section
+                  className="flex flex-col gap-3 border-t border-slate-200 pt-5"
+                  aria-labelledby="available-tags-heading"
+                >
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <h3
+                        id="available-tags-heading"
+                        className="text-sm font-semibold text-slate-900"
+                      >
+                        Available tags
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Choose a tag to add it immediately.
+                      </p>
+                    </div>
+                    {!isSearching && !searchError ? (
+                      <Badge variant="secondary" className="bg-blue-50 text-blue-950">
+                        {pagination.total} {pagination.total === 1 ? "result" : "results"}
+                      </Badge>
+                    ) : null}
+                  </div>
+
+                  <div
+                    className="min-h-[168px] overflow-hidden rounded-2xl border border-slate-200 bg-white"
+                    aria-busy={isSearching}
+                    aria-live="polite"
+                  >
+                    {isSearching ? (
+                      <div className="flex flex-col" aria-label="Loading tags">
+                        {[0, 1, 2].map((item) => (
+                          <div
+                            key={item}
+                            className="flex items-center justify-between gap-4 border-b border-slate-100 px-4 py-3 last:border-b-0"
+                          >
+                            <Skeleton className="h-6 w-28 rounded-full" />
+                            <Skeleton className="h-8 w-14 rounded-lg" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : searchError ? (
+                      <p
+                        className="flex min-h-[166px] items-center justify-center px-4 py-8 text-center text-sm text-rose-700"
+                        role="alert"
+                      >
+                        {searchError}
+                      </p>
+                    ) : availableTags.length ? (
+                      availableTags.map((tag) => (
+                        <div
+                          key={tag.id}
+                          className="flex min-h-14 items-center justify-between gap-4 border-b border-slate-100 px-4 py-3 last:border-b-0"
+                        >
+                          <Badge
+                            variant="outline"
+                            className="max-w-[70%] truncate border-transparent px-2.5 py-1 text-xs font-semibold"
+                            style={{
+                              backgroundColor: tag.bgColor,
+                              color: tag.textColor,
+                            }}
+                          >
+                            {tag.name}
+                          </Badge>
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={isBusy}
+                            className="min-w-20 cursor-pointer rounded-lg bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+                            onClick={() => void handleAssign(tag)}
+                          >
+                            {assigningTagId === tag.id ? (
+                              <Loader2 data-icon="inline-start" className="animate-spin" />
+                            ) : (
+                              <Plus data-icon="inline-start" />
+                            )}
+                            {assigningTagId === tag.id ? "Adding..." : "Add"}
+                          </Button>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="flex min-h-[166px] items-center justify-center px-4 py-8 text-center text-sm text-slate-500">
+                        No matching tags available.
+                      </p>
+                    )}
+                  </div>
+                </section>
+              </FieldGroup>
             </div>
 
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                className="cursor-pointer"
-                onClick={() => setOpen(false)}
-              >
-                Close
-              </Button>
+            <DialogFooter className="flex-col gap-3 border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:flex-row sm:items-center sm:px-7">
+              <span className="text-xs text-slate-500 sm:mr-auto">
+                Page {pagination.page} of {pagination.totalPages}
+              </span>
+              <div className="grid grid-cols-3 gap-2 sm:flex sm:items-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={page <= 1 || isSearching || isBusy}
+                  className="cursor-pointer rounded-lg"
+                  onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+                >
+                  Previous
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={page >= pagination.totalPages || isSearching || isBusy}
+                  className="cursor-pointer rounded-lg"
+                  onClick={() => setPage((prev) => prev + 1)}
+                >
+                  Next
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isBusy}
+                  className="cursor-pointer rounded-lg"
+                  onClick={() => handleOpenChange(false)}
+                >
+                  Close
+                </Button>
+              </div>
             </DialogFooter>
           </DialogContent>
         </Dialog>
