@@ -53,6 +53,16 @@ export function ContactHeaderStatus({
   }, [initialStatus])
 
   const selectedValue = status.value ?? "__unassigned__"
+  const selectedStatusStyle =
+    status.bgColor && status.textColor
+      ? {
+          backgroundColor: status.bgColor,
+          color: status.textColor,
+        }
+      : {
+          backgroundColor: "#F1F5F9",
+          color: "#334155",
+        }
 
   const updateStatus = async (nextStatus: StatusOption | null) => {
     setIsSaving(true)
@@ -88,23 +98,20 @@ export function ContactHeaderStatus({
         <Button
           type="button"
           variant="ghost"
-          className="h-8 max-w-[220px] cursor-pointer rounded-full border border-white/70 bg-white/70 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/90"
+          role="combobox"
+          aria-expanded={open}
+          aria-label={`Status: ${status.label}. Change status`}
+          disabled={isSaving}
+          style={selectedStatusStyle}
+          className="h-8 max-w-[220px] cursor-pointer rounded-full border border-black/5 px-3 py-1 shadow-sm transition-[filter,box-shadow] hover:brightness-[0.98] focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 focus-visible:ring-offset-[#f1f7ff] disabled:opacity-70"
         >
-          <span
-            aria-hidden="true"
-            className={cn(
-              "size-2.5 shrink-0 rounded-full ring-2 ring-white",
-              !status.bgColor && "bg-slate-400",
-            )}
-            style={status.bgColor ? { backgroundColor: status.bgColor } : undefined}
-          />
-          <span className="truncate text-xs font-medium text-slate-700">
+          <span className="truncate text-xs font-semibold">
             {status.label}
           </span>
           {isSaving ? (
-            <Loader2 className="ml-1 size-3.5 shrink-0 animate-spin text-slate-500" />
+            <Loader2 data-icon="inline-end" className="shrink-0 animate-spin opacity-70" />
           ) : (
-            <ChevronDown className="ml-1 size-3.5 shrink-0 text-slate-500" />
+            <ChevronDown data-icon="inline-end" className="shrink-0 opacity-70" />
           )}
         </Button>
       </PopoverTrigger>
