@@ -95,17 +95,13 @@ export default async function ContactsPage({
   }
 
   return (
-    <section className="flex h-full min-h-0 flex-col gap-4">
-      <div className="flex min-h-0 flex-1 rounded-xl bg-white p-2 md:p-4">
-        <div className="flex h-full w-full min-h-0 flex-col">
-          <ContactsTable
-            tenantSlug={tenantSlug}
-            tenantId={membership.tenant.id}
-            statusOptions={statusOptions}
-            tagOptions={tagOptions}
-          />
-        </div>
-      </div>
+    <section className="flex h-full min-h-0 flex-col">
+      <ContactsTable
+        tenantSlug={tenantSlug}
+        tenantId={membership.tenant.id}
+        statusOptions={statusOptions}
+        tagOptions={tagOptions}
+      />
     </section>
   )
 }
