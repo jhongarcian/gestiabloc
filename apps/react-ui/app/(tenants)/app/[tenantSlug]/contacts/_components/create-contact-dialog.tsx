@@ -1,6 +1,7 @@
 "use client"
 
 import { isAxiosError } from "axios"
+import { Loader2, Plus } from "lucide-react"
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
 
@@ -19,22 +20,21 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { AppPhoneInput } from "@/components/ui/phone-input"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
+import { AppPhoneInput } from "@/components/ui/phone-input"
 import { api } from "@/lib/api"
-
-type ContactStatusOption = {
-  label: string
-  value: string
-}
+import { cn } from "@/lib/utils"
+import {
+  ContactStatusSelect,
+  type ContactStatusOption,
+} from "./contact-status-select"
 
 type CreateContactDialogProps = {
   tenantId: string
@@ -86,6 +86,23 @@ export function CreateContactDialog({
     setFieldErrors({})
   }
 
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen && isSubmitting) return
+
+    setOpen(nextOpen)
+    if (!nextOpen) resetForm()
+  }
+
+  const clearFieldError = (field: keyof FieldErrors) => {
+    setFieldErrors((current) => {
+      if (!current[field]) return current
+
+      const nextErrors = { ...current }
+      delete nextErrors[field]
+      return nextErrors
+    })
+  }
+
   const validate = () => {
     const nextErrors: FieldErrors = {}
     const parsedDateOfBirth = parseDateInput(dateOfBirthInput)
@@ -105,6 +122,7 @@ export function CreateContactDialog({
   }
 
   const onSubmit = async () => {
+    if (isSubmitting) return
     if (!validate()) return
 
     setIsSubmitting(true)
@@ -176,166 +194,285 @@ export function CreateContactDialog({
   }
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen)
-        if (!nextOpen) resetForm()
-      }}
-    >
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button
           type="button"
-          className="bg-blue-950 text-white hover:bg-blue-950/90"
+          className="cursor-pointer rounded-xl bg-blue-950 text-white shadow-sm hover:bg-blue-900"
         >
-          Add Contact
+          <Plus data-icon="inline-start" />
+          Add contact
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Create Contact</DialogTitle>
-          <DialogDescription>
-            Add a new contact for this tenant.
-          </DialogDescription>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 bg-white p-0 shadow-2xl sm:max-w-3xl [&>button]:cursor-pointer">
+        <DialogHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
+          />
+          <div className="relative pr-10">
+            <div className="flex max-w-2xl min-w-0 flex-col gap-1.5">
+              <p className="text-xs font-semibold text-blue-700">Contact directory</p>
+              <DialogTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                Create a contact
+              </DialogTitle>
+              <DialogDescription className="max-w-xl text-sm leading-6 text-slate-600">
+                Add the identity and contact details your team needs to recognize this person.
+              </DialogDescription>
+            </div>
+          </div>
         </DialogHeader>
 
-        <div className="grid gap-4">
-          <div className="rounded-lg border border-slate-200 p-3 sm:p-4">
-            <p className="text-sm font-medium text-slate-900">Basic Information</p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-3">
-              <div className="grid gap-2">
-                <Label htmlFor="create-contact-first-name">First Name</Label>
-                <Input
-                  id="create-contact-first-name"
-                  value={firstName}
-                  onChange={(event) => setFirstName(event.target.value)}
-                  placeholder="Jane"
-                />
-                {fieldErrors.firstName ? (
-                  <p className="text-xs text-rose-600">{fieldErrors.firstName}</p>
-                ) : null}
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="create-contact-middle-name">Middle Name</Label>
-                <Input
-                  id="create-contact-middle-name"
-                  value={middleName}
-                  onChange={(event) => setMiddleName(event.target.value)}
-                  placeholder="Marie"
-                />
-                {fieldErrors.middleName ? (
-                  <p className="text-xs text-rose-600">{fieldErrors.middleName}</p>
-                ) : null}
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="create-contact-last-name">Last Name</Label>
-                <Input
-                  id="create-contact-last-name"
-                  value={lastName}
-                  onChange={(event) => setLastName(event.target.value)}
-                  placeholder="Doe"
-                />
-                {fieldErrors.lastName ? (
-                  <p className="text-xs text-rose-600">{fieldErrors.lastName}</p>
-                ) : null}
-              </div>
+        <form
+          id="create-contact-form"
+          className="contents"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void onSubmit()
+          }}
+        >
+          <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+            <div className="flex flex-col gap-7">
+              <section className="flex flex-col gap-4" aria-labelledby="contact-identity-heading">
+                <div className="flex flex-col gap-1">
+                  <h3
+                    id="contact-identity-heading"
+                    className="text-sm font-semibold text-slate-950"
+                  >
+                    Identity
+                  </h3>
+                  <p className="text-xs leading-5 text-slate-500">
+                    Use the person&apos;s legal or preferred name for this record.
+                  </p>
+                </div>
+
+                <FieldGroup className="gap-5 sm:grid sm:grid-cols-3">
+                  <Field
+                    data-invalid={Boolean(fieldErrors.firstName)}
+                    data-disabled={isSubmitting}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="create-contact-first-name" className="text-slate-800">
+                      First name <span className="text-rose-600" aria-hidden="true">*</span>
+                    </FieldLabel>
+                    <Input
+                      id="create-contact-first-name"
+                      value={firstName}
+                      onChange={(event) => {
+                        setFirstName(event.target.value)
+                        clearFieldError("firstName")
+                      }}
+                      placeholder="Jane"
+                      autoComplete="given-name"
+                      disabled={isSubmitting}
+                      aria-invalid={Boolean(fieldErrors.firstName)}
+                      aria-required="true"
+                      className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                    />
+                    <FieldError>{fieldErrors.firstName}</FieldError>
+                  </Field>
+
+                  <Field
+                    data-invalid={Boolean(fieldErrors.middleName)}
+                    data-disabled={isSubmitting}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="create-contact-middle-name" className="text-slate-800">
+                      Middle name
+                    </FieldLabel>
+                    <Input
+                      id="create-contact-middle-name"
+                      value={middleName}
+                      onChange={(event) => {
+                        setMiddleName(event.target.value)
+                        clearFieldError("middleName")
+                      }}
+                      placeholder="Marie"
+                      autoComplete="additional-name"
+                      disabled={isSubmitting}
+                      aria-invalid={Boolean(fieldErrors.middleName)}
+                      className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                    />
+                    <FieldError>{fieldErrors.middleName}</FieldError>
+                  </Field>
+
+                  <Field
+                    data-invalid={Boolean(fieldErrors.lastName)}
+                    data-disabled={isSubmitting}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="create-contact-last-name" className="text-slate-800">
+                      Last name <span className="text-rose-600" aria-hidden="true">*</span>
+                    </FieldLabel>
+                    <Input
+                      id="create-contact-last-name"
+                      value={lastName}
+                      onChange={(event) => {
+                        setLastName(event.target.value)
+                        clearFieldError("lastName")
+                      }}
+                      placeholder="Doe"
+                      autoComplete="family-name"
+                      disabled={isSubmitting}
+                      aria-invalid={Boolean(fieldErrors.lastName)}
+                      aria-required="true"
+                      className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                    />
+                    <FieldError>{fieldErrors.lastName}</FieldError>
+                  </Field>
+                </FieldGroup>
+              </section>
+
+              <section
+                className="flex flex-col gap-4 border-t border-slate-200 pt-6"
+                aria-labelledby="contact-details-heading"
+              >
+                <div className="flex flex-col gap-1">
+                  <h3
+                    id="contact-details-heading"
+                    className="text-sm font-semibold text-slate-950"
+                  >
+                    Contact details
+                  </h3>
+                  <p className="text-xs leading-5 text-slate-500">
+                    Add the best available information for communication and identification.
+                  </p>
+                </div>
+
+                <FieldGroup className="gap-5 sm:grid sm:grid-cols-2">
+                  <Field
+                    data-invalid={Boolean(fieldErrors.dateOfBirth)}
+                    data-disabled={isSubmitting}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="create-contact-date-of-birth" className="text-slate-800">
+                      Date of birth
+                    </FieldLabel>
+                    <DateInput
+                      id="create-contact-date-of-birth"
+                      value={dateOfBirthInput}
+                      onValueChange={(nextValue) => {
+                        setDateOfBirthInput(nextValue)
+                        clearFieldError("dateOfBirth")
+                      }}
+                      onDateChange={setDateOfBirth}
+                      disabled={isSubmitting}
+                      ariaInvalid={Boolean(fieldErrors.dateOfBirth)}
+                      className="[&_[data-slot=button]]:h-11 [&_[data-slot=button]]:rounded-xl [&_[data-slot=button]]:border-slate-200 [&_[data-slot=input]]:h-11 [&_[data-slot=input]]:rounded-xl [&_[data-slot=input]]:border-slate-200 [&_[data-slot=input]]:bg-slate-50/60 [&_[data-slot=input]]:px-4 [&_[data-slot=input]]:shadow-none"
+                    />
+                    <FieldDescription className="text-xs">Use MM/DD/YYYY.</FieldDescription>
+                    <FieldError>{fieldErrors.dateOfBirth}</FieldError>
+                  </Field>
+
+                  <Field
+                    data-invalid={Boolean(fieldErrors.phone)}
+                    data-disabled={isSubmitting}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="create-contact-phone" className="text-slate-800">
+                      Phone
+                    </FieldLabel>
+                    <AppPhoneInput
+                      id="create-contact-phone"
+                      defaultCountry="US"
+                      countryCallingCodeEditable={false}
+                      value={phone}
+                      onChange={(value) => {
+                        setPhone(value ?? "")
+                        clearFieldError("phone")
+                      }}
+                      disabled={isSubmitting}
+                      aria-invalid={Boolean(fieldErrors.phone)}
+                      className={cn(
+                        "!h-11 !min-h-11 !rounded-xl !border-slate-200 !bg-slate-50/60 !shadow-none",
+                        fieldErrors.phone && "!border-rose-500 !ring-3 !ring-rose-100",
+                      )}
+                    />
+                    <FieldError>{fieldErrors.phone}</FieldError>
+                  </Field>
+
+                  <Field
+                    data-invalid={Boolean(fieldErrors.email)}
+                    data-disabled={isSubmitting}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="create-contact-email" className="text-slate-800">
+                      Email
+                    </FieldLabel>
+                    <Input
+                      id="create-contact-email"
+                      type="email"
+                      value={email}
+                      onChange={(event) => {
+                        setEmail(event.target.value)
+                        clearFieldError("email")
+                      }}
+                      placeholder="jane@company.com"
+                      autoComplete="email"
+                      disabled={isSubmitting}
+                      aria-invalid={Boolean(fieldErrors.email)}
+                      className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                    />
+                    <FieldError>{fieldErrors.email}</FieldError>
+                  </Field>
+
+                  <Field
+                    data-invalid={Boolean(fieldErrors.status)}
+                    data-disabled={isSubmitting}
+                    className="gap-2"
+                  >
+                    <FieldLabel htmlFor="create-contact-status" className="text-slate-800">
+                      Status
+                    </FieldLabel>
+                    <ContactStatusSelect
+                      id="create-contact-status"
+                      value={statusConfigId ?? "__default__"}
+                      onValueChange={(value) => {
+                        setStatusConfigId(value === "__default__" ? undefined : value)
+                        clearFieldError("status")
+                      }}
+                      options={selectableStatuses}
+                      noneValue="__default__"
+                      noneLabel="Default (Active)"
+                      disabled={isSubmitting}
+                      ariaInvalid={Boolean(fieldErrors.status)}
+                    />
+                    <FieldDescription className="text-xs">
+                      Uses the tenant&apos;s default active status when unchanged.
+                    </FieldDescription>
+                    <FieldError>{fieldErrors.status}</FieldError>
+                  </Field>
+                </FieldGroup>
+              </section>
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-200 p-3 sm:p-4">
-            <p className="text-sm font-medium text-slate-900">Contact Details</p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-2">
-                <Label htmlFor="create-contact-date-of-birth">Date of Birth</Label>
-                <DateInput
-                  id="create-contact-date-of-birth"
-                  value={dateOfBirthInput}
-                  onValueChange={(nextValue) => {
-                    setDateOfBirthInput(nextValue)
-                    if (fieldErrors.dateOfBirth) {
-                      setFieldErrors((prev) => {
-                        const next = { ...prev }
-                        delete next.dateOfBirth
-                        return next
-                      })
-                    }
-                  }}
-                  onDateChange={setDateOfBirth}
-                  ariaInvalid={Boolean(fieldErrors.dateOfBirth)}
-                />
-                {fieldErrors.dateOfBirth ? (
-                  <p className="text-xs text-rose-600">{fieldErrors.dateOfBirth}</p>
-                ) : null}
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="create-contact-phone">Phone</Label>
-                <AppPhoneInput
-                  id="create-contact-phone"
-                  defaultCountry="US"
-                  countryCallingCodeEditable={false}
-                  value={phone}
-                  onChange={(value) => setPhone(value ?? "")}
-                />
-                {fieldErrors.phone ? (
-                  <p className="text-xs text-rose-600">{fieldErrors.phone}</p>
-                ) : null}
-              </div>
-              <div className="grid gap-2 sm:col-span-2">
-                <Label htmlFor="create-contact-email">Email</Label>
-                <Input
-                  id="create-contact-email"
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  placeholder="jane@company.com"
-                />
-                {fieldErrors.email ? (
-                  <p className="text-xs text-rose-600">{fieldErrors.email}</p>
-                ) : null}
-              </div>
-              <div className="grid gap-2 sm:col-span-2">
-                <Label>Status</Label>
-                <Select
-                  value={statusConfigId ?? "__default__"}
-                  onValueChange={(value) => {
-                    setStatusConfigId(value === "__default__" ? undefined : value)
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__default__">Default (Active)</SelectItem>
-                    {selectableStatuses.map((status) => (
-                      <SelectItem key={status.value} value={status.value}>
-                        {status.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {fieldErrors.status ? (
-                  <p className="text-xs text-rose-600">{fieldErrors.status}</p>
-                ) : null}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            disabled={isSubmitting}
-            onClick={() => {
-              void onSubmit()
-            }}
-            className="bg-blue-950 text-white hover:bg-blue-950/90"
-          >
-            {isSubmitting ? "Creating..." : "Create Contact"}
-          </Button>
-        </DialogFooter>
+          <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isSubmitting}
+              className="cursor-pointer rounded-xl"
+              onClick={() => handleOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={isSubmitting}
+              className="min-w-36 cursor-pointer rounded-xl bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+            >
+              {isSubmitting ? (
+                <Loader2 data-icon="inline-start" className="animate-spin" />
+              ) : null}
+              {isSubmitting ? "Creating..." : "Create contact"}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
