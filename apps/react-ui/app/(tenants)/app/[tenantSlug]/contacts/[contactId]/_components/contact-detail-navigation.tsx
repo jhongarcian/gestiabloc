@@ -37,7 +37,7 @@ export function ContactDetailNavigation({
   return (
     <nav
       aria-label="Contact detail sections"
-      className="relative min-w-0 shrink-0 overflow-hidden border-y border-blue-100 bg-[#f1f7ff]"
+      className="relative min-w-0 shrink-0 overflow-hidden border-y border-blue-200/80 bg-[#e4efff]"
     >
       <div
         aria-hidden="true"
@@ -63,7 +63,7 @@ export function ContactDetailNavigation({
                 href={href}
                 aria-current={isActive ? "page" : undefined}
                 className={cn(
-                  "inline-flex h-8 items-center rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-[#f1f7ff]",
+                  "inline-flex h-8 items-center rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-[#e4efff]",
                   isActive
                     ? "bg-blue-950 text-white shadow-sm hover:bg-blue-900"
                     : "text-slate-600 hover:bg-white/75 hover:text-slate-950",
