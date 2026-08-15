@@ -1555,6 +1555,7 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
                 firstName: true,
                 middleName: true,
                 lastName: true,
+                dateOfBirth: true,
                 phone: true,
                 email: true,
               },
@@ -1565,6 +1566,7 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
                 firstName: true,
                 middleName: true,
                 lastName: true,
+                dateOfBirth: true,
                 phone: true,
                 email: true,
               },
@@ -1817,6 +1819,7 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
               ]
                 .filter(Boolean)
                 .join(" "),
+              dateOfBirth: related.dateOfBirth ?? null,
               phoneNumber: related.phone ?? null,
               email: related.email ?? null,
             },
@@ -3067,6 +3070,7 @@ router.post(
               firstName: true,
               middleName: true,
               lastName: true,
+              dateOfBirth: true,
               phone: true,
               email: true,
             },
@@ -3095,6 +3099,7 @@ router.post(
             ]
               .filter(Boolean)
               .join(" "),
+            dateOfBirth: created.relatedContact.dateOfBirth ?? null,
             phoneNumber: created.relatedContact.phone ?? null,
             email: created.relatedContact.email ?? null,
           },
