@@ -310,8 +310,8 @@ export default async function ContactDetailsLayout({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-slate-200/80 bg-white shadow-sm">
         <header className="shrink-0 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_46%,#fff7ed_100%)]">
           <div className="space-y-4 p-4 md:p-5">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div className="min-w-0 space-y-2">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1 space-y-2">
                 <div className="min-w-0 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <Link
@@ -392,7 +392,7 @@ export default async function ContactDetailsLayout({
                   ) : null}
                 </div>
               </div>
-              <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="flex shrink-0 flex-nowrap items-center justify-end gap-2">
                 <AddContactOpportunityDialog
                   tenantId={tenantId}
                   initialContact={{
