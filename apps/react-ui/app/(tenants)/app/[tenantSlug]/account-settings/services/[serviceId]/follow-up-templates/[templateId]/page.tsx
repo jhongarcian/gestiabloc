@@ -14,6 +14,8 @@ type FollowUpTemplateResponse = {
     sortOrder: number
     isPublished: boolean
     publishedAt: string | null
+    needsRepair: boolean
+    activeVersion: { id: string; versionNumber: number; schemaVersion?: number; checksum: string; publishedAt: string } | null
     flowNodes: unknown[]
     flowEdges: unknown[]
   }

@@ -56,6 +56,8 @@ type FollowUpStep = {
   availableAt: string | null
   dueAt: string | null
   completedAt: string | null
+  resolutionSource?: "USER_COMPLETED" | "USER_SKIPPED" | "CONDITION_SKIPPED" | "FLOW_SKIPPED" | null
+  resolutionReason?: string | null
   note?: string | null
   sortOrder: number
 }
@@ -532,6 +534,9 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                     const isStatusLocked = (step.status ?? "PENDING") !== "ACTIVE"
                     const isActive = (step.status ?? "PENDING") === "ACTIVE"
                     const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"
+                    const isAutoSkipped =
+                      step.resolutionSource === "CONDITION_SKIPPED" ||
+                      step.resolutionSource === "FLOW_SKIPPED"
 
                     return (
                       <div key={step.id} className="flex gap-3">
@@ -539,7 +544,9 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                           <span
                             className={cn(
                               "inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold",
-                              isDone
+                              isAutoSkipped
+                                ? "border-rose-200 bg-rose-100 text-rose-800"
+                              : isDone
                                 ? "border-emerald-200 bg-emerald-100 text-emerald-800"
                                 : isActive
                                   ? "border-blue-200 bg-blue-50 text-blue-900"
@@ -555,7 +562,9 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                         <article
                           className={cn(
                             "flex-1 rounded-[22px] border px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]",
-                            isDone
+                            isAutoSkipped
+                              ? "border-rose-200 bg-rose-50/60"
+                            : isDone
                               ? "border-emerald-200 bg-emerald-50/50"
                               : isActive
                                 ? "border-blue-200 bg-blue-50/40"
@@ -579,6 +588,11 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                                         Current step
                                       </Badge>
                                     ) : null}
+                                    {isAutoSkipped ? (
+                                      <Badge className="bg-rose-100 text-rose-800 hover:bg-rose-100">
+                                        Skipped by workflow
+                                      </Badge>
+                                    ) : null}
                                   </div>
                                   <button
                                     type="button"
@@ -593,6 +607,11 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                               <p className="max-w-3xl text-sm leading-6 text-slate-600">
                                 {step.notesTemplate?.trim() || "No description provided for this step."}
                               </p>
+                              {step.resolutionReason ? (
+                                <p className="text-xs font-medium text-rose-700">
+                                  {step.resolutionReason}
+                                </p>
+                              ) : null}
                               {step.note?.trim() ? (
                                 <div className="rounded-2xl bg-slate-50 px-3 py-2.5">
                                   <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
@@ -766,8 +785,6 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="PENDING" className="cursor-pointer">Pending</SelectItem>
-                  <SelectItem value="ACTIVE" className="cursor-pointer">Active</SelectItem>
                   <SelectItem value="COMPLETED" className="cursor-pointer">Completed</SelectItem>
                   <SelectItem value="SKIPPED" className="cursor-pointer">Skipped</SelectItem>
                   <SelectItem value="POSTPONED" className="cursor-pointer">Postponed</SelectItem>

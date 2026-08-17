@@ -13,7 +13,7 @@ type FlowNode = {
     label?: string
     waitValue?: number
     waitUnit?: "days" | "hours" | "minutes"
-    reminderTarget?: "assigned_contact_owner" | "specific_user" | null
+    reminderTarget?: "assigned_contact_owner" | "specific_user" | "all_users" | null
     reminderUserId?: string | null
     ifElseBranches?: Array<{
       id: string
@@ -321,7 +321,7 @@ function normalizeCustomFieldUpdateValue(field: CustomFieldMetadata, rawValue: u
   return { ok: true as const, value: textValue }
 }
 
-async function buildCustomFieldByKey(
+export async function buildCustomFieldByKey(
   prismaTx: PrismaTx,
   tenantId: string,
   storedValues: Array<{ field: { id: string; key: string }; value: unknown }>,
@@ -543,7 +543,7 @@ async function applyContactFieldUpdate(
   })
 }
 
-async function executeActionNode(params: {
+export async function executeActionNode(params: {
   prismaTx: PrismaTx
   tenantId: string
   templateId: string
@@ -553,7 +553,10 @@ async function executeActionNode(params: {
     contactId: string
     serviceName: string
     contactName: string
+    activeStepId?: string | null
   }
+  templateVersionId?: string | null
+  runId?: string | null
   node: FlowNode
   customFieldByKey: Map<string, CustomFieldMetadata>
 }) {
@@ -565,10 +568,21 @@ async function executeActionNode(params: {
     contactService,
     node,
     customFieldByKey,
+    templateVersionId,
+    runId,
   } = params
   const kind = node.data?.kind
 
   if (kind === "assign" && node.data?.assigneeUserId) {
+    const membership = await prismaTx.membership.findUnique({
+      where: {
+        userId_tenantId: { userId: node.data.assigneeUserId, tenantId },
+      },
+      select: { status: true },
+    })
+    if (membership?.status !== "ACTIVE") {
+      throw new Error("The configured assignee is no longer an active tenant user.")
+    }
     await prismaTx.contact.update({
       where: { id: contactService.contactId },
       data: { assignedToUserId: node.data.assigneeUserId },
@@ -810,6 +824,10 @@ async function executeActionNode(params: {
       data: {
         tenantId,
         contactId: contactService.contactId,
+        contactServiceId: contactService.id,
+        followUpTemplateId: templateId,
+        followUpTemplateVersionId: templateVersionId ?? null,
+        contactServiceFollowUpStepId: contactService.activeStepId ?? null,
         title,
         body,
         createdById: actorUserId,
@@ -850,6 +868,10 @@ async function executeActionNode(params: {
       data: {
         tenantId,
         contactId: contactService.contactId,
+        contactServiceId: contactService.id,
+        followUpTemplateId: templateId,
+        followUpTemplateVersionId: templateVersionId ?? null,
+        contactServiceFollowUpStepId: contactService.activeStepId ?? null,
         statusConfigId: defaultStatus?.id ?? null,
         assignedToUserId: null,
         name:
@@ -889,22 +911,41 @@ async function executeActionNode(params: {
   }
 
   if (kind === "reminder") {
-    const reminderTarget =
-      node.data?.reminderTarget === "specific_user"
-        ? node.data.reminderUserId || null
-        : null
-
-    let recipientUserId = reminderTarget
-
-    if (!recipientUserId) {
+    let recipientUserIds: string[] = []
+    if (node.data?.reminderTarget === "all_users") {
+      const memberships = await prismaTx.membership.findMany({
+        where: { tenantId, status: "ACTIVE" },
+        select: { userId: true },
+      })
+      recipientUserIds = memberships.map((item: { userId: string }) => item.userId)
+    } else if (node.data?.reminderTarget === "specific_user" && node.data.reminderUserId) {
+      const membership = await prismaTx.membership.findUnique({
+        where: {
+          userId_tenantId: { userId: node.data.reminderUserId, tenantId },
+        },
+        select: { status: true },
+      })
+      if (membership?.status !== "ACTIVE") {
+        throw new Error("The configured reminder recipient is no longer an active tenant user.")
+      }
+      recipientUserIds = [node.data.reminderUserId]
+    } else {
       const contactOwner = await prismaTx.contact.findUnique({
         where: { id: contactService.contactId },
         select: { assignedToUserId: true },
       })
-      recipientUserId = contactOwner?.assignedToUserId ?? null
+      if (contactOwner?.assignedToUserId) {
+        const membership = await prismaTx.membership.findUnique({
+          where: {
+            userId_tenantId: { userId: contactOwner.assignedToUserId, tenantId },
+          },
+          select: { status: true },
+        })
+        if (membership?.status === "ACTIVE") recipientUserIds = [contactOwner.assignedToUserId]
+      }
     }
-
-    if (!recipientUserId) return
+    recipientUserIds = [...new Set(recipientUserIds)]
+    if (!recipientUserIds.length) return
 
     const contactName = contactService.contactName.trim() || "Contact"
     const reminderLabel = node.data?.label?.trim()
@@ -912,34 +953,48 @@ async function executeActionNode(params: {
       ? `${reminderLabel}: ${contactName}`
       : `Follow-up reminder: ${contactName}`
 
-    const notification = await prismaTx.notification.create({
-      data: {
-        tenantId,
-        userId: recipientUserId,
-        contactId: contactService.contactId,
-        type: "TASK_REMINDER",
-        title: reminderTitle,
-        body:
-          node.data?.notesTemplate?.trim() ||
-          `${contactName} has a follow-up action in ${contactService.serviceName}.`,
-      },
-      select: {
-        id: true,
-        tenantId: true,
-        userId: true,
-        contactId: true,
-        type: true,
-        title: true,
-        body: true,
-        readAt: true,
-        createdAt: true,
-        taskId: true,
-        taskReminderId: true,
-      },
-    })
-
-    const serialized = serializeNotification(notification)
-    emitNotificationCreated(serialized.userId, serialized)
+    const notificationIds: string[] = []
+    for (const recipientUserId of recipientUserIds) {
+      const eventKey = runId
+        ? `follow-up:${runId}:${node.id}:${recipientUserId}`
+        : `follow-up-legacy:${templateId}:${contactService.id}:${node.id}:${recipientUserId}`
+      const notification = await prismaTx.notification.upsert({
+        where: { eventKey },
+        update: {},
+        create: {
+          tenantId,
+          userId: recipientUserId,
+          contactId: contactService.contactId,
+          eventKey,
+          type: "TASK_REMINDER",
+          title: reminderTitle,
+          body:
+            node.data?.notesTemplate?.trim() ||
+            `${contactName} has a follow-up action in ${contactService.serviceName}.`,
+        },
+        select: {
+          id: true,
+          tenantId: true,
+          userId: true,
+          contactId: true,
+          type: true,
+          title: true,
+          body: true,
+          readAt: true,
+          createdAt: true,
+          taskId: true,
+          taskReminderId: true,
+        },
+      })
+      notificationIds.push(notification.id)
+      // V2 runs execute inside a larger transaction. Do not emit a socket event
+      // until that transaction is known to have committed; clients still receive
+      // the durable in-app notification on their next notification refresh.
+      if (!runId) {
+        const serialized = serializeNotification(notification)
+        emitNotificationCreated(serialized.userId, serialized)
+      }
+    }
     await createExecutionLog({
       prismaTx,
       tenantId,
@@ -951,7 +1006,7 @@ async function executeActionNode(params: {
       eventType: "ACTION_EXECUTED",
       title: reminderTitle,
       details: "Sent a reminder notification from the follow-up workflow.",
-      payload: { kind, notificationId: notification.id, recipientUserId },
+      payload: { kind, notificationIds, recipientCount: recipientUserIds.length, templateVersionId: templateVersionId ?? null },
     })
   }
 }

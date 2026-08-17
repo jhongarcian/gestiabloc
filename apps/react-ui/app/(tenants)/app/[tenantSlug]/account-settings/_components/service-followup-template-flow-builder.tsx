@@ -139,6 +139,7 @@ type DateTimeFormatOption = {
   label: string
   preview: string
 }
+type DateComparisonUnit = "days" | "months" | "years"
 type MathFieldValueType = "number" | "dateTime"
 type MathFieldKey = `contact:${string}` | `custom:${string}`
 type MathFieldOption = {
@@ -153,7 +154,7 @@ type CustomFieldOption = {
   fieldType: ContactCustomFieldType
   options: string[]
 }
-type IfElseBranchSource = "dateTime" | "contactInfo" | "customField"
+type IfElseBranchSource = "dateTime" | "contactInfo" | "customField" | "variable"
 type IfElseValueType = "string" | "number" | "dateTime"
 type IfElseOperator =
   | "includes"
@@ -177,6 +178,17 @@ type IfElseBranch = {
   compareValue: string
   isDefault?: boolean
   targetNodeId?: string | null
+  matchMode?: "ALL" | "ANY"
+  conditions?: Array<{
+    id: string
+    source: "contactInfo" | "customField" | "variable"
+    fieldKey?: string
+    customFieldId?: string
+    variableKey?: string
+    valueType: "string" | "number" | "dateTime" | "boolean"
+    operator: IfElseOperator
+    compareValue?: unknown
+  }>
 }
 
 const WAIT_UNIT_TO_MINUTES: Record<WaitUnit, number> = {
@@ -215,8 +227,8 @@ const NODE_KIND_LABEL: Record<Exclude<PersistedNodeKind, "start">, string> = {
   reminder: "Reminder notification",
   assign: "Assign user",
   removeUser: "Remove user",
-  tagAdd: "Create tag",
-  tagRemove: "Delete tag",
+  tagAdd: "Add tag",
+  tagRemove: "Remove tag",
   contactFieldUpdate: "Update contact field",
   statusUpdate: "Update status",
   addNote: "Add note",
@@ -296,6 +308,7 @@ const CONTACT_INFO_FIELDS: Array<{ key: string; label: string }> = [
   { key: "phoneNumber", label: "Phone number" },
   { key: "secondaryPhoneNumber", label: "Secondary phone number" },
   { key: "dateOfBirth", label: "Date of birth" },
+  { key: "ssn", label: "SSN present (protected)" },
   { key: "gender", label: "Gender" },
   { key: "smokerStatus", label: "Smoker status" },
   { key: "statusConfigId", label: "Status" },
@@ -315,6 +328,7 @@ const CONTACT_INFO_FIELD_VALUE_TYPE: Record<string, IfElseValueType> = {
   phoneNumber: "string",
   secondaryPhoneNumber: "string",
   dateOfBirth: "dateTime",
+  ssn: "string",
   gender: "string",
   smokerStatus: "string",
   statusConfigId: "string",
@@ -698,8 +712,10 @@ type StepNodeData = {
   dateTimeFormatSourceFieldSource?: FieldSource | null
   dateTimeFormatCompareFieldKey?: string | null
   dateTimeFormatCompareFieldSource?: FieldSource | null
+  dateTimeCompareUnit?: DateComparisonUnit | null
   goToNodeId?: string | null
   ifElseBranches?: IfElseBranch[]
+  outputKey?: string | null
 }
 
 type CanvasNodeData = {
@@ -754,8 +770,10 @@ type CanvasNodeData = {
   dateTimeFormatSourceFieldSource?: FieldSource | null
   dateTimeFormatCompareFieldKey?: string | null
   dateTimeFormatCompareFieldSource?: FieldSource | null
+  dateTimeCompareUnit?: DateComparisonUnit | null
   goToNodeId?: string | null
   ifElseBranches?: IfElseBranch[]
+  outputKey?: string | null
   sourceNodeId?: string
   moveTargetNodeId?: string
   moveLaneSourceNodeId?: string
@@ -764,6 +782,8 @@ type CanvasNodeData = {
   onEditAction?: (actionNodeId: string) => void
   onMoveAction?: (actionNodeId: string) => void
   onDeleteAction?: (actionNodeId: string) => void
+  hasValidationIssue?: boolean
+  routeOutcomes?: Array<{ id: string; name: string; targetName: string }>
 }
 
 type StepNode = Node<StepNodeData>
@@ -818,6 +838,7 @@ type NewStepDraft = {
   dateTimeFormatSourceFieldSource: FieldSource
   dateTimeFormatCompareFieldKey: string
   dateTimeFormatCompareFieldSource: FieldSource
+  dateTimeCompareUnit: DateComparisonUnit
   goToNodeId: string
   ifElseBranches: IfElseBranch[]
 }
@@ -873,6 +894,7 @@ const makeDefaultDraft = (
   dateTimeFormatSourceFieldSource: "contact",
   dateTimeFormatCompareFieldKey: "",
   dateTimeFormatCompareFieldSource: "contact",
+  dateTimeCompareUnit: "days",
   goToNodeId: "",
   ifElseBranches: kind === "ifElse" ? [makeIfElseBranch(1), makeDefaultBranch()] : [],
 })
@@ -889,6 +911,8 @@ type FollowUpTemplateFlowBuilderProps = {
     id: string
     name: string
     isPublished: boolean
+    needsRepair?: boolean
+    activeVersion?: { id: string; versionNumber: number; schemaVersion?: number; checksum: string; publishedAt: string } | null
     flowNodes: unknown[]
     flowEdges: unknown[]
   }
@@ -1099,7 +1123,9 @@ function StepFlowNode({ data, selected }: NodeProps<CanvasNode>) {
   return (
     <div
       className={`relative flex min-w-[260px] flex-col items-center rounded-xl border bg-white px-4 py-3 text-center shadow-sm transition ${
-        selected
+        data.hasValidationIssue
+          ? "border-red-500 ring-2 ring-red-100"
+        : selected
           ? "border-blue-500"
           : isStart
             ? "border-blue-300"
@@ -1147,9 +1173,9 @@ function StepFlowNode({ data, selected }: NodeProps<CanvasNode>) {
                           : isRemoveUser
                             ? data.label || "Remove user"
                             : isTagAdd
-                              ? data.label || "Create tag"
+                              ? data.label || "Add tag"
                               : isTagRemove
-                                ? data.label || "Delete tag"
+                                ? data.label || "Remove tag"
                                 : isContactFieldUpdate
                                   ? data.label || "Update contact field"
                                   : isStatusUpdate
@@ -1160,56 +1186,50 @@ function StepFlowNode({ data, selected }: NodeProps<CanvasNode>) {
                                         ? data.label || "Add task"
                                         : data.label || "Action"
         return (
-          <div className="flex w-full items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-600">
-              {renderActionIcon(data.kind)}
+          <div className="w-full">
+            <div className="flex w-full items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-600">
+                {renderActionIcon(data.kind)}
+              </div>
+              <p className="flex-1 truncate text-left text-sm font-semibold text-slate-900">
+                {actionLabel}
+              </p>
+              {!isStart && data.actionNodeId && data.onEditAction && data.onMoveAction && data.onDeleteAction ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="h-8 w-8 cursor-pointer rounded-lg border-blue-300 text-blue-600"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-44">
+                    <DropdownMenuItem className="cursor-pointer" onClick={(event) => { event.stopPropagation(); data.onEditAction?.(data.actionNodeId!) }}>
+                      Edit action
+                    </DropdownMenuItem>
+                    <DropdownMenuItem className="cursor-pointer" onClick={(event) => { event.stopPropagation(); data.onMoveAction?.(data.actionNodeId!) }}>
+                      Move action
+                    </DropdownMenuItem>
+                    <DropdownMenuItem className="cursor-pointer text-red-600 focus:text-red-700" onClick={(event) => { event.stopPropagation(); data.onDeleteAction?.(data.actionNodeId!) }}>
+                      Delete action
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
             </div>
-            <p className="flex-1 truncate text-left text-sm font-semibold text-slate-900">
-              {actionLabel}
-            </p>
-            {!isStart && data.actionNodeId && data.onEditAction && data.onMoveAction && data.onDeleteAction ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    className="h-8 w-8 cursor-pointer rounded-lg border-blue-300 text-blue-600"
-                    onClick={(event) => event.stopPropagation()}
-                  >
-                    <MoreHorizontal className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-44">
-                  <DropdownMenuItem
-                    className="cursor-pointer"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      data.onEditAction?.(data.actionNodeId!)
-                    }}
-                  >
-                    Edit action
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className="cursor-pointer"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      data.onMoveAction?.(data.actionNodeId!)
-                    }}
-                  >
-                    Move action
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className="cursor-pointer text-red-600 focus:text-red-700"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      data.onDeleteAction?.(data.actionNodeId!)
-                    }}
-                  >
-                    Delete action
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+            {(isIfElse || isGoTo) && data.routeOutcomes?.length ? (
+              <div className="mt-3 grid gap-1.5 border-t border-orange-100 pt-2 text-left">
+                {data.routeOutcomes.map((outcome) => (
+                  <div key={outcome.id} className="flex items-center justify-between gap-3 text-[11px]">
+                    <span className="max-w-[110px] truncate font-medium text-orange-800">{outcome.name}</span>
+                    <span className="truncate text-slate-500">→ {outcome.targetName}</span>
+                  </div>
+                ))}
+              </div>
             ) : null}
           </div>
         )
@@ -1426,7 +1446,12 @@ function toSafeNodes(raw: unknown[], templateId: string, templateName: string): 
           data.dateTimeFormatCompareFieldSource === "contact"
             ? data.dateTimeFormatCompareFieldSource
             : null,
+        dateTimeCompareUnit:
+          data.dateTimeCompareUnit === "months" || data.dateTimeCompareUnit === "years"
+            ? data.dateTimeCompareUnit
+            : "days",
         goToNodeId: typeof data.goToNodeId === "string" ? data.goToNodeId : null,
+        outputKey: typeof data.outputKey === "string" ? data.outputKey : null,
         ifElseBranches: Array.isArray(data.ifElseBranches)
           ? data.ifElseBranches
               .filter((item): item is IfElseBranch => {
@@ -1446,7 +1471,8 @@ function toSafeNodes(raw: unknown[], templateId: string, templateName: string): 
                 source:
                   branch.source === "dateTime" ||
                   branch.source === "contactInfo" ||
-                  branch.source === "customField"
+                  branch.source === "customField" ||
+                  branch.source === "variable"
                     ? branch.source
                     : "contactInfo",
                 fieldKey: typeof branch.fieldKey === "string" ? branch.fieldKey : "",
@@ -1476,6 +1502,8 @@ function toSafeNodes(raw: unknown[], templateId: string, templateName: string): 
                 isDefault: Boolean(branch.isDefault),
                 targetNodeId:
                   typeof branch.targetNodeId === "string" ? branch.targetNodeId : null,
+                matchMode: branch.matchMode === "ANY" ? "ANY" : "ALL",
+                conditions: Array.isArray(branch.conditions) ? branch.conditions : undefined,
               }))
           : null,
         noteAttachments: Array.isArray(data.noteAttachments)
@@ -1565,6 +1593,7 @@ function toSafeNodes(raw: unknown[], templateId: string, templateName: string): 
         dateTimeFormatSourceFieldSource: null,
         dateTimeFormatCompareFieldKey: null,
         dateTimeFormatCompareFieldSource: null,
+        dateTimeCompareUnit: null,
         goToNodeId: null,
         ifElseBranches: [],
         noteAttachments: [],
@@ -1600,6 +1629,356 @@ function toPersistedSnapshot(nodes: StepNode[], edges: Edge[], name: string) {
   })
 }
 
+type WorkflowValidationIssue = {
+  code: string
+  message: string
+  nodeId?: string
+  stepId?: string
+  transitionId?: string
+  branchId?: string
+  edgeId?: string
+}
+
+function AdditionalBranchConditions({
+  branch,
+  onChange,
+}: {
+  branch: IfElseBranch
+  onChange: (branch: IfElseBranch) => void
+}) {
+  const conditions = branch.conditions ?? []
+  return (
+    <div className="space-y-2 rounded-md border border-dashed border-slate-200 p-2">
+      <div className="flex items-center justify-between gap-2">
+        <select
+          value={branch.matchMode ?? "ALL"}
+          onChange={(event) =>
+            onChange({ ...branch, matchMode: event.target.value as "ALL" | "ANY" })
+          }
+          className="h-8 rounded-md border border-slate-300 bg-white px-2 text-xs"
+          aria-label="Condition match mode"
+        >
+          <option value="ALL">Match all conditions</option>
+          <option value="ANY">Match any condition</option>
+        </select>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() =>
+            onChange({
+              ...branch,
+              conditions: [
+                ...conditions,
+                {
+                  id: `condition-${Date.now()}-${Math.round(Math.random() * 1000)}`,
+                  source: "contactInfo",
+                  fieldKey: "firstName",
+                  valueType: "string",
+                  operator: "is_not_empty",
+                  compareValue: "",
+                },
+              ],
+            })
+          }
+        >
+          Add condition
+        </Button>
+      </div>
+      {conditions.map((condition, index) => (
+        <div key={condition.id} className="grid gap-2 rounded-md bg-slate-50 p-2">
+          <p className="text-xs font-medium text-slate-600">Additional condition {index + 2}</p>
+          <div className="grid grid-cols-2 gap-2">
+            <select
+              value={condition.source}
+              onChange={(event) => {
+                const source = event.target.value as "contactInfo" | "customField" | "variable"
+                onChange({
+                  ...branch,
+                  conditions: conditions.map((item) =>
+                    item.id === condition.id
+                      ? {
+                          ...item,
+                          source,
+                          fieldKey: source === "variable" ? undefined : "",
+                          variableKey: source === "variable" ? "" : undefined,
+                        }
+                      : item,
+                  ),
+                })
+              }}
+              className="h-8 rounded-md border border-slate-300 bg-white px-2 text-xs"
+            >
+              <option value="contactInfo">Contact field</option>
+              <option value="customField">Custom field</option>
+              <option value="variable">Workflow variable</option>
+            </select>
+            <select
+              value={condition.valueType}
+              onChange={(event) =>
+                onChange({
+                  ...branch,
+                  conditions: conditions.map((item) =>
+                    item.id === condition.id
+                      ? { ...item, valueType: event.target.value as "string" | "number" | "dateTime" | "boolean" }
+                      : item,
+                  ),
+                })
+              }
+              className="h-8 rounded-md border border-slate-300 bg-white px-2 text-xs"
+            >
+              <option value="string">Text</option>
+              <option value="number">Number</option>
+              <option value="dateTime">Date/time</option>
+              <option value="boolean">Yes/no</option>
+            </select>
+          </div>
+          <Input
+            value={condition.source === "variable" ? condition.variableKey ?? "" : condition.fieldKey ?? ""}
+            placeholder={condition.source === "variable" ? "Workflow output name" : "Field key"}
+            onChange={(event) =>
+              onChange({
+                ...branch,
+                conditions: conditions.map((item) =>
+                  item.id === condition.id
+                    ? condition.source === "variable"
+                      ? { ...item, variableKey: event.target.value }
+                      : { ...item, fieldKey: event.target.value }
+                    : item,
+                ),
+              })
+            }
+          />
+          <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
+            <select
+              value={condition.operator}
+              onChange={(event) =>
+                onChange({
+                  ...branch,
+                  conditions: conditions.map((item) =>
+                    item.id === condition.id
+                      ? { ...item, operator: event.target.value as IfElseOperator }
+                      : item,
+                  ),
+                })
+              }
+              className="h-9 rounded-md border border-slate-300 bg-white px-2 text-xs"
+            >
+              {getOperatorsForValueType(
+                condition.valueType === "boolean" ? "string" : condition.valueType,
+              ).map((operator) => (
+                <option key={operator} value={operator}>{OPERATOR_LABEL[operator]}</option>
+              ))}
+            </select>
+            <Input
+              disabled={condition.operator === "is_empty" || condition.operator === "is_not_empty"}
+              value={typeof condition.compareValue === "string" ? condition.compareValue : ""}
+              placeholder="Comparison value"
+              onChange={(event) =>
+                onChange({
+                  ...branch,
+                  conditions: conditions.map((item) =>
+                    item.id === condition.id ? { ...item, compareValue: event.target.value } : item,
+                  ),
+                })
+              }
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="text-red-600"
+              onClick={() =>
+                onChange({
+                  ...branch,
+                  conditions: conditions.filter((item) => item.id !== condition.id),
+                })
+              }
+            >
+              Remove
+            </Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function BranchDestinationSelect({
+  branch,
+  nodes,
+  currentNodeId,
+  onChange,
+}: {
+  branch: IfElseBranch
+  nodes: StepNode[]
+  currentNodeId?: string | null
+  onChange: (targetNodeId: string | null) => void
+}) {
+  const conditionalNode =
+    (currentNodeId ? nodes.find((node) => node.id === currentNodeId) : null) ??
+    nodes.find((node) => node.data.ifElseBranches?.some((item) => item.id === branch.id))
+  const candidates = nodes.filter(
+    (node) =>
+      node.data.kind === "step" &&
+      (!conditionalNode || node.position.y > conditionalNode.position.y),
+  )
+  return (
+    <div className="grid gap-1.5">
+      <Label className="text-xs">Go to step</Label>
+      <Select
+        value={branch.targetNodeId ?? "unconnected"}
+        onValueChange={(value) => onChange(value === "unconnected" ? null : value)}
+      >
+        <SelectTrigger className="h-9 bg-white">
+          <SelectValue placeholder="Add a new action from the canvas" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="unconnected">Select a later step</SelectItem>
+          {candidates.map((node) => (
+            <SelectItem key={node.id} value={node.id}>
+              {node.data.label || NODE_KIND_LABEL[node.data.kind as Exclude<PersistedNodeKind, "start">] || "Action"}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
+const toWorkflowOutputKey = (node: StepNode) => {
+  const configured = typeof node.data.outputKey === "string" ? node.data.outputKey.trim() : ""
+  if (configured) return configured
+  const base = `${node.data.kind}_${node.data.label || node.id}`
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+  return /^[A-Za-z]/.test(base) ? base : `output_${base || "value"}`
+}
+
+type CanonicalStepInput = {
+  templateNodeId: string
+  title: string
+  notesTemplate: string | null
+  dueDaysFromStart: number
+  sortOrder: number
+}
+
+function toWorkflowDefinitionV3(nodes: StepNode[], edges: Edge[], canonicalSteps: CanonicalStepInput[]) {
+  const start = nodes.find((node) => node.data.kind === "start")
+  if (!start) throw new Error("The workflow needs a Start node.")
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  const outgoingBySource = new Map<string, Edge[]>()
+  edges.forEach((edge) => {
+    outgoingBySource.set(edge.source, [...(outgoingBySource.get(edge.source) ?? []), edge])
+  })
+
+  const stepDefinitions = canonicalSteps.map((step) => ({
+    id: step.templateNodeId,
+    name: step.title,
+    notesTemplate: step.notesTemplate,
+    dueDaysFromStart: step.dueDaysFromStart,
+  }))
+  const stepIndex = new Map(stepDefinitions.map((step, index) => [step.id, index]))
+
+  const toConditions = (branch: IfElseBranch) => branch.isDefault
+    ? []
+    : [
+        {
+          id: `${branch.id}-condition`,
+          source: branch.source === "customField" ? "customField" : branch.source === "variable" ? "variable" : "contactInfo",
+          fieldKey: branch.source === "variable" ? undefined : branch.fieldKey,
+          variableKey: branch.source === "variable" ? branch.fieldKey : undefined,
+          valueType: branch.valueType,
+          operator: branch.operator,
+          compareValue: branch.compareValue,
+        },
+        ...(branch.conditions ?? []),
+      ]
+
+  const transitionFor = (fromId: string, fromIndex: number) => {
+    const actions: Array<Record<string, unknown>> = []
+    let cursorId = fromId
+    const visited = new Set([fromId])
+    let route: Record<string, unknown> = { kind: "NEXT" }
+
+    for (let guard = 0; guard <= nodes.length; guard += 1) {
+      const nextEdge = (outgoingBySource.get(cursorId) ?? [])[0]
+      if (!nextEdge) break
+      const nextNode = nodeById.get(nextEdge.target)
+      if (!nextNode || visited.has(nextNode.id)) break
+      visited.add(nextNode.id)
+
+      if (nextNode.data.kind === "step") {
+        const targetIndex = stepIndex.get(nextNode.id)
+        if (targetIndex !== undefined && targetIndex !== fromIndex + 1) {
+          route = { id: `route-${fromId}`, kind: "GO_TO", label: "Go to step", targetStepId: nextNode.id }
+        }
+        break
+      }
+      if (nextNode.data.kind === "ifElse") {
+        route = {
+          id: nextNode.id,
+          kind: "CONDITIONAL",
+          label: nextNode.data.label || "If / Else",
+          branches: (nextNode.data.ifElseBranches ?? []).map((branch, index) => ({
+            id: branch.id,
+            name: branch.name.trim() || (branch.isDefault ? "Default" : `Outcome ${index + 1}`),
+            isDefault: Boolean(branch.isDefault),
+            matchMode: branch.matchMode ?? "ALL",
+            conditions: toConditions(branch),
+            targetStepId: branch.targetNodeId ?? null,
+          })),
+        }
+        break
+      }
+      if (nextNode.data.kind === "goTo") {
+        route = {
+          id: nextNode.id,
+          kind: "GO_TO",
+          label: nextNode.data.label || "Go to step",
+          targetStepId: nextNode.data.goToNodeId || null,
+        }
+        break
+      }
+      if (nextNode.data.kind === "start") break
+
+      const { kind, label } = nextNode.data
+      const data = Object.fromEntries(
+        Object.entries(nextNode.data).filter(
+          ([key]) => !["kind", "label", "ifElseBranches", "goToNodeId"].includes(key),
+        ),
+      )
+      actions.push({
+        id: nextNode.id,
+        kind,
+        label,
+        data: {
+          ...data,
+          ...(
+            kind === "mathOperation" || kind === "numberFormatter" || kind === "dateTimeFormatter"
+              ? { outputKey: toWorkflowOutputKey(nextNode) }
+              : {}
+          ),
+        },
+      })
+      cursorId = nextNode.id
+    }
+
+    return { id: `transition-${fromId}`, fromId, actions, route }
+  }
+
+  return {
+    schemaVersion: 3 as const,
+    start: { id: start.id, label: start.data.label || "Start" },
+    end: { id: "end-v3", label: "End" },
+    steps: stepDefinitions,
+    transitions: [
+      transitionFor(start.id, -1),
+      ...stepDefinitions.map((step, index) => transitionFor(step.id, index)),
+    ],
+  }
+}
+
 export function ServiceFollowUpTemplateFlowBuilder({
   tenantId,
   tenantSlug,
@@ -1618,6 +1997,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const [edges, setEdges] = useState<Edge[]>(toSafeEdges(template.flowEdges))
   const [isSaving, setIsSaving] = useState(false)
   const [isPublishSaving, setIsPublishSaving] = useState(false)
+  const [validationIssues, setValidationIssues] = useState<WorkflowValidationIssue[]>([])
   const [isDeleting, setIsDeleting] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialNodes[0]?.id ?? null)
   const [hasRenamedTemplate, setHasRenamedTemplate] = useState(false)
@@ -2017,9 +2397,6 @@ export function ServiceFollowUpTemplateFlowBuilder({
     }
   }
 
-  const getIfBranchCanvasNodeId = (ifElseNodeId: string, branchId: string) =>
-    `if-branch-${ifElseNodeId}-${branchId}`
-
   const resolveCreateSourceNode = (sourceNodeId: string | null) => {
     if (!sourceNodeId) return null
     const parsedIfBranchSource = parseIfBranchSource(sourceNodeId)
@@ -2036,9 +2413,28 @@ export function ServiceFollowUpTemplateFlowBuilder({
   }
 
   const canAddStepAfterSource = (sourceNodeId: string | null) => {
+    return Boolean(resolveCreateSourceNode(sourceNodeId))
+  }
+
+  const makeDraftForSource = (
+    kind: Exclude<PersistedNodeKind, "start">,
+    sourceNodeId: string | null,
+  ) => {
+    const draft = makeDefaultDraft(kind)
+    if (kind !== "ifElse") return draft
     const sourceNode = resolveCreateSourceNode(sourceNodeId)
-    if (!sourceNode) return false
-    return sourceNode.data.kind === "wait"
+    const immediateNextStep = sourceNode
+      ? nodes
+          .filter((node) => node.data.kind === "step" && node.position.y > sourceNode.position.y)
+          .sort((left, right) => left.position.y - right.position.y)[0]
+      : null
+    if (!immediateNextStep) return draft
+    return {
+      ...draft,
+      ifElseBranches: draft.ifElseBranches.map((branch) =>
+        branch.isDefault ? { ...branch, targetNodeId: immediateNextStep.id } : branch,
+      ),
+    }
   }
 
   const addStepNode = () => {
@@ -2060,10 +2456,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
       toast.error("Could not find the source action.")
       return
     }
-    if (newStepDraft.kind === "step" && !canAddStepAfterSource(sourceNodeId)) {
-      toast.error("Add a Wait action before adding a Step.")
-      return
-    }
+    if (newStepDraft.kind === "step" && !canAddStepAfterSource(sourceNodeId)) return
 
     const waitValue = Math.max(0, Number.parseInt(newStepDraft.waitValue, 10) || 0)
     if (newStepDraft.kind === "assign" && !newStepDraft.assigneeUserId) {
@@ -2304,9 +2697,9 @@ export function ServiceFollowUpTemplateFlowBuilder({
                   : newStepDraft.kind === "removeUser"
                     ? "Remove user"
                     : newStepDraft.kind === "tagAdd"
-                      ? "Create tag"
+                      ? "Add tag"
                       : newStepDraft.kind === "tagRemove"
-                        ? "Delete tag"
+                        ? "Remove tag"
                         : newStepDraft.kind === "contactFieldUpdate"
                           ? "Update field"
                           : newStepDraft.kind === "statusUpdate"
@@ -2475,6 +2868,11 @@ export function ServiceFollowUpTemplateFlowBuilder({
           newStepDraft.kind === "dateTimeFormatter" &&
           newStepDraft.dateTimeFormatMode === "compareDates"
             ? newStepDraft.dateTimeFormatCompareFieldSource
+            : null,
+        dateTimeCompareUnit:
+          newStepDraft.kind === "dateTimeFormatter" &&
+          newStepDraft.dateTimeFormatMode === "compareDates"
+            ? newStepDraft.dateTimeCompareUnit
             : null,
         goToNodeId: newStepDraft.kind === "goTo" ? newStepDraft.goToNodeId.trim() : null,
         ifElseBranches:
@@ -3294,63 +3692,27 @@ export function ServiceFollowUpTemplateFlowBuilder({
     const sorted = [...nodes].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
     if (!sorted.length) return []
 
-    const ifBranchNodes: CanvasNode[] = sorted.flatMap((node) => {
-      if (node.data.kind !== "ifElse") return []
-      const branches = (node.data.ifElseBranches ?? []).filter((branch) =>
-        branch.isDefault ? true : branch.name.trim().length > 0,
-      )
-      if (!branches.length) return []
-      return branches.map((branch) => {
-        const branchPosition = getIfBranchCanvasPosition(node, branch.id)
-        return {
-        id: getIfBranchCanvasNodeId(node.id, branch.id),
-        type: "stepNode",
-        position: { x: branchPosition.x, y: branchPosition.y },
-        data: {
-          kind: "ifBranch",
-          label: branch.name || "Branch",
-          waitValue: 0,
-          waitUnit: "days",
-          waitDays: 0,
-          notesTemplate: "",
-          assigneeUserId: null,
-          tagName: null,
-          tagNames: [],
-          fieldKey: null,
-          fieldValue: null,
-          statusValue: null,
-          taskTitle: null,
-          sourceNodeId: `ifbranch:${node.id}:${branch.id}`,
-        },
-        selectable: false,
-        draggable: false,
-      }})
-    })
-
-    const baseNodes = [...sorted, ...ifBranchNodes]
+    const ifBranchNodes: CanvasNode[] = []
+    const baseNodes = [...sorted]
     const nodeById = new Map(baseNodes.map((node) => [node.id, node]))
-    const branchConnections: Array<{ sourceId: string; targetId: string }> = sorted.flatMap((node) => {
-      if (node.data.kind !== "ifElse") return []
-      return (node.data.ifElseBranches ?? [])
-        .filter((branch) => Boolean(branch.targetNodeId))
-        .map((branch) => ({
-          sourceId: getIfBranchCanvasNodeId(node.id, branch.id),
-          targetId: branch.targetNodeId as string,
-        }))
-    })
+    const branchConnections: Array<{ sourceId: string; targetId: string }> = []
 
     const betweenConnections = [
       ...edges.map((edge) => ({ sourceId: edge.source, targetId: edge.target })),
       ...branchConnections,
-    ].filter(({ sourceId, targetId }) => sourceId !== targetId)
+    ].filter(
+      ({ sourceId, targetId }) =>
+        sourceId !== targetId &&
+        !["ifElse", "goTo"].includes(nodeById.get(sourceId)?.data.kind ?? ""),
+    )
 
     const betweenActionNodes: CanvasNode[] = betweenConnections
       .map(({ sourceId, targetId }, index) => {
         const sourceNode = nodeById.get(sourceId)
         const targetNode = nodeById.get(targetId)
         if (!sourceNode || !targetNode) return null
-        const sourceWidth = sourceNode.data.kind === "ifBranch" ? IF_BRANCH_NODE_WIDTH : STEP_NODE_WIDTH
-        const targetWidth = targetNode.data.kind === "ifBranch" ? IF_BRANCH_NODE_WIDTH : STEP_NODE_WIDTH
+        const sourceWidth = STEP_NODE_WIDTH
+        const targetWidth = STEP_NODE_WIDTH
         const sourceCenterX = sourceNode.position.x + sourceWidth / 2
         const targetCenterX = targetNode.position.x + targetWidth / 2
         const sourceBottomY = sourceNode.position.y + 84
@@ -3376,11 +3738,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
             fieldValue: null,
             statusValue: null,
             taskTitle: null,
-            sourceNodeId: pendingMoveNodeId
-              ? null
-              : sourceNode.data.kind === "ifBranch" && sourceNode.data.sourceNodeId
-                ? sourceNode.data.sourceNodeId.replace("ifbranch:", "ifedge:") + `:${targetId}`
-                : `edge:${sourceId}:${targetId}`,
+            sourceNodeId: pendingMoveNodeId ? undefined : `edge:${sourceId}:${targetId}`,
             insertTargetNodeId: targetId,
             moveTargetNodeId: pendingMoveNodeId ? targetId : undefined,
           },
@@ -3400,15 +3758,6 @@ export function ServiceFollowUpTemplateFlowBuilder({
 
     sorted.forEach((node) => {
       if (node.data.kind === "ifElse") {
-        ;(node.data.ifElseBranches ?? []).forEach((branch) => {
-          if (branch.targetNodeId) return
-          const branchPosition = getIfBranchCanvasPosition(node, branch.id)
-          leafSources.push({
-            sourceNodeId: `ifbranch:${node.id}:${branch.id}`,
-            addX: branchPosition.x + (IF_BRANCH_NODE_WIDTH - ADD_NODE_WIDTH) / 2,
-            addY: branchPosition.y + NODE_VERTICAL_STEP,
-          })
-        })
         return
       }
       if (node.data.kind === "goTo") return
@@ -3445,12 +3794,19 @@ export function ServiceFollowUpTemplateFlowBuilder({
           draggable: false,
         }))
 
-    const endNodes: CanvasNode[] = addNodes.map((addNode, index) => ({
-          id: `node-end-${index + 1}`,
+    const sharedEndNode: CanvasNode | null = addNodes.length
+      ? {
+          id: "node-end-shared",
           type: "stepNode",
           position: {
-            x: addNode.position.x + (ADD_NODE_WIDTH - END_NODE_WIDTH) / 2,
-            y: addNode.position.y + 52,
+            x:
+              addNodes.reduce(
+                (total, addNode) => total + addNode.position.x + ADD_NODE_WIDTH / 2,
+                0,
+              ) /
+                addNodes.length -
+              END_NODE_WIDTH / 2,
+            y: Math.max(...addNodes.map((addNode) => addNode.position.y)) + 72,
           },
           data: {
             kind: "end",
@@ -3469,9 +3825,16 @@ export function ServiceFollowUpTemplateFlowBuilder({
           },
           selectable: false,
           draggable: false,
-        }))
+        }
+      : null
 
-    return [...sorted, ...ifBranchNodes, ...betweenActionNodes, ...addNodes, ...endNodes].map((node) => {
+    return [
+      ...sorted,
+      ...ifBranchNodes,
+      ...betweenActionNodes,
+      ...addNodes,
+      ...(sharedEndNode ? [sharedEndNode] : []),
+    ].map((node) => {
       const allowMenu =
         node.data.kind !== "start" &&
         node.data.kind !== "add" &&
@@ -3482,7 +3845,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
       return {
         ...node,
         type: "stepNode",
-        data: allowMenu
+        data: {
+          ...(allowMenu
           ? {
               ...node.data,
               actionNodeId: node.id,
@@ -3490,56 +3854,52 @@ export function ServiceFollowUpTemplateFlowBuilder({
               onMoveAction: startMoveAction,
               onDeleteAction: deleteAction,
             }
-          : node.data,
+          : node.data),
+          hasValidationIssue: validationIssues.some((issue) => issue.nodeId === node.id),
+          routeOutcomes:
+            node.data.kind === "ifElse"
+              ? (node.data.ifElseBranches ?? []).map((branch) => ({
+                  id: branch.id,
+                  name: branch.name || (branch.isDefault ? "Default" : "Outcome"),
+                  targetName:
+                    sorted.find((candidate) => candidate.id === branch.targetNodeId)?.data.label ||
+                    "Select a later step",
+                }))
+              : node.data.kind === "goTo"
+                ? [{
+                    id: node.id,
+                    name: "Continue",
+                    targetName:
+                      sorted.find((candidate) => candidate.id === node.data.goToNodeId)?.data.label ||
+                      "Select a later step",
+                  }]
+              : undefined,
+        },
       }
     })
-  }, [deleteAction, edges, nodes, openActionEditor, pendingMoveNodeId, startMoveAction])
+  }, [deleteAction, edges, nodes, openActionEditor, pendingMoveNodeId, startMoveAction, validationIssues])
 
   const canvasEdges = useMemo(() => {
     const sorted = [...nodes].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
     if (!sorted.length) return []
 
     const baseEdges = edges.map((edge) => ({ ...edge, type: "smoothstep" as const }))
-    const branchEdges: Edge[] = []
+    const routeSpineEdges: Edge[] = []
     const goToEdges: Edge[] = []
 
     sorted.forEach((node) => {
       if (node.data.kind !== "ifElse") return
-      const branches = (node.data.ifElseBranches ?? []).filter((branch) =>
-        branch.isDefault ? true : branch.name.trim().length > 0,
+      if (baseEdges.some((edge) => edge.source === node.id)) return
+      const nextStep = sorted.find(
+        (candidate) => candidate.data.kind === "step" && candidate.position.y > node.position.y,
       )
-      if (!branches.length) return
-
-      branches.forEach((branch) => {
-        const branchNodeId = getIfBranchCanvasNodeId(node.id, branch.id)
-        branchEdges.push({
-          id: `edge-${node.id}-${branchNodeId}`,
-          source: node.id,
-          target: branchNodeId,
-          type: "smoothstep",
-          label: branch.name || "Branch",
-        })
-        if (branch.targetNodeId) {
-          branchEdges.push({
-            id: `edge-${branchNodeId}-${branch.targetNodeId}`,
-            source: branchNodeId,
-            target: branch.targetNodeId,
-            type: "smoothstep",
-          })
-        }
-      })
-    })
-
-    const nodeIds = new Set(sorted.map((node) => node.id))
-    sorted.forEach((node) => {
-      if (node.data.kind !== "goTo") return
-      const targetId = node.data.goToNodeId?.trim()
-      if (!targetId || targetId === node.id || !nodeIds.has(targetId)) return
-      goToEdges.push({
-        id: `edge-goto-${node.id}-${targetId}`,
+      if (!nextStep) return
+      routeSpineEdges.push({
+        id: `edge-spine-${node.id}-${nextStep.id}`,
         source: node.id,
-        target: targetId,
+        target: nextStep.id,
         type: "smoothstep",
+        animated: true,
       })
     })
 
@@ -3551,10 +3911,6 @@ export function ServiceFollowUpTemplateFlowBuilder({
     const leafEdgeSources: string[] = []
     sorted.forEach((node) => {
       if (node.data.kind === "ifElse") {
-        ;(node.data.ifElseBranches ?? []).forEach((branch) => {
-          if (branch.targetNodeId) return
-          leafEdgeSources.push(getIfBranchCanvasNodeId(node.id, branch.id))
-        })
         return
       }
       if (node.data.kind === "goTo") return
@@ -3570,15 +3926,15 @@ export function ServiceFollowUpTemplateFlowBuilder({
         type: "smoothstep" as const,
       },
       {
-        id: `edge-node-add-${index + 1}-node-end-${index + 1}`,
+        id: `edge-node-add-${index + 1}-node-end-shared`,
         source: `node-add-${index + 1}`,
-        target: `node-end-${index + 1}`,
+        target: "node-end-shared",
         type: "smoothstep" as const,
       },
     ])
 
-    return [...baseEdges, ...branchEdges, ...goToEdges, ...addEdges]
-  }, [edges, nodes, pendingMoveNodeId])
+    return [...baseEdges, ...routeSpineEdges, ...goToEdges, ...addEdges]
+  }, [edges, nodes])
 
   const onSave = async () => {
     if (!name.trim()) {
@@ -3591,6 +3947,9 @@ export function ServiceFollowUpTemplateFlowBuilder({
       return
     }
 
+    // Drafts intentionally remain saveable while actions are being configured.
+    // The publish endpoint performs the authoritative graph/configuration check.
+    if (false) {
     const mathFieldValueTypeById = new Map<MathFieldKey, MathFieldValueType>(
       allMathFields.map(
         (field) => [`${field.source}:${field.key}` as MathFieldKey, field.valueType] as const,
@@ -3612,8 +3971,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
             node.data.mathResultFieldSource ?? "contact"
           }:${node.data.mathResultFieldKey}` as MathFieldKey)
         : null
-      const sourceValueType = sourceId ? mathFieldValueTypeById.get(sourceId) : undefined
-      const targetValueType = targetId ? mathFieldValueTypeById.get(targetId) : undefined
+      const sourceValueType = sourceId ? mathFieldValueTypeById.get(sourceId as MathFieldKey) : undefined
+      const targetValueType = targetId ? mathFieldValueTypeById.get(targetId as MathFieldKey) : undefined
 
       if (!sourceValueType || !targetValueType) {
         toast.error("Math operation must include valid source and update fields.")
@@ -3644,7 +4003,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
             node.data.dateTimeFormatSourceFieldSource ?? "contact"
           }:${node.data.dateTimeFormatSourceFieldKey}` as MathFieldKey)
         : null
-      if (!sourceId || !dateFieldKeySet.has(sourceId)) {
+      if (!sourceId || !dateFieldKeySet.has(sourceId as MathFieldKey)) {
         toast.error("Date/Time formatter must use a valid date field.")
         return
       }
@@ -3652,7 +4011,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
       const mode = node.data.dateTimeFormatMode ?? "dateTime"
       if (mode !== "compareDates") {
         const allowedFormatValues = new Set(getDateTimeFormatOptions(mode).map((option) => option.value))
-        if (!node.data.dateTimeFormatPattern || !allowedFormatValues.has(node.data.dateTimeFormatPattern)) {
+        if (!node.data.dateTimeFormatPattern || !allowedFormatValues.has(node.data.dateTimeFormatPattern as string)) {
           toast.error("Date/Time formatter must include a valid format option.")
           return
         }
@@ -3663,7 +4022,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
               node.data.dateTimeFormatCompareFieldSource ?? "contact"
             }:${node.data.dateTimeFormatCompareFieldKey}` as MathFieldKey)
           : null
-        if (!compareId || !dateFieldKeySet.has(compareId)) {
+        if (!compareId || !dateFieldKeySet.has(compareId as MathFieldKey)) {
           toast.error("Compare dates requires a valid compare date field.")
           return
         }
@@ -3719,7 +4078,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
           toast.error("Format phone number action requires a valid phone format option.")
           return
         }
-        if (!node.data.numberFormatterCountryCode || !/^\+\d{1,4}$/.test(node.data.numberFormatterCountryCode.trim())) {
+        if (!/^\+\d{1,4}$/.test((node.data.numberFormatterCountryCode ?? "").trim())) {
           toast.error("Format phone number action requires a valid country code, for example +1.")
           return
         }
@@ -3776,6 +4135,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
           return
         }
       }
+    }
+
     }
 
     setIsSaving(true)
@@ -3837,10 +4198,10 @@ export function ServiceFollowUpTemplateFlowBuilder({
         `/api/account-settings/${tenantId}/services/${serviceId}/follow-up-templates/${template.id}`,
         {
           name: name.trim(),
-          isPublished,
           flowNodes: nodes,
           flowEdges: edges,
           steps,
+          draftDefinition: toWorkflowDefinitionV3(nodes, edges, steps),
         },
       )
 
@@ -3857,6 +4218,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
       }
 
       shouldBypassUnsavedPromptRef.current = false
+      setValidationIssues([])
       toast.success("Template saved.")
       router.refresh()
     } catch (error) {
@@ -3877,22 +4239,32 @@ export function ServiceFollowUpTemplateFlowBuilder({
 
   const onTogglePublished = async () => {
     const nextPublished = !isPublished
-    setIsPublished(nextPublished)
+    if (nextPublished && hasUnsavedChanges) {
+      toast.error("Save the draft before publishing it.")
+      return
+    }
     setIsPublishSaving(true)
 
     try {
-      await api.patch(
-        `/api/account-settings/${tenantId}/services/${serviceId}/follow-up-templates/${template.id}`,
-        {
-          isPublished: nextPublished,
-        },
+      await api.post(
+        `/api/account-settings/${tenantId}/services/${serviceId}/follow-up-templates/${template.id}/${nextPublished ? "publish" : "unpublish"}`,
       )
+      setIsPublished(nextPublished)
+      setValidationIssues([])
       toast.success(nextPublished ? "Template published." : "Template moved to draft.")
       router.refresh()
     } catch (error) {
-      setIsPublished((prev) => !prev)
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
+        const backendIssues = error.response?.data?.issues
+        if (Array.isArray(backendIssues)) {
+          setValidationIssues(
+            backendIssues.filter(
+              (issue): issue is WorkflowValidationIssue =>
+                Boolean(issue && typeof issue === "object" && typeof issue.code === "string" && typeof issue.message === "string"),
+            ),
+          )
+        }
         toast.error(
           typeof backendError === "string"
             ? backendError.replace(/_/g, " ")
@@ -4195,6 +4567,14 @@ export function ServiceFollowUpTemplateFlowBuilder({
             >
               {hasUnsavedChanges ? "Unsaved changes" : "Saved"}
             </Badge>
+            {template.activeVersion ? (
+              <Badge variant="outline">Version {template.activeVersion.versionNumber}</Badge>
+            ) : null}
+            {template.needsRepair ? (
+              <Badge className="border border-red-200 bg-red-50 text-red-800 hover:bg-red-50">
+                Needs repair
+              </Badge>
+            ) : null}
             <Button
               type="button"
               variant="outline"
@@ -4226,6 +4606,21 @@ export function ServiceFollowUpTemplateFlowBuilder({
             </Button>
           </div>
         </div>
+        {validationIssues.length ? (
+          <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+            <p className="font-semibold">This draft cannot be published yet.</p>
+            <ul className="mt-1 list-disc space-y-1 pl-5">
+              {validationIssues.slice(0, 6).map((issue, index) => (
+                <li key={`${issue.code}-${issue.nodeId ?? issue.branchId ?? index}`}>
+                  {issue.message}
+                </li>
+              ))}
+            </ul>
+            {validationIssues.length > 6 ? (
+              <p className="mt-1 text-xs">And {validationIssues.length - 6} more issue(s).</p>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       <div className="flex items-center gap-2 px-1">
@@ -4372,7 +4767,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                               }`}
                               onClick={() => {
                                 if (isStepBlocked) {
-                                  toast.error("Add a Wait action before adding a Step.")
+                                  toast.error("Choose where to insert this step first.")
                                   return
                                 }
                                 setNewStepDraft(makeDefaultDraft(kind))
@@ -4384,7 +4779,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                               <p className="text-sm font-medium">{NODE_KIND_LABEL[kind]}</p>
                               <p className="text-xs">
                                 {isStepBlocked
-                                  ? "Requires a Wait action directly before this Step."
+                                  ? "Choose a valid insertion point."
                                   : NODE_KIND_DESCRIPTION[kind]}
                               </p>
                             </button>
@@ -4402,7 +4797,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                             type="button"
                             className="w-full cursor-pointer rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-slate-300 hover:bg-slate-50"
                             onClick={() => {
-                              setNewStepDraft(makeDefaultDraft(kind))
+                              setNewStepDraft(makeDraftForSource(kind, createSourceNodeId))
                               setIsContactInfoSectionOpen(false)
                               setIsCustomFieldsSectionOpen(false)
                               setCreatePanelView("form")
@@ -4531,6 +4926,17 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                 <p className="text-xs text-slate-500">
                                   Fallback when no branch criteria is met.
                                 </p>
+                                <BranchDestinationSelect
+                                  branch={branch}
+                                  nodes={nodes}
+                                  currentNodeId={resolveCreateSourceNode(createSourceNodeId)?.id}
+                                  onChange={(targetNodeId) =>
+                                    upsertDraftIfElseBranch(branch.id, (current) => ({
+                                      ...current,
+                                      targetNodeId,
+                                    }))
+                                  }
+                                />
                               </div>
                             ) : (
                               <div
@@ -4565,6 +4971,23 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                     Remove
                                   </Button>
                                 </div>
+                                <AdditionalBranchConditions
+                                  branch={branch}
+                                  onChange={(nextBranch) =>
+                                    upsertDraftIfElseBranch(branch.id, () => nextBranch)
+                                  }
+                                />
+                                <BranchDestinationSelect
+                                  branch={branch}
+                                  nodes={nodes}
+                                  currentNodeId={resolveCreateSourceNode(createSourceNodeId)?.id}
+                                  onChange={(targetNodeId) =>
+                                    upsertDraftIfElseBranch(branch.id, (current) => ({
+                                      ...current,
+                                      targetNodeId,
+                                    }))
+                                  }
+                                />
                                 <div className="grid grid-cols-1 gap-2">
                                   <Select
                                     value={branch.source}
@@ -4574,6 +4997,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                         const nextValueType =
                                           nextSource === "dateTime"
                                             ? "dateTime"
+                                            : nextSource === "variable"
+                                              ? "string"
                                             : nextSource === "contactInfo"
                                               ? CONTACT_INFO_FIELD_VALUE_TYPE[current.fieldKey] ?? "string"
                                               : toIfElseValueTypeFromCustomFieldType(
@@ -4604,10 +5029,25 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                       <SelectItem value="customField" className="cursor-pointer">
                                         Contact custom field
                                       </SelectItem>
+                                      <SelectItem value="variable" className="cursor-pointer">
+                                        Workflow variable
+                                      </SelectItem>
                                     </SelectContent>
                                   </Select>
                                   {branch.source === "dateTime" ? (
                                     <Input value="Current Date/Time" disabled />
+                                  ) : branch.source === "variable" ? (
+                                    <Input
+                                      placeholder="Output name, for example formatted_amount"
+                                      value={branch.fieldKey}
+                                      onChange={(event) =>
+                                        upsertDraftIfElseBranch(branch.id, (current) => ({
+                                          ...current,
+                                          fieldKey: event.target.value,
+                                          valueType: "string",
+                                        }))
+                                      }
+                                    />
                                   ) : branch.source === "contactInfo" ? (
                                     <Select
                                       value={branch.fieldKey}
@@ -4616,7 +5056,9 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                           const nextValueType =
                                             CONTACT_INFO_FIELD_VALUE_TYPE[value] ?? "string"
                                           const nextOperators =
-                                            getOperatorsForValueType(nextValueType)
+                                            value === "ssn"
+                                              ? (["is_not_empty", "is_empty"] as IfElseOperator[])
+                                              : getOperatorsForValueType(nextValueType)
                                           return {
                                             ...current,
                                             fieldKey: value,
@@ -4692,7 +5134,13 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                       <SelectValue placeholder="Select operator" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      {getOperatorsForValueType(branch.valueType).map((operator) => (
+                                      {getOperatorsForValueType(branch.valueType)
+                                        .filter((operator) =>
+                                          branch.source === "contactInfo" && branch.fieldKey === "ssn"
+                                            ? operator === "is_empty" || operator === "is_not_empty"
+                                            : true,
+                                        )
+                                        .map((operator) => (
                                         <SelectItem
                                           key={operator}
                                           value={operator}
@@ -5308,13 +5756,30 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                   ))}
                               </SelectContent>
                             </Select>
+                            <Label>Difference unit</Label>
+                            <Select
+                              value={newStepDraft.dateTimeCompareUnit}
+                              onValueChange={(value) =>
+                                setNewStepDraft((prev) => ({
+                                  ...prev,
+                                  dateTimeCompareUnit: value as DateComparisonUnit,
+                                }))
+                              }
+                            >
+                              <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="days">Days</SelectItem>
+                                <SelectItem value="months">Months</SelectItem>
+                                <SelectItem value="years">Years</SelectItem>
+                              </SelectContent>
+                            </Select>
                           </div>
                         ) : null}
                       </>
                     ) : null}
                     {newStepDraft.kind === "goTo" ? (
                       <div className="grid gap-2">
-                        <Label>Go to action</Label>
+                        <Label>Go to later step</Label>
                         <Select
                           value={newStepDraft.goToNodeId}
                           onValueChange={(value) =>
@@ -5325,11 +5790,17 @@ export function ServiceFollowUpTemplateFlowBuilder({
                           }
                         >
                           <SelectTrigger className="h-9 bg-white">
-                            <SelectValue placeholder="Select destination action" />
+                            <SelectValue placeholder="Select destination step" />
                           </SelectTrigger>
                           <SelectContent>
                             {orderedNodes
-                              .filter((node) => node.data.kind !== "start")
+                              .filter(
+                                (node) =>
+                                  node.data.kind === "step" &&
+                                  node.position.y >
+                                    (resolveCreateSourceNode(createSourceNodeId)?.position.y ??
+                                      Number.NEGATIVE_INFINITY),
+                              )
                               .map((node, index) => (
                                 <SelectItem key={node.id} value={node.id} className="cursor-pointer">
                                   {node.data.label?.trim() || `Step ${index + 1}`}
@@ -5933,6 +6404,26 @@ export function ServiceFollowUpTemplateFlowBuilder({
                   {selectedNode ? (
                     <div className="grid gap-3">
                       <p className="text-sm font-semibold text-slate-900">Selected Action</p>
+                      {selectedNode.data.kind === "mathOperation" ||
+                      selectedNode.data.kind === "numberFormatter" ||
+                      selectedNode.data.kind === "dateTimeFormatter" ? (
+                        <div className="grid gap-2 rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+                          <Label>Workflow output name</Label>
+                          <Input
+                            value={selectedNode.data.outputKey ?? toWorkflowOutputKey(selectedNode)}
+                            onChange={(event) =>
+                              updateSelectedNode((data) => ({
+                                ...data,
+                                outputKey: event.target.value,
+                              }))
+                            }
+                            placeholder="formatted_amount"
+                          />
+                          <p className="text-xs text-slate-500">
+                            Reference it later as {`{{variables.${selectedNode.data.outputKey ?? toWorkflowOutputKey(selectedNode)}}}`}.
+                          </p>
+                        </div>
+                      ) : null}
                       {selectedNode.data.kind === "start" ? (
                         <p className="text-sm text-slate-600">
                           Start step uses the template name and cannot be deleted.
@@ -6056,6 +6547,19 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                     <p className="text-xs text-slate-500">
                                       Fallback when no branch criteria is met.
                                     </p>
+                                    <BranchDestinationSelect
+                                      branch={branch}
+                                      nodes={nodes}
+                                      currentNodeId={selectedNode.id}
+                                      onChange={(targetNodeId) =>
+                                        updateSelectedNode((data) => ({
+                                          ...data,
+                                          ifElseBranches: (data.ifElseBranches ?? []).map((item) =>
+                                            item.id === branch.id ? { ...item, targetNodeId } : item,
+                                          ),
+                                        }))
+                                      }
+                                    />
                                   </div>
                                 ) : (
                                   <div
@@ -6094,6 +6598,30 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                         Remove
                                       </Button>
                                     </div>
+                                    <AdditionalBranchConditions
+                                      branch={branch}
+                                      onChange={(nextBranch) =>
+                                        updateSelectedNode((data) => ({
+                                          ...data,
+                                          ifElseBranches: (data.ifElseBranches ?? []).map((item) =>
+                                            item.id === branch.id ? nextBranch : item,
+                                          ),
+                                        }))
+                                      }
+                                    />
+                                    <BranchDestinationSelect
+                                      branch={branch}
+                                      nodes={nodes}
+                                      currentNodeId={selectedNode.id}
+                                      onChange={(targetNodeId) =>
+                                        updateSelectedNode((data) => ({
+                                          ...data,
+                                          ifElseBranches: (data.ifElseBranches ?? []).map((item) =>
+                                            item.id === branch.id ? { ...item, targetNodeId } : item,
+                                          ),
+                                        }))
+                                      }
+                                    />
                                     <Select
                                       value={branch.source}
                                       onValueChange={(value) =>
@@ -6105,6 +6633,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                             const nextValueType =
                                               nextSource === "dateTime"
                                                 ? "dateTime"
+                                                : nextSource === "variable"
+                                                  ? "string"
                                                 : nextSource === "contactInfo"
                                                   ? CONTACT_INFO_FIELD_VALUE_TYPE[item.fieldKey] ?? "string"
                                                   : toIfElseValueTypeFromCustomFieldType(
@@ -6135,10 +6665,28 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                         <SelectItem value="customField" className="cursor-pointer">
                                           Contact custom field
                                         </SelectItem>
+                                        <SelectItem value="variable" className="cursor-pointer">
+                                          Workflow variable
+                                        </SelectItem>
                                       </SelectContent>
                                     </Select>
                                     {branch.source === "dateTime" ? (
                                       <Input value="Current Date/Time" disabled />
+                                    ) : branch.source === "variable" ? (
+                                      <Input
+                                        placeholder="Output name, for example formatted_amount"
+                                        value={branch.fieldKey}
+                                        onChange={(event) =>
+                                          updateSelectedNode((data) => ({
+                                            ...data,
+                                            ifElseBranches: (data.ifElseBranches ?? []).map((item) =>
+                                              item.id === branch.id
+                                                ? { ...item, fieldKey: event.target.value, valueType: "string" }
+                                                : item,
+                                            ),
+                                          }))
+                                        }
+                                      />
                                     ) : branch.source === "contactInfo" ? (
                                       <Select
                                         value={branch.fieldKey}
@@ -6152,10 +6700,11 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                                     fieldKey: value,
                                                     valueType:
                                                       CONTACT_INFO_FIELD_VALUE_TYPE[value] ?? "string",
-                                                    operator:
-                                                      getOperatorsForValueType(
-                                                        CONTACT_INFO_FIELD_VALUE_TYPE[value] ?? "string",
-                                                      )[0],
+                                                    operator: value === "ssn"
+                                                      ? "is_not_empty"
+                                                      : getOperatorsForValueType(
+                                                          CONTACT_INFO_FIELD_VALUE_TYPE[value] ?? "string",
+                                                        )[0],
                                                     compareValue: "",
                                                   }
                                                 : item,
@@ -6233,7 +6782,13 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                         <SelectValue placeholder="Select operator" />
                                       </SelectTrigger>
                                       <SelectContent>
-                                        {getOperatorsForValueType(branch.valueType).map((operator) => (
+                                        {getOperatorsForValueType(branch.valueType)
+                                          .filter((operator) =>
+                                            branch.source === "contactInfo" && branch.fieldKey === "ssn"
+                                              ? operator === "is_empty" || operator === "is_not_empty"
+                                              : true,
+                                          )
+                                          .map((operator) => (
                                           <SelectItem
                                             key={operator}
                                             value={operator}
@@ -6915,6 +7470,23 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                     ))}
                                 </SelectContent>
                               </Select>
+                              <Label>Difference unit</Label>
+                              <Select
+                                value={selectedNode.data.dateTimeCompareUnit ?? "days"}
+                                onValueChange={(value) =>
+                                  updateSelectedNode((data) => ({
+                                    ...data,
+                                    dateTimeCompareUnit: value as DateComparisonUnit,
+                                  }))
+                                }
+                              >
+                                <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="days">Days</SelectItem>
+                                  <SelectItem value="months">Months</SelectItem>
+                                  <SelectItem value="years">Years</SelectItem>
+                                </SelectContent>
+                              </Select>
                             </div>
                           ) : null}
                         </>
@@ -6930,7 +7502,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                             />
                           </div>
                           <div className="grid gap-2">
-                            <Label>Go to action</Label>
+                            <Label>Go to later step</Label>
                             <Select
                               value={selectedNode.data.goToNodeId ?? ""}
                               onValueChange={(value) =>
@@ -6941,14 +7513,15 @@ export function ServiceFollowUpTemplateFlowBuilder({
                               }
                             >
                               <SelectTrigger className="h-9 bg-white">
-                                <SelectValue placeholder="Select destination action" />
+                                <SelectValue placeholder="Select destination step" />
                               </SelectTrigger>
                               <SelectContent>
                                 {orderedNodes
                                   .filter(
                                     (node) =>
                                       node.id !== selectedNode.id &&
-                                      node.data.kind !== "start",
+                                      node.data.kind === "step" &&
+                                      node.position.y > selectedNode.position.y,
                                   )
                                   .map((node, index) => (
                                     <SelectItem

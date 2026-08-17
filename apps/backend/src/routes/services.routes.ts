@@ -17,6 +17,13 @@ import {
   executeFollowUpFromStep,
   syncContactServiceActiveStep,
 } from "../lib/service-followup-execution.js"
+import {
+  continueFollowUpRunFromStepTx,
+  createFollowUpRunTx,
+  executeFollowUpRun,
+  postponeFollowUpRunStepTx,
+  retryFailedFollowUpRun,
+} from "../lib/service-followup-v2-execution.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
@@ -1804,6 +1811,20 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
               name: true,
             },
           },
+          followUpTemplateVersion: {
+            select: { id: true, versionNumber: true },
+          },
+          followUpRun: {
+            select: {
+              id: true,
+              status: true,
+              resumeAt: true,
+              failureNodeId: true,
+              failureCode: true,
+              failureMessage: true,
+              failedAt: true,
+            },
+          },
           followUpSteps: {
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: {
@@ -1813,6 +1834,8 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
               availableAt: true,
               dueAt: true,
               completedAt: true,
+              resolutionSource: true,
+              resolutionReason: true,
               assignedToUserId: true,
               note: true,
               sortOrder: true,
@@ -1947,6 +1970,8 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
           serviceName: service.service.name,
           followUpTemplateId: service.followUpTemplate?.id ?? null,
           followUpTemplateName: service.followUpTemplate?.name ?? null,
+          followUpTemplateVersion: service.followUpTemplateVersion ?? null,
+          followUpRun: service.followUpRun ?? null,
           currentStep: currentStep
             ? {
                 id: currentStep.id,
@@ -1955,6 +1980,8 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
                 availableAt: currentStep.availableAt,
                 dueAt: currentStep.dueAt,
                 completedAt: currentStep.completedAt,
+                resolutionSource: currentStep.resolutionSource ?? null,
+                resolutionReason: currentStep.resolutionReason ?? null,
                 assignedToUserId: currentStep.assignedToUserId,
                 assignedToName:
                   currentStep.assignedTo?.name?.trim() || currentStep.assignedTo?.email || null,
@@ -2480,10 +2507,16 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
             select: { id: true },
           },
           followUpTemplates: {
-            where: { isPublished: true },
+            where: { isPublished: true, activeVersionId: { not: null } },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: {
               id: true,
+              activeVersion: {
+                select: {
+                  id: true,
+                  definition: true,
+                },
+              },
               steps: {
                 orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
                 select: {
@@ -2528,7 +2561,11 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       selectedPublishedTemplate?.steps?.length
         ? selectedPublishedTemplate.steps
         : service.followUpTemplateSteps
-    if (payload.followUpTemplateId && !templateStepsForEnrollment.length) {
+    if (
+      payload.followUpTemplateId &&
+      !selectedPublishedTemplate?.activeVersion &&
+      !templateStepsForEnrollment.length
+    ) {
       return res.status(400).json({ error: "FOLLOW_UP_TEMPLATE_HAS_NO_STEPS" })
     }
 
@@ -2591,6 +2628,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           contactId: payload.contactId,
           serviceId: payload.serviceId,
           followUpTemplateId: selectedPublishedTemplate?.id ?? null,
+          followUpTemplateVersionId: selectedPublishedTemplate?.activeVersion?.id ?? null,
           assignedProfessionalId: selectedAssignedProfessional?.id ?? null,
           status: "IN_PROGRESS",
           startedAt,
@@ -2629,7 +2667,18 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         })
       }
 
-      if (templateStepsForEnrollment.length) {
+      let followUpRunId: string | null = null
+      if (selectedPublishedTemplate?.activeVersion) {
+        const run = await createFollowUpRunTx({
+          prismaTx,
+          tenantId,
+          contactServiceId: contactService.id,
+          templateVersion: selectedPublishedTemplate.activeVersion,
+          startedByUserId: authed.user.id,
+          assignedToUserId: payload.followUpAssignedToUserId ?? null,
+        })
+        followUpRunId = run.id
+      } else if (templateStepsForEnrollment.length) {
         await prismaTx.contactServiceFollowUpStep.createMany({
           data: templateStepsForEnrollment.map((step: any, index: number) => {
             const dueAt = new Date(startedAt)
@@ -2651,7 +2700,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         })
       }
 
-      if (selectedPublishedTemplate?.id) {
+      if (selectedPublishedTemplate?.id && !selectedPublishedTemplate.activeVersion) {
         await executeFollowUpFromStart({
           prismaTx,
           tenantId,
@@ -2668,12 +2717,19 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         authed.user.id,
       )
 
-      return contactService
+      return { contactService, followUpRunId }
     })
+
+    if (created.followUpRunId) {
+      await executeFollowUpRun({
+        runId: created.followUpRunId,
+        actorUserId: authed.user.id,
+      })
+    }
 
     return res.status(201).json({
       ok: true,
-      contactService: created,
+      contactService: created.contactService,
     })
   } catch (error) {
     return next(error)
@@ -2767,6 +2823,20 @@ router.get(
                 name: true,
               },
             },
+            followUpTemplateVersion: {
+              select: { id: true, versionNumber: true },
+            },
+            followUpRun: {
+              select: {
+                id: true,
+                status: true,
+                resumeAt: true,
+                failureNodeId: true,
+                failureCode: true,
+                failureMessage: true,
+                failedAt: true,
+              },
+            },
             payments: {
               select: {
                 amountCents: true,
@@ -2784,6 +2854,8 @@ router.get(
                 availableAt: true,
                 dueAt: true,
                 completedAt: true,
+                resolutionSource: true,
+                resolutionReason: true,
                 assignedToUserId: true,
                 assignedTo: {
                   select: {
@@ -3092,6 +3164,20 @@ router.get(
                 name: true,
               },
             },
+            followUpTemplateVersion: {
+              select: { id: true, versionNumber: true },
+            },
+            followUpRun: {
+              select: {
+                id: true,
+                status: true,
+                resumeAt: true,
+                failureNodeId: true,
+                failureCode: true,
+                failureMessage: true,
+                failedAt: true,
+              },
+            },
             payments: {
               select: {
                 id: true,
@@ -3179,6 +3265,8 @@ router.get(
                 availableAt: true,
                 dueAt: true,
                 completedAt: true,
+                resolutionSource: true,
+                resolutionReason: true,
                 assignedToUserId: true,
                 assignedTo: {
                   select: {
@@ -3506,7 +3594,6 @@ router.post(
       if (!contactService) {
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
-
       const existingPayments = await prismaWithServices.contactServicePayment.findMany({
         where: {
           tenantId,
@@ -4041,6 +4128,8 @@ router.patch(
           availableAt: true,
           sortOrder: true,
           templateNodeId: true,
+          runId: true,
+          resolutionSource: true,
         },
       })
 
@@ -4048,6 +4137,32 @@ router.patch(
         return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
       }
       const isReopenAction = payload.action === "REOPEN"
+
+      if (existing.runId && !isReopenAction) {
+        const run = await prismaWithServices.contactServiceFollowUpRun.findUnique({
+          where: { id: existing.runId },
+          select: { activeStepId: true, cursorNodeId: true, status: true },
+        })
+        const isCurrentStep =
+          run?.activeStepId === existing.id ||
+          (run?.activeStepId === null &&
+            run.cursorNodeId === existing.templateNodeId &&
+            ["AWAITING_STEP", "WAITING"].includes(run.status))
+        if (!isCurrentStep || existing.status !== "ACTIVE") {
+          return res.status(409).json({ error: "FOLLOW_UP_STEP_NOT_CURRENT" })
+        }
+        if (payload.status === "PENDING" || payload.status === "ACTIVE") {
+          return res.status(400).json({ error: "INVALID_FOLLOW_UP_STEP_TRANSITION" })
+        }
+      }
+
+      if (
+        isReopenAction &&
+        (existing.resolutionSource === "CONDITION_SKIPPED" ||
+          existing.resolutionSource === "FLOW_SKIPPED")
+      ) {
+        return res.status(409).json({ error: "AUTO_SKIPPED_STEP_CANNOT_REOPEN" })
+      }
 
       if (isReopenAction && !["COMPLETED", "SKIPPED", "POSTPONED"].includes(existing.status)) {
         return res.status(409).json({ error: "STEP_REOPEN_NOT_ALLOWED" })
@@ -4111,6 +4226,7 @@ router.patch(
       }
 
       let updated: any
+      let v2RunToAdvanceId: string | null = null
       await prisma.$transaction(async (tx) => {
         const prismaTx = tx as any
 
@@ -4140,6 +4256,18 @@ router.patch(
           })
         }
 
+        if (!isReopenAction && statusUpdate.status === "ACTIVE") {
+          await prismaTx.contactServiceFollowUpStep.updateMany({
+            where: {
+              tenantId,
+              contactServiceId,
+              id: { not: followUpStepId },
+              status: "ACTIVE",
+            },
+            data: { status: "PENDING" },
+          })
+        }
+
         updated = await prismaTx.contactServiceFollowUpStep.update({
           where: {
             id: followUpStepId,
@@ -4155,6 +4283,13 @@ router.patch(
                 }
               : {}),
             ...statusUpdate,
+            ...(isReopenAction
+              ? { resolutionSource: null, resolutionReason: null }
+              : payload.status === "SKIPPED"
+                ? { resolutionSource: "USER_SKIPPED" as const, resolutionReason: null }
+                : payload.status === "COMPLETED" || Boolean(payload.completedAt)
+                  ? { resolutionSource: "USER_COMPLETED" as const, resolutionReason: null }
+                  : {}),
             ...(payload.availableAt !== undefined
               ? { availableAt: payload.availableAt ? new Date(payload.availableAt) : null }
               : {}),
@@ -4187,6 +4322,9 @@ router.patch(
             note: true,
             sortOrder: true,
             templateNodeId: true,
+            runId: true,
+            resolutionSource: true,
+            resolutionReason: true,
           },
         })
 
@@ -4244,6 +4382,22 @@ router.patch(
           })
         }
 
+        if (isReopenAction && existing.runId) {
+          await prismaTx.contactServiceFollowUpRun.update({
+            where: { id: existing.runId },
+            data: {
+              status: "AWAITING_STEP",
+              cursorNodeId: existing.templateNodeId,
+              activeStepId: followUpStepId,
+              resumeAt: null,
+              failureNodeId: null,
+              failureCode: null,
+              failureMessage: null,
+              failedAt: null,
+            },
+          })
+        }
+
         if (postponeToDate && existing.dueAt) {
           const shiftMs = postponeToDate.getTime() - existing.dueAt.getTime()
           const shouldCascade = payload.cascadeFutureSteps !== false
@@ -4280,25 +4434,43 @@ router.patch(
           }
         }
 
+        if (existing.runId && postponeToDate && existing.templateNodeId) {
+          await postponeFollowUpRunStepTx({
+            prismaTx,
+            runId: existing.runId,
+            stepNodeId: existing.templateNodeId,
+            resumeAt: postponeToDate,
+          })
+        }
+
         if (
           existing.status === "ACTIVE" &&
           (updated.status === "COMPLETED" || updated.status === "SKIPPED")
         ) {
-          await executeFollowUpFromStep({
-            prismaTx,
-            tenantId,
-            contactServiceId,
-            completedStepId: followUpStepId,
-            completedStepSortOrder: existing.sortOrder,
-            completedStepTemplateNodeId: existing.templateNodeId,
-            actorUserId: authed.user.id,
-            ignoreWaitNodes: false,
-          })
-          await syncContactServiceActiveStep({
-            prismaTx,
-            tenantId,
-            contactServiceId,
-          })
+          if (existing.runId && existing.templateNodeId) {
+            await continueFollowUpRunFromStepTx({
+              prismaTx,
+              runId: existing.runId,
+              stepNodeId: existing.templateNodeId,
+            })
+            v2RunToAdvanceId = existing.runId
+          } else {
+            await executeFollowUpFromStep({
+              prismaTx,
+              tenantId,
+              contactServiceId,
+              completedStepId: followUpStepId,
+              completedStepSortOrder: existing.sortOrder,
+              completedStepTemplateNodeId: existing.templateNodeId,
+              actorUserId: authed.user.id,
+              ignoreWaitNodes: false,
+            })
+            await syncContactServiceActiveStep({
+              prismaTx,
+              tenantId,
+              contactServiceId,
+            })
+          }
         }
 
         if (
@@ -4315,6 +4487,13 @@ router.patch(
           )
         }
       })
+
+      if (v2RunToAdvanceId) {
+        await executeFollowUpRun({
+          runId: v2RunToAdvanceId,
+          actorUserId: authed.user.id,
+        })
+      }
 
       return res.json({
         ok: true,
@@ -4363,11 +4542,15 @@ router.post(
         },
         select: {
           id: true,
+          followUpRun: { select: { id: true } },
         },
       })
 
       if (!contactService) {
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+      if (contactService.followUpRun) {
+        return res.status(409).json({ error: "VERSIONED_FOLLOW_UP_STEPS_IMMUTABLE" })
       }
 
       const maxSortOrder = await prismaWithServices.contactServiceFollowUpStep.findFirst({
@@ -4388,6 +4571,9 @@ router.post(
       })
 
       const nextStatus = payload.status ?? (hasActiveStep ? "PENDING" : "ACTIVE")
+      if (nextStatus === "ACTIVE" && hasActiveStep) {
+        return res.status(409).json({ error: "FOLLOW_UP_ALREADY_HAS_ACTIVE_STEP" })
+      }
       const nextDueAt = payload.dueAt ? new Date(payload.dueAt) : null
       const nextAvailableAt =
         payload.availableAt !== undefined
@@ -4436,6 +4622,37 @@ router.post(
         ok: true,
         followUpStep: created,
       })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.post(
+  "/:tenantId/contact-services/:contactServiceId/follow-up-run/retry",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+      if (membership.role !== "TENANT_ADMIN") {
+        return res.status(403).json({ error: "TENANT_ADMIN_REQUIRED" })
+      }
+      const run = await prismaWithServices.contactServiceFollowUpRun.findFirst({
+        where: { tenantId, contactServiceId },
+        select: { id: true, status: true },
+      })
+      if (!run) return res.status(404).json({ error: "FOLLOW_UP_RUN_NOT_FOUND" })
+      if (run.status !== "FAILED") {
+        return res.status(409).json({ error: "FOLLOW_UP_RUN_NOT_RETRYABLE" })
+      }
+      const result = await retryFailedFollowUpRun({ runId: run.id, actorUserId: authed.user.id })
+      if (result.status === "NOT_RETRYABLE") {
+        return res.status(409).json({ error: "FOLLOW_UP_RUN_NOT_RETRYABLE" })
+      }
+      return res.json({ ok: result.status !== "FAILED", run: result })
     } catch (error) {
       return next(error)
     }

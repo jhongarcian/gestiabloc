@@ -128,6 +128,19 @@ type ContactServiceDetails = {
     id: string
     name: string
   } | null
+  followUpTemplateVersion?: {
+    id: string
+    versionNumber: number
+  } | null
+  followUpRun?: {
+    id: string
+    status: "RUNNING" | "WAITING" | "AWAITING_STEP" | "COMPLETED" | "FAILED" | "NEEDS_REVIEW" | "CANCELED"
+    resumeAt: string | null
+    failureNodeId: string | null
+    failureCode: string | null
+    failureMessage: string | null
+    failedAt: string | null
+  } | null
   assignedProfessional?: {
     id: string
     kind: "INTERNAL_USER" | "EXTERNAL"
@@ -148,6 +161,8 @@ type ContactServiceDetails = {
     availableAt: string | null
     dueAt: string | null
     completedAt: string | null
+    resolutionSource?: "USER_COMPLETED" | "USER_SKIPPED" | "CONDITION_SKIPPED" | "FLOW_SKIPPED" | null
+    resolutionReason?: string | null
     assignedToUserId: string | null
     assignedTo?: {
       id: string
@@ -2405,6 +2420,19 @@ export function ContactServiceDetailsPanel({
                   </Badge>
                 </div>
               </div>
+              {item.followUpRun?.status === "FAILED" || item.followUpRun?.status === "NEEDS_REVIEW" ? (
+                <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+                  <p className="font-semibold">
+                    {item.followUpRun.status === "FAILED"
+                      ? "Workflow paused after an automation error"
+                      : "Workflow needs administrator review"}
+                  </p>
+                  <p className="mt-1 text-xs text-rose-700">
+                    {item.followUpRun.failureMessage ??
+                      "The existing steps were preserved and new automation is paused."}
+                  </p>
+                </div>
+              ) : null}
               {followUpSteps.length ? (
                 <div className="space-y-4">
                   <div className="h-1.5 overflow-hidden rounded-full bg-slate-200">
@@ -2419,15 +2447,19 @@ export function ContactServiceDetailsPanel({
                       const timeMeta = getStepTimeMeta(step)
                       const isActive = currentStatus === "ACTIVE"
                       const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"
+                      const isAutoSkipped =
+                        step.resolutionSource === "CONDITION_SKIPPED" ||
+                        step.resolutionSource === "FLOW_SKIPPED"
                       const isOverdue = timeMeta.label === "Overdue" && !isDone
                       const showStatusBadge = currentStatus !== "ACTIVE"
                       const showTimeBadge = currentStatus === "PENDING" || currentStatus === "ACTIVE"
                       const canChangeStatus =
                         currentStatus === "ACTIVE" || currentStatus === "PENDING"
                       const canReopen =
-                        currentStatus === "COMPLETED" ||
-                        currentStatus === "SKIPPED" ||
-                        currentStatus === "POSTPONED"
+                        !isAutoSkipped &&
+                        (currentStatus === "COMPLETED" ||
+                          currentStatus === "SKIPPED" ||
+                          currentStatus === "POSTPONED")
 
                       return (
                         <div key={step.id} className="flex gap-3">
@@ -2437,6 +2469,8 @@ export function ContactServiceDetailsPanel({
                                 "inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold",
                                 isOverdue
                                   ? "border-rose-200 bg-rose-50 text-rose-700"
+                                  : isAutoSkipped
+                                    ? "border-rose-200 bg-rose-100 text-rose-800"
                                   : isDone
                                   ? "border-emerald-200 bg-emerald-100 text-emerald-800"
                                   : isActive
@@ -2455,6 +2489,8 @@ export function ContactServiceDetailsPanel({
                               "flex-1 rounded-[22px] border px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]",
                               isOverdue
                                 ? "border-rose-200 bg-rose-50/40"
+                                : isAutoSkipped
+                                  ? "border-rose-200 bg-rose-50/60"
                                 : isDone
                                 ? "border-emerald-200 bg-emerald-50/50"
                                 : isActive
@@ -2479,6 +2515,11 @@ export function ContactServiceDetailsPanel({
                                         Current step
                                       </Badge>
                                     ) : null}
+                                    {isAutoSkipped ? (
+                                      <Badge className="bg-rose-100 text-rose-800 hover:bg-rose-100">
+                                        Skipped by workflow
+                                      </Badge>
+                                    ) : null}
                                   </div>
                                   <div className="min-w-0 space-y-1.5">
                                     <button
@@ -2496,6 +2537,11 @@ export function ContactServiceDetailsPanel({
                                   <p className="max-w-3xl text-sm leading-6 text-slate-600">
                                     {step.notesTemplate?.trim() || "No description provided for this step."}
                                   </p>
+                                  {step.resolutionReason ? (
+                                    <p className="max-w-3xl text-xs font-medium text-rose-700">
+                                      {step.resolutionReason}
+                                    </p>
+                                  ) : null}
                                 </div>
                                 <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:shrink-0 xl:self-start">
                                   {canChangeStatus ? (
