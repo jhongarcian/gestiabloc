@@ -4610,6 +4610,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-run/next-follow-up:
+    patch:
+      tags: [Services]
+      summary: Reschedule the current user-scheduled workflow Wait
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nextFollowUpAt]
+              properties:
+                nextFollowUpAt:
+                  type: string
+                  format: date-time
+      responses:
+        "200":
+          description: Next follow-up rescheduled
+        "409":
+          description: The run is not at a reschedulable user-scheduled Wait or is already resuming
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: The selected date is invalid or not in the future
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-steps:
     post:
       tags: [Services]
@@ -7592,7 +7631,10 @@ components:
                       type: string
                       enum: [wait, mathOperation, numberFormatter, dateTimeFormatter, reminder, assign, removeUser, tagAdd, tagRemove, contactFieldUpdate, statusUpdate, addNote, addTask]
                     label: { type: string }
-                    data: { type: object, additionalProperties: true }
+                    data:
+                      type: object
+                      additionalProperties: true
+                      description: Wait actions use waitMode DURATION (the default when omitted) with waitValue/waitUnit, or USER_SCHEDULED with a non-empty prompt.
               route:
                 oneOf:
                   - type: object
@@ -8231,6 +8273,14 @@ components:
           nullable: true
         sortOrder:
           type: integer
+        completionRequirement:
+          type: object
+          nullable: true
+          properties:
+            type: { type: string, enum: [NEXT_FOLLOW_UP_AT] }
+            actionId: { type: string }
+            prompt: { type: string }
+            timezone: { type: string }
     ContactServiceListItem:
       type: object
       properties:
@@ -8333,6 +8383,17 @@ components:
           type: string
           format: date-time
           nullable: true
+        waitingNodeId:
+          type: string
+          nullable: true
+        manualWait:
+          type: object
+          nullable: true
+          properties:
+            actionId: { type: string }
+            prompt: { type: string }
+            scheduledFor: { type: string, format: date-time }
+            canReschedule: { type: boolean }
         failureNodeId:
           type: string
           nullable: true
@@ -8798,6 +8859,10 @@ components:
           type: string
           format: date-time
           nullable: true
+        nextFollowUpAt:
+          type: string
+          format: date-time
+          description: Required when completing the current step if its V3 transition contains a USER_SCHEDULED Wait.
         assignedToUserId:
           type: string
           nullable: true
