@@ -851,6 +851,7 @@ model ContactServiceFollowUpRun {
   cursorNodeId      String?
   activeStepId      String?
   resumeAt          DateTime?
+  waitingNodeId     String?
   variables         Json?
   branchDecisions   Json?
   leaseToken        String?
@@ -885,6 +886,7 @@ model ServiceFollowUpNodeExecution {
   nodeId       String
   status       FollowUpNodeExecutionStatus @default(RUNNING)
   attemptCount Int                         @default(1)
+  input        Json?
   output       Json?
   errorCode    String?
   errorMessage String?
