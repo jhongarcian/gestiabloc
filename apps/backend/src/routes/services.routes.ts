@@ -22,8 +22,14 @@ import {
   createFollowUpRunTx,
   executeFollowUpRun,
   postponeFollowUpRunStepTx,
+  resetUserScheduledWaitForStepTx,
   retryFailedFollowUpRun,
+  stageUserScheduledWaitInputTx,
 } from "../lib/service-followup-v2-execution.js"
+import {
+  getUserScheduledWaitByActionId,
+  getUserScheduledWaitForStep,
+} from "../lib/service-followup-v3-definition.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
@@ -508,11 +514,16 @@ const UpdateFollowUpStepSchema = z.object({
   availableAt: z.string().datetime().nullable().optional(),
   dueAt: z.string().datetime().nullable().optional(),
   postponeTo: z.string().datetime().optional(),
+  nextFollowUpAt: z.string().datetime({ offset: true }).optional(),
   cascadeFutureSteps: z.boolean().optional(),
   completedAt: z.string().datetime().nullable().optional(),
   assignedToUserId: z.string().trim().min(1).nullable().optional(),
   note: z.string().trim().max(2000).nullable().optional(),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+})
+
+const RescheduleNextFollowUpSchema = z.object({
+  nextFollowUpAt: z.string().datetime({ offset: true }),
 })
 
 const CreateFollowUpStepSchema = z.object({
@@ -568,6 +579,54 @@ const DEFAULT_TIMEZONE = "America/Chicago"
 
 function getSafeTimezone(timezone?: string | null) {
   return timezone?.trim() || DEFAULT_TIMEZONE
+}
+
+function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
+  const definition = item.followUpTemplateVersion?.definition
+  const followUpSteps = (item.followUpSteps ?? []).map((step: any) => {
+    const requirement =
+      step.status === "ACTIVE" && step.templateNodeId
+        ? getUserScheduledWaitForStep(definition, step.templateNodeId)
+        : null
+    return {
+      ...step,
+      completionRequirement: requirement
+        ? {
+            type: "NEXT_FOLLOW_UP_AT" as const,
+            actionId: requirement.actionId,
+            prompt: requirement.prompt,
+            timezone,
+          }
+        : null,
+    }
+  })
+  const waitingAction = item.followUpRun?.waitingNodeId
+    ? getUserScheduledWaitByActionId(definition, item.followUpRun.waitingNodeId)
+    : null
+  return {
+    timezone,
+    followUpSteps,
+    followUpTemplateVersion: item.followUpTemplateVersion
+      ? {
+          id: item.followUpTemplateVersion.id,
+          versionNumber: item.followUpTemplateVersion.versionNumber,
+        }
+      : null,
+    followUpRun: item.followUpRun
+      ? {
+          ...item.followUpRun,
+          manualWait:
+            waitingAction && item.followUpRun.status === "WAITING"
+              ? {
+                  actionId: waitingAction.actionId,
+                  prompt: waitingAction.prompt,
+                  scheduledFor: item.followUpRun.resumeAt,
+                  canReschedule: !item.followUpRun.leaseToken,
+                }
+              : null,
+        }
+      : null,
+  }
 }
 
 function decodeCustomFieldValue(storedValue: {
@@ -2803,6 +2862,7 @@ router.get(
                     taxEnabled: true,
                     taxLabel: true,
                     defaultTaxRateBps: true,
+                    timezone: true,
                   },
                 },
                 checklistItems: {
@@ -2824,13 +2884,15 @@ router.get(
               },
             },
             followUpTemplateVersion: {
-              select: { id: true, versionNumber: true },
+              select: { id: true, versionNumber: true, definition: true },
             },
             followUpRun: {
               select: {
                 id: true,
                 status: true,
                 resumeAt: true,
+                waitingNodeId: true,
+                leaseToken: true,
                 failureNodeId: true,
                 failureCode: true,
                 failureMessage: true,
@@ -2848,6 +2910,7 @@ router.get(
             followUpSteps: {
               select: {
                 id: true,
+                templateNodeId: true,
                 title: true,
                 notesTemplate: true,
                 status: true,
@@ -3006,7 +3069,10 @@ router.get(
                 : null,
           },
           followUpTemplate: item.followUpTemplate,
-          followUpSteps: item.followUpSteps,
+          ...serializeVersionedFollowUpMetadata(
+            item,
+            getSafeTimezone(item.service.tenant.timezone),
+          ),
           checklistItems: item.checklistItems.map((checklistItem: any) => ({
             id: checklistItem.id,
             checklistItemId: checklistItem.checklistItemId,
@@ -3144,6 +3210,7 @@ router.get(
                     taxEnabled: true,
                     taxLabel: true,
                     defaultTaxRateBps: true,
+                    timezone: true,
                   },
                 },
                 checklistItems: {
@@ -3165,13 +3232,15 @@ router.get(
               },
             },
             followUpTemplateVersion: {
-              select: { id: true, versionNumber: true },
+              select: { id: true, versionNumber: true, definition: true },
             },
             followUpRun: {
               select: {
                 id: true,
                 status: true,
                 resumeAt: true,
+                waitingNodeId: true,
+                leaseToken: true,
                 failureNodeId: true,
                 failureCode: true,
                 failureMessage: true,
@@ -3259,6 +3328,7 @@ router.get(
             followUpSteps: {
               select: {
                 id: true,
+                templateNodeId: true,
                 title: true,
                 notesTemplate: true,
                 status: true,
@@ -3443,9 +3513,12 @@ router.get(
                 : null,
           },
           followUpTemplate: item.followUpTemplate,
+          ...serializeVersionedFollowUpMetadata(
+            item,
+            getSafeTimezone(item.service.tenant.timezone),
+          ),
           payments: item.payments,
           serviceNotes: combinedNotes,
-          followUpSteps: item.followUpSteps,
           checklistItems: item.checklistItems.map((checklistItem: any) => ({
             id: checklistItem.id,
             checklistItemId: checklistItem.checklistItemId,
@@ -4137,23 +4210,57 @@ router.patch(
         return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
       }
       const isReopenAction = payload.action === "REOPEN"
+      const versionedRun = existing.runId
+        ? await prismaWithServices.contactServiceFollowUpRun.findUnique({
+            where: { id: existing.runId },
+            include: { templateVersion: { select: { definition: true } } },
+          })
+        : null
+      const userScheduledWait =
+        versionedRun?.templateVersion && existing.templateNodeId
+          ? getUserScheduledWaitForStep(
+              versionedRun.templateVersion.definition,
+              existing.templateNodeId,
+            )
+          : null
+      const isCompleting = payload.status === "COMPLETED" || Boolean(payload.completedAt)
+      const isUserSkipping = payload.status === "SKIPPED"
+      const nextFollowUpDate = payload.nextFollowUpAt
+        ? new Date(payload.nextFollowUpAt)
+        : null
 
       if (existing.runId && !isReopenAction) {
-        const run = await prismaWithServices.contactServiceFollowUpRun.findUnique({
-          where: { id: existing.runId },
-          select: { activeStepId: true, cursorNodeId: true, status: true },
-        })
         const isCurrentStep =
-          run?.activeStepId === existing.id ||
-          (run?.activeStepId === null &&
-            run.cursorNodeId === existing.templateNodeId &&
-            ["AWAITING_STEP", "WAITING"].includes(run.status))
+          versionedRun?.activeStepId === existing.id ||
+          (versionedRun?.activeStepId === null &&
+            versionedRun.cursorNodeId === existing.templateNodeId &&
+            ["AWAITING_STEP", "WAITING"].includes(versionedRun.status))
         if (!isCurrentStep || existing.status !== "ACTIVE") {
           return res.status(409).json({ error: "FOLLOW_UP_STEP_NOT_CURRENT" })
         }
         if (payload.status === "PENDING" || payload.status === "ACTIVE") {
           return res.status(400).json({ error: "INVALID_FOLLOW_UP_STEP_TRANSITION" })
         }
+      }
+
+      if (payload.nextFollowUpAt && (!isCompleting || !userScheduledWait)) {
+        return res.status(400).json({ error: "NEXT_FOLLOW_UP_AT_NOT_ALLOWED" })
+      }
+      if (userScheduledWait && isCompleting && !nextFollowUpDate) {
+        return res.status(422).json({
+          error: "NEXT_FOLLOW_UP_AT_REQUIRED",
+          completionRequirement: {
+            type: "NEXT_FOLLOW_UP_AT",
+            actionId: userScheduledWait.actionId,
+            prompt: userScheduledWait.prompt,
+          },
+        })
+      }
+      if (
+        nextFollowUpDate &&
+        (Number.isNaN(nextFollowUpDate.getTime()) || nextFollowUpDate.getTime() <= Date.now())
+      ) {
+        return res.status(422).json({ error: "INVALID_NEXT_FOLLOW_UP_AT" })
       }
 
       if (
@@ -4231,6 +4338,35 @@ router.patch(
         const prismaTx = tx as any
 
         if (isReopenAction) {
+          if (existing.runId && existing.templateNodeId) {
+            const resetWait = await resetUserScheduledWaitForStepTx({
+              prismaTx,
+              runId: existing.runId,
+              stepNodeId: existing.templateNodeId,
+            })
+            if (resetWait) {
+              const contactServiceForLog = await prismaTx.contactService.findUnique({
+                where: { id: contactServiceId },
+                select: { contactId: true, followUpTemplateId: true },
+              })
+              if (contactServiceForLog?.followUpTemplateId) {
+                await prismaTx.serviceFollowUpExecutionLog.create({
+                  data: {
+                    tenantId,
+                    templateId: contactServiceForLog.followUpTemplateId,
+                    templateVersionId: versionedRun?.templateVersionId ?? null,
+                    contactServiceId,
+                    contactId: contactServiceForLog.contactId,
+                    actorUserId: authed.user.id,
+                    flowNodeId: resetWait.actionId,
+                    stepId: existing.id,
+                    eventType: "MANUAL_WAIT_CANCELED",
+                    title: "Canceled the scheduled next follow-up after reopening its source step.",
+                  },
+                })
+              }
+            }
+          }
           await prismaTx.contactServiceFollowUpStep.updateMany({
             where: {
               tenantId,
@@ -4390,6 +4526,9 @@ router.patch(
               cursorNodeId: existing.templateNodeId,
               activeStepId: followUpStepId,
               resumeAt: null,
+              waitingNodeId: null,
+              leaseToken: null,
+              leaseExpiresAt: null,
               failureNodeId: null,
               failureCode: null,
               failureMessage: null,
@@ -4448,6 +4587,16 @@ router.patch(
           (updated.status === "COMPLETED" || updated.status === "SKIPPED")
         ) {
           if (existing.runId && existing.templateNodeId) {
+            if (userScheduledWait) {
+              await stageUserScheduledWaitInputTx({
+                prismaTx,
+                runId: existing.runId,
+                stepNodeId: existing.templateNodeId,
+                actorUserId: authed.user.id,
+                scheduledFor: nextFollowUpDate,
+                bypassed: isUserSkipping,
+              })
+            }
             await continueFollowUpRunFromStepTx({
               prismaTx,
               runId: existing.runId,
@@ -4622,6 +4771,113 @@ router.post(
         ok: true,
         followUpStep: created,
       })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.patch(
+  "/:tenantId/contact-services/:contactServiceId/follow-up-run/next-follow-up",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+      const payload = RescheduleNextFollowUpSchema.parse(req.body)
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const scheduledFor = new Date(payload.nextFollowUpAt)
+      if (Number.isNaN(scheduledFor.getTime()) || scheduledFor.getTime() <= Date.now()) {
+        return res.status(422).json({ error: "INVALID_NEXT_FOLLOW_UP_AT" })
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const run = await prismaTx.contactServiceFollowUpRun.findFirst({
+          where: { tenantId, contactServiceId },
+          include: {
+            templateVersion: { select: { definition: true, templateId: true } },
+            contactService: { select: { contactId: true, followUpTemplateId: true } },
+          },
+        })
+        if (!run || run.status !== "WAITING" || !run.waitingNodeId) return null
+        const wait = getUserScheduledWaitByActionId(
+          run.templateVersion?.definition,
+          run.waitingNodeId,
+        )
+        if (!wait) return null
+        if (run.leaseToken) return { conflict: "FOLLOW_UP_WAIT_ALREADY_RESUMING" as const }
+
+        const execution = await prismaTx.serviceFollowUpNodeExecution.findUnique({
+          where: { runId_nodeId: { runId: run.id, nodeId: wait.actionId } },
+          select: { input: true },
+        })
+        const previousInput =
+          execution?.input && typeof execution.input === "object" && !Array.isArray(execution.input)
+            ? execution.input
+            : {}
+        const previousScheduledFor = run.resumeAt
+        const updated = await prismaTx.contactServiceFollowUpRun.updateMany({
+          where: {
+            id: run.id,
+            status: "WAITING",
+            waitingNodeId: wait.actionId,
+            leaseToken: null,
+          },
+          data: { resumeAt: scheduledFor },
+        })
+        if (!updated.count) return { conflict: "FOLLOW_UP_WAIT_ALREADY_RESUMING" as const }
+        await prismaTx.serviceFollowUpNodeExecution.update({
+          where: { runId_nodeId: { runId: run.id, nodeId: wait.actionId } },
+          data: {
+            input: {
+              ...previousInput,
+              scheduledFor: scheduledFor.toISOString(),
+              suppliedByUserId: authed.user.id,
+              bypassed: false,
+            },
+            output: { scheduledFor: scheduledFor.toISOString() },
+          },
+        })
+        const templateId = run.contactService.followUpTemplateId ?? run.templateVersion?.templateId
+        if (templateId) {
+          await prismaTx.serviceFollowUpExecutionLog.create({
+            data: {
+              tenantId,
+              templateId,
+              templateVersionId: run.templateVersionId,
+              contactServiceId,
+              contactId: run.contactService.contactId,
+              actorUserId: authed.user.id,
+              flowNodeId: wait.actionId,
+              eventType: "MANUAL_WAIT_RESCHEDULED",
+              title: `Next follow-up rescheduled for ${scheduledFor.toISOString()}`,
+              payload: {
+                previousScheduledFor,
+                scheduledFor,
+              },
+            },
+          })
+        }
+        return {
+          manualWait: {
+            actionId: wait.actionId,
+            prompt: wait.prompt,
+            scheduledFor,
+            canReschedule: true,
+          },
+        }
+      })
+
+      if (!result) {
+        return res.status(409).json({ error: "FOLLOW_UP_RUN_NOT_MANUALLY_WAITING" })
+      }
+      if ("conflict" in result) {
+        return res.status(409).json({ error: result.conflict })
+      }
+      return res.json({ ok: true, ...result })
     } catch (error) {
       return next(error)
     }
