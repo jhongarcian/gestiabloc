@@ -239,10 +239,16 @@ export function validateWorkflowDefinition(value: unknown): WorkflowValidationRe
     const nonEmptyString = (value: unknown) =>
       typeof value === "string" && value.trim().length > 0
     if (node.kind === "wait") {
-      const amount = Number(data.waitValue)
-      if (!Number.isFinite(amount) || amount < 0) configIssue("Wait requires a non-negative duration.")
-      if (!["days", "hours", "minutes"].includes(String(data.waitUnit))) {
-        configIssue("Wait requires days, hours, or minutes.")
+      if (data.waitMode === "USER_SCHEDULED") {
+        if (!nonEmptyString(data.prompt)) {
+          configIssue("User-scheduled Wait requires a prompt.")
+        }
+      } else {
+        const amount = Number(data.waitValue)
+        if (!Number.isFinite(amount) || amount < 0) configIssue("Wait requires a non-negative duration.")
+        if (!["days", "hours", "minutes"].includes(String(data.waitUnit))) {
+          configIssue("Wait requires days, hours, or minutes.")
+        }
       }
     }
     if (node.kind === "assign" && !nonEmptyString(data.assigneeUserId)) {
@@ -614,10 +620,17 @@ export function convertLegacyWorkflowDefinition(
       const nextData = { ...data }
       delete nextData.kind
       if (kind === "wait") {
+        nextData.waitMode = data.waitMode === "USER_SCHEDULED" ? "USER_SCHEDULED" : "DURATION"
         nextData.waitValue =
           typeof data.waitValue === "number" ? data.waitValue : Number(data.waitDays) || 0
         nextData.waitUnit =
           data.waitUnit === "hours" || data.waitUnit === "minutes" ? data.waitUnit : "days"
+        if (nextData.waitMode === "USER_SCHEDULED") {
+          nextData.prompt =
+            typeof data.prompt === "string" && data.prompt.trim()
+              ? data.prompt.trim()
+              : "Select the next follow-up date and time."
+        }
       }
       if (
         kind === "mathOperation" ||

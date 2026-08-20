@@ -51,12 +51,47 @@ export const AUTOMATION_ACTION_KINDS_V3 = FOLLOW_UP_NODE_KINDS.filter(
     !["start", "end", "step", "ifElse", "goTo"].includes(kind),
 )
 
-const AutomationActionV3Schema = z.object({
+export const USER_SCHEDULED_WAIT_DEFAULT_PROMPT = "Select the next follow-up date and time."
+
+const DurationWaitDataV3Schema = z.object({
+  waitMode: z.literal("DURATION"),
+  waitValue: z.coerce.number().min(0).max(525_600),
+  waitUnit: z.enum(["days", "hours", "minutes"]),
+}).passthrough()
+
+const UserScheduledWaitDataV3Schema = z.object({
+  waitMode: z.literal("USER_SCHEDULED"),
+  prompt: z.string().trim().min(1).max(300),
+}).passthrough()
+
+export const WaitActionDataV3Schema = z.preprocess((value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value
+  const data = value as Record<string, unknown>
+  return data.waitMode === undefined ? { ...data, waitMode: "DURATION" } : data
+}, z.discriminatedUnion("waitMode", [DurationWaitDataV3Schema, UserScheduledWaitDataV3Schema]))
+
+const WaitAutomationActionV3Schema = z.object({
   id: z.string().trim().min(1).max(160),
-  kind: z.enum(AUTOMATION_ACTION_KINDS_V3),
+  kind: z.literal("wait"),
+  label: z.string().max(200).default(""),
+  data: WaitActionDataV3Schema,
+})
+
+const NonWaitAutomationActionKindsV3 = AUTOMATION_ACTION_KINDS_V3.filter(
+  (kind): kind is Exclude<(typeof AUTOMATION_ACTION_KINDS_V3)[number], "wait"> => kind !== "wait",
+)
+
+const NonWaitAutomationActionV3Schema = z.object({
+  id: z.string().trim().min(1).max(160),
+  kind: z.enum(NonWaitAutomationActionKindsV3),
   label: z.string().max(200).default(""),
   data: z.record(z.string(), z.unknown()).default({}),
 })
+
+const AutomationActionV3Schema = z.discriminatedUnion("kind", [
+  WaitAutomationActionV3Schema,
+  NonWaitAutomationActionV3Schema,
+])
 
 const NextRouteV3Schema = z.object({ kind: z.literal("NEXT") })
 const GoToRouteV3Schema = z.object({
@@ -247,6 +282,35 @@ export function validateWorkflowDefinitionV3(value: unknown): WorkflowValidation
     transitionByFrom.set(transition.fromId, transition)
     transition.actions.forEach((action) => idIssue(seenIds, action.id, issues, { nodeId: action.id, transitionId: transition.id }))
 
+    const userScheduledWaits = transition.actions.filter(
+      (action) => action.kind === "wait" && action.data.waitMode === "USER_SCHEDULED",
+    )
+    if (userScheduledWaits.length > 1) {
+      userScheduledWaits.forEach((action) => issues.push({
+        code: "USER_SCHEDULED_WAIT_DUPLICATE",
+        nodeId: action.id,
+        transitionId: transition.id,
+        message: "A transition may contain only one user-scheduled Wait.",
+      }))
+    }
+    if (userScheduledWaits.length && transition.fromId === definition.start.id) {
+      userScheduledWaits.forEach((action) => issues.push({
+        code: "USER_SCHEDULED_WAIT_AFTER_START",
+        nodeId: action.id,
+        transitionId: transition.id,
+        message: "A user-scheduled Wait must follow a manual step so the user can provide its date.",
+      }))
+    }
+    if (userScheduledWaits.length && transition.fromId === definition.steps.at(-1)?.id) {
+      userScheduledWaits.forEach((action) => issues.push({
+        code: "USER_SCHEDULED_WAIT_AFTER_FINAL_STEP",
+        nodeId: action.id,
+        stepId: transition.fromId,
+        transitionId: transition.id,
+        message: "The final manual step cannot schedule another follow-up.",
+      }))
+    }
+
     const sourceIndex = transition.fromId === definition.start.id ? -1 : stepIndex.get(transition.fromId)
     if (transition.route.kind === "GO_TO") {
       idIssue(seenIds, transition.route.id, issues, { nodeId: transition.route.id, transitionId: transition.id })
@@ -307,6 +371,45 @@ export function validateWorkflowDefinitionV3(value: unknown): WorkflowValidation
     )
   }
   return issues.length ? { ok: false, definition, issues } : { ok: true, definition, issues: [] }
+}
+
+export function getUserScheduledWaitForStep(
+  definitionValue: unknown,
+  stepNodeId: string,
+) {
+  const parsed = WorkflowDefinitionV3Schema.safeParse(definitionValue)
+  if (!parsed.success) return null
+  const transition = parsed.data.transitions.find((item) => item.fromId === stepNodeId)
+  if (!transition) return null
+  const action = transition.actions.find(
+    (item) => item.kind === "wait" && item.data.waitMode === "USER_SCHEDULED",
+  )
+  if (!action || action.kind !== "wait" || action.data.waitMode !== "USER_SCHEDULED") return null
+  return {
+    actionId: action.id,
+    prompt: action.data.prompt,
+    transitionId: transition.id,
+  }
+}
+
+export function getUserScheduledWaitByActionId(
+  definitionValue: unknown,
+  actionId: string,
+) {
+  const parsed = WorkflowDefinitionV3Schema.safeParse(definitionValue)
+  if (!parsed.success) return null
+  for (const transition of parsed.data.transitions) {
+    const action = transition.actions.find((item) => item.id === actionId)
+    if (action?.kind === "wait" && action.data.waitMode === "USER_SCHEDULED") {
+      return {
+        actionId: action.id,
+        prompt: action.data.prompt,
+        transitionId: transition.id,
+        fromStepId: transition.fromId,
+      }
+    }
+  }
+  return null
 }
 
 export function validateSensitiveCustomFieldConditionsV3(
@@ -421,7 +524,16 @@ export function convertWorkflowDefinitionV2ToV3(
         return null
       }
       claimedActionIds.add(next.id)
-      actions.push({ id: next.id, kind: next.kind, label: next.label, data: next.data })
+      if (next.kind === "wait") {
+        const waitData = WaitActionDataV3Schema.safeParse(next.data)
+        if (!waitData.success) {
+          issues.push(conversionIssue("V2_WAIT_CONFIG_INVALID", "The legacy Wait configuration is invalid.", next.id))
+          return null
+        }
+        actions.push({ id: next.id, kind: "wait", label: next.label, data: waitData.data })
+      } else {
+        actions.push({ id: next.id, kind: next.kind, label: next.label, data: next.data })
+      }
       currentId = next.id
     }
     issues.push(conversionIssue("V2_TRAVERSAL_LIMIT", "The legacy workflow could not be converted safely.", fromNode.id))

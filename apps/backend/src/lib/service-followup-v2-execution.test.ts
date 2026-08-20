@@ -76,3 +76,121 @@ test("branch-exclusive steps exclude the shared join", () => {
 
   assert.deepEqual(branchExclusiveStepNodeIds(definition, "if", "if-left"), ["right"])
 })
+
+test("stages a user-scheduled Wait input before workflow traversal", async () => {
+  process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
+  const { stageUserScheduledWaitInputTx } = await import("./service-followup-v2-execution.js")
+  const scheduledFor = new Date("2030-05-01T15:30:00.000Z")
+  let staged: Record<string, any> | null = null
+  const definition = {
+    schemaVersion: 3,
+    start: { id: "start", label: "Start" },
+    end: { id: "end", label: "End" },
+    steps: [
+      { id: "collect", name: "Collect", dueDaysFromStart: 0 },
+      { id: "submit", name: "Submit", dueDaysFromStart: 1 },
+    ],
+    transitions: [
+      { id: "start-transition", fromId: "start", actions: [], route: { kind: "NEXT" } },
+      {
+        id: "collect-transition",
+        fromId: "collect",
+        actions: [{
+          id: "appointment-wait",
+          kind: "wait",
+          label: "Schedule appointment",
+          data: { waitMode: "USER_SCHEDULED", prompt: "Select the appointment date." },
+        }],
+        route: { kind: "NEXT" },
+      },
+      { id: "submit-transition", fromId: "submit", actions: [], route: { kind: "NEXT" } },
+    ],
+  }
+  const prismaTx = {
+    contactServiceFollowUpRun: {
+      findUnique: async () => ({
+        id: "run-1",
+        tenantId: "tenant-1",
+        templateVersion: { definition },
+      }),
+    },
+    serviceFollowUpNodeExecution: {
+      upsert: async (value: Record<string, any>) => {
+        staged = value
+        return value
+      },
+    },
+  }
+
+  const requirement = await stageUserScheduledWaitInputTx({
+    prismaTx,
+    runId: "run-1",
+    stepNodeId: "collect",
+    actorUserId: "user-1",
+    scheduledFor,
+    bypassed: false,
+  })
+
+  assert.equal(requirement?.actionId, "appointment-wait")
+  assert.equal(staged?.create.input.scheduledFor, scheduledFor.toISOString())
+  assert.equal(staged?.create.input.suppliedByUserId, "user-1")
+  assert.equal(staged?.create.input.bypassed, false)
+  assert.equal(staged?.create.attemptCount, 0)
+})
+
+test("stages a bypass marker without requiring a date when the user skips", async () => {
+  process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
+  const { stageUserScheduledWaitInputTx } = await import("./service-followup-v2-execution.js")
+  let staged: Record<string, any> | null = null
+  const prismaTx = {
+    contactServiceFollowUpRun: {
+      findUnique: async () => ({
+        id: "run-2",
+        tenantId: "tenant-1",
+        templateVersion: {
+          definition: {
+            schemaVersion: 3,
+            start: { id: "start", label: "Start" },
+            end: { id: "end", label: "End" },
+            steps: [
+              { id: "collect", name: "Collect", dueDaysFromStart: 0 },
+              { id: "submit", name: "Submit", dueDaysFromStart: 1 },
+            ],
+            transitions: [
+              { id: "start-transition", fromId: "start", actions: [], route: { kind: "NEXT" } },
+              {
+                id: "collect-transition",
+                fromId: "collect",
+                actions: [{
+                  id: "manual-wait",
+                  kind: "wait",
+                  label: "Wait",
+                  data: { waitMode: "USER_SCHEDULED", prompt: "Choose a date." },
+                }],
+                route: { kind: "NEXT" },
+              },
+              { id: "submit-transition", fromId: "submit", actions: [], route: { kind: "NEXT" } },
+            ],
+          },
+        },
+      }),
+    },
+    serviceFollowUpNodeExecution: {
+      upsert: async (value: Record<string, any>) => {
+        staged = value
+        return value
+      },
+    },
+  }
+
+  await stageUserScheduledWaitInputTx({
+    prismaTx,
+    runId: "run-2",
+    stepNodeId: "collect",
+    actorUserId: "user-2",
+    bypassed: true,
+  })
+
+  assert.equal(staged?.create.input.scheduledFor, null)
+  assert.equal(staged?.create.input.bypassed, true)
+})

@@ -69,6 +69,65 @@ test("V3 accepts a single ordered step spine with a forward conditional skip", (
   assert.equal(validateWorkflowDefinitionV3(linearDefinition()).ok, true)
 })
 
+test("V3 normalizes legacy duration waits without an explicit wait mode", () => {
+  const definition = linearDefinition() as unknown as Record<string, any>
+  definition.transitions[1].actions = [{
+    id: "duration-wait",
+    kind: "wait",
+    label: "Wait",
+    data: { waitValue: 2, waitUnit: "days" },
+  }]
+  const result = validateWorkflowDefinitionV3(definition)
+  assert.equal(result.ok, true)
+  if (!result.definition) return
+  const wait = result.definition.transitions[1].actions[0]
+  assert.equal(wait.kind, "wait")
+  if (wait.kind === "wait") assert.equal(wait.data.waitMode, "DURATION")
+})
+
+test("V3 accepts one user-scheduled wait after a non-final manual step", () => {
+  const definition = linearDefinition()
+  definition.transitions[1].actions = [{
+    id: "appointment-wait",
+    kind: "wait",
+    label: "Schedule appointment",
+    data: {
+      waitMode: "USER_SCHEDULED",
+      prompt: "Select the appointment follow-up date.",
+    },
+  }]
+  assert.equal(validateWorkflowDefinitionV3(definition).ok, true)
+})
+
+test("V3 rejects user-scheduled waits after Start and the final step", () => {
+  const definition = linearDefinition()
+  const action = {
+    id: "manual-wait",
+    kind: "wait" as const,
+    label: "Wait",
+    data: { waitMode: "USER_SCHEDULED" as const, prompt: "Select a date." },
+  }
+  definition.transitions[0].actions = [action]
+  definition.transitions.at(-1)!.actions = [{ ...action, id: "final-manual-wait" }]
+  const result = validateWorkflowDefinitionV3(definition)
+  assert.equal(result.ok, false)
+  assert.ok(result.issues.some((issue) => issue.code === "USER_SCHEDULED_WAIT_AFTER_START"))
+  assert.ok(result.issues.some((issue) => issue.code === "USER_SCHEDULED_WAIT_AFTER_FINAL_STEP"))
+})
+
+test("V3 rejects multiple user-scheduled waits in one transition", () => {
+  const definition = linearDefinition()
+  definition.transitions[1].actions = ["first", "second"].map((id) => ({
+    id,
+    kind: "wait" as const,
+    label: "Wait",
+    data: { waitMode: "USER_SCHEDULED" as const, prompt: "Select a date." },
+  }))
+  const result = validateWorkflowDefinitionV3(definition)
+  assert.equal(result.ok, false)
+  assert.ok(result.issues.some((issue) => issue.code === "USER_SCHEDULED_WAIT_DUPLICATE"))
+})
+
 test("the template request schema accepts a V3 draft definition", () => {
   const parsed = WorkflowDefinitionAnySchema.safeParse(linearDefinition())
   assert.equal(parsed.success, true)

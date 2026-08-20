@@ -92,6 +92,7 @@ type PersistedNodeKind =
   | "addTask"
 type CanvasNodeKind = PersistedNodeKind | "add" | "end" | "ifBranch" | "moveDrop"
 type WaitUnit = "days" | "hours" | "minutes"
+type WaitMode = "DURATION" | "USER_SCHEDULED"
 type ReminderTarget = "all_users" | "specific_user" | "assigned_contact_owner"
 type RemoveTarget = "specific_user" | "all_assigned_users"
 type FieldSource = "contact" | "custom"
@@ -198,6 +199,7 @@ const WAIT_UNIT_TO_MINUTES: Record<WaitUnit, number> = {
 }
 
 const WAIT_UNITS: WaitUnit[] = ["days", "hours", "minutes"]
+const USER_SCHEDULED_WAIT_DEFAULT_PROMPT = "Select the next follow-up date and time."
 const CREATE_NODE_KINDS: Exclude<PersistedNodeKind, "start">[] = [
   "step",
   "wait",
@@ -665,6 +667,8 @@ type StepNodeData = {
   label: string
   waitValue: number
   waitUnit: WaitUnit
+  waitMode?: WaitMode
+  prompt?: string
   waitDays: number
   notesTemplate: string
   assigneeUserId?: string | null
@@ -723,6 +727,8 @@ type CanvasNodeData = {
   label: string
   waitValue: number
   waitUnit: WaitUnit
+  waitMode?: WaitMode
+  prompt?: string
   waitDays: number
   notesTemplate: string
   assigneeUserId?: string | null
@@ -794,6 +800,8 @@ type NewStepDraft = {
   label: string
   waitValue: string
   waitUnit: WaitUnit
+  waitMode: WaitMode
+  prompt: string
   notesTemplate: string
   assigneeUserId: string
   tagName: string
@@ -849,6 +857,8 @@ const makeDefaultDraft = (
   label: "",
   waitValue: "0",
   waitUnit: "days",
+  waitMode: "DURATION",
+  prompt: USER_SCHEDULED_WAIT_DEFAULT_PROMPT,
   notesTemplate: "",
   assigneeUserId: "",
   tagName: "",
@@ -1256,6 +1266,8 @@ function toSafeNodes(raw: unknown[], templateId: string, templateName: string): 
       const waitUnit: WaitUnit = WAIT_UNITS.includes(data.waitUnit as WaitUnit)
         ? (data.waitUnit as WaitUnit)
         : "days"
+      const waitMode: WaitMode =
+        data.waitMode === "USER_SCHEDULED" ? "USER_SCHEDULED" : "DURATION"
       const fallbackWaitValue =
         typeof data.waitDays === "number"
           ? data.waitDays
@@ -1294,6 +1306,11 @@ function toSafeNodes(raw: unknown[], templateId: string, templateName: string): 
             : "New step",
         waitValue,
         waitUnit,
+        waitMode,
+        prompt:
+          typeof data.prompt === "string" && data.prompt.trim()
+            ? data.prompt
+            : USER_SCHEDULED_WAIT_DEFAULT_PROMPT,
         waitDays: waitUnit === "days" ? waitValue : 0,
         notesTemplate: typeof data.notesTemplate === "string" ? data.notesTemplate : "",
         assigneeUserId:
@@ -2459,6 +2476,14 @@ export function ServiceFollowUpTemplateFlowBuilder({
     if (newStepDraft.kind === "step" && !canAddStepAfterSource(sourceNodeId)) return
 
     const waitValue = Math.max(0, Number.parseInt(newStepDraft.waitValue, 10) || 0)
+    if (
+      newStepDraft.kind === "wait" &&
+      newStepDraft.waitMode === "USER_SCHEDULED" &&
+      !newStepDraft.prompt.trim()
+    ) {
+      toast.error("Enter the prompt users will see when scheduling the next follow-up.")
+      return
+    }
     if (newStepDraft.kind === "assign" && !newStepDraft.assigneeUserId) {
       toast.error("Select a user for assignment.")
       return
@@ -2719,6 +2744,11 @@ export function ServiceFollowUpTemplateFlowBuilder({
                               : "Add task"),
         waitValue: newStepDraft.kind === "wait" ? waitValue : 0,
         waitUnit: newStepDraft.kind === "wait" ? newStepDraft.waitUnit : "days",
+        waitMode: newStepDraft.kind === "wait" ? newStepDraft.waitMode : "DURATION",
+        prompt:
+          newStepDraft.kind === "wait" && newStepDraft.waitMode === "USER_SCHEDULED"
+            ? newStepDraft.prompt.trim()
+            : USER_SCHEDULED_WAIT_DEFAULT_PROMPT,
         waitDays: newStepDraft.kind === "wait" && newStepDraft.waitUnit === "days" ? waitValue : 0,
         notesTemplate: newStepDraft.notesTemplate.trim(),
         assigneeUserId:
@@ -4168,6 +4198,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
             const sourceNode = nodesById.get(sourceId)
             const base = calcDueMinutes(sourceId, new Set(seen))
             if (sourceNode?.data.kind === "wait") {
+              if (sourceNode.data.waitMode === "USER_SCHEDULED") return base
               const safeWaitValue = Math.max(0, Number(sourceNode.data.waitValue) || 0)
               const unit = WAIT_UNITS.includes(sourceNode.data.waitUnit)
                 ? sourceNode.data.waitUnit
@@ -4851,35 +4882,63 @@ export function ServiceFollowUpTemplateFlowBuilder({
                       />
                     </div>
                     {newStepDraft.kind === "wait" ? (
-                      <div className="grid gap-2">
-                        <Label>Wait time</Label>
-                        <div className="grid grid-cols-[1fr_120px] gap-2">
-                          <Input
-                            type="number"
-                            min={0}
-                            value={newStepDraft.waitValue}
-                            onChange={(event) =>
-                              setNewStepDraft((prev) => ({
-                                ...prev,
-                                waitValue: event.target.value,
-                              }))
-                            }
-                          />
+                      <div className="grid gap-3">
+                        <div className="grid gap-2">
+                          <Label>Wait mode</Label>
                           <select
-                            value={newStepDraft.waitUnit}
+                            value={newStepDraft.waitMode}
                             onChange={(event) =>
                               setNewStepDraft((prev) => ({
                                 ...prev,
-                                waitUnit: event.target.value as WaitUnit,
+                                waitMode: event.target.value as WaitMode,
                               }))
                             }
                             className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-slate-400"
                           >
-                            <option value="days">Days</option>
-                            <option value="hours">Hours</option>
-                            <option value="minutes">Minutes</option>
+                            <option value="DURATION">Fixed duration</option>
+                            <option value="USER_SCHEDULED">User selects date and time</option>
                           </select>
                         </div>
+                        {newStepDraft.waitMode === "USER_SCHEDULED" ? (
+                          <div className="grid gap-2">
+                            <Label>Scheduling prompt</Label>
+                            <Input
+                              maxLength={300}
+                              value={newStepDraft.prompt}
+                              onChange={(event) =>
+                                setNewStepDraft((prev) => ({ ...prev, prompt: event.target.value }))
+                              }
+                            />
+                            <p className="text-xs text-slate-500">
+                              This is shown when the user completes the current manual step.
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="grid gap-2">
+                            <Label>Wait time</Label>
+                            <div className="grid grid-cols-[1fr_120px] gap-2">
+                              <Input
+                                type="number"
+                                min={0}
+                                value={newStepDraft.waitValue}
+                                onChange={(event) =>
+                                  setNewStepDraft((prev) => ({ ...prev, waitValue: event.target.value }))
+                                }
+                              />
+                              <select
+                                value={newStepDraft.waitUnit}
+                                onChange={(event) =>
+                                  setNewStepDraft((prev) => ({ ...prev, waitUnit: event.target.value as WaitUnit }))
+                                }
+                                className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-slate-400"
+                              >
+                                <option value="days">Days</option>
+                                <option value="hours">Hours</option>
+                                <option value="minutes">Minutes</option>
+                              </select>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ) : null}
                     {newStepDraft.kind === "ifElse" ? (
@@ -6431,43 +6490,76 @@ export function ServiceFollowUpTemplateFlowBuilder({
                       ) : selectedNode.data.kind === "wait" ? (
                         <>
                           <div className="grid gap-2">
-                            <Label>Wait time</Label>
-                            <div className="grid grid-cols-[1fr_120px] gap-2">
+                            <Label>Wait mode</Label>
+                            <select
+                              value={selectedNode.data.waitMode ?? "DURATION"}
+                              onChange={(event) =>
+                                updateSelectedNode((data) => ({
+                                  ...data,
+                                  waitMode: event.target.value as WaitMode,
+                                  prompt: data.prompt || USER_SCHEDULED_WAIT_DEFAULT_PROMPT,
+                                }))
+                              }
+                              className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-slate-400"
+                            >
+                              <option value="DURATION">Fixed duration</option>
+                              <option value="USER_SCHEDULED">User selects date and time</option>
+                            </select>
+                          </div>
+                          {(selectedNode.data.waitMode ?? "DURATION") === "USER_SCHEDULED" ? (
+                            <div className="grid gap-2">
+                              <Label>Scheduling prompt</Label>
                               <Input
-                                type="number"
-                                min={0}
-                                value={selectedNode.data.waitValue}
+                                maxLength={300}
+                                value={selectedNode.data.prompt ?? USER_SCHEDULED_WAIT_DEFAULT_PROMPT}
                                 onChange={(event) =>
-                                  updateSelectedNode((data) => ({
-                                    ...data,
-                                    waitValue: Math.max(0, Number.parseInt(event.target.value, 10) || 0),
-                                    waitDays:
-                                      data.waitUnit === "days"
-                                        ? Math.max(0, Number.parseInt(event.target.value, 10) || 0)
-                                        : 0,
-                                  }))
+                                  updateSelectedNode((data) => ({ ...data, prompt: event.target.value }))
                                 }
                               />
-                              <select
-                                value={selectedNode.data.waitUnit}
-                                onChange={(event) =>
-                                  updateSelectedNode((data) => {
-                                    const nextUnit = event.target.value as WaitUnit
-                                    return {
-                                      ...data,
-                                      waitUnit: nextUnit,
-                                      waitDays: nextUnit === "days" ? data.waitValue : 0,
-                                    }
-                                  })
-                                }
-                                className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-slate-400"
-                              >
-                                <option value="days">Days</option>
-                                <option value="hours">Hours</option>
-                                <option value="minutes">Minutes</option>
-                              </select>
+                              <p className="text-xs text-slate-500">
+                                The user supplies this date when completing the current manual step.
+                              </p>
                             </div>
-                          </div>
+                          ) : (
+                            <div className="grid gap-2">
+                              <Label>Wait time</Label>
+                              <div className="grid grid-cols-[1fr_120px] gap-2">
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  value={selectedNode.data.waitValue}
+                                  onChange={(event) =>
+                                    updateSelectedNode((data) => ({
+                                      ...data,
+                                      waitValue: Math.max(0, Number.parseInt(event.target.value, 10) || 0),
+                                      waitDays:
+                                        data.waitUnit === "days"
+                                          ? Math.max(0, Number.parseInt(event.target.value, 10) || 0)
+                                          : 0,
+                                    }))
+                                  }
+                                />
+                                <select
+                                  value={selectedNode.data.waitUnit}
+                                  onChange={(event) =>
+                                    updateSelectedNode((data) => {
+                                      const nextUnit = event.target.value as WaitUnit
+                                      return {
+                                        ...data,
+                                        waitUnit: nextUnit,
+                                        waitDays: nextUnit === "days" ? data.waitValue : 0,
+                                      }
+                                    })
+                                  }
+                                  className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-slate-400"
+                                >
+                                  <option value="days">Days</option>
+                                  <option value="hours">Hours</option>
+                                  <option value="minutes">Minutes</option>
+                                </select>
+                              </div>
+                            </div>
+                          )}
                         </>
                       ) : selectedNode.data.kind === "ifElse" ? (
                         <>

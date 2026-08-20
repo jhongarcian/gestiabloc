@@ -22,6 +22,8 @@ import {
 } from "./service-followup-runtime.js"
 import {
   WorkflowDefinitionV3Schema,
+  getUserScheduledWaitByActionId,
+  getUserScheduledWaitForStep,
   workflowDefinitionV3ToV2Graph,
 } from "./service-followup-v3-definition.js"
 
@@ -539,6 +541,146 @@ async function loadRuntimeRun(prismaTx: PrismaTx, runId: string) {
   })
 }
 
+export async function stageUserScheduledWaitInputTx(params: {
+  prismaTx: PrismaTx
+  runId: string
+  stepNodeId: string
+  actorUserId: string
+  scheduledFor?: Date | null
+  bypassed: boolean
+}) {
+  const run = await params.prismaTx.contactServiceFollowUpRun.findUnique({
+    where: { id: params.runId },
+    include: { templateVersion: { select: { definition: true } } },
+  })
+  if (!run?.templateVersion) return null
+  const requirement = getUserScheduledWaitForStep(
+    run.templateVersion.definition,
+    params.stepNodeId,
+  )
+  if (!requirement) return null
+  await params.prismaTx.serviceFollowUpNodeExecution.upsert({
+    where: { runId_nodeId: { runId: run.id, nodeId: requirement.actionId } },
+    update: {
+      status: "RUNNING",
+      input: {
+        scheduledFor: params.scheduledFor?.toISOString() ?? null,
+        suppliedByUserId: params.actorUserId,
+        bypassed: params.bypassed,
+        sourceStepNodeId: params.stepNodeId,
+      },
+      output: undefined,
+      errorCode: null,
+      errorMessage: null,
+      completedAt: null,
+    },
+    create: {
+      tenantId: run.tenantId,
+      runId: run.id,
+      nodeId: requirement.actionId,
+      status: "RUNNING",
+      attemptCount: 0,
+      input: {
+        scheduledFor: params.scheduledFor?.toISOString() ?? null,
+        suppliedByUserId: params.actorUserId,
+        bypassed: params.bypassed,
+        sourceStepNodeId: params.stepNodeId,
+      },
+    },
+  })
+  return requirement
+}
+
+export async function resetUserScheduledWaitForStepTx(params: {
+  prismaTx: PrismaTx
+  runId: string
+  stepNodeId: string
+}) {
+  const run = await params.prismaTx.contactServiceFollowUpRun.findUnique({
+    where: { id: params.runId },
+    include: { templateVersion: { select: { definition: true } } },
+  })
+  if (!run?.templateVersion) return null
+  const requirement = getUserScheduledWaitForStep(
+    run.templateVersion.definition,
+    params.stepNodeId,
+  )
+  if (!requirement) return null
+  await params.prismaTx.serviceFollowUpNodeExecution.deleteMany({
+    where: { runId: run.id, nodeId: requirement.actionId },
+  })
+  return requirement
+}
+
+async function scheduledActivationAtForRun(params: {
+  prismaTx: PrismaTx
+  run: any
+  targetStep: any
+}) {
+  const { prismaTx, run, targetStep } = params
+  if (!run.waitingNodeId) return null
+  const wait = getUserScheduledWaitByActionId(
+    run.templateVersion.definition,
+    run.waitingNodeId,
+  )
+  if (!wait) return null
+  const execution = await prismaTx.serviceFollowUpNodeExecution.findUnique({
+    where: { runId_nodeId: { runId: run.id, nodeId: wait.actionId } },
+    select: { input: true },
+  })
+  const input = recordValue(execution?.input)
+  const scheduledAt = comparableDate(input.scheduledFor)
+  if (!scheduledAt) return null
+
+  const parsedV3 = WorkflowDefinitionV3Schema.safeParse(run.templateVersion.definition)
+  const targetDefinition = parsedV3.success
+    ? parsedV3.data.steps.find((step) => step.id === targetStep.templateNodeId)
+    : null
+  const dueDaysByStepId = new Map(
+    parsedV3.success
+      ? parsedV3.data.steps.map((step) => [step.id, step.dueDaysFromStart])
+      : [],
+  )
+  const baseline = targetStep.dueAt ?? targetStep.availableAt
+  const shiftMs = baseline ? scheduledAt.getTime() - baseline.getTime() : null
+  const futureSteps = await prismaTx.contactServiceFollowUpStep.findMany({
+    where: {
+      tenantId: run.tenantId,
+      runId: run.id,
+      sortOrder: { gt: targetStep.sortOrder },
+      status: "PENDING",
+    },
+    select: {
+      id: true,
+      templateNodeId: true,
+      dueAt: true,
+      availableAt: true,
+    },
+  })
+  for (const futureStep of futureSteps) {
+    const relativeDays = Math.max(
+      0,
+      (dueDaysByStepId.get(futureStep.templateNodeId ?? "") ?? targetDefinition?.dueDaysFromStart ?? 0) -
+        (targetDefinition?.dueDaysFromStart ?? 0),
+    )
+    const fallback = new Date(scheduledAt.getTime() + relativeDays * WAIT_UNIT_TO_MS.days)
+    await prismaTx.contactServiceFollowUpStep.update({
+      where: { id: futureStep.id },
+      data: {
+        dueAt:
+          shiftMs !== null && futureStep.dueAt
+            ? new Date(futureStep.dueAt.getTime() + shiftMs)
+            : fallback,
+        availableAt:
+          shiftMs !== null && futureStep.availableAt
+            ? new Date(futureStep.availableAt.getTime() + shiftMs)
+            : fallback,
+      },
+    })
+  }
+  return scheduledAt
+}
+
 export async function advanceFollowUpRunTx(params: {
   prismaTx: PrismaTx
   runId: string
@@ -637,6 +779,7 @@ export async function advanceFollowUpRunTx(params: {
           cursorNodeId: node.id,
           activeStepId: null,
           resumeAt: null,
+          waitingNodeId: null,
           completedAt: new Date(),
           leaseToken: null,
           leaseExpiresAt: null,
@@ -662,9 +805,18 @@ export async function advanceFollowUpRunTx(params: {
         where: { tenantId: run.tenantId, runId: run.id, id: { not: step.id }, status: "ACTIVE" },
         data: { status: "PENDING" },
       })
+      const scheduledActivationAt = await scheduledActivationAtForRun({
+        prismaTx,
+        run,
+        targetStep: step,
+      })
       await prismaTx.contactServiceFollowUpStep.update({
         where: { id: step.id },
-        data: { status: "ACTIVE", availableAt: new Date(), dueAt: step.dueAt ?? new Date() },
+        data: {
+          status: "ACTIVE",
+          availableAt: scheduledActivationAt ?? new Date(),
+          dueAt: scheduledActivationAt ?? step.dueAt ?? new Date(),
+        },
       })
       await prismaTx.serviceFollowUpNodeExecution.update({
         where: { runId_nodeId: { runId: run.id, nodeId: node.id } },
@@ -677,6 +829,7 @@ export async function advanceFollowUpRunTx(params: {
           cursorNodeId: node.id,
           activeStepId: step.id,
           resumeAt: null,
+          waitingNodeId: null,
           leaseToken: null,
           leaseExpiresAt: null,
           variables,
@@ -689,6 +842,86 @@ export async function advanceFollowUpRunTx(params: {
 
     if (node.kind === "wait") {
       const data = recordValue(node.data)
+      if (data.waitMode === "USER_SCHEDULED") {
+        const input = recordValue(existingExecution?.input)
+        const nextNodeId = onlyTarget(definition, node.id)
+        if (input.bypassed === true) {
+          await prismaTx.serviceFollowUpNodeExecution.update({
+            where: { runId_nodeId: { runId: run.id, nodeId: node.id } },
+            data: {
+              status: "SUCCEEDED",
+              completedAt: new Date(),
+              output: { bypassed: true },
+            },
+          })
+          await logRunEvent({
+            prismaTx,
+            run,
+            actorUserId,
+            nodeId: node.id,
+            eventType: "MANUAL_WAIT_BYPASSED",
+            title: "User-skipped step bypassed the scheduled follow-up wait.",
+          })
+          cursor = nextNodeId
+          continue
+        }
+        const scheduledFor = comparableDate(input.scheduledFor)
+        if (!scheduledFor) {
+          throw new FollowUpExecutionError(
+            "NEXT_FOLLOW_UP_AT_REQUIRED",
+            "This Wait requires a user-supplied next follow-up date and time.",
+            node.id,
+          )
+        }
+        await prismaTx.serviceFollowUpNodeExecution.update({
+          where: { runId_nodeId: { runId: run.id, nodeId: node.id } },
+          data: {
+            status: "SUCCEEDED",
+            completedAt: new Date(),
+            output: { scheduledFor: scheduledFor.toISOString() },
+          },
+        })
+        if (scheduledFor.getTime() <= Date.now()) {
+          run.waitingNodeId = node.id
+          run.resumeAt = scheduledFor
+          await prismaTx.contactServiceFollowUpRun.update({
+            where: { id: run.id },
+            data: {
+              cursorNodeId: nextNodeId,
+              resumeAt: scheduledFor,
+              waitingNodeId: node.id,
+              variables,
+              branchDecisions,
+            },
+          })
+          cursor = nextNodeId
+          continue
+        }
+        await prismaTx.contactServiceFollowUpRun.update({
+          where: { id: run.id },
+          data: {
+            status: "WAITING",
+            cursorNodeId: nextNodeId,
+            resumeAt: scheduledFor,
+            waitingNodeId: node.id,
+            activeStepId: null,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            variables,
+            branchDecisions,
+          },
+        })
+        await logRunEvent({
+          prismaTx,
+          run,
+          actorUserId,
+          nodeId: node.id,
+          eventType: "MANUAL_WAIT_SCHEDULED",
+          title: `Next follow-up scheduled for ${scheduledFor.toISOString()}`,
+          payload: { scheduledFor },
+        })
+        return { status: "WAITING" as const, resumeAt: scheduledFor }
+      }
       const amount = Math.max(0, Number(data.waitValue) || 0)
       const unit = data.waitUnit === "hours" || data.waitUnit === "minutes" ? data.waitUnit : "days"
       const delayMs = amount * WAIT_UNIT_TO_MS[unit]
@@ -708,6 +941,7 @@ export async function advanceFollowUpRunTx(params: {
           status: "WAITING",
           cursorNodeId: nextNodeId,
           resumeAt,
+          waitingNodeId: node.id,
           activeStepId: null,
           leaseToken: null,
           leaseExpiresAt: null,
@@ -1016,6 +1250,7 @@ export async function continueFollowUpRunFromStepTx(params: {
       status: "RUNNING",
       cursorNodeId: nextNodeId,
       resumeAt: null,
+      waitingNodeId: null,
       leaseToken: null,
       leaseExpiresAt: null,
     },
@@ -1040,6 +1275,7 @@ export async function postponeFollowUpRunStepTx(params: {
       cursorNodeId: params.stepNodeId,
       activeStepId: step?.id ?? null,
       resumeAt: params.resumeAt,
+      waitingNodeId: null,
       leaseToken: null,
       leaseExpiresAt: null,
     },
