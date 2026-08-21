@@ -134,6 +134,7 @@ export default async function ContactDetailsLayout({
     percentage: number
     currentStepTitle: string | null
     currentStepDueAt: string | null
+    currentStepIsScheduled: boolean
     isOverdue: boolean
     collaborators: StackedAvatarGroupItem[]
   }> = []
@@ -230,8 +231,20 @@ export default async function ContactDetailsLayout({
               total,
               percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
               currentStepTitle: currentStep?.title ?? null,
-              currentStepDueAt: currentStep?.dueAt ?? null,
-              isOverdue: isPastDue(currentStep?.dueAt ?? null),
+              currentStepDueAt:
+                service.nextFollowUp?.at ??
+                currentStep?.effectiveDueAt ??
+                currentStep?.dueAt ??
+                currentStep?.availableAt ??
+                null,
+              currentStepIsScheduled: Boolean(service.nextFollowUp?.projected),
+              isOverdue: isPastDue(
+                service.nextFollowUp?.at ??
+                  currentStep?.effectiveDueAt ??
+                  currentStep?.dueAt ??
+                  currentStep?.availableAt ??
+                  null,
+              ),
               collaborators,
             }
           : null
@@ -578,7 +591,9 @@ export default async function ContactDetailsLayout({
                         {service.currentStepDueAt
                           ? service.isOverdue
                             ? `Past due ${formatShortDate(service.currentStepDueAt)}`
-                            : `Due ${formatShortDate(service.currentStepDueAt)}`
+                            : service.currentStepIsScheduled
+                              ? `Scheduled ${formatShortDate(service.currentStepDueAt)}`
+                              : `Due ${formatShortDate(service.currentStepDueAt)}`
                           : "No due date"}
                       </span>
                     </div>

@@ -130,6 +130,17 @@ function comparableDate(value: unknown) {
   return null
 }
 
+export function userScheduledActivationDatesFromInput(value: unknown) {
+  const input = recordValue(value)
+  const scheduledAt = comparableDate(input.scheduledFor)
+  if (!scheduledAt) return null
+  const continuedEarlyAt = comparableDate(input.continuedEarlyAt)
+  return {
+    availableAt: continuedEarlyAt ?? scheduledAt,
+    dueAt: scheduledAt,
+  }
+}
+
 type RuntimeCustomField = {
   id: string
   key: string
@@ -612,7 +623,7 @@ export async function resetUserScheduledWaitForStepTx(params: {
   return requirement
 }
 
-async function scheduledActivationAtForRun(params: {
+async function scheduledActivationDatesForRun(params: {
   prismaTx: PrismaTx
   run: any
   targetStep: any
@@ -628,9 +639,9 @@ async function scheduledActivationAtForRun(params: {
     where: { runId_nodeId: { runId: run.id, nodeId: wait.actionId } },
     select: { input: true },
   })
-  const input = recordValue(execution?.input)
-  const scheduledAt = comparableDate(input.scheduledFor)
-  if (!scheduledAt) return null
+  const activationDates = userScheduledActivationDatesFromInput(execution?.input)
+  if (!activationDates) return null
+  const scheduledAt = activationDates.dueAt
 
   const parsedV3 = WorkflowDefinitionV3Schema.safeParse(run.templateVersion.definition)
   const targetDefinition = parsedV3.success
@@ -678,7 +689,7 @@ async function scheduledActivationAtForRun(params: {
       },
     })
   }
-  return scheduledAt
+  return activationDates
 }
 
 export async function advanceFollowUpRunTx(params: {
@@ -805,7 +816,7 @@ export async function advanceFollowUpRunTx(params: {
         where: { tenantId: run.tenantId, runId: run.id, id: { not: step.id }, status: "ACTIVE" },
         data: { status: "PENDING" },
       })
-      const scheduledActivationAt = await scheduledActivationAtForRun({
+      const scheduledActivationDates = await scheduledActivationDatesForRun({
         prismaTx,
         run,
         targetStep: step,
@@ -814,8 +825,8 @@ export async function advanceFollowUpRunTx(params: {
         where: { id: step.id },
         data: {
           status: "ACTIVE",
-          availableAt: scheduledActivationAt ?? new Date(),
-          dueAt: scheduledActivationAt ?? step.dueAt ?? new Date(),
+          availableAt: scheduledActivationDates?.availableAt ?? new Date(),
+          dueAt: scheduledActivationDates?.dueAt ?? step.dueAt ?? new Date(),
         },
       })
       await prismaTx.serviceFollowUpNodeExecution.update({

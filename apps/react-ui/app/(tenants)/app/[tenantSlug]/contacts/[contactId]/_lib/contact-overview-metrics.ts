@@ -11,11 +11,18 @@ export type ContactServiceSummaryItem = {
     id: string
     name: string
   }
+  nextFollowUp?: {
+    at: string
+    stepId: string | null
+    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    projected: boolean
+  } | null
   followUpSteps: Array<{
     id: string
     title: string
     status: string
     dueAt?: string | null
+    effectiveDueAt?: string | null
     availableAt?: string | null
     completedAt: string | null
     assignedToUserId?: string | null

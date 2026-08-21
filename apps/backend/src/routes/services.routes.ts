@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 import { type Response, Router } from "express"
 import { z } from "zod"
 
@@ -17,6 +19,10 @@ import {
   executeFollowUpFromStep,
   syncContactServiceActiveStep,
 } from "../lib/service-followup-execution.js"
+import {
+  resolveEffectiveNextFollowUp,
+  serializeEffectiveNextFollowUp,
+} from "../lib/service-followup-next-follow-up.js"
 import {
   continueFollowUpRunFromStepTx,
   createFollowUpRunTx,
@@ -583,13 +589,32 @@ function getSafeTimezone(timezone?: string | null) {
 
 function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
   const definition = item.followUpTemplateVersion?.definition
+  const waitingAction = item.followUpRun?.waitingNodeId
+    ? getUserScheduledWaitByActionId(definition, item.followUpRun.waitingNodeId)
+    : null
+  const effectiveNextFollowUp = resolveEffectiveNextFollowUp({
+    steps: item.followUpSteps ?? [],
+    run: item.followUpRun,
+    isUserScheduledWait: Boolean(waitingAction),
+  })
+  const nextFollowUp = serializeEffectiveNextFollowUp(effectiveNextFollowUp)
   const followUpSteps = (item.followUpSteps ?? []).map((step: any) => {
     const requirement =
       step.status === "ACTIVE" && step.templateNodeId
         ? getUserScheduledWaitForStep(definition, step.templateNodeId)
         : null
+    const projectedForStep =
+      effectiveNextFollowUp?.stepId === step.id ? effectiveNextFollowUp : null
     return {
       ...step,
+      effectiveDueAt: projectedForStep
+        ? projectedForStep.at
+        : step.dueAt ?? null,
+      effectiveDueSource: projectedForStep
+        ? projectedForStep.source
+        : step.dueAt
+          ? "STEP_DUE"
+          : null,
       completionRequirement: requirement
         ? {
             type: "NEXT_FOLLOW_UP_AT" as const,
@@ -600,11 +625,9 @@ function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
         : null,
     }
   })
-  const waitingAction = item.followUpRun?.waitingNodeId
-    ? getUserScheduledWaitByActionId(definition, item.followUpRun.waitingNodeId)
-    : null
   return {
     timezone,
+    nextFollowUp,
     followUpSteps,
     followUpTemplateVersion: item.followUpTemplateVersion
       ? {
@@ -622,10 +645,43 @@ function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
                   prompt: waitingAction.prompt,
                   scheduledFor: item.followUpRun.resumeAt,
                   canReschedule: !item.followUpRun.leaseToken,
+                  canContinueNow: !item.followUpRun.leaseToken,
                 }
               : null,
         }
       : null,
+  }
+}
+
+function serializeContactServiceListFollowUpMetadata(item: any) {
+  const definition = item.followUpTemplateVersion?.definition
+  const waitingAction = item.followUpRun?.waitingNodeId
+    ? getUserScheduledWaitByActionId(definition, item.followUpRun.waitingNodeId)
+    : null
+  const effectiveNextFollowUp = resolveEffectiveNextFollowUp({
+    steps: item.followUpSteps ?? [],
+    run: item.followUpRun,
+    isUserScheduledWait: Boolean(waitingAction),
+  })
+  const nextFollowUp = serializeEffectiveNextFollowUp(effectiveNextFollowUp)
+
+  return {
+    nextFollowUp,
+    followUpSteps: (item.followUpSteps ?? []).map((step: any) => {
+      const effectiveForStep =
+        effectiveNextFollowUp?.stepId === step.id ? effectiveNextFollowUp : null
+      return {
+        ...step,
+        effectiveDueAt: effectiveForStep
+          ? effectiveForStep.at
+          : step.dueAt ?? null,
+        effectiveDueSource: effectiveForStep
+          ? effectiveForStep.source
+          : step.dueAt
+            ? "STEP_DUE"
+            : null,
+      }
+    }),
   }
 }
 
@@ -2292,13 +2348,30 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               amountCents: true,
             },
           },
+          followUpTemplateVersion: {
+            select: {
+              definition: true,
+            },
+          },
+          followUpRun: {
+            select: {
+              status: true,
+              resumeAt: true,
+              waitingNodeId: true,
+            },
+          },
           followUpSteps: {
             select: {
               id: true,
+              title: true,
               status: true,
+              availableAt: true,
               dueAt: true,
+              completedAt: true,
+              sortOrder: true,
               assignedTo: {
                 select: {
+                  id: true,
                   name: true,
                   email: true,
                   image: true,
@@ -2413,13 +2486,30 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               amountCents: true,
             },
           },
+          followUpTemplateVersion: {
+            select: {
+              definition: true,
+            },
+          },
+          followUpRun: {
+            select: {
+              status: true,
+              resumeAt: true,
+              waitingNodeId: true,
+            },
+          },
           followUpSteps: {
             select: {
               id: true,
+              title: true,
               status: true,
+              availableAt: true,
               dueAt: true,
+              completedAt: true,
+              sortOrder: true,
               assignedTo: {
                 select: {
+                  id: true,
                   name: true,
                   email: true,
                   image: true,
@@ -2488,6 +2578,8 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           0,
         )
 
+        const followUpMetadata = serializeContactServiceListFollowUpMetadata(item)
+
         return {
           id: item.id,
           status: item.status,
@@ -2497,7 +2589,8 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           remainingCents: Math.max(0, item.totalPriceCents - paidCents),
           currency: item.currency,
           service: item.service,
-          followUpSteps: item.followUpSteps,
+          nextFollowUp: followUpMetadata.nextFollowUp,
+          followUpSteps: followUpMetadata.followUpSteps,
         }
       }),
       pagination: {
@@ -4867,6 +4960,7 @@ router.patch(
             prompt: wait.prompt,
             scheduledFor,
             canReschedule: true,
+            canContinueNow: true,
           },
         }
       })
@@ -4878,6 +4972,115 @@ router.patch(
         return res.status(409).json({ error: result.conflict })
       }
       return res.json({ ok: true, ...result })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.post(
+  "/:tenantId/contact-services/:contactServiceId/follow-up-run/continue-now",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const claimed = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const run = await prismaTx.contactServiceFollowUpRun.findFirst({
+          where: { tenantId, contactServiceId },
+          include: {
+            templateVersion: { select: { definition: true, templateId: true } },
+            contactService: { select: { contactId: true, followUpTemplateId: true } },
+          },
+        })
+        if (!run || run.status !== "WAITING" || !run.waitingNodeId) return null
+        const wait = getUserScheduledWaitByActionId(
+          run.templateVersion?.definition,
+          run.waitingNodeId,
+        )
+        if (!wait) return null
+        if (run.leaseToken) return { conflict: "FOLLOW_UP_WAIT_ALREADY_RESUMING" as const }
+
+        const continuedEarlyAt = new Date()
+        const leaseToken = randomUUID()
+        const updated = await prismaTx.contactServiceFollowUpRun.updateMany({
+          where: {
+            id: run.id,
+            status: "WAITING",
+            waitingNodeId: wait.actionId,
+            leaseToken: null,
+          },
+          data: {
+            status: "RUNNING",
+            leaseToken,
+            leaseExpiresAt: new Date(continuedEarlyAt.getTime() + 60_000),
+          },
+        })
+        if (!updated.count) return { conflict: "FOLLOW_UP_WAIT_ALREADY_RESUMING" as const }
+
+        const execution = await prismaTx.serviceFollowUpNodeExecution.findUnique({
+          where: { runId_nodeId: { runId: run.id, nodeId: wait.actionId } },
+          select: { input: true },
+        })
+        const previousInput =
+          execution?.input && typeof execution.input === "object" && !Array.isArray(execution.input)
+            ? execution.input
+            : {}
+        await prismaTx.serviceFollowUpNodeExecution.update({
+          where: { runId_nodeId: { runId: run.id, nodeId: wait.actionId } },
+          data: {
+            input: {
+              ...previousInput,
+              continuedEarlyAt: continuedEarlyAt.toISOString(),
+              continuedEarlyByUserId: authed.user.id,
+            },
+          },
+        })
+
+        const templateId = run.contactService.followUpTemplateId ?? run.templateVersion?.templateId
+        if (templateId) {
+          await prismaTx.serviceFollowUpExecutionLog.create({
+            data: {
+              tenantId,
+              templateId,
+              templateVersionId: run.templateVersionId,
+              contactServiceId,
+              contactId: run.contactService.contactId,
+              actorUserId: authed.user.id,
+              flowNodeId: wait.actionId,
+              eventType: "MANUAL_WAIT_CONTINUED_EARLY",
+              title: "Continued the scheduled follow-up early.",
+              payload: {
+                scheduledFor: run.resumeAt,
+                continuedEarlyAt,
+              },
+            },
+          })
+        }
+
+        return { runId: run.id, leaseToken }
+      })
+
+      if (!claimed) {
+        return res.status(409).json({ error: "FOLLOW_UP_RUN_NOT_MANUALLY_WAITING" })
+      }
+      if ("conflict" in claimed) {
+        return res.status(409).json({ error: claimed.conflict })
+      }
+
+      const result = await executeFollowUpRun({
+        runId: claimed.runId,
+        actorUserId: authed.user.id,
+        expectedLeaseToken: claimed.leaseToken,
+      })
+      if (result.status === "LEASE_LOST") {
+        return res.status(409).json({ error: "FOLLOW_UP_WAIT_ALREADY_RESUMING" })
+      }
+      return res.json({ ok: true, result })
     } catch (error) {
       return next(error)
     }

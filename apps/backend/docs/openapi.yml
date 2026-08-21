@@ -4649,6 +4649,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-run/continue-now:
+    post:
+      tags: [Services]
+      summary: Continue a user-scheduled workflow Wait before its scheduled time
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The workflow was resumed and advanced to its routed step or next pause
+        "409":
+          description: The run is not manually waiting or another worker has already claimed it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-steps:
     post:
       tags: [Services]
@@ -8252,6 +8274,15 @@ components:
           type: string
           format: date-time
           nullable: true
+        effectiveDueAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Persisted due date or the projected user-scheduled follow-up timestamp
+        effectiveDueSource:
+          type: string
+          nullable: true
+          enum: [USER_SCHEDULED_WAIT, STEP_DUE, STEP_AVAILABLE]
         postponeTo:
           type: string
           format: date-time
@@ -8356,6 +8387,8 @@ components:
               type: integer
         followUpRun:
           $ref: "#/components/schemas/ContactServiceFollowUpRun"
+        nextFollowUp:
+          $ref: "#/components/schemas/ContactServiceNextFollowUp"
         checklistItems:
           type: array
           items:
@@ -8394,6 +8427,7 @@ components:
             prompt: { type: string }
             scheduledFor: { type: string, format: date-time }
             canReschedule: { type: boolean }
+            canContinueNow: { type: boolean }
         failureNodeId:
           type: string
           nullable: true
@@ -8403,6 +8437,21 @@ components:
         failureMessage:
           type: string
           nullable: true
+    ContactServiceNextFollowUp:
+      type: object
+      nullable: true
+      properties:
+        at:
+          type: string
+          format: date-time
+        stepId:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum: [USER_SCHEDULED_WAIT, STEP_DUE, STEP_AVAILABLE]
+        projected:
+          type: boolean
     ContactServiceChecklistTemplateItem:
       type: object
       properties:

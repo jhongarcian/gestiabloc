@@ -42,6 +42,7 @@ import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import {
   dateTimeDraftToUtcIso,
+  formatDateTimeForDisplay,
   formatUtcIsoToDateTimeDraft,
   isDateTimeDraftComplete,
   isDateTimeDraftEmpty,
@@ -55,6 +56,8 @@ type FollowUpStep = {
   status?: "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
   availableAt: string | null
   dueAt: string | null
+  effectiveDueAt?: string | null
+  effectiveDueSource?: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE" | null
   completedAt: string | null
   resolutionSource?: "USER_COMPLETED" | "USER_SKIPPED" | "CONDITION_SKIPPED" | "FLOW_SKIPPED" | null
   resolutionReason?: string | null
@@ -71,6 +74,12 @@ type ContactServiceItem = {
   followUpTemplate: {
     id: string
     name: string
+  } | null
+  nextFollowUp?: {
+    at: string
+    stepId: string | null
+    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    projected: boolean
   } | null
   followUpSteps: FollowUpStep[]
 }
@@ -101,6 +110,7 @@ type ServiceFollowUpView = {
 type ContactFollowUpsPanelProps = {
   tenantId: string
   contactId: string
+  tenantTimezone?: string | null
 }
 
 type StepTimeMeta = {
@@ -133,22 +143,30 @@ const fromInputDateTime = (value: string) => {
   return date.toISOString()
 }
 
-const getStepTimeMeta = (step: FlattenedStep): StepTimeMeta => {
+const getStepTimeMeta = (
+  step: FlattenedStep,
+  tenantTimezone?: string | null,
+): StepTimeMeta => {
   if (step.status === "COMPLETED") {
     return {
       label: "Completed",
-      helper: step.completedAt ? new Date(step.completedAt).toLocaleString() : "Marked as completed",
+      helper: step.completedAt
+        ? formatDateTimeForDisplay(step.completedAt, tenantTimezone)
+        : "Marked as completed",
       badgeClassName: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
     }
   }
   if (step.status === "POSTPONED") {
     return {
       label: "Postponed",
-      helper: step.dueAt ? `Now due ${new Date(step.dueAt).toLocaleString()}` : "Postponed",
+      helper: step.dueAt
+        ? `Now due ${formatDateTimeForDisplay(step.dueAt, tenantTimezone)}`
+        : "Postponed",
       badgeClassName: "bg-violet-100 text-violet-800 hover:bg-violet-100",
     }
   }
-  if (!step.dueAt) {
+  const effectiveDueAt = step.effectiveDueAt ?? step.dueAt
+  if (!effectiveDueAt) {
     return {
       label: "No due date",
       helper: "No due date configured",
@@ -156,14 +174,22 @@ const getStepTimeMeta = (step: FlattenedStep): StepTimeMeta => {
     }
   }
 
-  const dueDate = new Date(step.dueAt)
+  if (step.effectiveDueSource === "USER_SCHEDULED_WAIT") {
+    return {
+      label: "Scheduled",
+      helper: `Scheduled for ${formatDateTimeForDisplay(effectiveDueAt, tenantTimezone)}`,
+      badgeClassName: "bg-blue-100 text-blue-800 hover:bg-blue-100",
+    }
+  }
+
+  const dueDate = new Date(effectiveDueAt)
   const diffMs = dueDate.getTime() - Date.now()
   const diffHours = Math.round(diffMs / (1000 * 60 * 60))
 
   if (diffMs < 0) {
     return {
       label: "Overdue",
-      helper: `Due ${dueDate.toLocaleString()}`,
+      helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, tenantTimezone)}`,
       badgeClassName: "bg-rose-100 text-rose-800 hover:bg-rose-100",
     }
   }
@@ -171,19 +197,23 @@ const getStepTimeMeta = (step: FlattenedStep): StepTimeMeta => {
   if (diffHours <= 24) {
     return {
       label: "Due soon",
-      helper: `Due ${dueDate.toLocaleString()}`,
+      helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, tenantTimezone)}`,
       badgeClassName: "bg-amber-100 text-amber-800 hover:bg-amber-100",
     }
   }
 
   return {
     label: "Upcoming",
-    helper: `Due ${dueDate.toLocaleString()}`,
+    helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, tenantTimezone)}`,
     badgeClassName: "bg-sky-100 text-sky-800 hover:bg-sky-100",
   }
 }
 
-export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsPanelProps) {
+export function ContactFollowUpsPanel({
+  tenantId,
+  contactId,
+  tenantTimezone,
+}: ContactFollowUpsPanelProps) {
   const router = useRouter()
   const [services, setServices] = useState<ContactServiceItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -530,7 +560,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
               <div className="mt-4 space-y-3">
                 {service.steps.length ? (
                   service.steps.map((step, index) => {
-                    const timeMeta = getStepTimeMeta(step)
+                    const timeMeta = getStepTimeMeta(step, tenantTimezone)
                     const isStatusLocked = (step.status ?? "PENDING") !== "ACTIVE"
                     const isActive = (step.status ?? "PENDING") === "ACTIVE"
                     const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"

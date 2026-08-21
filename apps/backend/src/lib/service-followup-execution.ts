@@ -1020,6 +1020,35 @@ export async function syncContactServiceActiveStep(params: {
   const { prismaTx, tenantId, contactServiceId } = params
   const now = params.now ?? new Date()
 
+  const versionedRun = await prismaTx.contactServiceFollowUpRun.findUnique({
+    where: { contactServiceId },
+    select: { id: true, status: true, activeStepId: true },
+  })
+  if (versionedRun) {
+    if (versionedRun.status === "AWAITING_STEP" && versionedRun.activeStepId) {
+      return null
+    }
+
+    const staleActiveStep = await prismaTx.contactServiceFollowUpStep.findFirst({
+      where: {
+        tenantId,
+        contactServiceId,
+        status: "ACTIVE",
+      },
+      select: { id: true },
+    })
+    if (!staleActiveStep) return null
+    await prismaTx.contactServiceFollowUpStep.updateMany({
+      where: {
+        tenantId,
+        contactServiceId,
+        status: "ACTIVE",
+      },
+      data: { status: "PENDING" },
+    })
+    return staleActiveStep.id
+  }
+
   const activeStep = await prismaTx.contactServiceFollowUpStep.findFirst({
     where: {
       tenantId,

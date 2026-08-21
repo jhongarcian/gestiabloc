@@ -132,10 +132,11 @@ test("stages a user-scheduled Wait input before workflow traversal", async () =>
   })
 
   assert.equal(requirement?.actionId, "appointment-wait")
-  assert.equal(staged?.create.input.scheduledFor, scheduledFor.toISOString())
-  assert.equal(staged?.create.input.suppliedByUserId, "user-1")
-  assert.equal(staged?.create.input.bypassed, false)
-  assert.equal(staged?.create.attemptCount, 0)
+  const stagedValue = staged as Record<string, any> | null
+  assert.equal(stagedValue?.create.input.scheduledFor, scheduledFor.toISOString())
+  assert.equal(stagedValue?.create.input.suppliedByUserId, "user-1")
+  assert.equal(stagedValue?.create.input.bypassed, false)
+  assert.equal(stagedValue?.create.attemptCount, 0)
 })
 
 test("stages a bypass marker without requiring a date when the user skips", async () => {
@@ -191,6 +192,92 @@ test("stages a bypass marker without requiring a date when the user skips", asyn
     bypassed: true,
   })
 
-  assert.equal(staged?.create.input.scheduledFor, null)
-  assert.equal(staged?.create.input.bypassed, true)
+  const stagedValue = staged as Record<string, any> | null
+  assert.equal(stagedValue?.create.input.scheduledFor, null)
+  assert.equal(stagedValue?.create.input.bypassed, true)
+})
+
+test("legacy active-step synchronization repairs stale active steps on waiting versioned runs", async () => {
+  process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
+  const { syncContactServiceActiveStep } = await import("./service-followup-execution.js")
+  let repairedStatus: string | null = null
+  const prismaTx = {
+    contactServiceFollowUpRun: {
+      findUnique: async () => ({ id: "run-1", status: "WAITING", activeStepId: null }),
+    },
+    contactServiceFollowUpStep: {
+      findFirst: async () => ({ id: "stale-step" }),
+      updateMany: async (value: Record<string, any>) => {
+        repairedStatus = value.data.status
+        return { count: 1 }
+      },
+    },
+  }
+
+  const result = await syncContactServiceActiveStep({
+    prismaTx,
+    tenantId: "tenant-1",
+    contactServiceId: "service-1",
+  })
+
+  assert.equal(result, "stale-step")
+  assert.equal(repairedStatus, "PENDING")
+})
+
+test("legacy active-step synchronization does not touch the engine-owned active step", async () => {
+  process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
+  const { syncContactServiceActiveStep } = await import("./service-followup-execution.js")
+  let queriedSteps = false
+  const prismaTx = {
+    contactServiceFollowUpRun: {
+      findUnique: async () => ({
+        id: "run-2",
+        status: "AWAITING_STEP",
+        activeStepId: "active-step",
+      }),
+    },
+    contactServiceFollowUpStep: {
+      findFirst: async () => {
+        queriedSteps = true
+        return null
+      },
+    },
+  }
+
+  const result = await syncContactServiceActiveStep({
+    prismaTx,
+    tenantId: "tenant-1",
+    contactServiceId: "service-1",
+  })
+
+  assert.equal(result, null)
+  assert.equal(queriedSteps, false)
+})
+
+test("continuing early activates now while preserving the selected due date", async () => {
+  process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
+  const { userScheduledActivationDatesFromInput } = await import(
+    "./service-followup-v2-execution.js"
+  )
+  const result = userScheduledActivationDatesFromInput({
+    scheduledFor: "2030-05-10T15:00:00.000Z",
+    continuedEarlyAt: "2030-05-01T12:00:00.000Z",
+    continuedEarlyByUserId: "user-1",
+  })
+
+  assert.equal(result?.availableAt.toISOString(), "2030-05-01T12:00:00.000Z")
+  assert.equal(result?.dueAt.toISOString(), "2030-05-10T15:00:00.000Z")
+})
+
+test("scheduled resume uses the selected timestamp for availability and due date", async () => {
+  process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
+  const { userScheduledActivationDatesFromInput } = await import(
+    "./service-followup-v2-execution.js"
+  )
+  const result = userScheduledActivationDatesFromInput({
+    scheduledFor: "2030-05-10T15:00:00.000Z",
+  })
+
+  assert.equal(result?.availableAt.toISOString(), "2030-05-10T15:00:00.000Z")
+  assert.equal(result?.dueAt.toISOString(), "2030-05-10T15:00:00.000Z")
 })

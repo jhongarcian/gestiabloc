@@ -18,6 +18,7 @@ import {
   Loader2,
   NotebookPen,
   Paperclip,
+  Play,
   SendHorizontal,
   Upload,
   UserRound,
@@ -147,7 +148,14 @@ type ContactServiceDetails = {
       prompt: string
       scheduledFor: string
       canReschedule: boolean
+      canContinueNow: boolean
     } | null
+  } | null
+  nextFollowUp?: {
+    at: string
+    stepId: string | null
+    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    projected: boolean
   } | null
   assignedProfessional?: {
     id: string
@@ -168,6 +176,8 @@ type ContactServiceDetails = {
     status?: FollowUpStepStatus
     availableAt: string | null
     dueAt: string | null
+    effectiveDueAt?: string | null
+    effectiveDueSource?: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE" | null
     completedAt: string | null
     resolutionSource?: "USER_COMPLETED" | "USER_SKIPPED" | "CONDITION_SKIPPED" | "FLOW_SKIPPED" | null
     resolutionReason?: string | null
@@ -528,7 +538,10 @@ const isBeforeToday = (date: Date) => {
   return candidate < today
 }
 
-const getStepTimeMeta = (step: ContactServiceDetails["followUpSteps"][number]): StepTimeMeta => {
+const getStepTimeMeta = (
+  step: ContactServiceDetails["followUpSteps"][number],
+  timezone?: string | null,
+): StepTimeMeta => {
   if (step.status === "COMPLETED") {
     return {
       label: "Completed",
@@ -546,11 +559,14 @@ const getStepTimeMeta = (step: ContactServiceDetails["followUpSteps"][number]): 
   if (step.status === "POSTPONED") {
     return {
       label: "Postponed",
-      helper: step.dueAt ? `Postponed to ${new Date(step.dueAt).toLocaleString()}` : "Postponed",
+      helper: step.dueAt
+        ? `Postponed to ${formatDateTimeForDisplay(step.dueAt, timezone)}`
+        : "Postponed",
       badgeClassName: "bg-violet-100 text-violet-800 hover:bg-violet-100",
     }
   }
-  if (!step.dueAt) {
+  const effectiveDueAt = step.effectiveDueAt ?? step.dueAt
+  if (!effectiveDueAt) {
     return {
       label: "No due date",
       helper: "No due date configured",
@@ -558,14 +574,22 @@ const getStepTimeMeta = (step: ContactServiceDetails["followUpSteps"][number]): 
     }
   }
 
-  const dueDate = new Date(step.dueAt)
+  if (step.effectiveDueSource === "USER_SCHEDULED_WAIT") {
+    return {
+      label: "Scheduled",
+      helper: `Scheduled for ${formatDateTimeForDisplay(effectiveDueAt, timezone)}`,
+      badgeClassName: "bg-blue-100 text-blue-800 hover:bg-blue-100",
+    }
+  }
+
+  const dueDate = new Date(effectiveDueAt)
   const diffMs = dueDate.getTime() - Date.now()
   const diffHours = Math.round(diffMs / (1000 * 60 * 60))
 
   if (diffMs < 0) {
     return {
       label: "Overdue",
-      helper: `Due ${dueDate.toLocaleString()}`,
+      helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, timezone)}`,
       badgeClassName: "bg-rose-100 text-rose-800 hover:bg-rose-100",
     }
   }
@@ -573,14 +597,14 @@ const getStepTimeMeta = (step: ContactServiceDetails["followUpSteps"][number]): 
   if (diffHours <= 24) {
     return {
       label: "Due soon",
-      helper: `Due ${dueDate.toLocaleString()}`,
+      helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, timezone)}`,
       badgeClassName: "bg-amber-100 text-amber-800 hover:bg-amber-100",
     }
   }
 
   return {
     label: "Upcoming",
-    helper: `Due ${dueDate.toLocaleString()}`,
+    helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, timezone)}`,
     badgeClassName: "bg-sky-100 text-sky-800 hover:bg-sky-100",
   }
 }
@@ -708,6 +732,7 @@ export function ContactServiceDetailsPanel({
   const [isRescheduleWaitOpen, setIsRescheduleWaitOpen] = useState(false)
   const [rescheduleWaitInput, setRescheduleWaitInput] = useState<DateTimeDraft>({ date: "", time: "" })
   const [isReschedulingWait, setIsReschedulingWait] = useState(false)
+  const [isContinuingWait, setIsContinuingWait] = useState(false)
   const [isSavingStepStatus, setIsSavingStepStatus] = useState(false)
   const [isSavingFollowUpOwner, setIsSavingFollowUpOwner] = useState(false)
   const [stepAssignedToUserId, setStepAssignedToUserId] = useState("")
@@ -1551,6 +1576,28 @@ export function ContactServiceDetailsPanel({
     }
   }
 
+  const continueManualWaitNow = async () => {
+    if (!item?.followUpRun?.manualWait) return
+    setIsContinuingWait(true)
+    try {
+      await api.post(
+        `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-run/continue-now`,
+      )
+      toast.success("Follow-up continued. The next routed step is ready.")
+      await refreshData(true)
+      router.refresh()
+    } catch (error) {
+      const backendError = isAxiosError(error) ? error.response?.data?.error : null
+      toast.error(
+        typeof backendError === "string"
+          ? backendError.replace(/_/g, " ")
+          : "Could not continue the follow-up.",
+      )
+    } finally {
+      setIsContinuingWait(false)
+    }
+  }
+
   const openStepNoteDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
     setActiveStep(step)
     setStepNoteTitle("")
@@ -2302,7 +2349,7 @@ export function ContactServiceDetailsPanel({
             <section
               className={cn(
                 "rounded-[24px] p-4 shadow-sm sm:p-5",
-                nextFollowUpStep && getStepTimeMeta(nextFollowUpStep).label === "Overdue"
+                nextFollowUpStep && getStepTimeMeta(nextFollowUpStep, item?.timezone).label === "Overdue"
                   ? "border border-rose-200 bg-[linear-gradient(135deg,#fff1f2_0%,#fff7ed_45%,#ffffff_100%)]"
                   : "border border-blue-200 bg-[linear-gradient(135deg,#eff6ff_0%,#f8fafc_45%,#ffffff_100%)]",
               )}
@@ -2313,7 +2360,7 @@ export function ContactServiceDetailsPanel({
                     <p
                       className={cn(
                         "text-xs font-semibold uppercase tracking-[0.14em]",
-                        nextFollowUpStep && getStepTimeMeta(nextFollowUpStep).label === "Overdue"
+                        nextFollowUpStep && getStepTimeMeta(nextFollowUpStep, item?.timezone).label === "Overdue"
                           ? "text-rose-700"
                           : "text-blue-700",
                       )}
@@ -2329,13 +2376,15 @@ export function ContactServiceDetailsPanel({
                       <Badge className={getFollowUpStepStatusBadgeClass(nextFollowUpStep.status)}>
                         {formatFollowUpStepStatus(nextFollowUpStep.status)}
                       </Badge>
-                      {getStepTimeMeta(nextFollowUpStep).label === "Overdue" ? (
+                      {getStepTimeMeta(nextFollowUpStep, item?.timezone).label === "Overdue" ? (
                         <Badge className="bg-rose-100 text-rose-800 hover:bg-rose-100">
                           Overdue
                         </Badge>
                       ) : null}
-                      <Badge className={getStepTimeMeta(nextFollowUpStep).badgeClassName}>
-                        Due
+                      <Badge className={getStepTimeMeta(nextFollowUpStep, item?.timezone).badgeClassName}>
+                        {getStepTimeMeta(nextFollowUpStep, item?.timezone).label === "Scheduled"
+                          ? "Scheduled"
+                          : "Due"}
                       </Badge>
                     </div>
                   ) : null}
@@ -2353,7 +2402,7 @@ export function ContactServiceDetailsPanel({
                         Due
                       </p>
                       <p className="mt-2 text-sm font-semibold text-slate-950">
-                        {getStepTimeMeta(nextFollowUpStep).helper}
+                        {getStepTimeMeta(nextFollowUpStep, item?.timezone).helper}
                       </p>
                     </div>
                     <div className="rounded-[18px] border border-white/80 bg-white/80 px-4 py-3 shadow-sm">
@@ -2522,24 +2571,42 @@ export function ContactServiceDetailsPanel({
                       {formatDateTimeForDisplay(item.followUpRun.manualWait.scheduledFor, item.timezone)}
                     </p>
                   </div>
-                  {item.followUpRun.manualWait.canReschedule ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="cursor-pointer border-blue-200 bg-white"
-                      onClick={() => {
-                        setRescheduleWaitInput(
-                          formatUtcIsoToDateTimeDraft(
-                            item.followUpRun?.manualWait?.scheduledFor ?? null,
-                            item.timezone,
-                          ),
-                        )
-                        setIsRescheduleWaitOpen(true)
-                      }}
-                    >
-                      Change date
-                    </Button>
-                  ) : null}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {item.followUpRun.manualWait.canReschedule ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="cursor-pointer border-blue-200 bg-white"
+                        disabled={isContinuingWait}
+                        onClick={() => {
+                          setRescheduleWaitInput(
+                            formatUtcIsoToDateTimeDraft(
+                              item.followUpRun?.manualWait?.scheduledFor ?? null,
+                              item.timezone,
+                            ),
+                          )
+                          setIsRescheduleWaitOpen(true)
+                        }}
+                      >
+                        Change date
+                      </Button>
+                    ) : null}
+                    {item.followUpRun.manualWait.canContinueNow ? (
+                      <Button
+                        type="button"
+                        className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
+                        disabled={isContinuingWait}
+                        onClick={() => void continueManualWaitNow()}
+                      >
+                        {isContinuingWait ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Play className="mr-2 h-4 w-4" aria-hidden="true" />
+                        )}
+                        Continue now
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
               {followUpSteps.length ? (
@@ -2553,7 +2620,7 @@ export function ContactServiceDetailsPanel({
                   <div className="space-y-3">
                     {followUpSteps.map((step, index) => {
                       const currentStatus = step.status ?? "PENDING"
-                      const timeMeta = getStepTimeMeta(step)
+                      const timeMeta = getStepTimeMeta(step, item?.timezone)
                       const isActive = currentStatus === "ACTIVE"
                       const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"
                       const isAutoSkipped =
