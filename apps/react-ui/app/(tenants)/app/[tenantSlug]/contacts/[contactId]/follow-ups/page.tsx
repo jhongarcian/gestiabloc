@@ -7,7 +7,13 @@ export default async function ContactFollowUpsPage({
   params: Promise<{ tenantSlug: string; contactId: string }>
 }) {
   const { tenantSlug, contactId } = await params
-  const { tenantId } = await getContactDetailsContext(tenantSlug, contactId)
+  const { tenantId, tenantTimezone } = await getContactDetailsContext(tenantSlug, contactId)
 
-  return <ContactFollowUpsPanel tenantId={tenantId} contactId={contactId} />
+  return (
+    <ContactFollowUpsPanel
+      tenantId={tenantId}
+      contactId={contactId}
+      tenantTimezone={tenantTimezone}
+    />
+  )
 }

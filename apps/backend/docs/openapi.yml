@@ -2114,6 +2114,73 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
+  /api/account-settings/{tenantId}/services/{recordId}/follow-up-templates/{templateId}/validate:
+    post:
+      tags: [Account Settings]
+      summary: Validate a follow-up workflow draft
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Draft is valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowUpWorkflowValidationResponse"
+        "422":
+          description: Draft contains graph errors
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowUpWorkflowValidationResponse"
+  /api/account-settings/{tenantId}/services/{recordId}/follow-up-templates/{templateId}/publish:
+    post:
+      tags: [Account Settings]
+      summary: Validate and publish an immutable follow-up workflow version
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Version published and activated for future enrollments
+        "422":
+          description: Draft contains graph errors
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowUpWorkflowValidationResponse"
+  /api/account-settings/{tenantId}/services/{recordId}/follow-up-templates/{templateId}/unpublish:
+    post:
+      tags: [Account Settings]
+      summary: Stop new enrollments without changing existing pinned runs
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Template unpublished
   /api/account-settings/{tenantId}/services/{recordId}/follow-up-templates/{templateId}/execution-logs:
     get:
       tags: [Account Settings]
@@ -4521,6 +4588,89 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-run/retry:
+    post:
+      tags: [Services]
+      summary: Retry the failed workflow node without repeating successful automation
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Retry accepted
+        "409":
+          description: The run is not failed or cannot be retried
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-run/next-follow-up:
+    patch:
+      tags: [Services]
+      summary: Reschedule the current user-scheduled workflow Wait
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nextFollowUpAt]
+              properties:
+                nextFollowUpAt:
+                  type: string
+                  format: date-time
+      responses:
+        "200":
+          description: Next follow-up rescheduled
+        "409":
+          description: The run is not at a reschedulable user-scheduled Wait or is already resuming
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: The selected date is invalid or not in the future
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-run/continue-now:
+    post:
+      tags: [Services]
+      summary: Continue a duration or user-scheduled workflow Wait before its scheduled time
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The workflow was resumed and advanced to its routed step or next pause
+        "409":
+          description: The run is not waiting at a resumable Wait or another worker has already claimed it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-steps:
     post:
       tags: [Services]
@@ -4622,6 +4772,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Follow-up step not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The step is not the current active step, is already resolved, or cannot be reopened.
           content:
             application/json:
               schema:
@@ -6030,6 +6186,7 @@ components:
               nullable: true
         activeFollowUpServices:
           type: array
+          description: Services with enrolled follow-up steps that remain in progress or are awaiting payment; completed and canceled services are excluded.
           items:
             type: object
             properties:
@@ -7430,6 +7587,149 @@ components:
           enum: [INTERNAL_USER, EXTERNAL]
         name:
           type: string
+    FollowUpWorkflowDefinitionV2:
+      type: object
+      required: [schemaVersion, nodes, edges]
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [2]
+        nodes:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        edges:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    FollowUpWorkflowDefinitionV3:
+      type: object
+      required: [schemaVersion, start, end, steps, transitions]
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [3]
+        start:
+          type: object
+          required: [id, label]
+          properties:
+            id: { type: string }
+            label: { type: string }
+        end:
+          type: object
+          required: [id, label]
+          properties:
+            id: { type: string }
+            label: { type: string }
+        steps:
+          type: array
+          description: Canonical manual-step order shown on every enrolled contact.
+          items:
+            type: object
+            required: [id, name, dueDaysFromStart]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              notesTemplate: { type: string, nullable: true }
+              dueDaysFromStart: { type: integer, minimum: 0 }
+        transitions:
+          type: array
+          description: One shared automation transition after Start and after every manual step.
+          items:
+            type: object
+            required: [id, fromId, actions, route]
+            properties:
+              id: { type: string }
+              fromId: { type: string }
+              actions:
+                type: array
+                items:
+                  type: object
+                  required: [id, kind, label, data]
+                  properties:
+                    id: { type: string }
+                    kind:
+                      type: string
+                      enum: [wait, mathOperation, numberFormatter, dateTimeFormatter, reminder, assign, removeUser, tagAdd, tagRemove, contactFieldUpdate, statusUpdate, addNote, addTask]
+                    label: { type: string }
+                    data:
+                      type: object
+                      additionalProperties: true
+                      description: Wait actions use waitMode DURATION (the default when omitted) with waitValue/waitUnit, or USER_SCHEDULED with a non-empty prompt.
+              route:
+                oneOf:
+                  - type: object
+                    required: [kind]
+                    properties:
+                      kind: { type: string, enum: [NEXT] }
+                  - type: object
+                    required: [id, kind, targetStepId]
+                    properties:
+                      id: { type: string }
+                      kind: { type: string, enum: [GO_TO] }
+                      label: { type: string }
+                      targetStepId: { type: string, nullable: true }
+                  - type: object
+                    required: [id, kind, branches]
+                    properties:
+                      id: { type: string }
+                      kind: { type: string, enum: [CONDITIONAL] }
+                      label: { type: string }
+                      branches:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, name, isDefault, matchMode, conditions, targetStepId]
+                          properties:
+                            id: { type: string }
+                            name: { type: string }
+                            isDefault: { type: boolean }
+                            matchMode: { type: string, enum: [ALL, ANY] }
+                            conditions:
+                              type: array
+                              items: { type: object, additionalProperties: true }
+                            targetStepId: { type: string, nullable: true }
+    FollowUpWorkflowDefinition:
+      oneOf:
+        - $ref: "#/components/schemas/FollowUpWorkflowDefinitionV3"
+        - $ref: "#/components/schemas/FollowUpWorkflowDefinitionV2"
+    FollowUpWorkflowValidationIssue:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        nodeId:
+          type: string
+        branchId:
+          type: string
+        edgeId:
+          type: string
+        stepId:
+          type: string
+        transitionId:
+          type: string
+    FollowUpWorkflowValidationResponse:
+      type: object
+      required: [ok, issues]
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+        definition:
+          allOf:
+            - $ref: "#/components/schemas/FollowUpWorkflowDefinition"
+          nullable: true
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/FollowUpWorkflowValidationIssue"
     AccountSettingsServiceFollowUpTemplateItem:
       type: object
       properties:
@@ -7441,6 +7741,8 @@ components:
           type: integer
         isPublished:
           type: boolean
+        needsRepair:
+          type: boolean
         publishedAt:
           type: string
           format: date-time
@@ -7451,6 +7753,24 @@ components:
         flowEdges:
           type: array
           items: {}
+        draftDefinition:
+          $ref: "#/components/schemas/FollowUpWorkflowDefinition"
+        activeVersion:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            versionNumber:
+              type: integer
+            schemaVersion:
+              type: integer
+              enum: [2, 3]
+            checksum:
+              type: string
+            publishedAt:
+              type: string
+              format: date-time
         stepsCount:
           type: integer
     AccountSettingsServiceFollowUpTemplateCreateRequest:
@@ -7461,14 +7781,14 @@ components:
           type: string
         sortOrder:
           type: integer
-        isPublished:
-          type: boolean
         flowNodes:
           type: array
           items: {}
         flowEdges:
           type: array
           items: {}
+        draftDefinition:
+          $ref: "#/components/schemas/FollowUpWorkflowDefinition"
     AccountSettingsServiceFollowUpTemplateUpdateRequest:
       type: object
       properties:
@@ -7476,14 +7796,14 @@ components:
           type: string
         sortOrder:
           type: integer
-        isPublished:
-          type: boolean
         flowNodes:
           type: array
           items: {}
         flowEdges:
           type: array
           items: {}
+        draftDefinition:
+          $ref: "#/components/schemas/FollowUpWorkflowDefinition"
         steps:
           type: array
           items:
@@ -7505,6 +7825,8 @@ components:
               type: integer
             isPublished:
               type: boolean
+            needsRepair:
+              type: boolean
             publishedAt:
               type: string
               format: date-time
@@ -7515,6 +7837,21 @@ components:
             flowEdges:
               type: array
               items: {}
+            draftDefinition:
+              $ref: "#/components/schemas/FollowUpWorkflowDefinition"
+            activeVersion:
+              type: object
+              nullable: true
+              properties:
+                id:
+                  type: string
+                versionNumber:
+                  type: integer
+                schemaVersion:
+                  type: integer
+                  enum: [2, 3]
+                checksum:
+                  type: string
     AccountSettingsServiceFollowUpTemplateExecutionLogItem:
       type: object
       properties:
@@ -7938,6 +8275,15 @@ components:
           type: string
           format: date-time
           nullable: true
+        effectiveDueAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Persisted due date or the projected timestamp of a duration or user-scheduled Wait
+        effectiveDueSource:
+          type: string
+          nullable: true
+          enum: [USER_SCHEDULED_WAIT, STEP_DUE, STEP_AVAILABLE]
         postponeTo:
           type: string
           format: date-time
@@ -7947,11 +8293,29 @@ components:
           type: string
           format: date-time
           nullable: true
+        resolutionSource:
+          type: string
+          nullable: true
+          enum: [USER_COMPLETED, USER_SKIPPED, CONDITION_SKIPPED, FLOW_SKIPPED]
+        resolutionReason:
+          type: string
+          nullable: true
         assignedToUserId:
           type: string
           nullable: true
         sortOrder:
           type: integer
+        canCompleteNow:
+          type: boolean
+          description: True when this is the current step or the next pending step can be safely continued and completed before its scheduled time.
+        completionRequirement:
+          type: object
+          nullable: true
+          properties:
+            type: { type: string, enum: [NEXT_FOLLOW_UP_AT] }
+            actionId: { type: string }
+            prompt: { type: string }
+            timezone: { type: string }
     ContactServiceListItem:
       type: object
       properties:
@@ -8017,6 +8381,18 @@ components:
               type: string
             name:
               type: string
+        followUpTemplateVersion:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            versionNumber:
+              type: integer
+        followUpRun:
+          $ref: "#/components/schemas/ContactServiceFollowUpRun"
+        nextFollowUp:
+          $ref: "#/components/schemas/ContactServiceNextFollowUp"
         checklistItems:
           type: array
           items:
@@ -8025,6 +8401,64 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ContactServiceFollowUpStepItem"
+    ContactServiceFollowUpRun:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [RUNNING, WAITING, AWAITING_STEP, COMPLETED, FAILED, NEEDS_REVIEW, CANCELED]
+        cursorNodeId:
+          type: string
+          nullable: true
+        activeStepId:
+          type: string
+          nullable: true
+        resumeAt:
+          type: string
+          format: date-time
+          nullable: true
+        waitingNodeId:
+          type: string
+          nullable: true
+        canContinueNow:
+          type: boolean
+          description: True when the current duration or user-scheduled Wait is lease-free and may be resumed early.
+        manualWait:
+          type: object
+          nullable: true
+          properties:
+            actionId: { type: string }
+            prompt: { type: string }
+            scheduledFor: { type: string, format: date-time }
+            canReschedule: { type: boolean }
+            canContinueNow: { type: boolean }
+        failureNodeId:
+          type: string
+          nullable: true
+        failureCode:
+          type: string
+          nullable: true
+        failureMessage:
+          type: string
+          nullable: true
+    ContactServiceNextFollowUp:
+      type: object
+      nullable: true
+      properties:
+        at:
+          type: string
+          format: date-time
+        stepId:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum: [USER_SCHEDULED_WAIT, STEP_DUE, STEP_AVAILABLE]
+        projected:
+          type: boolean
     ContactServiceChecklistTemplateItem:
       type: object
       properties:
@@ -8468,6 +8902,7 @@ components:
         status:
           type: string
           enum: [PENDING, ACTIVE, COMPLETED, SKIPPED, POSTPONED]
+          description: For versioned workflow runs, only COMPLETED, SKIPPED, or POSTPONED may be applied to the current ACTIVE step. PENDING and ACTIVE remain available only for legacy, unversioned steps.
         availableAt:
           type: string
           format: date-time
@@ -8480,6 +8915,10 @@ components:
           type: string
           format: date-time
           nullable: true
+        nextFollowUpAt:
+          type: string
+          format: date-time
+          description: Required when completing the current step if its V3 transition contains a USER_SCHEDULED Wait.
         assignedToUserId:
           type: string
           nullable: true

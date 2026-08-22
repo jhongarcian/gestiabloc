@@ -29,9 +29,43 @@ import {
   ensureDefaultContactStatuses,
   ensureDefaultTaskStatuses,
 } from "../lib/tenant-defaults.js";
+import {
+  WorkflowDefinitionV2Schema,
+  convertLegacyWorkflowDefinition,
+  validateSensitiveCustomFieldConditions,
+  validateWorkflowDefinition,
+  workflowDefinitionToLegacyCanvas,
+} from "../lib/service-followup-definition.js";
+import {
+  WorkflowDefinitionAnySchema,
+  WorkflowDefinitionV3Schema,
+  checksumWorkflowDefinitionAny,
+  getDraftWorkflowDefinitionAny,
+  validateSensitiveCustomFieldConditionsV3,
+  validateWorkflowDefinitionV3,
+  workflowDefinitionV3ToLegacyCanvas,
+  type WorkflowDefinitionAny,
+} from "../lib/service-followup-v3-definition.js";
 
 const router = Router();
 const prismaWithContacts = prisma as any;
+
+const getDraftWorkflowDefinition = getDraftWorkflowDefinitionAny;
+const checksumWorkflowDefinition = checksumWorkflowDefinitionAny;
+const validateAnyWorkflowDefinition = (definition: unknown) => {
+  const v3 = WorkflowDefinitionV3Schema.safeParse(definition);
+  return v3.success ? validateWorkflowDefinitionV3(v3.data) : validateWorkflowDefinition(definition);
+};
+const validateAnySensitiveConditions = (
+  definition: WorkflowDefinitionAny,
+  fields: Array<{ id: string; key: string; isEncrypted: boolean; isSensitive: boolean }>,
+) => definition.schemaVersion === 3
+  ? validateSensitiveCustomFieldConditionsV3(definition, fields)
+  : validateSensitiveCustomFieldConditions(definition, fields);
+const workflowDefinitionToCanvas = (definition: WorkflowDefinitionAny) =>
+  definition.schemaVersion === 3
+    ? workflowDefinitionV3ToLegacyCanvas(definition)
+    : workflowDefinitionToLegacyCanvas(definition);
 
 const ACCOUNT_SETTINGS_SECTIONS = [
   "users",
@@ -629,6 +663,7 @@ const ServiceFollowUpTemplateSchema = z.object({
   isPublished: z.boolean().optional(),
   flowNodes: z.array(z.unknown()).optional(),
   flowEdges: z.array(z.unknown()).optional(),
+  draftDefinition: WorkflowDefinitionAnySchema.optional(),
 });
 const ServiceFollowUpTemplatePatchSchema = z.object({
   name: z.string().trim().min(1).max(160).optional(),
@@ -636,6 +671,7 @@ const ServiceFollowUpTemplatePatchSchema = z.object({
   isPublished: z.boolean().optional(),
   flowNodes: z.array(z.unknown()).optional(),
   flowEdges: z.array(z.unknown()).optional(),
+  draftDefinition: WorkflowDefinitionAnySchema.optional(),
   steps: z.array(ServiceFollowUpTemplateStepInputSchema).optional(),
 });
 
@@ -3700,24 +3736,36 @@ router.get(
           publishedAt: true,
           flowNodes: true,
           flowEdges: true,
+          draftDefinition: true,
+          needsRepair: true,
+          activeVersion: {
+            select: { id: true, versionNumber: true, schemaVersion: true, checksum: true, publishedAt: true },
+          },
           steps: {
-            select: { id: true },
+            select: { id: true, templateNodeId: true, sortOrder: true },
           },
         },
       });
 
       return res.json({
         ok: true,
-        items: items.map((item: any) => ({
+        items: items.map((item: any) => {
+          const definition = getDraftWorkflowDefinition(item);
+          const canvas = workflowDefinitionToCanvas(definition);
+          return {
           id: item.id,
           name: item.name,
           sortOrder: item.sortOrder,
           isPublished: item.isPublished,
           publishedAt: item.publishedAt,
-          flowNodes: item.flowNodes ?? [],
-          flowEdges: item.flowEdges ?? [],
+          flowNodes: canvas.nodes,
+          flowEdges: canvas.edges,
+          draftDefinition: definition,
+          needsRepair: item.needsRepair,
+          activeVersion: item.activeVersion,
           stepsCount: item.steps.length,
-        })),
+          };
+        }),
       });
     } catch (error) {
       return next(error);
@@ -3756,10 +3804,13 @@ router.post(
           serviceId: recordId,
           name: payload.name.trim(),
           sortOrder: payload.sortOrder ?? nextSortOrder,
-          isPublished: payload.isPublished ?? false,
-          publishedAt: payload.isPublished ? new Date() : null,
+          isPublished: false,
+          publishedAt: null,
           flowNodes: payload.flowNodes ?? [],
           flowEdges: payload.flowEdges ?? [],
+          draftDefinition:
+            payload.draftDefinition ??
+            convertLegacyWorkflowDefinition(payload.flowNodes ?? [], payload.flowEdges ?? []),
         },
         select: {
           id: true,
@@ -3769,10 +3820,18 @@ router.post(
           publishedAt: true,
           flowNodes: true,
           flowEdges: true,
+          draftDefinition: true,
+          needsRepair: true,
+          activeVersionId: true,
         },
       });
 
-      return res.status(201).json({ ok: true, template: created });
+      const definition = getDraftWorkflowDefinition(created);
+      const canvas = workflowDefinitionToCanvas(definition);
+      return res.status(201).json({
+        ok: true,
+        template: { ...created, flowNodes: canvas.nodes, flowEdges: canvas.edges, draftDefinition: definition },
+      });
     } catch (error) {
       return next(error);
     }
@@ -3799,6 +3858,21 @@ router.get(
           publishedAt: true,
           flowNodes: true,
           flowEdges: true,
+          draftDefinition: true,
+          needsRepair: true,
+          activeVersion: {
+            select: {
+              id: true,
+              versionNumber: true,
+              schemaVersion: true,
+              checksum: true,
+              publishedAt: true,
+            },
+          },
+          steps: {
+            select: { templateNodeId: true, sortOrder: true },
+            orderBy: { sortOrder: "asc" },
+          },
         },
       });
 
@@ -3806,12 +3880,15 @@ router.get(
         return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
       }
 
+      const definition = getDraftWorkflowDefinition(template);
+      const canvas = workflowDefinitionToCanvas(definition);
       return res.json({
         ok: true,
         template: {
           ...template,
-          flowNodes: template.flowNodes ?? [],
-          flowEdges: template.flowEdges ?? [],
+          flowNodes: canvas.nodes,
+          flowEdges: canvas.edges,
+          draftDefinition: definition,
         },
       });
     } catch (error) {
@@ -4088,16 +4165,46 @@ router.patch(
 
       const existing = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
         where: { id: templateId },
-        select: { id: true, tenantId: true, serviceId: true },
+        select: {
+          id: true,
+          tenantId: true,
+          serviceId: true,
+          flowNodes: true,
+          flowEdges: true,
+          draftDefinition: true,
+        },
       });
       if (!existing || existing.tenantId !== tenantId || existing.serviceId !== recordId) {
         return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
       }
 
+      if (payload.isPublished !== undefined) {
+        return res.status(400).json({ error: "USE_FOLLOW_UP_PUBLISH_ENDPOINT" });
+      }
+
+      const nextDraftDefinition =
+        payload.draftDefinition ??
+        (payload.flowNodes !== undefined || payload.flowEdges !== undefined
+          ? convertLegacyWorkflowDefinition(
+              payload.flowNodes ?? existing.flowNodes,
+              payload.flowEdges ?? existing.flowEdges,
+            )
+          : undefined);
+      const v3Draft = WorkflowDefinitionV3Schema.safeParse(nextDraftDefinition);
+      const canonicalSteps = v3Draft.success
+        ? v3Draft.data.steps.map((step, index) => ({
+            title: step.name,
+            notesTemplate: step.notesTemplate ?? null,
+            templateNodeId: step.id,
+            dueDaysFromStart: step.dueDaysFromStart,
+            sortOrder: (index + 1) * 10,
+          }))
+        : payload.steps;
+
       const updated = await prisma.$transaction(async (tx) => {
         const prismaTx = tx as any;
 
-        if (payload.steps) {
+        if (canonicalSteps) {
           await prismaTx.serviceFollowUpTemplateStep.deleteMany({
             where: { tenantId, serviceId: recordId, templateId },
           });
@@ -4108,18 +4215,15 @@ router.patch(
           data: {
             ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
             ...(payload.sortOrder !== undefined ? { sortOrder: payload.sortOrder } : {}),
-            ...(payload.isPublished !== undefined
-              ? {
-                  isPublished: payload.isPublished,
-                  publishedAt: payload.isPublished ? new Date() : null,
-                }
-              : {}),
             ...(payload.flowNodes !== undefined ? { flowNodes: payload.flowNodes } : {}),
             ...(payload.flowEdges !== undefined ? { flowEdges: payload.flowEdges } : {}),
-            ...(payload.steps
+            ...(nextDraftDefinition !== undefined
+              ? { draftDefinition: nextDraftDefinition, needsRepair: false }
+              : {}),
+            ...(canonicalSteps
               ? {
                   steps: {
-                    create: payload.steps.map((step, index) => ({
+                    create: canonicalSteps.map((step, index) => ({
                       tenantId,
                       serviceId: recordId,
                       title: step.title.trim(),
@@ -4140,18 +4244,201 @@ router.patch(
             publishedAt: true,
             flowNodes: true,
             flowEdges: true,
+            draftDefinition: true,
+            needsRepair: true,
+            activeVersion: {
+              select: { id: true, versionNumber: true, schemaVersion: true, checksum: true, publishedAt: true },
+            },
           },
         });
       });
 
+      const definition = getDraftWorkflowDefinition(updated);
+      const canvas = workflowDefinitionToCanvas(definition);
       return res.json({
         ok: true,
         template: {
           ...updated,
-          flowNodes: updated.flowNodes ?? [],
-          flowEdges: updated.flowEdges ?? [],
+          flowNodes: canvas.nodes,
+          flowEdges: canvas.edges,
+          draftDefinition: definition,
         },
       });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/:tenantId/services/:recordId/follow-up-templates/:templateId/validate",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      const templateId = z.string().trim().min(1).parse(req.params.templateId);
+      const suppliedDefinition = req.body?.definition;
+
+      const template = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
+        where: { id: templateId },
+        select: {
+          id: true,
+          tenantId: true,
+          serviceId: true,
+          draftDefinition: true,
+          flowNodes: true,
+          flowEdges: true,
+          steps: { select: { templateNodeId: true, sortOrder: true }, orderBy: { sortOrder: "asc" } },
+        },
+      });
+      if (!template || template.tenantId !== tenantId || template.serviceId !== recordId) {
+        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
+      }
+
+      const definition =
+        suppliedDefinition === undefined
+          ? getDraftWorkflowDefinition(template)
+          : suppliedDefinition;
+      const validation = validateAnyWorkflowDefinition(definition);
+      const protectedFields = validation.definition
+        ? await prismaWithContacts.contactCustomField.findMany({
+            where: { tenantId, OR: [{ isEncrypted: true }, { isSensitive: true }] },
+            select: { id: true, key: true, isEncrypted: true, isSensitive: true },
+          })
+        : [];
+      const sensitiveIssues = validation.definition
+        ? validateAnySensitiveConditions(validation.definition, protectedFields)
+        : [];
+      const issues = [...validation.issues, ...sensitiveIssues];
+      const isValid = validation.ok && sensitiveIssues.length === 0;
+      return res.status(isValid ? 200 : 422).json({
+        ok: isValid,
+        definition: validation.definition,
+        issues,
+        ...(isValid ? {} : { error: "INVALID_FOLLOW_UP_GRAPH" }),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/:tenantId/services/:recordId/follow-up-templates/:templateId/publish",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+      const authed = req as AuthedRequest;
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      const templateId = z.string().trim().min(1).parse(req.params.templateId);
+
+      const template = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
+        where: { id: templateId },
+        select: {
+          id: true,
+          tenantId: true,
+          serviceId: true,
+          draftDefinition: true,
+          flowNodes: true,
+          flowEdges: true,
+          steps: { select: { templateNodeId: true, sortOrder: true }, orderBy: { sortOrder: "asc" } },
+        },
+      });
+      if (!template || template.tenantId !== tenantId || template.serviceId !== recordId) {
+        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
+      }
+
+      const validation = validateAnyWorkflowDefinition(getDraftWorkflowDefinition(template));
+      const protectedFields = validation.definition
+        ? await prismaWithContacts.contactCustomField.findMany({
+            where: { tenantId, OR: [{ isEncrypted: true }, { isSensitive: true }] },
+            select: { id: true, key: true, isEncrypted: true, isSensitive: true },
+          })
+        : [];
+      const sensitiveIssues = validation.definition
+        ? validateAnySensitiveConditions(validation.definition, protectedFields)
+        : [];
+      if (!validation.ok || sensitiveIssues.length) {
+        await prismaWithContacts.serviceFollowUpTemplate.update({
+          where: { id: templateId },
+          data: { needsRepair: true },
+        });
+        return res.status(422).json({
+          error: "INVALID_FOLLOW_UP_GRAPH",
+          issues: [...validation.issues, ...sensitiveIssues],
+        });
+      }
+
+      const definition = validation.definition;
+      const checksum = checksumWorkflowDefinition(definition);
+      const published = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any;
+        const existingVersion = await prismaTx.serviceFollowUpTemplateVersion.findFirst({
+          where: { templateId, checksum },
+        });
+        const latest = await prismaTx.serviceFollowUpTemplateVersion.findFirst({
+          where: { templateId },
+          orderBy: { versionNumber: "desc" },
+          select: { versionNumber: true },
+        });
+        const version =
+          existingVersion ??
+          (await prismaTx.serviceFollowUpTemplateVersion.create({
+            data: {
+              tenantId,
+              templateId,
+              versionNumber: (latest?.versionNumber ?? 0) + 1,
+              schemaVersion: definition.schemaVersion,
+              checksum,
+              definition,
+              publishedById: authed.user.id,
+            },
+          }));
+
+        const updatedTemplate = await prismaTx.serviceFollowUpTemplate.update({
+          where: { id: templateId },
+          data: {
+            draftDefinition: definition,
+            activeVersionId: version.id,
+            isPublished: true,
+            publishedAt: version.publishedAt,
+            needsRepair: false,
+          },
+          select: { id: true, isPublished: true, publishedAt: true, needsRepair: true },
+        });
+        return { template: updatedTemplate, version };
+      });
+
+      return res.json({ ok: true, ...published });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/:tenantId/services/:recordId/follow-up-templates/:templateId/unpublish",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      const templateId = z.string().trim().min(1).parse(req.params.templateId);
+      const existing = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
+        where: { id: templateId },
+        select: { tenantId: true, serviceId: true },
+      });
+      if (!existing || existing.tenantId !== tenantId || existing.serviceId !== recordId) {
+        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
+      }
+      const template = await prismaWithContacts.serviceFollowUpTemplate.update({
+        where: { id: templateId },
+        data: { activeVersionId: null, isPublished: false, publishedAt: null },
+        select: { id: true, isPublished: true, publishedAt: true },
+      });
+      return res.json({ ok: true, template });
     } catch (error) {
       return next(error);
     }

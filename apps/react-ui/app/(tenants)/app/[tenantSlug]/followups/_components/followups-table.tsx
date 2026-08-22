@@ -54,6 +54,12 @@ type EnrollmentRow = {
   serviceName: string
   followUpTemplateId: string | null
   followUpTemplateName: string | null
+  followUpTemplateVersion?: { id: string; versionNumber: number } | null
+  followUpRun?: {
+    id: string
+    status: "RUNNING" | "WAITING" | "AWAITING_STEP" | "COMPLETED" | "FAILED" | "NEEDS_REVIEW" | "CANCELED"
+    failureMessage: string | null
+  } | null
   currentStep: {
     id: string
     title: string
@@ -66,6 +72,8 @@ type EnrollmentRow = {
     note: string | null
     sortOrder: number
     stepNumber: number | null
+    resolutionSource?: "USER_COMPLETED" | "USER_SKIPPED" | "CONDITION_SKIPPED" | "FLOW_SKIPPED" | null
+    resolutionReason?: string | null
   } | null
   progress: {
     completedCount: number
@@ -793,7 +801,15 @@ export function FollowUpsTable({
                         <p className="font-medium text-slate-900">{item.serviceName}</p>
                         <p className="text-xs text-slate-500">
                           {item.followUpTemplateName || "Manual follow-up flow"}
+                          {item.followUpTemplateVersion
+                            ? ` · v${item.followUpTemplateVersion.versionNumber}`
+                            : ""}
                         </p>
+                        {item.followUpRun?.status === "FAILED" || item.followUpRun?.status === "NEEDS_REVIEW" ? (
+                          <p className="text-xs font-medium text-rose-700">
+                            {item.followUpRun.status === "FAILED" ? "Automation paused" : "Needs review"}
+                          </p>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell>

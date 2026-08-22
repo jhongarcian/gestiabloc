@@ -42,6 +42,7 @@ import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import {
   dateTimeDraftToUtcIso,
+  formatDateTimeForDisplay,
   formatUtcIsoToDateTimeDraft,
   isDateTimeDraftComplete,
   isDateTimeDraftEmpty,
@@ -55,9 +56,20 @@ type FollowUpStep = {
   status?: "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
   availableAt: string | null
   dueAt: string | null
+  effectiveDueAt?: string | null
+  effectiveDueSource?: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE" | null
   completedAt: string | null
+  resolutionSource?: "USER_COMPLETED" | "USER_SKIPPED" | "CONDITION_SKIPPED" | "FLOW_SKIPPED" | null
+  resolutionReason?: string | null
   note?: string | null
   sortOrder: number
+  canCompleteNow?: boolean
+  completionRequirement?: {
+    type: "NEXT_FOLLOW_UP_AT"
+    actionId: string
+    prompt: string
+    timezone?: string
+  } | null
 }
 
 type ContactServiceItem = {
@@ -69,6 +81,17 @@ type ContactServiceItem = {
   followUpTemplate: {
     id: string
     name: string
+  } | null
+  nextFollowUp?: {
+    at: string
+    stepId: string | null
+    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    projected: boolean
+  } | null
+  followUpRun?: {
+    status: "RUNNING" | "WAITING" | "AWAITING_STEP" | "COMPLETED" | "FAILED" | "NEEDS_REVIEW" | "CANCELED"
+    resumeAt: string | null
+    canContinueNow: boolean
   } | null
   followUpSteps: FollowUpStep[]
 }
@@ -99,6 +122,7 @@ type ServiceFollowUpView = {
 type ContactFollowUpsPanelProps = {
   tenantId: string
   contactId: string
+  tenantTimezone?: string | null
 }
 
 type StepTimeMeta = {
@@ -131,22 +155,30 @@ const fromInputDateTime = (value: string) => {
   return date.toISOString()
 }
 
-const getStepTimeMeta = (step: FlattenedStep): StepTimeMeta => {
+const getStepTimeMeta = (
+  step: FlattenedStep,
+  tenantTimezone?: string | null,
+): StepTimeMeta => {
   if (step.status === "COMPLETED") {
     return {
       label: "Completed",
-      helper: step.completedAt ? new Date(step.completedAt).toLocaleString() : "Marked as completed",
+      helper: step.completedAt
+        ? formatDateTimeForDisplay(step.completedAt, tenantTimezone)
+        : "Marked as completed",
       badgeClassName: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
     }
   }
   if (step.status === "POSTPONED") {
     return {
       label: "Postponed",
-      helper: step.dueAt ? `Now due ${new Date(step.dueAt).toLocaleString()}` : "Postponed",
+      helper: step.dueAt
+        ? `Now due ${formatDateTimeForDisplay(step.dueAt, tenantTimezone)}`
+        : "Postponed",
       badgeClassName: "bg-violet-100 text-violet-800 hover:bg-violet-100",
     }
   }
-  if (!step.dueAt) {
+  const effectiveDueAt = step.effectiveDueAt ?? step.dueAt
+  if (!effectiveDueAt) {
     return {
       label: "No due date",
       helper: "No due date configured",
@@ -154,14 +186,22 @@ const getStepTimeMeta = (step: FlattenedStep): StepTimeMeta => {
     }
   }
 
-  const dueDate = new Date(step.dueAt)
+  if (step.effectiveDueSource === "USER_SCHEDULED_WAIT") {
+    return {
+      label: "Scheduled",
+      helper: `Scheduled for ${formatDateTimeForDisplay(effectiveDueAt, tenantTimezone)}`,
+      badgeClassName: "bg-blue-100 text-blue-800 hover:bg-blue-100",
+    }
+  }
+
+  const dueDate = new Date(effectiveDueAt)
   const diffMs = dueDate.getTime() - Date.now()
   const diffHours = Math.round(diffMs / (1000 * 60 * 60))
 
   if (diffMs < 0) {
     return {
       label: "Overdue",
-      helper: `Due ${dueDate.toLocaleString()}`,
+      helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, tenantTimezone)}`,
       badgeClassName: "bg-rose-100 text-rose-800 hover:bg-rose-100",
     }
   }
@@ -169,19 +209,23 @@ const getStepTimeMeta = (step: FlattenedStep): StepTimeMeta => {
   if (diffHours <= 24) {
     return {
       label: "Due soon",
-      helper: `Due ${dueDate.toLocaleString()}`,
+      helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, tenantTimezone)}`,
       badgeClassName: "bg-amber-100 text-amber-800 hover:bg-amber-100",
     }
   }
 
   return {
     label: "Upcoming",
-    helper: `Due ${dueDate.toLocaleString()}`,
+    helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, tenantTimezone)}`,
     badgeClassName: "bg-sky-100 text-sky-800 hover:bg-sky-100",
   }
 }
 
-export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsPanelProps) {
+export function ContactFollowUpsPanel({
+  tenantId,
+  contactId,
+  tenantTimezone,
+}: ContactFollowUpsPanelProps) {
   const router = useRouter()
   const [services, setServices] = useState<ContactServiceItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -202,6 +246,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
   const [stepStatusValue, setStepStatusValue] = useState<FollowUpStep["status"]>("PENDING")
   const [stepStatusNote, setStepStatusNote] = useState("")
   const [stepPostponeInput, setStepPostponeInput] = useState<DateTimeDraft>({ date: "", time: "" })
+  const [stepNextFollowUpInput, setStepNextFollowUpInput] = useState<DateTimeDraft>({ date: "", time: "" })
   const [isSavingStepStatus, setIsSavingStepStatus] = useState(false)
   const [stepNoteTitle, setStepNoteTitle] = useState("")
   const [stepNoteBody, setStepNoteBody] = useState("")
@@ -303,6 +348,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
     nextStatus: FollowUpStep["status"],
     note?: string,
     postponeTo?: string,
+    nextFollowUpAt?: string,
   ) => {
     if (!nextStatus) return
     setMutatingStepId(step.id)
@@ -313,6 +359,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
           status: nextStatus,
           ...(note?.trim() ? { note: note.trim() } : {}),
           ...(postponeTo ? { postponeTo, cascadeFutureSteps: true } : {}),
+          ...(nextFollowUpAt ? { nextFollowUpAt } : {}),
         },
       )
       toast.success(nextStatus === "COMPLETED" ? "Step marked as completed." : "Step status updated.")
@@ -332,10 +379,68 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
 
   const openStepStatusDialog = (step: FlattenedStep) => {
     setActiveStepContext(step)
-    setStepStatusValue(step.status ?? "PENDING")
+    setStepStatusValue("COMPLETED")
     setStepStatusNote("")
-    setStepPostponeInput(formatUtcIsoToDateTimeDraft(step.dueAt, "America/Chicago"))
+    setStepPostponeInput(formatUtcIsoToDateTimeDraft(step.dueAt, tenantTimezone))
+    setStepNextFollowUpInput({ date: "", time: "" })
     setIsStepStatusDialogOpen(true)
+  }
+
+  const prepareStepStatusDialog = async (step: FlattenedStep) => {
+    if (step.status === "ACTIVE") {
+      openStepStatusDialog(step)
+      return
+    }
+    if (step.status !== "PENDING" || !step.canCompleteNow) return
+
+    const service = services.find((candidate) => candidate.id === step.contactServiceId)
+    setMutatingStepId(step.id)
+    try {
+      if (service?.followUpRun) {
+        const { data } = await api.post(
+          `/api/services/${tenantId}/contact-services/${step.contactServiceId}/follow-up-run/continue-now`,
+        )
+        const activeStepId = data?.result?.activeStepId
+        await loadData()
+        router.refresh()
+        if (data?.result?.status === "FAILED") {
+          toast.error("The follow-up could not continue because an automation action failed.")
+          return
+        }
+        if (data?.result?.status === "WAITING") {
+          toast.success("The follow-up continued to its next scheduled wait.")
+          return
+        }
+        if (activeStepId !== step.id) {
+          toast.success("The follow-up continued and selected the next applicable step.")
+          return
+        }
+      } else {
+        await api.patch(
+          `/api/services/${tenantId}/contact-services/${step.contactServiceId}/follow-up-steps/${step.id}`,
+          { status: "ACTIVE" },
+        )
+        await loadData()
+        router.refresh()
+      }
+
+      toast.success("This upcoming step is ready to complete now.")
+      openStepStatusDialog({
+        ...step,
+        status: "ACTIVE",
+        availableAt: new Date().toISOString(),
+      })
+    } catch (error) {
+      const backendError = isAxiosError(error) ? error.response?.data?.error : null
+      toast.error(
+        typeof backendError === "string"
+          ? backendError.replace(/_/g, " ")
+          : "Could not start this upcoming follow-up early.",
+      )
+      await loadData()
+    } finally {
+      setMutatingStepId(null)
+    }
   }
 
   const openStepDetailsDialog = (step: FlattenedStep) => {
@@ -363,19 +468,38 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
     }
     const postponeToIso = stepStatusValue !== "POSTPONED" || isDateTimeDraftEmpty(stepPostponeInput)
       ? undefined
-      : dateTimeDraftToUtcIso(stepPostponeInput, "America/Chicago") ?? undefined
+      : dateTimeDraftToUtcIso(stepPostponeInput, tenantTimezone) ?? undefined
+    const needsNextFollowUp =
+      stepStatusValue === "COMPLETED" &&
+      activeStepContext.completionRequirement?.type === "NEXT_FOLLOW_UP_AT"
+    if (
+      needsNextFollowUp &&
+      (!isDateTimeDraftComplete(stepNextFollowUpInput) || isDateTimeDraftEmpty(stepNextFollowUpInput))
+    ) {
+      toast.error("Next follow-up date and time are required.")
+      return
+    }
+    const nextFollowUpAt = needsNextFollowUp
+      ? dateTimeDraftToUtcIso(stepNextFollowUpInput, tenantTimezone)
+      : undefined
+    if (needsNextFollowUp && (!nextFollowUpAt || new Date(nextFollowUpAt).getTime() <= Date.now())) {
+      toast.error("Select a future next follow-up date and time.")
+      return
+    }
     setIsSavingStepStatus(true)
     await updateStepStatus(
       activeStepContext,
       stepStatusValue,
       stepStatusNote,
       postponeToIso,
+      nextFollowUpAt ?? undefined,
     )
     setIsSavingStepStatus(false)
     setIsStepStatusDialogOpen(false)
     setActiveStepContext(null)
     setStepStatusNote("")
     setStepPostponeInput({ date: "", time: "" })
+    setStepNextFollowUpInput({ date: "", time: "" })
   }
 
   const openStepNoteDialog = (step: FlattenedStep) => {
@@ -528,10 +652,14 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
               <div className="mt-4 space-y-3">
                 {service.steps.length ? (
                   service.steps.map((step, index) => {
-                    const timeMeta = getStepTimeMeta(step)
-                    const isStatusLocked = (step.status ?? "PENDING") !== "ACTIVE"
+                    const timeMeta = getStepTimeMeta(step, tenantTimezone)
+                    const isStatusLocked = !step.canCompleteNow
                     const isActive = (step.status ?? "PENDING") === "ACTIVE"
+                    const isCompletingEarly = (step.status ?? "PENDING") === "PENDING" && !isStatusLocked
                     const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"
+                    const isAutoSkipped =
+                      step.resolutionSource === "CONDITION_SKIPPED" ||
+                      step.resolutionSource === "FLOW_SKIPPED"
 
                     return (
                       <div key={step.id} className="flex gap-3">
@@ -539,7 +667,9 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                           <span
                             className={cn(
                               "inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold",
-                              isDone
+                              isAutoSkipped
+                                ? "border-rose-200 bg-rose-100 text-rose-800"
+                              : isDone
                                 ? "border-emerald-200 bg-emerald-100 text-emerald-800"
                                 : isActive
                                   ? "border-blue-200 bg-blue-50 text-blue-900"
@@ -555,7 +685,9 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                         <article
                           className={cn(
                             "flex-1 rounded-[22px] border px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]",
-                            isDone
+                            isAutoSkipped
+                              ? "border-rose-200 bg-rose-50/60"
+                            : isDone
                               ? "border-emerald-200 bg-emerald-50/50"
                               : isActive
                                 ? "border-blue-200 bg-blue-50/40"
@@ -579,6 +711,11 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                                         Current step
                                       </Badge>
                                     ) : null}
+                                    {isAutoSkipped ? (
+                                      <Badge className="bg-rose-100 text-rose-800 hover:bg-rose-100">
+                                        Skipped by workflow
+                                      </Badge>
+                                    ) : null}
                                   </div>
                                   <button
                                     type="button"
@@ -593,6 +730,11 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                               <p className="max-w-3xl text-sm leading-6 text-slate-600">
                                 {step.notesTemplate?.trim() || "No description provided for this step."}
                               </p>
+                              {step.resolutionReason ? (
+                                <p className="text-xs font-medium text-rose-700">
+                                  {step.resolutionReason}
+                                </p>
+                              ) : null}
                               {step.note?.trim() ? (
                                 <div className="rounded-2xl bg-slate-50 px-3 py-2.5">
                                   <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
@@ -611,9 +753,13 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                                   variant="outline"
                                   className="h-10 min-w-[150px] cursor-pointer justify-between rounded-full border-slate-200 bg-white text-sm capitalize shadow-sm"
                                   disabled={mutatingStepId === step.id}
-                                  onClick={() => openStepStatusDialog(step)}
+                                  onClick={() => void prepareStepStatusDialog(step)}
                                 >
-                                  <span>{(step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}</span>
+                                  <span>
+                                    {isCompletingEarly
+                                      ? "Complete early"
+                                      : (step.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}
+                                  </span>
                                   {mutatingStepId === step.id ? (
                                     <Loader2 className="h-4 w-4 animate-spin" />
                                   ) : (
@@ -636,7 +782,7 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                                     </span>
                                   </TooltipTrigger>
                                   <TooltipContent side="top" sideOffset={6}>
-                                    Only the current active step can be updated.
+                                    Only the current or next upcoming step can be updated.
                                   </TooltipContent>
                                 </Tooltip>
                               )}
@@ -750,6 +896,13 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                 <p><span className="font-medium text-slate-900">Step:</span> {activeStepContext.title}</p>
               </div>
             ) : null}
+            {activeStepContext?.effectiveDueAt &&
+            new Date(activeStepContext.effectiveDueAt).getTime() > Date.now() ? (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                This step is scheduled for a later time. You can complete it now; its original due
+                date will remain in the follow-up history.
+              </div>
+            ) : null}
             <div className="grid gap-2">
               <Label>Status</Label>
               <Select
@@ -760,14 +913,15 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                   if (nextValue !== "POSTPONED") {
                     setStepPostponeInput({ date: "", time: "" })
                   }
+                  if (nextValue !== "COMPLETED") {
+                    setStepNextFollowUpInput({ date: "", time: "" })
+                  }
                 }}
               >
                 <SelectTrigger className="cursor-pointer">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="PENDING" className="cursor-pointer">Pending</SelectItem>
-                  <SelectItem value="ACTIVE" className="cursor-pointer">Active</SelectItem>
                   <SelectItem value="COMPLETED" className="cursor-pointer">Completed</SelectItem>
                   <SelectItem value="SKIPPED" className="cursor-pointer">Skipped</SelectItem>
                   <SelectItem value="POSTPONED" className="cursor-pointer">Postponed</SelectItem>
@@ -793,6 +947,20 @@ export function ContactFollowUpsPanel({ tenantId, contactId }: ContactFollowUpsP
                 />
                 <p className="text-xs text-slate-500">
                   This step and all upcoming pending/active steps will shift to match the new timing.
+                </p>
+              </div>
+            ) : null}
+            {stepStatusValue === "COMPLETED" &&
+            activeStepContext?.completionRequirement?.type === "NEXT_FOLLOW_UP_AT" ? (
+              <div className="grid gap-2 rounded-xl border border-blue-200 bg-blue-50/60 p-3">
+                <Label>{activeStepContext.completionRequirement.prompt}</Label>
+                <DateTimeInput
+                  value={stepNextFollowUpInput}
+                  onValueChange={setStepNextFollowUpInput}
+                  disabledDate={isBeforeToday}
+                />
+                <p className="text-xs text-slate-600">
+                  The workflow will pause and activate the next selected step at this time.
                 </p>
               </div>
             ) : null}

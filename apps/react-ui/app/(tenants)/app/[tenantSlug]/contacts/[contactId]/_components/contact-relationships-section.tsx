@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -25,6 +26,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
@@ -71,6 +80,7 @@ type RelationshipRecord = {
   relatedContact: {
     id: string
     fullName: string
+    dateOfBirth: string | null
     phoneNumber: string | null
     email: string | null
   }
@@ -127,6 +137,20 @@ const RELATIONSHIP_OPTIONS: Array<{ value: RelationshipType; label: string }> =
     { value: "OTHER", label: "Other" },
   ]
 
+function formatDateOfBirth(value: string | null) {
+  if (!value) return "—"
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "—"
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "2-digit",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date)
+}
+
 export function ContactRelationshipsSection({
   tenantId,
   tenantSlug,
@@ -159,6 +183,13 @@ export function ContactRelationshipsSection({
 
   const relatedContactIds = useMemo(
     () => new Set(relationships.map((item) => item.relatedContactId)),
+    [relationships],
+  )
+  const sortedRelationships = useMemo(
+    () =>
+      [...relationships].sort((left, right) =>
+        left.relatedContact.fullName.localeCompare(right.relatedContact.fullName),
+      ),
     [relationships],
   )
   const groupedRelationships = useMemo(() => {
@@ -380,25 +411,115 @@ export function ContactRelationshipsSection({
             </div>
           </div>
 
-          <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-            {relationships.length > 0 ? (
-              <div className="space-y-5">{groupedContent}</div>
-            ) : (
-              <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50 px-5 py-12 text-center">
-                <p className="text-base font-medium text-slate-900">No relationships added yet.</p>
-                <p className="mt-1 text-sm text-slate-500">
-                  Add family, caregiver, or other connected contacts to keep this record easier to understand.
-                </p>
-                <Button
-                  type="button"
-                  className="mt-5 cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
-                  onClick={() => setOpen(true)}
-                >
-                  <Plus className="h-4 w-4" />
-                  Add relationship
-                </Button>
-              </div>
-            )}
+          <section
+            className="overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-sm"
+            aria-label="Contact relationships"
+          >
+            <div className="overflow-auto px-4 pt-4">
+              <Table
+                className="min-w-[920px] table-fixed border-separate border-spacing-0"
+                aria-label="Relationships"
+              >
+                <TableHeader className="drop-shadow-sm [&_tr]:border-0">
+                  <TableRow className="h-14 border-0 hover:bg-transparent">
+                    <TableHead className="w-[22%] rounded-l-xl border-y border-l bg-slate-50 px-4 text-xs text-slate-600">
+                      Name
+                    </TableHead>
+                    <TableHead className="w-[16%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                      Date of birth
+                    </TableHead>
+                    <TableHead className="w-[18%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                      Phone number
+                    </TableHead>
+                    <TableHead className="w-[24%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                      Email
+                    </TableHead>
+                    <TableHead className="w-[14%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                      Relationship
+                    </TableHead>
+                    <TableHead className="w-[6%] rounded-r-xl border-y border-r bg-slate-50 px-4">
+                      <span className="sr-only">Actions</span>
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow
+                    aria-hidden="true"
+                    className="h-2 border-0 hover:bg-transparent"
+                  >
+                    <TableCell colSpan={6} className="p-0" />
+                  </TableRow>
+
+                  {sortedRelationships.map((relationship) => (
+                    <TableRow
+                      key={relationship.id}
+                      className="h-14 hover:bg-blue-50/50 focus-within:bg-blue-50/50"
+                    >
+                      <TableCell className="px-4 py-0">
+                        <Link
+                          href={`/app/${tenantSlug}/contacts/${relationship.relatedContact.id}/overview`}
+                          className="block truncate font-medium text-slate-950 transition-colors hover:text-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                          title={relationship.relatedContact.fullName}
+                        >
+                          {relationship.relatedContact.fullName}
+                        </Link>
+                      </TableCell>
+                      <TableCell className="px-4 py-0 text-slate-700">
+                        {formatDateOfBirth(relationship.relatedContact.dateOfBirth)}
+                      </TableCell>
+                      <TableCell className="px-4 py-0 text-slate-700">
+                        {formatPhoneNumber(relationship.relatedContact.phoneNumber)}
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        <span
+                          className="block truncate text-slate-700"
+                          title={relationship.relatedContact.email ?? undefined}
+                        >
+                          {relationship.relatedContact.email ?? "—"}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        <Badge variant="secondary">
+                          {relationship.relationshipLabel}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="px-4 py-0 text-right">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => void handleDelete(relationship.id)}
+                          disabled={isSaving}
+                          aria-label={`Remove relationship with ${relationship.relatedContact.fullName}`}
+                          title="Remove relationship"
+                        >
+                          <Trash2 aria-hidden="true" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+
+                  {sortedRelationships.length === 0 ? (
+                    <TableRow className="h-20 hover:bg-transparent">
+                      <TableCell
+                        colSpan={6}
+                        className="px-4 py-0 text-center text-sm text-slate-500"
+                      >
+                        No relationships added yet.
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="flex items-center justify-between px-4 py-4">
+              <p className="text-sm text-slate-500">
+                {relationships.length === 1
+                  ? "1 relationship"
+                  : `${relationships.length} relationships`}
+              </p>
+            </div>
           </section>
         </section>
       ) : (

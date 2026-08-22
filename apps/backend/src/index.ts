@@ -25,6 +25,7 @@ import {
   refreshTaskPrioritiesForTenants,
 } from "./lib/task-priority"
 import { materializeTaskNotifications } from "./lib/task-notifications"
+import { resumeDueFollowUpRuns } from "./lib/service-followup-v2-execution"
 import { ZodError } from "zod"
 import swaggerUi from "swagger-ui-express"
 import { readFileSync } from "fs"
@@ -251,6 +252,14 @@ const start = async () => {
   }, 15_000)
 
   reminderInterval.unref?.()
+
+  const followUpInterval = setInterval(() => {
+    void resumeDueFollowUpRuns().catch((error) => {
+      console.error("Failed to resume due follow-up runs:", error)
+    })
+  }, 15_000)
+
+  followUpInterval.unref?.()
 
   server.listen(env.port, () => {
     console.log(`Backend listening on http://localhost:${env.port}`)

@@ -5,8 +5,11 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "build": "tsc",
     "test": "node --import tsx --test src/**/*.test.ts",
-    "db:seed": "node --import tsx prisma/seed.ts"
+    "db:seed": "node --import tsx prisma/seed.ts",
+    "db:backfill-followups-v2": "node --import tsx prisma/backfill-followup-v2.ts",
+    "db:backfill-followups-v3": "node --import tsx prisma/backfill-followup-v3.ts"
   },
   "prisma": {
     "seed": "node --import tsx prisma/seed.ts"
