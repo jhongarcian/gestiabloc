@@ -71,6 +71,12 @@ import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import { uploadPrivateFileToSignedUrl } from "@/lib/supabase-storage"
 import { cn } from "@/lib/utils"
+import {
+  parseBuilderApiIssues,
+  parseWorkflowValidationIssues,
+  toPersistedBuilderSnapshot,
+  type WorkflowValidationIssue,
+} from "./service-followup-builder-state"
 
 type PersistedNodeKind =
   | "start"
@@ -928,6 +934,17 @@ type FollowUpTemplateFlowBuilderProps = {
   }
 }
 
+type FollowUpTemplateMutationResponse = {
+  ok: boolean
+  template: {
+    id: string
+    name: string
+    flowNodes: unknown[]
+    flowEdges: unknown[]
+    draftDefinition: unknown
+  }
+}
+
 type TenantUsersResponse = {
   ok: boolean
   items: Array<{
@@ -1625,37 +1642,6 @@ function toSafeEdges(raw: unknown[]): Edge[] {
     .map((item) => ({ ...item, type: "smoothstep" }))
 }
 
-function toPersistedSnapshot(nodes: StepNode[], edges: Edge[], name: string) {
-  return JSON.stringify({
-    name: name.trim(),
-    nodes: nodes.map((node) => ({
-      id: node.id,
-      type: node.type,
-      position: {
-        x: node.position.x,
-        y: node.position.y,
-      },
-      data: node.data,
-    })),
-    edges: edges.map((edge) => ({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      type: edge.type,
-    })),
-  })
-}
-
-type WorkflowValidationIssue = {
-  code: string
-  message: string
-  nodeId?: string
-  stepId?: string
-  transitionId?: string
-  branchId?: string
-  edgeId?: string
-}
-
 function AdditionalBranchConditions({
   branch,
   onChange,
@@ -2018,6 +2004,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const [isDeleting, setIsDeleting] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialNodes[0]?.id ?? null)
   const [hasRenamedTemplate, setHasRenamedTemplate] = useState(false)
+  const [lastSavedTemplateName, setLastSavedTemplateName] = useState(template.name)
+  const [validationIssueContext, setValidationIssueContext] = useState<"save" | "publish">("publish")
   const [isPublished, setIsPublished] = useState(Boolean(template.isPublished))
   const [newStepDraft, setNewStepDraft] = useState<NewStepDraft>(makeDefaultDraft())
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("hidden")
@@ -2059,9 +2047,9 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const noteAttachmentInputRef = useRef<HTMLInputElement | null>(null)
   const shouldBypassUnsavedPromptRef = useRef(false)
   const hasPushedUnsavedHistoryRef = useRef(false)
-  const canEditTemplateName = !hasRenamedTemplate && template.name.startsWith("Template ")
+  const canEditTemplateName = !hasRenamedTemplate && lastSavedTemplateName.startsWith("Template ")
   const initialBuilderSnapshot = useMemo(
-    () => toPersistedSnapshot(initialNodes, toSafeEdges(template.flowEdges), template.name),
+    () => toPersistedBuilderSnapshot(initialNodes, toSafeEdges(template.flowEdges), template.name),
     [initialNodes, template.flowEdges, template.name],
   )
   const [lastSavedBuilderSnapshot, setLastSavedBuilderSnapshot] = useState(initialBuilderSnapshot)
@@ -2069,6 +2057,10 @@ export function ServiceFollowUpTemplateFlowBuilder({
   useEffect(() => {
     setIsPublished(Boolean(template.isPublished))
   }, [template.id, template.isPublished])
+
+  useEffect(() => {
+    setLastSavedTemplateName(template.name)
+  }, [template.id, template.name])
 
   useEffect(() => {
     setLastSavedBuilderSnapshot(initialBuilderSnapshot)
@@ -2087,10 +2079,44 @@ export function ServiceFollowUpTemplateFlowBuilder({
     [nodes],
   )
   const currentBuilderSnapshot = useMemo(
-    () => toPersistedSnapshot(nodes, edges, name),
+    () => toPersistedBuilderSnapshot(nodes, edges, name),
     [edges, name, nodes],
   )
+  const currentBuilderSnapshotRef = useRef(currentBuilderSnapshot)
+  useEffect(() => {
+    currentBuilderSnapshotRef.current = currentBuilderSnapshot
+  }, [currentBuilderSnapshot])
   const hasUnsavedChanges = currentBuilderSnapshot !== lastSavedBuilderSnapshot
+  const validationIssuesWithLocations = useMemo(
+    () => validationIssues.map((issue) => {
+      const branchNode = issue.branchId
+        ? nodes.find((node) =>
+            node.data.kind === "ifElse" &&
+            (node.data.ifElseBranches ?? []).some((branch) => branch.id === issue.branchId),
+          )
+        : undefined
+      const transitionSourceId = issue.transitionId?.startsWith("transition-")
+        ? issue.transitionId.slice("transition-".length)
+        : undefined
+      const node = nodes.find((candidate) =>
+        candidate.id === issue.nodeId ||
+        candidate.id === issue.stepId ||
+        candidate.id === transitionSourceId,
+      ) ?? branchNode
+
+      if (!node) return { issue, location: null }
+      const branch = issue.branchId
+        ? (branchNode?.data.ifElseBranches ?? []).find((candidate) => candidate.id === issue.branchId)
+        : undefined
+      const nodeType = node.data.kind === "step" ? "Step" : node.data.kind === "start" ? "Start" : "Action"
+      const nodeLabel = node.data.label || NODE_KIND_LABEL[node.data.kind as Exclude<PersistedNodeKind, "start">] || "Workflow item"
+      const location = branch
+        ? `${nodeType} “${nodeLabel}”, outcome “${branch.name || "Default"}”`
+        : `${nodeType} “${nodeLabel}”`
+      return { issue, location }
+    }),
+    [nodes, validationIssues],
+  )
   const confirmLeaveWithUnsavedChanges = useCallback(() => {
     if (!hasUnsavedChanges || shouldBypassUnsavedPromptRef.current) {
       return true
@@ -3885,7 +3911,14 @@ export function ServiceFollowUpTemplateFlowBuilder({
               onDeleteAction: deleteAction,
             }
           : node.data),
-          hasValidationIssue: validationIssues.some((issue) => issue.nodeId === node.id),
+          hasValidationIssue: validationIssues.some((issue) => {
+            if (issue.nodeId === node.id || issue.stepId === node.id) return true
+            if (issue.transitionId === `transition-${node.id}`) return true
+            return (
+              node.data.kind === "ifElse" &&
+              (node.data.ifElseBranches ?? []).some((branch) => branch.id === issue.branchId)
+            )
+          }),
           routeOutcomes:
             node.data.kind === "ifElse"
               ? (node.data.ifElseBranches ?? []).map((branch) => ({
@@ -3968,12 +4001,21 @@ export function ServiceFollowUpTemplateFlowBuilder({
 
   const onSave = async () => {
     if (!name.trim()) {
-      toast.error("Template name is required.")
+      const issue = { code: "TEMPLATE_NAME_REQUIRED", message: "Template name is required." }
+      setValidationIssueContext("save")
+      setValidationIssues([issue])
+      toast.error(issue.message)
       return
     }
 
-    if (!canEditTemplateName && name.trim() !== template.name) {
-      toast.error("Template name can only be edited once.")
+    if (!canEditTemplateName && name.trim() !== lastSavedTemplateName) {
+      const issue = {
+        code: "TEMPLATE_NAME_LOCKED",
+        message: "Template name can only be edited once.",
+      }
+      setValidationIssueContext("save")
+      setValidationIssues([issue])
+      toast.error(issue.message)
       return
     }
 
@@ -4169,6 +4211,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
 
     }
 
+    const submittedSnapshot = currentBuilderSnapshot
+    const submittedName = name.trim()
     setIsSaving(true)
     try {
       const edgesByTarget = new Map<string, string[]>()
@@ -4225,41 +4269,83 @@ export function ServiceFollowUpTemplateFlowBuilder({
           sortOrder: (index + 1) * 10,
         }))
 
-      await api.patch(
+      const draftDefinition = toWorkflowDefinitionV3(nodes, edges, steps)
+      const { data } = await api.patch<FollowUpTemplateMutationResponse>(
         `/api/account-settings/${tenantId}/services/${serviceId}/follow-up-templates/${template.id}`,
         {
-          name: name.trim(),
+          name: submittedName,
           flowNodes: nodes,
           flowEdges: edges,
           steps,
-          draftDefinition: toWorkflowDefinitionV3(nodes, edges, steps),
+          draftDefinition,
         },
       )
 
-      setLastSavedBuilderSnapshot(
-        JSON.stringify({
-          name,
-          nodes,
-          edges,
-        }),
-      )
+      const savedName = data.template.name.trim()
+      const savedNodes = toSafeNodes(data.template.flowNodes, template.id, savedName)
+      const savedEdges = toSafeEdges(data.template.flowEdges)
+      const savedSnapshot = toPersistedBuilderSnapshot(savedNodes, savedEdges, savedName)
+      const builderChangedDuringSave = currentBuilderSnapshotRef.current !== submittedSnapshot
 
-      if (canEditTemplateName && name.trim() !== template.name) {
+      if (!builderChangedDuringSave) {
+        setName(savedName)
+        setNodes(savedNodes)
+        setEdges(savedEdges)
+      }
+      setLastSavedBuilderSnapshot(savedSnapshot)
+      setLastSavedTemplateName(savedName)
+
+      if (canEditTemplateName && savedName !== lastSavedTemplateName) {
         setHasRenamedTemplate(true)
       }
 
+      let savedValidationIssues: WorkflowValidationIssue[] = []
+      let validationCheckFailed = false
+      try {
+        const validationResponse = await api.post(
+          `/api/account-settings/${tenantId}/services/${serviceId}/follow-up-templates/${template.id}/validate`,
+          { definition: data.template.draftDefinition ?? draftDefinition },
+        )
+        savedValidationIssues = parseWorkflowValidationIssues(validationResponse.data?.issues)
+      } catch (validationError) {
+        if (isAxiosError(validationError) && validationError.response?.status === 422) {
+          savedValidationIssues = parseBuilderApiIssues(validationError.response.data)
+        } else {
+          validationCheckFailed = true
+        }
+      }
+
+      setValidationIssueContext("publish")
+      setValidationIssues(savedValidationIssues)
+
       shouldBypassUnsavedPromptRef.current = false
-      setValidationIssues([])
-      toast.success("Template saved.")
-      router.refresh()
+      toast.success(
+        savedValidationIssues.length
+          ? `Template saved. Review ${savedValidationIssues.length} issue${savedValidationIssues.length === 1 ? "" : "s"} before publishing.`
+          : "Template saved.",
+      )
+      if (validationCheckFailed) {
+        toast.warning("Template saved, but its publish validation could not be checked.")
+      }
     } catch (error) {
       if (isAxiosError(error)) {
+        const builderIssues = parseBuilderApiIssues(error.response?.data)
         const backendError = error.response?.data?.error
+        if (builderIssues.length) {
+          setValidationIssueContext("save")
+          setValidationIssues(builderIssues)
+        }
         toast.error(
-          typeof backendError === "string"
+          builderIssues.length
+            ? "Template could not be saved. Review the issues shown in the builder."
+            : typeof backendError === "string"
             ? backendError.replace(/_/g, " ")
             : "Could not save template.",
         )
+      } else if (error instanceof Error) {
+        setValidationIssueContext("save")
+        setValidationIssues([{ code: "INVALID_BUILDER_STATE", message: error.message }])
+        toast.error(error.message)
       } else {
         toast.error("Could not save template.")
       }
@@ -4281,20 +4367,17 @@ export function ServiceFollowUpTemplateFlowBuilder({
         `/api/account-settings/${tenantId}/services/${serviceId}/follow-up-templates/${template.id}/${nextPublished ? "publish" : "unpublish"}`,
       )
       setIsPublished(nextPublished)
+      setValidationIssueContext("publish")
       setValidationIssues([])
       toast.success(nextPublished ? "Template published." : "Template moved to draft.")
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
-        const backendIssues = error.response?.data?.issues
-        if (Array.isArray(backendIssues)) {
-          setValidationIssues(
-            backendIssues.filter(
-              (issue): issue is WorkflowValidationIssue =>
-                Boolean(issue && typeof issue === "object" && typeof issue.code === "string" && typeof issue.message === "string"),
-            ),
-          )
+        const backendIssues = parseBuilderApiIssues(error.response?.data)
+        if (backendIssues.length) {
+          setValidationIssueContext("publish")
+          setValidationIssues(backendIssues)
         }
         toast.error(
           typeof backendError === "string"
@@ -4553,7 +4636,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
             <div className="flex items-center gap-2">
               <Input
                 value={name}
-                disabled={!canEditTemplateName}
+                disabled={!canEditTemplateName || isSaving}
                 onChange={(event) => setName(event.target.value)}
                 className="h-9 max-w-md"
               />
@@ -4639,10 +4722,15 @@ export function ServiceFollowUpTemplateFlowBuilder({
         </div>
         {validationIssues.length ? (
           <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
-            <p className="font-semibold">This draft cannot be published yet.</p>
+            <p className="font-semibold">
+              {validationIssueContext === "save"
+                ? "This draft could not be saved."
+                : "This draft was saved, but it cannot be published yet."}
+            </p>
             <ul className="mt-1 list-disc space-y-1 pl-5">
-              {validationIssues.slice(0, 6).map((issue, index) => (
+              {validationIssuesWithLocations.slice(0, 6).map(({ issue, location }, index) => (
                 <li key={`${issue.code}-${issue.nodeId ?? issue.branchId ?? index}`}>
+                  {location ? <span className="font-medium">{location}: </span> : null}
                   {issue.message}
                 </li>
               ))}
