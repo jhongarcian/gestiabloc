@@ -6186,6 +6186,7 @@ components:
               nullable: true
         activeFollowUpServices:
           type: array
+          description: Services with enrolled follow-up steps that remain in progress or are awaiting payment; completed and canceled services are excluded.
           items:
             type: object
             properties:

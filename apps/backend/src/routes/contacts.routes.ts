@@ -6,6 +6,7 @@ import {
   encryptCustomFieldValue,
 } from "../lib/contact-custom-field-encryption.js"
 import { normalizeCustomFieldValue } from "../lib/contact-custom-field-values.js"
+import { summarizeVisibleContactFollowUpServices } from "../lib/contact-followup-visibility.js"
 import { prisma } from "../lib/prisma.js"
 import { emitNotificationCreated } from "../lib/realtime.js"
 import { deletePrivateObject } from "../lib/private-storage.js"
@@ -1359,12 +1360,16 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
                 in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
               },
               followUpSteps: {
-                some: {
-                  status: "ACTIVE",
-                },
+                some: {},
               },
             },
             select: {
+              status: true,
+              _count: {
+                select: {
+                  followUpSteps: true,
+                },
+              },
               service: {
                 select: {
                   id: true,
@@ -1390,17 +1395,13 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
     return res.json({
       ok: true,
       items: contacts.map((contact) => {
-        const activeFollowUpServices = Array.from(
-          new Map(
-            contact.serviceProcesses.map((serviceProcess) => [
-              serviceProcess.service.id,
-              {
-                id: serviceProcess.service.id,
-                name: serviceProcess.service.name,
-              },
-            ]),
-          ).values(),
-        ).sort((left, right) => left.name.localeCompare(right.name))
+        const activeFollowUpServices = summarizeVisibleContactFollowUpServices(
+          contact.serviceProcesses.map((serviceProcess) => ({
+            status: serviceProcess.status,
+            followUpStepCount: serviceProcess._count.followUpSteps,
+            service: serviceProcess.service,
+          })),
+        )
 
         return {
           id: contact.id,
