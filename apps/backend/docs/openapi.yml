@@ -4652,7 +4652,7 @@ paths:
   /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-run/continue-now:
     post:
       tags: [Services]
-      summary: Continue a user-scheduled workflow Wait before its scheduled time
+      summary: Continue a duration or user-scheduled workflow Wait before its scheduled time
       security:
         - cookieAuth: []
       parameters:
@@ -4666,7 +4666,7 @@ paths:
         "200":
           description: The workflow was resumed and advanced to its routed step or next pause
         "409":
-          description: The run is not manually waiting or another worker has already claimed it
+          description: The run is not waiting at a resumable Wait or another worker has already claimed it
           content:
             application/json:
               schema:
@@ -8279,7 +8279,7 @@ components:
           type: string
           format: date-time
           nullable: true
-          description: Persisted due date or the projected user-scheduled follow-up timestamp
+          description: Persisted due date or the projected timestamp of a duration or user-scheduled Wait
         effectiveDueSource:
           type: string
           nullable: true
@@ -8305,6 +8305,9 @@ components:
           nullable: true
         sortOrder:
           type: integer
+        canCompleteNow:
+          type: boolean
+          description: True when this is the current step or the next pending step can be safely continued and completed before its scheduled time.
         completionRequirement:
           type: object
           nullable: true
@@ -8420,6 +8423,9 @@ components:
         waitingNodeId:
           type: string
           nullable: true
+        canContinueNow:
+          type: boolean
+          description: True when the current duration or user-scheduled Wait is lease-free and may be resumed early.
         manualWait:
           type: object
           nullable: true

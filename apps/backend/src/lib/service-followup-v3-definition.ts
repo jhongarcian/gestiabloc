@@ -396,20 +396,52 @@ export function getUserScheduledWaitByActionId(
   definitionValue: unknown,
   actionId: string,
 ) {
+  const wait = getWorkflowWaitByActionId(definitionValue, actionId)
+  return wait?.waitMode === "USER_SCHEDULED" ? wait : null
+}
+
+export function getWorkflowWaitByActionId(
+  definitionValue: unknown,
+  actionId: string,
+) {
   const parsed = WorkflowDefinitionV3Schema.safeParse(definitionValue)
-  if (!parsed.success) return null
-  for (const transition of parsed.data.transitions) {
-    const action = transition.actions.find((item) => item.id === actionId)
-    if (action?.kind === "wait" && action.data.waitMode === "USER_SCHEDULED") {
-      return {
-        actionId: action.id,
-        prompt: action.data.prompt,
-        transitionId: transition.id,
-        fromStepId: transition.fromId,
+  if (parsed.success) {
+    for (const transition of parsed.data.transitions) {
+      const action = transition.actions.find((item) => item.id === actionId)
+      if (action?.kind === "wait") {
+        return {
+          actionId: action.id,
+          waitMode: action.data.waitMode,
+          prompt:
+            action.data.waitMode === "USER_SCHEDULED"
+              ? action.data.prompt
+              : "Continue this follow-up before its scheduled time.",
+          transitionId: transition.id,
+          fromStepId: transition.fromId,
+        }
       }
     }
+    return null
   }
-  return null
+
+  const legacy = WorkflowDefinitionV2Schema.safeParse(definitionValue)
+  if (!legacy.success) return null
+  const node = legacy.data.nodes.find((item) => item.id === actionId && item.kind === "wait")
+  if (!node) return null
+  const data = node.data && typeof node.data === "object" && !Array.isArray(node.data)
+    ? node.data as Record<string, unknown>
+    : {}
+  const waitMode = data.waitMode === "USER_SCHEDULED" ? "USER_SCHEDULED" : "DURATION"
+  return {
+    actionId: node.id,
+    waitMode,
+    prompt:
+      waitMode === "USER_SCHEDULED" && typeof data.prompt === "string" && data.prompt.trim()
+        ? data.prompt.trim()
+        : "Continue this follow-up before its scheduled time.",
+    transitionId: null,
+    fromStepId: null,
+  }
 }
 
 export function validateSensitiveCustomFieldConditionsV3(

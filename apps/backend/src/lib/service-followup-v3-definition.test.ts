@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   WorkflowDefinitionAnySchema,
   convertWorkflowDefinitionV2ToV3,
+  getWorkflowWaitByActionId,
   validateWorkflowDefinitionV3,
   workflowDefinitionV3ToV2Graph,
   type WorkflowDefinitionV3,
@@ -83,6 +84,32 @@ test("V3 normalizes legacy duration waits without an explicit wait mode", () => 
   const wait = result.definition.transitions[1].actions[0]
   assert.equal(wait.kind, "wait")
   if (wait.kind === "wait") assert.equal(wait.data.waitMode, "DURATION")
+})
+
+test("finds duration and user-scheduled Waits that may continue early", () => {
+  const durationDefinition = linearDefinition()
+  durationDefinition.transitions[1].actions = [{
+    id: "duration-wait",
+    kind: "wait",
+    label: "Wait two days",
+    data: { waitMode: "DURATION", waitValue: 2, waitUnit: "days" },
+  }]
+  assert.equal(
+    getWorkflowWaitByActionId(durationDefinition, "duration-wait")?.waitMode,
+    "DURATION",
+  )
+
+  const manualDefinition = linearDefinition()
+  manualDefinition.transitions[1].actions = [{
+    id: "manual-wait",
+    kind: "wait",
+    label: "Schedule appointment",
+    data: { waitMode: "USER_SCHEDULED", prompt: "Choose a date." },
+  }]
+  assert.equal(
+    getWorkflowWaitByActionId(manualDefinition, "manual-wait")?.waitMode,
+    "USER_SCHEDULED",
+  )
 })
 
 test("V3 accepts one user-scheduled wait after a non-final manual step", () => {

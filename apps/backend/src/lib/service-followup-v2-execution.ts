@@ -22,6 +22,7 @@ import {
 } from "./service-followup-runtime.js"
 import {
   WorkflowDefinitionV3Schema,
+  getWorkflowWaitByActionId,
   getUserScheduledWaitByActionId,
   getUserScheduledWaitForStep,
   workflowDefinitionV3ToV2Graph,
@@ -138,6 +139,20 @@ export function userScheduledActivationDatesFromInput(value: unknown) {
   return {
     availableAt: continuedEarlyAt ?? scheduledAt,
     dueAt: scheduledAt,
+  }
+}
+
+export function durationWaitActivationDates(
+  resumeAtValue: unknown,
+  inputValue: unknown,
+) {
+  const dueAt = comparableDate(resumeAtValue)
+  if (!dueAt) return null
+  const input = recordValue(inputValue)
+  const continuedEarlyAt = comparableDate(input.continuedEarlyAt)
+  return {
+    availableAt: continuedEarlyAt ?? dueAt,
+    dueAt,
   }
 }
 
@@ -630,7 +645,7 @@ async function scheduledActivationDatesForRun(params: {
 }) {
   const { prismaTx, run, targetStep } = params
   if (!run.waitingNodeId) return null
-  const wait = getUserScheduledWaitByActionId(
+  const wait = getWorkflowWaitByActionId(
     run.templateVersion.definition,
     run.waitingNodeId,
   )
@@ -639,7 +654,9 @@ async function scheduledActivationDatesForRun(params: {
     where: { runId_nodeId: { runId: run.id, nodeId: wait.actionId } },
     select: { input: true },
   })
-  const activationDates = userScheduledActivationDatesFromInput(execution?.input)
+  const activationDates = wait.waitMode === "USER_SCHEDULED"
+    ? userScheduledActivationDatesFromInput(execution?.input)
+    : durationWaitActivationDates(run.resumeAt, execution?.input)
   if (!activationDates) return null
   const scheduledAt = activationDates.dueAt
 

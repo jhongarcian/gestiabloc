@@ -143,6 +143,7 @@ type ContactServiceDetails = {
     failureCode: string | null
     failureMessage: string | null
     failedAt: string | null
+    canContinueNow?: boolean
     manualWait?: {
       actionId: string
       prompt: string
@@ -190,6 +191,7 @@ type ContactServiceDetails = {
     } | null
     note?: string | null
     sortOrder: number
+    canCompleteNow?: boolean
     completionRequirement?: {
       type: "NEXT_FOLLOW_UP_AT"
       actionId: string
@@ -1378,6 +1380,65 @@ export function ContactServiceDetailsPanel({
     setStepPostponeInput(formatUtcIsoToDateTimeDraft(step.dueAt, item?.timezone))
     setStepNextFollowUpInput({ date: "", time: "" })
     setIsStepStatusDialogOpen(true)
+  }
+
+  const prepareStepStatusDialog = async (
+    step: ContactServiceDetails["followUpSteps"][number],
+  ) => {
+    if (!item) return
+    if (step.status === "ACTIVE") {
+      openStepStatusDialog(step)
+      return
+    }
+    if (step.status !== "PENDING" || !step.canCompleteNow) return
+
+    setMutatingStepId(step.id)
+    try {
+      if (item.followUpRun) {
+        const { data } = await api.post(
+          `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-run/continue-now`,
+        )
+        const activeStepId = data?.result?.activeStepId
+        await refreshData(true)
+        router.refresh()
+        if (data?.result?.status === "FAILED") {
+          toast.error("The follow-up could not continue because an automation action failed.")
+          return
+        }
+        if (data?.result?.status === "WAITING") {
+          toast.success("The follow-up continued to its next scheduled wait.")
+          return
+        }
+        if (activeStepId !== step.id) {
+          toast.success("The follow-up continued and selected the next applicable step.")
+          return
+        }
+      } else {
+        await api.patch(
+          `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-steps/${step.id}`,
+          { status: "ACTIVE" },
+        )
+        await refreshData(true)
+        router.refresh()
+      }
+
+      toast.success("This upcoming step is ready to complete now.")
+      openStepStatusDialog({
+        ...step,
+        status: "ACTIVE",
+        availableAt: new Date().toISOString(),
+      })
+    } catch (error) {
+      const backendError = isAxiosError(error) ? error.response?.data?.error : null
+      toast.error(
+        typeof backendError === "string"
+          ? backendError.replace(/_/g, " ")
+          : "Could not start this upcoming follow-up early.",
+      )
+      await refreshData(true)
+    } finally {
+      setMutatingStepId(null)
+    }
   }
 
   const openStepDetailsDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
@@ -2629,8 +2690,8 @@ export function ContactServiceDetailsPanel({
                       const isOverdue = timeMeta.label === "Overdue" && !isDone
                       const showStatusBadge = currentStatus !== "ACTIVE"
                       const showTimeBadge = currentStatus === "PENDING" || currentStatus === "ACTIVE"
-                      const canChangeStatus =
-                        currentStatus === "ACTIVE"
+                      const canChangeStatus = Boolean(step.canCompleteNow)
+                      const isCompletingEarly = currentStatus === "PENDING" && canChangeStatus
                       const canReopen =
                         !isAutoSkipped &&
                         (currentStatus === "COMPLETED" ||
@@ -2726,13 +2787,13 @@ export function ContactServiceDetailsPanel({
                                       variant="outline"
                                       className="h-9 min-w-[142px] cursor-pointer rounded-full border-slate-200 bg-white text-sm font-medium text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50"
                                       disabled={mutatingStepId === step.id}
-                                      onClick={() => openStepStatusDialog(step)}
+                                      onClick={() => void prepareStepStatusDialog(step)}
                                     >
                                       {mutatingStepId === step.id ? (
                                         <Loader2 className="h-4 w-4 animate-spin" />
                                       ) : (
                                         <>
-                                          Change status
+                                          {isCompletingEarly ? "Complete early" : "Change status"}
                                           <ChevronDown className="h-4 w-4" />
                                         </>
                                       )}
@@ -3772,6 +3833,13 @@ export function ContactServiceDetailsPanel({
                 <p><span className="font-medium text-slate-900">Service:</span> {item.service.name}</p>
                 <p><span className="font-medium text-slate-900">Template:</span> {item.followUpTemplate?.name ?? "No template selected"}</p>
                 <p><span className="font-medium text-slate-900">Step:</span> {activeStep.title}</p>
+              </div>
+            ) : null}
+            {activeStep?.effectiveDueAt &&
+            new Date(activeStep.effectiveDueAt).getTime() > Date.now() ? (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                This step is scheduled for a later time. You can complete it now; its original due
+                date will remain in the follow-up history.
               </div>
             ) : null}
             <div className="grid gap-2">

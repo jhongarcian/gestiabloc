@@ -281,3 +281,20 @@ test("scheduled resume uses the selected timestamp for availability and due date
   assert.equal(result?.availableAt.toISOString(), "2030-05-10T15:00:00.000Z")
   assert.equal(result?.dueAt.toISOString(), "2030-05-10T15:00:00.000Z")
 })
+
+test("continuing a duration Wait early preserves its original due date", async () => {
+  process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
+  const { durationWaitActivationDates } = await import(
+    "./service-followup-v2-execution.js"
+  )
+  const result = durationWaitActivationDates(
+    "2030-05-10T15:00:00.000Z",
+    {
+      continuedEarlyAt: "2030-05-01T12:00:00.000Z",
+      continuedEarlyByUserId: "user-1",
+    },
+  )
+
+  assert.equal(result?.availableAt.toISOString(), "2030-05-01T12:00:00.000Z")
+  assert.equal(result?.dueAt.toISOString(), "2030-05-10T15:00:00.000Z")
+})

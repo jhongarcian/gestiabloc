@@ -20,6 +20,7 @@ import {
   syncContactServiceActiveStep,
 } from "../lib/service-followup-execution.js"
 import {
+  canCompleteFollowUpStepNow,
   resolveEffectiveNextFollowUp,
   serializeEffectiveNextFollowUp,
 } from "../lib/service-followup-next-follow-up.js"
@@ -33,6 +34,7 @@ import {
   stageUserScheduledWaitInputTx,
 } from "../lib/service-followup-v2-execution.js"
 import {
+  getWorkflowWaitByActionId,
   getUserScheduledWaitByActionId,
   getUserScheduledWaitForStep,
 } from "../lib/service-followup-v3-definition.js"
@@ -590,17 +592,36 @@ function getSafeTimezone(timezone?: string | null) {
 function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
   const definition = item.followUpTemplateVersion?.definition
   const waitingAction = item.followUpRun?.waitingNodeId
+    ? getWorkflowWaitByActionId(definition, item.followUpRun.waitingNodeId)
+    : null
+  const userScheduledWaitingAction = item.followUpRun?.waitingNodeId
     ? getUserScheduledWaitByActionId(definition, item.followUpRun.waitingNodeId)
     : null
   const effectiveNextFollowUp = resolveEffectiveNextFollowUp({
     steps: item.followUpSteps ?? [],
     run: item.followUpRun,
-    isUserScheduledWait: Boolean(waitingAction),
+    isUserScheduledWait: Boolean(userScheduledWaitingAction),
+    isWorkflowWait: Boolean(waitingAction),
   })
   const nextFollowUp = serializeEffectiveNextFollowUp(effectiveNextFollowUp)
+  const firstUnresolvedStep = (item.followUpSteps ?? []).find(
+    (step: any) => !["COMPLETED", "SKIPPED"].includes(step.status),
+  )
+  const canContinueWaitingRun = Boolean(
+    item.followUpRun?.status === "WAITING" &&
+      waitingAction &&
+      !item.followUpRun.leaseToken,
+  )
   const followUpSteps = (item.followUpSteps ?? []).map((step: any) => {
+    const canCompleteNow = canCompleteFollowUpStepNow({
+      step,
+      firstUnresolvedStepId: firstUnresolvedStep?.id ?? null,
+      run: item.followUpRun,
+      effectiveNextFollowUp,
+      canContinueWaitingRun,
+    })
     const requirement =
-      step.status === "ACTIVE" && step.templateNodeId
+      canCompleteNow && step.templateNodeId
         ? getUserScheduledWaitForStep(definition, step.templateNodeId)
         : null
     const projectedForStep =
@@ -615,6 +636,7 @@ function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
         : step.dueAt
           ? "STEP_DUE"
           : null,
+      canCompleteNow,
       completionRequirement: requirement
         ? {
             type: "NEXT_FOLLOW_UP_AT" as const,
@@ -638,11 +660,12 @@ function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
     followUpRun: item.followUpRun
       ? {
           ...item.followUpRun,
+          canContinueNow: canContinueWaitingRun,
           manualWait:
-            waitingAction && item.followUpRun.status === "WAITING"
+            userScheduledWaitingAction && item.followUpRun.status === "WAITING"
               ? {
-                  actionId: waitingAction.actionId,
-                  prompt: waitingAction.prompt,
+                  actionId: userScheduledWaitingAction.actionId,
+                  prompt: userScheduledWaitingAction.prompt,
                   scheduledFor: item.followUpRun.resumeAt,
                   canReschedule: !item.followUpRun.leaseToken,
                   canContinueNow: !item.followUpRun.leaseToken,
@@ -656,20 +679,50 @@ function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
 function serializeContactServiceListFollowUpMetadata(item: any) {
   const definition = item.followUpTemplateVersion?.definition
   const waitingAction = item.followUpRun?.waitingNodeId
+    ? getWorkflowWaitByActionId(definition, item.followUpRun.waitingNodeId)
+    : null
+  const userScheduledWaitingAction = item.followUpRun?.waitingNodeId
     ? getUserScheduledWaitByActionId(definition, item.followUpRun.waitingNodeId)
     : null
   const effectiveNextFollowUp = resolveEffectiveNextFollowUp({
     steps: item.followUpSteps ?? [],
     run: item.followUpRun,
-    isUserScheduledWait: Boolean(waitingAction),
+    isUserScheduledWait: Boolean(userScheduledWaitingAction),
+    isWorkflowWait: Boolean(waitingAction),
   })
   const nextFollowUp = serializeEffectiveNextFollowUp(effectiveNextFollowUp)
+  const firstUnresolvedStep = (item.followUpSteps ?? []).find(
+    (step: any) => !["COMPLETED", "SKIPPED"].includes(step.status),
+  )
+  const canContinueWaitingRun = Boolean(
+    item.followUpRun?.status === "WAITING" &&
+      waitingAction &&
+      !item.followUpRun.leaseToken,
+  )
 
   return {
     nextFollowUp,
+    followUpRun: item.followUpRun
+      ? {
+          status: item.followUpRun.status,
+          resumeAt: item.followUpRun.resumeAt,
+          canContinueNow: canContinueWaitingRun,
+        }
+      : null,
     followUpSteps: (item.followUpSteps ?? []).map((step: any) => {
       const effectiveForStep =
         effectiveNextFollowUp?.stepId === step.id ? effectiveNextFollowUp : null
+      const canCompleteNow = canCompleteFollowUpStepNow({
+        step,
+        firstUnresolvedStepId: firstUnresolvedStep?.id ?? null,
+        run: item.followUpRun,
+        effectiveNextFollowUp,
+        canContinueWaitingRun,
+      })
+      const requirement =
+        canCompleteNow && step.templateNodeId
+          ? getUserScheduledWaitForStep(definition, step.templateNodeId)
+          : null
       return {
         ...step,
         effectiveDueAt: effectiveForStep
@@ -680,6 +733,14 @@ function serializeContactServiceListFollowUpMetadata(item: any) {
           : step.dueAt
             ? "STEP_DUE"
             : null,
+        canCompleteNow,
+        completionRequirement: requirement
+          ? {
+              type: "NEXT_FOLLOW_UP_AT" as const,
+              actionId: requirement.actionId,
+              prompt: requirement.prompt,
+            }
+          : null,
       }
     }),
   }
@@ -2358,11 +2419,13 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               status: true,
               resumeAt: true,
               waitingNodeId: true,
+              leaseToken: true,
             },
           },
           followUpSteps: {
             select: {
               id: true,
+              templateNodeId: true,
               title: true,
               status: true,
               availableAt: true,
@@ -2496,11 +2559,13 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               status: true,
               resumeAt: true,
               waitingNodeId: true,
+              leaseToken: true,
             },
           },
           followUpSteps: {
             select: {
               id: true,
+              templateNodeId: true,
               title: true,
               status: true,
               availableAt: true,
@@ -2590,6 +2655,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           currency: item.currency,
           service: item.service,
           nextFollowUp: followUpMetadata.nextFollowUp,
+          followUpRun: followUpMetadata.followUpRun,
           followUpSteps: followUpMetadata.followUpSteps,
         }
       }),
@@ -4998,7 +5064,7 @@ router.post(
           },
         })
         if (!run || run.status !== "WAITING" || !run.waitingNodeId) return null
-        const wait = getUserScheduledWaitByActionId(
+        const wait = getWorkflowWaitByActionId(
           run.templateVersion?.definition,
           run.waitingNodeId,
         )
@@ -5052,8 +5118,14 @@ router.post(
               contactId: run.contactService.contactId,
               actorUserId: authed.user.id,
               flowNodeId: wait.actionId,
-              eventType: "MANUAL_WAIT_CONTINUED_EARLY",
-              title: "Continued the scheduled follow-up early.",
+              eventType:
+                wait.waitMode === "USER_SCHEDULED"
+                  ? "MANUAL_WAIT_CONTINUED_EARLY"
+                  : "DURATION_WAIT_CONTINUED_EARLY",
+              title:
+                wait.waitMode === "USER_SCHEDULED"
+                  ? "Continued the user-scheduled follow-up early."
+                  : "Continued the duration-based follow-up early.",
               payload: {
                 scheduledFor: run.resumeAt,
                 continuedEarlyAt,

@@ -36,16 +36,18 @@ export function resolveEffectiveNextFollowUp(params: {
   steps: FollowUpStepLike[]
   run?: FollowUpRunLike | null
   isUserScheduledWait?: boolean
+  isWorkflowWait?: boolean
 }): EffectiveNextFollowUp | null {
   const { steps, run, isUserScheduledWait = false } = params
+  const isWorkflowWait = params.isWorkflowWait ?? isUserScheduledWait
   const scheduledAt = validDate(run?.resumeAt)
 
-  if (run?.status === "WAITING" && isUserScheduledWait && scheduledAt) {
+  if (run?.status === "WAITING" && isWorkflowWait && scheduledAt) {
     const projectedStep = firstStepWithStatus(steps, "PENDING")
     return {
       at: scheduledAt,
       stepId: projectedStep?.id ?? null,
-      source: "USER_SCHEDULED_WAIT",
+      source: isUserScheduledWait ? "USER_SCHEDULED_WAIT" : "STEP_AVAILABLE",
       projected: true,
     }
   }
@@ -85,3 +87,20 @@ export function serializeEffectiveNextFollowUp(value: EffectiveNextFollowUp | nu
     : null
 }
 
+export function canCompleteFollowUpStepNow(params: {
+  step: { id: string; status?: string | null }
+  firstUnresolvedStepId: string | null
+  run?: { status?: string | null } | null
+  effectiveNextFollowUp: EffectiveNextFollowUp | null
+  canContinueWaitingRun: boolean
+}) {
+  const { step, run, firstUnresolvedStepId, effectiveNextFollowUp, canContinueWaitingRun } = params
+  if (step.status === "ACTIVE") return true
+  if (step.status !== "PENDING") return false
+  if (!run) return firstUnresolvedStepId === step.id
+  return (
+    run.status === "WAITING" &&
+    canContinueWaitingRun &&
+    effectiveNextFollowUp?.stepId === step.id
+  )
+}
