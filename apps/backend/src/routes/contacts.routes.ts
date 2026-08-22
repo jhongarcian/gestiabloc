@@ -6,6 +6,7 @@ import {
   encryptCustomFieldValue,
 } from "../lib/contact-custom-field-encryption.js"
 import { normalizeCustomFieldValue } from "../lib/contact-custom-field-values.js"
+import { summarizeVisibleContactFollowUpServices } from "../lib/contact-followup-visibility.js"
 import { prisma } from "../lib/prisma.js"
 import { emitNotificationCreated } from "../lib/realtime.js"
 import { deletePrivateObject } from "../lib/private-storage.js"
@@ -1359,12 +1360,16 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
                 in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
               },
               followUpSteps: {
-                some: {
-                  status: "ACTIVE",
-                },
+                some: {},
               },
             },
             select: {
+              status: true,
+              _count: {
+                select: {
+                  followUpSteps: true,
+                },
+              },
               service: {
                 select: {
                   id: true,
@@ -1390,17 +1395,13 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
     return res.json({
       ok: true,
       items: contacts.map((contact) => {
-        const activeFollowUpServices = Array.from(
-          new Map(
-            contact.serviceProcesses.map((serviceProcess) => [
-              serviceProcess.service.id,
-              {
-                id: serviceProcess.service.id,
-                name: serviceProcess.service.name,
-              },
-            ]),
-          ).values(),
-        ).sort((left, right) => left.name.localeCompare(right.name))
+        const activeFollowUpServices = summarizeVisibleContactFollowUpServices(
+          contact.serviceProcesses.map((serviceProcess) => ({
+            status: serviceProcess.status,
+            followUpStepCount: serviceProcess._count.followUpSteps,
+            service: serviceProcess.service,
+          })),
+        )
 
         return {
           id: contact.id,
@@ -1555,6 +1556,7 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
                 firstName: true,
                 middleName: true,
                 lastName: true,
+                dateOfBirth: true,
                 phone: true,
                 email: true,
               },
@@ -1565,6 +1567,7 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
                 firstName: true,
                 middleName: true,
                 lastName: true,
+                dateOfBirth: true,
                 phone: true,
                 email: true,
               },
@@ -1817,6 +1820,7 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
               ]
                 .filter(Boolean)
                 .join(" "),
+              dateOfBirth: related.dateOfBirth ?? null,
               phoneNumber: related.phone ?? null,
               email: related.email ?? null,
             },
@@ -3067,6 +3071,7 @@ router.post(
               firstName: true,
               middleName: true,
               lastName: true,
+              dateOfBirth: true,
               phone: true,
               email: true,
             },
@@ -3095,6 +3100,7 @@ router.post(
             ]
               .filter(Boolean)
               .join(" "),
+            dateOfBirth: created.relatedContact.dateOfBirth ?? null,
             phoneNumber: created.relatedContact.phone ?? null,
             email: created.relatedContact.email ?? null,
           },

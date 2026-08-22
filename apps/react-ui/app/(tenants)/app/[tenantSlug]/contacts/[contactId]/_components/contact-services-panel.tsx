@@ -109,11 +109,18 @@ type ContactServiceItem = {
       id: string
     }>
   }
+  nextFollowUp?: {
+    at: string
+    stepId: string | null
+    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    projected: boolean
+  } | null
   followUpSteps: Array<{
     id: string
     status?: "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
     availableAt?: string | null
     dueAt?: string | null
+    effectiveDueAt?: string | null
     completedAt?: string | null
     assignedTo?: {
       name: string | null
@@ -1383,13 +1390,14 @@ export function ContactServicesPanel({
   }
 
   const getNextFollowUpDate = (item: ContactServiceItem) => {
+    if (item.nextFollowUp?.at) return item.nextFollowUp.at
     const nextStep =
       item.followUpSteps.find((step) => step.status === "ACTIVE") ??
       item.followUpSteps.find((step) => step.status === "POSTPONED") ??
       item.followUpSteps.find((step) => step.status === "PENDING") ??
       null
 
-    return nextStep?.dueAt ?? nextStep?.availableAt ?? null
+    return nextStep?.effectiveDueAt ?? nextStep?.dueAt ?? nextStep?.availableAt ?? null
   }
 
   const getCurrentFollowUpAssignee = (item: ContactServiceItem) => {
@@ -1710,7 +1718,14 @@ export function ContactServicesPanel({
                               {formatDate(item.purchasedAt)}
                             </TableCell>
                             <TableCell className="px-4 py-0 text-foreground">
-                              {formatDate(getNextFollowUpDate(item))}
+                              <div className="flex flex-col">
+                                <span>{formatDate(getNextFollowUpDate(item))}</span>
+                                {item.nextFollowUp?.projected ? (
+                                  <span className="text-[11px] font-medium text-blue-700">
+                                    Scheduled
+                                  </span>
+                                ) : null}
+                              </div>
                             </TableCell>
                             <TableCell className="px-4 py-0">
                               <div className="flex min-w-0 items-center gap-2.5">

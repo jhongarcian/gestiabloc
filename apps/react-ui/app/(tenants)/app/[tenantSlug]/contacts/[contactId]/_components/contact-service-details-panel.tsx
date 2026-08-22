@@ -18,6 +18,7 @@ import {
   Loader2,
   NotebookPen,
   Paperclip,
+  Play,
   SendHorizontal,
   Upload,
   UserRound,
@@ -67,6 +68,7 @@ import { api } from "@/lib/api"
 import { uploadPrivateFileToSignedUrl } from "@/lib/supabase-storage"
 import {
   dateTimeDraftToUtcIso,
+  formatDateTimeForDisplay,
   formatUtcIsoToDateTimeDraft,
   isDateTimeDraftComplete,
   isDateTimeDraftEmpty,
@@ -109,6 +111,7 @@ type ContactServiceDetails = {
   currency: string
   allowPartialPayments: boolean
   notes: string | null
+  timezone?: string | null
   service: {
     id: string
     name: string
@@ -127,6 +130,33 @@ type ContactServiceDetails = {
   followUpTemplate?: {
     id: string
     name: string
+  } | null
+  followUpTemplateVersion?: {
+    id: string
+    versionNumber: number
+  } | null
+  followUpRun?: {
+    id: string
+    status: "RUNNING" | "WAITING" | "AWAITING_STEP" | "COMPLETED" | "FAILED" | "NEEDS_REVIEW" | "CANCELED"
+    resumeAt: string | null
+    failureNodeId: string | null
+    failureCode: string | null
+    failureMessage: string | null
+    failedAt: string | null
+    canContinueNow?: boolean
+    manualWait?: {
+      actionId: string
+      prompt: string
+      scheduledFor: string
+      canReschedule: boolean
+      canContinueNow: boolean
+    } | null
+  } | null
+  nextFollowUp?: {
+    at: string
+    stepId: string | null
+    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    projected: boolean
   } | null
   assignedProfessional?: {
     id: string
@@ -147,7 +177,11 @@ type ContactServiceDetails = {
     status?: FollowUpStepStatus
     availableAt: string | null
     dueAt: string | null
+    effectiveDueAt?: string | null
+    effectiveDueSource?: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE" | null
     completedAt: string | null
+    resolutionSource?: "USER_COMPLETED" | "USER_SKIPPED" | "CONDITION_SKIPPED" | "FLOW_SKIPPED" | null
+    resolutionReason?: string | null
     assignedToUserId: string | null
     assignedTo?: {
       id: string
@@ -157,6 +191,13 @@ type ContactServiceDetails = {
     } | null
     note?: string | null
     sortOrder: number
+    canCompleteNow?: boolean
+    completionRequirement?: {
+      type: "NEXT_FOLLOW_UP_AT"
+      actionId: string
+      prompt: string
+      timezone: string
+    } | null
   }>
   payments: Array<{
     id: string
@@ -499,7 +540,10 @@ const isBeforeToday = (date: Date) => {
   return candidate < today
 }
 
-const getStepTimeMeta = (step: ContactServiceDetails["followUpSteps"][number]): StepTimeMeta => {
+const getStepTimeMeta = (
+  step: ContactServiceDetails["followUpSteps"][number],
+  timezone?: string | null,
+): StepTimeMeta => {
   if (step.status === "COMPLETED") {
     return {
       label: "Completed",
@@ -517,11 +561,14 @@ const getStepTimeMeta = (step: ContactServiceDetails["followUpSteps"][number]): 
   if (step.status === "POSTPONED") {
     return {
       label: "Postponed",
-      helper: step.dueAt ? `Postponed to ${new Date(step.dueAt).toLocaleString()}` : "Postponed",
+      helper: step.dueAt
+        ? `Postponed to ${formatDateTimeForDisplay(step.dueAt, timezone)}`
+        : "Postponed",
       badgeClassName: "bg-violet-100 text-violet-800 hover:bg-violet-100",
     }
   }
-  if (!step.dueAt) {
+  const effectiveDueAt = step.effectiveDueAt ?? step.dueAt
+  if (!effectiveDueAt) {
     return {
       label: "No due date",
       helper: "No due date configured",
@@ -529,14 +576,22 @@ const getStepTimeMeta = (step: ContactServiceDetails["followUpSteps"][number]): 
     }
   }
 
-  const dueDate = new Date(step.dueAt)
+  if (step.effectiveDueSource === "USER_SCHEDULED_WAIT") {
+    return {
+      label: "Scheduled",
+      helper: `Scheduled for ${formatDateTimeForDisplay(effectiveDueAt, timezone)}`,
+      badgeClassName: "bg-blue-100 text-blue-800 hover:bg-blue-100",
+    }
+  }
+
+  const dueDate = new Date(effectiveDueAt)
   const diffMs = dueDate.getTime() - Date.now()
   const diffHours = Math.round(diffMs / (1000 * 60 * 60))
 
   if (diffMs < 0) {
     return {
       label: "Overdue",
-      helper: `Due ${dueDate.toLocaleString()}`,
+      helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, timezone)}`,
       badgeClassName: "bg-rose-100 text-rose-800 hover:bg-rose-100",
     }
   }
@@ -544,14 +599,14 @@ const getStepTimeMeta = (step: ContactServiceDetails["followUpSteps"][number]): 
   if (diffHours <= 24) {
     return {
       label: "Due soon",
-      helper: `Due ${dueDate.toLocaleString()}`,
+      helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, timezone)}`,
       badgeClassName: "bg-amber-100 text-amber-800 hover:bg-amber-100",
     }
   }
 
   return {
     label: "Upcoming",
-    helper: `Due ${dueDate.toLocaleString()}`,
+    helper: `Due ${formatDateTimeForDisplay(effectiveDueAt, timezone)}`,
     badgeClassName: "bg-sky-100 text-sky-800 hover:bg-sky-100",
   }
 }
@@ -675,6 +730,11 @@ export function ContactServiceDetailsPanel({
   const [stepStatusValue, setStepStatusValue] = useState<FollowUpStepStatus>("PENDING")
   const [stepStatusNote, setStepStatusNote] = useState("")
   const [stepPostponeInput, setStepPostponeInput] = useState<DateTimeDraft>({ date: "", time: "" })
+  const [stepNextFollowUpInput, setStepNextFollowUpInput] = useState<DateTimeDraft>({ date: "", time: "" })
+  const [isRescheduleWaitOpen, setIsRescheduleWaitOpen] = useState(false)
+  const [rescheduleWaitInput, setRescheduleWaitInput] = useState<DateTimeDraft>({ date: "", time: "" })
+  const [isReschedulingWait, setIsReschedulingWait] = useState(false)
+  const [isContinuingWait, setIsContinuingWait] = useState(false)
   const [isSavingStepStatus, setIsSavingStepStatus] = useState(false)
   const [isSavingFollowUpOwner, setIsSavingFollowUpOwner] = useState(false)
   const [stepAssignedToUserId, setStepAssignedToUserId] = useState("")
@@ -1317,8 +1377,68 @@ export function ContactServiceDetailsPanel({
     setActiveStep(step)
     setStepStatusValue("COMPLETED")
     setStepStatusNote("")
-    setStepPostponeInput(formatUtcIsoToDateTimeDraft(step.dueAt, "America/Chicago"))
+    setStepPostponeInput(formatUtcIsoToDateTimeDraft(step.dueAt, item?.timezone))
+    setStepNextFollowUpInput({ date: "", time: "" })
     setIsStepStatusDialogOpen(true)
+  }
+
+  const prepareStepStatusDialog = async (
+    step: ContactServiceDetails["followUpSteps"][number],
+  ) => {
+    if (!item) return
+    if (step.status === "ACTIVE") {
+      openStepStatusDialog(step)
+      return
+    }
+    if (step.status !== "PENDING" || !step.canCompleteNow) return
+
+    setMutatingStepId(step.id)
+    try {
+      if (item.followUpRun) {
+        const { data } = await api.post(
+          `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-run/continue-now`,
+        )
+        const activeStepId = data?.result?.activeStepId
+        await refreshData(true)
+        router.refresh()
+        if (data?.result?.status === "FAILED") {
+          toast.error("The follow-up could not continue because an automation action failed.")
+          return
+        }
+        if (data?.result?.status === "WAITING") {
+          toast.success("The follow-up continued to its next scheduled wait.")
+          return
+        }
+        if (activeStepId !== step.id) {
+          toast.success("The follow-up continued and selected the next applicable step.")
+          return
+        }
+      } else {
+        await api.patch(
+          `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-steps/${step.id}`,
+          { status: "ACTIVE" },
+        )
+        await refreshData(true)
+        router.refresh()
+      }
+
+      toast.success("This upcoming step is ready to complete now.")
+      openStepStatusDialog({
+        ...step,
+        status: "ACTIVE",
+        availableAt: new Date().toISOString(),
+      })
+    } catch (error) {
+      const backendError = isAxiosError(error) ? error.response?.data?.error : null
+      toast.error(
+        typeof backendError === "string"
+          ? backendError.replace(/_/g, " ")
+          : "Could not start this upcoming follow-up early.",
+      )
+      await refreshData(true)
+    } finally {
+      setMutatingStepId(null)
+    }
   }
 
   const openStepDetailsDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
@@ -1365,6 +1485,7 @@ export function ContactServiceDetailsPanel({
     nextStatus: FollowUpStepStatus,
     note?: string,
     postponeTo?: string,
+    nextFollowUpAt?: string,
   ) => {
     if (!item || !nextStatus) return
     setMutatingStepId(step.id)
@@ -1375,6 +1496,7 @@ export function ContactServiceDetailsPanel({
           status: nextStatus,
           ...(note?.trim() ? { note: note.trim() } : {}),
           ...(postponeTo ? { postponeTo, cascadeFutureSteps: true } : {}),
+          ...(nextFollowUpAt ? { nextFollowUpAt } : {}),
         },
       )
       toast.success(nextStatus === "COMPLETED" ? "Step marked as completed." : "Step status updated.")
@@ -1444,7 +1566,24 @@ export function ContactServiceDetailsPanel({
     const postponeToIso =
       stepStatusValue !== "POSTPONED" || isDateTimeDraftEmpty(stepPostponeInput)
         ? undefined
-        : dateTimeDraftToUtcIso(stepPostponeInput, "America/Chicago") ?? undefined
+        : dateTimeDraftToUtcIso(stepPostponeInput, item?.timezone) ?? undefined
+    const needsNextFollowUp =
+      stepStatusValue === "COMPLETED" &&
+      activeStep.completionRequirement?.type === "NEXT_FOLLOW_UP_AT"
+    if (
+      needsNextFollowUp &&
+      (!isDateTimeDraftComplete(stepNextFollowUpInput) || isDateTimeDraftEmpty(stepNextFollowUpInput))
+    ) {
+      toast.error("Next follow-up date and time are required.")
+      return
+    }
+    const nextFollowUpAt = needsNextFollowUp
+      ? dateTimeDraftToUtcIso(stepNextFollowUpInput, item?.timezone)
+      : undefined
+    if (needsNextFollowUp && (!nextFollowUpAt || new Date(nextFollowUpAt).getTime() <= Date.now())) {
+      toast.error("Select a future next follow-up date and time.")
+      return
+    }
     const stepToUpdate = activeStep
     const nextStatusValue = stepStatusValue
     const nextStatusNote = stepStatusNote
@@ -1454,8 +1593,70 @@ export function ContactServiceDetailsPanel({
     setActiveStep(null)
     setStepStatusNote("")
     setStepPostponeInput({ date: "", time: "" })
-    await updateStepStatus(stepToUpdate, nextStatusValue, nextStatusNote, postponeToIso)
+    setStepNextFollowUpInput({ date: "", time: "" })
+    await updateStepStatus(
+      stepToUpdate,
+      nextStatusValue,
+      nextStatusNote,
+      postponeToIso,
+      nextFollowUpAt ?? undefined,
+    )
     setIsSavingStepStatus(false)
+  }
+
+  const rescheduleManualWait = async () => {
+    if (!item || !item.followUpRun?.manualWait) return
+    if (!isDateTimeDraftComplete(rescheduleWaitInput) || isDateTimeDraftEmpty(rescheduleWaitInput)) {
+      toast.error("Next follow-up date and time are required.")
+      return
+    }
+    const nextFollowUpAt = dateTimeDraftToUtcIso(rescheduleWaitInput, item.timezone)
+    if (!nextFollowUpAt || new Date(nextFollowUpAt).getTime() <= Date.now()) {
+      toast.error("Select a future next follow-up date and time.")
+      return
+    }
+    setIsReschedulingWait(true)
+    try {
+      await api.patch(
+        `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-run/next-follow-up`,
+        { nextFollowUpAt },
+      )
+      toast.success("Next follow-up rescheduled.")
+      setIsRescheduleWaitOpen(false)
+      await refreshData(true)
+      router.refresh()
+    } catch (error) {
+      const backendError = isAxiosError(error) ? error.response?.data?.error : null
+      toast.error(
+        typeof backendError === "string"
+          ? backendError.replace(/_/g, " ")
+          : "Could not reschedule the next follow-up.",
+      )
+    } finally {
+      setIsReschedulingWait(false)
+    }
+  }
+
+  const continueManualWaitNow = async () => {
+    if (!item?.followUpRun?.manualWait) return
+    setIsContinuingWait(true)
+    try {
+      await api.post(
+        `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-run/continue-now`,
+      )
+      toast.success("Follow-up continued. The next routed step is ready.")
+      await refreshData(true)
+      router.refresh()
+    } catch (error) {
+      const backendError = isAxiosError(error) ? error.response?.data?.error : null
+      toast.error(
+        typeof backendError === "string"
+          ? backendError.replace(/_/g, " ")
+          : "Could not continue the follow-up.",
+      )
+    } finally {
+      setIsContinuingWait(false)
+    }
   }
 
   const openStepNoteDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
@@ -1555,7 +1756,7 @@ export function ContactServiceDetailsPanel({
     setActiveStep(step)
     setStepTaskName(step.title)
     setStepTaskDescription("")
-    setStepTaskDueAt(formatUtcIsoToDateTimeDraft(step.dueAt, "America/Chicago"))
+    setStepTaskDueAt(formatUtcIsoToDateTimeDraft(step.dueAt, item?.timezone))
     setStepTaskAssignedToUserId(step.assignedToUserId ?? "")
     setIsStepTaskDialogOpen(true)
   }
@@ -1580,7 +1781,7 @@ export function ContactServiceDetailsPanel({
         linkedEntityType: "SERVICE",
         assignedToUserId: stepTaskAssignedToUserId || null,
         dueDate: isDateTimeDraftComplete(stepTaskDueAt)
-          ? dateTimeDraftToUtcIso(stepTaskDueAt, "America/Chicago")
+          ? dateTimeDraftToUtcIso(stepTaskDueAt, item.timezone)
           : null,
         startedAt: new Date().toISOString(),
       })
@@ -2209,7 +2410,7 @@ export function ContactServiceDetailsPanel({
             <section
               className={cn(
                 "rounded-[24px] p-4 shadow-sm sm:p-5",
-                nextFollowUpStep && getStepTimeMeta(nextFollowUpStep).label === "Overdue"
+                nextFollowUpStep && getStepTimeMeta(nextFollowUpStep, item?.timezone).label === "Overdue"
                   ? "border border-rose-200 bg-[linear-gradient(135deg,#fff1f2_0%,#fff7ed_45%,#ffffff_100%)]"
                   : "border border-blue-200 bg-[linear-gradient(135deg,#eff6ff_0%,#f8fafc_45%,#ffffff_100%)]",
               )}
@@ -2220,7 +2421,7 @@ export function ContactServiceDetailsPanel({
                     <p
                       className={cn(
                         "text-xs font-semibold uppercase tracking-[0.14em]",
-                        nextFollowUpStep && getStepTimeMeta(nextFollowUpStep).label === "Overdue"
+                        nextFollowUpStep && getStepTimeMeta(nextFollowUpStep, item?.timezone).label === "Overdue"
                           ? "text-rose-700"
                           : "text-blue-700",
                       )}
@@ -2236,13 +2437,15 @@ export function ContactServiceDetailsPanel({
                       <Badge className={getFollowUpStepStatusBadgeClass(nextFollowUpStep.status)}>
                         {formatFollowUpStepStatus(nextFollowUpStep.status)}
                       </Badge>
-                      {getStepTimeMeta(nextFollowUpStep).label === "Overdue" ? (
+                      {getStepTimeMeta(nextFollowUpStep, item?.timezone).label === "Overdue" ? (
                         <Badge className="bg-rose-100 text-rose-800 hover:bg-rose-100">
                           Overdue
                         </Badge>
                       ) : null}
-                      <Badge className={getStepTimeMeta(nextFollowUpStep).badgeClassName}>
-                        Due
+                      <Badge className={getStepTimeMeta(nextFollowUpStep, item?.timezone).badgeClassName}>
+                        {getStepTimeMeta(nextFollowUpStep, item?.timezone).label === "Scheduled"
+                          ? "Scheduled"
+                          : "Due"}
                       </Badge>
                     </div>
                   ) : null}
@@ -2260,7 +2463,7 @@ export function ContactServiceDetailsPanel({
                         Due
                       </p>
                       <p className="mt-2 text-sm font-semibold text-slate-950">
-                        {getStepTimeMeta(nextFollowUpStep).helper}
+                        {getStepTimeMeta(nextFollowUpStep, item?.timezone).helper}
                       </p>
                     </div>
                     <div className="rounded-[18px] border border-white/80 bg-white/80 px-4 py-3 shadow-sm">
@@ -2405,6 +2608,68 @@ export function ContactServiceDetailsPanel({
                   </Badge>
                 </div>
               </div>
+              {item.followUpRun?.status === "FAILED" || item.followUpRun?.status === "NEEDS_REVIEW" ? (
+                <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+                  <p className="font-semibold">
+                    {item.followUpRun.status === "FAILED"
+                      ? "Workflow paused after an automation error"
+                      : "Workflow needs administrator review"}
+                  </p>
+                  <p className="mt-1 text-xs text-rose-700">
+                    {item.followUpRun.failureMessage ??
+                      "The existing steps were preserved and new automation is paused."}
+                  </p>
+                </div>
+              ) : null}
+              {item.followUpRun?.status === "WAITING" && item.followUpRun.manualWait ? (
+                <div className="mb-4 flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-950 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="font-semibold">Next follow-up scheduled</p>
+                    <p className="mt-1 text-xs text-blue-800">
+                      {item.followUpRun.manualWait.prompt}
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-blue-950">
+                      {formatDateTimeForDisplay(item.followUpRun.manualWait.scheduledFor, item.timezone)}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {item.followUpRun.manualWait.canReschedule ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="cursor-pointer border-blue-200 bg-white"
+                        disabled={isContinuingWait}
+                        onClick={() => {
+                          setRescheduleWaitInput(
+                            formatUtcIsoToDateTimeDraft(
+                              item.followUpRun?.manualWait?.scheduledFor ?? null,
+                              item.timezone,
+                            ),
+                          )
+                          setIsRescheduleWaitOpen(true)
+                        }}
+                      >
+                        Change date
+                      </Button>
+                    ) : null}
+                    {item.followUpRun.manualWait.canContinueNow ? (
+                      <Button
+                        type="button"
+                        className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
+                        disabled={isContinuingWait}
+                        onClick={() => void continueManualWaitNow()}
+                      >
+                        {isContinuingWait ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Play className="mr-2 h-4 w-4" aria-hidden="true" />
+                        )}
+                        Continue now
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
               {followUpSteps.length ? (
                 <div className="space-y-4">
                   <div className="h-1.5 overflow-hidden rounded-full bg-slate-200">
@@ -2416,18 +2681,22 @@ export function ContactServiceDetailsPanel({
                   <div className="space-y-3">
                     {followUpSteps.map((step, index) => {
                       const currentStatus = step.status ?? "PENDING"
-                      const timeMeta = getStepTimeMeta(step)
+                      const timeMeta = getStepTimeMeta(step, item?.timezone)
                       const isActive = currentStatus === "ACTIVE"
                       const isDone = step.status === "COMPLETED" || step.status === "SKIPPED"
+                      const isAutoSkipped =
+                        step.resolutionSource === "CONDITION_SKIPPED" ||
+                        step.resolutionSource === "FLOW_SKIPPED"
                       const isOverdue = timeMeta.label === "Overdue" && !isDone
                       const showStatusBadge = currentStatus !== "ACTIVE"
                       const showTimeBadge = currentStatus === "PENDING" || currentStatus === "ACTIVE"
-                      const canChangeStatus =
-                        currentStatus === "ACTIVE" || currentStatus === "PENDING"
+                      const canChangeStatus = Boolean(step.canCompleteNow)
+                      const isCompletingEarly = currentStatus === "PENDING" && canChangeStatus
                       const canReopen =
-                        currentStatus === "COMPLETED" ||
-                        currentStatus === "SKIPPED" ||
-                        currentStatus === "POSTPONED"
+                        !isAutoSkipped &&
+                        (currentStatus === "COMPLETED" ||
+                          currentStatus === "SKIPPED" ||
+                          currentStatus === "POSTPONED")
 
                       return (
                         <div key={step.id} className="flex gap-3">
@@ -2437,6 +2706,8 @@ export function ContactServiceDetailsPanel({
                                 "inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold",
                                 isOverdue
                                   ? "border-rose-200 bg-rose-50 text-rose-700"
+                                  : isAutoSkipped
+                                    ? "border-rose-200 bg-rose-100 text-rose-800"
                                   : isDone
                                   ? "border-emerald-200 bg-emerald-100 text-emerald-800"
                                   : isActive
@@ -2455,6 +2726,8 @@ export function ContactServiceDetailsPanel({
                               "flex-1 rounded-[22px] border px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]",
                               isOverdue
                                 ? "border-rose-200 bg-rose-50/40"
+                                : isAutoSkipped
+                                  ? "border-rose-200 bg-rose-50/60"
                                 : isDone
                                 ? "border-emerald-200 bg-emerald-50/50"
                                 : isActive
@@ -2479,6 +2752,11 @@ export function ContactServiceDetailsPanel({
                                         Current step
                                       </Badge>
                                     ) : null}
+                                    {isAutoSkipped ? (
+                                      <Badge className="bg-rose-100 text-rose-800 hover:bg-rose-100">
+                                        Skipped by workflow
+                                      </Badge>
+                                    ) : null}
                                   </div>
                                   <div className="min-w-0 space-y-1.5">
                                     <button
@@ -2496,6 +2774,11 @@ export function ContactServiceDetailsPanel({
                                   <p className="max-w-3xl text-sm leading-6 text-slate-600">
                                     {step.notesTemplate?.trim() || "No description provided for this step."}
                                   </p>
+                                  {step.resolutionReason ? (
+                                    <p className="max-w-3xl text-xs font-medium text-rose-700">
+                                      {step.resolutionReason}
+                                    </p>
+                                  ) : null}
                                 </div>
                                 <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:shrink-0 xl:self-start">
                                   {canChangeStatus ? (
@@ -2504,13 +2787,13 @@ export function ContactServiceDetailsPanel({
                                       variant="outline"
                                       className="h-9 min-w-[142px] cursor-pointer rounded-full border-slate-200 bg-white text-sm font-medium text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50"
                                       disabled={mutatingStepId === step.id}
-                                      onClick={() => openStepStatusDialog(step)}
+                                      onClick={() => void prepareStepStatusDialog(step)}
                                     >
                                       {mutatingStepId === step.id ? (
                                         <Loader2 className="h-4 w-4 animate-spin" />
                                       ) : (
                                         <>
-                                          Change status
+                                          {isCompletingEarly ? "Complete early" : "Change status"}
                                           <ChevronDown className="h-4 w-4" />
                                         </>
                                       )}
@@ -3533,6 +3816,7 @@ export function ContactServiceDetailsPanel({
             setActiveStep(null)
             setStepStatusNote("")
             setStepPostponeInput({ date: "", time: "" })
+            setStepNextFollowUpInput({ date: "", time: "" })
           }
         }}
       >
@@ -3551,6 +3835,13 @@ export function ContactServiceDetailsPanel({
                 <p><span className="font-medium text-slate-900">Step:</span> {activeStep.title}</p>
               </div>
             ) : null}
+            {activeStep?.effectiveDueAt &&
+            new Date(activeStep.effectiveDueAt).getTime() > Date.now() ? (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                This step is scheduled for a later time. You can complete it now; its original due
+                date will remain in the follow-up history.
+              </div>
+            ) : null}
             <div className="grid gap-2">
               <Label>Status</Label>
               <Select
@@ -3560,6 +3851,9 @@ export function ContactServiceDetailsPanel({
                   setStepStatusValue(nextValue)
                   if (nextValue !== "POSTPONED") {
                     setStepPostponeInput({ date: "", time: "" })
+                  }
+                  if (nextValue !== "COMPLETED") {
+                    setStepNextFollowUpInput({ date: "", time: "" })
                   }
                 }}
               >
@@ -3595,6 +3889,20 @@ export function ContactServiceDetailsPanel({
                 </p>
               </div>
             ) : null}
+            {stepStatusValue === "COMPLETED" &&
+            activeStep?.completionRequirement?.type === "NEXT_FOLLOW_UP_AT" ? (
+              <div className="grid gap-2 rounded-xl border border-blue-200 bg-blue-50/60 p-3">
+                <Label>{activeStep.completionRequirement.prompt}</Label>
+                <DateTimeInput
+                  value={stepNextFollowUpInput}
+                  onValueChange={setStepNextFollowUpInput}
+                  disabledDate={isBeforeToday}
+                />
+                <p className="text-xs text-slate-600">
+                  The workflow will pause and activate the next selected step at this time.
+                </p>
+              </div>
+            ) : null}
           </div>
           <DialogFooter>
             <Button
@@ -3613,6 +3921,50 @@ export function ContactServiceDetailsPanel({
               className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
             >
               {isSavingStepStatus ? "Saving..." : "Save status"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isRescheduleWaitOpen}
+        onOpenChange={(open) => {
+          setIsRescheduleWaitOpen(open)
+          if (!open) setRescheduleWaitInput({ date: "", time: "" })
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Change next follow-up</DialogTitle>
+            <DialogDescription>
+              {item?.followUpRun?.manualWait?.prompt ?? "Select the next follow-up date and time."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2 py-1">
+            <Label>Next follow-up date and time</Label>
+            <DateTimeInput
+              value={rescheduleWaitInput}
+              onValueChange={setRescheduleWaitInput}
+              disabledDate={isBeforeToday}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              className="cursor-pointer"
+              disabled={isReschedulingWait}
+              onClick={() => setIsRescheduleWaitOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="cursor-pointer"
+              disabled={isReschedulingWait}
+              onClick={() => void rescheduleManualWait()}
+            >
+              {isReschedulingWait ? "Saving..." : "Save date"}
             </Button>
           </DialogFooter>
         </DialogContent>
