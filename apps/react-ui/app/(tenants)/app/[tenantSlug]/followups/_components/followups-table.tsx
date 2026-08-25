@@ -1,12 +1,39 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { AlertTriangle, CalendarClock, Clock3, Filter, Gauge, Search, X } from "lucide-react"
+import {
+  AlertTriangle,
+  CalendarClock,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Filter,
+  Gauge,
+} from "lucide-react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { startTransition, useCallback, useEffect, useMemo, useState } from "react"
 
+import { Badge } from "@/components/ui/badge"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Sheet,
   SheetContent,
@@ -18,10 +45,12 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
   TableBody,
@@ -145,6 +174,153 @@ function parsePositiveInt(value: string | null, fallback: number) {
   return parsed
 }
 
+function getInitials(name: string) {
+  const initials = name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("")
+
+  return initials || "?"
+}
+
+function AssigneeFilterPicker({
+  assignees,
+  value,
+  onValueChange,
+  id,
+}: {
+  assignees: AssigneeOption[]
+  value: string
+  onValueChange: (value: string) => void
+  id: string
+}) {
+  const [open, setOpen] = useState(false)
+
+  const selectedAssignee = useMemo(
+    () => assignees.find((assignee) => assignee.value === value) ?? null,
+    [assignees, value],
+  )
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          aria-expanded={open}
+          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <Avatar size="sm" className={selectedAssignee ? "ring-2 ring-blue-50" : undefined}>
+              {selectedAssignee?.image ? (
+                <AvatarImage
+                  src={selectedAssignee.image}
+                  alt={`${selectedAssignee.label} profile photo`}
+                  className="object-cover"
+                />
+              ) : null}
+              <AvatarFallback
+                className={
+                  selectedAssignee
+                    ? "bg-blue-950 font-semibold text-white"
+                    : "bg-slate-100 font-semibold text-slate-500"
+                }
+              >
+                {selectedAssignee ? getInitials(selectedAssignee.label) : "—"}
+              </AvatarFallback>
+            </Avatar>
+            <span className="truncate font-medium text-slate-800">
+              {selectedAssignee?.label ?? "All assignees"}
+            </span>
+          </span>
+          <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
+        </Button>
+      </PopoverTrigger>
+
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] p-0"
+      >
+        <Command>
+          <CommandInput placeholder="Search team members..." />
+          <CommandList>
+            <CommandEmpty>No team members found.</CommandEmpty>
+            <CommandGroup heading="Assignee">
+              <CommandItem
+                value="All assignees no owner filter"
+                onSelect={() => {
+                  onValueChange(ALL_ASSIGNEE_FILTER)
+                  setOpen(false)
+                }}
+                className="cursor-pointer gap-3 py-2.5"
+              >
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
+                  All assignees
+                </span>
+                <Check
+                  className={cn(
+                    "text-blue-800",
+                    value === ALL_ASSIGNEE_FILTER ? "opacity-100" : "opacity-0",
+                  )}
+                />
+              </CommandItem>
+
+              {assignees.map((assignee) => (
+                <CommandItem
+                  key={assignee.value}
+                  value={`${assignee.label} ${assignee.email ?? ""} ${assignee.value}`}
+                  onSelect={() => {
+                    onValueChange(assignee.value)
+                    setOpen(false)
+                  }}
+                  className="cursor-pointer gap-3 py-2.5"
+                >
+                  <Avatar size="sm" className="ring-2 ring-blue-50">
+                    {assignee.image ? (
+                      <AvatarImage
+                        src={assignee.image}
+                        alt={`${assignee.label} profile photo`}
+                        className="object-cover"
+                      />
+                    ) : null}
+                    <AvatarFallback className="bg-blue-950 font-semibold text-white">
+                      {getInitials(assignee.label)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-medium text-slate-900">
+                      {assignee.label}
+                    </span>
+                    {assignee.email ? (
+                      <span className="truncate text-xs text-slate-500">
+                        {assignee.email}
+                      </span>
+                    ) : null}
+                  </span>
+                  <Check
+                    className={cn(
+                      "text-blue-800",
+                      value === assignee.value ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function CurrentStepBadge({
   status,
 }: {
@@ -190,64 +366,51 @@ function StepNumberChip({
 function DueDateCell({
   dueAt,
   isOverdue,
-  nowTimestamp,
   tenantTimezone,
 }: {
   dueAt: string | null
   isOverdue: boolean
-  nowTimestamp: number | null
   tenantTimezone?: string | null
 }) {
   if (!dueAt) {
-    return <span className="text-xs text-slate-400">No due date</span>
+    return <span className="text-sm text-slate-400">No due date</span>
   }
 
-  const dueDate = new Date(dueAt)
-  const isDueSoon =
-    nowTimestamp !== null && dueDate.getTime() - nowTimestamp <= 24 * 60 * 60 * 1000
-
   return (
-    <div className="space-y-0.5">
-      <p className={cn("text-sm", isOverdue ? "font-medium text-rose-700" : "text-slate-700")}>
-        {formatDateTimeForDisplay(dueAt, tenantTimezone)}
-      </p>
-      <p
-        className={cn(
-          "text-xs",
-          isOverdue
-            ? "text-rose-600"
-            : isDueSoon
-              ? "text-amber-600"
-              : "text-slate-500",
-        )}
-      >
-        {isOverdue ? "Overdue" : isDueSoon ? "Due soon" : "Scheduled"}
-      </p>
-    </div>
+    <span className={cn("text-sm", isOverdue ? "font-medium text-rose-700" : "text-slate-700")}>
+      {formatDateTimeForDisplay(dueAt, tenantTimezone)}
+    </span>
   )
 }
 
 function ProgressCell({
   completedCount,
   totalCount,
-  remainingCount,
   completionPercentage,
 }: EnrollmentRow["progress"]) {
+  const boundedPercentage = Math.max(0, Math.min(100, completionPercentage))
+
   return (
-    <div className="min-w-40 space-y-1.5">
-      <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
-        <span>
-          {completedCount}/{totalCount} completed
-        </span>
-        <span>{remainingCount} left</span>
-      </div>
-      <div className="h-1.5 rounded-full bg-slate-100">
+    <div className="flex min-w-48 items-center gap-2">
+      <span className="w-10 text-sm font-semibold tabular-nums text-slate-900">
+        {boundedPercentage}%
+      </span>
+      <div
+        className="h-2 min-w-20 flex-1 rounded-full bg-slate-100"
+        role="progressbar"
+        aria-label="Follow-up progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={boundedPercentage}
+      >
         <div
-          className="h-1.5 rounded-full bg-slate-900 transition-[width]"
-          style={{ width: `${completionPercentage}%` }}
+          className="h-2 rounded-full bg-blue-950 transition-[width]"
+          style={{ width: `${boundedPercentage}%` }}
         />
       </div>
-      <p className="text-xs font-medium text-slate-600">{completionPercentage}% complete</p>
+      <span className="w-10 text-right text-xs tabular-nums text-slate-500">
+        {completedCount}/{totalCount}
+      </span>
     </div>
   )
 }
@@ -287,16 +450,11 @@ export function FollowUpsTable({
     const parsed = parsePositiveInt(searchParams.get("pageSize"), 10)
     return parsed === 25 ? 25 : 10
   })
-  const [nowTimestamp, setNowTimestamp] = useState<number | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [data, setData] = useState<FollowUpsResponse | null>(null)
   const [templateOptions, setTemplateOptions] = useState<FollowUpTemplateOption[]>([])
   const [assigneeOptions, setAssigneeOptions] = useState<AssigneeOption[]>([])
-
-  useEffect(() => {
-    setNowTimestamp(Date.now())
-  }, [])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -465,6 +623,20 @@ export function FollowUpsTable({
     (statusFilter !== DEFAULT_STATUS ? 1 : 0) +
     (templateFilter !== ALL_TEMPLATE_FILTER ? 1 : 0) +
     (assigneeFilter !== ALL_ASSIGNEE_FILTER ? 1 : 0)
+  const hasActiveQueryOrFilters = Boolean(query.trim()) || activeFilterCount > 0
+  const placeholderRowCount =
+    enrollments.length === 0
+      ? pageSize - 1
+      : Math.max(0, pageSize - enrollments.length)
+  const visiblePageCount = Math.min(5, totalPages)
+  const firstVisiblePage = Math.max(
+    1,
+    Math.min(page - 2, totalPages - visiblePageCount + 1),
+  )
+  const visiblePages = Array.from(
+    { length: visiblePageCount },
+    (_, index) => firstVisiblePage + index,
+  )
 
   const summaryLabel = useMemo(() => {
     if (!total) return "No active service paths found"
@@ -475,222 +647,239 @@ export function FollowUpsTable({
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900">Follow-Ups</h2>
-          <p className="text-sm text-slate-500">{summaryLabel}</p>
+      <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="flex min-w-0 flex-col gap-2">
+            <p className="text-xs font-semibold text-blue-700">Follow-ups</p>
+            <div className="flex flex-col gap-1">
+              <h1 className="text-2xl font-semibold text-slate-950">
+                Service follow-up workspace
+              </h1>
+              <p className="text-sm text-slate-600">
+                Review ownership, due dates, and progress across active service paths.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="min-w-0 rounded-[22px] border border-white/80 bg-white/70 px-4 py-3 shadow-sm backdrop-blur">
+            <div className="flex items-center gap-2 text-slate-500">
+              <Clock3 className="h-4 w-4 text-slate-400" aria-hidden="true" />
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                In Progress
+              </p>
+            </div>
+            <p className="mt-2 truncate text-xl font-semibold tabular-nums tracking-tight text-slate-950">
+              {summary.servicesInProgress}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Active service paths currently moving through steps.
+            </p>
+          </div>
+
+          <div className="min-w-0 rounded-[22px] border border-white/80 bg-white/70 px-4 py-3 shadow-sm backdrop-blur">
+            <div className="flex items-center gap-2 text-slate-500">
+              <AlertTriangle className="h-4 w-4 text-slate-400" aria-hidden="true" />
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                Overdue
+              </p>
+            </div>
+            <p className="mt-2 truncate text-xl font-semibold tabular-nums tracking-tight text-rose-700">
+              {summary.overdueEnrollments}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Current steps with due dates already in the past.
+            </p>
+          </div>
+
+          <div className="min-w-0 rounded-[22px] border border-white/80 bg-white/70 px-4 py-3 shadow-sm backdrop-blur">
+            <div className="flex items-center gap-2 text-slate-500">
+              <CalendarClock className="h-4 w-4 text-slate-400" aria-hidden="true" />
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                Due Today
+              </p>
+            </div>
+            <p className="mt-2 truncate text-xl font-semibold tabular-nums tracking-tight text-amber-700">
+              {summary.dueToday}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Active steps that need attention before the day ends.
+            </p>
+          </div>
+
+          <div className="min-w-0 rounded-[22px] border border-white/80 bg-white/70 px-4 py-3 shadow-sm backdrop-blur">
+            <div className="flex items-center gap-2 text-slate-500">
+              <Gauge className="h-4 w-4 text-slate-400" aria-hidden="true" />
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                Average Progress
+              </p>
+            </div>
+            <p className="mt-2 truncate text-xl font-semibold tabular-nums tracking-tight text-sky-700">
+              {summary.averageProgress}%
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Completion level across active service paths.
+            </p>
+          </div>
         </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-slate-400">
-            <Clock3 className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-              Services In Progress
-            </p>
-          </div>
-          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
-            {summary.servicesInProgress}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">
-            Enrollments that still have an active service step.
-          </p>
-        </div>
-
-        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-slate-400">
-            <AlertTriangle className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-              Overdue
-            </p>
-          </div>
-          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-rose-700">
-            {summary.overdueEnrollments}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">
-            Current steps with a due date already in the past.
-          </p>
-        </div>
-
-        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-slate-400">
-            <CalendarClock className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-              Due Today
-            </p>
-          </div>
-          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-amber-700">
-            {summary.dueToday}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">
-            Active steps that need attention before the day ends.
-          </p>
-        </div>
-
-        <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-slate-400">
-            <Gauge className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-              Average Progress
-            </p>
-          </div>
-          <p className="mt-2 truncate text-xl font-semibold tracking-tight text-sky-700">
-            {summary.averageProgress}%
-          </p>
-          <p className="mt-1 text-xs text-slate-500">
-            Completion level across all active service paths.
-          </p>
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-2 rounded-lg bg-white py-1">
-        <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <Input
-              placeholder="Search by contact name and phone number"
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value)
-                setPage(1)
-              }}
-              className="pl-9 pr-12"
-            />
-            {query ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="absolute right-1.5 top-1/2 h-8 w-8 -translate-y-1/2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                onClick={() => {
-                  setQuery("")
-                  setPage(1)
-                }}
-              >
-                <X className="h-4 w-4" />
-                <span className="sr-only">Clear search</span>
-              </Button>
-            ) : null}
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            className="cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-            onClick={() => {
-              setDraftStatusFilter(statusFilter)
-              setDraftTemplateFilter(templateFilter)
-              setDraftAssigneeFilter(assigneeFilter)
-              setIsFilterSheetOpen(true)
-            }}
-          >
-            <Filter className="h-4 w-4" />
-            Filters
-            {activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            className="cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-            onClick={() => {
-              setQuery("")
-              setDebouncedQuery("")
-              setStatusFilter(DEFAULT_STATUS)
-              setTemplateFilter(ALL_TEMPLATE_FILTER)
-              setAssigneeFilter(ALL_ASSIGNEE_FILTER)
-              setDraftStatusFilter(DEFAULT_STATUS)
-              setDraftTemplateFilter(ALL_TEMPLATE_FILTER)
-              setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
-              setPage(1)
-            }}
-          >
-            Clear Filters
-          </Button>
-        </div>
+      <div className="grid gap-3 rounded-[22px] border border-slate-200 bg-white/75 p-3 shadow-sm backdrop-blur lg:grid-cols-[minmax(280px,1fr)_auto_auto]">
+        <Input
+          type="search"
+          placeholder="Search by contact name or phone number"
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value)
+            setPage(1)
+          }}
+          aria-label="Search follow-ups"
+          className="h-11 rounded-xl border-white/80 bg-white/85 px-4 shadow-sm backdrop-blur placeholder:text-slate-400 focus-visible:border-blue-300 focus-visible:ring-blue-100"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          className="h-11 cursor-pointer rounded-xl border-white/80 bg-white/85 px-4 text-blue-950 shadow-sm backdrop-blur hover:bg-white hover:text-blue-950"
+          onClick={() => {
+            setDraftStatusFilter(statusFilter)
+            setDraftTemplateFilter(templateFilter)
+            setDraftAssigneeFilter(assigneeFilter)
+            setIsFilterSheetOpen(true)
+          }}
+        >
+          <Filter data-icon="inline-start" />
+          Filters
+          {activeFilterCount > 0 ? (
+            <Badge className="min-w-5 bg-blue-950 px-1.5 text-white">
+              {activeFilterCount}
+            </Badge>
+          ) : null}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!hasActiveQueryOrFilters}
+          className="h-11 cursor-pointer rounded-xl border-white/80 bg-white/70 px-4 text-slate-700 shadow-sm backdrop-blur hover:bg-white hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-55"
+          onClick={() => {
+            setQuery("")
+            setDebouncedQuery("")
+            setStatusFilter(DEFAULT_STATUS)
+            setTemplateFilter(ALL_TEMPLATE_FILTER)
+            setAssigneeFilter(ALL_ASSIGNEE_FILTER)
+            setDraftStatusFilter(DEFAULT_STATUS)
+            setDraftTemplateFilter(ALL_TEMPLATE_FILTER)
+            setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
+            setPage(1)
+          }}
+        >
+          Clear filters
+        </Button>
       </div>
 
       <Sheet open={isFilterSheetOpen} onOpenChange={setIsFilterSheetOpen}>
-        <SheetContent side="right" className="sm:max-w-md">
-          <SheetHeader>
-            <SheetTitle>Filters</SheetTitle>
-            <SheetDescription>
-              Narrow follow-ups by current step status, template, or assignee.
-            </SheetDescription>
+        <SheetContent
+          side="right"
+          className="flex h-full w-full flex-col gap-0 overflow-hidden border-l border-slate-200 bg-white p-0 sm:max-w-lg [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:opacity-100 [&>button]:shadow-sm [&>button]:backdrop-blur"
+        >
+          <SheetHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
+            />
+            <div className="relative pr-10">
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <p className="text-xs font-semibold text-blue-700">
+                  Follow-up filters
+                </p>
+                <SheetTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                  Refine follow-ups
+                </SheetTitle>
+                <SheetDescription className="max-w-xl text-sm leading-6 text-slate-600">
+                  Filter service paths by step status, template, and owner.
+                </SheetDescription>
+              </div>
+            </div>
           </SheetHeader>
 
-          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pb-4">
-            <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-              <div className="space-y-1">
-                <p className="text-sm font-semibold text-slate-900">Step Status</p>
-                <p className="text-xs text-slate-500">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+            <FieldGroup className="gap-6">
+              <Field className="gap-2">
+                <FieldLabel htmlFor="follow-up-status-filter" className="text-slate-800">
+                  Step status
+                </FieldLabel>
+                <Select value={draftStatusFilter} onValueChange={setDraftStatusFilter}>
+                  <SelectTrigger
+                    id="follow-up-status-filter"
+                    className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                  >
+                    <SelectValue placeholder="Current step status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_STATUS}>All statuses</SelectItem>
+                    <SelectItem value="ACTIVE">Active</SelectItem>
+                    <SelectItem value="POSTPONED">Postponed</SelectItem>
+                    <SelectItem value="PENDING">Pending</SelectItem>
+                    <SelectItem value="COMPLETED">Completed</SelectItem>
+                    <SelectItem value="SKIPPED">Skipped</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FieldDescription className="text-xs">
                   Show follow-ups matching the selected current step state.
-                </p>
-              </div>
-              <Select value={draftStatusFilter} onValueChange={setDraftStatusFilter}>
-                <SelectTrigger className="h-11 w-full rounded-xl border-slate-200 bg-white shadow-sm">
-                  <SelectValue placeholder="Current step status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL_STATUS}>All Statuses</SelectItem>
-                  <SelectItem value="ACTIVE">Active</SelectItem>
-                  <SelectItem value="POSTPONED">Postponed</SelectItem>
-                  <SelectItem value="PENDING">Pending</SelectItem>
-                  <SelectItem value="COMPLETED">Completed</SelectItem>
-                  <SelectItem value="SKIPPED">Skipped</SelectItem>
-                </SelectContent>
-              </Select>
-            </section>
+                </FieldDescription>
+              </Field>
 
-            <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-              <div className="space-y-1">
-                <p className="text-sm font-semibold text-slate-900">Template</p>
-                <p className="text-xs text-slate-500">
+              <Field className="gap-2">
+                <FieldLabel htmlFor="follow-up-template-filter" className="text-slate-800">
+                  Template
+                </FieldLabel>
+                <Select value={draftTemplateFilter} onValueChange={setDraftTemplateFilter}>
+                  <SelectTrigger
+                    id="follow-up-template-filter"
+                    className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                  >
+                    <SelectValue placeholder="Template" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_TEMPLATE_FILTER}>All templates</SelectItem>
+                    {templateOptions.map((template) => (
+                      <SelectItem key={template.id} value={template.id}>
+                        {template.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldDescription className="text-xs">
                   Focus on a specific follow-up template across the selected due-date tab.
-                </p>
-              </div>
-              <Select value={draftTemplateFilter} onValueChange={setDraftTemplateFilter}>
-                <SelectTrigger className="h-11 w-full rounded-xl border-slate-200 bg-white shadow-sm">
-                  <SelectValue placeholder="Template" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL_TEMPLATE_FILTER}>All Templates</SelectItem>
-                  {templateOptions.map((template) => (
-                    <SelectItem key={template.id} value={template.id}>
-                      {template.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </section>
+                </FieldDescription>
+              </Field>
 
-            <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-              <div className="space-y-1">
-                <p className="text-sm font-semibold text-slate-900">Assigned To</p>
-                <p className="text-xs text-slate-500">
+              <Field className="gap-2">
+                <FieldLabel htmlFor="follow-up-assignee-filter" className="text-slate-800">
+                  Assigned to
+                </FieldLabel>
+                <AssigneeFilterPicker
+                  id="follow-up-assignee-filter"
+                  assignees={assigneeOptions}
+                  value={draftAssigneeFilter}
+                  onValueChange={setDraftAssigneeFilter}
+                />
+                <FieldDescription className="text-xs">
                   Show follow-ups owned by a specific user.
-                </p>
-              </div>
-              <Select value={draftAssigneeFilter} onValueChange={setDraftAssigneeFilter}>
-                <SelectTrigger className="h-11 w-full rounded-xl border-slate-200 bg-white shadow-sm">
-                  <SelectValue placeholder="Assigned to" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL_ASSIGNEE_FILTER}>All Assignees</SelectItem>
-                  {assigneeOptions.map((assignee) => (
-                    <SelectItem key={assignee.value} value={assignee.value}>
-                      {assignee.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </section>
+                </FieldDescription>
+              </Field>
+            </FieldGroup>
           </div>
 
-          <SheetFooter>
+          <SheetFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:flex-row sm:justify-end sm:px-7">
             <Button
               type="button"
               variant="outline"
-              className="cursor-pointer"
+              className="cursor-pointer border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
               onClick={() => {
                 setDraftStatusFilter(DEFAULT_STATUS)
                 setDraftTemplateFilter(ALL_TEMPLATE_FILTER)
@@ -701,7 +890,7 @@ export function FollowUpsTable({
             </Button>
             <Button
               type="button"
-              className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+              className="min-w-32 cursor-pointer bg-blue-950 text-white shadow-sm hover:bg-blue-900"
               onClick={() => {
                 setStatusFilter(draftStatusFilter)
                 setTemplateFilter(draftTemplateFilter)
@@ -710,7 +899,7 @@ export function FollowUpsTable({
                 setIsFilterSheetOpen(false)
               }}
             >
-              Apply Filters
+              Apply filters
             </Button>
           </SheetFooter>
         </SheetContent>
@@ -722,9 +911,9 @@ export function FollowUpsTable({
           setDueDatePreset(value)
           setPage(1)
         }}
-        className="flex min-h-0 flex-1 flex-col rounded-[22px] border border-slate-200 bg-white shadow-sm"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-sm"
       >
-        <div className="border-b border-slate-200 px-4 pt-3">
+        <div className="border-b border-slate-200 px-4 pt-4">
           <div className="pb-2">
             <div className="overflow-x-auto overflow-y-hidden">
               <TabsList className="inline-flex h-auto w-max min-w-0 justify-start gap-2 bg-transparent p-0">
@@ -747,167 +936,298 @@ export function FollowUpsTable({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto">
-          <Table className="[&_td]:py-2.5 [&_td:first-child]:pl-4 [&_td:last-child]:pr-4 [&_th]:h-8 [&_th:first-child]:pl-4 [&_th:last-child]:pr-4">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="min-w-48 text-xs">Contact</TableHead>
-                <TableHead className="min-w-44 text-xs">Service</TableHead>
-                <TableHead className="min-w-56 text-xs">Current Step</TableHead>
-                <TableHead className="min-w-32 text-xs">Status</TableHead>
-                <TableHead className="min-w-44 text-xs">Due Date</TableHead>
-                <TableHead className="min-w-44 text-xs">Progress</TableHead>
+        <div className="min-h-0 flex-1 overflow-auto px-4 pt-4">
+          <Table
+            className="min-w-[1600px] table-fixed border-separate border-spacing-0"
+            aria-label="Follow-ups"
+          >
+            <TableHeader className="drop-shadow-sm [&_tr]:border-0">
+              <TableRow className="h-14 border-0 hover:bg-transparent">
+                <TableHead className="w-[12%] rounded-l-xl border-y border-l bg-slate-50 px-4 text-xs text-slate-600">
+                  Name
+                </TableHead>
+                <TableHead className="w-[9%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Number
+                </TableHead>
+                <TableHead className="w-[11%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Service
+                </TableHead>
+                <TableHead className="w-[13%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Template
+                </TableHead>
+                <TableHead className="w-[15%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Current Step
+                </TableHead>
+                <TableHead className="w-[11%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Assigned
+                </TableHead>
+                <TableHead className="w-[8%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Status
+                </TableHead>
+                <TableHead className="w-[9%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Due Date
+                </TableHead>
+                <TableHead className="w-[12%] rounded-r-xl border-y border-r bg-slate-50 px-4 text-xs text-slate-600">
+                  Progress
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
+              <TableRow
+                aria-hidden="true"
+                className="h-2 border-0 hover:bg-transparent"
+              >
+                <TableCell colSpan={9} className="p-0" />
+              </TableRow>
               {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-slate-500">
-                    Loading service paths...
-                  </TableCell>
-                </TableRow>
+                Array.from({ length: pageSize }, (_, index) => (
+                  <TableRow
+                    key={`follow-up-loading-${index}`}
+                    className="h-14 hover:bg-transparent"
+                  >
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-4 w-4/5" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-4 w-28" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-4 w-4/5" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-4 w-4/5" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <div className="flex items-center gap-2">
+                        <Skeleton className="h-6 w-8 rounded-full" />
+                        <Skeleton className="h-4 w-32" />
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-4 w-24" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-5 w-16 rounded-full" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-4 w-32" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <div className="flex items-center gap-2">
+                        <Skeleton className="h-4 w-10" />
+                        <Skeleton className="h-2 flex-1 rounded-full" />
+                        <Skeleton className="h-4 w-8" />
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
               ) : errorMessage ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-rose-600">
+                <TableRow className="h-14 hover:bg-transparent">
+                  <TableCell
+                    colSpan={9}
+                    className="px-4 py-0 text-center text-sm text-rose-600"
+                  >
                     {errorMessage}
                   </TableCell>
                 </TableRow>
               ) : enrollments.length ? (
-                enrollments.map((item) => (
-                  <TableRow
-                    key={item.id}
-                    className={cn(
-                      "cursor-pointer",
-                      item.overdue && "bg-rose-50/50 hover:bg-rose-50",
-                    )}
-                    onClick={() =>
-                      router.push(
-                        `/app/${tenantSlug}/contacts/${item.contactId}/services/${item.id}`,
-                      )
-                    }
-                  >
-                    <TableCell>
-                      <div className="space-y-0.5">
-                        <p className="font-medium text-slate-900">
+                enrollments.map((item) => {
+                  const href = `/app/${tenantSlug}/contacts/${item.contactId}/services/${item.id}`
+
+                  return (
+                    <TableRow
+                      key={item.id}
+                      role="link"
+                      tabIndex={0}
+                      aria-label={`Open ${item.contactName || "Unnamed contact"} service follow-up`}
+                      className="h-14 cursor-pointer outline-none hover:bg-blue-50/50 focus-visible:bg-blue-50/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500/40"
+                      onClick={() => router.push(href)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault()
+                          router.push(href)
+                        }
+                      }}
+                    >
+                      <TableCell className="px-4 py-0">
+                        <p className="truncate font-medium text-slate-900">
                           {item.contactName || "Unnamed contact"}
                         </p>
-                        <p className="text-xs text-slate-500">
-                          {item.phoneNumber ? formatPhoneNumber(item.phoneNumber) : "No phone number"}
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        <span className="text-sm text-slate-600">
+                          {item.phoneNumber
+                            ? formatPhoneNumber(item.phoneNumber)
+                            : "No number"}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        <p className="truncate font-medium text-slate-900">
+                          {item.serviceName}
                         </p>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="space-y-0.5">
-                        <p className="font-medium text-slate-900">{item.serviceName}</p>
-                        <p className="text-xs text-slate-500">
-                          {item.followUpTemplateName || "Manual follow-up flow"}
-                          {item.followUpTemplateVersion
-                            ? ` · v${item.followUpTemplateVersion.versionNumber}`
-                            : ""}
-                        </p>
-                        {item.followUpRun?.status === "FAILED" || item.followUpRun?.status === "NEEDS_REVIEW" ? (
-                          <p className="text-xs font-medium text-rose-700">
-                            {item.followUpRun.status === "FAILED" ? "Automation paused" : "Needs review"}
-                          </p>
-                        ) : null}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="space-y-0.5">
-                        <div className="flex flex-wrap items-center gap-2">
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="min-w-0 truncate text-sm text-slate-700">
+                            {item.followUpTemplateName || "Manual follow-up flow"}
+                            {item.followUpTemplateVersion
+                              ? ` v${item.followUpTemplateVersion.versionNumber}`
+                              : ""}
+                          </span>
+                          {item.followUpRun?.status === "FAILED" ||
+                          item.followUpRun?.status === "NEEDS_REVIEW" ? (
+                            <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
+                              {item.followUpRun.status === "FAILED"
+                                ? "Paused"
+                                : "Review"}
+                            </span>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        <div className="flex min-w-0 items-center gap-2">
                           {item.currentStep ? (
                             <StepNumberChip stepNumber={item.currentStep.stepNumber} />
                           ) : null}
-                          <p className="font-medium text-slate-900">
+                          <span className="min-w-0 truncate font-medium text-slate-900">
                             {item.currentStep?.title || "No active step"}
-                          </p>
+                          </span>
                         </div>
-                        <p className="text-xs text-slate-500">
-                          {item.currentStep?.assignedToName
-                            ? `Assigned to ${item.currentStep.assignedToName}`
-                            : "Unassigned"}
-                        </p>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      {item.currentStep ? <CurrentStepBadge status={item.currentStep.status} /> : "—"}
-                    </TableCell>
-                    <TableCell>
-                      <DueDateCell
-                        dueAt={item.currentStep?.dueAt ?? null}
-                        isOverdue={item.overdue}
-                        nowTimestamp={nowTimestamp}
-                        tenantTimezone={tenantTimezone}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <ProgressCell {...item.progress} />
-                    </TableCell>
-                  </TableRow>
-                ))
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        <span className="block truncate text-sm text-slate-700">
+                          {item.currentStep?.assignedToName || "Unassigned"}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        {item.currentStep ? (
+                          <CurrentStepBadge status={item.currentStep.status} />
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        <DueDateCell
+                          dueAt={item.currentStep?.dueAt ?? null}
+                          isOverdue={item.overdue}
+                          tenantTimezone={tenantTimezone}
+                        />
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        <ProgressCell {...item.progress} />
+                      </TableCell>
+                    </TableRow>
+                  )
+                })
               ) : (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-slate-500">
+                <TableRow className="h-14 hover:bg-transparent">
+                  <TableCell
+                    colSpan={9}
+                    className="px-4 py-0 text-center text-sm text-slate-500"
+                  >
                     No active service paths match these filters.
                   </TableCell>
                 </TableRow>
               )}
+              {!isLoading && !errorMessage
+                ? Array.from({ length: placeholderRowCount }, (_, index) => (
+                    <TableRow
+                      key={`follow-up-placeholder-${index}`}
+                      aria-hidden="true"
+                      className="h-14 hover:bg-transparent"
+                    >
+                      <TableCell colSpan={9} className="px-4 py-0" />
+                    </TableRow>
+                  ))
+                : null}
             </TableBody>
           </Table>
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-2 text-sm text-slate-600">
-            <span>Rows per page</span>
-            <Select
-              value={String(pageSize)}
-              onValueChange={(value) => {
-                const next = Number(value)
-                if (next === 10 || next === 25) {
-                  setPageSize(next)
-                  setPage(1)
-                }
-              }}
-            >
-              <SelectTrigger size="sm" className="w-20">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PAGE_SIZE_OPTIONS.map((size) => (
-                  <SelectItem key={size} value={String(size)}>
-                    {size}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <footer className="flex flex-col gap-4 border-t border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+            {isLoading ? (
+              <Skeleton className="h-4 w-44" />
+            ) : (
+              <p className="text-sm text-slate-500">{summaryLabel}</p>
+            )}
+            <div className="flex items-center gap-2 text-sm text-slate-600">
+              <span>Rows per page</span>
+              <Select
+                value={String(pageSize)}
+                onValueChange={(value) => {
+                  const next = Number(value)
+                  if (next === 10 || next === 25) {
+                    setPageSize(next)
+                    setPage(1)
+                  }
+                }}
+              >
+                <SelectTrigger size="sm" className="w-20 rounded-lg">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {PAGE_SIZE_OPTIONS.map((size) => (
+                      <SelectItem key={size} value={String(size)}>
+                        {size}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 self-end sm:self-auto">
+          <nav
+            className="flex items-center gap-2 self-end sm:self-auto"
+            aria-label="Follow-up pagination"
+          >
             <Button
               type="button"
               variant="outline"
-              size="sm"
-              className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+              size="icon-sm"
+              aria-label="Previous page"
               disabled={!canGoPrevious || isLoading}
               onClick={() => setPage((current) => Math.max(1, current - 1))}
             >
-              Previous
+              <ChevronLeft aria-hidden="true" />
             </Button>
-            <span className="px-1 text-sm text-slate-600">
-              Page {page} of {totalPages}
-            </span>
+            {visiblePages.map((pageNumber) => (
+              <Button
+                key={pageNumber}
+                type="button"
+                variant={pageNumber === page ? "default" : "outline"}
+                size="icon-sm"
+                aria-label={
+                  pageNumber === page
+                    ? `Current page, page ${pageNumber}`
+                    : `Go to page ${pageNumber}`
+                }
+                aria-current={pageNumber === page ? "page" : undefined}
+                disabled={isLoading || pageNumber === page}
+                className={
+                  pageNumber === page
+                    ? "bg-blue-950 text-white hover:bg-blue-900 disabled:opacity-100"
+                    : undefined
+                }
+                onClick={() => setPage(pageNumber)}
+              >
+                {pageNumber}
+              </Button>
+            ))}
             <Button
               type="button"
               variant="outline"
-              size="sm"
-              className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+              size="icon-sm"
+              aria-label="Next page"
               disabled={!canGoNext || isLoading}
               onClick={() => setPage((prev) => prev + 1)}
             >
-              Next
+              <ChevronRight aria-hidden="true" />
             </Button>
-          </div>
-        </div>
+          </nav>
+        </footer>
       </Tabs>
     </div>
   )
