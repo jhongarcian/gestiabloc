@@ -1367,6 +1367,8 @@ export async function executeFollowUpFromStep(params: {
           availableAt: activationTime,
           dueAt: activationTime,
           completedAt: null,
+          overdueNotifiedAt: null,
+          overdueNotifiedDueAt: null,
         },
       })
 
@@ -1659,6 +1661,8 @@ export async function executeFollowUpFromStart(params: {
           availableAt: activationTime,
           dueAt: delayMs > 0 ? activationTime : enrolledStep.dueAt ?? activationTime,
           completedAt: null,
+          overdueNotifiedAt: null,
+          overdueNotifiedDueAt: null,
         },
       })
 

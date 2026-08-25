@@ -74,6 +74,8 @@ type NotificationItem = {
     | "TASK_REMINDER"
     | "TASK_ASSIGNED"
     | "TASK_DUE"
+    | "FOLLOW_UP_OVERDUE"
+    | "FOLLOW_UP_FAILED"
     | "CUSTOM_FIELD_ACCESS_REQUEST"
     | "CUSTOM_FIELD_ACCESS_GRANTED"
   title: string
@@ -181,6 +183,18 @@ const notificationMeta = (
         label: "Due now",
         chipClassName:
           "border border-amber-200/80 bg-amber-100/80 text-amber-700",
+      }
+    case "FOLLOW_UP_OVERDUE":
+      return {
+        label: "Follow-up overdue",
+        chipClassName:
+          "border border-rose-200/80 bg-rose-100/80 text-rose-700",
+      }
+    case "FOLLOW_UP_FAILED":
+      return {
+        label: "Follow-up paused",
+        chipClassName:
+          "border border-red-200/80 bg-red-100/80 text-red-700",
       }
     case "CUSTOM_FIELD_ACCESS_REQUEST":
       return {

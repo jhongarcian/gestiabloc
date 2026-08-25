@@ -4490,6 +4490,14 @@ router.patch(
       if (payload.postponeTo && Number.isNaN(postponeToDate?.getTime() ?? NaN)) {
         return res.status(400).json({ error: "INVALID_POSTPONE_DATE" })
       }
+      const requestedDueAt = postponeToDate ??
+        (payload.dueAt !== undefined
+          ? payload.dueAt
+            ? new Date(payload.dueAt)
+            : null
+          : undefined)
+      const dueAtChanged = requestedDueAt !== undefined &&
+        (requestedDueAt?.getTime() ?? null) !== (existing.dueAt?.getTime() ?? null)
 
       let updated: any
       let v2RunToAdvanceId: string | null = null
@@ -4588,10 +4596,10 @@ router.patch(
             ...(payload.availableAt !== undefined
               ? { availableAt: payload.availableAt ? new Date(payload.availableAt) : null }
               : {}),
-            ...(payload.dueAt !== undefined
-              ? { dueAt: payload.dueAt ? new Date(payload.dueAt) : null }
+            ...(requestedDueAt !== undefined ? { dueAt: requestedDueAt } : {}),
+            ...(dueAtChanged
+              ? { overdueNotifiedAt: null, overdueNotifiedDueAt: null }
               : {}),
-            ...(postponeToDate ? { dueAt: postponeToDate } : {}),
             ...(payload.assignedToUserId !== undefined
               ? { assignedToUserId: payload.assignedToUserId || null }
               : {}),
@@ -4726,6 +4734,8 @@ router.patch(
                   ...(futureStep.availableAt
                     ? { availableAt: new Date(futureStep.availableAt.getTime() + shiftMs) }
                     : {}),
+                  overdueNotifiedAt: null,
+                  overdueNotifiedDueAt: null,
                 },
               })
             }
