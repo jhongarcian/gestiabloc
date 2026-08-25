@@ -2,7 +2,14 @@
 
 import Link from "next/link"
 import { useRouter, useSelectedLayoutSegments } from "next/navigation"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  type UIEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { toast } from "sonner"
 
 import {
@@ -47,7 +54,6 @@ import { AppSidebar } from "./sidebar"
 import { TenantUserProvider, type TenantUser } from "./tenant-context"
 import { api } from "@/lib/api"
 import { Badge } from "@/components/ui/badge"
-import { ScrollArea } from "@/components/ui/scroll-area"
 
 type TenantShellProps = {
   tenantSlug: string
@@ -109,6 +115,8 @@ type SocketClient = {
   off: (event: string, callback: (payload: RealtimeNotificationItem) => void) => void
   disconnect: () => void
 }
+
+const NOTIFICATIONS_PAGE_SIZE = 10
 
 declare global {
   interface Window {
@@ -217,6 +225,30 @@ const notificationMeta = (
   }
 }
 
+const mergeLatestNotifications = (
+  current: NotificationItem[],
+  incoming: NotificationItem[],
+) => {
+  const seen = new Set<string>()
+
+  return [...incoming, ...current].filter((notification) => {
+    if (seen.has(notification.id)) return false
+    seen.add(notification.id)
+    return true
+  })
+}
+
+const appendOlderNotifications = (
+  current: NotificationItem[],
+  incoming: NotificationItem[],
+) => {
+  const existingIds = new Set(current.map((notification) => notification.id))
+  return [
+    ...current,
+    ...incoming.filter((notification) => !existingIds.has(notification.id)),
+  ]
+}
+
 export function TenantShell({
   tenantSlug,
   tenantName,
@@ -227,6 +259,8 @@ export function TenantShell({
   const router = useRouter()
   const selectedSegments = useSelectedLayoutSegments()
   const socketRef = useRef<SocketClient | null>(null)
+  const isLoadingNotificationsRef = useRef(false)
+  const isLoadingMoreNotificationsRef = useRef(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
@@ -235,7 +269,11 @@ export function TenantShell({
   const [serviceCrumbLabel, setServiceCrumbLabel] = useState<string | null>(null)
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
+  const [notificationsPage, setNotificationsPage] = useState(0)
+  const [notificationsTotalPages, setNotificationsTotalPages] = useState(1)
   const [isNotificationsLoading, setIsNotificationsLoading] = useState(false)
+  const [isMoreNotificationsLoading, setIsMoreNotificationsLoading] =
+    useState(false)
   const [isNotificationsActionPending, setIsNotificationsActionPending] = useState<
     "read-all" | "clear" | null
   >(null)
@@ -263,6 +301,7 @@ export function TenantShell({
     () => `/app/${tenantSlug}`,
     [tenantSlug],
   )
+  const hasMoreNotifications = notificationsPage < notificationsTotalPages
   const isFlowBuilderRoute = useMemo(
     () =>
       segments[0] === "account-settings" &&
@@ -445,42 +484,109 @@ export function TenantShell({
     setCurrentUser(user)
   }, [user])
 
-  const loadNotifications = useCallback(async () => {
+  const loadNotifications = useCallback(async ({
+    mode = "replace",
+    page = 1,
+  }: {
+    mode?: "replace" | "merge" | "append"
+    page?: number
+  } = {}) => {
     if (!tenantId) return
 
-    setIsNotificationsLoading(true)
+    const isAppending = mode === "append"
+    if (
+      isLoadingNotificationsRef.current ||
+      isLoadingMoreNotificationsRef.current
+    ) {
+      return
+    }
+
+    if (isAppending) {
+      isLoadingMoreNotificationsRef.current = true
+      setIsMoreNotificationsLoading(true)
+    } else {
+      isLoadingNotificationsRef.current = true
+      if (mode === "replace") {
+        setIsNotificationsLoading(true)
+      }
+    }
+
     try {
       const { data } = await api.get<NotificationsResponse>(
         `/api/notifications/${tenantId}`,
         {
           params: {
-            page: 1,
-            pageSize: 10,
+            page,
+            pageSize: NOTIFICATIONS_PAGE_SIZE,
           },
         },
       )
 
-      setNotifications(data.items)
+      setNotifications((current) => {
+        if (mode === "append") {
+          return appendOlderNotifications(current, data.items)
+        }
+
+        if (mode === "merge") {
+          return mergeLatestNotifications(current, data.items)
+        }
+
+        return data.items
+      })
       setUnreadCount(data.unreadCount)
+      setNotificationsPage((current) =>
+        mode === "append" ? Math.max(current, data.pagination.page) : data.pagination.page,
+      )
+      setNotificationsTotalPages(data.pagination.totalPages)
     } catch {
       // Keep the shell usable even if notifications fail.
     } finally {
-      setIsNotificationsLoading(false)
+      if (isAppending) {
+        isLoadingMoreNotificationsRef.current = false
+        setIsMoreNotificationsLoading(false)
+      } else {
+        isLoadingNotificationsRef.current = false
+        setIsNotificationsLoading(false)
+      }
     }
   }, [tenantId])
+
+  const loadMoreNotifications = useCallback(async () => {
+    if (!tenantId || !hasMoreNotifications) return
+
+    await loadNotifications({
+      mode: "append",
+      page: notificationsPage + 1,
+    })
+  }, [tenantId, hasMoreNotifications, loadNotifications, notificationsPage])
+
+  const handleNotificationsScroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      const target = event.currentTarget
+      const remainingScroll =
+        target.scrollHeight - target.scrollTop - target.clientHeight
+
+      if (remainingScroll <= 96) {
+        void loadMoreNotifications()
+      }
+    },
+    [loadMoreNotifications],
+  )
 
   useEffect(() => {
     if (!tenantId) return
     void loadNotifications()
 
     const intervalId = window.setInterval(() => {
-      void loadNotifications()
+      void loadNotifications({
+        mode: notificationsOpen ? "merge" : "replace",
+      })
     }, 60_000)
 
     return () => {
       window.clearInterval(intervalId)
     }
-  }, [tenantId, loadNotifications])
+  }, [tenantId, loadNotifications, notificationsOpen])
 
   useEffect(() => {
     if (notificationsOpen) {
@@ -580,6 +686,8 @@ export function TenantShell({
       await api.delete(`/api/notifications/${tenantId}`)
       setNotifications([])
       setUnreadCount(0)
+      setNotificationsPage(0)
+      setNotificationsTotalPages(1)
     } catch {
       toast.error("Could not clear notifications.")
     } finally {
@@ -686,10 +794,7 @@ export function TenantShell({
               taskReminderId: payload.taskReminderId,
             }
 
-            return [nextItem, ...current.filter((item) => item.id !== payload.id)].slice(
-              0,
-              10,
-            )
+            return [nextItem, ...current.filter((item) => item.id !== payload.id)]
           })
           setUnreadCount((current) => current + (payload.readAt ? 0 : 1))
         }
@@ -961,33 +1066,43 @@ export function TenantShell({
                   <span>Live activity</span>
                 </div>
                 <div className="flex items-center justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="cursor-pointer rounded-full text-slate-600 hover:bg-white/80"
-                  onClick={() => void handleMarkAllNotificationsRead()}
-                  disabled={isNotificationsActionPending !== null || unreadCount === 0}
-                >
-                  {isNotificationsActionPending === "read-all"
-                    ? "Marking..."
-                    : "Mark all as read"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="cursor-pointer rounded-full text-slate-600 hover:bg-white/80"
-                  onClick={() => void handleClearNotifications()}
-                  disabled={isNotificationsActionPending !== null || notifications.length === 0}
-                >
-                  {isNotificationsActionPending === "clear" ? "Clearing..." : "Clear all"}
-                </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="cursor-pointer rounded-full text-slate-600 hover:bg-white/80"
+                    onClick={() => void handleMarkAllNotificationsRead()}
+                    disabled={
+                      isNotificationsActionPending !== null || unreadCount === 0
+                    }
+                  >
+                    {isNotificationsActionPending === "read-all"
+                      ? "Marking..."
+                      : "Mark all as read"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="cursor-pointer rounded-full text-slate-600 hover:bg-white/80"
+                    onClick={() => void handleClearNotifications()}
+                    disabled={
+                      isNotificationsActionPending !== null ||
+                      notifications.length === 0
+                    }
+                  >
+                    {isNotificationsActionPending === "clear"
+                      ? "Clearing..."
+                      : "Clear all"}
+                  </Button>
                 </div>
               </div>
             </div>
 
-            <ScrollArea className="flex-1 bg-[radial-gradient(circle_at_top,_rgba(191,219,254,0.45),_rgba(248,250,252,0.92)_28%,_rgba(255,255,255,0.92)_100%)]">
+            <div
+              className="flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top,_rgba(191,219,254,0.45),_rgba(248,250,252,0.92)_28%,_rgba(255,255,255,0.92)_100%)]"
+              onScroll={handleNotificationsScroll}
+            >
               <div className="flex flex-col gap-4 p-4">
                 {isNotificationsLoading ? (
                   <div className="flex min-h-40 items-center justify-center text-sm text-slate-500">
@@ -995,80 +1110,108 @@ export function TenantShell({
                     Loading notifications...
                   </div>
                 ) : notifications.length ? (
-                  notifications.map((notification) => {
-                    const meta = notificationMeta(notification.type)
-                    const isDeleting = deletingNotificationId === notification.id
+                  <>
+                    {notifications.map((notification) => {
+                      const meta = notificationMeta(notification.type)
+                      const isDeleting = deletingNotificationId === notification.id
 
-                    return (
-                      <div
-                        key={notification.id}
-                        className="group relative overflow-hidden rounded-[24px] border border-white/70 bg-white/55 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.45)] backdrop-blur-2xl transition hover:border-white hover:bg-white/72"
-                      >
-                        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.28),rgba(255,255,255,0.05))]" />
-                        <button
-                          type="button"
-                          aria-label="Delete notification"
-                          className="absolute right-4 top-4 z-10 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-slate-200/80 bg-white/80 text-slate-500 opacity-100 backdrop-blur transition hover:border-slate-300 hover:bg-white hover:text-slate-700 md:opacity-0 md:group-hover:opacity-100"
-                          onClick={() => void handleDeleteNotification(notification)}
-                          disabled={isDeleting}
+                      return (
+                        <div
+                          key={notification.id}
+                          className="group relative overflow-hidden rounded-[24px] border border-white/70 bg-white/55 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.45)] backdrop-blur-2xl transition hover:border-white hover:bg-white/72"
                         >
-                          {isDeleting ? (
-                            <LoaderCircle className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <X className="h-4 w-4" />
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleNotificationClick(notification)}
-                          className="relative flex w-full cursor-pointer flex-col gap-4 px-4 py-4 pr-14 text-left"
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="space-y-2">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span
-                                  className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${meta.chipClassName}`}
-                                >
-                                  {meta.label}
-                                </span>
-                                {!notification.readAt ? (
-                                  <span className="inline-flex h-2.5 w-2.5 rounded-full bg-rose-500" />
-                                ) : null}
+                          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.28),rgba(255,255,255,0.05))]" />
+                          <button
+                            type="button"
+                            aria-label="Delete notification"
+                            className="absolute right-4 top-4 z-10 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-slate-200/80 bg-white/80 text-slate-500 opacity-100 backdrop-blur transition hover:border-slate-300 hover:bg-white hover:text-slate-700 md:opacity-0 md:group-hover:opacity-100"
+                            onClick={() => void handleDeleteNotification(notification)}
+                            disabled={isDeleting}
+                          >
+                            {isDeleting ? (
+                              <LoaderCircle className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <X className="h-4 w-4" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleNotificationClick(notification)}
+                            className="relative flex w-full cursor-pointer flex-col gap-4 px-4 py-4 pr-14 text-left"
+                          >
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="space-y-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span
+                                    className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${meta.chipClassName}`}
+                                  >
+                                    {meta.label}
+                                  </span>
+                                  {!notification.readAt ? (
+                                    <span className="inline-flex h-2.5 w-2.5 rounded-full bg-rose-500" />
+                                  ) : null}
+                                </div>
+                                <p className="text-sm font-semibold text-slate-950">
+                                  {notification.title}
+                                </p>
+                                <div className="flex items-center gap-2 text-xs text-slate-500">
+                                  <Clock3 className="h-3.5 w-3.5" />
+                                  <span>
+                                    {formatNotificationDate(notification.createdAt)}
+                                  </span>
+                                </div>
                               </div>
-                              <p className="text-sm font-semibold text-slate-950">
-                                {notification.title}
-                              </p>
-                              <div className="flex items-center gap-2 text-xs text-slate-500">
-                                <Clock3 className="h-3.5 w-3.5" />
-                                <span>{formatNotificationDate(notification.createdAt)}</span>
+                              <div className="flex items-start gap-2">
+                                {notification.readAt ? (
+                                  <Badge
+                                    variant="secondary"
+                                    className="bg-slate-100/80"
+                                  >
+                                    Read
+                                  </Badge>
+                                ) : (
+                                  <Badge className="bg-rose-500 text-white hover:bg-rose-500">
+                                    New
+                                  </Badge>
+                                )}
                               </div>
                             </div>
-                            <div className="flex items-start gap-2">
-                              {notification.readAt ? (
-                                <Badge variant="secondary" className="bg-slate-100/80">
-                                  Read
-                                </Badge>
-                              ) : (
-                                <Badge className="bg-rose-500 text-white hover:bg-rose-500">
-                                  New
-                                </Badge>
-                              )}
-                            </div>
-                          </div>
-                          <p className="text-sm leading-6 text-slate-600">
-                            {notification.body ?? "Open notification"}
-                          </p>
-                        </button>
-                      </div>
-                    )
-                  })
+                            <p className="text-sm leading-6 text-slate-600">
+                              {notification.body ?? "Open notification"}
+                            </p>
+                          </button>
+                        </div>
+                      )
+                    })}
+                    <div className="pb-2">
+                      {isMoreNotificationsLoading ? (
+                        <div className="flex h-12 items-center justify-center text-sm text-slate-500">
+                          <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
+                          Loading more...
+                        </div>
+                      ) : hasMoreNotifications ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-11 w-full cursor-pointer rounded-full border-slate-200 bg-white/75 text-slate-600 shadow-sm hover:bg-white"
+                          onClick={() => void loadMoreNotifications()}
+                        >
+                          Load older notifications
+                        </Button>
+                      ) : (
+                        <div className="flex h-10 items-center justify-center text-xs font-medium text-slate-400">
+                          All notifications loaded.
+                        </div>
+                      )}
+                    </div>
+                  </>
                 ) : (
                   <div className="flex min-h-40 items-center justify-center rounded-[24px] border border-dashed border-white/80 bg-white/55 px-6 text-center text-sm text-slate-500 backdrop-blur-2xl">
                     No notifications yet.
                   </div>
                 )}
               </div>
-            </ScrollArea>
+            </div>
           </div>
         </SheetContent>
       </Sheet>
