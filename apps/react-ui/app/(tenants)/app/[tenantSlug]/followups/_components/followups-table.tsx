@@ -650,14 +650,10 @@ export function FollowUpsTable({
       <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="flex min-w-0 flex-col gap-2">
-            <p className="text-xs font-semibold text-blue-700">Follow-ups</p>
             <div className="flex flex-col gap-1">
               <h1 className="text-2xl font-semibold text-slate-950">
-                Service follow-up workspace
+                Service follow-ups
               </h1>
-              <p className="text-sm text-slate-600">
-                Review ownership, due dates, and progress across active service paths.
-              </p>
             </div>
           </div>
         </div>

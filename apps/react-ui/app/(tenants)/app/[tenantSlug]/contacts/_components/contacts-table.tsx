@@ -16,8 +16,15 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -430,131 +437,167 @@ export function ContactsTable({
       </header>
 
       <Sheet open={isFilterSheetOpen} onOpenChange={setIsFilterSheetOpen}>
-        <SheetContent side="right" className="sm:max-w-md">
-          <SheetHeader>
-            <SheetTitle>Filters</SheetTitle>
-            <SheetDescription>
-              Select one or more status and tag filters.
-            </SheetDescription>
+        <SheetContent
+          side="right"
+          className="flex h-full w-full flex-col gap-0 overflow-hidden border-l border-slate-200 bg-white p-0 sm:max-w-lg [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:opacity-100 [&>button]:shadow-sm [&>button]:backdrop-blur"
+        >
+          <SheetHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
+            />
+            <div className="relative pr-10">
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <p className="text-xs font-semibold text-blue-700">
+                  Contact filters
+                </p>
+                <SheetTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                  Refine contacts
+                </SheetTitle>
+                <SheetDescription className="max-w-xl text-sm leading-6 text-slate-600">
+                  Filter contacts by status and assigned tags.
+                </SheetDescription>
+              </div>
+            </div>
           </SheetHeader>
 
-          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pb-4">
-            <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-              <div className="space-y-1">
-                <Label className="text-sm font-semibold text-slate-900">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+            <div className="flex flex-col gap-7">
+              <FieldSet className="gap-2">
+                <FieldLegend variant="label" className="mb-0 text-slate-800">
                   Status
-                </Label>
-                <p className="text-xs text-slate-500">
+                </FieldLegend>
+                <FieldDescription className="text-xs">
                   Show contacts matching any selected status.
-                </p>
-              </div>
+                </FieldDescription>
 
-              {selectableStatusOptions.length ? (
-                <div className="space-y-2">
-                  {selectableStatusOptions.map((option) => {
-                    const checked = draftStatusFilters.includes(option.value)
-                    return (
-                      <label
-                        key={option.value}
-                        className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1.5 hover:bg-slate-50"
-                      >
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(nextChecked) => {
-                            setDraftStatusFilters((prev) =>
-                              nextChecked
-                                ? [...prev, option.value]
-                                : prev.filter(
-                                    (value) => value !== option.value,
-                                  ),
-                            )
-                          }}
-                        />
-                        <span
-                          className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
-                          style={
-                            option.bgColor && option.textColor
-                              ? {
-                                  backgroundColor: option.bgColor,
-                                  color: option.textColor,
-                                }
-                              : undefined
-                          }
+                {selectableStatusOptions.length ? (
+                  <FieldGroup className="gap-2">
+                    {selectableStatusOptions.map((option) => {
+                      const checked = draftStatusFilters.includes(option.value)
+                      const checkboxId = `contact-status-filter-${option.value}`
+
+                      return (
+                        <Field
+                          key={option.value}
+                          orientation="horizontal"
+                          className="min-h-10 gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2 transition-colors hover:bg-white"
                         >
-                          {option.label}
-                        </span>
-                      </label>
-                    )
-                  })}
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500">
-                  No status filters available.
-                </p>
-              )}
-            </section>
+                          <Checkbox
+                            id={checkboxId}
+                            checked={checked}
+                            onCheckedChange={(nextChecked) => {
+                              setDraftStatusFilters((prev) =>
+                                nextChecked
+                                  ? [...prev, option.value]
+                                  : prev.filter(
+                                      (value) => value !== option.value,
+                                    ),
+                              )
+                            }}
+                          />
+                          <FieldLabel
+                            htmlFor={checkboxId}
+                            className="cursor-pointer"
+                          >
+                            <span
+                              className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                              style={
+                                option.bgColor && option.textColor
+                                  ? {
+                                      backgroundColor: option.bgColor,
+                                      color: option.textColor,
+                                    }
+                                  : undefined
+                              }
+                            >
+                              {option.label}
+                            </span>
+                          </FieldLabel>
+                        </Field>
+                      )
+                    })}
+                  </FieldGroup>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    No status filters available.
+                  </p>
+                )}
+              </FieldSet>
 
-            <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-              <div className="space-y-1">
-                <Label className="text-sm font-semibold text-slate-900">
+              <FieldSet className="gap-2 border-t border-slate-200 pt-6">
+                <FieldLegend variant="label" className="mb-0 text-slate-800">
                   Tags
-                </Label>
-                <p className="text-xs text-slate-500">
+                </FieldLegend>
+                <FieldDescription className="text-xs">
                   Show contacts matching any selected tag.
-                </p>
-              </div>
+                </FieldDescription>
 
-              {tagFilterOptions.length ? (
-                <div className="space-y-2">
-                  {tagFilterOptions.map((option) => {
-                    const checked = draftTagFilters.includes(option.value)
-                    return (
-                      <label
-                        key={option.value}
-                        className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1.5 hover:bg-slate-50"
-                      >
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(nextChecked) => {
-                            setDraftTagFilters((prev) =>
-                              nextChecked
-                                ? [...prev, option.value]
-                                : prev.filter(
-                                    (value) => value !== option.value,
-                                  ),
-                            )
-                          }}
-                        />
-                        <span
-                          className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
-                          style={
-                            option.bgColor && option.textColor
-                              ? {
-                                  backgroundColor: option.bgColor,
-                                  color: option.textColor,
-                                }
-                              : undefined
-                          }
+                {tagFilterOptions.length ? (
+                  <FieldGroup className="gap-2">
+                    {tagFilterOptions.map((option) => {
+                      const checked = draftTagFilters.includes(option.value)
+                      const checkboxId = `contact-tag-filter-${option.value}`
+
+                      return (
+                        <Field
+                          key={option.value}
+                          orientation="horizontal"
+                          className="min-h-10 gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2 transition-colors hover:bg-white"
                         >
-                          {option.label}
-                        </span>
-                      </label>
-                    )
-                  })}
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500">
-                  No tag filters available.
-                </p>
-              )}
-            </section>
+                          <Checkbox
+                            id={checkboxId}
+                            checked={checked}
+                            onCheckedChange={(nextChecked) => {
+                              setDraftTagFilters((prev) =>
+                                nextChecked
+                                  ? [...prev, option.value]
+                                  : prev.filter(
+                                      (value) => value !== option.value,
+                                    ),
+                              )
+                            }}
+                          />
+                          <FieldLabel
+                            htmlFor={checkboxId}
+                            className="cursor-pointer"
+                          >
+                            <span
+                              className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                              style={
+                                option.bgColor && option.textColor
+                                  ? {
+                                      backgroundColor: option.bgColor,
+                                      color: option.textColor,
+                                    }
+                                  : undefined
+                              }
+                            >
+                              {option.label}
+                            </span>
+                          </FieldLabel>
+                        </Field>
+                      )
+                    })}
+                  </FieldGroup>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    No tag filters available.
+                  </p>
+                )}
+              </FieldSet>
+            </div>
           </div>
 
-          <SheetFooter>
+          <SheetFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:flex-row sm:justify-end sm:px-7">
             <Button
               type="button"
               variant="outline"
-              className="cursor-pointer"
+              className="cursor-pointer border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
               onClick={() => {
                 setDraftStatusFilters([])
                 setDraftTagFilters([])
@@ -564,7 +607,7 @@ export function ContactsTable({
             </Button>
             <Button
               type="button"
-              className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+              className="min-w-32 cursor-pointer bg-blue-950 text-white shadow-sm hover:bg-blue-900"
               onClick={() => {
                 setStatusFilters([...new Set(draftStatusFilters)])
                 setTagFilters([...new Set(draftTagFilters)])
@@ -572,7 +615,7 @@ export function ContactsTable({
                 setIsFilterSheetOpen(false)
               }}
             >
-              Apply Filters
+              Apply filters
             </Button>
           </SheetFooter>
         </SheetContent>
