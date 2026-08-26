@@ -2,7 +2,7 @@ import { redirect } from "next/navigation"
 
 import { api } from "@/lib/api"
 import { getTenantMembershipContext } from "../_lib/tenant-session"
-import { TaskInsights } from "./_components/task-insights"
+import type { TaskSummary } from "./_components/task-page-header"
 import { TasksTable } from "./_components/tasks-table"
 
 type TaskStatusConfigResponse = {
@@ -29,20 +29,7 @@ type TaskAssigneesResponse = {
 
 type TaskSummaryResponse = {
   ok: boolean
-  summary: {
-    totalTasks: number
-    overdueTasks: number
-    dueToday: number
-    dueThisWeek: number
-    highPriorityTasks: number
-    unassignedTasks: number
-    completedToday: number
-    myPriorityCounts: {
-      HIGH: number
-      MEDIUM: number
-      LOW: number
-    }
-  }
+  summary: TaskSummary
 }
 
 export default async function TasksPage({
@@ -69,19 +56,11 @@ export default async function TasksPage({
     email?: string
     image?: string | null
   }> = []
-  let summary: TaskSummaryResponse["summary"] = {
+  let summary: TaskSummary = {
     totalTasks: 0,
     overdueTasks: 0,
     dueToday: 0,
-    dueThisWeek: 0,
-    highPriorityTasks: 0,
     unassignedTasks: 0,
-    completedToday: 0,
-    myPriorityCounts: {
-      HIGH: 0,
-      MEDIUM: 0,
-      LOW: 0,
-    },
   }
 
   try {
@@ -122,24 +101,26 @@ export default async function TasksPage({
       },
     )
 
-    summary = summaryData.summary
+    summary = {
+      totalTasks: summaryData.summary.totalTasks,
+      overdueTasks: summaryData.summary.overdueTasks,
+      dueToday: summaryData.summary.dueToday,
+      unassignedTasks: summaryData.summary.unassignedTasks,
+    }
   } catch {
-    // Insights should not block task filters or list rendering.
+    // Summary metrics should not block task filters or list rendering.
   }
 
   return (
     <section className="flex h-full min-h-0 flex-col gap-4">
-      <TaskInsights summary={summary} />
-
-      <div className="flex min-h-0 flex-1">
-        <TasksTable
-          tenantSlug={tenantSlug}
-          tenantId={membership.tenant.id}
-          tenantTimezone={tenantTimezone}
-          statusOptions={statusOptions}
-          assigneeOptions={assigneeOptions}
-        />
-      </div>
+      <TasksTable
+        tenantSlug={tenantSlug}
+        tenantId={membership.tenant.id}
+        tenantTimezone={tenantTimezone}
+        statusOptions={statusOptions}
+        assigneeOptions={assigneeOptions}
+        summary={summary}
+      />
     </section>
   )
 }
