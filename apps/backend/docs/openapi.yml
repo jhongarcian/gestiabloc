@@ -3672,6 +3672,12 @@ paths:
           schema:
             $ref: "#/components/schemas/TaskPriority"
         - in: query
+          name: assignedToUserId
+          description: Filter by an active tenant user ID, or use `__UNASSIGNED__` for tasks without an owner.
+          schema:
+            type: string
+            maxLength: 80
+        - in: query
           name: contactId
           schema:
             type: string

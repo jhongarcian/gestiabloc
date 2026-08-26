@@ -2,7 +2,13 @@
 
 import { isAxiosError } from "axios"
 import Link from "next/link"
-import { ChevronLeft, ChevronRight, Filter } from "lucide-react"
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+} from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
@@ -10,12 +16,21 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import {
   Field,
   FieldDescription,
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -43,6 +58,7 @@ import {
 } from "@/components/ui/table"
 import { api } from "@/lib/api"
 import { formatDateForDisplay } from "@/lib/date-time"
+import { cn } from "@/lib/utils"
 import { CreateTaskDialog } from "./create-task-dialog"
 import {
   TaskPageHeader,
@@ -99,6 +115,8 @@ type TasksListResponse = {
 const PAGE_SIZE_OPTIONS = [10, 25] as const
 const ALL_STATUS_VALUE = "ALL"
 const ALL_PRIORITY_VALUE = "ALL"
+const ALL_ASSIGNEE_FILTER = "ALL"
+const UNASSIGNED_ASSIGNEE_FILTER = "__UNASSIGNED__"
 
 const PRIORITY_BADGE_STYLES = {
   LOW: "border-emerald-100 bg-emerald-50 text-emerald-700",
@@ -115,6 +133,185 @@ function getInitials(name: string) {
     .join("")
 
   return initials || "?"
+}
+
+function AssigneeFilterPicker({
+  assignees,
+  value,
+  onValueChange,
+  id,
+}: {
+  assignees: SelectOption[]
+  value: string
+  onValueChange: (value: string) => void
+  id: string
+}) {
+  const [open, setOpen] = useState(false)
+
+  const selectedAssignee = useMemo(
+    () => assignees.find((assignee) => assignee.value === value) ?? null,
+    [assignees, value],
+  )
+  const isUnassigned = value === UNASSIGNED_ASSIGNEE_FILTER
+  const hasSelectedAssignee = value !== ALL_ASSIGNEE_FILTER && !isUnassigned
+  const triggerLabel = isUnassigned
+    ? "Not assigned"
+    : (selectedAssignee?.label ??
+      (hasSelectedAssignee ? "Selected assignee" : "All assignees"))
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          aria-expanded={open}
+          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <Avatar
+              size="sm"
+              className={cn(
+                (selectedAssignee || hasSelectedAssignee) &&
+                  "ring-2 ring-blue-50",
+              )}
+            >
+              {selectedAssignee?.image ? (
+                <AvatarImage
+                  src={selectedAssignee.image}
+                  alt={`${selectedAssignee.label} profile photo`}
+                  className="object-cover"
+                />
+              ) : null}
+              <AvatarFallback
+                className={cn(
+                  "font-semibold",
+                  selectedAssignee || hasSelectedAssignee
+                    ? "bg-blue-950 text-white"
+                    : "bg-slate-100 text-slate-500",
+                )}
+              >
+                {selectedAssignee
+                  ? getInitials(selectedAssignee.label)
+                  : hasSelectedAssignee
+                    ? "?"
+                    : "—"}
+              </AvatarFallback>
+            </Avatar>
+            <span className="truncate font-medium text-slate-800">
+              {triggerLabel}
+            </span>
+          </span>
+          <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
+        </Button>
+      </PopoverTrigger>
+
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] p-0"
+      >
+        <Command>
+          <CommandInput placeholder="Search team members..." />
+          <CommandList>
+            <CommandEmpty>No team members found.</CommandEmpty>
+            <CommandGroup heading="Assignee">
+              <CommandItem
+                value="All assignees no owner filter"
+                onSelect={() => {
+                  onValueChange(ALL_ASSIGNEE_FILTER)
+                  setOpen(false)
+                }}
+                className="cursor-pointer gap-3 py-2.5"
+              >
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
+                  All assignees
+                </span>
+                <Check
+                  className={cn(
+                    "text-blue-800",
+                    value === ALL_ASSIGNEE_FILTER ? "opacity-100" : "opacity-0",
+                  )}
+                />
+              </CommandItem>
+
+              <CommandItem
+                value="Not assigned unassigned no owner"
+                onSelect={() => {
+                  onValueChange(UNASSIGNED_ASSIGNEE_FILTER)
+                  setOpen(false)
+                }}
+                className="cursor-pointer gap-3 py-2.5"
+              >
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
+                  Not assigned
+                </span>
+                <Check
+                  className={cn(
+                    "text-blue-800",
+                    value === UNASSIGNED_ASSIGNEE_FILTER
+                      ? "opacity-100"
+                      : "opacity-0",
+                  )}
+                />
+              </CommandItem>
+
+              {assignees.map((assignee) => (
+                <CommandItem
+                  key={assignee.value}
+                  value={`${assignee.label} ${assignee.email ?? ""} ${assignee.value}`}
+                  onSelect={() => {
+                    onValueChange(assignee.value)
+                    setOpen(false)
+                  }}
+                  className="cursor-pointer gap-3 py-2.5"
+                >
+                  <Avatar size="sm" className="ring-2 ring-blue-50">
+                    {assignee.image ? (
+                      <AvatarImage
+                        src={assignee.image}
+                        alt={`${assignee.label} profile photo`}
+                        className="object-cover"
+                      />
+                    ) : null}
+                    <AvatarFallback className="bg-blue-950 font-semibold text-white">
+                      {getInitials(assignee.label)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-medium text-slate-900">
+                      {assignee.label}
+                    </span>
+                    {assignee.email ? (
+                      <span className="truncate text-xs text-slate-500">
+                        {assignee.email}
+                      </span>
+                    ) : null}
+                  </span>
+                  <Check
+                    className={cn(
+                      "text-blue-800",
+                      value === assignee.value ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
 }
 
 function StatusBadge({
@@ -215,10 +412,14 @@ export function TasksTable({
   const [debouncedQuery, setDebouncedQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState(ALL_STATUS_VALUE)
   const [priorityFilter, setPriorityFilter] = useState(ALL_PRIORITY_VALUE)
+  const [assigneeFilter, setAssigneeFilter] = useState(ALL_ASSIGNEE_FILTER)
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false)
   const [draftStatusFilter, setDraftStatusFilter] = useState(ALL_STATUS_VALUE)
   const [draftPriorityFilter, setDraftPriorityFilter] = useState(
     ALL_PRIORITY_VALUE,
+  )
+  const [draftAssigneeFilter, setDraftAssigneeFilter] = useState(
+    ALL_ASSIGNEE_FILTER,
   )
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(10)
@@ -253,6 +454,10 @@ export function TasksTable({
               statusFilter === ALL_STATUS_VALUE ? undefined : statusFilter,
             priority:
               priorityFilter === ALL_PRIORITY_VALUE ? undefined : priorityFilter,
+            assignedToUserId:
+              assigneeFilter === ALL_ASSIGNEE_FILTER
+                ? undefined
+                : assigneeFilter,
           },
         },
       )
@@ -271,7 +476,15 @@ export function TasksTable({
     } finally {
       setIsLoading(false)
     }
-  }, [tenantId, page, pageSize, debouncedQuery, statusFilter, priorityFilter])
+  }, [
+    assigneeFilter,
+    tenantId,
+    page,
+    pageSize,
+    debouncedQuery,
+    statusFilter,
+    priorityFilter,
+  ])
 
   useEffect(() => {
     void loadTasks()
@@ -285,7 +498,8 @@ export function TasksTable({
   const canGoNext = page < totalPages
   const activeFilterCount =
     (statusFilter !== ALL_STATUS_VALUE ? 1 : 0) +
-    (priorityFilter !== ALL_PRIORITY_VALUE ? 1 : 0)
+    (priorityFilter !== ALL_PRIORITY_VALUE ? 1 : 0) +
+    (assigneeFilter !== ALL_ASSIGNEE_FILTER ? 1 : 0)
   const hasActiveQueryOrFilters = Boolean(query.trim()) || activeFilterCount > 0
   const placeholderRowCount =
     tasks.length === 0 ? pageSize - 1 : Math.max(0, pageSize - tasks.length)
@@ -347,6 +561,7 @@ export function TasksTable({
           onClick={() => {
             setDraftStatusFilter(statusFilter)
             setDraftPriorityFilter(priorityFilter)
+            setDraftAssigneeFilter(assigneeFilter)
             setIsFilterSheetOpen(true)
           }}
         >
@@ -368,8 +583,10 @@ export function TasksTable({
             setDebouncedQuery("")
             setStatusFilter(ALL_STATUS_VALUE)
             setPriorityFilter(ALL_PRIORITY_VALUE)
+            setAssigneeFilter(ALL_ASSIGNEE_FILTER)
             setDraftStatusFilter(ALL_STATUS_VALUE)
             setDraftPriorityFilter(ALL_PRIORITY_VALUE)
+            setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
             setPage(1)
           }}
         >
@@ -384,6 +601,7 @@ export function TasksTable({
           if (!nextOpen) {
             setDraftStatusFilter(statusFilter)
             setDraftPriorityFilter(priorityFilter)
+            setDraftAssigneeFilter(assigneeFilter)
           }
         }}
       >
@@ -409,7 +627,7 @@ export function TasksTable({
                   Refine tasks
                 </SheetTitle>
                 <SheetDescription className="max-w-xl text-sm leading-6 text-slate-600">
-                  Filter tasks by status and priority.
+                  Filter tasks by status, priority, and assignee.
                 </SheetDescription>
               </div>
             </div>
@@ -478,6 +696,24 @@ export function TasksTable({
                   Focus the task list on one priority level.
                 </FieldDescription>
               </Field>
+
+              <Field className="gap-2">
+                <FieldLabel
+                  htmlFor="task-assignee-filter"
+                  className="text-slate-800"
+                >
+                  Assigned to
+                </FieldLabel>
+                <AssigneeFilterPicker
+                  id="task-assignee-filter"
+                  assignees={assigneeOptions}
+                  value={draftAssigneeFilter}
+                  onValueChange={setDraftAssigneeFilter}
+                />
+                <FieldDescription className="text-xs">
+                  Show tasks owned by a specific team member or tasks without an owner.
+                </FieldDescription>
+              </Field>
             </FieldGroup>
           </div>
 
@@ -489,6 +725,7 @@ export function TasksTable({
               onClick={() => {
                 setDraftStatusFilter(ALL_STATUS_VALUE)
                 setDraftPriorityFilter(ALL_PRIORITY_VALUE)
+                setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
               }}
             >
               Clear
@@ -499,6 +736,7 @@ export function TasksTable({
               onClick={() => {
                 setStatusFilter(draftStatusFilter)
                 setPriorityFilter(draftPriorityFilter)
+                setAssigneeFilter(draftAssigneeFilter)
                 setPage(1)
                 setIsFilterSheetOpen(false)
               }}
