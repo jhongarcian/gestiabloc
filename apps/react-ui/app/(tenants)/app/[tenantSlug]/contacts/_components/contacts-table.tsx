@@ -1,7 +1,13 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { ChevronLeft, ChevronRight, Filter } from "lucide-react"
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+} from "lucide-react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
   startTransition,
@@ -17,6 +23,14 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import {
   Field,
   FieldDescription,
   FieldGroup,
@@ -25,6 +39,7 @@ import {
   FieldSet,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -52,6 +67,7 @@ import {
 } from "@/components/ui/table"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
+import { cn } from "@/lib/utils"
 import { CreateContactDialog } from "./create-contact-dialog"
 
 type ContactsTableProps = {
@@ -104,8 +120,22 @@ type ContactsListResponse = {
   }
 }
 
+type AssigneeOption = {
+  value: string
+  label: string
+  email: string
+  image: string | null
+}
+
 const PAGE_SIZE_OPTIONS = [10, 25] as const
 const ALL_STATUS_VALUE = "ALL"
+const ALL_ASSIGNEE_FILTER = "ALL"
+const UNASSIGNED_ASSIGNEE_FILTER = "__UNASSIGNED__"
+
+function normalizeAssigneeFilter(value: string | null) {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : ALL_ASSIGNEE_FILTER
+}
 
 function parseCsvParam(value: string | null) {
   if (!value) return []
@@ -157,6 +187,182 @@ function getInitials(value: string) {
   return parts.map((part) => part[0]?.toUpperCase() ?? "").join("")
 }
 
+function AssigneeFilterPicker({
+  assignees,
+  value,
+  onValueChange,
+  id,
+}: {
+  assignees: AssigneeOption[]
+  value: string
+  onValueChange: (value: string) => void
+  id: string
+}) {
+  const [open, setOpen] = useState(false)
+
+  const selectedAssignee = useMemo(
+    () => assignees.find((assignee) => assignee.value === value) ?? null,
+    [assignees, value],
+  )
+  const isUnassigned = value === UNASSIGNED_ASSIGNEE_FILTER
+  const hasUserFilter = value !== ALL_ASSIGNEE_FILTER && !isUnassigned
+  const triggerLabel = isUnassigned
+    ? "Not assigned"
+    : selectedAssignee?.label ?? (hasUserFilter ? "Selected assignee" : "All assignees")
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          aria-expanded={open}
+          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <Avatar
+              size="sm"
+              className={
+                selectedAssignee || hasUserFilter ? "ring-2 ring-blue-50" : undefined
+              }
+            >
+              {selectedAssignee?.image ? (
+                <AvatarImage
+                  src={selectedAssignee.image}
+                  alt={`${selectedAssignee.label} profile photo`}
+                  className="object-cover"
+                />
+              ) : null}
+              <AvatarFallback
+                className={
+                  selectedAssignee || hasUserFilter
+                    ? "bg-blue-950 font-semibold text-white"
+                    : "bg-slate-100 font-semibold text-slate-500"
+                }
+              >
+                {selectedAssignee
+                  ? getInitials(selectedAssignee.label)
+                  : hasUserFilter
+                    ? "?"
+                    : "—"}
+              </AvatarFallback>
+            </Avatar>
+            <span className="truncate font-medium text-slate-800">
+              {triggerLabel}
+            </span>
+          </span>
+          <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
+        </Button>
+      </PopoverTrigger>
+
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] p-0"
+      >
+        <Command>
+          <CommandInput placeholder="Search team members..." />
+          <CommandList>
+            <CommandEmpty>No team members found.</CommandEmpty>
+            <CommandGroup heading="Assignee">
+              <CommandItem
+                value="All assignees no owner filter"
+                onSelect={() => {
+                  onValueChange(ALL_ASSIGNEE_FILTER)
+                  setOpen(false)
+                }}
+                className="cursor-pointer gap-3 py-2.5"
+              >
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
+                  All assignees
+                </span>
+                <Check
+                  className={cn(
+                    "text-blue-800",
+                    value === ALL_ASSIGNEE_FILTER ? "opacity-100" : "opacity-0",
+                  )}
+                />
+              </CommandItem>
+
+              <CommandItem
+                value="Not assigned unassigned no owner"
+                onSelect={() => {
+                  onValueChange(UNASSIGNED_ASSIGNEE_FILTER)
+                  setOpen(false)
+                }}
+                className="cursor-pointer gap-3 py-2.5"
+              >
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
+                  Not assigned
+                </span>
+                <Check
+                  className={cn(
+                    "text-blue-800",
+                    value === UNASSIGNED_ASSIGNEE_FILTER
+                      ? "opacity-100"
+                      : "opacity-0",
+                  )}
+                />
+              </CommandItem>
+
+              {assignees.map((assignee) => (
+                <CommandItem
+                  key={assignee.value}
+                  value={`${assignee.label} ${assignee.email ?? ""} ${assignee.value}`}
+                  onSelect={() => {
+                    onValueChange(assignee.value)
+                    setOpen(false)
+                  }}
+                  className="cursor-pointer gap-3 py-2.5"
+                >
+                  <Avatar size="sm" className="ring-2 ring-blue-50">
+                    {assignee.image ? (
+                      <AvatarImage
+                        src={assignee.image}
+                        alt={`${assignee.label} profile photo`}
+                        className="object-cover"
+                      />
+                    ) : null}
+                    <AvatarFallback className="bg-blue-950 font-semibold text-white">
+                      {getInitials(assignee.label)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-medium text-slate-900">
+                      {assignee.label}
+                    </span>
+                    {assignee.email ? (
+                      <span className="truncate text-xs text-slate-500">
+                        {assignee.email}
+                      </span>
+                    ) : null}
+                  </span>
+                  <Check
+                    className={cn(
+                      "text-blue-800",
+                      value === assignee.value ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 const formatDate = (value: string | null) => {
   if (!value) return "—"
   const date = new Date(value)
@@ -192,10 +398,17 @@ export function ContactsTable({
   const [tagFilters, setTagFilters] = useState<string[]>(() =>
     parseCsvParam(searchParams.get("tagIds")),
   )
+  const [assigneeFilter, setAssigneeFilter] = useState(
+    () => normalizeAssigneeFilter(searchParams.get("assignedToUserId")),
+  )
   const [tagFilterOptions, setTagFilterOptions] = useState(tagOptions)
+  const [assigneeOptions, setAssigneeOptions] = useState<AssigneeOption[]>([])
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false)
   const [draftStatusFilters, setDraftStatusFilters] = useState<string[]>([])
   const [draftTagFilters, setDraftTagFilters] = useState<string[]>([])
+  const [draftAssigneeFilter, setDraftAssigneeFilter] = useState(
+    () => normalizeAssigneeFilter(searchParams.get("assignedToUserId")),
+  )
   const [page, setPage] = useState(() =>
     parsePositiveInt(searchParams.get("page"), 1),
   )
@@ -258,6 +471,31 @@ export function ContactsTable({
   }, [tagFilterOptions.length, tenantId])
 
   useEffect(() => {
+    let cancelled = false
+
+    const loadAssigneeOptions = async () => {
+      try {
+        const { data: response } = await api.get<{
+          ok: boolean
+          items: AssigneeOption[]
+        }>(`/api/tasks/${encodeURIComponent(tenantId)}/assignees`)
+
+        if (cancelled) return
+        setAssigneeOptions(response.items ?? [])
+      } catch {
+        if (cancelled) return
+        setAssigneeOptions([])
+      }
+    }
+
+    void loadAssigneeOptions()
+
+    return () => {
+      cancelled = true
+    }
+  }, [tenantId])
+
+  useEffect(() => {
     const timeout = window.setTimeout(() => {
       setDebouncedQuery(query.trim())
       setPage(1)
@@ -275,6 +513,9 @@ export function ContactsTable({
     if (statusFilters.length)
       nextParams.set("statusConfigIds", statusFilters.join(","))
     if (tagFilters.length) nextParams.set("tagIds", tagFilters.join(","))
+    if (assigneeFilter !== ALL_ASSIGNEE_FILTER) {
+      nextParams.set("assignedToUserId", assigneeFilter)
+    }
     if (page > 1) nextParams.set("page", String(page))
     if (pageSize !== 10) nextParams.set("pageSize", String(pageSize))
 
@@ -294,6 +535,7 @@ export function ContactsTable({
     pathname,
     router,
     searchParams,
+    assigneeFilter,
     statusFilters,
     tagFilters,
   ])
@@ -314,6 +556,10 @@ export function ContactsTable({
               ? statusFilters.join(",")
               : undefined,
             tagIds: tagFilters.length ? tagFilters.join(",") : undefined,
+            assignedToUserId:
+              assigneeFilter === ALL_ASSIGNEE_FILTER
+                ? undefined
+                : assigneeFilter,
           },
         },
       )
@@ -332,7 +578,15 @@ export function ContactsTable({
     } finally {
       setIsLoading(false)
     }
-  }, [tenantId, page, pageSize, debouncedQuery, statusFilters, tagFilters])
+  }, [
+    assigneeFilter,
+    tenantId,
+    page,
+    pageSize,
+    debouncedQuery,
+    statusFilters,
+    tagFilters,
+  ])
 
   useEffect(() => {
     void loadContacts()
@@ -344,7 +598,10 @@ export function ContactsTable({
   const startIndex = (page - 1) * pageSize
   const canGoPrevious = page > 1
   const canGoNext = page < totalPages
-  const activeFilterCount = statusFilters.length + tagFilters.length
+  const activeFilterCount =
+    statusFilters.length +
+    tagFilters.length +
+    (assigneeFilter !== ALL_ASSIGNEE_FILTER ? 1 : 0)
   const hasActiveQueryOrFilters = Boolean(query.trim()) || activeFilterCount > 0
   const placeholderRowCount =
     contacts.length === 0
@@ -407,6 +664,7 @@ export function ContactsTable({
             onClick={() => {
               setDraftStatusFilters(statusFilters)
               setDraftTagFilters(tagFilters)
+              setDraftAssigneeFilter(assigneeFilter)
               setIsFilterSheetOpen(true)
             }}
           >
@@ -428,6 +686,10 @@ export function ContactsTable({
               setDebouncedQuery("")
               setStatusFilters([])
               setTagFilters([])
+              setAssigneeFilter(ALL_ASSIGNEE_FILTER)
+              setDraftStatusFilters([])
+              setDraftTagFilters([])
+              setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
               setPage(1)
             }}
           >
@@ -459,7 +721,7 @@ export function ContactsTable({
                   Refine contacts
                 </SheetTitle>
                 <SheetDescription className="max-w-xl text-sm leading-6 text-slate-600">
-                  Filter contacts by status and assigned tags.
+                  Filter contacts by status, assigned tags, and owner.
                 </SheetDescription>
               </div>
             </div>
@@ -590,6 +852,24 @@ export function ContactsTable({
                   </p>
                 )}
               </FieldSet>
+
+              <Field className="gap-2 border-t border-slate-200 pt-6">
+                <FieldLabel
+                  htmlFor="contact-assignee-filter"
+                  className="text-slate-800"
+                >
+                  Assigned to
+                </FieldLabel>
+                <AssigneeFilterPicker
+                  id="contact-assignee-filter"
+                  assignees={assigneeOptions}
+                  value={draftAssigneeFilter}
+                  onValueChange={setDraftAssigneeFilter}
+                />
+                <FieldDescription className="text-xs">
+                  Show contacts owned by a specific user or contacts without an owner.
+                </FieldDescription>
+              </Field>
             </div>
           </div>
 
@@ -601,6 +881,7 @@ export function ContactsTable({
               onClick={() => {
                 setDraftStatusFilters([])
                 setDraftTagFilters([])
+                setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
               }}
             >
               Clear
@@ -611,6 +892,7 @@ export function ContactsTable({
               onClick={() => {
                 setStatusFilters([...new Set(draftStatusFilters)])
                 setTagFilters([...new Set(draftTagFilters)])
+                setAssigneeFilter(draftAssigneeFilter)
                 setPage(1)
                 setIsFilterSheetOpen(false)
               }}
