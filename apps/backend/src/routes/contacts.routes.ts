@@ -63,6 +63,7 @@ const ContactsListQuerySchema = z.object({
   search: z.string().trim().max(120).optional().default(""),
   statusConfigIds: z.string().trim().max(2000).optional().default(""),
   tagIds: z.string().trim().max(2000).optional().default(""),
+  assignedToUserId: z.string().trim().max(120).optional().default(""),
 })
 
 const ContactSearchQuerySchema = z.object({
@@ -1282,7 +1283,7 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
     const { tenantId } = TenantPathSchema.parse(req.params)
-    const { page, pageSize, search, statusConfigIds, tagIds } =
+    const { page, pageSize, search, statusConfigIds, tagIds, assignedToUserId } =
       ContactsListQuerySchema.parse(req.query)
 
     const membership = await requireActiveMembership(authed, res, tenantId)
@@ -1291,6 +1292,8 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
     const skip = (page - 1) * pageSize
     const selectedStatusConfigIds = parseCsvIds(statusConfigIds)
     const selectedTagIds = parseCsvIds(tagIds)
+    const assignedToUserIdFilter =
+      assignedToUserId === "ALL" ? "" : assignedToUserId
 
     const where = {
       tenantId,
@@ -1311,6 +1314,20 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
               },
             },
           }
+        : {}),
+      ...(assignedToUserIdFilter
+        ? assignedToUserIdFilter === "__UNASSIGNED__"
+          ? {
+              assignedToUserId: null,
+            }
+          : {
+              assignedToUserId: assignedToUserIdFilter,
+              assignedToMembership: {
+                is: {
+                  status: "ACTIVE" as const,
+                },
+              },
+            }
         : {}),
       ...(search
         ? {

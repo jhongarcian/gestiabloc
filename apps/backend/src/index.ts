@@ -26,6 +26,7 @@ import {
 } from "./lib/task-priority"
 import { materializeTaskNotifications } from "./lib/task-notifications"
 import { resumeDueFollowUpRuns } from "./lib/service-followup-v2-execution"
+import { materializeOverdueFollowUpNotifications } from "./lib/service-followup-overdue-notifications"
 import { ZodError } from "zod"
 import swaggerUi from "swagger-ui-express"
 import { readFileSync } from "fs"
@@ -254,9 +255,11 @@ const start = async () => {
   reminderInterval.unref?.()
 
   const followUpInterval = setInterval(() => {
-    void resumeDueFollowUpRuns().catch((error) => {
-      console.error("Failed to resume due follow-up runs:", error)
-    })
+    void resumeDueFollowUpRuns()
+      .then(() => materializeOverdueFollowUpNotifications())
+      .catch((error) => {
+        console.error("Failed to process due follow-up runs:", error)
+      })
   }, 15_000)
 
   followUpInterval.unref?.()

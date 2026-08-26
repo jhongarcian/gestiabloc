@@ -2,13 +2,35 @@
 
 import { isAxiosError } from "axios"
 import Link from "next/link"
-import { ChevronLeft, ChevronRight } from "lucide-react"
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+} from "lucide-react"
+import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -17,6 +39,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
@@ -28,7 +58,12 @@ import {
 } from "@/components/ui/table"
 import { api } from "@/lib/api"
 import { formatDateForDisplay } from "@/lib/date-time"
+import { cn } from "@/lib/utils"
 import { CreateTaskDialog } from "./create-task-dialog"
+import {
+  TaskPageHeader,
+  type TaskSummary,
+} from "./task-page-header"
 
 type SelectOption = {
   label: string
@@ -45,6 +80,7 @@ type TasksTableProps = {
   tenantTimezone?: string | null
   statusOptions: SelectOption[]
   assigneeOptions: SelectOption[]
+  summary: TaskSummary
 }
 
 type TaskItem = {
@@ -79,6 +115,8 @@ type TasksListResponse = {
 const PAGE_SIZE_OPTIONS = [10, 25] as const
 const ALL_STATUS_VALUE = "ALL"
 const ALL_PRIORITY_VALUE = "ALL"
+const ALL_ASSIGNEE_FILTER = "ALL"
+const UNASSIGNED_ASSIGNEE_FILTER = "__UNASSIGNED__"
 
 const PRIORITY_BADGE_STYLES = {
   LOW: "border-emerald-100 bg-emerald-50 text-emerald-700",
@@ -95,6 +133,185 @@ function getInitials(name: string) {
     .join("")
 
   return initials || "?"
+}
+
+function AssigneeFilterPicker({
+  assignees,
+  value,
+  onValueChange,
+  id,
+}: {
+  assignees: SelectOption[]
+  value: string
+  onValueChange: (value: string) => void
+  id: string
+}) {
+  const [open, setOpen] = useState(false)
+
+  const selectedAssignee = useMemo(
+    () => assignees.find((assignee) => assignee.value === value) ?? null,
+    [assignees, value],
+  )
+  const isUnassigned = value === UNASSIGNED_ASSIGNEE_FILTER
+  const hasSelectedAssignee = value !== ALL_ASSIGNEE_FILTER && !isUnassigned
+  const triggerLabel = isUnassigned
+    ? "Not assigned"
+    : (selectedAssignee?.label ??
+      (hasSelectedAssignee ? "Selected assignee" : "All assignees"))
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          aria-expanded={open}
+          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <Avatar
+              size="sm"
+              className={cn(
+                (selectedAssignee || hasSelectedAssignee) &&
+                  "ring-2 ring-blue-50",
+              )}
+            >
+              {selectedAssignee?.image ? (
+                <AvatarImage
+                  src={selectedAssignee.image}
+                  alt={`${selectedAssignee.label} profile photo`}
+                  className="object-cover"
+                />
+              ) : null}
+              <AvatarFallback
+                className={cn(
+                  "font-semibold",
+                  selectedAssignee || hasSelectedAssignee
+                    ? "bg-blue-950 text-white"
+                    : "bg-slate-100 text-slate-500",
+                )}
+              >
+                {selectedAssignee
+                  ? getInitials(selectedAssignee.label)
+                  : hasSelectedAssignee
+                    ? "?"
+                    : "—"}
+              </AvatarFallback>
+            </Avatar>
+            <span className="truncate font-medium text-slate-800">
+              {triggerLabel}
+            </span>
+          </span>
+          <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
+        </Button>
+      </PopoverTrigger>
+
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] p-0"
+      >
+        <Command>
+          <CommandInput placeholder="Search team members..." />
+          <CommandList>
+            <CommandEmpty>No team members found.</CommandEmpty>
+            <CommandGroup heading="Assignee">
+              <CommandItem
+                value="All assignees no owner filter"
+                onSelect={() => {
+                  onValueChange(ALL_ASSIGNEE_FILTER)
+                  setOpen(false)
+                }}
+                className="cursor-pointer gap-3 py-2.5"
+              >
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
+                  All assignees
+                </span>
+                <Check
+                  className={cn(
+                    "text-blue-800",
+                    value === ALL_ASSIGNEE_FILTER ? "opacity-100" : "opacity-0",
+                  )}
+                />
+              </CommandItem>
+
+              <CommandItem
+                value="Not assigned unassigned no owner"
+                onSelect={() => {
+                  onValueChange(UNASSIGNED_ASSIGNEE_FILTER)
+                  setOpen(false)
+                }}
+                className="cursor-pointer gap-3 py-2.5"
+              >
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
+                  Not assigned
+                </span>
+                <Check
+                  className={cn(
+                    "text-blue-800",
+                    value === UNASSIGNED_ASSIGNEE_FILTER
+                      ? "opacity-100"
+                      : "opacity-0",
+                  )}
+                />
+              </CommandItem>
+
+              {assignees.map((assignee) => (
+                <CommandItem
+                  key={assignee.value}
+                  value={`${assignee.label} ${assignee.email ?? ""} ${assignee.value}`}
+                  onSelect={() => {
+                    onValueChange(assignee.value)
+                    setOpen(false)
+                  }}
+                  className="cursor-pointer gap-3 py-2.5"
+                >
+                  <Avatar size="sm" className="ring-2 ring-blue-50">
+                    {assignee.image ? (
+                      <AvatarImage
+                        src={assignee.image}
+                        alt={`${assignee.label} profile photo`}
+                        className="object-cover"
+                      />
+                    ) : null}
+                    <AvatarFallback className="bg-blue-950 font-semibold text-white">
+                      {getInitials(assignee.label)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-medium text-slate-900">
+                      {assignee.label}
+                    </span>
+                    {assignee.email ? (
+                      <span className="truncate text-xs text-slate-500">
+                        {assignee.email}
+                      </span>
+                    ) : null}
+                  </span>
+                  <Check
+                    className={cn(
+                      "text-blue-800",
+                      value === assignee.value ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
 }
 
 function StatusBadge({
@@ -188,11 +405,22 @@ export function TasksTable({
   tenantTimezone,
   statusOptions,
   assigneeOptions,
+  summary,
 }: TasksTableProps) {
+  const router = useRouter()
   const [query, setQuery] = useState("")
   const [debouncedQuery, setDebouncedQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState(ALL_STATUS_VALUE)
   const [priorityFilter, setPriorityFilter] = useState(ALL_PRIORITY_VALUE)
+  const [assigneeFilter, setAssigneeFilter] = useState(ALL_ASSIGNEE_FILTER)
+  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false)
+  const [draftStatusFilter, setDraftStatusFilter] = useState(ALL_STATUS_VALUE)
+  const [draftPriorityFilter, setDraftPriorityFilter] = useState(
+    ALL_PRIORITY_VALUE,
+  )
+  const [draftAssigneeFilter, setDraftAssigneeFilter] = useState(
+    ALL_ASSIGNEE_FILTER,
+  )
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(10)
   const [isLoading, setIsLoading] = useState(false)
@@ -226,6 +454,10 @@ export function TasksTable({
               statusFilter === ALL_STATUS_VALUE ? undefined : statusFilter,
             priority:
               priorityFilter === ALL_PRIORITY_VALUE ? undefined : priorityFilter,
+            assignedToUserId:
+              assigneeFilter === ALL_ASSIGNEE_FILTER
+                ? undefined
+                : assigneeFilter,
           },
         },
       )
@@ -244,7 +476,15 @@ export function TasksTable({
     } finally {
       setIsLoading(false)
     }
-  }, [tenantId, page, pageSize, debouncedQuery, statusFilter, priorityFilter])
+  }, [
+    assigneeFilter,
+    tenantId,
+    page,
+    pageSize,
+    debouncedQuery,
+    statusFilter,
+    priorityFilter,
+  ])
 
   useEffect(() => {
     void loadTasks()
@@ -256,10 +496,11 @@ export function TasksTable({
   const startIndex = (page - 1) * pageSize
   const canGoPrevious = page > 1
   const canGoNext = page < totalPages
-  const hasActiveFilters =
-    query.length > 0 ||
-    statusFilter !== ALL_STATUS_VALUE ||
-    priorityFilter !== ALL_PRIORITY_VALUE
+  const activeFilterCount =
+    (statusFilter !== ALL_STATUS_VALUE ? 1 : 0) +
+    (priorityFilter !== ALL_PRIORITY_VALUE ? 1 : 0) +
+    (assigneeFilter !== ALL_ASSIGNEE_FILTER ? 1 : 0)
+  const hasActiveQueryOrFilters = Boolean(query.trim()) || activeFilterCount > 0
   const placeholderRowCount =
     tasks.length === 0 ? pageSize - 1 : Math.max(0, pageSize - tasks.length)
 
@@ -281,25 +522,29 @@ export function TasksTable({
     return Array.from({ length: count }, (_, index) => first + index)
   }, [page, totalPages])
 
+  const handleTaskCreated = useCallback(async () => {
+    await loadTasks()
+    router.refresh()
+  }, [loadTasks, router])
+
   return (
-    <div className="flex h-full min-h-0 w-full flex-col gap-4 rounded-xl bg-white p-3 md:p-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-col gap-0.5">
-          <h2 className="text-lg font-semibold text-foreground">Task list</h2>
-          <p className="text-sm text-muted-foreground">{summaryLabel}</p>
-        </div>
+    <div className="flex h-full min-h-0 w-full flex-col gap-4">
+      <TaskPageHeader
+        summary={summary}
+        action={
+          <CreateTaskDialog
+            tenantId={tenantId}
+            tenantTimezone={tenantTimezone}
+            statusOptions={statusOptions}
+            assigneeOptions={assigneeOptions}
+            onCreated={handleTaskCreated}
+          />
+        }
+      />
 
-        <CreateTaskDialog
-          tenantId={tenantId}
-          tenantTimezone={tenantTimezone}
-          statusOptions={statusOptions}
-          assigneeOptions={assigneeOptions}
-          onCreated={loadTasks}
-        />
-      </div>
-
-      <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_200px_200px_auto]">
+      <div className="grid gap-3 rounded-[22px] border border-slate-200 bg-white/75 p-3 shadow-sm backdrop-blur lg:grid-cols-[minmax(280px,1fr)_auto_auto]">
         <Input
+          type="search"
           aria-label="Search tasks"
           placeholder="Search tasks, contacts, assignees, services, or products"
           value={query}
@@ -307,55 +552,41 @@ export function TasksTable({
             setQuery(event.target.value)
             setPage(1)
           }}
+          className="h-11 rounded-xl border-white/80 bg-white/85 px-4 shadow-sm backdrop-blur placeholder:text-slate-400 focus-visible:border-blue-300 focus-visible:ring-blue-100"
         />
-        <Select
-          value={statusFilter}
-          onValueChange={(value) => {
-            setStatusFilter(value)
-            setPage(1)
-          }}
-        >
-          <SelectTrigger aria-label="Filter by status">
-            <SelectValue placeholder="Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              {statusOptions.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-        <Select
-          value={priorityFilter}
-          onValueChange={(value) => {
-            setPriorityFilter(value)
-            setPage(1)
-          }}
-        >
-          <SelectTrigger aria-label="Filter by priority">
-            <SelectValue placeholder="Priority" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              <SelectItem value={ALL_PRIORITY_VALUE}>All Priorities</SelectItem>
-              <SelectItem value="HIGH">High priority</SelectItem>
-              <SelectItem value="MEDIUM">Medium priority</SelectItem>
-              <SelectItem value="LOW">Low priority</SelectItem>
-            </SelectGroup>
-          </SelectContent>
-        </Select>
         <Button
           type="button"
           variant="outline"
-          disabled={!hasActiveFilters}
+          className="h-11 cursor-pointer rounded-xl border-white/80 bg-white/85 px-4 text-blue-950 shadow-sm backdrop-blur hover:bg-white hover:text-blue-950"
+          onClick={() => {
+            setDraftStatusFilter(statusFilter)
+            setDraftPriorityFilter(priorityFilter)
+            setDraftAssigneeFilter(assigneeFilter)
+            setIsFilterSheetOpen(true)
+          }}
+        >
+          <Filter data-icon="inline-start" />
+          Filters
+          {activeFilterCount > 0 ? (
+            <Badge className="min-w-5 bg-blue-950 px-1.5 text-white">
+              {activeFilterCount}
+            </Badge>
+          ) : null}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!hasActiveQueryOrFilters}
+          className="h-11 cursor-pointer rounded-xl border-white/80 bg-white/70 px-4 text-slate-700 shadow-sm backdrop-blur hover:bg-white hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-55"
           onClick={() => {
             setQuery("")
             setDebouncedQuery("")
             setStatusFilter(ALL_STATUS_VALUE)
             setPriorityFilter(ALL_PRIORITY_VALUE)
+            setAssigneeFilter(ALL_ASSIGNEE_FILTER)
+            setDraftStatusFilter(ALL_STATUS_VALUE)
+            setDraftPriorityFilter(ALL_PRIORITY_VALUE)
+            setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
             setPage(1)
           }}
         >
@@ -363,8 +594,164 @@ export function TasksTable({
         </Button>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="min-h-0 flex-1 overflow-auto">
+      <Sheet
+        open={isFilterSheetOpen}
+        onOpenChange={(nextOpen) => {
+          setIsFilterSheetOpen(nextOpen)
+          if (!nextOpen) {
+            setDraftStatusFilter(statusFilter)
+            setDraftPriorityFilter(priorityFilter)
+            setDraftAssigneeFilter(assigneeFilter)
+          }
+        }}
+      >
+        <SheetContent
+          side="right"
+          className="flex h-full w-full flex-col gap-0 overflow-hidden border-l border-slate-200 bg-white p-0 sm:max-w-lg [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:opacity-100 [&>button]:shadow-sm [&>button]:backdrop-blur"
+        >
+          <SheetHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
+            />
+            <div className="relative pr-10">
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <p className="text-xs font-semibold text-blue-700">
+                  Task filters
+                </p>
+                <SheetTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                  Refine tasks
+                </SheetTitle>
+                <SheetDescription className="max-w-xl text-sm leading-6 text-slate-600">
+                  Filter tasks by status, priority, and assignee.
+                </SheetDescription>
+              </div>
+            </div>
+          </SheetHeader>
+
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+            <FieldGroup className="gap-6">
+              <Field className="gap-2">
+                <FieldLabel htmlFor="task-status-filter" className="text-slate-800">
+                  Status
+                </FieldLabel>
+                <Select
+                  value={draftStatusFilter}
+                  onValueChange={setDraftStatusFilter}
+                >
+                  <SelectTrigger
+                    id="task-status-filter"
+                    className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                  >
+                    <SelectValue placeholder="Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {statusOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldDescription className="text-xs">
+                  Show tasks matching the selected workflow status.
+                </FieldDescription>
+              </Field>
+
+              <Field className="gap-2">
+                <FieldLabel
+                  htmlFor="task-priority-filter"
+                  className="text-slate-800"
+                >
+                  Priority
+                </FieldLabel>
+                <Select
+                  value={draftPriorityFilter}
+                  onValueChange={setDraftPriorityFilter}
+                >
+                  <SelectTrigger
+                    id="task-priority-filter"
+                    className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                  >
+                    <SelectValue placeholder="Priority" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value={ALL_PRIORITY_VALUE}>
+                        All priorities
+                      </SelectItem>
+                      <SelectItem value="HIGH">High priority</SelectItem>
+                      <SelectItem value="MEDIUM">Medium priority</SelectItem>
+                      <SelectItem value="LOW">Low priority</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldDescription className="text-xs">
+                  Focus the task list on one priority level.
+                </FieldDescription>
+              </Field>
+
+              <Field className="gap-2">
+                <FieldLabel
+                  htmlFor="task-assignee-filter"
+                  className="text-slate-800"
+                >
+                  Assigned to
+                </FieldLabel>
+                <AssigneeFilterPicker
+                  id="task-assignee-filter"
+                  assignees={assigneeOptions}
+                  value={draftAssigneeFilter}
+                  onValueChange={setDraftAssigneeFilter}
+                />
+                <FieldDescription className="text-xs">
+                  Show tasks owned by a specific team member or tasks without an owner.
+                </FieldDescription>
+              </Field>
+            </FieldGroup>
+          </div>
+
+          <SheetFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:flex-row sm:justify-end sm:px-7">
+            <Button
+              type="button"
+              variant="outline"
+              className="cursor-pointer border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
+              onClick={() => {
+                setDraftStatusFilter(ALL_STATUS_VALUE)
+                setDraftPriorityFilter(ALL_PRIORITY_VALUE)
+                setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
+              }}
+            >
+              Clear
+            </Button>
+            <Button
+              type="button"
+              className="min-w-32 cursor-pointer bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+              onClick={() => {
+                setStatusFilter(draftStatusFilter)
+                setPriorityFilter(draftPriorityFilter)
+                setAssigneeFilter(draftAssigneeFilter)
+                setPage(1)
+                setIsFilterSheetOpen(false)
+              }}
+            >
+              Apply filters
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+
+      <section
+        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-sm"
+        aria-label="Task list"
+      >
+        <div className="min-h-0 flex-1 overflow-auto px-4 pt-4">
           <Table
             className="min-w-[920px] table-fixed border-separate border-spacing-0"
             aria-label="Tasks"
@@ -503,7 +890,7 @@ export function TasksTable({
                     <TableRow className="h-14 hover:bg-transparent">
                       <TableCell colSpan={6} className="px-4 py-0 text-center">
                         <span className="text-sm text-muted-foreground">
-                          {hasActiveFilters
+                          {hasActiveQueryOrFilters
                             ? "No tasks match the current filters."
                             : "No tasks to display yet."}
                         </span>
@@ -518,7 +905,7 @@ export function TasksTable({
           </Table>
         </div>
 
-        <div className="flex flex-col items-center gap-3 px-1 py-4 sm:flex-row sm:justify-between">
+        <footer className="flex flex-col items-center gap-3 border-t border-slate-200 px-4 py-4 sm:flex-row sm:justify-between">
           <div className="flex items-center gap-3">
             <p className="text-sm text-muted-foreground">{summaryLabel}</p>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -598,8 +985,8 @@ export function TasksTable({
               <ChevronRight />
             </Button>
           </nav>
-        </div>
-      </div>
+        </footer>
+      </section>
     </div>
   )
 }
