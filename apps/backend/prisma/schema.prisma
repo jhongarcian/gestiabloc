@@ -176,6 +176,7 @@ enum NotificationType {
   TASK_REMINDER
   TASK_ASSIGNED
   TASK_DUE
+  FOLLOW_UP_OVERDUE
   FOLLOW_UP_FAILED
   CUSTOM_FIELD_ACCESS_REQUEST
   CUSTOM_FIELD_ACCESS_GRANTED
@@ -806,22 +807,24 @@ model ContactServicePayment {
 }
 
 model ContactServiceFollowUpStep {
-  id               String                           @id @default(uuid())
-  tenantId         String
-  contactServiceId String
-  runId            String?
-  templateNodeId   String?
-  title            String
-  notesTemplate    String?
-  status           ContactServiceFollowUpStepStatus @default(PENDING)
-  availableAt      DateTime?
-  dueAt            DateTime?
-  completedAt      DateTime?
-  resolutionSource FollowUpStepResolutionSource?
-  resolutionReason String?
-  assignedToUserId String?
-  note             String?
-  sortOrder        Int                              @default(0)
+  id                   String                           @id @default(uuid())
+  tenantId             String
+  contactServiceId     String
+  runId                String?
+  templateNodeId       String?
+  title                String
+  notesTemplate        String?
+  status               ContactServiceFollowUpStepStatus @default(PENDING)
+  availableAt          DateTime?
+  dueAt                DateTime?
+  completedAt          DateTime?
+  resolutionSource     FollowUpStepResolutionSource?
+  resolutionReason     String?
+  assignedToUserId     String?
+  overdueNotifiedAt    DateTime?
+  overdueNotifiedDueAt DateTime?
+  note                 String?
+  sortOrder            Int                              @default(0)
 
   tenant         Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contactService ContactService             @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
@@ -839,6 +842,7 @@ model ContactServiceFollowUpStep {
   @@index([tenantId, contactServiceId, templateNodeId])
   @@index([tenantId, runId, sortOrder])
   @@index([tenantId, assignedToUserId, dueAt])
+  @@index([tenantId, status, dueAt, overdueNotifiedDueAt])
 }
 
 model ContactServiceFollowUpRun {

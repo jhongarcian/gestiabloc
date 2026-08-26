@@ -703,6 +703,8 @@ async function scheduledActivationDatesForRun(params: {
           shiftMs !== null && futureStep.availableAt
             ? new Date(futureStep.availableAt.getTime() + shiftMs)
             : fallback,
+        overdueNotifiedAt: null,
+        overdueNotifiedDueAt: null,
       },
     })
   }
@@ -844,6 +846,8 @@ export async function advanceFollowUpRunTx(params: {
           status: "ACTIVE",
           availableAt: scheduledActivationDates?.availableAt ?? new Date(),
           dueAt: scheduledActivationDates?.dueAt ?? step.dueAt ?? new Date(),
+          overdueNotifiedAt: null,
+          overdueNotifiedDueAt: null,
         },
       })
       await prismaTx.serviceFollowUpNodeExecution.update({

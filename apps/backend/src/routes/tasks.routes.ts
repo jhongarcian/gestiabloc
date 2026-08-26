@@ -57,6 +57,7 @@ const TasksListQuerySchema = z.object({
   search: z.string().trim().max(120).optional().default(""),
   statusConfigId: z.string().trim().max(80).optional(),
   priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(),
+  assignedToUserId: z.string().trim().max(80).optional(),
   contactId: z.string().trim().min(1).optional(),
 })
 
@@ -525,19 +526,40 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
     const { tenantId } = TenantPathSchema.parse(req.params)
-    const { page, pageSize, search, statusConfigId, priority, contactId } =
-      TasksListQuerySchema.parse(req.query)
+    const {
+      page,
+      pageSize,
+      search,
+      statusConfigId,
+      priority,
+      assignedToUserId,
+      contactId,
+    } = TasksListQuerySchema.parse(req.query)
 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
     const skip = (page - 1) * pageSize
+    const assignedToUserIdFilter =
+      assignedToUserId === "ALL" ? "" : assignedToUserId
 
     const where = {
       tenantId,
       ...(contactId ? { contactId } : {}),
       ...(statusConfigId ? { statusConfigId } : {}),
       ...(priority ? { priority } : {}),
+      ...(assignedToUserIdFilter
+        ? assignedToUserIdFilter === "__UNASSIGNED__"
+          ? { assignedToUserId: null }
+          : {
+              assignedToUserId: assignedToUserIdFilter,
+              assignedToMembership: {
+                is: {
+                  status: "ACTIVE" as const,
+                },
+              },
+            }
+        : {}),
       ...(search
         ? {
             OR: [

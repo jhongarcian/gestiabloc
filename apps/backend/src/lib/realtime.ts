@@ -9,6 +9,8 @@ export type RealtimeNotificationPayload = {
     | "TASK_REMINDER"
     | "TASK_ASSIGNED"
     | "TASK_DUE"
+    | "FOLLOW_UP_OVERDUE"
+    | "FOLLOW_UP_FAILED"
     | "CUSTOM_FIELD_ACCESS_REQUEST"
     | "CUSTOM_FIELD_ACCESS_GRANTED"
   title: string

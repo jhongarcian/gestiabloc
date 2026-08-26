@@ -1,7 +1,13 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { ChevronLeft, ChevronRight, Filter } from "lucide-react"
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+} from "lucide-react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
   startTransition,
@@ -16,8 +22,24 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -45,6 +67,7 @@ import {
 } from "@/components/ui/table"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
+import { cn } from "@/lib/utils"
 import { CreateContactDialog } from "./create-contact-dialog"
 
 type ContactsTableProps = {
@@ -97,8 +120,22 @@ type ContactsListResponse = {
   }
 }
 
+type AssigneeOption = {
+  value: string
+  label: string
+  email: string
+  image: string | null
+}
+
 const PAGE_SIZE_OPTIONS = [10, 25] as const
 const ALL_STATUS_VALUE = "ALL"
+const ALL_ASSIGNEE_FILTER = "ALL"
+const UNASSIGNED_ASSIGNEE_FILTER = "__UNASSIGNED__"
+
+function normalizeAssigneeFilter(value: string | null) {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : ALL_ASSIGNEE_FILTER
+}
 
 function parseCsvParam(value: string | null) {
   if (!value) return []
@@ -150,6 +187,182 @@ function getInitials(value: string) {
   return parts.map((part) => part[0]?.toUpperCase() ?? "").join("")
 }
 
+function AssigneeFilterPicker({
+  assignees,
+  value,
+  onValueChange,
+  id,
+}: {
+  assignees: AssigneeOption[]
+  value: string
+  onValueChange: (value: string) => void
+  id: string
+}) {
+  const [open, setOpen] = useState(false)
+
+  const selectedAssignee = useMemo(
+    () => assignees.find((assignee) => assignee.value === value) ?? null,
+    [assignees, value],
+  )
+  const isUnassigned = value === UNASSIGNED_ASSIGNEE_FILTER
+  const hasUserFilter = value !== ALL_ASSIGNEE_FILTER && !isUnassigned
+  const triggerLabel = isUnassigned
+    ? "Not assigned"
+    : selectedAssignee?.label ?? (hasUserFilter ? "Selected assignee" : "All assignees")
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          aria-expanded={open}
+          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <Avatar
+              size="sm"
+              className={
+                selectedAssignee || hasUserFilter ? "ring-2 ring-blue-50" : undefined
+              }
+            >
+              {selectedAssignee?.image ? (
+                <AvatarImage
+                  src={selectedAssignee.image}
+                  alt={`${selectedAssignee.label} profile photo`}
+                  className="object-cover"
+                />
+              ) : null}
+              <AvatarFallback
+                className={
+                  selectedAssignee || hasUserFilter
+                    ? "bg-blue-950 font-semibold text-white"
+                    : "bg-slate-100 font-semibold text-slate-500"
+                }
+              >
+                {selectedAssignee
+                  ? getInitials(selectedAssignee.label)
+                  : hasUserFilter
+                    ? "?"
+                    : "—"}
+              </AvatarFallback>
+            </Avatar>
+            <span className="truncate font-medium text-slate-800">
+              {triggerLabel}
+            </span>
+          </span>
+          <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
+        </Button>
+      </PopoverTrigger>
+
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] p-0"
+      >
+        <Command>
+          <CommandInput placeholder="Search team members..." />
+          <CommandList>
+            <CommandEmpty>No team members found.</CommandEmpty>
+            <CommandGroup heading="Assignee">
+              <CommandItem
+                value="All assignees no owner filter"
+                onSelect={() => {
+                  onValueChange(ALL_ASSIGNEE_FILTER)
+                  setOpen(false)
+                }}
+                className="cursor-pointer gap-3 py-2.5"
+              >
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
+                  All assignees
+                </span>
+                <Check
+                  className={cn(
+                    "text-blue-800",
+                    value === ALL_ASSIGNEE_FILTER ? "opacity-100" : "opacity-0",
+                  )}
+                />
+              </CommandItem>
+
+              <CommandItem
+                value="Not assigned unassigned no owner"
+                onSelect={() => {
+                  onValueChange(UNASSIGNED_ASSIGNEE_FILTER)
+                  setOpen(false)
+                }}
+                className="cursor-pointer gap-3 py-2.5"
+              >
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
+                  Not assigned
+                </span>
+                <Check
+                  className={cn(
+                    "text-blue-800",
+                    value === UNASSIGNED_ASSIGNEE_FILTER
+                      ? "opacity-100"
+                      : "opacity-0",
+                  )}
+                />
+              </CommandItem>
+
+              {assignees.map((assignee) => (
+                <CommandItem
+                  key={assignee.value}
+                  value={`${assignee.label} ${assignee.email ?? ""} ${assignee.value}`}
+                  onSelect={() => {
+                    onValueChange(assignee.value)
+                    setOpen(false)
+                  }}
+                  className="cursor-pointer gap-3 py-2.5"
+                >
+                  <Avatar size="sm" className="ring-2 ring-blue-50">
+                    {assignee.image ? (
+                      <AvatarImage
+                        src={assignee.image}
+                        alt={`${assignee.label} profile photo`}
+                        className="object-cover"
+                      />
+                    ) : null}
+                    <AvatarFallback className="bg-blue-950 font-semibold text-white">
+                      {getInitials(assignee.label)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-medium text-slate-900">
+                      {assignee.label}
+                    </span>
+                    {assignee.email ? (
+                      <span className="truncate text-xs text-slate-500">
+                        {assignee.email}
+                      </span>
+                    ) : null}
+                  </span>
+                  <Check
+                    className={cn(
+                      "text-blue-800",
+                      value === assignee.value ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 const formatDate = (value: string | null) => {
   if (!value) return "—"
   const date = new Date(value)
@@ -185,10 +398,17 @@ export function ContactsTable({
   const [tagFilters, setTagFilters] = useState<string[]>(() =>
     parseCsvParam(searchParams.get("tagIds")),
   )
+  const [assigneeFilter, setAssigneeFilter] = useState(
+    () => normalizeAssigneeFilter(searchParams.get("assignedToUserId")),
+  )
   const [tagFilterOptions, setTagFilterOptions] = useState(tagOptions)
+  const [assigneeOptions, setAssigneeOptions] = useState<AssigneeOption[]>([])
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false)
   const [draftStatusFilters, setDraftStatusFilters] = useState<string[]>([])
   const [draftTagFilters, setDraftTagFilters] = useState<string[]>([])
+  const [draftAssigneeFilter, setDraftAssigneeFilter] = useState(
+    () => normalizeAssigneeFilter(searchParams.get("assignedToUserId")),
+  )
   const [page, setPage] = useState(() =>
     parsePositiveInt(searchParams.get("page"), 1),
   )
@@ -251,6 +471,31 @@ export function ContactsTable({
   }, [tagFilterOptions.length, tenantId])
 
   useEffect(() => {
+    let cancelled = false
+
+    const loadAssigneeOptions = async () => {
+      try {
+        const { data: response } = await api.get<{
+          ok: boolean
+          items: AssigneeOption[]
+        }>(`/api/tasks/${encodeURIComponent(tenantId)}/assignees`)
+
+        if (cancelled) return
+        setAssigneeOptions(response.items ?? [])
+      } catch {
+        if (cancelled) return
+        setAssigneeOptions([])
+      }
+    }
+
+    void loadAssigneeOptions()
+
+    return () => {
+      cancelled = true
+    }
+  }, [tenantId])
+
+  useEffect(() => {
     const timeout = window.setTimeout(() => {
       setDebouncedQuery(query.trim())
       setPage(1)
@@ -268,6 +513,9 @@ export function ContactsTable({
     if (statusFilters.length)
       nextParams.set("statusConfigIds", statusFilters.join(","))
     if (tagFilters.length) nextParams.set("tagIds", tagFilters.join(","))
+    if (assigneeFilter !== ALL_ASSIGNEE_FILTER) {
+      nextParams.set("assignedToUserId", assigneeFilter)
+    }
     if (page > 1) nextParams.set("page", String(page))
     if (pageSize !== 10) nextParams.set("pageSize", String(pageSize))
 
@@ -287,6 +535,7 @@ export function ContactsTable({
     pathname,
     router,
     searchParams,
+    assigneeFilter,
     statusFilters,
     tagFilters,
   ])
@@ -307,6 +556,10 @@ export function ContactsTable({
               ? statusFilters.join(",")
               : undefined,
             tagIds: tagFilters.length ? tagFilters.join(",") : undefined,
+            assignedToUserId:
+              assigneeFilter === ALL_ASSIGNEE_FILTER
+                ? undefined
+                : assigneeFilter,
           },
         },
       )
@@ -325,7 +578,15 @@ export function ContactsTable({
     } finally {
       setIsLoading(false)
     }
-  }, [tenantId, page, pageSize, debouncedQuery, statusFilters, tagFilters])
+  }, [
+    assigneeFilter,
+    tenantId,
+    page,
+    pageSize,
+    debouncedQuery,
+    statusFilters,
+    tagFilters,
+  ])
 
   useEffect(() => {
     void loadContacts()
@@ -337,7 +598,10 @@ export function ContactsTable({
   const startIndex = (page - 1) * pageSize
   const canGoPrevious = page > 1
   const canGoNext = page < totalPages
-  const activeFilterCount = statusFilters.length + tagFilters.length
+  const activeFilterCount =
+    statusFilters.length +
+    tagFilters.length +
+    (assigneeFilter !== ALL_ASSIGNEE_FILTER ? 1 : 0)
   const hasActiveQueryOrFilters = Boolean(query.trim()) || activeFilterCount > 0
   const placeholderRowCount =
     contacts.length === 0
@@ -400,6 +664,7 @@ export function ContactsTable({
             onClick={() => {
               setDraftStatusFilters(statusFilters)
               setDraftTagFilters(tagFilters)
+              setDraftAssigneeFilter(assigneeFilter)
               setIsFilterSheetOpen(true)
             }}
           >
@@ -421,6 +686,10 @@ export function ContactsTable({
               setDebouncedQuery("")
               setStatusFilters([])
               setTagFilters([])
+              setAssigneeFilter(ALL_ASSIGNEE_FILTER)
+              setDraftStatusFilters([])
+              setDraftTagFilters([])
+              setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
               setPage(1)
             }}
           >
@@ -430,149 +699,205 @@ export function ContactsTable({
       </header>
 
       <Sheet open={isFilterSheetOpen} onOpenChange={setIsFilterSheetOpen}>
-        <SheetContent side="right" className="sm:max-w-md">
-          <SheetHeader>
-            <SheetTitle>Filters</SheetTitle>
-            <SheetDescription>
-              Select one or more status and tag filters.
-            </SheetDescription>
+        <SheetContent
+          side="right"
+          className="flex h-full w-full flex-col gap-0 overflow-hidden border-l border-slate-200 bg-white p-0 sm:max-w-lg [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:opacity-100 [&>button]:shadow-sm [&>button]:backdrop-blur"
+        >
+          <SheetHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
+            />
+            <div className="relative pr-10">
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <p className="text-xs font-semibold text-blue-700">
+                  Contact filters
+                </p>
+                <SheetTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                  Refine contacts
+                </SheetTitle>
+                <SheetDescription className="max-w-xl text-sm leading-6 text-slate-600">
+                  Filter contacts by status, assigned tags, and owner.
+                </SheetDescription>
+              </div>
+            </div>
           </SheetHeader>
 
-          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pb-4">
-            <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-              <div className="space-y-1">
-                <Label className="text-sm font-semibold text-slate-900">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+            <div className="flex flex-col gap-7">
+              <FieldSet className="gap-2">
+                <FieldLegend variant="label" className="mb-0 text-slate-800">
                   Status
-                </Label>
-                <p className="text-xs text-slate-500">
+                </FieldLegend>
+                <FieldDescription className="text-xs">
                   Show contacts matching any selected status.
-                </p>
-              </div>
+                </FieldDescription>
 
-              {selectableStatusOptions.length ? (
-                <div className="space-y-2">
-                  {selectableStatusOptions.map((option) => {
-                    const checked = draftStatusFilters.includes(option.value)
-                    return (
-                      <label
-                        key={option.value}
-                        className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1.5 hover:bg-slate-50"
-                      >
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(nextChecked) => {
-                            setDraftStatusFilters((prev) =>
-                              nextChecked
-                                ? [...prev, option.value]
-                                : prev.filter(
-                                    (value) => value !== option.value,
-                                  ),
-                            )
-                          }}
-                        />
-                        <span
-                          className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
-                          style={
-                            option.bgColor && option.textColor
-                              ? {
-                                  backgroundColor: option.bgColor,
-                                  color: option.textColor,
-                                }
-                              : undefined
-                          }
+                {selectableStatusOptions.length ? (
+                  <FieldGroup className="gap-2">
+                    {selectableStatusOptions.map((option) => {
+                      const checked = draftStatusFilters.includes(option.value)
+                      const checkboxId = `contact-status-filter-${option.value}`
+
+                      return (
+                        <Field
+                          key={option.value}
+                          orientation="horizontal"
+                          className="min-h-10 gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2 transition-colors hover:bg-white"
                         >
-                          {option.label}
-                        </span>
-                      </label>
-                    )
-                  })}
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500">
-                  No status filters available.
-                </p>
-              )}
-            </section>
+                          <Checkbox
+                            id={checkboxId}
+                            checked={checked}
+                            onCheckedChange={(nextChecked) => {
+                              setDraftStatusFilters((prev) =>
+                                nextChecked
+                                  ? [...prev, option.value]
+                                  : prev.filter(
+                                      (value) => value !== option.value,
+                                    ),
+                              )
+                            }}
+                          />
+                          <FieldLabel
+                            htmlFor={checkboxId}
+                            className="cursor-pointer"
+                          >
+                            <span
+                              className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                              style={
+                                option.bgColor && option.textColor
+                                  ? {
+                                      backgroundColor: option.bgColor,
+                                      color: option.textColor,
+                                    }
+                                  : undefined
+                              }
+                            >
+                              {option.label}
+                            </span>
+                          </FieldLabel>
+                        </Field>
+                      )
+                    })}
+                  </FieldGroup>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    No status filters available.
+                  </p>
+                )}
+              </FieldSet>
 
-            <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-              <div className="space-y-1">
-                <Label className="text-sm font-semibold text-slate-900">
+              <FieldSet className="gap-2 border-t border-slate-200 pt-6">
+                <FieldLegend variant="label" className="mb-0 text-slate-800">
                   Tags
-                </Label>
-                <p className="text-xs text-slate-500">
+                </FieldLegend>
+                <FieldDescription className="text-xs">
                   Show contacts matching any selected tag.
-                </p>
-              </div>
+                </FieldDescription>
 
-              {tagFilterOptions.length ? (
-                <div className="space-y-2">
-                  {tagFilterOptions.map((option) => {
-                    const checked = draftTagFilters.includes(option.value)
-                    return (
-                      <label
-                        key={option.value}
-                        className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1.5 hover:bg-slate-50"
-                      >
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(nextChecked) => {
-                            setDraftTagFilters((prev) =>
-                              nextChecked
-                                ? [...prev, option.value]
-                                : prev.filter(
-                                    (value) => value !== option.value,
-                                  ),
-                            )
-                          }}
-                        />
-                        <span
-                          className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
-                          style={
-                            option.bgColor && option.textColor
-                              ? {
-                                  backgroundColor: option.bgColor,
-                                  color: option.textColor,
-                                }
-                              : undefined
-                          }
+                {tagFilterOptions.length ? (
+                  <FieldGroup className="gap-2">
+                    {tagFilterOptions.map((option) => {
+                      const checked = draftTagFilters.includes(option.value)
+                      const checkboxId = `contact-tag-filter-${option.value}`
+
+                      return (
+                        <Field
+                          key={option.value}
+                          orientation="horizontal"
+                          className="min-h-10 gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2 transition-colors hover:bg-white"
                         >
-                          {option.label}
-                        </span>
-                      </label>
-                    )
-                  })}
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500">
-                  No tag filters available.
-                </p>
-              )}
-            </section>
+                          <Checkbox
+                            id={checkboxId}
+                            checked={checked}
+                            onCheckedChange={(nextChecked) => {
+                              setDraftTagFilters((prev) =>
+                                nextChecked
+                                  ? [...prev, option.value]
+                                  : prev.filter(
+                                      (value) => value !== option.value,
+                                    ),
+                              )
+                            }}
+                          />
+                          <FieldLabel
+                            htmlFor={checkboxId}
+                            className="cursor-pointer"
+                          >
+                            <span
+                              className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                              style={
+                                option.bgColor && option.textColor
+                                  ? {
+                                      backgroundColor: option.bgColor,
+                                      color: option.textColor,
+                                    }
+                                  : undefined
+                              }
+                            >
+                              {option.label}
+                            </span>
+                          </FieldLabel>
+                        </Field>
+                      )
+                    })}
+                  </FieldGroup>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    No tag filters available.
+                  </p>
+                )}
+              </FieldSet>
+
+              <Field className="gap-2 border-t border-slate-200 pt-6">
+                <FieldLabel
+                  htmlFor="contact-assignee-filter"
+                  className="text-slate-800"
+                >
+                  Assigned to
+                </FieldLabel>
+                <AssigneeFilterPicker
+                  id="contact-assignee-filter"
+                  assignees={assigneeOptions}
+                  value={draftAssigneeFilter}
+                  onValueChange={setDraftAssigneeFilter}
+                />
+                <FieldDescription className="text-xs">
+                  Show contacts owned by a specific user or contacts without an owner.
+                </FieldDescription>
+              </Field>
+            </div>
           </div>
 
-          <SheetFooter>
+          <SheetFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:flex-row sm:justify-end sm:px-7">
             <Button
               type="button"
               variant="outline"
-              className="cursor-pointer"
+              className="cursor-pointer border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
               onClick={() => {
                 setDraftStatusFilters([])
                 setDraftTagFilters([])
+                setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
               }}
             >
               Clear
             </Button>
             <Button
               type="button"
-              className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+              className="min-w-32 cursor-pointer bg-blue-950 text-white shadow-sm hover:bg-blue-900"
               onClick={() => {
                 setStatusFilters([...new Set(draftStatusFilters)])
                 setTagFilters([...new Set(draftTagFilters)])
+                setAssigneeFilter(draftAssigneeFilter)
                 setPage(1)
                 setIsFilterSheetOpen(false)
               }}
             >
-              Apply Filters
+              Apply filters
             </Button>
           </SheetFooter>
         </SheetContent>

@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "ContactServiceFollowUpStep_tenantId_status_dueAt_overdueNotifie" RENAME TO "ContactServiceFollowUpStep_tenantId_status_dueAt_overdueNot_idx";
