@@ -70,12 +70,11 @@ type TaskAssigneesResponse = {
   }>
 }
 
-type LinkedEntityOptionsResponse = {
+type ServiceOptionsResponse = {
   ok: boolean
   items: Array<{
     id: string
     name: string
-    type: "SERVICE" | "PRODUCT"
   }>
 }
 
@@ -110,7 +109,7 @@ export default async function TaskDetailsPage({
     textColor?: string
   }> = []
   let assigneeOptions: TaskAssigneesResponse["items"] = []
-  let linkedEntityOptions: LinkedEntityOptionsResponse["items"] = []
+  let serviceOptions: ServiceOptionsResponse["items"] = []
 
   if (membership?.tenant?.id) {
     try {
@@ -118,7 +117,7 @@ export default async function TaskDetailsPage({
         { data: taskData },
         { data: statusData },
         { data: assigneeData },
-        linkedEntityResult,
+        serviceOptionsResult,
       ] = await Promise.all([
         api.get<TaskDetailsResponse>(
           `/api/tasks/${membership.tenant.id}/${taskId}`,
@@ -133,12 +132,9 @@ export default async function TaskDetailsPage({
           { headers: { cookie } },
         ),
         api
-          .get<LinkedEntityOptionsResponse>(
-            `/api/services-products/${membership.tenant.id}/options`,
-            {
-              headers: { cookie },
-              params: { limit: 100 },
-            },
+          .get<ServiceOptionsResponse>(
+            `/api/services/${membership.tenant.id}/options`,
+            { headers: { cookie } },
           )
           .catch(() => null),
       ])
@@ -165,7 +161,7 @@ export default async function TaskDetailsPage({
           ...assigneeOptions,
         ]
       }
-      linkedEntityOptions = linkedEntityResult?.data.items ?? []
+      serviceOptions = serviceOptionsResult?.data.items ?? []
     } catch (error) {
       if (isAxiosError(error) && error.response?.status === 404) {
         errorMessage = "This task could not be found."
@@ -264,7 +260,7 @@ export default async function TaskDetailsPage({
             initialTask={task}
             statusOptions={statusOptions}
             assigneeOptions={assigneeOptions}
-            linkedEntityOptions={linkedEntityOptions}
+            serviceOptions={serviceOptions}
           />
           <TaskReminderPanel
             tenantId={membership.tenant.id}

@@ -18,6 +18,14 @@ import {
   FieldTitle,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import {
@@ -37,10 +45,9 @@ import {
   type TaskStatusOption,
 } from "../../_components/task-status-select"
 
-type LinkedEntityOption = {
+type TaskServiceOption = {
   id: string
   name: string
-  type: "SERVICE" | "PRODUCT"
 }
 
 type TaskOverviewFormProps = {
@@ -60,7 +67,7 @@ type TaskOverviewFormProps = {
   }
   statusOptions: TaskStatusOption[]
   assigneeOptions: TaskAssigneeOption[]
-  linkedEntityOptions: LinkedEntityOption[]
+  serviceOptions: TaskServiceOption[]
 }
 
 type FieldErrors = Partial<
@@ -77,6 +84,7 @@ type FieldErrors = Partial<
 >
 
 const NO_STATUS_VALUE = "__NO_STATUS__"
+const NO_LINKED_SERVICE_VALUE = "__NO_LINKED_SERVICE__"
 const TASK_FORM_FIELD_KEYS = new Set<keyof FieldErrors>([
   "name",
   "description",
@@ -107,7 +115,7 @@ export function TaskOverviewForm({
   initialTask,
   statusOptions,
   assigneeOptions,
-  linkedEntityOptions,
+  serviceOptions,
 }: TaskOverviewFormProps) {
   const router = useRouter()
   const [isSaving, setIsSaving] = useState(false)
@@ -120,8 +128,11 @@ export function TaskOverviewForm({
   const [statusConfigId, setStatusConfigId] = useState(
     initialTask.statusConfigId ?? NO_STATUS_VALUE,
   )
-  const [linkedEntityName, setLinkedEntityName] = useState(
-    initialTask.linkedEntityName ?? "",
+  const [linkedServiceId, setLinkedServiceId] = useState(
+    initialTask.linkedEntityType === "SERVICE"
+      ? serviceOptions.find((service) => service.name === initialTask.linkedEntityName)
+          ?.id ?? NO_LINKED_SERVICE_VALUE
+      : NO_LINKED_SERVICE_VALUE,
   )
   const [startedAt, setStartedAt] = useState<DateTimeDraft>(() =>
     formatUtcIsoToDateTimeDraft(initialTask.startedAt, tenantTimezone),
@@ -137,7 +148,7 @@ export function TaskOverviewForm({
         description,
         assignedToUserId,
         statusConfigId,
-        linkedEntityName,
+        linkedServiceId,
         startedAt,
         dueDate,
       }),
@@ -145,7 +156,7 @@ export function TaskOverviewForm({
       assignedToUserId,
       description,
       dueDate,
-      linkedEntityName,
+      linkedServiceId,
       name,
       startedAt,
       statusConfigId,
@@ -221,7 +232,9 @@ export function TaskOverviewForm({
 
     const normalizedName = name.trim()
     const normalizedDescription = description.trim()
-    const normalizedLinkedEntityName = linkedEntityName.trim()
+    const selectedService = serviceOptions.find(
+      (service) => service.id === linkedServiceId,
+    )
 
     try {
       await api.patch(`/api/tasks/${tenantId}/${taskId}`, {
@@ -231,22 +244,21 @@ export function TaskOverviewForm({
           assignedToUserId === UNASSIGNED_TASK_VALUE ? null : assignedToUserId,
         statusConfigId:
           statusConfigId === NO_STATUS_VALUE ? null : statusConfigId,
-        linkedEntityType: normalizedLinkedEntityName ? "SERVICE" : null,
-        linkedEntityName: normalizedLinkedEntityName || null,
+        linkedEntityType: selectedService ? "SERVICE" : null,
+        linkedEntityName: selectedService?.name ?? null,
         startedAt: startedAtIso,
         dueDate: dueDateIso,
       })
 
       setName(normalizedName)
       setDescription(normalizedDescription)
-      setLinkedEntityName(normalizedLinkedEntityName)
       setSavedSnapshot(
         JSON.stringify({
           name: normalizedName,
           description: normalizedDescription,
           assignedToUserId,
           statusConfigId,
-          linkedEntityName: normalizedLinkedEntityName,
+          linkedServiceId,
           startedAt,
           dueDate,
         }),
@@ -516,34 +528,41 @@ export function TaskOverviewForm({
             data-disabled={isSaving}
             className="gap-2"
           >
-            <FieldLabel htmlFor="task-detail-linked-name">Service</FieldLabel>
-            <Input
-              id="task-detail-linked-name"
-              value={linkedEntityName}
-              onChange={(event) => {
-                setLinkedEntityName(event.target.value)
+            <FieldLabel htmlFor="task-detail-linked-service">Service</FieldLabel>
+            <Select
+              value={linkedServiceId}
+              onValueChange={(value) => {
+                setLinkedServiceId(value)
                 clearError("linkedEntity")
               }}
-              placeholder="Enter or choose a service"
-              list="task-detail-linked-options"
               disabled={isSaving}
-              aria-invalid={Boolean(fieldErrors.linkedEntity)}
-              maxLength={120}
-              className="h-11 rounded-xl"
-            />
-            <datalist id="task-detail-linked-options">
-              {linkedEntityOptions
-                .filter((option) => option.type === "SERVICE")
-                .map((option) => (
-                  <option key={option.id} value={option.name} />
-                ))}
-            </datalist>
+            >
+              <SelectTrigger
+                id="task-detail-linked-service"
+                aria-invalid={Boolean(fieldErrors.linkedEntity)}
+                className="h-11 w-full rounded-xl"
+              >
+                <SelectValue placeholder="Select a service" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value={NO_LINKED_SERVICE_VALUE}>
+                    No linked service
+                  </SelectItem>
+                  {serviceOptions.map((service) => (
+                    <SelectItem key={service.id} value={service.id}>
+                      {service.name}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <FieldDescription>
+              Choose an active service from this tenant’s account.
+            </FieldDescription>
+            <FieldError>{fieldErrors.linkedEntity}</FieldError>
           </Field>
         </FieldGroup>
-        <FieldDescription>
-          The linked contact remains fixed for this task.
-        </FieldDescription>
-        <FieldError>{fieldErrors.linkedEntity}</FieldError>
       </section>
 
       {isDirty ? (
