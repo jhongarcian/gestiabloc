@@ -13,6 +13,12 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { formatDateTimeForDisplay } from "@/lib/date-time"
 
 export type TaskActivity = {
@@ -47,12 +53,25 @@ export function TaskActivitySheet({
 }: TaskActivitySheetProps) {
   return (
     <Sheet>
-      <SheetTrigger asChild>
-        <Button type="button" variant="outline" className="bg-white/80 hover:bg-white">
-          <History data-icon="inline-start" />
-          Activity history
-        </Button>
-      </SheetTrigger>
+      <TooltipProvider delayDuration={120}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <SheetTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                aria-label="Activity history"
+                className="h-8 w-8 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
+              >
+                <History className="size-4" aria-hidden="true" />
+              </Button>
+            </SheetTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={8}>
+            Activity history
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       <SheetContent
         side="right"
         className="flex h-full w-full flex-col gap-0 overflow-hidden border-l border-slate-200 bg-white p-0 sm:max-w-lg [&>button]:cursor-pointer"

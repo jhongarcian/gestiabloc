@@ -187,12 +187,15 @@ export default async function TaskDetailsPage({
       <header className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="flex min-w-0 flex-1 flex-col gap-3">
-            <div className="flex min-w-0 items-center gap-3">
-              <Button asChild variant="outline" size="icon" className="shrink-0 bg-white/80 hover:bg-white">
-                <Link href={`/app/${tenantSlug}/tasks`} aria-label="Back to tasks">
-                  <ArrowLeft />
-                </Link>
-              </Button>
+            <div className="flex min-w-0 items-center gap-2">
+              <Link
+                href={`/app/${tenantSlug}/tasks`}
+                aria-label="Back to tasks"
+                title="Back to tasks"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white/85 text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </Link>
               <div className="flex min-w-0 flex-col gap-1.5">
                 <p className="text-xs font-semibold text-blue-700">Task details</p>
                 <h1 className="truncate text-2xl font-semibold text-slate-950">
@@ -200,11 +203,6 @@ export default async function TaskDetailsPage({
                 </h1>
               </div>
             </div>
-
-            <p className="max-w-3xl text-sm text-slate-600">
-              Review and update this task’s ownership, schedule, reminders, and
-              related work.
-            </p>
 
             <div
               className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500"
@@ -227,16 +225,22 @@ export default async function TaskDetailsPage({
             </div>
           </div>
 
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center md:shrink-0">
+          <div className="flex w-full max-w-full shrink-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] md:w-auto md:self-center md:justify-end md:overflow-visible md:pb-0 [&::-webkit-scrollbar]:hidden">
             {task ? (
               <TaskActivitySheet
                 tenantTimezone={tenantTimezone}
                 activities={task.activities}
               />
             ) : (
-              <Button type="button" variant="outline" disabled>
-                <History data-icon="inline-start" />
-                Activity history
+              <Button
+                type="button"
+                size="icon"
+                aria-label="Activity history"
+                title="Activity history"
+                className="h-8 w-8 rounded-full"
+                disabled
+              >
+                <History className="size-4" aria-hidden="true" />
               </Button>
             )}
             {task && membership?.tenant?.id ? (

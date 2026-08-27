@@ -15,16 +15,9 @@ import {
   FieldError,
   FieldGroup,
   FieldLabel,
+  FieldTitle,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import {
@@ -84,7 +77,6 @@ type FieldErrors = Partial<
 >
 
 const NO_STATUS_VALUE = "__NO_STATUS__"
-const NO_LINKED_ENTITY_VALUE = "__NO_LINKED_ENTITY__"
 const TASK_FORM_FIELD_KEYS = new Set<keyof FieldErrors>([
   "name",
   "description",
@@ -128,9 +120,6 @@ export function TaskOverviewForm({
   const [statusConfigId, setStatusConfigId] = useState(
     initialTask.statusConfigId ?? NO_STATUS_VALUE,
   )
-  const [linkedEntityType, setLinkedEntityType] = useState<
-    "SERVICE" | "PRODUCT" | typeof NO_LINKED_ENTITY_VALUE
-  >(initialTask.linkedEntityType ?? NO_LINKED_ENTITY_VALUE)
   const [linkedEntityName, setLinkedEntityName] = useState(
     initialTask.linkedEntityName ?? "",
   )
@@ -148,7 +137,6 @@ export function TaskOverviewForm({
         description,
         assignedToUserId,
         statusConfigId,
-        linkedEntityType,
         linkedEntityName,
         startedAt,
         dueDate,
@@ -158,7 +146,6 @@ export function TaskOverviewForm({
       description,
       dueDate,
       linkedEntityName,
-      linkedEntityType,
       name,
       startedAt,
       statusConfigId,
@@ -175,7 +162,6 @@ export function TaskOverviewForm({
     const errors: FieldErrors = {}
     const trimmedName = name.trim()
     const trimmedDescription = description.trim()
-    const trimmedLinkedEntityName = linkedEntityName.trim()
 
     if (!trimmedName) {
       errors.name = "Task name is required."
@@ -205,11 +191,6 @@ export function TaskOverviewForm({
       dueTimestamp < startTimestamp
     ) {
       errors.dueDate = "Due date must be at or after the start date."
-    }
-
-    const hasLinkedEntityType = linkedEntityType !== NO_LINKED_ENTITY_VALUE
-    if (hasLinkedEntityType !== Boolean(trimmedLinkedEntityName)) {
-      errors.linkedEntity = "Select a type and enter a matching name."
     }
 
     setFieldErrors(errors)
@@ -250,8 +231,7 @@ export function TaskOverviewForm({
           assignedToUserId === UNASSIGNED_TASK_VALUE ? null : assignedToUserId,
         statusConfigId:
           statusConfigId === NO_STATUS_VALUE ? null : statusConfigId,
-        linkedEntityType:
-          linkedEntityType === NO_LINKED_ENTITY_VALUE ? null : linkedEntityType,
+        linkedEntityType: normalizedLinkedEntityName ? "SERVICE" : null,
         linkedEntityName: normalizedLinkedEntityName || null,
         startedAt: startedAtIso,
         dueDate: dueDateIso,
@@ -266,7 +246,6 @@ export function TaskOverviewForm({
           description: normalizedDescription,
           assignedToUserId,
           statusConfigId,
-          linkedEntityType,
           linkedEntityName: normalizedLinkedEntityName,
           startedAt,
           dueDate,
@@ -307,7 +286,7 @@ export function TaskOverviewForm({
           responseData?.error === "LINKED_ENTITY_NAME_REQUIRED" ||
           responseData?.error === "LINKED_ENTITY_TYPE_REQUIRED"
         ) {
-          mappedErrors.linkedEntity = "Select a type and enter a matching name."
+          mappedErrors.linkedEntity = "Choose a valid service."
         }
 
         if (Object.keys(mappedErrors).length > 0) {
@@ -399,7 +378,7 @@ export function TaskOverviewForm({
           </p>
         </div>
 
-        <FieldGroup className="gap-4 sm:grid sm:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]">
+        <FieldGroup className="gap-4 sm:grid sm:grid-cols-2 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)_minmax(10rem,0.65fr)]">
           <Field
             data-invalid={Boolean(fieldErrors.assignedToUserId)}
             data-disabled={isSaving}
@@ -441,19 +420,18 @@ export function TaskOverviewForm({
             />
             <FieldError>{fieldErrors.status}</FieldError>
           </Field>
-        </FieldGroup>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3">
-          <div className="flex flex-col gap-0.5">
-            <p className="text-sm font-medium text-slate-900">Current priority</p>
-            <p className="text-xs text-slate-500">
-              Priority is calculated from the due date and completion state.
-            </p>
-          </div>
-          <Badge variant={initialTask.priority === "HIGH" ? "destructive" : "secondary"}>
-            {getPriorityLabel(initialTask.priority)}
-          </Badge>
-        </div>
+          <Field className="gap-2 sm:col-span-2 lg:col-span-1">
+            <FieldTitle>Priority</FieldTitle>
+            <div className="flex h-11 items-center">
+              <Badge
+                variant={initialTask.priority === "HIGH" ? "destructive" : "secondary"}
+              >
+                {getPriorityLabel(initialTask.priority)}
+              </Badge>
+            </div>
+          </Field>
+        </FieldGroup>
       </section>
 
       <section className="flex flex-col gap-4 rounded-xl border border-slate-100 bg-white p-4 md:p-5">
@@ -528,55 +506,17 @@ export function TaskOverviewForm({
         <div className="flex flex-col gap-1">
           <h2 className="text-sm font-semibold text-slate-900">Related work</h2>
           <p className="text-sm text-slate-500">
-            Keep the task connected to the service or product it supports.
+            Keep the task connected to the service it supports.
           </p>
         </div>
 
-        <FieldGroup className="gap-4 sm:grid sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+        <FieldGroup className="sm:max-w-xl">
           <Field
             data-invalid={Boolean(fieldErrors.linkedEntity)}
             data-disabled={isSaving}
             className="gap-2"
           >
-            <FieldLabel htmlFor="task-detail-linked-type">Type</FieldLabel>
-            <Select
-              value={linkedEntityType}
-              onValueChange={(value) => {
-                const nextType = value as
-                  | "SERVICE"
-                  | "PRODUCT"
-                  | typeof NO_LINKED_ENTITY_VALUE
-                setLinkedEntityType(nextType)
-                if (nextType === NO_LINKED_ENTITY_VALUE) {
-                  setLinkedEntityName("")
-                }
-                clearError("linkedEntity")
-              }}
-              disabled={isSaving}
-            >
-              <SelectTrigger
-                id="task-detail-linked-type"
-                aria-invalid={Boolean(fieldErrors.linkedEntity)}
-                className="h-11 w-full rounded-xl"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value={NO_LINKED_ENTITY_VALUE}>No linked item</SelectItem>
-                  <SelectItem value="SERVICE">Service</SelectItem>
-                  <SelectItem value="PRODUCT">Product</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-
-          <Field
-            data-invalid={Boolean(fieldErrors.linkedEntity)}
-            data-disabled={isSaving}
-            className="gap-2"
-          >
-            <FieldLabel htmlFor="task-detail-linked-name">Name</FieldLabel>
+            <FieldLabel htmlFor="task-detail-linked-name">Service</FieldLabel>
             <Input
               id="task-detail-linked-name"
               value={linkedEntityName}
@@ -584,16 +524,16 @@ export function TaskOverviewForm({
                 setLinkedEntityName(event.target.value)
                 clearError("linkedEntity")
               }}
-              placeholder="Select a type, then enter or choose a name"
+              placeholder="Enter or choose a service"
               list="task-detail-linked-options"
-              disabled={isSaving || linkedEntityType === NO_LINKED_ENTITY_VALUE}
+              disabled={isSaving}
               aria-invalid={Boolean(fieldErrors.linkedEntity)}
               maxLength={120}
               className="h-11 rounded-xl"
             />
             <datalist id="task-detail-linked-options">
               {linkedEntityOptions
-                .filter((option) => option.type === linkedEntityType)
+                .filter((option) => option.type === "SERVICE")
                 .map((option) => (
                   <option key={option.id} value={option.name} />
                 ))}
