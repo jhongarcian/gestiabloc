@@ -30,6 +30,7 @@ import { ContactBreadcrumbSync } from "./_components/contact-breadcrumb-sync"
 import { ContactDetailNavigation } from "./_components/contact-detail-navigation"
 import { ContactHeaderAssignee } from "./_components/contact-header-assignee"
 import { ContactHeaderStatus } from "./_components/contact-header-status"
+import { ContactServiceProgress } from "./_components/contact-service-progress"
 import {
   formatContactDate,
   getContactDetailsContext,
@@ -320,92 +321,56 @@ export default async function ContactDetailsLayout({
   return (
     <section className="flex h-full min-h-0 flex-col gap-4">
       <ContactBreadcrumbSync label={contact.fullName} />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-slate-200/80 bg-white shadow-sm">
-        <header className="shrink-0 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_46%,#fff7ed_100%)]">
-          <div className="space-y-4 p-4 md:p-5">
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0 flex-1 space-y-2">
-                <div className="min-w-0 space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Link
-                      href={`/app/${tenantSlug}/contacts`}
-                      aria-label="Back to contacts"
-                      title="Back to contacts"
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white/85 text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
-                    >
-                      <ArrowLeft className="h-4 w-4" />
-                    </Link>
-                    <h1 className="truncate text-2xl font-semibold tracking-tight text-slate-950">
-                      {contact.fullName}
-                    </h1>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5 text-xs text-slate-500">
-                    <span>{formatPhoneNumber(contact.phoneNumber)}</span>
-                    <span className="h-1 w-1 rounded-full bg-slate-300" />
-                    <span className="truncate">{contact.email ?? "—"}</span>
-                    <span className="h-1 w-1 rounded-full bg-slate-300" />
-                    <span>{formatContactDate(contact.dateOfBirth)}</span>
-                  </div>
-                  {visibleHeaderTags.length > 0 ? (
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 pt-1.5">
-                      <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                        Tags
-                      </span>
-                      <div className="flex flex-wrap items-center gap-2">
-                        {visibleHeaderTags.map((tag) => (
-                          <span
-                            key={tag.id}
-                            className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold shadow-sm"
-                            style={{
-                              backgroundColor: tag.bgColor,
-                              color: tag.textColor,
-                            }}
-                          >
-                            {tag.name}
-                          </span>
-                        ))}
-                        {remainingHeaderTagsCount > 0 ? (
-                          <span className="inline-flex items-center rounded-full bg-white/85 px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm">
-                            +{remainingHeaderTagsCount}
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
-                  {visibleHeaderRelationships.length > 0 ? (
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 pt-1.5">
-                      <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                        Relationships
-                      </span>
-                      <div className="flex flex-wrap items-center gap-2">
-                        {visibleHeaderRelationships.map((relationship) => (
-                          <Link
-                            key={relationship.id}
-                            href={`/app/${tenantSlug}/contacts/${relationship.relatedContact.id}/overview`}
-                            className="inline-flex max-w-full items-center gap-1 rounded-full border border-white/80 bg-white/85 px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm transition hover:border-slate-200 hover:bg-white hover:text-slate-950"
-                          >
-                            <span className="shrink-0 font-semibold text-slate-500">
-                              {relationship.relationshipLabel}:
-                            </span>
-                            <span className="truncate">
-                              {relationship.relatedContact.fullName}
-                            </span>
-                          </Link>
-                        ))}
-                        {remainingHeaderRelationshipsCount > 0 ? (
-                          <Link
-                            href={`/app/${tenantSlug}/contacts/${contactId}/relationships`}
-                            className="inline-flex items-center rounded-full border border-slate-200 bg-white/85 px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
-                          >
-                            +{remainingHeaderRelationshipsCount}
-                          </Link>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-clip rounded-[28px] border border-slate-200/80 bg-white shadow-sm">
+        <header className="sticky top-[var(--tenant-shell-header-height)] z-20 shrink-0 rounded-t-[27px] border-b border-slate-200/80 bg-[linear-gradient(135deg,rgba(248,250,252,0.97)_0%,rgba(239,246,255,0.97)_46%,rgba(255,247,237,0.97)_100%)] shadow-sm backdrop-blur-md">
+          <div className="flex flex-col gap-3 p-3 md:px-5 xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <Link
+                  href={`/app/${tenantSlug}/contacts`}
+                  aria-label="Back to contacts"
+                  title="Back to contacts"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white/85 text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </Link>
+                <h1 className="min-w-0 flex-1 truncate text-2xl font-semibold tracking-tight text-slate-950">
+                  {contact.fullName}
+                </h1>
               </div>
-              <div className="flex shrink-0 flex-nowrap items-center justify-end gap-2">
+              {visibleHeaderRelationships.length > 0 ? (
+                <div className="min-w-0 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  <div className="flex min-w-max items-center gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                      Relationships
+                    </span>
+                    {visibleHeaderRelationships.map((relationship) => (
+                      <Link
+                        key={relationship.id}
+                        href={`/app/${tenantSlug}/contacts/${relationship.relatedContact.id}/overview`}
+                        className="inline-flex max-w-72 items-center gap-1 rounded-full border border-white/80 bg-white/85 px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm transition hover:border-slate-200 hover:bg-white hover:text-slate-950"
+                      >
+                        <span className="shrink-0 font-semibold text-slate-500">
+                          {relationship.relationshipLabel}:
+                        </span>
+                        <span className="truncate">
+                          {relationship.relatedContact.fullName}
+                        </span>
+                      </Link>
+                    ))}
+                    {remainingHeaderRelationshipsCount > 0 ? (
+                      <Link
+                        href={`/app/${tenantSlug}/contacts/${contactId}/relationships`}
+                        className="inline-flex items-center rounded-full border border-slate-200 bg-white/85 px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
+                      >
+                        +{remainingHeaderRelationshipsCount}
+                      </Link>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <div className="flex w-full max-w-full shrink-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] xl:w-auto xl:justify-end xl:overflow-visible xl:pb-0 [&::-webkit-scrollbar]:hidden">
                 <AddContactOpportunityDialog
                   tenantId={tenantId}
                   initialContact={{
@@ -519,21 +484,47 @@ export default async function ContactDetailsLayout({
                 />
               </div>
             </div>
+        </header>
+
+        <div className="flex shrink-0 flex-col gap-2 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_46%,#fff7ed_100%)] px-4 py-3 md:px-5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+            <span>{formatPhoneNumber(contact.phoneNumber)}</span>
+            <span className="size-1 rounded-full bg-slate-300" />
+            <span className="truncate">{contact.email ?? "—"}</span>
+            <span className="size-1 rounded-full bg-slate-300" />
+            <span>{formatContactDate(contact.dateOfBirth)}</span>
           </div>
 
-        {activeFollowUpServices.length > 0 ? (
-          <section
-            aria-labelledby="service-progress-title"
-            className="border-t border-slate-200/70"
-          >
-            <div className="px-4 pt-3 md:px-5">
-              <h2
-                id="service-progress-title"
-                className="text-sm font-semibold text-slate-800"
-              >
-                Service progress
-              </h2>
+          {visibleHeaderTags.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Tags
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                {visibleHeaderTags.map((tag) => (
+                  <span
+                    key={tag.id}
+                    className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold shadow-sm"
+                    style={{
+                      backgroundColor: tag.bgColor,
+                      color: tag.textColor,
+                    }}
+                  >
+                    {tag.name}
+                  </span>
+                ))}
+                {remainingHeaderTagsCount > 0 ? (
+                  <span className="inline-flex items-center rounded-full bg-white/85 px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm">
+                    +{remainingHeaderTagsCount}
+                  </span>
+                ) : null}
+              </div>
             </div>
+          ) : null}
+        </div>
+
+        {activeFollowUpServices.length > 0 ? (
+          <ContactServiceProgress count={activeFollowUpServices.length}>
             <div className="grid gap-3 px-4 pb-3 pt-2 sm:grid-cols-2 md:px-5 lg:grid-cols-4">
               {visibleActiveFollowUpServices.map((service) => (
                 <Link
@@ -616,9 +607,8 @@ export default async function ContactDetailsLayout({
                 </Link>
               ) : null}
             </div>
-          </section>
+          </ContactServiceProgress>
         ) : null}
-        </header>
 
         <ContactDetailNavigation tenantSlug={tenantSlug} contactId={contactId} />
         <div className="min-h-0 min-w-0 flex-1 bg-background px-4 py-5 md:px-5 md:py-6">

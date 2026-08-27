@@ -7204,6 +7204,24 @@ components:
           allOf:
             - $ref: "#/components/schemas/TaskActivityActor"
           nullable: true
+    TaskContactSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        fullName:
+          type: string
+        email:
+          type: string
+          format: email
+          nullable: true
+        phoneNumber:
+          type: string
+          nullable: true
+        dateOfBirth:
+          type: string
+          format: date-time
+          nullable: true
     TaskDetailsItem:
       type: object
       properties:
@@ -7242,6 +7260,10 @@ components:
           nullable: true
         contactName:
           type: string
+          nullable: true
+        contact:
+          allOf:
+            - $ref: "#/components/schemas/TaskContactSummary"
           nullable: true
         linkedEntityName:
           type: string

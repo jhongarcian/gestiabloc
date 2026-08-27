@@ -258,6 +258,7 @@ export function TenantShell({
 }: TenantShellProps) {
   const router = useRouter()
   const selectedSegments = useSelectedLayoutSegments()
+  const tenantShellHeaderRef = useRef<HTMLElement>(null)
   const socketRef = useRef<SocketClient | null>(null)
   const isLoadingNotificationsRef = useRef(false)
   const isLoadingMoreNotificationsRef = useRef(false)
@@ -355,6 +356,30 @@ export function TenantShell({
     })
     return items
   }, [segments, basePath, contactCrumbLabel, serviceCrumbLabel])
+
+  useEffect(() => {
+    const header = tenantShellHeaderRef.current
+    const shell = header?.parentElement
+
+    if (!header || !shell) return
+
+    const updateHeaderHeight = () => {
+      shell.style.setProperty(
+        "--tenant-shell-header-height",
+        `${Math.ceil(header.getBoundingClientRect().height)}px`,
+      )
+    }
+
+    updateHeaderHeight()
+
+    const observer = new ResizeObserver(updateHeaderHeight)
+    observer.observe(header)
+
+    return () => {
+      observer.disconnect()
+      shell.style.removeProperty("--tenant-shell-header-height")
+    }
+  }, [])
 
   useEffect(() => {
     if (!currentUser.image) {
@@ -830,8 +855,11 @@ export function TenantShell({
         />
       ) : null}
 
-      <SidebarInset className="min-w-0 bg-slate-50 flex min-h-screen flex-col">
-        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md supports-backdrop-filter:bg-white/70">
+      <SidebarInset className="min-w-0 bg-slate-50 flex min-h-screen flex-col [--tenant-shell-header-height:113px] md:[--tenant-shell-header-height:65px]">
+        <header
+          ref={tenantShellHeaderRef}
+          className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md supports-backdrop-filter:bg-white/70"
+        >
           <div
             className={`flex flex-col px-4 ${
               isFlowBuilderRoute
