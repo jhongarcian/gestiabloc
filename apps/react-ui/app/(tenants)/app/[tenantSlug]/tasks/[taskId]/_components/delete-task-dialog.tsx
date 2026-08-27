@@ -1,6 +1,7 @@
 "use client"
 
 import { isAxiosError } from "axios"
+import { Trash2 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useState } from "react"
 import { toast } from "sonner"
@@ -15,6 +16,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 
 type DeleteTaskDialogProps = {
@@ -58,11 +65,25 @@ export function DeleteTaskDialog({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button type="button" variant="destructive">
-          Delete task
-        </Button>
-      </DialogTrigger>
+      <TooltipProvider delayDuration={120}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DialogTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                aria-label="Delete task"
+                className="h-8 w-8 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
+              >
+                <Trash2 className="size-4" aria-hidden="true" />
+              </Button>
+            </DialogTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={8}>
+            Delete task
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Delete Task</DialogTitle>

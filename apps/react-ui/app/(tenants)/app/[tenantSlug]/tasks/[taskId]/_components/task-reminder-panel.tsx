@@ -1,22 +1,21 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { BellRing, LoaderCircle, Trash2 } from "lucide-react"
+import { Loader2, Trash2 } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { DateTimeInput } from "@/components/ui/date-time-input"
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import {
-  DateTimeInput,
-} from "@/components/ui/date-time-input"
-import { Label } from "@/components/ui/label"
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import {
@@ -27,7 +26,7 @@ import {
   isDateTimeDraftEmpty,
 } from "@/lib/date-time"
 
-type TaskReminder = {
+export type TaskReminder = {
   id: string
   remindAt: string
   message: string | null
@@ -65,12 +64,11 @@ export function TaskReminderPanel({
   assignedPersonName,
   initialReminders,
 }: TaskReminderPanelProps) {
+  const router = useRouter()
   const [reminders, setReminders] = useState(initialReminders)
-  const [remindAtInput, setRemindAtInput] = useState<DateTimeDraft>({
-    date: "",
-    time: "",
-  })
+  const [remindAt, setRemindAt] = useState<DateTimeDraft>({ date: "", time: "" })
   const [message, setMessage] = useState("")
+  const [fieldError, setFieldError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [deletingReminderId, setDeletingReminderId] = useState<string | null>(null)
 
@@ -83,20 +81,29 @@ export function TaskReminderPanel({
   }, [assignedPersonName])
 
   const handleCreateReminder = async () => {
-    if (isDateTimeDraftEmpty(remindAtInput) || !isDateTimeDraftComplete(remindAtInput)) {
-      toast.error("Choose a valid reminder date and time.")
+    if (isDateTimeDraftEmpty(remindAt)) {
+      setFieldError("Choose a reminder date and time.")
+      return
+    }
+    if (!isDateTimeDraftComplete(remindAt)) {
+      setFieldError("Enter both a date and time.")
+      return
+    }
+
+    const remindAtIso = dateTimeDraftToUtcIso(remindAt, tenantTimezone)
+    if (!remindAtIso) {
+      setFieldError("Choose a valid reminder date and time.")
       return
     }
 
     setIsSubmitting(true)
+    setFieldError(null)
 
     try {
-      const remindAt = dateTimeDraftToUtcIso(remindAtInput, tenantTimezone)
-
       const { data } = await api.post<CreateReminderResponse>(
         `/api/tasks/${tenantId}/${taskId}/reminders`,
         {
-          remindAt,
+          remindAt: remindAtIso,
           message: message.trim() || null,
         },
       )
@@ -107,16 +114,17 @@ export function TaskReminderPanel({
         ),
       )
       setMessage("")
-      setRemindAtInput({ date: "", time: "" })
+      setRemindAt({ date: "", time: "" })
       toast.success("Reminder created.")
+      router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
-        if (typeof backendError === "string") {
-          toast.error(backendError.replace(/_/g, " "))
-        } else {
-          toast.error("Could not create reminder.")
-        }
+        toast.error(
+          typeof backendError === "string"
+            ? backendError.replace(/_/g, " ")
+            : "Could not create reminder.",
+        )
       } else {
         toast.error("Could not create reminder.")
       }
@@ -132,6 +140,7 @@ export function TaskReminderPanel({
       await api.delete(`/api/tasks/${tenantId}/${taskId}/reminders/${reminderId}`)
       setReminders((current) => current.filter((item) => item.id !== reminderId))
       toast.success("Reminder deleted.")
+      router.refresh()
     } catch {
       toast.error("Could not delete reminder.")
     } finally {
@@ -140,85 +149,103 @@ export function TaskReminderPanel({
   }
 
   return (
-    <Card className="border-slate-200 lg:col-span-2">
-      <CardHeader className="border-b border-slate-100">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <BellRing className="h-4 w-4 text-slate-500" />
-              Reminders
-            </CardTitle>
-            <CardDescription>{recipientSummary}</CardDescription>
-          </div>
-        </div>
-      </CardHeader>
+    <section className="flex flex-col gap-4 rounded-xl border border-slate-100 bg-white p-4 md:p-5">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-semibold text-slate-900">Reminders</h2>
+        <p className="text-sm text-slate-500">{recipientSummary}</p>
+      </div>
 
-      <CardContent className="grid gap-6 pt-6 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
-        <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/80 p-4">
-          <div className="space-y-2">
-            <Label htmlFor="task-remind-at">Reminder Date</Label>
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
+        <FieldGroup className="gap-4 rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
+          <Field
+            data-invalid={Boolean(fieldError)}
+            data-disabled={isSubmitting}
+            className="min-w-0 gap-2"
+          >
+            <div className="grid grid-cols-[minmax(0,1.35fr)_minmax(7.5rem,0.8fr)] gap-0">
+              <FieldLabel htmlFor="task-reminder-date">Reminder date</FieldLabel>
+              <FieldLabel htmlFor="task-reminder-time">Time</FieldLabel>
+            </div>
             <DateTimeInput
-              id="task-remind-at"
-              value={remindAtInput}
-              onValueChange={setRemindAtInput}
+              id="task-reminder-date"
+              timeId="task-reminder-time"
+              value={remindAt}
+              onValueChange={(value) => {
+                setRemindAt(value)
+                setFieldError(null)
+              }}
               disabled={isSubmitting}
+              ariaInvalid={Boolean(fieldError)}
               timezone={tenantTimezone}
               disabledDate={() => false}
+              layout="joined"
             />
-          </div>
+            <FieldError>{fieldError}</FieldError>
+          </Field>
 
-          <div className="space-y-2">
-            <Label htmlFor="task-reminder-message">Message</Label>
+          <Field data-disabled={isSubmitting} className="gap-2">
+            <div className="flex items-center justify-between gap-4">
+              <FieldLabel htmlFor="task-reminder-message">Message</FieldLabel>
+              <span className="text-xs tabular-nums text-slate-500">
+                {message.length}/500
+              </span>
+            </div>
             <Textarea
               id="task-reminder-message"
               value={message}
               onChange={(event) => setMessage(event.target.value)}
-              placeholder="Optional note for the reminder notification"
+              placeholder="Add context for the reminder notification."
               disabled={isSubmitting}
               maxLength={500}
-              className="min-h-28 bg-white"
+              className="min-h-28 resize-y rounded-xl bg-white"
             />
-          </div>
+            <FieldDescription>
+              The message is included with the reminder notification.
+            </FieldDescription>
+          </Field>
 
           <Button
             type="button"
-            className="w-full"
+            className="w-full bg-blue-950 text-white hover:bg-blue-900"
             disabled={isSubmitting}
             onClick={() => void handleCreateReminder()}
           >
             {isSubmitting ? (
-              <>
-                <LoaderCircle className="animate-spin" />
-                Saving reminder
-              </>
-            ) : (
-              "Create reminder"
-            )}
+              <Loader2 data-icon="inline-start" className="animate-spin" />
+            ) : null}
+            {isSubmitting ? "Saving..." : "Create reminder"}
           </Button>
-        </div>
+        </FieldGroup>
 
-        <div className="space-y-3">
-          {reminders.length ? (
+        <div className="flex min-w-0 flex-col gap-3">
+          {reminders.length > 0 ? (
             reminders.map((reminder) => {
               const isDeleting = deletingReminderId === reminder.id
               const isOwnReminder = reminder.recipient.id === currentUserId
 
               return (
-                <div
+                <article
                   key={reminder.id}
-                  className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-start sm:justify-between"
+                  className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-start sm:justify-between"
                 >
-                  <div className="space-y-2">
+                  <div className="flex min-w-0 flex-col gap-2">
                     <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-semibold text-slate-950">
-                        {formatDateTimeForDisplay(reminder.remindAt, tenantTimezone, true)}
-                      </p>
-                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                      <time
+                        dateTime={reminder.remindAt}
+                        className="text-sm font-semibold tabular-nums text-slate-950"
+                      >
+                        {formatDateTimeForDisplay(
+                          reminder.remindAt,
+                          tenantTimezone,
+                          true,
+                        )}
+                      </time>
+                      <Badge variant="secondary">
                         {reminder.notifiedAt ? "Sent" : "Scheduled"}
-                      </span>
+                      </Badge>
                     </div>
 
-                    <div className="space-y-1 text-sm text-slate-600">
+                    <div className="flex flex-col gap-1 text-sm text-slate-600">
                       <p>
                         Recipient:{" "}
                         <span className="font-medium text-slate-900">
@@ -245,27 +272,22 @@ export function TaskReminderPanel({
                     onClick={() => void handleDeleteReminder(reminder.id)}
                   >
                     {isDeleting ? (
-                      <>
-                        <LoaderCircle className="animate-spin" />
-                        Removing
-                      </>
+                      <Loader2 data-icon="inline-start" className="animate-spin" />
                     ) : (
-                      <>
-                        <Trash2 />
-                        Delete
-                      </>
+                      <Trash2 data-icon="inline-start" />
                     )}
+                    {isDeleting ? "Removing..." : "Delete"}
                   </Button>
-                </div>
+                </article>
               )
             })
           ) : (
-            <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/70 p-6 text-sm text-slate-500">
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/70 p-6 text-sm text-slate-500">
               No reminders scheduled yet.
             </div>
           )}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   )
 }

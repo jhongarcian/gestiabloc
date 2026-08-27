@@ -3937,6 +3937,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/options:
+    get:
+      tags: [Services]
+      summary: List active tenant services for selection controls
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Active tenant services returned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, items]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name]
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/catalog-summary:
     get:
       tags: [Services]
@@ -7204,6 +7246,24 @@ components:
           allOf:
             - $ref: "#/components/schemas/TaskActivityActor"
           nullable: true
+    TaskContactSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        fullName:
+          type: string
+        email:
+          type: string
+          format: email
+          nullable: true
+        phoneNumber:
+          type: string
+          nullable: true
+        dateOfBirth:
+          type: string
+          format: date-time
+          nullable: true
     TaskDetailsItem:
       type: object
       properties:
@@ -7242,6 +7302,10 @@ components:
           nullable: true
         contactName:
           type: string
+          nullable: true
+        contact:
+          allOf:
+            - $ref: "#/components/schemas/TaskContactSummary"
           nullable: true
         linkedEntityName:
           type: string

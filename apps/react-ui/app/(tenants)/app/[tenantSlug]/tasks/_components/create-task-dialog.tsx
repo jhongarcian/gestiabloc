@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation"
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import {
   Command,
@@ -55,6 +55,10 @@ import {
   TaskStatusSelect,
   type TaskStatusOption,
 } from "./task-status-select"
+import {
+  TaskAssigneeInput,
+  UNASSIGNED_TASK_VALUE,
+} from "./task-assignee-input"
 
 type CreateTaskDialogProps = {
   tenantId: string
@@ -187,8 +191,9 @@ export function CreateTaskDialog({
   )
   const [contactResults, setContactResults] = useState<ContactSearchItem[]>([])
   const [isSearchingContacts, setIsSearchingContacts] = useState(false)
-  const [assignedToUserId, setAssignedToUserId] = useState<string>("__UNASSIGNED__")
-  const [assigneePickerOpen, setAssigneePickerOpen] = useState(false)
+  const [assignedToUserId, setAssignedToUserId] = useState<string>(
+    UNASSIGNED_TASK_VALUE,
+  )
   const [statusConfigId, setStatusConfigId] = useState<string | undefined>(undefined)
   const [selectedLinkedService, setSelectedLinkedService] =
     useState<LinkedServiceOption | null>(null)
@@ -208,10 +213,6 @@ export function CreateTaskDialog({
   const selectableStatuses = useMemo(
     () => statusOptions.filter((option) => option.value !== ALL_STATUS_VALUE),
     [statusOptions],
-  )
-  const selectedAssignee = useMemo(
-    () => assigneeOptions.find((option) => option.value === assignedToUserId) ?? null,
-    [assignedToUserId, assigneeOptions],
   )
   const dialogDescription = lockContact
     ? "Create, assign, and schedule work already attached to this contact."
@@ -279,8 +280,7 @@ export function CreateTaskDialog({
     setDebouncedContactQuery("")
     setSelectedContact(initialContact)
     setContactResults([])
-    setAssignedToUserId("__UNASSIGNED__")
-    setAssigneePickerOpen(false)
+    setAssignedToUserId(UNASSIGNED_TASK_VALUE)
     setStatusConfigId(undefined)
     setSelectedLinkedService(null)
     setServicePickerOpen(false)
@@ -367,7 +367,7 @@ export function CreateTaskDialog({
         contactId: selectedContact?.id,
         description: description.trim() || null,
         assignedToUserId:
-          assignedToUserId === "__UNASSIGNED__" ? null : assignedToUserId,
+          assignedToUserId === UNASSIGNED_TASK_VALUE ? null : assignedToUserId,
         statusConfigId: statusConfigId ?? null,
         linkedEntityName: selectedLinkedService?.name ?? null,
         linkedEntityType: selectedLinkedService ? "SERVICE" : null,
@@ -704,122 +704,20 @@ export function CreateTaskDialog({
             className="gap-2"
           >
             <FieldLabel htmlFor="create-task-assignee">Assignee</FieldLabel>
-            <Popover open={assigneePickerOpen} onOpenChange={setAssigneePickerOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  id="create-task-assignee"
-                  type="button"
-                  variant="outline"
-                  disabled={isSubmitting}
-                  aria-invalid={Boolean(fieldErrors.assignedToUserId)}
-                  aria-expanded={assigneePickerOpen}
-                  className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
-                >
-                  <span className="flex min-w-0 items-center gap-2.5">
-                    <Avatar size="sm" className="ring-2 ring-blue-50">
-                      {selectedAssignee?.image ? (
-                        <AvatarImage
-                          src={selectedAssignee.image}
-                          alt={`${selectedAssignee.label} profile photo`}
-                        />
-                      ) : null}
-                      <AvatarFallback className="bg-blue-950 font-semibold text-white">
-                        {selectedAssignee ? getInitials(selectedAssignee.label) : "—"}
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="truncate font-medium text-slate-800">
-                      {selectedAssignee?.label ?? "Not assigned"}
-                    </span>
-                  </span>
-                  <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                className="w-[var(--radix-popover-trigger-width)] p-0"
-              >
-                <Command>
-                  <CommandInput placeholder="Search team members..." />
-                  <CommandList>
-                    <CommandEmpty>No team members found.</CommandEmpty>
-                    <CommandGroup heading="Assignment">
-                      <CommandItem
-                        value="Not assigned unassigned"
-                        onSelect={() => {
-                          setAssignedToUserId("__UNASSIGNED__")
-                          setAssigneePickerOpen(false)
-                          setFieldErrors((current) => ({
-                            ...current,
-                            assignedToUserId: undefined,
-                          }))
-                        }}
-                        className="cursor-pointer gap-3 py-2.5"
-                      >
-                        <Avatar size="sm">
-                          <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
-                            —
-                          </AvatarFallback>
-                        </Avatar>
-                        <span className="min-w-0 flex-1 font-medium text-slate-700">
-                          Not assigned
-                        </span>
-                        <Check
-                          className={
-                            assignedToUserId === "__UNASSIGNED__"
-                              ? "text-blue-800 opacity-100"
-                              : "opacity-0"
-                          }
-                        />
-                      </CommandItem>
-                      {assigneeOptions.map((option) => (
-                        <CommandItem
-                          key={option.value}
-                          value={`${option.label} ${option.email ?? ""} ${option.value}`}
-                          onSelect={() => {
-                            setAssignedToUserId(option.value)
-                            setAssigneePickerOpen(false)
-                            setFieldErrors((current) => ({
-                              ...current,
-                              assignedToUserId: undefined,
-                            }))
-                          }}
-                          className="cursor-pointer gap-3 py-2.5"
-                        >
-                          <Avatar size="sm" className="ring-2 ring-blue-50">
-                            {option.image ? (
-                              <AvatarImage
-                                src={option.image}
-                                alt={`${option.label} profile photo`}
-                              />
-                            ) : null}
-                            <AvatarFallback className="bg-blue-950 font-semibold text-white">
-                              {getInitials(option.label)}
-                            </AvatarFallback>
-                          </Avatar>
-                          <span className="flex min-w-0 flex-1 flex-col">
-                            <span className="truncate font-medium text-slate-900">
-                              {option.label}
-                            </span>
-                            {option.email ? (
-                              <span className="truncate text-xs text-slate-500">
-                                {option.email}
-                              </span>
-                            ) : null}
-                          </span>
-                          <Check
-                            className={
-                              assignedToUserId === option.value
-                                ? "text-blue-800 opacity-100"
-                                : "opacity-0"
-                            }
-                          />
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
+            <TaskAssigneeInput
+              id="create-task-assignee"
+              value={assignedToUserId}
+              onValueChange={(value) => {
+                setAssignedToUserId(value)
+                setFieldErrors((current) => ({
+                  ...current,
+                  assignedToUserId: undefined,
+                }))
+              }}
+              options={assigneeOptions}
+              disabled={isSubmitting}
+              ariaInvalid={Boolean(fieldErrors.assignedToUserId)}
+            />
             <FieldError>{fieldErrors.assignedToUserId}</FieldError>
           </Field>
 

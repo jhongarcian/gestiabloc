@@ -1143,9 +1143,13 @@ router.get("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
         linkedEntityType: true,
         contact: {
           select: {
+            id: true,
             firstName: true,
             middleName: true,
             lastName: true,
+            email: true,
+            phone: true,
+            dateOfBirth: true,
           },
         },
         assignedToMembership: {
@@ -1234,6 +1238,21 @@ router.get("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
           ? [task.contact.firstName, task.contact.middleName, task.contact.lastName]
               .filter(Boolean)
               .join(" ")
+          : null,
+        contact: task.contact
+          ? {
+              id: task.contact.id,
+              fullName: [
+                task.contact.firstName,
+                task.contact.middleName,
+                task.contact.lastName,
+              ]
+                .filter(Boolean)
+                .join(" "),
+              email: task.contact.email ?? null,
+              phoneNumber: task.contact.phone ?? null,
+              dateOfBirth: task.contact.dateOfBirth ?? null,
+            }
           : null,
         linkedEntityName: task.linkedEntityName ?? null,
         linkedEntityType: task.linkedEntityType ?? null,

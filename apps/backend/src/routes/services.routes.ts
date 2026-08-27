@@ -1463,6 +1463,32 @@ async function reconcileContactServiceCompletionFromFollowUps(
   return contactService
 }
 
+router.get("/:tenantId/options", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const items = await prismaWithServices.service.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+      },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+      },
+    })
+
+    return res.json({ ok: true, items })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
