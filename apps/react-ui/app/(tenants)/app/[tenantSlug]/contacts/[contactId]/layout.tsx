@@ -322,8 +322,9 @@ export default async function ContactDetailsLayout({
     <section className="flex h-full min-h-0 flex-col gap-4">
       <ContactBreadcrumbSync label={contact.fullName} />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-clip rounded-[28px] border border-slate-200/80 bg-white shadow-sm">
-        <header className="sticky top-[var(--tenant-shell-header-height)] z-20 shrink-0 rounded-t-[27px] border-b border-slate-200/80 bg-[linear-gradient(135deg,rgba(248,250,252,0.97)_0%,rgba(239,246,255,0.97)_46%,rgba(255,247,237,0.97)_100%)] shadow-sm backdrop-blur-md">
-          <div className="flex flex-col gap-3 p-3 md:px-5 xl:flex-row xl:items-start xl:justify-between">
+        {/* Match the page behind the rounded corners so scrolling content cannot show through. */}
+        <header className="sticky top-[var(--tenant-shell-header-height)] z-20 shrink-0 bg-slate-100">
+          <div className="flex flex-col gap-3 rounded-t-[27px] border-b border-slate-200/80 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_46%,#fff7ed_100%)] p-3 shadow-sm md:px-5 xl:flex-row xl:items-start xl:justify-between">
             <div className="flex min-w-0 flex-1 flex-col gap-2">
               <div className="flex min-w-0 items-center gap-2">
                 <Link
