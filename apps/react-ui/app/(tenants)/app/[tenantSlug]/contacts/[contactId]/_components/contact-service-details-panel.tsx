@@ -20,6 +20,7 @@ import {
   Paperclip,
   Play,
   SendHorizontal,
+  Trash2,
   Upload,
   UserRound,
   X,
@@ -1930,195 +1931,36 @@ export function ContactServiceDetailsPanel({
   return (
     <TooltipProvider>
       <section className="flex flex-col gap-5">
-      <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div className="space-y-3">
-            <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
-              <span>Contact Service</span>
-              {serviceData.followUpTemplate?.name ? (
-                <>
-                  <span className="text-slate-300">/</span>
-                  <span>{serviceData.followUpTemplate.name}</span>
-                </>
-              ) : null}
-            </div>
-            <div className="flex items-start gap-3">
+        <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-3 shadow-sm md:px-5">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex min-w-0 flex-1 items-start gap-2">
               <Link
                 href={backHref}
                 aria-label="Back to services"
-                className="mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+                title="Back to services"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white/85 text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
               >
-                <ArrowLeft className="h-4 w-4" />
+                <ArrowLeft className="h-4 w-4" aria-hidden="true" />
               </Link>
-              <div className="space-y-1">
-                <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
-                  {serviceData.service.name}
+              <div className="min-w-0 flex-1">
+                <h1 className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-2xl font-semibold tracking-tight text-slate-950">
+                  <span>{serviceData.service.name}</span>
+                  {serviceData.followUpTemplate?.name ? (
+                    <>
+                      <span className="font-normal text-slate-300" aria-hidden="true">
+                        /
+                      </span>
+                      <span>{serviceData.followUpTemplate.name}</span>
+                    </>
+                  ) : null}
                 </h1>
-                <p className="text-sm text-slate-500">
+                <p className="mt-1 text-sm text-slate-500">
                   Professional: {getAssignedProfessionalLabel(serviceData.assignedProfessional)}
                 </p>
-                <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
-                  <span>Assigned to task:</span>
-                  {canManageSensitiveServiceActions && followUpSteps.length ? (
-                    <Popover
-                      open={followUpOwnerOpen}
-                      onOpenChange={(open) => {
-                        if (!canManageSensitiveServiceActions || !followUpSteps.length) return
-                        setFollowUpOwnerOpen(open)
-                      }}
-                    >
-                      <PopoverTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="h-8 max-w-[260px] cursor-pointer rounded-full border border-white/70 bg-white/70 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/90"
-                          disabled={isSavingFollowUpOwner || isLoadingAssignees}
-                        >
-                          {hasMixedOpenStepOwners ? (
-                            <div className="flex min-w-0 max-w-full items-center gap-2">
-                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                                <UserRound className="h-3.5 w-3.5" />
-                              </span>
-                              <span className="truncate text-xs font-medium text-slate-700">
-                                Mixed assignees
-                              </span>
-                            </div>
-                          ) : currentFollowUpOwner ? (
-                            <div className="flex min-w-0 max-w-full items-center gap-2">
-                              <Avatar className="h-5 w-5 shrink-0">
-                                <AvatarImage
-                                  src={currentFollowUpOwner.image ?? undefined}
-                                  alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                                />
-                                <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
-                                  {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
-                                </AvatarFallback>
-                              </Avatar>
-                              <span className="truncate text-xs font-medium text-slate-700">
-                                {getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="flex min-w-0 max-w-full items-center gap-2">
-                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                                <UserRound className="h-3.5 w-3.5" />
-                              </span>
-                              <span className="truncate text-xs font-medium text-slate-600">
-                                Unassigned
-                              </span>
-                            </div>
-                          )}
-                          {isLoadingAssignees || isSavingFollowUpOwner ? (
-                            <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin text-slate-500" />
-                          ) : (
-                            <ChevronDown className="ml-1 h-3.5 w-3.5 shrink-0 text-slate-500" />
-                          )}
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="start" className="w-[320px] p-0">
-                        <Command>
-                          <CommandInput placeholder="Change follow-up owner..." />
-                          <CommandList>
-                            <CommandEmpty>No assignees found.</CommandEmpty>
-                            <CommandItem
-                              onSelect={() => void updateFollowUpOwner("")}
-                              className="cursor-pointer gap-2 px-3 py-2"
-                              disabled={isSavingFollowUpOwner}
-                            >
-                              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                                <UserRound className="h-3.5 w-3.5" />
-                              </span>
-                              <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
-                                Unassigned
-                              </span>
-                              <Check
-                                className={cn(
-                                  "h-4 w-4 text-blue-950",
-                                  !hasMixedOpenStepOwners && currentFollowUpOwnerUserId === ""
-                                    ? "opacity-100"
-                                    : "opacity-0",
-                                )}
-                              />
-                            </CommandItem>
-                            {followUpAssigneeOptions.map((assignee) => (
-                              <CommandItem
-                                key={assignee.value}
-                                onSelect={() => void updateFollowUpOwner(assignee.value)}
-                                className="cursor-pointer gap-2 px-3 py-2"
-                                disabled={isSavingFollowUpOwner}
-                              >
-                                <Avatar className="h-6 w-6 shrink-0">
-                                  <AvatarImage src={assignee.image ?? undefined} alt={assignee.label} />
-                                  <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
-                                    {getInitials(assignee.label)}
-                                  </AvatarFallback>
-                                </Avatar>
-                                <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
-                                  {assignee.label}
-                                </span>
-                                <Check
-                                  className={cn(
-                                    "h-4 w-4 text-blue-950",
-                                    !hasMixedOpenStepOwners && currentFollowUpOwnerUserId === assignee.value
-                                      ? "opacity-100"
-                                      : "opacity-0",
-                                  )}
-                                />
-                              </CommandItem>
-                            ))}
-                          </CommandList>
-                        </Command>
-                      </PopoverContent>
-                    </Popover>
-                  ) : hasMixedOpenStepOwners ? (
-                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                        <UserRound className="h-3.5 w-3.5" />
-                      </span>
-                      Mixed assignees
-                    </span>
-                  ) : currentFollowUpOwner ? (
-                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                      <Avatar className="h-5 w-5 shrink-0">
-                        <AvatarImage
-                          src={currentFollowUpOwner.image ?? undefined}
-                          alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                        />
-                        <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
-                          {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
-                        </AvatarFallback>
-                      </Avatar>
-                      {getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-600">
-                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                        <UserRound className="h-3.5 w-3.5" />
-                      </span>
-                      Unassigned
-                    </span>
-                  )}
-                </div>
-                {serviceData.service.description ? (
-                  <p className="max-w-3xl text-sm leading-6 text-slate-600">
-                    {serviceData.service.description}
-                  </p>
-                ) : null}
               </div>
             </div>
-          </div>
-          <div className="flex items-center gap-2 self-center md:self-center">
-            {canManageSensitiveServiceActions ? (
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-8 cursor-pointer rounded-full border border-rose-100 bg-rose-50/60 px-3 py-1 text-xs font-semibold text-rose-600 shadow-sm backdrop-blur hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
-                onClick={() => void onDeleteService()}
-                disabled={isDeleting || isStatusSaving}
-              >
-                {isDeleting ? "Deleting..." : "Delete"}
-              </Button>
-            ) : null}
+
+            <div className="flex w-full max-w-full shrink-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] xl:w-auto xl:justify-end xl:overflow-visible xl:pb-0 [&::-webkit-scrollbar]:hidden">
             <Popover
               open={canManageSensitiveServiceActions ? statusOpen : false}
               onOpenChange={(open) => {
@@ -2181,6 +2023,169 @@ export function ContactServiceDetailsPanel({
                 </Command>
               </PopoverContent>
             </Popover>
+
+            {canManageSensitiveServiceActions && followUpSteps.length ? (
+              <Popover
+                open={followUpOwnerOpen}
+                onOpenChange={(open) => {
+                  if (!canManageSensitiveServiceActions || !followUpSteps.length) return
+                  setFollowUpOwnerOpen(open)
+                }}
+              >
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    aria-label="Change follow-up assignee"
+                    className="h-8 max-w-[260px] cursor-pointer rounded-full border border-white/70 bg-white/70 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/90"
+                    disabled={isSavingFollowUpOwner || isLoadingAssignees}
+                  >
+                    {hasMixedOpenStepOwners ? (
+                      <div className="flex min-w-0 max-w-full items-center gap-2">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                          <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
+                        </span>
+                        <span className="truncate text-xs font-medium text-slate-700">
+                          Mixed assignees
+                        </span>
+                      </div>
+                    ) : currentFollowUpOwner ? (
+                      <div className="flex min-w-0 max-w-full items-center gap-2">
+                        <Avatar className="h-5 w-5 shrink-0">
+                          <AvatarImage
+                            src={currentFollowUpOwner.image ?? undefined}
+                            alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                          />
+                          <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                            {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="truncate text-xs font-medium text-slate-700">
+                          {getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="flex min-w-0 max-w-full items-center gap-2">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                          <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
+                        </span>
+                        <span className="truncate text-xs font-medium text-slate-600">
+                          Unassigned
+                        </span>
+                      </div>
+                    )}
+                    {isLoadingAssignees || isSavingFollowUpOwner ? (
+                      <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin text-slate-500" />
+                    ) : (
+                      <ChevronDown className="ml-1 h-3.5 w-3.5 shrink-0 text-slate-500" />
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-[320px] p-0">
+                  <Command>
+                    <CommandInput placeholder="Change follow-up owner..." />
+                    <CommandList>
+                      <CommandEmpty>No assignees found.</CommandEmpty>
+                      <CommandItem
+                        onSelect={() => void updateFollowUpOwner("")}
+                        className="cursor-pointer gap-2 px-3 py-2"
+                        disabled={isSavingFollowUpOwner}
+                      >
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                          <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
+                          Unassigned
+                        </span>
+                        <Check
+                          className={cn(
+                            "h-4 w-4 text-blue-950",
+                            !hasMixedOpenStepOwners && currentFollowUpOwnerUserId === ""
+                              ? "opacity-100"
+                              : "opacity-0",
+                          )}
+                        />
+                      </CommandItem>
+                      {followUpAssigneeOptions.map((assignee) => (
+                        <CommandItem
+                          key={assignee.value}
+                          onSelect={() => void updateFollowUpOwner(assignee.value)}
+                          className="cursor-pointer gap-2 px-3 py-2"
+                          disabled={isSavingFollowUpOwner}
+                        >
+                          <Avatar className="h-6 w-6 shrink-0">
+                            <AvatarImage src={assignee.image ?? undefined} alt={assignee.label} />
+                            <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                              {getInitials(assignee.label)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
+                            {assignee.label}
+                          </span>
+                          <Check
+                            className={cn(
+                              "h-4 w-4 text-blue-950",
+                              !hasMixedOpenStepOwners &&
+                                currentFollowUpOwnerUserId === assignee.value
+                                ? "opacity-100"
+                                : "opacity-0",
+                            )}
+                          />
+                        </CommandItem>
+                      ))}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            ) : hasMixedOpenStepOwners ? (
+              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-2.5 text-xs font-medium text-slate-700 shadow-sm">
+                <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
+                Mixed assignees
+              </span>
+            ) : currentFollowUpOwner ? (
+              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-2.5 text-xs font-medium text-slate-700 shadow-sm">
+                <Avatar className="h-5 w-5 shrink-0">
+                  <AvatarImage
+                    src={currentFollowUpOwner.image ?? undefined}
+                    alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                  />
+                  <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                    {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
+                  </AvatarFallback>
+                </Avatar>
+                {getFollowUpAssigneeLabel(currentFollowUpOwner)}
+              </span>
+            ) : (
+              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-2.5 text-xs font-medium text-slate-600 shadow-sm">
+                <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
+                Unassigned
+              </span>
+            )}
+
+            {canManageSensitiveServiceActions ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Delete service"
+                    className="h-8 w-8 shrink-0 cursor-pointer rounded-full border border-rose-100 bg-rose-50/60 text-rose-600 shadow-sm backdrop-blur hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                    onClick={() => void onDeleteService()}
+                    disabled={isDeleting || isStatusSaving}
+                  >
+                    {isDeleting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>
+                  Delete service
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
           </div>
         </div>
       </div>
