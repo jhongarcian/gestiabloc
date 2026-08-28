@@ -4,6 +4,7 @@ import { type Response, Router } from "express"
 import { z } from "zod"
 
 import { decryptCustomFieldValue } from "../lib/contact-custom-field-encryption.js"
+import { canManageContactServices } from "../lib/contact-service-permissions.js"
 import { prisma } from "../lib/prisma.js"
 import { generateServiceFitExplanation } from "../lib/service-fit-explanations.js"
 import { routeServiceQuestion } from "../lib/service-fit-question-router.js"
@@ -574,13 +575,6 @@ async function requireActiveMembership(
   }
 
   return membership
-}
-
-function canManageContactServices(membership: {
-  role: string
-  securityLevel: "LOW" | "MEDIUM" | "MAX"
-}) {
-  return membership.role === "TENANT_ADMIN" || membership.securityLevel !== "LOW"
 }
 
 const DEFAULT_TIMEZONE = "America/Chicago"

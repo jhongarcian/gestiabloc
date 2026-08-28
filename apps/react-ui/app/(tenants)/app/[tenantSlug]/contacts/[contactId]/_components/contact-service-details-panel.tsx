@@ -698,6 +698,7 @@ export function ContactServiceDetailsPanel({
   const [isChecklistSavingId, setIsChecklistSavingId] = useState<string | null>(null)
   const [statusOpen, setStatusOpen] = useState(false)
   const [isStatusSaving, setIsStatusSaving] = useState(false)
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isPaymentOpen, setIsPaymentOpen] = useState(false)
   const [isPaymentSaving, setIsPaymentSaving] = useState(false)
@@ -937,6 +938,11 @@ export function ContactServiceDetailsPanel({
   }
 
   const onDeleteService = async () => {
+    if (!canManageSensitiveServiceActions) {
+      toast.error("You do not have permission to delete this service.")
+      return
+    }
+
     const currentService = item ?? overview
     if (!currentService) return
 
@@ -944,16 +950,21 @@ export function ContactServiceDetailsPanel({
     try {
       await api.delete(`/api/services/${encodedTenantId}/contact-services/${currentService.id}`)
       toast.success("Service removed.")
+      setIsDeleteDialogOpen(false)
       router.push(backHref)
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
-        toast.error(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ")
-            : "Could not remove service.",
-        )
+        if (backendError === "INSUFFICIENT_SECURITY_LEVEL") {
+          toast.error("You do not have permission to delete this service.")
+        } else {
+          toast.error(
+            typeof backendError === "string"
+              ? backendError.replace(/_/g, " ")
+              : "Could not remove service.",
+          )
+        }
       } else {
         toast.error("Could not remove service.")
       }
@@ -2171,7 +2182,7 @@ export function ContactServiceDetailsPanel({
                     size="icon"
                     aria-label="Delete service"
                     className="h-8 w-8 shrink-0 cursor-pointer rounded-full border border-rose-100 bg-rose-50/60 text-rose-600 shadow-sm backdrop-blur hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
-                    onClick={() => void onDeleteService()}
+                    onClick={() => setIsDeleteDialogOpen(true)}
                     disabled={isDeleting || isStatusSaving}
                   >
                     {isDeleting ? (
@@ -2187,10 +2198,64 @@ export function ContactServiceDetailsPanel({
               </Tooltip>
             ) : null}
           </div>
+          </div>
         </div>
-      </div>
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Dialog
+          open={isDeleteDialogOpen}
+          onOpenChange={(open) => {
+            if (isDeleting) return
+            setIsDeleteDialogOpen(open)
+          }}
+        >
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Delete service enrollment?</DialogTitle>
+              <DialogDescription className="space-y-3">
+                <span className="block">
+                  This will permanently delete{" "}
+                  <span className="font-medium text-slate-900">
+                    {serviceData.service.name}
+                  </span>{" "}
+                  for{" "}
+                  <span className="font-medium text-slate-900">
+                    {serviceData.contactName?.trim() || "this contact"}
+                  </span>, including its payments, checklist progress, service notes, and follow-up
+                  history.
+                </span>
+                <span className="block">
+                  Linked CRM tasks will remain, but their service enrollment and follow-up step
+                  links will be removed. This action cannot be undone.
+                </span>
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsDeleteDialogOpen(false)}
+                disabled={isDeleting}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => void onDeleteService()}
+                disabled={isDeleting}
+              >
+                {isDeleting ? (
+                  <Loader2 data-icon="inline-start" className="animate-spin" />
+                ) : (
+                  <Trash2 data-icon="inline-start" />
+                )}
+                {isDeleting ? "Deleting..." : "Delete service"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex items-center gap-2 text-slate-400">
             <CircleDollarSign className="h-4 w-4" />

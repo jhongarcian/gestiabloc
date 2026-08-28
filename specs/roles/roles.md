@@ -152,6 +152,25 @@ Current behavior:
 - Can read sensitive custom-field values without needing a grant
 - Aligns with the highest non-admin security tier currently used in live business logic
 
+## Contact Service Deletion
+
+Deleting a contact service enrollment is an elevated service-management action.
+
+Permission matrix:
+
+- Active `TENANT_ADMIN`: allowed; the delete control is visible
+- Active `TENANT_USER + MEDIUM`: allowed; the delete control is visible
+- Active `TENANT_USER + MAX`: allowed; the delete control is visible
+- Active `TENANT_USER + LOW`: denied; the delete control is hidden and direct API requests return `403 INSUFFICIENT_SECURITY_LEVEL`
+- Inactive or non-member users: denied by the active-membership guard before the enrollment is looked up or deleted
+
+Deletion behavior:
+
+- The UI requires confirmation before sending the delete request
+- The contact service enrollment and its cascading enrollment records are permanently deleted
+- Linked CRM tasks are preserved, while their contact-service and follow-up-step references are cleared
+- The backend permission check is authoritative; hiding the UI control is not treated as the security boundary
+
 ## Sensitive Custom Field Access Configuration
 
 Sensitive custom fields use a specific approval model:
