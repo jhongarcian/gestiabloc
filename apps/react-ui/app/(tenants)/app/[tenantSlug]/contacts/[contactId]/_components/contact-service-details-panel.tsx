@@ -3625,17 +3625,14 @@ export function ContactServiceDetailsPanel({
               </div>
             ) : historyItems.length ? (
               <ol aria-label="Service activity timeline" className="flex flex-col">
-                {historyItems.map((historyItem, index) => (
-                  <li key={historyItem.id} className="relative flex gap-3 pb-5 last:pb-0">
-                    {index < historyItems.length - 1 ? (
-                      <span
-                        aria-hidden="true"
-                        className="absolute bottom-0 left-[17px] top-9 w-px bg-slate-200"
-                      />
-                    ) : null}
+                {historyItems.map((historyItem) => (
+                  <li
+                    key={historyItem.id}
+                    className="flex gap-3 border-b border-slate-200 py-5 first:pt-0 last:border-b-0 last:pb-0"
+                  >
                     <span
                       className={cn(
-                        "relative z-10 mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border bg-white",
+                        "mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border",
                         historyItem.tone,
                       )}
                     >
@@ -3649,7 +3646,7 @@ export function ContactServiceDetailsPanel({
                         <Clock3 className="h-4 w-4" aria-hidden="true" />
                       )}
                     </span>
-                    <div className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3.5">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm font-semibold leading-5 text-slate-900">
                         {historyItem.title}
                       </p>
