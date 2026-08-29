@@ -76,6 +76,7 @@ paths:
     post:
       tags: [Auth]
       summary: Login (step 1) and issue OTP challenge
+      description: Password verification issues a challenge. Clients can request deferred OTP delivery to render the verification view before sending email.
       requestBody:
         required: true
         content:
@@ -95,6 +96,47 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/otp/send:
+    post:
+      tags: [Auth]
+      summary: Send or resend a login OTP
+      description: Sends an OTP for a password-verified challenge. Limited to three sends per challenge with a 30-second cooldown.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OtpSendRequest"
+      responses:
+        "200":
+          description: OTP delivery accepted or delivery confirmation timed out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OtpDeliveryResponse"
+        "401":
+          description: Invalid or expired challenge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Resend cooldown or send limit reached
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds before another send may be attempted, when applicable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OtpDeliveryErrorResponse"
+        "503":
+          description: Email provider rejected delivery
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OtpDeliveryErrorResponse"
   /api/auth/otp/verify:
     post:
       tags: [Auth]
@@ -5460,12 +5502,17 @@ components:
     LoginRequest:
       type: object
       required: [email, password]
+      additionalProperties: false
       properties:
         email:
           type: string
           format: email
         password:
           type: string
+        otpDeliveryMode:
+          type: string
+          enum: [DEFERRED]
+          description: Return the challenge before sending email so the client can show the OTP view immediately.
     LoginResponse:
       type: object
       properties:
@@ -5477,6 +5524,66 @@ components:
         challengeToken:
           type: string
           nullable: true
+        otpDeliveryStatus:
+          type: string
+          enum: [PENDING, SENT, UNCONFIRMED]
+          description: PENDING requires a follow-up call to /api/auth/otp/send. Omitted by older API versions.
+        expiresAt:
+          type: string
+          format: date-time
+        resendAvailableAt:
+          type: string
+          format: date-time
+        sendsRemaining:
+          type: integer
+          minimum: 0
+          maximum: 3
+    OtpSendRequest:
+      type: object
+      required: [challengeToken]
+      additionalProperties: false
+      properties:
+        challengeToken:
+          type: string
+    OtpDeliveryResponse:
+      type: object
+      required: [ok, deliveryStatus, expiresAt, resendAvailableAt, sendsRemaining]
+      properties:
+        ok:
+          type: boolean
+          example: true
+        deliveryStatus:
+          type: string
+          enum: [SENT, UNCONFIRMED]
+        expiresAt:
+          type: string
+          format: date-time
+        resendAvailableAt:
+          type: string
+          format: date-time
+        sendsRemaining:
+          type: integer
+          minimum: 0
+          maximum: 2
+    OtpDeliveryErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - INVALID_CHALLENGE
+            - CHALLENGE_EXPIRED
+            - OTP_RESEND_TOO_SOON
+            - OTP_SEND_LIMIT
+            - OTP_DELIVERY_FAILED
+        retryAfterSeconds:
+          type: integer
+          minimum: 0
+        sendsRemaining:
+          type: integer
+          minimum: 0
+          maximum: 2
     OtpVerifyRequest:
       type: object
       required: [challengeToken, code]

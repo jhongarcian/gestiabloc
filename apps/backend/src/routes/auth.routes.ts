@@ -1,4 +1,4 @@
-import { Router } from "express"
+import { Router, type Response } from "express"
 import argon2 from "argon2"
 import { z } from "zod"
 
@@ -8,13 +8,17 @@ import {
   trialPeriodDays,
 } from "../lib/subscription-plans.js"
 import { enforceSameOrigin } from "../lib/security.js"
-import { generateOtp6, randomToken, sha256 } from "../lib/crypto.js"
+import { randomToken, sha256 } from "../lib/crypto.js"
 import { clearSessionCookie, setSessionCookie } from "../lib/cookies.js"
 import {
-  sendLoginOtpEmail,
   sendPasswordResetEmail,
   sendVerifyEmail,
 } from "../lib/email.js"
+import {
+  replaceLoginChallenge,
+  sendOtpForChallenge,
+  type LoginOtpSendResult,
+} from "../lib/login-otp.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 import { ensureTenantOperationalDefaults } from "../lib/tenant-defaults.js"
 
@@ -50,15 +54,42 @@ const RegisterSchema = z.object({
   name: z.string().min(1).max(120),
 })
 
-const LoginSchema = z.object({
-  email: z.string().email().max(255),
-  password: z.string().min(1).max(200),
-})
+const LoginSchema = z
+  .object({
+    email: z.string().email().max(255),
+    password: z.string().min(1).max(200),
+    otpDeliveryMode: z.enum(["DEFERRED"]).optional(),
+  })
+  .strict()
+
+const OtpSendSchema = z
+  .object({
+    challengeToken: z.string().min(20).max(500),
+  })
+  .strict()
 
 const OtpVerifySchema = z.object({
   challengeToken: z.string().min(20).max(500),
   code: z.string().regex(/^\d{6}$/),
 })
+
+function setOtpRetryAfter(res: Response, seconds: number) {
+  res.setHeader("Retry-After", String(Math.max(1, seconds)))
+}
+
+function serializeOtpDelivery(
+  result: Extract<
+    LoginOtpSendResult,
+    { status: "SENT" | "UNCONFIRMED" }
+  >,
+) {
+  return {
+    deliveryStatus: result.status,
+    expiresAt: result.expiresAt.toISOString(),
+    resendAvailableAt: result.resendAvailableAt.toISOString(),
+    sendsRemaining: result.sendsRemaining,
+  }
+}
 
 const ForgotPasswordSchema = z.object({
   email: z.email().max(255),
@@ -291,13 +322,14 @@ router.post("/tenant/signup", async (req, res, next) => {
 
 /**
  * POST /api/auth/login
- * Step 1: verify password -> send OTP -> return challengeToken
+ * Step 1: verify password -> issue an OTP challenge.
+ * New clients request deferred delivery so the verification view can render first.
  */
 router.post("/login", async (req, res, next) => {
   try {
     enforceSameOrigin(req)
 
-    const { email, password } = LoginSchema.parse(req.body)
+    const { email, password, otpDeliveryMode } = LoginSchema.parse(req.body)
 
     const user = await prisma.user.findUnique({ where: { email } })
     // Avoid email enumeration: always respond same-ish
@@ -319,47 +351,81 @@ router.post("/login", async (req, res, next) => {
       return res.json({ ok: true, requiresOtp: false })
     }
 
-    // Create login challenge (binds OTP step to this login attempt)
-    const challengeToken = randomToken(32)
-    const nonceHash = sha256(challengeToken)
-    const challengeExpiresAt = new Date(Date.now() + 5 * 60 * 1000)
+    const { challengeToken } = await replaceLoginChallenge(user.id)
 
-    // Replace any existing challenges for that user
-    await prisma.loginChallenge.deleteMany({ where: { userId: user.id } })
-    await prisma.loginChallenge.create({
-      data: {
-        userId: user.id,
-        nonceHash,
-        expiresAt: challengeExpiresAt,
-      },
-    })
+    if (otpDeliveryMode === "DEFERRED") {
+      return res.json({
+        ok: true,
+        requiresOtp: true,
+        challengeToken,
+        otpDeliveryStatus: "PENDING",
+      })
+    }
 
-    // Create OTP for email (hash stored)
-    const code = generateOtp6()
-    const codeHash = sha256(code)
-    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000)
+    const delivery = await sendOtpForChallenge(challengeToken)
 
-    // delete old unused OTPs for this email
-    await prisma.emailOtp.deleteMany({
-      where: { email, purpose: "LOGIN", usedAt: null },
-    })
+    if (delivery.status === "DELIVERY_FAILED") {
+      setOtpRetryAfter(res, delivery.retryAfterSeconds)
+      return res.status(503).json({
+        error: "OTP_DELIVERY_FAILED",
+        retryAfterSeconds: delivery.retryAfterSeconds,
+        sendsRemaining: delivery.sendsRemaining,
+      })
+    }
 
-    await prisma.emailOtp.create({
-      data: {
-        email,
-        purpose: "LOGIN",
-        codeHash,
-        expiresAt: otpExpiresAt,
-      },
-    })
+    if (delivery.status !== "SENT" && delivery.status !== "UNCONFIRMED") {
+      return res.status(500).json({ error: "OTP_DELIVERY_FAILED" })
+    }
 
-    await sendLoginOtpEmail(email, code)
-
+    const serializedDelivery = serializeOtpDelivery(delivery)
     return res.json({
       ok: true,
       requiresOtp: true,
-      challengeToken, // frontend redirects to OTP page with this
+      challengeToken,
+      otpDeliveryStatus: delivery.status,
+      expiresAt: serializedDelivery.expiresAt,
+      resendAvailableAt: serializedDelivery.resendAvailableAt,
+      sendsRemaining: serializedDelivery.sendsRemaining,
     })
+  } catch (e) {
+    return next(e)
+  }
+})
+
+/**
+ * POST /api/auth/otp/send
+ * Sends or resends the OTP for a password-verified challenge.
+ */
+router.post("/otp/send", async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const { challengeToken } = OtpSendSchema.parse(req.body)
+    const delivery = await sendOtpForChallenge(challengeToken)
+
+    switch (delivery.status) {
+      case "SENT":
+      case "UNCONFIRMED":
+        return res.json({ ok: true, ...serializeOtpDelivery(delivery) })
+      case "INVALID_CHALLENGE":
+        return res.status(401).json({ error: "INVALID_CHALLENGE" })
+      case "CHALLENGE_EXPIRED":
+        return res.status(401).json({ error: "CHALLENGE_EXPIRED" })
+      case "OTP_RESEND_TOO_SOON":
+        setOtpRetryAfter(res, delivery.retryAfterSeconds)
+        return res.status(429).json({
+          error: "OTP_RESEND_TOO_SOON",
+          retryAfterSeconds: delivery.retryAfterSeconds,
+        })
+      case "OTP_SEND_LIMIT":
+        return res.status(429).json({ error: "OTP_SEND_LIMIT" })
+      case "DELIVERY_FAILED":
+        setOtpRetryAfter(res, delivery.retryAfterSeconds)
+        return res.status(503).json({
+          error: "OTP_DELIVERY_FAILED",
+          retryAfterSeconds: delivery.retryAfterSeconds,
+          sendsRemaining: delivery.sendsRemaining,
+        })
+    }
   } catch (e) {
     return next(e)
   }
