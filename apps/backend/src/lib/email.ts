@@ -1,31 +1,81 @@
-const from = process.env.EMAIL_FROM ?? "no-reply@yourdomain.com"
+import { Resend } from "resend"
 
-// If you don't want Resend yet, just console.log the code.
-export async function sendLoginOtpEmail(to: string, code: string) {
-  if (!process.env.RESEND_API_KEY) {
+const from = process.env.EMAIL_FROM ?? "no-reply@yourdomain.com"
+let resendClient: Resend | null = null
+
+function getResendClient() {
+  if (!process.env.RESEND_API_KEY) return null
+  resendClient ??= new Resend(process.env.RESEND_API_KEY)
+  return resendClient
+}
+
+export type LoginOtpDeliveryResult =
+  | { status: "SENT" }
+  | { status: "REJECTED" }
+  | { status: "UNCONFIRMED" }
+
+// Local development can surface the code without an email provider.
+export async function sendLoginOtpEmail(
+  to: string,
+  code: string,
+  options?: { idempotencyKey?: string; timeoutMs?: number },
+): Promise<LoginOtpDeliveryResult> {
+  const resend = getResendClient()
+  if (!resend) {
+    if (process.env.NODE_ENV === "production") {
+      console.error("Login OTP delivery is not configured in production.")
+      return { status: "REJECTED" }
+    }
     console.log(`[DEV OTP] Send to ${to}: ${code}`)
-    return
+    return { status: "SENT" }
   }
 
-  const { Resend } = await import("resend")
-  const resend = new Resend(process.env.RESEND_API_KEY)
+  const timeoutMs = options?.timeoutMs ?? 10_000
+  let timeout: NodeJS.Timeout | undefined
 
-  await resend.emails.send({
-    from,
-    to,
-    subject: "Your login code",
-    text: `Your login code is: ${code}\n\nIt expires in 5 minutes.`,
-  })
+  try {
+    const result = await Promise.race([
+      resend.emails.send(
+        {
+          from,
+          to,
+          subject: "Your login code",
+          text: `Your login code is: ${code}\n\nIt expires in 5 minutes.`,
+        },
+        { idempotencyKey: options?.idempotencyKey },
+      ),
+      new Promise<"TIMEOUT">((resolve) => {
+        timeout = setTimeout(() => resolve("TIMEOUT"), timeoutMs)
+        timeout.unref?.()
+      }),
+    ])
+
+    if (result === "TIMEOUT") {
+      console.error("Login OTP delivery timed out before confirmation.")
+      return { status: "UNCONFIRMED" }
+    }
+    if (result.error) {
+      console.error("Login OTP delivery was rejected:", result.error.name)
+      return { status: "REJECTED" }
+    }
+    return { status: "SENT" }
+  } catch (error) {
+    console.error(
+      "Login OTP delivery could not be confirmed:",
+      error instanceof Error ? error.message : "Unknown error",
+    )
+    return { status: "UNCONFIRMED" }
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
 }
 
 export async function sendVerifyEmail(to: string, verifyUrl: string) {
-  if (!process.env.RESEND_API_KEY) {
+  const resend = getResendClient()
+  if (!resend) {
     console.log(`[DEV VERIFY] Send to ${to}: ${verifyUrl}`)
     return
   }
-
-  const { Resend } = await import("resend")
-  const resend = new Resend(process.env.RESEND_API_KEY)
 
   await resend.emails.send({
     from,
@@ -36,13 +86,11 @@ export async function sendVerifyEmail(to: string, verifyUrl: string) {
 }
 
 export async function sendPasswordResetEmail(to: string, resetUrl: string) {
-  if (!process.env.RESEND_API_KEY) {
+  const resend = getResendClient()
+  if (!resend) {
     console.log(`[DEV RESET] Send to ${to}: ${resetUrl}`)
     return
   }
-
-  const { Resend } = await import("resend")
-  const resend = new Resend(process.env.RESEND_API_KEY)
 
   await resend.emails.send({
     from,

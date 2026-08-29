@@ -9,5 +9,5 @@ export function sha256(value: string) {
 }
 
 export function generateOtp6() {
-  return String(Math.floor(100000 + Math.random() * 900000))
+  return String(crypto.randomInt(100000, 1_000_000))
 }

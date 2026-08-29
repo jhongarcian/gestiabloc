@@ -16,10 +16,12 @@ import {
   ImageIcon,
   ListTodo,
   Loader2,
+  Logs,
   NotebookPen,
   Paperclip,
   Play,
   SendHorizontal,
+  Trash2,
   Upload,
   UserRound,
   X,
@@ -56,6 +58,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -310,7 +321,7 @@ type StepTimeMeta = {
   badgeClassName: string
 }
 
-type ContactServiceTab = "overview" | "follow-up" | "payments" | "checklist" | "notes" | "activity"
+type ContactServiceTab = "overview" | "follow-up" | "payments" | "checklist" | "notes"
 
 const currencyFormatter = (valueCents: number, currency: string) =>
   new Intl.NumberFormat("en-US", {
@@ -458,7 +469,6 @@ const INSTALLMENT_FREQUENCY_LABELS = {
 } as const
 
 const PAYMENTS_PAGE_SIZE = 5
-const ACTIVITY_PAGE_SIZE = 8
 
 const formatPaymentMethod = (value: string | null | undefined) => {
   if (!value) return null
@@ -697,6 +707,8 @@ export function ContactServiceDetailsPanel({
   const [isChecklistSavingId, setIsChecklistSavingId] = useState<string | null>(null)
   const [statusOpen, setStatusOpen] = useState(false)
   const [isStatusSaving, setIsStatusSaving] = useState(false)
+  const [isActivitySheetOpen, setIsActivitySheetOpen] = useState(false)
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isPaymentOpen, setIsPaymentOpen] = useState(false)
   const [isPaymentSaving, setIsPaymentSaving] = useState(false)
@@ -717,7 +729,6 @@ export function ContactServiceDetailsPanel({
   const [serviceNoteAttachmentError, setServiceNoteAttachmentError] = useState<string | null>(null)
   const [downloadingServiceNoteKey, setDownloadingServiceNoteKey] = useState<string | null>(null)
   const [visiblePaymentsCount, setVisiblePaymentsCount] = useState(PAYMENTS_PAGE_SIZE)
-  const [visibleHistoryCount, setVisibleHistoryCount] = useState(ACTIVITY_PAGE_SIZE)
   const [isStepStatusDialogOpen, setIsStepStatusDialogOpen] = useState(false)
   const [isStepDetailsDialogOpen, setIsStepDetailsDialogOpen] = useState(false)
   const [isStepNoteDialogOpen, setIsStepNoteDialogOpen] = useState(false)
@@ -809,10 +820,6 @@ export function ContactServiceDetailsPanel({
     setVisiblePaymentsCount(PAYMENTS_PAGE_SIZE)
   }, [item?.id, item?.payments?.length])
 
-  useEffect(() => {
-    setVisibleHistoryCount(ACTIVITY_PAGE_SIZE)
-  }, [item?.id, overview?.id])
-
   const resetPaymentForm = () => {
     setPaymentEntryMode("FULL")
     setPaymentAmountUsd("")
@@ -851,6 +858,11 @@ export function ContactServiceDetailsPanel({
     if (item || isDetailLoading) return
     await loadItem()
   }, [isDetailLoading, item, loadItem])
+
+  const openActivitySheet = useCallback(() => {
+    setIsActivitySheetOpen(true)
+    void ensureDetailLoaded()
+  }, [ensureDetailLoaded])
 
   const updateStatus = async (nextStatus: ContactServiceStatus) => {
     const currentService = item ?? overview
@@ -936,6 +948,11 @@ export function ContactServiceDetailsPanel({
   }
 
   const onDeleteService = async () => {
+    if (!canManageSensitiveServiceActions) {
+      toast.error("You do not have permission to delete this service.")
+      return
+    }
+
     const currentService = item ?? overview
     if (!currentService) return
 
@@ -943,16 +960,21 @@ export function ContactServiceDetailsPanel({
     try {
       await api.delete(`/api/services/${encodedTenantId}/contact-services/${currentService.id}`)
       toast.success("Service removed.")
+      setIsDeleteDialogOpen(false)
       router.push(backHref)
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
-        toast.error(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ")
-            : "Could not remove service.",
-        )
+        if (backendError === "INSUFFICIENT_SECURITY_LEVEL") {
+          toast.error("You do not have permission to delete this service.")
+        } else {
+          toast.error(
+            typeof backendError === "string"
+              ? backendError.replace(/_/g, " ")
+              : "Could not remove service.",
+          )
+        }
       } else {
         toast.error("Could not remove service.")
       }
@@ -1899,11 +1921,6 @@ export function ContactServiceDetailsPanel({
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     )
   }, [checklistItems, item, payments, serviceNotes])
-  const visibleHistoryItems = useMemo(
-    () => historyItems.slice(0, visibleHistoryCount),
-    [historyItems, visibleHistoryCount],
-  )
-
   const detailTabState = useMemo(() => {
     if (activeTab === "overview") return "ready" as const
     if (isDetailLoading && !item) return "loading" as const
@@ -1930,195 +1947,54 @@ export function ContactServiceDetailsPanel({
   return (
     <TooltipProvider>
       <section className="flex flex-col gap-5">
-      <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div className="space-y-3">
-            <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
-              <span>Contact Service</span>
-              {serviceData.followUpTemplate?.name ? (
-                <>
-                  <span className="text-slate-300">/</span>
-                  <span>{serviceData.followUpTemplate.name}</span>
-                </>
-              ) : null}
-            </div>
-            <div className="flex items-start gap-3">
+        <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-3 shadow-sm md:px-5">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex min-w-0 flex-1 items-start gap-2">
               <Link
                 href={backHref}
                 aria-label="Back to services"
-                className="mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+                title="Back to services"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white/85 text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
               >
-                <ArrowLeft className="h-4 w-4" />
+                <ArrowLeft className="h-4 w-4" aria-hidden="true" />
               </Link>
-              <div className="space-y-1">
-                <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
-                  {serviceData.service.name}
+              <div className="min-w-0 flex-1">
+                <h1 className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-2xl font-semibold tracking-tight text-slate-950">
+                  <span>{serviceData.service.name}</span>
+                  {serviceData.followUpTemplate?.name ? (
+                    <>
+                      <span className="font-normal text-slate-300" aria-hidden="true">
+                        /
+                      </span>
+                      <span>{serviceData.followUpTemplate.name}</span>
+                    </>
+                  ) : null}
                 </h1>
-                <p className="text-sm text-slate-500">
+                <p className="mt-1 text-sm text-slate-500">
                   Professional: {getAssignedProfessionalLabel(serviceData.assignedProfessional)}
                 </p>
-                <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
-                  <span>Assigned to task:</span>
-                  {canManageSensitiveServiceActions && followUpSteps.length ? (
-                    <Popover
-                      open={followUpOwnerOpen}
-                      onOpenChange={(open) => {
-                        if (!canManageSensitiveServiceActions || !followUpSteps.length) return
-                        setFollowUpOwnerOpen(open)
-                      }}
-                    >
-                      <PopoverTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="h-8 max-w-[260px] cursor-pointer rounded-full border border-white/70 bg-white/70 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/90"
-                          disabled={isSavingFollowUpOwner || isLoadingAssignees}
-                        >
-                          {hasMixedOpenStepOwners ? (
-                            <div className="flex min-w-0 max-w-full items-center gap-2">
-                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                                <UserRound className="h-3.5 w-3.5" />
-                              </span>
-                              <span className="truncate text-xs font-medium text-slate-700">
-                                Mixed assignees
-                              </span>
-                            </div>
-                          ) : currentFollowUpOwner ? (
-                            <div className="flex min-w-0 max-w-full items-center gap-2">
-                              <Avatar className="h-5 w-5 shrink-0">
-                                <AvatarImage
-                                  src={currentFollowUpOwner.image ?? undefined}
-                                  alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                                />
-                                <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
-                                  {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
-                                </AvatarFallback>
-                              </Avatar>
-                              <span className="truncate text-xs font-medium text-slate-700">
-                                {getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="flex min-w-0 max-w-full items-center gap-2">
-                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                                <UserRound className="h-3.5 w-3.5" />
-                              </span>
-                              <span className="truncate text-xs font-medium text-slate-600">
-                                Unassigned
-                              </span>
-                            </div>
-                          )}
-                          {isLoadingAssignees || isSavingFollowUpOwner ? (
-                            <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin text-slate-500" />
-                          ) : (
-                            <ChevronDown className="ml-1 h-3.5 w-3.5 shrink-0 text-slate-500" />
-                          )}
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="start" className="w-[320px] p-0">
-                        <Command>
-                          <CommandInput placeholder="Change follow-up owner..." />
-                          <CommandList>
-                            <CommandEmpty>No assignees found.</CommandEmpty>
-                            <CommandItem
-                              onSelect={() => void updateFollowUpOwner("")}
-                              className="cursor-pointer gap-2 px-3 py-2"
-                              disabled={isSavingFollowUpOwner}
-                            >
-                              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                                <UserRound className="h-3.5 w-3.5" />
-                              </span>
-                              <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
-                                Unassigned
-                              </span>
-                              <Check
-                                className={cn(
-                                  "h-4 w-4 text-blue-950",
-                                  !hasMixedOpenStepOwners && currentFollowUpOwnerUserId === ""
-                                    ? "opacity-100"
-                                    : "opacity-0",
-                                )}
-                              />
-                            </CommandItem>
-                            {followUpAssigneeOptions.map((assignee) => (
-                              <CommandItem
-                                key={assignee.value}
-                                onSelect={() => void updateFollowUpOwner(assignee.value)}
-                                className="cursor-pointer gap-2 px-3 py-2"
-                                disabled={isSavingFollowUpOwner}
-                              >
-                                <Avatar className="h-6 w-6 shrink-0">
-                                  <AvatarImage src={assignee.image ?? undefined} alt={assignee.label} />
-                                  <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
-                                    {getInitials(assignee.label)}
-                                  </AvatarFallback>
-                                </Avatar>
-                                <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
-                                  {assignee.label}
-                                </span>
-                                <Check
-                                  className={cn(
-                                    "h-4 w-4 text-blue-950",
-                                    !hasMixedOpenStepOwners && currentFollowUpOwnerUserId === assignee.value
-                                      ? "opacity-100"
-                                      : "opacity-0",
-                                  )}
-                                />
-                              </CommandItem>
-                            ))}
-                          </CommandList>
-                        </Command>
-                      </PopoverContent>
-                    </Popover>
-                  ) : hasMixedOpenStepOwners ? (
-                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                        <UserRound className="h-3.5 w-3.5" />
-                      </span>
-                      Mixed assignees
-                    </span>
-                  ) : currentFollowUpOwner ? (
-                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                      <Avatar className="h-5 w-5 shrink-0">
-                        <AvatarImage
-                          src={currentFollowUpOwner.image ?? undefined}
-                          alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                        />
-                        <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
-                          {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
-                        </AvatarFallback>
-                      </Avatar>
-                      {getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-600">
-                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                        <UserRound className="h-3.5 w-3.5" />
-                      </span>
-                      Unassigned
-                    </span>
-                  )}
-                </div>
-                {serviceData.service.description ? (
-                  <p className="max-w-3xl text-sm leading-6 text-slate-600">
-                    {serviceData.service.description}
-                  </p>
-                ) : null}
               </div>
             </div>
-          </div>
-          <div className="flex items-center gap-2 self-center md:self-center">
-            {canManageSensitiveServiceActions ? (
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-8 cursor-pointer rounded-full border border-rose-100 bg-rose-50/60 px-3 py-1 text-xs font-semibold text-rose-600 shadow-sm backdrop-blur hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
-                onClick={() => void onDeleteService()}
-                disabled={isDeleting || isStatusSaving}
-              >
-                {isDeleting ? "Deleting..." : "Delete"}
-              </Button>
-            ) : null}
+
+            <div className="flex w-full max-w-full shrink-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] xl:w-auto xl:justify-end xl:overflow-visible xl:pb-0 [&::-webkit-scrollbar]:hidden">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Activity log"
+                  className="h-8 w-8 shrink-0 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900 hover:text-white"
+                  onClick={openActivitySheet}
+                >
+                  <Logs className="h-4 w-4" aria-hidden="true" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>
+                Activity log
+              </TooltipContent>
+            </Tooltip>
+
             <Popover
               open={canManageSensitiveServiceActions ? statusOpen : false}
               onOpenChange={(open) => {
@@ -2181,11 +2057,228 @@ export function ContactServiceDetailsPanel({
                 </Command>
               </PopoverContent>
             </Popover>
+
+            {canManageSensitiveServiceActions && followUpSteps.length ? (
+              <Popover
+                open={followUpOwnerOpen}
+                onOpenChange={(open) => {
+                  if (!canManageSensitiveServiceActions || !followUpSteps.length) return
+                  setFollowUpOwnerOpen(open)
+                }}
+              >
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    aria-label="Change follow-up assignee"
+                    className="h-8 max-w-[260px] cursor-pointer rounded-full border border-white/70 bg-white/70 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/90"
+                    disabled={isSavingFollowUpOwner || isLoadingAssignees}
+                  >
+                    {hasMixedOpenStepOwners ? (
+                      <div className="flex min-w-0 max-w-full items-center gap-2">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                          <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
+                        </span>
+                        <span className="truncate text-xs font-medium text-slate-700">
+                          Mixed assignees
+                        </span>
+                      </div>
+                    ) : currentFollowUpOwner ? (
+                      <div className="flex min-w-0 max-w-full items-center gap-2">
+                        <Avatar className="h-5 w-5 shrink-0">
+                          <AvatarImage
+                            src={currentFollowUpOwner.image ?? undefined}
+                            alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                          />
+                          <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                            {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="truncate text-xs font-medium text-slate-700">
+                          {getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="flex min-w-0 max-w-full items-center gap-2">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                          <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
+                        </span>
+                        <span className="truncate text-xs font-medium text-slate-600">
+                          Unassigned
+                        </span>
+                      </div>
+                    )}
+                    {isLoadingAssignees || isSavingFollowUpOwner ? (
+                      <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin text-slate-500" />
+                    ) : (
+                      <ChevronDown className="ml-1 h-3.5 w-3.5 shrink-0 text-slate-500" />
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-[320px] p-0">
+                  <Command>
+                    <CommandInput placeholder="Change follow-up owner..." />
+                    <CommandList>
+                      <CommandEmpty>No assignees found.</CommandEmpty>
+                      <CommandItem
+                        onSelect={() => void updateFollowUpOwner("")}
+                        className="cursor-pointer gap-2 px-3 py-2"
+                        disabled={isSavingFollowUpOwner}
+                      >
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                          <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
+                          Unassigned
+                        </span>
+                        <Check
+                          className={cn(
+                            "h-4 w-4 text-blue-950",
+                            !hasMixedOpenStepOwners && currentFollowUpOwnerUserId === ""
+                              ? "opacity-100"
+                              : "opacity-0",
+                          )}
+                        />
+                      </CommandItem>
+                      {followUpAssigneeOptions.map((assignee) => (
+                        <CommandItem
+                          key={assignee.value}
+                          onSelect={() => void updateFollowUpOwner(assignee.value)}
+                          className="cursor-pointer gap-2 px-3 py-2"
+                          disabled={isSavingFollowUpOwner}
+                        >
+                          <Avatar className="h-6 w-6 shrink-0">
+                            <AvatarImage src={assignee.image ?? undefined} alt={assignee.label} />
+                            <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                              {getInitials(assignee.label)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
+                            {assignee.label}
+                          </span>
+                          <Check
+                            className={cn(
+                              "h-4 w-4 text-blue-950",
+                              !hasMixedOpenStepOwners &&
+                                currentFollowUpOwnerUserId === assignee.value
+                                ? "opacity-100"
+                                : "opacity-0",
+                            )}
+                          />
+                        </CommandItem>
+                      ))}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            ) : hasMixedOpenStepOwners ? (
+              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-2.5 text-xs font-medium text-slate-700 shadow-sm">
+                <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
+                Mixed assignees
+              </span>
+            ) : currentFollowUpOwner ? (
+              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-2.5 text-xs font-medium text-slate-700 shadow-sm">
+                <Avatar className="h-5 w-5 shrink-0">
+                  <AvatarImage
+                    src={currentFollowUpOwner.image ?? undefined}
+                    alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                  />
+                  <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                    {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
+                  </AvatarFallback>
+                </Avatar>
+                {getFollowUpAssigneeLabel(currentFollowUpOwner)}
+              </span>
+            ) : (
+              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-2.5 text-xs font-medium text-slate-600 shadow-sm">
+                <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
+                Unassigned
+              </span>
+            )}
+
+            {canManageSensitiveServiceActions ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Delete service"
+                    className="h-8 w-8 shrink-0 cursor-pointer rounded-full border border-rose-100 bg-rose-50/60 text-rose-600 shadow-sm backdrop-blur hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                    onClick={() => setIsDeleteDialogOpen(true)}
+                    disabled={isDeleting || isStatusSaving}
+                  >
+                    {isDeleting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>
+                  Delete service
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+          </div>
           </div>
         </div>
-      </div>
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Dialog
+          open={isDeleteDialogOpen}
+          onOpenChange={(open) => {
+            if (isDeleting) return
+            setIsDeleteDialogOpen(open)
+          }}
+        >
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Delete service enrollment?</DialogTitle>
+              <DialogDescription className="space-y-3">
+                <span className="block">
+                  This will permanently delete{" "}
+                  <span className="font-medium text-slate-900">
+                    {serviceData.service.name}
+                  </span>{" "}
+                  for{" "}
+                  <span className="font-medium text-slate-900">
+                    {serviceData.contactName?.trim() || "this contact"}
+                  </span>, including its payments, checklist progress, service notes, and follow-up
+                  history.
+                </span>
+                <span className="block">
+                  Linked CRM tasks will remain, but their service enrollment and follow-up step
+                  links will be removed. This action cannot be undone.
+                </span>
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsDeleteDialogOpen(false)}
+                disabled={isDeleting}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => void onDeleteService()}
+                disabled={isDeleting}
+              >
+                {isDeleting ? (
+                  <Loader2 data-icon="inline-start" className="animate-spin" />
+                ) : (
+                  <Trash2 data-icon="inline-start" />
+                )}
+                {isDeleting ? "Deleting..." : "Delete service"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <div className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex items-center gap-2 text-slate-400">
             <CircleDollarSign className="h-4 w-4" />
@@ -2259,7 +2352,7 @@ export function ContactServiceDetailsPanel({
         onValueChange={handleTabChange}
         className="rounded-[28px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-5 shadow-sm md:p-6"
       >
-        <TabsList className="grid h-auto w-full grid-cols-2 gap-2 bg-transparent p-0 md:grid-cols-3 xl:grid-cols-6">
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-2 bg-transparent p-0 md:grid-cols-3 xl:grid-cols-5">
             <TabsTrigger
               value="overview"
               className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
@@ -2289,12 +2382,6 @@ export function ContactServiceDetailsPanel({
               className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
             >
               Notes
-            </TabsTrigger>
-            <TabsTrigger
-              value="activity"
-              className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
-            >
-              Activity log
             </TabsTrigger>
         </TabsList>
 
@@ -3472,94 +3559,136 @@ export function ContactServiceDetailsPanel({
           )}
         </TabsContent>
 
-        <TabsContent value="activity" className="pt-4">
-          {detailTabState !== "ready" || !item ? (
-            <div className="rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-10 text-center text-sm text-slate-500">
-              {detailTabState === "loading"
-                ? "Loading service activity..."
-                : "Open this tab to load the service activity log."}
-            </div>
-          ) : (
-            <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service History</p>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Review the service timeline, including payments, checklist receipts, and note activity.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 text-xs text-slate-500">
-                  <span>
-                    Showing {Math.min(visibleHistoryCount, historyItems.length)} of {historyItems.length} activity items
-                  </span>
-                  {historyItems.length > ACTIVITY_PAGE_SIZE ? (
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-medium text-slate-600">
-                      {historyItems.length - Math.min(visibleHistoryCount, historyItems.length)} more
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-              {historyItems.length ? (
-                <div className="space-y-3">
-                  {visibleHistoryItems.map((historyItem) => (
-                    <div key={historyItem.id} className="flex gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                      <div className={cn("mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border", historyItem.tone)}>
-                        {historyItem.icon === "payment" ? (
-                          <CreditCard className="h-4 w-4" />
-                        ) : historyItem.icon === "checklist" ? (
-                          <CheckCircle2 className="h-4 w-4" />
-                        ) : historyItem.icon === "note" ? (
-                          <NotebookPen className="h-4 w-4" />
-                        ) : (
-                          <Clock3 className="h-4 w-4" />
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <p className="text-sm font-semibold text-slate-900">{historyItem.title}</p>
-                          <p className="text-xs text-slate-500">{formatDateTime(historyItem.createdAt)}</p>
-                        </div>
-                        <p className="mt-1 text-sm leading-6 text-slate-600">{historyItem.description}</p>
-                      </div>
-                    </div>
-                  ))}
-                  {historyItems.length > visibleHistoryCount ? (
-                    <div className="flex justify-center pt-1">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                        onClick={() =>
-                          setVisibleHistoryCount((current) =>
-                            Math.min(current + ACTIVITY_PAGE_SIZE, historyItems.length),
-                          )
-                        }
-                      >
-                        Load more activity
-                      </Button>
-                    </div>
-                  ) : historyItems.length > ACTIVITY_PAGE_SIZE ? (
-                    <div className="flex justify-center pt-1">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="cursor-pointer rounded-full border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-950"
-                        onClick={() => setVisibleHistoryCount(ACTIVITY_PAGE_SIZE)}
-                      >
-                        Show less
-                      </Button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                  No service activity is available yet.
-                </div>
-              )}
-            </section>
-          )}
-        </TabsContent>
       </Tabs>
+
+      <Sheet
+        open={isActivitySheetOpen}
+        onOpenChange={(open) => {
+          setIsActivitySheetOpen(open)
+          if (open) void ensureDetailLoaded()
+        }}
+      >
+        <SheetContent
+          side="right"
+          className="flex h-full w-full flex-col gap-0 overflow-hidden border-l border-slate-200 bg-white p-0 sm:max-w-lg [&>button]:cursor-pointer"
+        >
+          <SheetHeader className="relative shrink-0 overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 pr-10 text-left sm:px-7 sm:pr-10">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-60 [background-image:linear-gradient(rgba(59,130,246,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(59,130,246,0.08)_1px,transparent_1px)] [background-size:24px_24px]"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-blue-200/50 blur-3xl"
+            />
+            <div className="relative">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-700">
+                Service activity
+              </p>
+              <SheetTitle className="mt-2 text-xl font-semibold tracking-tight text-slate-950">
+                Review activity log
+              </SheetTitle>
+              <SheetDescription className="mt-2 max-w-md text-sm leading-6 text-slate-600">
+                See payments, checklist completions, notes, and follow-up changes for{" "}
+                {serviceData.service.name}.
+              </SheetDescription>
+            </div>
+          </SheetHeader>
+
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+            {isDetailLoading && !item ? (
+              <div
+                role="status"
+                className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-5 text-center"
+              >
+                <Loader2 className="h-6 w-6 animate-spin text-blue-800" aria-hidden="true" />
+                <p className="mt-3 text-sm font-medium text-slate-800">Loading service activity...</p>
+                <p className="mt-1 text-xs text-slate-500">Gathering the complete enrollment history.</p>
+              </div>
+            ) : !item ? (
+              <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 text-center">
+                <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm ring-1 ring-slate-200">
+                  <Clock3 className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <p className="mt-3 text-sm font-semibold text-slate-900">Activity unavailable</p>
+                <p className="mt-1 max-w-xs text-sm leading-6 text-slate-500">
+                  We could not load this service history. Try again to reload the activity log.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-4 cursor-pointer rounded-full border-slate-200 bg-white"
+                  onClick={() => void ensureDetailLoaded()}
+                >
+                  Retry
+                </Button>
+              </div>
+            ) : historyItems.length ? (
+              <ol aria-label="Service activity timeline" className="flex flex-col">
+                {historyItems.map((historyItem) => (
+                  <li
+                    key={historyItem.id}
+                    className="flex gap-3 border-b border-slate-200 py-5 first:pt-0 last:border-b-0 last:pb-0"
+                  >
+                    <span
+                      className={cn(
+                        "mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border",
+                        historyItem.tone,
+                      )}
+                    >
+                      {historyItem.icon === "payment" ? (
+                        <CreditCard className="h-4 w-4" aria-hidden="true" />
+                      ) : historyItem.icon === "checklist" ? (
+                        <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                      ) : historyItem.icon === "note" ? (
+                        <NotebookPen className="h-4 w-4" aria-hidden="true" />
+                      ) : (
+                        <Clock3 className="h-4 w-4" aria-hidden="true" />
+                      )}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold leading-5 text-slate-900">
+                        {historyItem.title}
+                      </p>
+                      <time
+                        dateTime={historyItem.createdAt}
+                        className="mt-1 block text-xs font-medium text-slate-500"
+                      >
+                        {formatDateTimeForDisplay(historyItem.createdAt, item.timezone, true)}
+                      </time>
+                      <p className="mt-2 text-sm leading-6 text-slate-600">
+                        {historyItem.description}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 text-center">
+                <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm ring-1 ring-slate-200">
+                  <Logs className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <p className="mt-3 text-sm font-semibold text-slate-900">No activity yet</p>
+                <p className="mt-1 max-w-xs text-sm leading-6 text-slate-500">
+                  Payments, checklist completions, notes, and follow-up changes will appear here.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <SheetFooter className="shrink-0 border-t border-slate-200 bg-white px-6 py-4 sm:px-7">
+            <SheetClose asChild>
+              <Button
+                type="button"
+                variant="outline"
+                className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
+              >
+                Close
+              </Button>
+            </SheetClose>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
 
       {item ? (
         <>

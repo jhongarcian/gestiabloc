@@ -34,16 +34,40 @@ export async function verifyEmail(token: string) {
 export type LoginPayload = {
   email: string
   password: string
+  otpDeliveryMode?: "DEFERRED"
 }
 
 export type LoginResponse = {
   ok: boolean
   requiresOtp: boolean
   challengeToken?: string
+  otpDeliveryStatus?: "PENDING" | "SENT" | "UNCONFIRMED"
+  expiresAt?: string
+  resendAvailableAt?: string
+  sendsRemaining?: number
 }
 
 export async function login(payload: LoginPayload): Promise<LoginResponse> {
-  const { data } = await api.post("/api/auth/login", payload)
+  const { data } = await api.post("/api/auth/login", payload, {
+    timeout: 15_000,
+  })
+  return data
+}
+
+export type OtpDeliveryResponse = {
+  ok: boolean
+  deliveryStatus: "SENT" | "UNCONFIRMED"
+  expiresAt: string
+  resendAvailableAt: string
+  sendsRemaining: number
+}
+
+export async function sendOtp(challengeToken: string) {
+  const { data } = await api.post<OtpDeliveryResponse>(
+    "/api/auth/otp/send",
+    { challengeToken },
+    { timeout: 12_000 },
+  )
   return data
 }
 
@@ -51,7 +75,9 @@ export async function verifyOtp(payload: {
   challengeToken: string
   code: string
 }) {
-  const { data } = await api.post("/api/auth/otp/verify", payload)
+  const { data } = await api.post("/api/auth/otp/verify", payload, {
+    timeout: 15_000,
+  })
   return data
 }
 
