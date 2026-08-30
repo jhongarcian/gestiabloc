@@ -4471,7 +4471,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ContactServiceChecklistItemMutationResponse"
         "400":
-          description: Invalid request
+          description: Invalid status, both status fields supplied, or no status field supplied
           content:
             application/json:
               schema:
@@ -8652,6 +8652,10 @@ components:
           type: boolean
         sortOrder:
           type: integer
+    ContactServiceChecklistStatus:
+      type: string
+      enum: [NOT_RECEIVED, INFORMED, MISSING, RECEIVED]
+      description: RECEIVED is the only checklist status that counts as complete.
     ContactServiceChecklistItem:
       type: object
       properties:
@@ -8659,6 +8663,8 @@ components:
           type: string
         checklistItemId:
           type: string
+        status:
+          $ref: "#/components/schemas/ContactServiceChecklistStatus"
         label:
           type: string
         description:
@@ -8672,6 +8678,34 @@ components:
           type: string
           format: date-time
           nullable: true
+          description: Received timestamp. Set only while status is RECEIVED.
+    ContactServiceChecklistActivityItem:
+      type: object
+      properties:
+        id:
+          type: string
+        checklistItemId:
+          type: string
+          nullable: true
+        label:
+          type: string
+          description: Checklist label snapshot captured when the transition occurred.
+        previousStatus:
+          $ref: "#/components/schemas/ContactServiceChecklistStatus"
+        status:
+          $ref: "#/components/schemas/ContactServiceChecklistStatus"
+        createdAt:
+          type: string
+          format: date-time
+        actor:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+              nullable: true
     ContactServicePaymentItem:
       type: object
       properties:
@@ -8834,6 +8868,11 @@ components:
                   type: array
                   items:
                     $ref: "#/components/schemas/ContactServiceExecutionLogItem"
+                checklistActivityLogs:
+                  type: array
+                  description: Durable checklist status transitions, newest first.
+                  items:
+                    $ref: "#/components/schemas/ContactServiceChecklistActivityItem"
     ContactServiceOverviewResponse:
       type: object
       properties:
@@ -8921,9 +8960,21 @@ components:
               nullable: true
     UpdateContactServiceChecklistItemRequest:
       type: object
+      description: Provide exactly one of status or the deprecated completed field.
       properties:
+        status:
+          $ref: "#/components/schemas/ContactServiceChecklistStatus"
         completed:
           type: boolean
+          deprecated: true
+          description: Compatibility field. True maps to RECEIVED; false maps to NOT_RECEIVED.
+      oneOf:
+        - required: [status]
+          not:
+            required: [completed]
+        - required: [completed]
+          not:
+            required: [status]
     ContactServiceChecklistItemMutationResponse:
       type: object
       properties:
@@ -8932,6 +8983,11 @@ components:
           example: true
         checklistItem:
           $ref: "#/components/schemas/ContactServiceChecklistItem"
+        activity:
+          allOf:
+            - $ref: "#/components/schemas/ContactServiceChecklistActivityItem"
+          nullable: true
+          description: Newly created transition event, or null when the selected status was unchanged.
     CreateContactServicePaymentRequest:
       type: object
       required: [amountCents]
