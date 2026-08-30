@@ -36,6 +36,7 @@ import {
   HelpCircle,
   LogOut,
   ArrowUpCircle,
+  ChevronLeft,
 } from "lucide-react"
 
 type SidebarItem = {
@@ -105,11 +106,12 @@ function AppSidebarContent({
         </Link>
       </SidebarHeader>
 
-      <SidebarContent className="px-3 group-data-[collapsible=icon]:px-0">
+      <div className="flex h-12 shrink-0 items-center">
+        <SidebarSeparator className="mx-0 ml-5 mr-10 bg-white/25 transition-[margin] duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none group-data-[collapsible=icon]:ml-2 group-data-[collapsible=icon]:mr-7" />
+      </div>
+
+      <SidebarContent className="px-3 transition-[padding] duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none group-data-[collapsible=icon]:px-0">
         <SidebarGroup className="px-0 py-3">
-          <SidebarGroupLabel className="px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-100/80">
-            Workspace
-          </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu className="gap-1">
               {menuItems.map((item) => {
@@ -350,5 +352,38 @@ export function AppSidebar({
         </div>
       </div>
     </Sidebar>
+  )
+}
+
+export function SidebarEdgeToggle() {
+  const { state, toggleSidebar } = useSidebar()
+  const isExpanded = state === "expanded"
+  const label = isExpanded ? "Collapse sidebar" : "Expand sidebar"
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-lg"
+      className={cn(
+        "fixed top-[4.75rem] z-40 hidden rounded-xl border border-white/15 bg-[#10213a] text-slate-200 shadow-[0_10px_26px_rgba(2,8,23,0.3)] transition-[left,background-color,color,box-shadow] duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none hover:bg-[#182d49] hover:text-white hover:shadow-[0_12px_30px_rgba(2,8,23,0.38)] focus-visible:border-white/35 focus-visible:ring-white/30 md:inline-flex",
+        isExpanded
+          ? "left-[calc(var(--sidebar-width)-1.25rem)]"
+          : "left-[calc(var(--sidebar-width-icon)-1.25rem)]",
+      )}
+      onClick={toggleSidebar}
+      aria-label={label}
+      title={label}
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          "flex transition-transform duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
+          !isExpanded && "rotate-180",
+        )}
+      >
+        <ChevronLeft />
+      </span>
+    </Button>
   )
 }

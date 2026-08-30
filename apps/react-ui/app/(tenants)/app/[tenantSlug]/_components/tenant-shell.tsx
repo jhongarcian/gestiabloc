@@ -50,7 +50,7 @@ import {
   X,
 } from "lucide-react"
 
-import { AppSidebar } from "./sidebar"
+import { AppSidebar, SidebarEdgeToggle } from "./sidebar"
 import { TenantUserProvider, type TenantUser } from "./tenant-context"
 import { api } from "@/lib/api"
 import { Badge } from "@/components/ui/badge"
@@ -845,14 +845,17 @@ export function TenantShell({
   return (
     <SidebarProvider className="min-h-screen w-full bg-slate-50">
       {!isFlowBuilderRoute ? (
-        <AppSidebar
-          tenantSlug={tenantSlug}
-          tenantName={tenantName}
-          className="md:h-full"
-          onNavigate={handleSidebarNavigate}
-          planKey={subscription?.planKey}
-          isAdmin={canAccessAccountSettings}
-        />
+        <>
+          <AppSidebar
+            tenantSlug={tenantSlug}
+            tenantName={tenantName}
+            className="md:h-full"
+            onNavigate={handleSidebarNavigate}
+            planKey={subscription?.planKey}
+            isAdmin={canAccessAccountSettings}
+          />
+          <SidebarEdgeToggle />
+        </>
       ) : null}
 
       <SidebarInset className="min-w-0 bg-slate-50 flex min-h-screen flex-col [--tenant-shell-header-height:113px] md:[--tenant-shell-header-height:65px]">
@@ -867,9 +870,9 @@ export function TenantShell({
                 : "gap-3 py-3 md:flex-row md:items-center md:justify-between"
             }`}
           >
-            <div className="flex flex-1 items-center gap-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               {!isFlowBuilderRoute ? (
-                <SidebarTrigger className="h-9 w-9 cursor-pointer" />
+                <SidebarTrigger className="size-9 cursor-pointer md:hidden" />
               ) : null}
               <Breadcrumb>
                 <BreadcrumbList>
