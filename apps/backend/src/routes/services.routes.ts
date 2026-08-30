@@ -5,6 +5,13 @@ import { z } from "zod"
 
 import { decryptCustomFieldValue } from "../lib/contact-custom-field-encryption.js"
 import { canManageContactServices } from "../lib/contact-service-permissions.js"
+import {
+  buildContactServiceChecklistActivityData,
+  CONTACT_SERVICE_CHECKLIST_STATUSES,
+  hasExactlyOneChecklistStatusInput,
+  resolveContactServiceChecklistStatus,
+  resolveContactServiceChecklistTransition,
+} from "../lib/contact-service-checklist-status.js"
 import { prisma } from "../lib/prisma.js"
 import { generateServiceFitExplanation } from "../lib/service-fit-explanations.js"
 import { routeServiceQuestion } from "../lib/service-fit-question-router.js"
@@ -546,9 +553,20 @@ const CreateFollowUpStepSchema = z.object({
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
 })
 
-const UpdateContactServiceChecklistItemSchema = z.object({
-  completed: z.boolean().optional(),
-})
+const UpdateContactServiceChecklistItemSchema = z
+  .object({
+    status: z.enum(CONTACT_SERVICE_CHECKLIST_STATUSES).optional(),
+    completed: z.boolean().optional(),
+  })
+  .superRefine((payload, context) => {
+    if (!hasExactlyOneChecklistStatusInput(payload)) {
+      context.addIssue({
+        code: "custom",
+        path: [payload.status !== undefined ? "completed" : "status"],
+        message: "Provide exactly one of status or completed.",
+      })
+    }
+  })
 
 async function requireActiveMembership(
   req: AuthedRequest,
@@ -2467,6 +2485,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               checklistItemId: true,
+              status: true,
               completedAt: true,
               checklistItem: {
                 select: {
@@ -2607,6 +2626,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               checklistItemId: true,
+              status: true,
               completedAt: true,
               checklistItem: {
                 select: {
@@ -3116,6 +3136,7 @@ router.get(
               select: {
                 id: true,
                 checklistItemId: true,
+                status: true,
                 completedAt: true,
                 checklistItem: {
                   select: {
@@ -3255,6 +3276,7 @@ router.get(
           checklistItems: item.checklistItems.map((checklistItem: any) => ({
             id: checklistItem.id,
             checklistItemId: checklistItem.checklistItemId,
+            status: checklistItem.status,
             completedAt: checklistItem.completedAt,
             label: checklistItem.checklistItem?.label ?? "",
             description: checklistItem.checklistItem?.description ?? null,
@@ -3504,6 +3526,23 @@ router.get(
               },
               orderBy: [{ createdAt: "desc" }],
             },
+            checklistActivities: {
+              select: {
+                id: true,
+                contactServiceChecklistItemId: true,
+                itemLabel: true,
+                previousStatus: true,
+                status: true,
+                createdAt: true,
+                actor: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+              },
+              orderBy: [{ createdAt: "desc" }],
+            },
             followUpSteps: {
               select: {
                 id: true,
@@ -3534,6 +3573,7 @@ router.get(
               select: {
                 id: true,
                 checklistItemId: true,
+                status: true,
                 completedAt: true,
                 checklistItem: {
                   select: {
@@ -3698,9 +3738,20 @@ router.get(
           ),
           payments: item.payments,
           serviceNotes: combinedNotes,
+          executionLogs: item.executionLogs,
+          checklistActivityLogs: item.checklistActivities.map((activity: any) => ({
+            id: activity.id,
+            checklistItemId: activity.contactServiceChecklistItemId,
+            label: activity.itemLabel,
+            previousStatus: activity.previousStatus,
+            status: activity.status,
+            createdAt: activity.createdAt,
+            actor: activity.actor,
+          })),
           checklistItems: item.checklistItems.map((checklistItem: any) => ({
             id: checklistItem.id,
             checklistItemId: checklistItem.checklistItemId,
+            status: checklistItem.status,
             completedAt: checklistItem.completedAt,
             label: checklistItem.checklistItem?.label ?? "",
             description: checklistItem.checklistItem?.description ?? null,
@@ -4258,75 +4309,140 @@ router.patch(
   requireAuth,
   async (req, res, next) => {
     try {
+      const authed = req as AuthedRequest
       const { tenantId, contactServiceId, checklistItemId } =
         TenantContactServiceChecklistItemPathSchema.parse(req.params)
-      const payload = UpdateContactServiceChecklistItemSchema.parse(req.body)
+      const parsedPayload = UpdateContactServiceChecklistItemSchema.safeParse(req.body)
 
-      const membership = await requireActiveMembership(req as AuthedRequest, res, tenantId)
-      if (!membership) return
-
-      if (payload.completed === undefined) {
-        return res.status(400).json({ error: "NO_CHANGES_PROVIDED" })
+      if (!parsedPayload.success) {
+        return res.status(400).json({
+          error: "INVALID_CHECKLIST_STATUS_UPDATE",
+          issues: parsedPayload.error.issues,
+        })
       }
 
-      const existing = await prismaWithServices.contactServiceChecklistItem.findFirst({
-        where: {
-          id: checklistItemId,
-          tenantId,
-          contactServiceId,
-        },
-        select: {
-          id: true,
-          checklistItemId: true,
-          completedAt: true,
-          checklistItem: {
-            select: {
-              id: true,
-              label: true,
-              description: true,
-              isRequired: true,
-              sortOrder: true,
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const nextStatus = resolveContactServiceChecklistStatus(parsedPayload.data)
+      const result = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const existing = await prismaTx.contactServiceChecklistItem.findFirst({
+          where: {
+            id: checklistItemId,
+            tenantId,
+            contactServiceId,
+          },
+          select: {
+            id: true,
+            checklistItemId: true,
+            status: true,
+            completedAt: true,
+            checklistItem: {
+              select: {
+                id: true,
+                label: true,
+                description: true,
+                isRequired: true,
+                sortOrder: true,
+              },
             },
           },
-        },
+        })
+
+        if (!existing) return null
+
+        const transition = resolveContactServiceChecklistTransition({
+          currentStatus: existing.status,
+          currentCompletedAt: existing.completedAt,
+          nextStatus,
+          now: new Date(),
+        })
+
+        if (!transition.changed) {
+          return { checklistItem: existing, activity: null }
+        }
+
+        const updated = await prismaTx.contactServiceChecklistItem.update({
+          where: { id: checklistItemId },
+          data: {
+            status: nextStatus,
+            completedAt: transition.completedAt,
+          },
+          select: {
+            id: true,
+            checklistItemId: true,
+            status: true,
+            completedAt: true,
+            checklistItem: {
+              select: {
+                id: true,
+                label: true,
+                description: true,
+                isRequired: true,
+                sortOrder: true,
+              },
+            },
+          },
+        })
+        const activity = await prismaTx.contactServiceChecklistActivity.create({
+          data: buildContactServiceChecklistActivityData({
+            tenantId,
+            contactServiceId,
+            contactServiceChecklistItemId: existing.id,
+            itemLabel: existing.checklistItem?.label ?? "Checklist item",
+            previousStatus: existing.status,
+            status: nextStatus,
+            actorUserId: authed.user.id,
+          }),
+          select: {
+            id: true,
+            contactServiceChecklistItemId: true,
+            itemLabel: true,
+            previousStatus: true,
+            status: true,
+            createdAt: true,
+            actor: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        })
+
+        return { checklistItem: updated, activity }
       })
 
-      if (!existing) {
+      if (!result) {
         return res.status(404).json({ error: "CONTACT_SERVICE_CHECKLIST_ITEM_NOT_FOUND" })
       }
 
-      const updated = await prismaWithServices.contactServiceChecklistItem.update({
-        where: { id: checklistItemId },
-        data: {
-          completedAt: payload.completed ? new Date() : null,
-        },
-        select: {
-          id: true,
-          checklistItemId: true,
-          completedAt: true,
-          checklistItem: {
-            select: {
-              id: true,
-              label: true,
-              description: true,
-              isRequired: true,
-              sortOrder: true,
-            },
-          },
-        },
-      })
+      const updated = result.checklistItem
 
       return res.json({
         ok: true,
         checklistItem: {
           id: updated.id,
           checklistItemId: updated.checklistItemId,
+          status: updated.status,
           completedAt: updated.completedAt,
           label: updated.checklistItem?.label ?? "",
           description: updated.checklistItem?.description ?? null,
           isRequired: Boolean(updated.checklistItem?.isRequired),
           sortOrder: updated.checklistItem?.sortOrder ?? 0,
         },
+        activity: result.activity
+          ? {
+              id: result.activity.id,
+              checklistItemId: result.activity.contactServiceChecklistItemId,
+              label: result.activity.itemLabel,
+              previousStatus: result.activity.previousStatus,
+              status: result.activity.status,
+              createdAt: result.activity.createdAt,
+              actor: result.activity.actor,
+            }
+          : null,
       })
     } catch (error) {
       return next(error)

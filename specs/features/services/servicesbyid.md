@@ -199,30 +199,29 @@ These four cards are critical. They are the fastest way to understand the financ
 
 After the KPI cards, the page continues with stacked operational cards.
 
-### 3. Checklist Tracking Card
+### 3. Checklist Sheet
 
 Purpose:
 
-- operationally track documents or requirements received for this contact service
+- operationally track the current state of documents or requirements for this contact service
 
-Header contains:
+The sheet is opened from the checklist quick action in the service header. Its header contains:
 
 - section label: `Checklist Tracking`
 - helper copy explaining the intent
-- badge showing `{completed}/{total} received`
+- badge showing `{completed}/{total}` and completion percentage; only `RECEIVED` items count
 
 Each checklist row includes:
 
 - item label
 - `Required` badge when applicable
-- `Received` or `Pending` badge
+- a compact selector with `Not received`, `Informed`, `Missing`, and `Received`
 - optional description
 - helper line with:
-  - received timestamp, or
-  - prompt telling the user to click the circle
-- trailing circular action button:
-  - unchecked circle for pending
-  - filled success icon for completed
+  - received timestamp for `RECEIVED`, or
+  - operational helper text for the selected status
+- status treatments are neutral for `NOT_RECEIVED`, blue for `INFORMED`, amber for `MISSING`, and emerald for `RECEIVED`
+- all selectors and sheet dismissal are disabled while one update is saving
 
 Empty state:
 
@@ -372,7 +371,7 @@ History sources merged into one list:
 - service purchased
 - service completed
 - service canceled
-- checklist completions
+- durable checklist status transitions, including previous status, new status, actor, and timestamp
 - payments
 - service notes
 
@@ -584,7 +583,7 @@ Top-level visible buttons and controls currently used:
 - add payment
 - follow-up owner trigger
 - service status trigger
-- checklist toggle control
+- checklist status selector in the checklist sheet
 - payment row click for edit
 - load more payments
 - show less payments

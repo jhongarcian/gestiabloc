@@ -55,6 +55,7 @@ import { Progress } from "@/components/ui/progress"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -93,6 +94,11 @@ type ContactServiceStatus =
   | "PENDING_PAYMENT"
   | "COMPLETED"
   | "CANCELED"
+type ContactServiceChecklistStatus =
+  | "NOT_RECEIVED"
+  | "INFORMED"
+  | "MISSING"
+  | "RECEIVED"
 type FollowUpStepStatus = "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
 type FollowUpStepAction = "REOPEN"
 type NoteAttachment = {
@@ -248,9 +254,22 @@ type ContactServiceDetails = {
       name: string | null
     } | null
   }>
+  checklistActivityLogs: Array<{
+    id: string
+    checklistItemId: string | null
+    label: string
+    previousStatus: ContactServiceChecklistStatus
+    status: ContactServiceChecklistStatus
+    createdAt: string
+    actor?: {
+      id: string
+      name: string | null
+    } | null
+  }>
   checklistItems: Array<{
     id: string
     checklistItemId: string
+    status: ContactServiceChecklistStatus
     completedAt: string | null
     label: string
     description: string | null
@@ -261,7 +280,7 @@ type ContactServiceDetails = {
 
 type ContactServiceOverview = Omit<
   ContactServiceDetails,
-  "payments" | "serviceNotes" | "executionLogs"
+  "payments" | "serviceNotes" | "executionLogs" | "checklistActivityLogs"
 > & {
   paymentSummary?: {
     latestPaidAt: string | null
@@ -305,6 +324,14 @@ type ServiceStatusOption = {
   label: string
   bgClassName: string
   textClassName: string
+}
+
+type ChecklistStatusOption = {
+  value: ContactServiceChecklistStatus
+  label: string
+  helper: string
+  badgeClassName: string
+  dotClassName: string
 }
 
 type ActivityItem = {
@@ -513,6 +540,41 @@ const STATUS_OPTION_BY_VALUE: Record<ContactServiceStatus, ServiceStatusOption> 
   CANCELED: SERVICE_STATUS_OPTIONS[3],
 }
 
+const CHECKLIST_STATUS_OPTIONS: ChecklistStatusOption[] = [
+  {
+    value: "NOT_RECEIVED",
+    label: "Not received",
+    helper: "Default state",
+    badgeClassName: "border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-100",
+    dotClassName: "bg-slate-400",
+  },
+  {
+    value: "INFORMED",
+    label: "Informed",
+    helper: "Contact informed",
+    badgeClassName: "border-blue-200 bg-blue-100 text-blue-800 hover:bg-blue-100",
+    dotClassName: "bg-blue-500",
+  },
+  {
+    value: "MISSING",
+    label: "Missing",
+    helper: "Item is missing",
+    badgeClassName: "border-amber-200 bg-amber-100 text-amber-800 hover:bg-amber-100",
+    dotClassName: "bg-amber-500",
+  },
+  {
+    value: "RECEIVED",
+    label: "Received",
+    helper: "Counts as complete",
+    badgeClassName: "border-emerald-200 bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
+    dotClassName: "bg-emerald-500",
+  },
+]
+
+const CHECKLIST_STATUS_BY_VALUE = Object.fromEntries(
+  CHECKLIST_STATUS_OPTIONS.map((option) => [option.value, option]),
+) as Record<ContactServiceChecklistStatus, ChecklistStatusOption>
+
 const formatDateTime = (value: string | null | undefined) => {
   if (!value) return "-"
   return new Date(value).toLocaleString()
@@ -660,7 +722,11 @@ const normalizeContactServiceDetails = (details: ContactServiceDetails): Contact
     attachments: note.attachments ?? [],
   })),
   executionLogs: details.executionLogs ?? [],
-  checklistItems: details.checklistItems ?? [],
+  checklistActivityLogs: details.checklistActivityLogs ?? [],
+  checklistItems: (details.checklistItems ?? []).map((checklistItem) => ({
+    ...checklistItem,
+    status: checklistItem.status ?? (checklistItem.completedAt ? "RECEIVED" : "NOT_RECEIVED"),
+  })),
   tenantBilling: {
     ...DEFAULT_TENANT_BILLING,
     ...(details.tenantBilling ?? {}),
@@ -672,7 +738,10 @@ const normalizeContactServiceOverview = (
 ): ContactServiceOverview => ({
   ...details,
   followUpSteps: details.followUpSteps ?? [],
-  checklistItems: details.checklistItems ?? [],
+  checklistItems: (details.checklistItems ?? []).map((checklistItem) => ({
+    ...checklistItem,
+    status: checklistItem.status ?? (checklistItem.completedAt ? "RECEIVED" : "NOT_RECEIVED"),
+  })),
   tenantBilling: {
     ...DEFAULT_TENANT_BILLING,
     ...(details.tenantBilling ?? {}),
@@ -1159,24 +1228,40 @@ export function ContactServiceDetailsPanel({
     }
   }
 
-  const toggleChecklistItem = async (
+  const updateChecklistStatus = async (
     checklistItem: ContactServiceDetails["checklistItems"][number],
+    nextStatus: ContactServiceChecklistStatus,
   ) => {
-    if (!item) return
-    const nextCompleted = !Boolean(checklistItem.completedAt)
+    if (!item || isChecklistSavingId || checklistItem.status === nextStatus) return
     setIsChecklistSavingId(checklistItem.id)
     try {
       const { data } = await api.patch<{
         ok: boolean
         checklistItem: ContactServiceDetails["checklistItems"][number]
+        activity: ContactServiceDetails["checklistActivityLogs"][number] | null
       }>(
         `/api/services/${encodedTenantId}/contact-services/${item.id}/checklist-items/${checklistItem.id}`,
         {
-          completed: nextCompleted,
+          status: nextStatus,
         },
       )
 
       setItem((current) =>
+        current
+          ? {
+              ...current,
+              checklistItems: current.checklistItems.map((entry) =>
+                entry.id === checklistItem.id ? data.checklistItem : entry,
+              ),
+              checklistActivityLogs:
+                data.activity &&
+                !current.checklistActivityLogs.some((entry) => entry.id === data.activity?.id)
+                  ? [data.activity, ...current.checklistActivityLogs]
+                  : current.checklistActivityLogs,
+            }
+          : current,
+      )
+      setOverview((current) =>
         current
           ? {
               ...current,
@@ -1219,7 +1304,7 @@ export function ContactServiceDetailsPanel({
     [item?.followUpSteps, overview?.followUpSteps],
   )
   const checklistCompletedCount = useMemo(
-    () => checklistItems.filter((entry) => Boolean(entry.completedAt)).length,
+    () => checklistItems.filter((entry) => entry.status === "RECEIVED").length,
     [checklistItems],
   )
   const checklistCompletionPercentage = useMemo(
@@ -1871,18 +1956,27 @@ export function ContactServiceDetailsPanel({
       })
     }
 
-    checklistItems
-      .filter((checklistItem) => Boolean(checklistItem.completedAt))
-      .forEach((checklistItem) => {
-        entries.push({
-          id: `checklist-${checklistItem.id}`,
-          createdAt: checklistItem.completedAt as string,
-          title: `Checklist completed: ${checklistItem.label}`,
-          description: "A required service document was marked as received.",
-          tone: "border-emerald-200 bg-emerald-50/80 text-emerald-800",
-          icon: "checklist",
-        })
+    item.checklistActivityLogs.forEach((activity) => {
+      const previousStatus = CHECKLIST_STATUS_BY_VALUE[activity.previousStatus]
+      const nextStatus = CHECKLIST_STATUS_BY_VALUE[activity.status]
+      entries.push({
+        id: `checklist-${activity.id}`,
+        createdAt: activity.createdAt,
+        title: `Checklist updated: ${activity.label}`,
+        description: `${previousStatus.label} → ${nextStatus.label}${
+          activity.actor?.name ? ` · Updated by ${activity.actor.name}` : ""
+        }`,
+        tone:
+          activity.status === "RECEIVED"
+            ? "border-emerald-300 text-emerald-700"
+            : activity.status === "MISSING"
+              ? "border-amber-300 text-amber-700"
+              : activity.status === "INFORMED"
+                ? "border-blue-300 text-blue-700"
+                : "border-slate-300 text-slate-600",
+        icon: "checklist",
       })
+    })
 
     payments.forEach((payment) => {
       entries.push({
@@ -1931,7 +2025,7 @@ export function ContactServiceDetailsPanel({
     return entries.sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     )
-  }, [checklistItems, item, payments, serviceNotes])
+  }, [item, payments, serviceNotes])
   const detailTabState = useMemo(() => {
     if (activeTab === "overview") return "ready" as const
     if (isDetailLoading && !item) return "loading" as const
@@ -1959,8 +2053,8 @@ export function ContactServiceDetailsPanel({
     <TooltipProvider>
       <section className="flex flex-col gap-5">
         <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-3 shadow-sm md:px-5">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-            <div className="flex min-w-0 flex-1 items-start gap-2">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               <Link
                 href={backHref}
                 aria-label="Back to services"
@@ -1970,7 +2064,7 @@ export function ContactServiceDetailsPanel({
                 <ArrowLeft className="h-4 w-4" aria-hidden="true" />
               </Link>
               <div className="min-w-0 flex-1">
-                <h1 className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-2xl font-semibold tracking-tight text-slate-950">
+                <h1 className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-xl font-semibold leading-tight tracking-tight text-slate-950">
                   <span>{serviceData.service.name}</span>
                   {serviceData.followUpTemplate?.name ? (
                     <>
@@ -1981,7 +2075,7 @@ export function ContactServiceDetailsPanel({
                     </>
                   ) : null}
                 </h1>
-                <p className="mt-1 text-sm text-slate-500">
+                <p className="mt-1 text-xs text-slate-500">
                   Professional: {getAssignedProfessionalLabel(serviceData.assignedProfessional)}
                 </p>
               </div>
@@ -2668,19 +2762,20 @@ export function ContactServiceDetailsPanel({
                         </p>
                       </div>
                       <Badge
-                        className={cn(
-                          checklistItem.completedAt
-                            ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100"
-                            : "bg-slate-100 text-slate-700 hover:bg-slate-100",
-                        )}
+                        variant="outline"
+                        className={CHECKLIST_STATUS_BY_VALUE[checklistItem.status].badgeClassName}
                       >
-                        {checklistItem.completedAt ? "Received" : "Pending"}
+                        {CHECKLIST_STATUS_BY_VALUE[checklistItem.status].label}
                       </Badge>
                     </div>
                     <p className="mt-3 text-xs text-slate-500">
-                      {checklistItem.completedAt
-                        ? `Received ${formatDateTime(checklistItem.completedAt)}`
-                        : "Still waiting to be received"}
+                      {checklistItem.status === "RECEIVED" && checklistItem.completedAt
+                        ? `Received ${formatDateTimeForDisplay(
+                            checklistItem.completedAt,
+                            serviceData.timezone,
+                            true,
+                          )}`
+                        : CHECKLIST_STATUS_BY_VALUE[checklistItem.status].helper}
                     </p>
                   </div>
                 ))}
@@ -3466,8 +3561,7 @@ export function ContactServiceDetailsPanel({
                 Review checklist
               </SheetTitle>
               <SheetDescription className="mt-1.5 max-w-md text-sm leading-6 text-slate-600">
-                Track required documents for {serviceData.service.name} and mark each item as
-                received.
+                Track what is happening with every required item for {serviceData.service.name}.
               </SheetDescription>
             </div>
           </SheetHeader>
@@ -3516,7 +3610,7 @@ export function ContactServiceDetailsPanel({
                         Checklist progress
                       </h3>
                       <p className="mt-1 text-xs leading-5 text-slate-500">
-                        Mark an item when the requested document has been received.
+                        Only received items count toward completion.
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -3541,42 +3635,18 @@ export function ContactServiceDetailsPanel({
                 {sortedChecklistItems.length ? (
                   <section aria-label="Service checklist items" className="border-t border-slate-200">
                     {sortedChecklistItems.map((checklistItem) => {
-                      const isCompleted = Boolean(checklistItem.completedAt)
+                      const isCompleted = checklistItem.status === "RECEIVED"
                       const isSavingChecklist = isChecklistSavingId === checklistItem.id
+                      const statusOption = CHECKLIST_STATUS_BY_VALUE[checklistItem.status]
 
                       return (
                         <div
                           key={checklistItem.id}
                           className={cn(
-                            "flex items-start gap-3 border-b border-slate-200 py-5 last:border-b-0 last:pb-0",
+                            "flex flex-col gap-3 border-b border-slate-200 py-5 last:border-b-0 last:pb-0 sm:flex-row sm:items-start sm:justify-between",
                             isSavingChecklist && "opacity-70",
                           )}
                         >
-                          <button
-                            type="button"
-                            className={cn(
-                              "mt-0.5 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 transition disabled:cursor-not-allowed disabled:opacity-60",
-                              isCompleted
-                                ? "border-emerald-500 bg-emerald-500 text-white shadow-[0_4px_10px_rgba(16,185,129,0.25)] hover:border-emerald-600 hover:bg-emerald-600"
-                                : "border-slate-300 bg-white text-transparent hover:border-emerald-400 hover:bg-emerald-50",
-                              isSavingChecklist && "border-blue-300 bg-blue-50 text-blue-700",
-                            )}
-                            onClick={() => void toggleChecklistItem(checklistItem)}
-                            disabled={Boolean(isChecklistSavingId)}
-                            aria-pressed={isCompleted}
-                            aria-label={
-                              isCompleted
-                                ? `Mark ${checklistItem.label} as not received`
-                                : `Mark ${checklistItem.label} as received`
-                            }
-                          >
-                            {isSavingChecklist ? (
-                              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                            ) : (
-                              <Check className="size-3.5" aria-hidden="true" />
-                            )}
-                          </button>
-
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-baseline gap-1.5">
                               <p
@@ -3612,14 +3682,59 @@ export function ContactServiceDetailsPanel({
                                       item.timezone,
                                       true,
                                     )}`
-                                  : "Not received"}
+                                  : statusOption.helper}
                               </span>
-                              {isSavingChecklist ? (
-                                <span role="status" className="font-medium text-blue-700">
-                                  Updating...
-                                </span>
-                              ) : null}
                             </div>
+                          </div>
+
+                          <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
+                            {isSavingChecklist ? (
+                              <Loader2
+                                className="size-4 animate-spin text-blue-700"
+                                aria-label={`Updating ${checklistItem.label}`}
+                              />
+                            ) : null}
+                            <Select
+                              value={checklistItem.status}
+                              onValueChange={(value) =>
+                                void updateChecklistStatus(
+                                  checklistItem,
+                                  value as ContactServiceChecklistStatus,
+                                )
+                              }
+                              disabled={Boolean(isChecklistSavingId)}
+                            >
+                              <SelectTrigger
+                                size="sm"
+                                className={cn(
+                                  "w-full cursor-pointer sm:w-40",
+                                  statusOption.badgeClassName,
+                                )}
+                                aria-label={`Status for ${checklistItem.label}`}
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className={cn("size-2 rounded-full", statusOption.dotClassName)}
+                                />
+                                <SelectValue>{statusOption.label}</SelectValue>
+                              </SelectTrigger>
+                              <SelectContent position="popper" align="end">
+                                <SelectGroup>
+                                  {CHECKLIST_STATUS_OPTIONS.map((option) => (
+                                    <SelectItem key={option.value} value={option.value}>
+                                      <span
+                                        aria-hidden="true"
+                                        className={cn(
+                                          "size-2 rounded-full",
+                                          option.dotClassName,
+                                        )}
+                                      />
+                                      {option.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
                           </div>
                         </div>
                       )
@@ -3680,7 +3795,7 @@ export function ContactServiceDetailsPanel({
                 Review activity log
               </SheetTitle>
               <SheetDescription className="mt-2 max-w-md text-sm leading-6 text-slate-600">
-                See payments, checklist completions, notes, and follow-up changes for{" "}
+                See payments, checklist status changes, notes, and follow-up changes for{" "}
                 {serviceData.service.name}.
               </SheetDescription>
             </div>
@@ -3761,7 +3876,7 @@ export function ContactServiceDetailsPanel({
                 </span>
                 <p className="mt-3 text-sm font-semibold text-slate-900">No activity yet</p>
                 <p className="mt-1 max-w-xs text-sm leading-6 text-slate-500">
-                  Payments, checklist completions, notes, and follow-up changes will appear here.
+                  Payments, checklist status changes, notes, and follow-up changes will appear here.
                 </p>
               </div>
             )}

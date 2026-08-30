@@ -552,10 +552,21 @@ Checklist entries are contact-service-specific copies of service checklist requi
 Current behavior:
 
 - checklist items are displayed in service sort order
-- each item can be marked received or unreceived
+- each item has one fixed operational status:
+  - `NOT_RECEIVED` is the default state
+  - `INFORMED` means the contact has been informed
+  - `MISSING` means the requested item is currently missing
+  - `RECEIVED` means the item has been received and is the only status that counts as complete
+- entering `RECEIVED` sets `completedAt`; re-selecting `RECEIVED` preserves it; every other status clears it
 - required checklist items are visibly labeled
 - checklist updates call:
   - `PATCH /api/services/{tenantId}/contact-services/{contactServiceId}/checklist-items/{checklistItemId}`
+- the update body accepts `status`; the deprecated `completed` boolean remains temporarily supported and maps to `RECEIVED` or `NOT_RECEIVED`
+- clients must send exactly one of `status` or `completed`
+- a real status transition and its activity event are saved atomically
+- selecting the current status is idempotent and does not create another event
+- each transition retains the checklist label snapshot, previous and new statuses, actor, and timestamp
+- historical checklist events are returned with the contact-service detail and are removed with the enrollment
 
 ### Payments behavior
 
