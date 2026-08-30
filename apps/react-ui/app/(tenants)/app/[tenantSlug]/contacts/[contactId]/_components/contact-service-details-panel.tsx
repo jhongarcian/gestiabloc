@@ -51,6 +51,7 @@ import { DateTimeInput } from "@/components/ui/date-time-input"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Progress } from "@/components/ui/progress"
 import {
   Select,
   SelectContent,
@@ -321,7 +322,7 @@ type StepTimeMeta = {
   badgeClassName: string
 }
 
-type ContactServiceTab = "overview" | "follow-up" | "payments" | "checklist" | "notes"
+type ContactServiceTab = "overview" | "follow-up" | "payments" | "notes"
 
 const currencyFormatter = (valueCents: number, currency: string) =>
   new Intl.NumberFormat("en-US", {
@@ -707,6 +708,7 @@ export function ContactServiceDetailsPanel({
   const [isChecklistSavingId, setIsChecklistSavingId] = useState<string | null>(null)
   const [statusOpen, setStatusOpen] = useState(false)
   const [isStatusSaving, setIsStatusSaving] = useState(false)
+  const [isChecklistSheetOpen, setIsChecklistSheetOpen] = useState(false)
   const [isActivitySheetOpen, setIsActivitySheetOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -861,6 +863,11 @@ export function ContactServiceDetailsPanel({
 
   const openActivitySheet = useCallback(() => {
     setIsActivitySheetOpen(true)
+    void ensureDetailLoaded()
+  }, [ensureDetailLoaded])
+
+  const openChecklistSheet = useCallback(() => {
+    setIsChecklistSheetOpen(true)
     void ensureDetailLoaded()
   }, [ensureDetailLoaded])
 
@@ -1197,6 +1204,10 @@ export function ContactServiceDetailsPanel({
     () => item?.checklistItems ?? overview?.checklistItems ?? [],
     [item?.checklistItems, overview?.checklistItems],
   )
+  const sortedChecklistItems = useMemo(
+    () => [...checklistItems].sort((a, b) => a.sortOrder - b.sortOrder),
+    [checklistItems],
+  )
   const followUpSteps = useMemo(
     () =>
       [...(item?.followUpSteps ?? overview?.followUpSteps ?? [])]
@@ -1318,8 +1329,8 @@ export function ContactServiceDetailsPanel({
     [followUpSteps],
   )
   const overviewChecklistPreview = useMemo(
-    () => [...checklistItems].sort((a, b) => a.sortOrder - b.sortOrder).slice(0, 3),
-    [checklistItems],
+    () => sortedChecklistItems.slice(0, 3),
+    [sortedChecklistItems],
   )
   const hasMixedOpenStepOwners = useMemo(() => {
     const assignedUserIds = new Set(
@@ -1983,6 +1994,24 @@ export function ContactServiceDetailsPanel({
                   type="button"
                   variant="ghost"
                   size="icon"
+                  aria-label="Service checklist"
+                  className="h-8 w-8 shrink-0 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900 hover:text-white"
+                  onClick={openChecklistSheet}
+                >
+                  <ListTodo aria-hidden="true" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>
+                Service checklist
+              </TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
                   aria-label="Activity log"
                   className="h-8 w-8 shrink-0 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900 hover:text-white"
                   onClick={openActivitySheet}
@@ -2352,7 +2381,7 @@ export function ContactServiceDetailsPanel({
         onValueChange={handleTabChange}
         className="rounded-[28px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-5 shadow-sm md:p-6"
       >
-        <TabsList className="grid h-auto w-full grid-cols-2 gap-2 bg-transparent p-0 md:grid-cols-3 xl:grid-cols-5">
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-2 bg-transparent p-0 md:grid-cols-4">
             <TabsTrigger
               value="overview"
               className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
@@ -2370,12 +2399,6 @@ export function ContactServiceDetailsPanel({
               className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
             >
               Payments
-            </TabsTrigger>
-            <TabsTrigger
-              value="checklist"
-              className="h-10 min-w-0 cursor-pointer rounded-xl bg-slate-50 px-3.5 text-sm font-medium text-slate-600 shadow-none hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 data-[state=active]:border-blue-950 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-sm"
-            >
-              Checklist
             </TabsTrigger>
             <TabsTrigger
               value="notes"
@@ -2619,7 +2642,7 @@ export function ContactServiceDetailsPanel({
                   type="button"
                   variant="outline"
                   className="w-full cursor-pointer rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50 sm:w-auto"
-                  onClick={() => handleTabChange("checklist")}
+                  onClick={openChecklistSheet}
                 >
                   View all checklist items
                 </Button>
@@ -3157,151 +3180,6 @@ export function ContactServiceDetailsPanel({
           )}
         </TabsContent>
 
-        <TabsContent value="checklist" className="pt-4">
-          {detailTabState !== "ready" || !item ? (
-            <div className="rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-10 text-center text-sm text-slate-500">
-              {detailTabState === "loading"
-                ? "Loading checklist details..."
-                : "Open this tab to load the service checklist details."}
-            </div>
-          ) : (
-            <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white">
-              <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                      Checklist Tracking
-                    </p>
-                    <p className="mt-1 text-sm text-slate-600">
-                      Mark documents as received as soon as the contact brings them in.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
-                      {checklistCompletionPercentage}% complete
-                    </Badge>
-                    <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
-                      {checklistCompletedCount}/{checklistItems.length} items
-                    </Badge>
-                  </div>
-                </div>
-                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200">
-                  <div
-                    className="h-full rounded-full bg-emerald-500 transition-[width]"
-                    style={{ width: `${checklistCompletionPercentage}%` }}
-                  />
-                </div>
-              </div>
-              {checklistItems.length ? (
-                <div>
-                  <div className="sticky top-0 z-10 hidden items-center gap-3 border-b border-slate-200 bg-white/95 px-5 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 backdrop-blur sm:flex">
-                    <div className="min-w-0 flex-1">Checklist Item</div>
-                    <div className="w-[132px] shrink-0 text-right">Received On</div>
-                  </div>
-                  <div className="divide-y divide-slate-200">
-                    {[...checklistItems]
-                      .sort((a, b) => a.sortOrder - b.sortOrder)
-                      .map((checklistItem) => {
-                        const isCompleted = Boolean(checklistItem.completedAt)
-                        const isSavingChecklist = isChecklistSavingId === checklistItem.id
-                        return (
-                          <div
-                            key={checklistItem.id}
-                            className={cn(
-                              "flex items-center gap-3 px-5 py-3 transition-colors",
-                              isCompleted
-                                ? "bg-emerald-50/40"
-                                : "hover:bg-slate-50/60",
-                              isSavingChecklist && "opacity-70",
-                            )}
-                          >
-                            <button
-                              type="button"
-                              className={cn(
-                                "mt-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 transition",
-                                isCompleted
-                                  ? "border-emerald-500 bg-emerald-500 text-white shadow-[0_4px_10px_rgba(16,185,129,0.25)] hover:border-emerald-600 hover:bg-emerald-600"
-                                  : "border-slate-300 bg-white text-transparent hover:border-emerald-400 hover:bg-emerald-50",
-                                "disabled:cursor-not-allowed disabled:opacity-60",
-                              )}
-                              onClick={() => void toggleChecklistItem(checklistItem)}
-                              disabled={isSavingChecklist}
-                              aria-label={isCompleted ? `Uncheck ${checklistItem.label}` : `Check ${checklistItem.label}`}
-                            >
-                              <Check className="h-3.5 w-3.5" />
-                            </button>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                <p
-                                  className={cn(
-                                    "flex items-center text-sm font-medium leading-5",
-                                    isCompleted
-                                      ? "text-slate-500 line-through"
-                                      : "text-slate-900",
-                                  )}
-                                >
-                                  {checklistItem.label}
-                                </p>
-                                {checklistItem.description ? (
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <button
-                                        type="button"
-                                        className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full text-slate-400 transition hover:text-slate-600"
-                                        aria-label={`Description for ${checklistItem.label}`}
-                                      >
-                                        <CircleHelp className="h-3.5 w-3.5" />
-                                      </button>
-                                    </TooltipTrigger>
-                                    <TooltipContent
-                                      side="top"
-                                      sideOffset={6}
-                                      className="max-w-xs text-sm leading-5"
-                                    >
-                                      {checklistItem.description}
-                                    </TooltipContent>
-                                  </Tooltip>
-                                ) : null}
-                                {checklistItem.isRequired ? (
-                                  <span
-                                    className="inline-flex items-center text-sm font-semibold leading-5 text-rose-500"
-                                    title="Required"
-                                    aria-label="Required item"
-                                  >
-                                    *
-                                  </span>
-                                ) : null}
-                              </div>
-                              {checklistItem.description ? (
-                                <p className="mt-0.5 text-xs leading-5 text-slate-500 sm:hidden">
-                                  {checklistItem.description}
-                                </p>
-                              ) : null}
-                            </div>
-                            <div className="shrink-0 self-center text-right">
-                              <p className="text-[11px] font-medium text-slate-500 sm:hidden">
-                                {isCompleted ? "Received on" : "Status"}
-                              </p>
-                              <p className="text-xs text-slate-500">
-                                {isCompleted
-                                  ? formatDateTime(checklistItem.completedAt)
-                                  : "Not received"}
-                              </p>
-                            </div>
-                          </div>
-                        )
-                      })}
-                  </div>
-                </div>
-              ) : (
-                <div className="px-5 py-8 text-center text-sm text-slate-500">
-                  This service does not have checklist requirements yet.
-                </div>
-              )}
-            </section>
-          )}
-        </TabsContent>
-
         <TabsContent value="notes" className="pt-4">
           {detailTabState !== "ready" || !item ? (
             <div className="rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-10 text-center text-sm text-slate-500">
@@ -3560,6 +3438,219 @@ export function ContactServiceDetailsPanel({
         </TabsContent>
 
       </Tabs>
+
+      <Sheet
+        open={isChecklistSheetOpen}
+        onOpenChange={(open) => {
+          if (!open && isChecklistSavingId) return
+          setIsChecklistSheetOpen(open)
+          if (open) void ensureDetailLoaded()
+        }}
+      >
+        <SheetContent
+          side="right"
+          className="flex h-full w-full flex-col gap-0 overflow-hidden border-l border-slate-200 bg-white p-0 sm:max-w-lg [&>button]:cursor-pointer"
+        >
+          <SheetHeader className="relative shrink-0 overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 pr-10 text-left sm:px-7 sm:pr-10">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -bottom-20 -right-12 size-48 rounded-full bg-blue-300/30 blur-3xl"
+            />
+            <div className="relative">
+              <p className="text-xs font-semibold text-blue-700">Service checklist</p>
+              <SheetTitle className="mt-1.5 text-xl font-semibold text-slate-950 sm:text-2xl">
+                Review checklist
+              </SheetTitle>
+              <SheetDescription className="mt-1.5 max-w-md text-sm leading-6 text-slate-600">
+                Track required documents for {serviceData.service.name} and mark each item as
+                received.
+              </SheetDescription>
+            </div>
+          </SheetHeader>
+
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+            {isDetailLoading && !item ? (
+              <div
+                role="status"
+                className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-5 text-center"
+              >
+                <Loader2 className="size-6 animate-spin text-blue-800" aria-hidden="true" />
+                <p className="mt-3 text-sm font-medium text-slate-800">
+                  Loading service checklist...
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Gathering the latest checklist progress.
+                </p>
+              </div>
+            ) : !item ? (
+              <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 text-center">
+                <span className="inline-flex size-10 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm ring-1 ring-slate-200">
+                  <ListTodo className="size-4" aria-hidden="true" />
+                </span>
+                <p className="mt-3 text-sm font-semibold text-slate-900">Checklist unavailable</p>
+                <p className="mt-1 max-w-xs text-sm leading-6 text-slate-500">
+                  We could not load this service checklist. Try again to reload its requirements.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-4 cursor-pointer rounded-full border-slate-200 bg-white"
+                  onClick={() => void ensureDetailLoaded()}
+                >
+                  Retry
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-6">
+                <section aria-labelledby="service-checklist-progress" className="flex flex-col gap-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3
+                        id="service-checklist-progress"
+                        className="text-sm font-semibold text-slate-950"
+                      >
+                        Checklist progress
+                      </h3>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        Mark an item when the requested document has been received.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
+                        {checklistCompletionPercentage}% complete
+                      </Badge>
+                      <Badge
+                        variant="outline"
+                        className="border-slate-200 bg-white text-slate-700"
+                      >
+                        {checklistCompletedCount}/{checklistItems.length} items
+                      </Badge>
+                    </div>
+                  </div>
+                  <Progress
+                    value={checklistCompletionPercentage}
+                    aria-label="Checklist completion"
+                    className="h-1.5 bg-slate-200 [&_[data-slot=progress-indicator]]:bg-emerald-500"
+                  />
+                </section>
+
+                {sortedChecklistItems.length ? (
+                  <section aria-label="Service checklist items" className="border-t border-slate-200">
+                    {sortedChecklistItems.map((checklistItem) => {
+                      const isCompleted = Boolean(checklistItem.completedAt)
+                      const isSavingChecklist = isChecklistSavingId === checklistItem.id
+
+                      return (
+                        <div
+                          key={checklistItem.id}
+                          className={cn(
+                            "flex items-start gap-3 border-b border-slate-200 py-5 last:border-b-0 last:pb-0",
+                            isSavingChecklist && "opacity-70",
+                          )}
+                        >
+                          <button
+                            type="button"
+                            className={cn(
+                              "mt-0.5 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 transition disabled:cursor-not-allowed disabled:opacity-60",
+                              isCompleted
+                                ? "border-emerald-500 bg-emerald-500 text-white shadow-[0_4px_10px_rgba(16,185,129,0.25)] hover:border-emerald-600 hover:bg-emerald-600"
+                                : "border-slate-300 bg-white text-transparent hover:border-emerald-400 hover:bg-emerald-50",
+                              isSavingChecklist && "border-blue-300 bg-blue-50 text-blue-700",
+                            )}
+                            onClick={() => void toggleChecklistItem(checklistItem)}
+                            disabled={Boolean(isChecklistSavingId)}
+                            aria-pressed={isCompleted}
+                            aria-label={
+                              isCompleted
+                                ? `Mark ${checklistItem.label} as not received`
+                                : `Mark ${checklistItem.label} as received`
+                            }
+                          >
+                            {isSavingChecklist ? (
+                              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                            ) : (
+                              <Check className="size-3.5" aria-hidden="true" />
+                            )}
+                          </button>
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-baseline gap-1.5">
+                              <p
+                                className={cn(
+                                  "text-sm font-medium leading-5",
+                                  isCompleted ? "text-slate-500 line-through" : "text-slate-900",
+                                )}
+                              >
+                                {checklistItem.label}
+                              </p>
+                              {checklistItem.isRequired ? (
+                                <>
+                                  <span
+                                    className="text-sm font-semibold text-rose-500"
+                                    aria-hidden="true"
+                                  >
+                                    *
+                                  </span>
+                                  <span className="sr-only">Required item</span>
+                                </>
+                              ) : null}
+                            </div>
+                            {checklistItem.description ? (
+                              <p className="mt-1 text-xs leading-5 text-slate-500">
+                                {checklistItem.description}
+                              </p>
+                            ) : null}
+                            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                              <span>
+                                {isCompleted
+                                  ? `Received ${formatDateTimeForDisplay(
+                                      checklistItem.completedAt,
+                                      item.timezone,
+                                      true,
+                                    )}`
+                                  : "Not received"}
+                              </span>
+                              {isSavingChecklist ? (
+                                <span role="status" className="font-medium text-blue-700">
+                                  Updating...
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </section>
+                ) : (
+                  <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 text-center">
+                    <span className="inline-flex size-10 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm ring-1 ring-slate-200">
+                      <ListTodo className="size-4" aria-hidden="true" />
+                    </span>
+                    <p className="mt-3 text-sm font-semibold text-slate-900">
+                      No checklist requirements
+                    </p>
+                    <p className="mt-1 max-w-xs text-sm leading-6 text-slate-500">
+                      This service does not have any checklist items yet.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <SheetFooter className="shrink-0 border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:flex-row sm:justify-end sm:px-7">
+            <SheetClose asChild>
+              <Button type="button" variant="outline" disabled={Boolean(isChecklistSavingId)}>
+                Close
+              </Button>
+            </SheetClose>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
 
       <Sheet
         open={isActivitySheetOpen}
