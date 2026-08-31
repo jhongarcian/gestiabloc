@@ -331,7 +331,6 @@ type ChecklistStatusOption = {
   label: string
   helper: string
   badgeClassName: string
-  dotClassName: string
 }
 
 type ActivityItem = {
@@ -546,28 +545,24 @@ const CHECKLIST_STATUS_OPTIONS: ChecklistStatusOption[] = [
     label: "Not received",
     helper: "Default state",
     badgeClassName: "border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-100",
-    dotClassName: "bg-slate-400",
   },
   {
     value: "INFORMED",
     label: "Informed",
     helper: "Contact informed",
     badgeClassName: "border-blue-200 bg-blue-100 text-blue-800 hover:bg-blue-100",
-    dotClassName: "bg-blue-500",
   },
   {
     value: "MISSING",
     label: "Missing",
     helper: "Item is missing",
     badgeClassName: "border-amber-200 bg-amber-100 text-amber-800 hover:bg-amber-100",
-    dotClassName: "bg-amber-500",
   },
   {
     value: "RECEIVED",
     label: "Received",
     helper: "Counts as complete",
     badgeClassName: "border-emerald-200 bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
-    dotClassName: "bg-emerald-500",
   },
 ]
 
@@ -3601,35 +3596,37 @@ export function ContactServiceDetailsPanel({
             ) : (
               <div className="flex flex-col gap-6">
                 <section aria-labelledby="service-checklist-progress" className="flex flex-col gap-3">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h3
-                        id="service-checklist-progress"
-                        className="text-sm font-semibold text-slate-950"
-                      >
-                        Checklist progress
-                      </h3>
-                      <p className="mt-1 text-xs leading-5 text-slate-500">
-                        Only received items count toward completion.
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
-                        {checklistCompletionPercentage}% complete
-                      </Badge>
-                      <Badge
-                        variant="outline"
-                        className="border-slate-200 bg-white text-slate-700"
-                      >
-                        {checklistCompletedCount}/{checklistItems.length} items
-                      </Badge>
-                    </div>
+                  <div>
+                    <h3
+                      id="service-checklist-progress"
+                      className="text-sm font-semibold text-slate-950"
+                    >
+                      Checklist progress
+                    </h3>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      Only received items count toward completion.
+                    </p>
                   </div>
-                  <Progress
-                    value={checklistCompletionPercentage}
-                    aria-label="Checklist completion"
-                    className="h-1.5 bg-slate-200 [&_[data-slot=progress-indicator]]:bg-emerald-500"
-                  />
+                  <div className="relative">
+                    <Progress
+                      value={checklistCompletionPercentage}
+                      aria-label="Checklist completion"
+                      aria-valuetext={`${checklistCompletionPercentage}% complete, ${checklistCompletedCount} of ${checklistItems.length} items`}
+                      className="h-7 border border-emerald-100 bg-emerald-100/60 [&_[data-slot=progress-indicator]]:bg-[linear-gradient(90deg,#047857_0%,#10b981_100%)]"
+                    />
+                    <span
+                      aria-hidden="true"
+                      className="absolute inset-y-1 left-1 flex items-center rounded-full bg-emerald-950 px-2 text-[10px] font-semibold text-white shadow-sm tabular-nums"
+                    >
+                      {checklistCompletionPercentage}%
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className="absolute inset-y-1 right-1 flex items-center rounded-full bg-white/90 px-2 text-[11px] font-semibold text-emerald-950 shadow-sm ring-1 ring-emerald-950/5 tabular-nums"
+                    >
+                      {checklistCompletedCount} of {checklistItems.length} items
+                    </span>
+                  </div>
                 </section>
 
                 {sortedChecklistItems.length ? (
@@ -3648,46 +3645,43 @@ export function ContactServiceDetailsPanel({
                           )}
                         >
                           <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-baseline gap-1.5">
-                              <p
-                                className={cn(
-                                  "text-sm font-medium leading-5",
-                                  isCompleted ? "text-slate-500 line-through" : "text-slate-900",
-                                )}
-                              >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-semibold leading-5 text-slate-950">
                                 {checklistItem.label}
                               </p>
                               {checklistItem.isRequired ? (
-                                <>
-                                  <span
-                                    className="text-sm font-semibold text-rose-500"
-                                    aria-hidden="true"
-                                  >
-                                    *
-                                  </span>
-                                  <span className="sr-only">Required item</span>
-                                </>
+                                <Badge
+                                  variant="outline"
+                                  className="rounded-full border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-rose-700"
+                                >
+                                  Required
+                                </Badge>
                               ) : null}
                             </div>
                             {checklistItem.description ? (
-                              <p className="mt-1 text-xs leading-5 text-slate-500">
+                              <p className="mt-1.5 text-xs leading-5 text-slate-600">
                                 {checklistItem.description}
                               </p>
                             ) : null}
-                            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
-                              <span>
-                                {isCompleted
-                                  ? `Received ${formatDateTimeForDisplay(
+                            <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                              {isCompleted ? (
+                                <span className="inline-flex items-center gap-1.5">
+                                  <Clock3 className="size-3.5 text-slate-400" aria-hidden="true" />
+                                  <time dateTime={checklistItem.completedAt ?? undefined}>
+                                    {formatDateTimeForDisplay(
                                       checklistItem.completedAt,
                                       item.timezone,
                                       true,
-                                    )}`
-                                  : statusOption.helper}
-                              </span>
+                                    )}
+                                  </time>
+                                </span>
+                              ) : (
+                                <span>{statusOption.helper}</span>
+                              )}
                             </div>
                           </div>
 
-                          <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
+                          <div className="flex w-full shrink-0 items-center justify-start gap-2 sm:w-auto sm:justify-end">
                             {isSavingChecklist ? (
                               <Loader2
                                 className="size-4 animate-spin text-blue-700"
@@ -3707,29 +3701,35 @@ export function ContactServiceDetailsPanel({
                               <SelectTrigger
                                 size="sm"
                                 className={cn(
-                                  "w-full cursor-pointer sm:w-40",
+                                  "h-8 w-fit min-w-0 max-w-full cursor-pointer rounded-full px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-black/5 [&_[data-slot=select-value]]:truncate sm:max-w-[220px]",
                                   statusOption.badgeClassName,
                                 )}
                                 aria-label={`Status for ${checklistItem.label}`}
+                                aria-busy={isSavingChecklist}
                               >
-                                <span
-                                  aria-hidden="true"
-                                  className={cn("size-2 rounded-full", statusOption.dotClassName)}
-                                />
                                 <SelectValue>{statusOption.label}</SelectValue>
                               </SelectTrigger>
-                              <SelectContent position="popper" align="end">
+                              <SelectContent
+                                position="popper"
+                                align="end"
+                                className="w-[240px] max-w-[calc(100vw-2rem)]"
+                              >
                                 <SelectGroup>
                                   {CHECKLIST_STATUS_OPTIONS.map((option) => (
-                                    <SelectItem key={option.value} value={option.value}>
-                                      <span
-                                        aria-hidden="true"
+                                    <SelectItem
+                                      key={option.value}
+                                      value={option.value}
+                                      className="cursor-pointer gap-2 px-3 py-2"
+                                    >
+                                      <Badge
+                                        variant="outline"
                                         className={cn(
-                                          "size-2 rounded-full",
-                                          option.dotClassName,
+                                          "max-w-[170px] truncate rounded-full px-2 py-1 text-xs font-semibold shadow-sm ring-1 ring-black/5",
+                                          option.badgeClassName,
                                         )}
-                                      />
-                                      {option.label}
+                                      >
+                                        {option.label}
+                                      </Badge>
                                     </SelectItem>
                                   ))}
                                 </SelectGroup>
