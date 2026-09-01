@@ -1,8 +1,8 @@
-import { redirect } from "next/navigation"
+import { permanentRedirect } from "next/navigation"
 
-import { getServiceEnrollmentHref } from "@/lib/routes"
+import { getServiceEnrollmentFollowUpsHref } from "@/lib/routes"
 
-export default async function ServiceEnrollmentDetailsPage({
+export default async function ServiceEnrollmentFollowUpsPage({
   params,
   searchParams,
 }: {
@@ -14,8 +14,8 @@ export default async function ServiceEnrollmentDetailsPage({
   const rawReturnTo = resolvedSearchParams?.returnTo
   const returnTo = Array.isArray(rawReturnTo) ? rawReturnTo[0] : rawReturnTo
 
-  redirect(
-    getServiceEnrollmentHref({
+  permanentRedirect(
+    getServiceEnrollmentFollowUpsHref({
       tenantSlug,
       contactServiceId,
       returnTo,

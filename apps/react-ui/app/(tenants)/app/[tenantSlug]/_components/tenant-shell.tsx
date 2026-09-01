@@ -328,6 +328,7 @@ export function TenantShell({
       const isServiceEnrollmentRoute =
         segments[0] === "services" && segments[1] === "enrollments"
       const isServiceEnrollmentsSegment = isServiceEnrollmentRoute && index === 1
+      const isServiceEnrollmentViewSegment = isServiceEnrollmentRoute && index >= 3
       const isServiceIdSegment =
         (segments[0] === "account-settings" &&
           segments[1] === "services" &&
@@ -344,6 +345,9 @@ export function TenantShell({
         return
       }
       if (isServiceEnrollmentsSegment) {
+        return
+      }
+      if (isServiceEnrollmentViewSegment) {
         return
       }
       if (isServiceIdSegment && !serviceCrumbLabel) {

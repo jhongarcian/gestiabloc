@@ -1,6 +1,8 @@
 export const CONTACT_SERVICES_PAGE_SIZES = [10, 25] as const
+export const SERVICE_ENROLLMENT_VIEWS = ["overview", "payments", "notes"] as const
 
 export type ContactServicesPageSize = (typeof CONTACT_SERVICES_PAGE_SIZES)[number]
+export type ServiceEnrollmentView = (typeof SERVICE_ENROLLMENT_VIEWS)[number]
 
 const encodePathSegment = (value: string) => encodeURIComponent(value)
 
@@ -43,16 +45,35 @@ export function getContactServicesHref({
 export function getServiceEnrollmentHref({
   tenantSlug,
   contactServiceId,
+  view = "overview",
+  returnTo,
+}: {
+  tenantSlug: string
+  contactServiceId: string
+  view?: ServiceEnrollmentView
+  returnTo?: string | null
+}) {
+  const baseHref = `/app/${encodePathSegment(tenantSlug)}/services/enrollments/${encodePathSegment(contactServiceId)}/${view}`
+  if (!returnTo) return baseHref
+
+  return `${baseHref}?${new URLSearchParams({ returnTo }).toString()}`
+}
+
+export function getServiceEnrollmentFollowUpsHref({
+  tenantSlug,
+  contactServiceId,
   returnTo,
 }: {
   tenantSlug: string
   contactServiceId: string
   returnTo?: string | null
 }) {
-  const baseHref = `/app/${encodePathSegment(tenantSlug)}/services/enrollments/${encodePathSegment(contactServiceId)}`
-  if (!returnTo) return baseHref
-
-  return `${baseHref}?${new URLSearchParams({ returnTo }).toString()}`
+  return `${getServiceEnrollmentHref({
+    tenantSlug,
+    contactServiceId,
+    view: "overview",
+    returnTo,
+  })}#service-follow-ups`
 }
 
 export function getSafeContactServicesReturnTo({

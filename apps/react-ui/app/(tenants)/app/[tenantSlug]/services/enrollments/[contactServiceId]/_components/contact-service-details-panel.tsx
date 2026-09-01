@@ -76,7 +76,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
-import { getSafeContactServicesReturnTo } from "@/lib/routes"
+import {
+  getSafeContactServicesReturnTo,
+  getServiceEnrollmentFollowUpsHref,
+  getServiceEnrollmentHref,
+  type ServiceEnrollmentView,
+} from "@/lib/routes"
 import { uploadPrivateFileToSignedUrl } from "@/lib/supabase-storage"
 import {
   dateTimeDraftToUtcIso,
@@ -87,6 +92,7 @@ import {
   type DateTimeDraft,
 } from "@/lib/date-time"
 import { cn } from "@/lib/utils"
+import { getServiceOverviewPriority } from "../_lib/service-overview-priority"
 
 type ContactServiceStatus =
   | "IN_PROGRESS"
@@ -316,6 +322,7 @@ type ContactServiceDetailsPanelProps = {
   tenantSlug: string
   contactServiceId: string
   membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
+  activeView: ServiceEnrollmentView
   returnTo?: string | null
 }
 
@@ -347,8 +354,6 @@ type StepTimeMeta = {
   helper: string
   badgeClassName: string
 }
-
-type ContactServiceSection = "overview" | "follow-up" | "payments" | "notes"
 
 const currencyFormatter = (valueCents: number, currency: string) =>
   new Intl.NumberFormat("en-US", {
@@ -498,9 +503,8 @@ const INSTALLMENT_FREQUENCY_LABELS = {
 const PAYMENTS_PAGE_SIZE = 5
 const NOTES_PAGE_SIZE = 5
 const FOLLOW_UP_PAGE_SIZE = 5
-const SERVICE_SECTIONS: Array<{ value: ContactServiceSection; label: string }> = [
+const SERVICE_SECTIONS: Array<{ value: ServiceEnrollmentView; label: string }> = [
   { value: "overview", label: "Overview" },
-  { value: "follow-up", label: "Follow-up" },
   { value: "payments", label: "Payments" },
   { value: "notes", label: "Notes" },
 ]
@@ -761,16 +765,18 @@ export function ContactServiceDetailsPanel({
   tenantSlug,
   contactServiceId,
   membershipSecurityLevel,
+  activeView,
   returnTo,
 }: ContactServiceDetailsPanelProps) {
   const serviceNoteFileInputRef = useRef<HTMLInputElement | null>(null)
   const stepNoteFileInputRef = useRef<HTMLInputElement | null>(null)
   const hasAutoLoadedDetailRef = useRef(false)
+  const hasHandledFollowUpHashRef = useRef(false)
+  const previousActiveViewRef = useRef(activeView)
   const router = useRouter()
   const canManageSensitiveServiceActions = membershipSecurityLevel !== "LOW"
   const encodedTenantId = encodeURIComponent(tenantId)
   const encodedContactServiceId = encodeURIComponent(contactServiceId)
-  const [activeSection, setActiveSection] = useState<ContactServiceSection>("overview")
   const [overview, setOverview] = useState<ContactServiceOverview | null>(null)
   const [item, setItem] = useState<ContactServiceDetails | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -897,7 +903,6 @@ export function ContactServiceDetailsPanel({
     setOverview(null)
     setItem(null)
     setIsDetailLoadError(false)
-    setActiveSection("overview")
     setPaymentPage(1)
     setNotesPage(1)
     setFollowUpFilter("OPEN")
@@ -1309,8 +1314,35 @@ export function ContactServiceDetailsPanel({
   }
 
   const serviceData = item ?? overview
-  const serviceDataId = serviceData?.id
-  const detailItemId = item?.id
+
+  useEffect(() => {
+    if (previousActiveViewRef.current === activeView) return
+    previousActiveViewRef.current = activeView
+
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById("service-workspace-content")?.scrollIntoView({ block: "start" })
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [activeView])
+
+  useEffect(() => {
+    if (
+      !serviceData ||
+      activeView !== "overview" ||
+      hasHandledFollowUpHashRef.current ||
+      window.location.hash !== "#service-follow-ups"
+    ) {
+      return
+    }
+
+    hasHandledFollowUpHashRef.current = true
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById("service-follow-ups")?.scrollIntoView({ block: "start" })
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [activeView, serviceData])
   const serviceBreadcrumbLabel = serviceData?.service.name ?? null
 
   useEffect(() => {
@@ -1374,6 +1406,21 @@ export function ContactServiceDetailsPanel({
     () => checklistItems.filter((entry) => entry.status === "RECEIVED").length,
     [checklistItems],
   )
+  const checklistMissingCount = useMemo(
+    () => checklistItems.filter((entry) => entry.status === "MISSING").length,
+    [checklistItems],
+  )
+  const checklistInformedCount = useMemo(
+    () => checklistItems.filter((entry) => entry.status === "INFORMED").length,
+    [checklistItems],
+  )
+  const requiredMissingChecklistCount = useMemo(
+    () =>
+      checklistItems.filter(
+        (entry) => entry.isRequired && entry.status === "MISSING",
+      ).length,
+    [checklistItems],
+  )
   const checklistCompletionPercentage = useMemo(
     () =>
       checklistItems.length
@@ -1435,24 +1482,12 @@ export function ContactServiceDetailsPanel({
   useEffect(() => {
     setFollowUpPage((current) => Math.min(current, followUpPageCount))
   }, [followUpPageCount])
-  const taxAmountCents = useMemo(() => {
-    if (!serviceData) return 0
-    return Math.max(0, serviceData.totalPriceCents - serviceData.service.basePriceCents)
-  }, [serviceData])
   const paymentCollectionState = useMemo(() => {
     if (!serviceData) return "Pay later"
     if (serviceData.paidCents <= 0) return "Pay later"
     if (serviceData.remainingCents > 0) return "Partial payment"
     return "Paid in full"
   }, [serviceData])
-  const latestPaymentAt = useMemo(() => {
-    if (item && payments.length) {
-      return payments.reduce((latest, payment) =>
-        new Date(payment.paidAt).getTime() > new Date(latest.paidAt).getTime() ? payment : latest,
-      ).paidAt
-    }
-    return overview?.paymentSummary?.latestPaidAt ?? null
-  }, [item, overview?.paymentSummary?.latestPaidAt, payments])
   const completedScheduledPaymentsCount = useMemo(() => {
     if (item) {
       return payments.filter((payment) => payment.note?.trim().toLowerCase() !== "initial payment").length
@@ -1500,7 +1535,6 @@ export function ContactServiceDetailsPanel({
   }, [remainingScheduledInstallments, serviceData, suggestedInstallmentPaymentCents])
   const canAddPayments = Boolean(serviceData && serviceData.remainingCents > 0)
   const currentStatusOption = serviceData ? STATUS_OPTION_BY_VALUE[serviceData.status] : null
-  const tenantBilling = serviceData?.tenantBilling ?? DEFAULT_TENANT_BILLING
   const openFollowUpSteps = useMemo(
     () =>
       followUpSteps.filter(
@@ -1525,6 +1559,31 @@ export function ContactServiceDetailsPanel({
       null,
     [followUpSteps],
   )
+  const overviewPriority = useMemo(
+    () =>
+      getServiceOverviewPriority({
+        followUpRunStatus: serviceData?.followUpRun?.status,
+        failureMessage: serviceData?.followUpRun?.failureMessage,
+        failedAt: serviceData?.followUpRun?.failedAt,
+        followUpSteps: followUpSteps.map((step) => ({
+          title: step.title,
+          status: step.status,
+          dueAt: step.effectiveDueAt ?? step.dueAt,
+        })),
+        completedStepCount: followUpCompletedCount,
+        requiredMissingCount: requiredMissingChecklistCount,
+        nextFollowUpAt: serviceData?.nextFollowUp?.at,
+      }),
+    [
+      followUpCompletedCount,
+      followUpSteps,
+      requiredMissingChecklistCount,
+      serviceData?.followUpRun?.failedAt,
+      serviceData?.followUpRun?.failureMessage,
+      serviceData?.followUpRun?.status,
+      serviceData?.nextFollowUp?.at,
+    ],
+  )
   const hasMixedOpenStepOwners = useMemo(() => {
     const assignedUserIds = new Set(
       openFollowUpSteps.map((step) => step.assignedToUserId ?? "").filter((value) => value.length > 0),
@@ -1538,65 +1597,6 @@ export function ContactServiceDetailsPanel({
     )
     return uniqueOpenOwnerIds.length === 1 ? (uniqueOpenOwnerIds[0] ?? "") : ""
   }, [openFollowUpSteps])
-
-  const scrollToSection = useCallback((section: ContactServiceSection) => {
-    const sectionId = `service-${section}`
-    const target = document.getElementById(sectionId)
-    if (!target) return
-
-    setActiveSection(section)
-    window.history.replaceState(null, "", `#${sectionId}`)
-    target.scrollIntoView({ behavior: "smooth", block: "start" })
-  }, [])
-
-  useEffect(() => {
-    if (!serviceDataId) return
-
-    const requestedSection = window.location.hash.replace("#service-", "")
-    if (!SERVICE_SECTIONS.some((section) => section.value === requestedSection)) return
-
-    const section = requestedSection as ContactServiceSection
-    setActiveSection(section)
-    window.requestAnimationFrame(() => {
-      document.getElementById(`service-${section}`)?.scrollIntoView({ block: "start" })
-    })
-  }, [detailItemId, serviceDataId])
-
-  useEffect(() => {
-    if (!serviceDataId) return
-
-    const updateActiveSection = (syncHash = false) => {
-      const activationLine = Math.min(window.innerHeight * 0.35, 320)
-      let currentSection: ContactServiceSection = "overview"
-
-      SERVICE_SECTIONS.forEach((section) => {
-        const element = document.getElementById(`service-${section.value}`)
-        if (element && element.getBoundingClientRect().top <= activationLine) {
-          currentSection = section.value
-        }
-      })
-
-      setActiveSection((current) =>
-        current === currentSection ? current : currentSection,
-      )
-      if (syncHash) {
-        const nextHash = `#service-${currentSection}`
-        if (window.location.hash !== nextHash) {
-          window.history.replaceState(null, "", nextHash)
-        }
-      }
-    }
-
-    updateActiveSection()
-    const handleScroll = () => updateActiveSection(true)
-    const handleResize = () => updateActiveSection()
-    window.addEventListener("scroll", handleScroll, { passive: true })
-    window.addEventListener("resize", handleResize)
-    return () => {
-      window.removeEventListener("scroll", handleScroll)
-      window.removeEventListener("resize", handleResize)
-    }
-  }, [detailItemId, serviceDataId])
 
   const updateFollowUpOwner = async (nextUserId: string) => {
     const currentService = item ?? overview
@@ -2203,10 +2203,12 @@ export function ContactServiceDetailsPanel({
 
   return (
     <TooltipProvider>
-      <section className="flex flex-col gap-5">
-        <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-3 shadow-sm md:px-5">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+      <section className="flex h-full min-h-0 flex-col gap-4">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-clip rounded-[28px] border border-slate-200/80 bg-white shadow-sm">
+        <header className="sticky top-[var(--tenant-shell-header-height)] z-20 shrink-0 bg-slate-100">
+          <div className="flex flex-col gap-3 rounded-t-[27px] border-b border-slate-200/80 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_46%,#fff7ed_100%)] p-3 shadow-sm md:px-5 xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <div className="flex min-w-0 items-center gap-2">
               <Link
                 href={backHref}
                 aria-label={`Back to ${serviceData.contactName?.trim() || "contact"} services`}
@@ -2215,37 +2217,43 @@ export function ContactServiceDetailsPanel({
               >
                 <ArrowLeft className="h-4 w-4" aria-hidden="true" />
               </Link>
-              <div className="min-w-0 flex-1">
-                {resolvedContactId ? (
-                  <p className="mb-1 flex min-w-0 items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                    <span className="shrink-0">Contact</span>
-                    <span aria-hidden="true" className="text-slate-300">/</span>
+                <h1 className="min-w-0 flex-1 truncate text-2xl font-semibold text-slate-950">
+                  {resolvedContactId ? (
                     <Link
                       href={`/app/${encodeURIComponent(tenantSlug)}/contacts/${encodeURIComponent(resolvedContactId)}/overview`}
-                      className="truncate text-blue-700 transition hover:text-blue-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                      className="rounded-sm transition hover:text-blue-800 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
                     >
                       {serviceData.contactName?.trim() || "View contact"}
                     </Link>
-                  </p>
-                ) : null}
-                <h1 className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-xl font-semibold leading-tight tracking-tight text-slate-950">
-                  <span>{serviceData.service.name}</span>
-                  {serviceData.followUpTemplate?.name ? (
-                    <>
-                      <span className="font-normal text-slate-300" aria-hidden="true">
-                        /
-                      </span>
-                      <span>{serviceData.followUpTemplate.name}</span>
-                    </>
-                  ) : null}
+                  ) : (
+                    serviceData.contactName?.trim() || "Contact"
+                  )}
                 </h1>
-                <p className="mt-1 text-xs text-slate-500">
-                  Professional: {getAssignedProfessionalLabel(serviceData.assignedProfessional)}
-                </p>
               </div>
             </div>
 
             <div className="flex w-full max-w-full shrink-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] xl:w-auto xl:justify-end xl:overflow-visible xl:pb-0 [&::-webkit-scrollbar]:hidden">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Add note to next follow-up"
+                  className="h-8 w-8 shrink-0 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900 hover:text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+                  onClick={() => {
+                    if (nextFollowUpStep) openStepNoteDialog(nextFollowUpStep)
+                  }}
+                  disabled={!nextFollowUpStep}
+                >
+                  <NotebookPen className="h-4 w-4" aria-hidden="true" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>
+                {nextFollowUpStep ? "Add follow-up note" : "No open follow-up"}
+              </TooltipContent>
+            </Tooltip>
+
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -2509,6 +2517,22 @@ export function ContactServiceDetailsPanel({
             ) : null}
           </div>
           </div>
+        </header>
+
+        <div className="flex shrink-0 flex-col gap-2 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_46%,#fff7ed_100%)] px-4 py-3 md:px-5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+            <span className="font-semibold text-slate-950">{serviceData.service.name}</span>
+            {serviceData.followUpTemplate?.name ? (
+              <>
+                <span className="size-1 rounded-full bg-slate-300" aria-hidden="true" />
+                <span>{serviceData.followUpTemplate.name}</span>
+              </>
+            ) : null}
+            <span className="size-1 rounded-full bg-slate-300" aria-hidden="true" />
+            <span>
+              Professional: {getAssignedProfessionalLabel(serviceData.assignedProfessional)}
+            </span>
+          </div>
         </div>
 
         <Dialog
@@ -2567,162 +2591,171 @@ export function ContactServiceDetailsPanel({
 
         <nav
           aria-label="Service workspace sections"
-          className="sticky top-[calc(var(--tenant-shell-header-height)+6.25rem)] z-10 overflow-hidden rounded-[18px] border border-blue-200/80 bg-[#e4efff]/95 shadow-sm backdrop-blur xl:top-[calc(var(--tenant-shell-header-height)+3.5rem)]"
+          className="relative min-w-0 shrink-0 overflow-hidden border-y border-blue-200/80 bg-[#e4efff]"
         >
-          <div className="overflow-x-auto px-2 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 opacity-35 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-16 -bottom-24 size-48 rounded-full bg-blue-300/20 blur-3xl"
+          />
+          <div className="relative overflow-x-auto px-4 py-3 [scrollbar-width:none] md:px-5 [&::-webkit-scrollbar]:hidden">
             <div className="flex min-w-max items-center gap-1">
               {SERVICE_SECTIONS.map((section) => (
-                <a
+                <Link
                   key={section.value}
-                  href={`#service-${section.value}`}
-                  aria-current={activeSection === section.value ? "location" : undefined}
-                  onClick={(event) => {
-                    event.preventDefault()
-                    scrollToSection(section.value)
-                  }}
+                  href={getServiceEnrollmentHref({
+                    tenantSlug,
+                    contactServiceId,
+                    view: section.value,
+                    returnTo,
+                  })}
+                  aria-current={activeView === section.value ? "page" : undefined}
                   className={cn(
-                    "inline-flex h-8 items-center rounded-lg px-3 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-[#e4efff]",
-                    activeSection === section.value
-                      ? "bg-blue-950 text-white shadow-sm"
-                      : "text-slate-600 hover:bg-white/80 hover:text-slate-950",
+                    "inline-flex h-8 items-center rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-[#e4efff]",
+                    activeView === section.value
+                      ? "bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+                      : "text-slate-600 hover:bg-white/75 hover:text-slate-950",
                   )}
                 >
                   {section.label}
-                </a>
+                </Link>
               ))}
             </div>
           </div>
         </nav>
 
-        <section
-          id="service-overview"
-          aria-labelledby="service-overview-title"
-          className="scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] xl:scroll-mt-[calc(var(--tenant-shell-header-height)+7.5rem)]"
+        <div
+          id="service-workspace-content"
+          className="min-h-0 min-w-0 flex-1 scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] bg-background px-4 py-5 md:px-5 md:py-6"
         >
-          <h2 id="service-overview-title" className="sr-only">Service overview</h2>
-          <div className="grid gap-3 lg:grid-cols-3">
-            <div className="min-w-0 rounded-[20px] border border-slate-200 bg-white px-4 py-3.5 shadow-sm">
-              <div className="flex items-center gap-2 text-slate-400">
-                <CircleDollarSign className="size-4" />
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Total amount</p>
+        {activeView === "overview" ? (
+          <div className="space-y-6">
+          <section
+            className="rounded-[26px] border border-slate-200 bg-slate-50 p-5"
+            aria-labelledby="service-overview-title"
+          >
+            <h2 id="service-overview-title" className="sr-only">Service overview</h2>
+
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0 space-y-1">
+                <p className="text-[11px] font-semibold uppercase text-slate-400">
+                  Service priority · {overviewPriority.badge}
+                </p>
+                <h3 className="text-2xl font-semibold text-slate-950">
+                  {overviewPriority.title}
+                </h3>
+                <p className="max-w-3xl text-sm text-slate-600">
+                  {overviewPriority.description}
+                </p>
+                {overviewPriority.dateAt ? (
+                  <p className="text-xs text-slate-500">
+                    {formatDateTimeForDisplay(overviewPriority.dateAt, serviceData.timezone)}
+                  </p>
+                ) : null}
               </div>
-              <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
-                {currencyFormatter(serviceData.totalPriceCents, serviceData.currency)}
-              </p>
-              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
-                <span>Purchased {formatDateOnly(serviceData.purchasedAt ?? serviceData.startedAt)}</span>
-                <span>
-                  {taxAmountCents > 0
-                    ? `Includes ${currencyFormatter(taxAmountCents, serviceData.currency)} in ${tenantBilling.taxLabel || "tax"}`
-                    : tenantBilling.taxEnabled && serviceData.service.isTaxExempt
-                      ? "Tax exempt"
-                      : "No tax applied"}
-                </span>
+
+              <div className="shrink-0">
+                {overviewPriority.action === "CHECKLIST" ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="cursor-pointer rounded-xl border-white/80 bg-white/80 text-xs font-semibold text-slate-700 shadow-sm hover:bg-white hover:text-slate-950"
+                    onClick={openChecklistSheet}
+                  >
+                    {overviewPriority.actionLabel}
+                  </Button>
+                ) : (
+                  <Link
+                    href={getServiceEnrollmentFollowUpsHref({
+                      tenantSlug,
+                      contactServiceId,
+                      returnTo,
+                    })}
+                    className="inline-flex h-9 items-center justify-center rounded-xl border border-white/80 bg-white/80 px-4 text-xs font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-white hover:text-slate-950 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  >
+                    {overviewPriority.actionLabel}
+                  </Link>
+                )}
               </div>
             </div>
 
-            <div className="min-w-0 rounded-[20px] border border-slate-200 bg-white px-4 py-3.5 shadow-sm">
-              <div className="flex items-center gap-2 text-slate-400">
-                <CreditCard className="size-4" />
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Payment position</p>
-              </div>
-              <div className="mt-2 grid grid-cols-2 divide-x divide-slate-200">
-                <div className="min-w-0 pr-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Paid</p>
-                  <p className="mt-0.5 truncate text-lg font-semibold text-emerald-700">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <Link
+                href={getServiceEnrollmentFollowUpsHref({
+                  tenantSlug,
+                  contactServiceId,
+                  returnTo,
+                })}
+                className="group min-w-0 rounded-[22px] outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                aria-label="View service follow-ups"
+              >
+                <div className="h-full min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur transition group-hover:-translate-y-0.5 group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-md">
+                  <p className="text-[11px] font-semibold uppercase text-slate-400">Follow-up</p>
+                  <p className="mt-2 truncate text-xl font-semibold text-slate-950">
+                    {followUpSteps.length
+                      ? `${followUpCompletedCount} of ${followUpSteps.length} steps`
+                      : "No steps enrolled"}
+                  </p>
+                  <p className="mt-1 truncate text-xs text-slate-500">
+                    {followUpSteps.length ? `${followUpCompletionPercentage}% complete` : "Workflow not configured"}
+                    {serviceData.nextFollowUp?.at
+                      ? ` · Next due ${formatDateTimeForDisplay(serviceData.nextFollowUp.at, serviceData.timezone)}`
+                      : ""}
+                  </p>
+                </div>
+              </Link>
+
+              <Link
+                href={getServiceEnrollmentHref({
+                  tenantSlug,
+                  contactServiceId,
+                  view: "payments",
+                  returnTo,
+                })}
+                className="group min-w-0 rounded-[22px] outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                aria-label="View service payments"
+              >
+                <div className="h-full min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur transition group-hover:-translate-y-0.5 group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-md">
+                  <p className="text-[11px] font-semibold uppercase text-slate-400">Financial position</p>
+                  <p className="mt-2 truncate text-xl font-semibold text-slate-950">
+                    {currencyFormatter(serviceData.remainingCents, serviceData.currency)} balance
+                  </p>
+                  <p className="mt-1 truncate text-xs text-slate-500">
+                    Total {currencyFormatter(serviceData.totalPriceCents, serviceData.currency)} · Paid{" "}
                     {currencyFormatter(serviceData.paidCents, serviceData.currency)}
                   </p>
                 </div>
-                <div className="min-w-0 pl-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Balance</p>
-                  <p className="mt-0.5 truncate text-lg font-semibold text-amber-700">
-                    {currencyFormatter(serviceData.remainingCents, serviceData.currency)}
+              </Link>
+
+              <button
+                type="button"
+                className="group min-w-0 rounded-[22px] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:col-span-2 xl:col-span-1"
+                onClick={openChecklistSheet}
+                aria-label="Open service checklist"
+              >
+                <div className="h-full min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur transition group-hover:-translate-y-0.5 group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-md">
+                  <p className="text-[11px] font-semibold uppercase text-slate-400">Checklist readiness</p>
+                  <p className="mt-2 truncate text-xl font-semibold text-slate-950">
+                    {checklistItems.length
+                      ? `${checklistCompletedCount} of ${checklistItems.length} received`
+                      : "No requirements"}
+                  </p>
+                  <p className="mt-1 truncate text-xs text-slate-500">
+                    {checklistItems.length
+                      ? `${checklistCompletionPercentage}% received · ${checklistMissingCount} missing · ${checklistInformedCount} informed`
+                      : "No checklist items are configured"}
                   </p>
                 </div>
-              </div>
-              <p className="mt-1 text-xs text-slate-500">
-                {latestPaymentAt ? `Last payment ${formatDateOnly(latestPaymentAt)}` : "No payments recorded yet"}
-              </p>
-            </div>
-
-            <button
-              type="button"
-              className={cn(
-                "min-w-0 cursor-pointer rounded-[20px] border px-4 py-3.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40",
-                nextFollowUpStep && getStepTimeMeta(nextFollowUpStep, item?.timezone).label === "Overdue"
-                  ? "border-rose-200 bg-rose-50/50"
-                  : "border-blue-200 bg-blue-50/50",
-              )}
-              onClick={() => scrollToSection("follow-up")}
-              aria-label="View follow-up workflow"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-blue-700">
-                  <Clock3 className="size-4" />
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Next follow-up</p>
-                </div>
-                {nextFollowUpStep ? (
-                  <Badge className={getFollowUpStepStatusBadgeClass(nextFollowUpStep.status)}>
-                    {formatFollowUpStepStatus(nextFollowUpStep.status)}
-                  </Badge>
-                ) : null}
-              </div>
-              <p className="mt-2 truncate text-lg font-semibold tracking-tight text-slate-950">
-                {serviceData.nextFollowUp?.at
-                  ? formatDateTimeForDisplay(serviceData.nextFollowUp.at, serviceData.timezone)
-                  : nextFollowUpStep
-                    ? getStepTimeMeta(nextFollowUpStep, item?.timezone).helper
-                    : "Not scheduled"}
-              </p>
-              <div className="mt-1 flex items-center justify-between gap-3 text-xs text-slate-500">
-                <span className="truncate">{nextFollowUpStep?.title ?? "No open follow-up steps"}</span>
-                <span className="shrink-0 font-semibold text-emerald-700 tabular-nums">
-                  {followUpCompletionPercentage}% complete
-                </span>
-              </div>
-            </button>
-          </div>
-
-          <section className="mt-3 rounded-[20px] border border-slate-200 bg-white px-4 py-3 shadow-sm">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-              <div className="flex min-w-0 items-center justify-between gap-3 lg:w-64 lg:shrink-0 lg:justify-start">
-                <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Checklist</p>
-                  <p className="truncate text-sm font-semibold text-slate-950">Service requirements</p>
-                </div>
-                <Badge variant="outline" className="shrink-0 border-slate-200 bg-slate-50 text-slate-700">
-                  {checklistCompletedCount}/{checklistItems.length}
-                </Badge>
-              </div>
-              {checklistItems.length ? (
-                <div className="relative min-w-0 flex-1">
-                  <Progress
-                    value={checklistCompletionPercentage}
-                    aria-label="Checklist completion"
-                    aria-valuetext={`${checklistCompletionPercentage}% complete, ${checklistCompletedCount} of ${checklistItems.length} items`}
-                    className="h-7 border border-emerald-100 bg-emerald-100/60 [&_[data-slot=progress-indicator]]:bg-[linear-gradient(90deg,#047857_0%,#10b981_100%)]"
-                  />
-                  <span aria-hidden="true" className="absolute inset-y-1 left-1 flex items-center rounded-full bg-emerald-950 px-2 text-[10px] font-semibold text-white shadow-sm tabular-nums">
-                    {checklistCompletionPercentage}%
-                  </span>
-                  <span aria-hidden="true" className="absolute inset-y-1 right-1 flex items-center rounded-full bg-white/90 px-2 text-[11px] font-semibold text-emerald-950 shadow-sm ring-1 ring-emerald-950/5 tabular-nums">
-                    {checklistCompletedCount} of {checklistItems.length} items
-                  </span>
-                </div>
-              ) : (
-                <p className="flex-1 text-sm text-slate-500">No checklist requirements configured.</p>
-              )}
-              <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-slate-200 bg-white" onClick={openChecklistSheet}>
-                Open checklist
-              </Button>
+              </button>
             </div>
           </section>
-        </section>
-
         <section
-          id="service-follow-up"
+          id="service-follow-ups"
+          className="scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)]"
           aria-labelledby="service-follow-up-title"
-          className="scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] xl:scroll-mt-[calc(var(--tenant-shell-header-height)+7.5rem)]"
         >
           {!item ? (
             <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-10 text-center">
@@ -2749,8 +2782,8 @@ export function ContactServiceDetailsPanel({
             <section className="rounded-[24px] border border-slate-200 bg-white p-5">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service workflow</p>
-                  <h2 id="service-follow-up-title" className="mt-1 text-lg font-semibold tracking-tight text-slate-950">
+                  <p className="text-xs font-semibold uppercase text-slate-500">Service workflow</p>
+                  <h2 id="service-follow-up-title" className="mt-1 text-lg font-semibold text-slate-950">
                     Follow-up
                   </h2>
                   <p className="mt-1 text-sm text-slate-600">
@@ -2951,7 +2984,7 @@ export function ContactServiceDetailsPanel({
                                   <div className="flex min-w-0 flex-col gap-1">
                                     <button
                                       type="button"
-                                      className="w-fit max-w-full cursor-pointer truncate text-left text-sm font-semibold tracking-tight text-slate-950 transition hover:text-blue-800"
+                                      className="w-fit max-w-full cursor-pointer truncate text-left text-sm font-semibold text-slate-950 transition hover:text-blue-800"
                                       onClick={() => openStepDetailsDialog(step)}
                                     >
                                       {step.title}
@@ -3093,12 +3126,11 @@ export function ContactServiceDetailsPanel({
             </section>
           )}
         </section>
+          </div>
+        ) : null}
 
-        <section
-          id="service-payments"
-          aria-labelledby="service-payments-title"
-          className="scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] xl:scroll-mt-[calc(var(--tenant-shell-header-height)+7.5rem)]"
-        >
+        {activeView === "payments" ? (
+        <section aria-labelledby="service-payments-title">
           {!item ? (
             <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-10 text-center">
               <h2 id="service-payments-title" className="text-base font-semibold text-slate-950">
@@ -3124,8 +3156,8 @@ export function ContactServiceDetailsPanel({
             <section className="rounded-[24px] border border-slate-200 bg-white p-5">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Payment history</p>
-                  <h2 id="service-payments-title" className="mt-1 text-lg font-semibold tracking-tight text-slate-950">
+                  <p className="text-xs font-semibold uppercase text-slate-500">Payment history</p>
+                  <h2 id="service-payments-title" className="mt-1 text-lg font-semibold text-slate-950">
                     Payments
                   </h2>
                   <p className="mt-1 text-sm text-slate-600">
@@ -3147,7 +3179,7 @@ export function ContactServiceDetailsPanel({
               </div>
               <div className="mb-4 grid gap-3 md:grid-cols-3">
                 <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  <p className="text-[11px] font-semibold uppercase text-slate-400">
                     Schedule
                   </p>
                   <p className="mt-2 text-base font-semibold text-slate-950">
@@ -3157,7 +3189,7 @@ export function ContactServiceDetailsPanel({
                   </p>
                 </div>
                 <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  <p className="text-[11px] font-semibold uppercase text-slate-400">
                     Next Payment Date
                   </p>
                   <p className="mt-2 text-base font-semibold text-slate-950">
@@ -3169,7 +3201,7 @@ export function ContactServiceDetailsPanel({
                   </p>
                 </div>
                 <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  <p className="text-[11px] font-semibold uppercase text-slate-400">
                     Minimum Deposit
                   </p>
                   <p className="mt-2 text-base font-semibold text-slate-950">
@@ -3209,7 +3241,7 @@ export function ContactServiceDetailsPanel({
                             <p className="text-xs font-medium text-slate-500">
                               {formatDateTime(payment.paidAt)}
                             </p>
-                            <p className="mt-1 text-lg font-semibold tracking-tight text-slate-950">
+                            <p className="mt-1 text-lg font-semibold text-slate-950">
                               {currencyFormatter(payment.amountCents, item.currency)}
                             </p>
                           </div>
@@ -3244,19 +3276,19 @@ export function ContactServiceDetailsPanel({
                     <table className="w-full min-w-[760px] table-fixed">
                       <thead>
                         <tr className="border-b border-slate-200 bg-slate-50/40">
-                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase text-slate-400">
                             Date Paid
                           </th>
-                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase text-slate-400">
                             Recorded By
                           </th>
-                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase text-slate-400">
                             Type
                           </th>
-                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase text-slate-400">
                             Note
                           </th>
-                          <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase text-slate-400">
                             Amount
                           </th>
                         </tr>
@@ -3348,12 +3380,10 @@ export function ContactServiceDetailsPanel({
             </section>
           )}
         </section>
+        ) : null}
 
-        <section
-          id="service-notes"
-          aria-labelledby="service-notes-title"
-          className="scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] xl:scroll-mt-[calc(var(--tenant-shell-header-height)+7.5rem)]"
-        >
+        {activeView === "notes" ? (
+        <section aria-labelledby="service-notes-title">
           {!item ? (
             <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-10 text-center">
               <h2 id="service-notes-title" className="text-base font-semibold text-slate-950">
@@ -3379,8 +3409,8 @@ export function ContactServiceDetailsPanel({
             <section className="rounded-[24px] border border-slate-200 bg-white p-5">
               <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Service notes</p>
-                  <h2 id="service-notes-title" className="mt-1 text-lg font-semibold tracking-tight text-slate-950">
+                  <p className="text-xs font-semibold uppercase text-slate-500">Service notes</p>
+                  <h2 id="service-notes-title" className="mt-1 text-lg font-semibold text-slate-950">
                     Notes workspace
                   </h2>
                   <p className="mt-1 text-sm text-slate-600">
@@ -3417,7 +3447,7 @@ export function ContactServiceDetailsPanel({
                             </AvatarFallback>
                           </Avatar>
                           <div className="min-w-0">
-                            <h3 className="text-sm font-semibold tracking-tight text-slate-950">{note.title}</h3>
+                            <h3 className="text-sm font-semibold text-slate-950">{note.title}</h3>
                             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
                               <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2 py-1">
                                 {note.createdBy?.name ? `Added by ${note.createdBy.name}` : "Added to this service"}
@@ -3551,7 +3581,7 @@ export function ContactServiceDetailsPanel({
               >
                 <div className="space-y-4">
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    <p className="text-xs font-semibold uppercase text-slate-500">
                       New Service Note
                     </p>
                     <p className="mt-1 text-sm text-slate-600">
@@ -3579,7 +3609,7 @@ export function ContactServiceDetailsPanel({
                   <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50/80 px-4 py-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div>
-                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                        <p className="text-xs font-semibold uppercase text-slate-400">
                           Attachments
                         </p>
                         <p className="mt-1 text-sm text-slate-600">
@@ -3689,6 +3719,10 @@ export function ContactServiceDetailsPanel({
             </section>
           )}
         </section>
+        ) : null}
+
+        </div>
+        </div>
 
       <Sheet
         open={isChecklistSheetOpen}
@@ -3813,7 +3847,7 @@ export function ContactServiceDetailsPanel({
                               {checklistItem.isRequired ? (
                                 <Badge
                                   variant="outline"
-                                  className="rounded-full border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-rose-700"
+                                  className="rounded-full border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-rose-700"
                                 >
                                   Required
                                 </Badge>
@@ -3949,10 +3983,10 @@ export function ContactServiceDetailsPanel({
               className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-blue-200/50 blur-3xl"
             />
             <div className="relative">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-700">
+              <p className="text-[11px] font-semibold uppercase text-blue-700">
                 Service activity
               </p>
-              <SheetTitle className="mt-2 text-xl font-semibold tracking-tight text-slate-950">
+              <SheetTitle className="mt-2 text-xl font-semibold text-slate-950">
                 Review activity log
               </SheetTitle>
               <SheetDescription className="mt-2 max-w-md text-sm leading-6 text-slate-600">
@@ -4076,7 +4110,7 @@ export function ContactServiceDetailsPanel({
           <div className="grid gap-5 py-4">
             <div className="grid gap-3 rounded-2xl border border-slate-200/90 px-4 py-4 sm:grid-cols-2">
               <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                <p className="text-[11px] font-semibold uppercase text-slate-400">
                   Remaining balance
                 </p>
                 <div className="mt-2 flex items-center gap-2 text-base font-semibold text-slate-950">
@@ -4085,7 +4119,7 @@ export function ContactServiceDetailsPanel({
                 </div>
               </div>
               <div className="min-w-0 sm:text-right">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                <p className="text-[11px] font-semibold uppercase text-slate-400">
                   Status
                 </p>
                 <div className="mt-2 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
@@ -4492,20 +4526,20 @@ export function ContactServiceDetailsPanel({
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Status</p>
+                  <p className="text-xs font-semibold uppercase text-slate-500">Status</p>
                   <p className="mt-1 text-sm capitalize text-slate-900">
                     {(activeStep.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}
                   </p>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Due</p>
+                  <p className="text-xs font-semibold uppercase text-slate-500">Due</p>
                   <p className="mt-1 text-sm text-slate-900">
                     {activeStep.dueAt ? new Date(activeStep.dueAt).toLocaleString() : "No due date"}
                   </p>
                 </div>
               </div>
               <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Follow-up owner</p>
+                <p className="text-xs font-semibold uppercase text-slate-500">Follow-up owner</p>
                 <div className="mt-3 flex items-center gap-3">
                   <Avatar className="h-10 w-10 shrink-0 border border-slate-200">
                     <AvatarImage
@@ -4554,13 +4588,13 @@ export function ContactServiceDetailsPanel({
                 ) : null}
               </div>
               <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Description</p>
+                <p className="text-xs font-semibold uppercase text-slate-500">Description</p>
                 <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
                   {activeStep.notesTemplate?.trim() || "No description provided for this step."}
                 </p>
               </div>
               <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Latest step note</p>
+                <p className="text-xs font-semibold uppercase text-slate-500">Latest step note</p>
                 <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
                   {activeStep.note?.trim() || "No step note recorded yet."}
                 </p>
@@ -4646,7 +4680,7 @@ export function ContactServiceDetailsPanel({
             <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50/80 px-4 py-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                  <p className="text-xs font-semibold uppercase text-slate-400">
                     Attachments
                   </p>
                   <p className="mt-1 text-sm text-slate-600">
