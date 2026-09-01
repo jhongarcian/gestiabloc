@@ -1,5 +1,6 @@
-import { ContactServiceDetailsPanel } from "../../_components/contact-service-details-panel"
-import { getContactDetailsContext } from "../../_lib/contact-details"
+import { permanentRedirect } from "next/navigation"
+
+import { getContactServicesHref, getServiceEnrollmentHref } from "@/lib/routes"
 
 export default async function ContactServiceDetailsPage({
   params,
@@ -7,15 +8,12 @@ export default async function ContactServiceDetailsPage({
   params: Promise<{ tenantSlug: string; contactId: string; contactServiceId: string }>
 }) {
   const { tenantSlug, contactId, contactServiceId } = await params
-  const { tenantId, membershipSecurityLevel } = await getContactDetailsContext(tenantSlug, contactId)
 
-  return (
-    <ContactServiceDetailsPanel
-      tenantId={tenantId}
-      tenantSlug={tenantSlug}
-      contactId={contactId}
-      contactServiceId={contactServiceId}
-      membershipSecurityLevel={membershipSecurityLevel}
-    />
+  permanentRedirect(
+    getServiceEnrollmentHref({
+      tenantSlug,
+      contactServiceId,
+      returnTo: getContactServicesHref({ tenantSlug, contactId }),
+    }),
   )
 }

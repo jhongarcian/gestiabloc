@@ -325,11 +325,15 @@ export function TenantShell({
     segments.forEach((segment, index) => {
       acc += `/${segment}`
       const isContactIdSegment = segments[0] === "contacts" && index === 1
+      const isServiceEnrollmentRoute =
+        segments[0] === "services" && segments[1] === "enrollments"
+      const isServiceEnrollmentsSegment = isServiceEnrollmentRoute && index === 1
       const isServiceIdSegment =
         (segments[0] === "account-settings" &&
           segments[1] === "services" &&
           index === 2) ||
-        (segments[0] === "services" && index === 1)
+        (segments[0] === "services" &&
+          index === (isServiceEnrollmentRoute ? 2 : 1))
       const isServiceFollowUpsSegment =
         segments[0] === "account-settings" &&
         segments[1] === "services" &&
@@ -337,6 +341,9 @@ export function TenantShell({
         segment === "follow-up-templates"
 
       if (isContactIdSegment && !contactCrumbLabel) {
+        return
+      }
+      if (isServiceEnrollmentsSegment) {
         return
       }
       if (isServiceIdSegment && !serviceCrumbLabel) {
@@ -441,7 +448,9 @@ export function TenantShell({
       segments[0] === "account-settings" && segments[1] === "services"
         ? segments[2]
         : segments[0] === "services"
-          ? segments[1]
+          ? segments[1] === "enrollments"
+            ? segments[2]
+            : segments[1]
           : null
     if (!serviceId) {
       setServiceCrumbLabel(null)

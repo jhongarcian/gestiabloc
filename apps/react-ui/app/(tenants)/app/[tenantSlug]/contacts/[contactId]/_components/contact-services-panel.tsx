@@ -86,6 +86,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
+import {
+  CONTACT_SERVICES_PAGE_SIZES,
+  getContactServicesHref,
+  getServiceEnrollmentHref,
+  type ContactServicesPageSize,
+} from "@/lib/routes"
 import { cn } from "@/lib/utils"
 import {
   FIT_STATUS_STYLES,
@@ -147,7 +153,7 @@ type ContactServicesResponse = {
   }
 }
 
-const PAGE_SIZE_OPTIONS = [10, 25] as const
+const PAGE_SIZE_OPTIONS = CONTACT_SERVICES_PAGE_SIZES
 
 type ServiceOptionsResponse = {
   ok: boolean
@@ -225,6 +231,8 @@ type ContactServicesPanelProps = {
   membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
   initialCreateServiceId?: string | null
   initialCreateOpen?: boolean
+  initialPage?: number
+  initialPageSize?: ContactServicesPageSize
 }
 
 const currencyFormatter = (valueCents: number, currency: string) =>
@@ -834,14 +842,16 @@ export function ContactServicesPanel({
   contactId,
   initialCreateServiceId,
   initialCreateOpen,
+  initialPage = 1,
+  initialPageSize = 10,
 }: ContactServicesPanelProps) {
   const router = useRouter()
   const [items, setItems] = useState<ContactServiceItem[]>([])
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(10)
-  const [pagination, setPagination] = useState({
-    page: 1,
-    pageSize: 10,
+  const [page, setPage] = useState(initialPage)
+  const [pageSize, setPageSize] = useState<ContactServicesPageSize>(initialPageSize)
+  const [pagination, setPagination] = useState<ContactServicesResponse["pagination"]>({
+    page: initialPage,
+    pageSize: initialPageSize,
     total: 0,
     totalPages: 1,
   })
@@ -882,6 +892,21 @@ export function ContactServicesPanel({
   >({})
 
   const hasItems = items.length > 0
+  const currentListHref = useMemo(
+    () => getContactServicesHref({ tenantSlug, contactId, page, pageSize }),
+    [contactId, page, pageSize, tenantSlug],
+  )
+
+  const navigateListPage = useCallback((nextPage: number, nextPageSize: ContactServicesPageSize) => {
+    const safePage = Math.max(1, nextPage)
+    setPage(safePage)
+    setPageSize(nextPageSize)
+  }, [])
+
+  useEffect(() => {
+    if (initialCreateOpen) return
+    router.replace(currentListHref, { scroll: false })
+  }, [currentListHref, initialCreateOpen, router])
 
   const resetCreate = useCallback(() => {
     setCreateStep(1)
@@ -908,9 +933,9 @@ export function ContactServicesPanel({
     setIsCreateOpen(false)
     resetCreate()
     if (initialCreateOpen) {
-      router.replace(`/app/${tenantSlug}/contacts/${contactId}/services`)
+      router.replace(currentListHref, { scroll: false })
     }
-  }, [contactId, initialCreateOpen, resetCreate, router, tenantSlug])
+  }, [currentListHref, initialCreateOpen, resetCreate, router])
 
   const loadServices = useCallback(async () => {
     setIsLoading(true)
@@ -925,6 +950,9 @@ export function ContactServicesPanel({
       setItems(data.items)
       setPagination(data.pagination)
       setSummary(data.summary)
+      if (page > Math.max(1, data.pagination.totalPages)) {
+        navigateListPage(Math.max(1, data.pagination.totalPages), pageSize)
+      }
     } catch {
       setItems([])
       setSummary(null)
@@ -938,7 +966,7 @@ export function ContactServicesPanel({
     } finally {
       setIsLoading(false)
     }
-  }, [tenantId, contactId, page, pageSize])
+  }, [tenantId, contactId, navigateListPage, page, pageSize])
 
   const loadFitRecommendations = useCallback(async () => {
     setIsLoadingFitRecommendations(true)
@@ -1479,7 +1507,13 @@ export function ContactServicesPanel({
       if (hasRunFitScan) {
         await loadFitRecommendations()
       }
-      router.push(`/app/${tenantSlug}/contacts/${contactId}/services/${data.contactService.id}`)
+      router.push(
+        getServiceEnrollmentHref({
+          tenantSlug,
+          contactServiceId: data.contactService.id,
+          returnTo: currentListHref,
+        }),
+      )
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
@@ -1698,7 +1732,11 @@ export function ContactServicesPanel({
                           >
                             <TableCell className="px-4 py-0">
                               <Link
-                                href={`/app/${tenantSlug}/contacts/${contactId}/services/${item.id}`}
+                                href={getServiceEnrollmentHref({
+                                  tenantSlug,
+                                  contactServiceId: item.id,
+                                  returnTo: currentListHref,
+                                })}
                                 className="block truncate font-medium text-foreground transition-colors before:absolute before:inset-0 before:z-10 before:rounded-md hover:text-blue-800 focus-visible:outline-none focus-visible:before:ring-2 focus-visible:before:ring-ring focus-visible:before:ring-offset-1"
                                 title={item.service.name}
                                 aria-label={`Open ${item.service.name}`}
@@ -1822,8 +1860,7 @@ export function ContactServicesPanel({
                     onValueChange={(value) => {
                       const nextPageSize = Number(value)
                       if (nextPageSize === 10 || nextPageSize === 25) {
-                        setPageSize(nextPageSize)
-                        setPage(1)
+                        navigateListPage(1, nextPageSize)
                       }
                     }}
                   >
@@ -1853,7 +1890,7 @@ export function ContactServicesPanel({
                   size="icon-sm"
                   aria-label="Previous page"
                   disabled={!canGoPrevious || isLoading}
-                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  onClick={() => navigateListPage(Math.max(1, page - 1), pageSize)}
                 >
                   <ChevronLeft />
                 </Button>
@@ -1871,7 +1908,7 @@ export function ContactServicesPanel({
                     }
                     aria-current={pageNumber === page ? "page" : undefined}
                     disabled={isLoading}
-                    onClick={() => setPage(pageNumber)}
+                    onClick={() => navigateListPage(pageNumber, pageSize)}
                   >
                     {pageNumber}
                   </Button>
@@ -1883,7 +1920,7 @@ export function ContactServicesPanel({
                   size="icon-sm"
                   aria-label="Next page"
                   disabled={!canGoNext || isLoading}
-                  onClick={() => setPage((current) => current + 1)}
+                  onClick={() => navigateListPage(page + 1, pageSize)}
                 >
                   <ChevronRight />
                 </Button>

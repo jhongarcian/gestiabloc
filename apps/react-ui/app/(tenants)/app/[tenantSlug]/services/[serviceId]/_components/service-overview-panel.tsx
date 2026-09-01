@@ -68,6 +68,7 @@ import {
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
+import { getServiceEnrollmentHref } from "@/lib/routes"
 import { cn } from "@/lib/utils"
 
 type ServiceProfessional = {
@@ -1093,7 +1094,10 @@ function CreateTransactionDialog({
       onOpenChange(false)
       resetForm()
       router.push(
-        `/app/${tenantSlug}/contacts/${selectedContact.id}/services/${data.contactService.id}`,
+        getServiceEnrollmentHref({
+          tenantSlug,
+          contactServiceId: data.contactService.id,
+        }),
       )
       router.refresh()
     } catch (error) {

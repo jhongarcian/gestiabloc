@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
+import { getServiceEnrollmentHref } from "@/lib/routes"
 import { cn } from "@/lib/utils"
 import {
   buildAllScopeServiceNarrative,
@@ -133,7 +134,10 @@ function getServiceAction(
   if (item.hasActiveEnrollment && item.currentContactServiceId) {
     return {
       label: "Open service",
-      href: `/app/${tenantSlug}/contacts/${contactId}/services/${encodeURIComponent(item.currentContactServiceId)}`,
+      href: getServiceEnrollmentHref({
+        tenantSlug,
+        contactServiceId: item.currentContactServiceId,
+      }),
       variant: "default" as const,
     }
   }
@@ -141,7 +145,10 @@ function getServiceAction(
   if (item.hasPurchased && item.currentContactServiceId) {
     return {
       label: "View service",
-      href: `/app/${tenantSlug}/contacts/${contactId}/services/${encodeURIComponent(item.currentContactServiceId)}`,
+      href: getServiceEnrollmentHref({
+        tenantSlug,
+        contactServiceId: item.currentContactServiceId,
+      }),
       variant: "outline" as const,
     }
   }

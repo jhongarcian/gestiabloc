@@ -11,6 +11,7 @@ import {
 } from "@/components/stacked-avatar-group"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
+import { getServiceEnrollmentHref } from "@/lib/routes"
 import { getCalendarMeta, type CalendarMetaResponse } from "../../calendar/_lib/calendar-api"
 import { ContactBreadcrumbSync } from "./_components/contact-breadcrumb-sync"
 import { ContactDetailNavigation } from "./_components/contact-detail-navigation"
@@ -430,7 +431,10 @@ export default async function ContactDetailsLayout({
               {visibleActiveFollowUpServices.map((service) => (
                 <Link
                   key={service.id}
-                  href={`/app/${tenantSlug}/contacts/${contactId}/services/${service.id}`}
+                  href={getServiceEnrollmentHref({
+                    tenantSlug,
+                    contactServiceId: service.id,
+                  })}
                   aria-label={`Open ${service.name} service details`}
                   className={
                     service.isOverdue
