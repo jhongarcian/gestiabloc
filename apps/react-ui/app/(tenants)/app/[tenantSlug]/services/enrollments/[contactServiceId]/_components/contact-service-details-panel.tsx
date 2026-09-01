@@ -823,7 +823,7 @@ function FollowUpStepAssigneeInput({
           disabled={disabled}
           aria-invalid={ariaInvalid}
           aria-expanded={open}
-          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+          className="h-11 w-full justify-between rounded-full border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
         >
           <span className="flex min-w-0 items-center gap-2.5">
             <Avatar size="sm" className="ring-2 ring-blue-50">
@@ -3245,7 +3245,7 @@ export function ContactServiceDetailsPanel({
                                     <Button
                                       type="button"
                                       variant="outline"
-                                      className="h-9 flex-1 cursor-pointer rounded-lg border-slate-300 bg-white px-3 text-sm font-medium text-slate-800 shadow-none hover:bg-slate-50 sm:flex-none"
+                                      className="h-8 flex-1 cursor-pointer rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 sm:flex-none"
                                       disabled={
                                         isTimelineBusy ||
                                         (isExpanded && expandedStepPanelMode === "STATUS")
@@ -3253,7 +3253,11 @@ export function ContactServiceDetailsPanel({
                                       onClick={() => void prepareInlineStepStatusEditor(step)}
                                     >
                                       {mutatingStepId === step.id ? (
-                                        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                                        <Loader2
+                                          data-icon="inline-start"
+                                          className="animate-spin"
+                                          aria-hidden="true"
+                                        />
                                       ) : isStartingEarly ? (
                                         "Start early"
                                       ) : (

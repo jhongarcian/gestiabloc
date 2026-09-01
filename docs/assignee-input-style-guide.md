@@ -4,9 +4,14 @@ This guide defines the shared assignee input pattern for Gestiabloc forms. Use i
 
 The design direction is **identity before metadata**: show the person's avatar and full name first, use email only as supporting context, and make unassigned ownership explicit.
 
-Reference implementation:
+Reference implementations:
 
-`apps/react-ui/app/(tenants)/app/[tenantSlug]/tasks/_components/create-task-dialog.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/tasks/_components/task-assignee-input.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/enrollments/[contactServiceId]/_components/contact-service-details-panel.tsx`
+
+Related guidance:
+
+- Use `docs/button-style-guide.md` for adjacent Save, Cancel, and other compact actions.
 
 ## Data contract
 
@@ -45,7 +50,7 @@ Use a shadcn `Popover` containing `Command` for searchable assignment. The trigg
       disabled={isSubmitting}
       aria-invalid={Boolean(errors.assignee)}
       aria-expanded={assigneePickerOpen}
-      className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none"
+      className="h-11 w-full justify-between rounded-full border-blue-100 bg-white px-3 shadow-none"
     >
       {/* Selected avatar and full name */}
     </Button>
@@ -66,7 +71,7 @@ Use a shadcn `Popover` containing `Command` for searchable assignment. The trigg
 Component rules:
 
 - Use a button trigger, not a disabled text input.
-- Match standard control height with `h-11` and `rounded-xl`.
+- Match standard control height with `h-11` and use `rounded-full` for the pill shape.
 - Match the popover width to the trigger.
 - Use `CommandInput`, `CommandList`, `CommandEmpty`, `CommandGroup`, and `CommandItem` together.
 - Put every `CommandItem` inside `CommandGroup`.
@@ -139,6 +144,36 @@ Trigger rules:
 - Use `Not assigned` instead of an ambiguous empty placeholder when assignment is optional.
 - Do not add a decorative person icon when an avatar already communicates identity.
 - Keep hover and focus surfaces restrained and consistent with other form controls.
+
+## Pill shape and adjacent actions
+
+The assignee trigger uses the same rounded visual language as compact header controls and action buttons while retaining the standard `h-11` input height.
+
+```tsx
+<div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+  <TaskAssigneeInput
+    id="step-assignee"
+    value={draftAssigneeId}
+    onValueChange={setDraftAssigneeId}
+    options={assigneeOptions}
+  />
+  {hasAssigneeChange ? (
+    <Button className="h-8 rounded-full px-3 text-xs font-semibold">
+      Save assignee
+    </Button>
+  ) : null}
+</div>
+```
+
+Composition rules:
+
+- Use `rounded-full` on the assignee trigger; do not mix it with `rounded-lg` or `rounded-xl` variants in the same workflow.
+- Keep the trigger at `h-11` so its avatar, name, and touch target remain comfortable.
+- Center a compact `h-8` Save action beside the input with `items-center`.
+- Render Save only after the selected assignee differs from the persisted assignee.
+- Keep Save outside the popover trigger so both controls retain clear keyboard and pointer behavior.
+- Place validation or failure text below the entire control row, not between the input and Save action.
+- The popover panel remains a conventional surface; the pill radius applies to the closed trigger, not the results panel.
 
 ## Search behavior
 
@@ -252,8 +287,9 @@ Before merging an assignee input, verify:
 - Email is secondary and searchable.
 - `Not assigned` is explicit when supported.
 - The trigger height matches Status and adjacent inputs.
+- The trigger uses the shared `rounded-full` pill shape.
+- A conditional Save action follows the compact button guide and is vertically centered beside the input.
 - Long names truncate without layout overflow.
 - Search, empty, selected, disabled, and error states work.
 - The popover closes after selection.
 - The submitted value is a valid tenant user ID or `null`.
-
