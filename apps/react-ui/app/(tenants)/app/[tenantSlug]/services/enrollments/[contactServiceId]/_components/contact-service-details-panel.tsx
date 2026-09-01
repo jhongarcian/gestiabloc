@@ -47,6 +47,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { DateTimeInput } from "@/components/ui/date-time-input"
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -799,6 +806,7 @@ export function ContactServiceDetailsPanel({
   const [selectedPaymentId, setSelectedPaymentId] = useState<string | null>(null)
   const [paymentEntryMode, setPaymentEntryMode] = useState<"FULL" | "PARTIAL">("FULL")
   const [paymentAmountUsd, setPaymentAmountUsd] = useState("")
+  const [paymentAmountError, setPaymentAmountError] = useState<string | null>(null)
   const [paymentMethod, setPaymentMethod] = useState<string>("")
   const [paymentNote, setPaymentNote] = useState("")
   const [editPaymentAmountUsd, setEditPaymentAmountUsd] = useState("")
@@ -927,6 +935,7 @@ export function ContactServiceDetailsPanel({
   const resetPaymentForm = () => {
     setPaymentEntryMode("FULL")
     setPaymentAmountUsd("")
+    setPaymentAmountError(null)
     setPaymentMethod("")
     setPaymentNote("")
   }
@@ -1011,8 +1020,13 @@ export function ContactServiceDetailsPanel({
   }
 
   const onAddPayment = async () => {
+    if (!canManageSensitiveServiceActions) {
+      toast.error("You do not have permission to add transactions.")
+      return
+    }
     if (!item) return
     if (paymentEntryMode === "PARTIAL" && !item.allowPartialPayments) {
+      setPaymentAmountError("Partial payments are not available for this service.")
       toast.error("This service does not allow partial payments.")
       return
     }
@@ -1020,14 +1034,17 @@ export function ContactServiceDetailsPanel({
     const amountCents =
       paymentEntryMode === "FULL" ? item.remainingCents : parseUsdToCents(paymentAmountUsd)
     if (amountCents === null || amountCents <= 0) {
-      toast.error("Enter a valid payment amount in USD.")
+      setPaymentAmountError("Enter an amount greater than zero.")
       return
     }
     if (amountCents > item.remainingCents) {
-      toast.error("Payment amount cannot be greater than the remaining balance.")
+      setPaymentAmountError(
+        `Enter an amount no greater than ${currencyFormatter(item.remainingCents, item.currency)}.`,
+      )
       return
     }
 
+    setPaymentAmountError(null)
     setIsPaymentSaving(true)
     try {
       await api.post(`/api/services/${encodedTenantId}/contact-services/${item.id}/payments`, {
@@ -2254,6 +2271,30 @@ export function ContactServiceDetailsPanel({
               </TooltipContent>
             </Tooltip>
 
+            {canManageSensitiveServiceActions ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Add transaction"
+                    className="size-8 shrink-0 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900 hover:text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+                    onClick={() => {
+                      setIsPaymentOpen(true)
+                      void ensureDetailLoaded()
+                    }}
+                    disabled={!canAddPayments}
+                  >
+                    <CircleDollarSign aria-hidden="true" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>
+                  {canAddPayments ? "Add transaction" : "No remaining balance"}
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -3172,7 +3213,7 @@ export function ContactServiceDetailsPanel({
                     onClick={() => setIsPaymentOpen(true)}
                     disabled={!canAddPayments}
                   >
-                    <CircleDollarSign className="h-3.5 w-3.5" />
+                    <CircleDollarSign data-icon="inline-start" />
                     Add transaction
                   </Button>
                 ) : null}
@@ -4095,160 +4136,238 @@ export function ContactServiceDetailsPanel({
         <>
       <Dialog
         open={isPaymentOpen}
-        onOpenChange={(open) => {
-          setIsPaymentOpen(open)
-          if (!open) resetPaymentForm()
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && isPaymentSaving) return
+          setIsPaymentOpen(nextOpen)
+          if (!nextOpen) resetPaymentForm()
         }}
       >
-        <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-xl">
-          <DialogHeader className="gap-1 border-b border-slate-200 pb-4">
-            <DialogTitle>Add payment</DialogTitle>
-            <DialogDescription>
-              Record an additional payment for this service enrollment.
-            </DialogDescription>
+        <DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 bg-white p-0 shadow-2xl sm:max-w-2xl [&>button]:cursor-pointer">
+          <DialogHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
+            />
+            <div className="relative pr-10">
+              <div className="flex max-w-xl min-w-0 flex-col gap-1.5">
+                <p className="text-xs font-semibold text-blue-700">Service payment</p>
+                <DialogTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                  Add transaction
+                </DialogTitle>
+                <DialogDescription className="max-w-lg text-sm leading-6 text-slate-600">
+                  Record a payment for {item.service.name} and update the remaining service balance.
+                </DialogDescription>
+              </div>
+            </div>
           </DialogHeader>
-          <div className="grid gap-5 py-4">
-            <div className="grid gap-3 rounded-2xl border border-slate-200/90 px-4 py-4 sm:grid-cols-2">
-              <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase text-slate-400">
-                  Remaining balance
-                </p>
-                <div className="mt-2 flex items-center gap-2 text-base font-semibold text-slate-950">
-                  <CreditCard className="h-4 w-4 text-slate-500" />
-                  {currencyFormatter(item.remainingCents, item.currency)}
-                </div>
-              </div>
-              <div className="min-w-0 sm:text-right">
-                <p className="text-[11px] font-semibold uppercase text-slate-400">
-                  Status
-                </p>
-                <div className="mt-2 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
-                  {paymentCollectionState}
-                </div>
-                {nextScheduledPaymentSummary ? (
-                  <p className="mt-2 text-xs text-slate-500">{nextScheduledPaymentSummary}</p>
-                ) : null}
-              </div>
-            </div>
-            <div className="grid gap-2">
-              <Label>Payment action</Label>
-              <Select
-                value={paymentEntryMode}
-                onValueChange={(value) => {
-                  const nextMode = value as "FULL" | "PARTIAL"
-                  setPaymentEntryMode(nextMode)
-                  if (nextMode === "FULL") {
-                    setPaymentAmountUsd("")
-                    return
-                  }
-                  setPaymentAmountUsd(
-                    suggestedInstallmentPaymentCents !== null
-                      ? centsToUsdInput(suggestedInstallmentPaymentCents)
-                      : "",
-                  )
-                }}
-              >
-                <SelectTrigger className="h-11 cursor-pointer rounded-xl border-slate-200 bg-white">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="FULL">Pay remaining in full</SelectItem>
-                  <SelectItem value="PARTIAL" disabled={!item.allowPartialPayments}>
-                    Record partial payment
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              {paymentEntryMode === "PARTIAL" ? (
-                <p className="text-xs leading-5 text-slate-500">
-                  {addPaymentPlanSummary} You can record a different amount and the next suggested payment will update automatically.
-                </p>
-              ) : null}
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="grid gap-2">
-                <Label>Payment Amount (USD)</Label>
-                <Input
-                  value={
-                    paymentEntryMode === "FULL"
-                      ? centsToUsdInput(item.remainingCents)
-                      : paymentAmountUsd
-                  }
-                  onChange={(event) => setPaymentAmountUsd(event.target.value)}
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  readOnly={paymentEntryMode === "FULL"}
-                  className="h-11 rounded-xl border-slate-200"
-                />
-                {paymentEntryMode === "PARTIAL" && suggestedInstallmentPaymentCents !== null ? (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-7 cursor-pointer rounded-full border-slate-200 px-3 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
-                      onClick={() =>
-                        setPaymentAmountUsd(centsToUsdInput(suggestedInstallmentPaymentCents))
-                      }
-                    >
-                      Use {currencyFormatter(suggestedInstallmentPaymentCents, item.currency)}
-                    </Button>
-                    <p className="text-xs leading-5 text-slate-500">
-                      Based on {remainingScheduledInstallments} remaining installment
-                      {remainingScheduledInstallments === 1 ? "" : "s"}.
-                    </p>
+          <form
+            id="add-service-transaction-form"
+            className="contents"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void onAddPayment()
+            }}
+          >
+            <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+              <div className="flex flex-col gap-7">
+                <dl className="grid gap-4 border-b border-slate-200 pb-6 sm:grid-cols-2 sm:gap-0">
+                  <div className="min-w-0 sm:border-r sm:border-slate-200 sm:pr-6">
+                    <dt className="text-xs font-medium text-slate-500">Remaining balance</dt>
+                    <dd className="mt-1 text-xl font-semibold text-slate-950">
+                      {currencyFormatter(item.remainingCents, item.currency)}
+                    </dd>
                   </div>
-                ) : paymentEntryMode === "PARTIAL" ? (
-                  <p className="text-xs leading-5 text-slate-500">
-                    Enter any amount up to {currencyFormatter(item.remainingCents, item.currency)}.
-                  </p>
+                  <div className="min-w-0 sm:pl-6">
+                    <dt className="text-xs font-medium text-slate-500">Payment position</dt>
+                    <dd className="mt-1 text-sm font-semibold text-slate-950">
+                      {paymentCollectionState}
+                    </dd>
+                    {nextScheduledPaymentSummary ? (
+                      <p className="mt-1 text-xs text-slate-500">{nextScheduledPaymentSummary}</p>
+                    ) : null}
+                  </div>
+                </dl>
+
+                <FieldGroup className="gap-5">
+                  <Field data-disabled={isPaymentSaving} className="gap-2">
+                    <FieldLabel htmlFor="service-payment-action" className="text-slate-800">
+                      Payment action <span className="text-rose-600" aria-hidden="true">*</span>
+                    </FieldLabel>
+                    <Select
+                      value={paymentEntryMode}
+                      disabled={isPaymentSaving}
+                      onValueChange={(value) => {
+                        const nextMode = value as "FULL" | "PARTIAL"
+                        setPaymentEntryMode(nextMode)
+                        setPaymentAmountError(null)
+                        if (nextMode === "FULL") {
+                          setPaymentAmountUsd("")
+                          return
+                        }
+                        setPaymentAmountUsd(
+                          suggestedInstallmentPaymentCents !== null
+                            ? centsToUsdInput(suggestedInstallmentPaymentCents)
+                            : "",
+                        )
+                      }}
+                    >
+                      <SelectTrigger
+                        id="service-payment-action"
+                        aria-required="true"
+                        className="h-11 cursor-pointer rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="FULL">Pay remaining in full</SelectItem>
+                          <SelectItem value="PARTIAL" disabled={!item.allowPartialPayments}>
+                            Record partial payment
+                          </SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    {paymentEntryMode === "PARTIAL" ? (
+                      <FieldDescription className="text-xs">
+                        {addPaymentPlanSummary} The next suggested payment updates after this transaction.
+                      </FieldDescription>
+                    ) : null}
+                  </Field>
+
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <Field
+                      data-invalid={Boolean(paymentAmountError)}
+                      data-disabled={isPaymentSaving}
+                      className="gap-2"
+                    >
+                      <FieldLabel htmlFor="service-payment-amount" className="text-slate-800">
+                        Payment amount (USD){" "}
+                        <span className="text-rose-600" aria-hidden="true">*</span>
+                      </FieldLabel>
+                      <Input
+                        id="service-payment-amount"
+                        value={
+                          paymentEntryMode === "FULL"
+                            ? centsToUsdInput(item.remainingCents)
+                            : paymentAmountUsd
+                        }
+                        onChange={(event) => {
+                          setPaymentAmountUsd(event.target.value)
+                          setPaymentAmountError(null)
+                        }}
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        readOnly={paymentEntryMode === "FULL"}
+                        disabled={isPaymentSaving}
+                        aria-invalid={Boolean(paymentAmountError)}
+                        aria-required="true"
+                        className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                      />
+                      {paymentEntryMode === "PARTIAL" && suggestedInstallmentPaymentCents !== null ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="cursor-pointer rounded-full"
+                            disabled={isPaymentSaving}
+                            onClick={() => {
+                              setPaymentAmountUsd(centsToUsdInput(suggestedInstallmentPaymentCents))
+                              setPaymentAmountError(null)
+                            }}
+                          >
+                            Use {currencyFormatter(suggestedInstallmentPaymentCents, item.currency)}
+                          </Button>
+                          <span className="text-xs text-slate-500">
+                            {remainingScheduledInstallments} installment
+                            {remainingScheduledInstallments === 1 ? "" : "s"} remaining
+                          </span>
+                        </div>
+                      ) : paymentEntryMode === "PARTIAL" ? (
+                        <FieldDescription className="text-xs">
+                          Enter up to {currencyFormatter(item.remainingCents, item.currency)}.
+                        </FieldDescription>
+                      ) : null}
+                      <FieldError>{paymentAmountError}</FieldError>
+                    </Field>
+
+                    <Field data-disabled={isPaymentSaving} className="gap-2">
+                      <FieldLabel htmlFor="service-payment-method" className="text-slate-800">
+                        Payment method
+                      </FieldLabel>
+                      <Select
+                        value={paymentMethod || "__none__"}
+                        disabled={isPaymentSaving}
+                        onValueChange={(value) => setPaymentMethod(value === "__none__" ? "" : value)}
+                      >
+                        <SelectTrigger
+                          id="service-payment-method"
+                          className="h-11 cursor-pointer rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                        >
+                          <SelectValue placeholder="Select payment method" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value="__none__">No method</SelectItem>
+                            {PAYMENT_METHOD_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  </div>
+
+                  <Field data-disabled={isPaymentSaving} className="gap-2">
+                    <FieldLabel htmlFor="service-payment-note" className="text-slate-800">
+                      Note
+                    </FieldLabel>
+                    <Textarea
+                      id="service-payment-note"
+                      value={paymentNote}
+                      onChange={(event) => setPaymentNote(event.target.value)}
+                      rows={4}
+                      placeholder="Add payment context"
+                      disabled={isPaymentSaving}
+                      className="min-h-32 resize-y rounded-xl border-slate-200 bg-slate-50/60 px-4 py-3 text-sm leading-6 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
+                    />
+                    <FieldDescription className="text-xs">
+                      This context will appear with the transaction in payment history.
+                    </FieldDescription>
+                  </Field>
+                </FieldGroup>
+              </div>
+            </div>
+            <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setIsPaymentOpen(false)
+                  resetPaymentForm()
+                }}
+                disabled={isPaymentSaving}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={isPaymentSaving || !canAddPayments}
+                className="min-w-36 bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+              >
+                {isPaymentSaving ? (
+                  <Loader2 data-icon="inline-start" className="animate-spin" />
                 ) : null}
-              </div>
-              <div className="grid gap-2">
-                <Label>Payment Method</Label>
-                <Select value={paymentMethod || "__none__"} onValueChange={(value) => setPaymentMethod(value === "__none__" ? "" : value)}>
-                  <SelectTrigger className="h-11 rounded-xl border-slate-200 bg-white">
-                    <SelectValue placeholder="Select payment method" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">No method</SelectItem>
-                    {PAYMENT_METHOD_OPTIONS.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="grid gap-2">
-              <Label>Note</Label>
-              <Textarea
-                value={paymentNote}
-                onChange={(event) => setPaymentNote(event.target.value)}
-                rows={4}
-                placeholder="Optional payment note"
-                className="min-h-[112px] rounded-2xl border-slate-200 bg-white px-4 py-3 text-sm leading-6"
-              />
-            </div>
-          </div>
-          <DialogFooter className="border-t border-slate-200 pt-4">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setIsPaymentOpen(false)}
-              disabled={isPaymentSaving}
-              className="cursor-pointer rounded-xl"
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void onAddPayment()}
-              disabled={isPaymentSaving}
-              className="cursor-pointer rounded-xl"
-            >
-              {isPaymentSaving ? "Saving..." : "Add payment"}
-            </Button>
-          </DialogFooter>
+                {isPaymentSaving ? "Creating..." : "Add transaction"}
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 
