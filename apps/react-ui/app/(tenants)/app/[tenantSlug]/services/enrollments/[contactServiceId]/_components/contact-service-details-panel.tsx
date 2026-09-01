@@ -11,6 +11,7 @@ import {
   ChevronDown,
   Clock3,
   CreditCard,
+  Ellipsis,
   FileText,
   ImageIcon,
   ListTodo,
@@ -19,6 +20,7 @@ import {
   NotebookPen,
   Paperclip,
   Play,
+  RotateCcw,
   SendHorizontal,
   Trash2,
   Upload,
@@ -31,9 +33,11 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
 import {
   Command,
   CommandEmpty,
+  CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
@@ -47,6 +51,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { DateTimeInput } from "@/components/ui/date-time-input"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Field,
   FieldDescription,
@@ -76,6 +88,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   Tooltip,
   TooltipContent,
@@ -99,7 +112,6 @@ import {
   type DateTimeDraft,
 } from "@/lib/date-time"
 import { cn } from "@/lib/utils"
-import { getServiceOverviewPriority } from "../_lib/service-overview-priority"
 
 type ContactServiceStatus =
   | "IN_PROGRESS"
@@ -114,6 +126,7 @@ type ContactServiceChecklistStatus =
 type FollowUpStepStatus = "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
 type FollowUpStepAction = "REOPEN"
 type FollowUpFilter = "OPEN" | "COMPLETED" | "ALL"
+type FollowUpStepPanelMode = "DETAILS" | "STATUS"
 type NoteAttachment = {
   id: string
   fileId: string
@@ -488,9 +501,9 @@ const getFollowUpAssigneeLabel = (
     | null
     | undefined,
 ) => {
-  if (!assignee) return "Unassigned"
+  if (!assignee) return "Not assigned"
 
-  return ("label" in assignee ? assignee.label : assignee.name)?.trim() || assignee.email?.trim() || "Assigned owner"
+  return ("label" in assignee ? assignee.label : assignee.name)?.trim() || assignee.email?.trim() || "Assigned user"
 }
 
 const PAYMENT_METHOD_OPTIONS = [
@@ -727,6 +740,185 @@ const getInitials = (value: string | null | undefined) =>
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("") || "NA"
 
+const FOLLOW_UP_UNASSIGNED_VALUE = "__FOLLOW_UP_UNASSIGNED__"
+
+function FollowUpStepAssigneeAvatar({
+  assignee,
+}: {
+  assignee: ContactServiceDetails["followUpSteps"][number]["assignedTo"]
+}) {
+  const label = getFollowUpAssigneeLabel(assignee)
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          role="img"
+          tabIndex={0}
+          aria-label={`Step assignee: ${label}`}
+          className="inline-flex size-7 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+        >
+          <Avatar size="sm" aria-hidden="true" className="ring-2 ring-blue-50">
+            {assignee?.image ? (
+              <AvatarImage src={assignee.image} alt="" />
+            ) : null}
+            <AvatarFallback
+              className={cn(
+                "font-semibold",
+                assignee ? "bg-blue-950 text-white" : "bg-slate-100 text-slate-500",
+              )}
+            >
+              {assignee ? getInitials(getFollowUpAssigneeLabel(assignee)) : "—"}
+            </AvatarFallback>
+          </Avatar>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function FollowUpStepAssigneeInput({
+  id,
+  value,
+  options,
+  currentAssignee,
+  disabled,
+  ariaInvalid,
+  onValueChange,
+}: {
+  id: string
+  value: string
+  options: TenantAssigneeOption[]
+  currentAssignee: TenantAssigneeOption | null
+  disabled: boolean
+  ariaInvalid: boolean
+  onValueChange: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const selectedAssignee = useMemo(
+    () =>
+      options.find((option) => option.value === value) ??
+      (currentAssignee?.value === value ? currentAssignee : null),
+    [currentAssignee, options, value],
+  )
+
+  const selectAssignee = (nextValue: string) => {
+    onValueChange(nextValue)
+    setOpen(false)
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          disabled={disabled}
+          aria-invalid={ariaInvalid}
+          aria-expanded={open}
+          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <Avatar size="sm" className="ring-2 ring-blue-50">
+              {selectedAssignee?.image ? (
+                <AvatarImage
+                  src={selectedAssignee.image}
+                  alt={`${selectedAssignee.label} profile photo`}
+                />
+              ) : null}
+              <AvatarFallback
+                className={cn(
+                  "font-semibold",
+                  selectedAssignee
+                    ? "bg-blue-950 text-white"
+                    : "bg-slate-100 text-slate-500",
+                )}
+              >
+                {selectedAssignee ? getInitials(selectedAssignee.label) : "—"}
+              </AvatarFallback>
+            </Avatar>
+            <span className="truncate font-medium text-slate-800">
+              {selectedAssignee?.label ?? "Not assigned"}
+            </span>
+          </span>
+          <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] p-0"
+      >
+        <Command>
+          <CommandInput placeholder="Search team members..." disabled={disabled} />
+          <CommandList>
+            <CommandEmpty>No team members found.</CommandEmpty>
+            <CommandGroup heading="Assignment">
+              <CommandItem
+                value="Not assigned unassigned"
+                onSelect={() => selectAssignee(FOLLOW_UP_UNASSIGNED_VALUE)}
+                className="cursor-pointer gap-3 py-2.5"
+              >
+                <Avatar size="sm">
+                  <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                    —
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 font-medium text-slate-700">
+                  Not assigned
+                </span>
+                <Check
+                  className={cn(
+                    value === FOLLOW_UP_UNASSIGNED_VALUE
+                      ? "text-blue-800 opacity-100"
+                      : "opacity-0",
+                  )}
+                />
+              </CommandItem>
+              {options.map((option) => (
+                <CommandItem
+                  key={option.value}
+                  value={`${option.label} ${option.email ?? ""} ${option.value}`}
+                  onSelect={() => selectAssignee(option.value)}
+                  className="cursor-pointer gap-3 py-2.5"
+                >
+                  <Avatar size="sm" className="ring-2 ring-blue-50">
+                    {option.image ? (
+                      <AvatarImage
+                        src={option.image}
+                        alt={`${option.label} profile photo`}
+                      />
+                    ) : null}
+                    <AvatarFallback className="bg-blue-950 font-semibold text-white">
+                      {getInitials(option.label)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-medium text-slate-900">
+                      {option.label}
+                    </span>
+                    {option.email ? (
+                      <span className="truncate text-xs text-slate-500">{option.email}</span>
+                    ) : null}
+                  </span>
+                  <Check
+                    className={cn(
+                      value === option.value ? "text-blue-800 opacity-100" : "opacity-0",
+                    )}
+                  />
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 const normalizeContactServiceDetails = (details: ContactServiceDetails): ContactServiceDetails => ({
   ...details,
   followUpSteps: details.followUpSteps ?? [],
@@ -819,11 +1011,12 @@ export function ContactServiceDetailsPanel({
   const [downloadingServiceNoteKey, setDownloadingServiceNoteKey] = useState<string | null>(null)
   const [paymentPage, setPaymentPage] = useState(1)
   const [notesPage, setNotesPage] = useState(1)
-  const [followUpFilter, setFollowUpFilter] = useState<FollowUpFilter>("OPEN")
+  const [followUpFilter, setFollowUpFilter] = useState<FollowUpFilter>("ALL")
   const [followUpPage, setFollowUpPage] = useState(1)
   const [expandedNoteIds, setExpandedNoteIds] = useState<Set<string>>(() => new Set())
-  const [isStepStatusDialogOpen, setIsStepStatusDialogOpen] = useState(false)
-  const [isStepDetailsDialogOpen, setIsStepDetailsDialogOpen] = useState(false)
+  const [expandedStepId, setExpandedStepId] = useState<string | null>(null)
+  const [expandedStepPanelMode, setExpandedStepPanelMode] =
+    useState<FollowUpStepPanelMode | null>(null)
   const [isStepNoteDialogOpen, setIsStepNoteDialogOpen] = useState(false)
   const [isStepTaskDialogOpen, setIsStepTaskDialogOpen] = useState(false)
   const [followUpOwnerOpen, setFollowUpOwnerOpen] = useState(false)
@@ -841,7 +1034,10 @@ export function ContactServiceDetailsPanel({
   const [isContinuingWait, setIsContinuingWait] = useState(false)
   const [isSavingStepStatus, setIsSavingStepStatus] = useState(false)
   const [isSavingFollowUpOwner, setIsSavingFollowUpOwner] = useState(false)
-  const [stepAssignedToUserId, setStepAssignedToUserId] = useState("")
+  const [stepAssignedToUserId, setStepAssignedToUserId] = useState(
+    FOLLOW_UP_UNASSIGNED_VALUE,
+  )
+  const [stepAssigneeError, setStepAssigneeError] = useState<string | null>(null)
   const [isSavingStepAssignee, setIsSavingStepAssignee] = useState(false)
   const [stepNoteTitle, setStepNoteTitle] = useState("")
   const [stepNoteBody, setStepNoteBody] = useState("")
@@ -913,8 +1109,12 @@ export function ContactServiceDetailsPanel({
     setIsDetailLoadError(false)
     setPaymentPage(1)
     setNotesPage(1)
-    setFollowUpFilter("OPEN")
+    setFollowUpFilter("ALL")
     setFollowUpPage(1)
+    setExpandedStepId(null)
+    setExpandedStepPanelMode(null)
+    setStepAssignedToUserId(FOLLOW_UP_UNASSIGNED_VALUE)
+    setStepAssigneeError(null)
     setExpandedNoteIds(new Set())
   }, [encodedContactServiceId])
 
@@ -1419,6 +1619,10 @@ export function ContactServiceDetailsPanel({
         .sort((a, b) => a.sortOrder - b.sortOrder),
     [item?.followUpSteps, overview?.followUpSteps],
   )
+  const expandedStep = useMemo(
+    () => followUpSteps.find((step) => step.id === expandedStepId) ?? null,
+    [expandedStepId, followUpSteps],
+  )
   const checklistCompletedCount = useMemo(
     () => checklistItems.filter((entry) => entry.status === "RECEIVED").length,
     [checklistItems],
@@ -1429,13 +1633,6 @@ export function ContactServiceDetailsPanel({
   )
   const checklistInformedCount = useMemo(
     () => checklistItems.filter((entry) => entry.status === "INFORMED").length,
-    [checklistItems],
-  )
-  const requiredMissingChecklistCount = useMemo(
-    () =>
-      checklistItems.filter(
-        (entry) => entry.isRequired && entry.status === "MISSING",
-      ).length,
     [checklistItems],
   )
   const checklistCompletionPercentage = useMemo(
@@ -1499,6 +1696,11 @@ export function ContactServiceDetailsPanel({
   useEffect(() => {
     setFollowUpPage((current) => Math.min(current, followUpPageCount))
   }, [followUpPageCount])
+
+  useEffect(() => {
+    setExpandedStepId(null)
+    setExpandedStepPanelMode(null)
+  }, [followUpFilter, followUpPage])
   const paymentCollectionState = useMemo(() => {
     if (!serviceData) return "Pay later"
     if (serviceData.paidCents <= 0) return "Pay later"
@@ -1576,31 +1778,6 @@ export function ContactServiceDetailsPanel({
       null,
     [followUpSteps],
   )
-  const overviewPriority = useMemo(
-    () =>
-      getServiceOverviewPriority({
-        followUpRunStatus: serviceData?.followUpRun?.status,
-        failureMessage: serviceData?.followUpRun?.failureMessage,
-        failedAt: serviceData?.followUpRun?.failedAt,
-        followUpSteps: followUpSteps.map((step) => ({
-          title: step.title,
-          status: step.status,
-          dueAt: step.effectiveDueAt ?? step.dueAt,
-        })),
-        completedStepCount: followUpCompletedCount,
-        requiredMissingCount: requiredMissingChecklistCount,
-        nextFollowUpAt: serviceData?.nextFollowUp?.at,
-      }),
-    [
-      followUpCompletedCount,
-      followUpSteps,
-      requiredMissingChecklistCount,
-      serviceData?.followUpRun?.failedAt,
-      serviceData?.followUpRun?.failureMessage,
-      serviceData?.followUpRun?.status,
-      serviceData?.nextFollowUp?.at,
-    ],
-  )
   const hasMixedOpenStepOwners = useMemo(() => {
     const assignedUserIds = new Set(
       openFollowUpSteps.map((step) => step.assignedToUserId ?? "").filter((value) => value.length > 0),
@@ -1644,7 +1821,7 @@ export function ContactServiceDetailsPanel({
           ),
         ),
       )
-      toast.success("Follow-up owner updated.")
+      toast.success("Open step assignees updated.")
       await refreshData(true)
       router.refresh()
       setFollowUpOwnerOpen(false)
@@ -1664,21 +1841,23 @@ export function ContactServiceDetailsPanel({
     }
   }
 
-  const openStepStatusDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
-    setActiveStep(step)
+  const openInlineStepStatusEditor = (
+    step: ContactServiceDetails["followUpSteps"][number],
+  ) => {
+    setExpandedStepId(step.id)
+    setExpandedStepPanelMode("STATUS")
     setStepStatusValue("COMPLETED")
     setStepStatusNote("")
     setStepPostponeInput(formatUtcIsoToDateTimeDraft(step.dueAt, item?.timezone))
     setStepNextFollowUpInput({ date: "", time: "" })
-    setIsStepStatusDialogOpen(true)
   }
 
-  const prepareStepStatusDialog = async (
+  const prepareInlineStepStatusEditor = async (
     step: ContactServiceDetails["followUpSteps"][number],
   ) => {
     if (!item) return
     if (step.status === "ACTIVE") {
-      openStepStatusDialog(step)
+      openInlineStepStatusEditor(step)
       return
     }
     if (step.status !== "PENDING" || !step.canCompleteNow) return
@@ -1714,7 +1893,7 @@ export function ContactServiceDetailsPanel({
       }
 
       toast.success("This upcoming step is ready to complete now.")
-      openStepStatusDialog({
+      openInlineStepStatusEditor({
         ...step,
         status: "ACTIVE",
         availableAt: new Date().toISOString(),
@@ -1732,39 +1911,50 @@ export function ContactServiceDetailsPanel({
     }
   }
 
-  const openStepDetailsDialog = (step: ContactServiceDetails["followUpSteps"][number]) => {
-    setActiveStep(step)
-    setStepAssignedToUserId(step.assignedToUserId ?? "")
-    setIsStepDetailsDialogOpen(true)
+  const toggleStepDetails = (step: ContactServiceDetails["followUpSteps"][number]) => {
+    if (expandedStepId === step.id && expandedStepPanelMode === "DETAILS") {
+      setExpandedStepId(null)
+      setExpandedStepPanelMode(null)
+      return
+    }
+
+    setExpandedStepId(step.id)
+    setExpandedStepPanelMode("DETAILS")
+    setStepAssignedToUserId(step.assignedToUserId ?? FOLLOW_UP_UNASSIGNED_VALUE)
+    setStepAssigneeError(null)
   }
 
   const saveStepAssignee = async () => {
-    if (!item || !activeStep) return
+    if (!item || !expandedStep || expandedStepPanelMode !== "DETAILS") return
 
     setIsSavingStepAssignee(true)
     try {
       await api.patch(
-        `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-steps/${activeStep.id}`,
+        `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-steps/${expandedStep.id}`,
         {
-          assignedToUserId: stepAssignedToUserId || null,
+          assignedToUserId:
+            stepAssignedToUserId === FOLLOW_UP_UNASSIGNED_VALUE
+              ? null
+              : stepAssignedToUserId,
         },
       )
-      toast.success("Follow-up owner updated.")
+      setStepAssigneeError(null)
+      toast.success("Step assignee updated.")
       await refreshData(true)
       router.refresh()
-      setIsStepDetailsDialogOpen(false)
-      setActiveStep(null)
-      setStepAssignedToUserId("")
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
-        toast.error(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ")
-            : "Could not update follow-up owner.",
-        )
+        const message =
+          backendError === "INVALID_ASSIGNEE"
+            ? "Selected assignee is not an active member of this tenant."
+            : "Could not update the step assignee."
+        setStepAssigneeError(message)
+        toast.error(message)
       } else {
-        toast.error("Could not update follow-up owner.")
+        const message = "Could not update the step assignee."
+        setStepAssigneeError(message)
+        toast.error(message)
       }
     } finally {
       setIsSavingStepAssignee(false)
@@ -1793,6 +1983,7 @@ export function ContactServiceDetailsPanel({
       toast.success(nextStatus === "COMPLETED" ? "Step marked as completed." : "Step status updated.")
       await refreshData(true)
       router.refresh()
+      return true
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
@@ -1804,6 +1995,7 @@ export function ContactServiceDetailsPanel({
       } else {
         toast.error("Could not update this follow-up step.")
       }
+      return false
     } finally {
       setMutatingStepId(null)
     }
@@ -1821,6 +2013,8 @@ export function ContactServiceDetailsPanel({
       )
       await refreshData(true)
       router.refresh()
+      setExpandedStepId(null)
+      setExpandedStepPanelMode(null)
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
@@ -1838,7 +2032,7 @@ export function ContactServiceDetailsPanel({
   }
 
   const saveStepStatus = async () => {
-    if (!activeStep || !stepStatusValue) return
+    if (!expandedStep || expandedStepPanelMode !== "STATUS" || !stepStatusValue) return
     if (
       stepStatusValue === "POSTPONED" &&
       (!isDateTimeDraftComplete(stepPostponeInput) || isDateTimeDraftEmpty(stepPostponeInput))
@@ -1860,7 +2054,7 @@ export function ContactServiceDetailsPanel({
         : dateTimeDraftToUtcIso(stepPostponeInput, item?.timezone) ?? undefined
     const needsNextFollowUp =
       stepStatusValue === "COMPLETED" &&
-      activeStep.completionRequirement?.type === "NEXT_FOLLOW_UP_AT"
+      expandedStep.completionRequirement?.type === "NEXT_FOLLOW_UP_AT"
     if (
       needsNextFollowUp &&
       (!isDateTimeDraftComplete(stepNextFollowUpInput) || isDateTimeDraftEmpty(stepNextFollowUpInput))
@@ -1875,24 +2069,29 @@ export function ContactServiceDetailsPanel({
       toast.error("Select a future next follow-up date and time.")
       return
     }
-    const stepToUpdate = activeStep
+    const stepToUpdate = expandedStep
     const nextStatusValue = stepStatusValue
     const nextStatusNote = stepStatusNote
 
     setIsSavingStepStatus(true)
-    setIsStepStatusDialogOpen(false)
-    setActiveStep(null)
-    setStepStatusNote("")
-    setStepPostponeInput({ date: "", time: "" })
-    setStepNextFollowUpInput({ date: "", time: "" })
-    await updateStepStatus(
-      stepToUpdate,
-      nextStatusValue,
-      nextStatusNote,
-      postponeToIso,
-      nextFollowUpAt ?? undefined,
-    )
-    setIsSavingStepStatus(false)
+    try {
+      const didSave = await updateStepStatus(
+        stepToUpdate,
+        nextStatusValue,
+        nextStatusNote,
+        postponeToIso,
+        nextFollowUpAt ?? undefined,
+      )
+      if (!didSave) return
+
+      setExpandedStepId(null)
+      setExpandedStepPanelMode(null)
+      setStepStatusNote("")
+      setStepPostponeInput({ date: "", time: "" })
+      setStepNextFollowUpInput({ date: "", time: "" })
+    } finally {
+      setIsSavingStepStatus(false)
+    }
   }
 
   const rescheduleManualWait = async () => {
@@ -2679,51 +2878,7 @@ export function ContactServiceDetailsPanel({
             aria-labelledby="service-overview-title"
           >
             <h2 id="service-overview-title" className="sr-only">Service overview</h2>
-
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div className="min-w-0 space-y-1">
-                <p className="text-[11px] font-semibold uppercase text-slate-400">
-                  Service priority · {overviewPriority.badge}
-                </p>
-                <h3 className="text-2xl font-semibold text-slate-950">
-                  {overviewPriority.title}
-                </h3>
-                <p className="max-w-3xl text-sm text-slate-600">
-                  {overviewPriority.description}
-                </p>
-                {overviewPriority.dateAt ? (
-                  <p className="text-xs text-slate-500">
-                    {formatDateTimeForDisplay(overviewPriority.dateAt, serviceData.timezone)}
-                  </p>
-                ) : null}
-              </div>
-
-              <div className="shrink-0">
-                {overviewPriority.action === "CHECKLIST" ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="cursor-pointer rounded-xl border-white/80 bg-white/80 text-xs font-semibold text-slate-700 shadow-sm hover:bg-white hover:text-slate-950"
-                    onClick={openChecklistSheet}
-                  >
-                    {overviewPriority.actionLabel}
-                  </Button>
-                ) : (
-                  <Link
-                    href={getServiceEnrollmentFollowUpsHref({
-                      tenantSlug,
-                      contactServiceId,
-                      returnTo,
-                    })}
-                    className="inline-flex h-9 items-center justify-center rounded-xl border border-white/80 bg-white/80 px-4 text-xs font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-white hover:text-slate-950 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  >
-                    {overviewPriority.actionLabel}
-                  </Link>
-                )}
-              </div>
-            </div>
-
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <Link
                 href={getServiceEnrollmentFollowUpsHref({
                   tenantSlug,
@@ -2821,25 +2976,34 @@ export function ContactServiceDetailsPanel({
             </div>
           ) : (
             <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase text-slate-500">Service workflow</p>
-                  <h2 id="service-follow-up-title" className="mt-1 text-lg font-semibold text-slate-950">
-                    Follow-up
-                  </h2>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Review the enrolled follow-up path for this service and update steps as the contact completes them.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
-                    {followUpCompletionPercentage}% complete
-                  </Badge>
-                  <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
-                    {followUpCompletedCount}/{followUpSteps.length} steps
-                  </Badge>
-                </div>
+              <div className="mb-4">
+                <h2 id="service-follow-up-title" className="text-lg font-semibold text-slate-950">
+                  Follow-up
+                </h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Review the enrolled follow-up path for this service and update steps as the contact completes them.
+                </p>
               </div>
+              {followUpSteps.length ? (
+                <div className="mb-4 border-y border-slate-200 py-3">
+                  <div className="mb-2 flex items-end justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-950">
+                        {followUpCompletionPercentage}% complete
+                      </p>
+                      <p className="mt-0.5 text-xs text-slate-500">Workflow progress</p>
+                    </div>
+                    <p className="text-xs font-medium text-slate-600 tabular-nums">
+                      {followUpCompletedCount} of {followUpSteps.length} steps
+                    </p>
+                  </div>
+                  <Progress
+                    value={followUpCompletionPercentage}
+                    aria-label={`${followUpCompletionPercentage}% of follow-up steps completed`}
+                    className="h-1.5 bg-slate-200 [&_[data-slot=progress-indicator]]:bg-emerald-600"
+                  />
+                </div>
+              ) : null}
               {item.followUpRun?.status === "FAILED" || item.followUpRun?.status === "NEEDS_REVIEW" ? (
                 <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
                   <p className="font-semibold">
@@ -2902,17 +3066,18 @@ export function ContactServiceDetailsPanel({
                   </div>
                 </div>
               ) : null}
-              <div className="mb-4 flex flex-col gap-3 border-y border-slate-200 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-3 sm:flex-row sm:items-center sm:justify-between">
                 <div role="group" aria-label="Filter follow-up steps" className="flex w-full gap-1 rounded-xl bg-slate-100 p-1 sm:w-auto">
                   {([
+                    { value: "ALL", label: "All" },
                     { value: "OPEN", label: "Open" },
                     { value: "COMPLETED", label: "Completed" },
-                    { value: "ALL", label: "All" },
                   ] as const).map((filter) => (
                     <button
                       key={filter.value}
                       type="button"
                       aria-pressed={followUpFilter === filter.value}
+                      disabled={isSavingStepStatus || isSavingStepAssignee || Boolean(mutatingStepId)}
                       onClick={() => setFollowUpFilter(filter.value)}
                       className={cn(
                         "flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 sm:flex-none",
@@ -2935,15 +3100,9 @@ export function ContactServiceDetailsPanel({
                 </p>
               </div>
               {followUpSteps.length ? (
-                <div className="space-y-4">
-                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-200">
-                    <div
-                      className="h-full rounded-full bg-emerald-500 transition-all"
-                      style={{ width: `${followUpCompletionPercentage}%` }}
-                    />
-                  </div>
-                  <div className="space-y-3">
-                    {visibleFollowUpSteps.map((step) => {
+                <div className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-3">
+                    {visibleFollowUpSteps.map((step, visibleIndex) => {
                       const stepNumber = followUpSteps.findIndex((candidate) => candidate.id === step.id) + 1
                       const currentStatus = step.status ?? "PENDING"
                       const timeMeta = getStepTimeMeta(step, item?.timezone)
@@ -2956,65 +3115,55 @@ export function ContactServiceDetailsPanel({
                       const showStatusBadge = currentStatus !== "ACTIVE"
                       const showTimeBadge = currentStatus === "PENDING" || currentStatus === "ACTIVE"
                       const canChangeStatus = Boolean(step.canCompleteNow)
-                      const isCompletingEarly = currentStatus === "PENDING" && canChangeStatus
+                      const isStartingEarly = currentStatus === "PENDING" && canChangeStatus
                       const canReopen =
                         !isAutoSkipped &&
                         (currentStatus === "COMPLETED" ||
                           currentStatus === "SKIPPED" ||
                           currentStatus === "POSTPONED")
+                      const isExpanded = expandedStepId === step.id
+                      const isTimelineBusy =
+                        Boolean(mutatingStepId) || isSavingStepStatus || isSavingStepAssignee
+                      const panelId = `follow-up-step-panel-${step.id}`
 
                       return (
-                        <div key={step.id} className="flex gap-2.5">
-                          <div className="flex w-7 shrink-0 flex-col items-center pt-2">
-                            <span
-                              className={cn(
-                                "inline-flex size-7 items-center justify-center rounded-full border text-[11px] font-semibold",
-                                isOverdue
-                                  ? "border-rose-200 bg-rose-50 text-rose-700"
-                                  : isAutoSkipped
-                                    ? "border-rose-200 bg-rose-100 text-rose-800"
-                                  : isDone
-                                  ? "border-emerald-200 bg-emerald-100 text-emerald-800"
-                                  : isActive
-                                    ? "border-blue-200 bg-blue-50 text-blue-900"
-                                    : "border-slate-200 bg-slate-50 text-slate-600",
-                              )}
-                            >
-                              {stepNumber}
+                        <div key={step.id} className="flex gap-3 sm:gap-4">
+                          <div className="relative flex w-8 shrink-0 justify-center pt-4 sm:w-10">
+                            <span className="relative z-10 bg-white px-1 text-xs font-semibold text-slate-500 tabular-nums">
+                              {String(stepNumber).padStart(2, "0")}
                             </span>
-                            {stepNumber < followUpSteps.length ? (
-                              <span className="mt-2 h-full min-h-8 w-px bg-slate-200" />
+                            {visibleIndex < visibleFollowUpSteps.length - 1 ? (
+                              <span
+                                aria-hidden="true"
+                                className="absolute top-8 bottom-[-0.75rem] left-1/2 w-px -translate-x-1/2 bg-slate-200"
+                              />
                             ) : null}
                           </div>
-                          <article
-                            className={cn(
-                              "min-w-0 flex-1 rounded-[18px] border px-3.5 py-3",
-                              isOverdue
-                                ? "border-rose-200 bg-rose-50/40"
-                                : isAutoSkipped
-                                  ? "border-rose-200 bg-rose-50/60"
-                                : isDone
-                                ? "border-emerald-200 bg-emerald-50/50"
-                                : isActive
-                                  ? "border-blue-200 bg-blue-50/40"
-                                  : "border-slate-200 bg-white",
-                            )}
-                          >
-                            <div className="flex flex-col gap-2.5 xl:flex-row xl:items-center xl:justify-between">
+                          <Collapsible open={isExpanded} className="min-w-0 flex-1">
+                            <article
+                              className={cn(
+                                "overflow-hidden rounded-2xl border bg-white transition-[border-color,box-shadow]",
+                                isOverdue
+                                  ? "border-rose-300"
+                                  : isActive
+                                    ? "border-slate-400 shadow-xs"
+                                    : "border-slate-200",
+                              )}
+                            >
+                              <div className="flex flex-col gap-3 px-4 py-3.5 lg:flex-row lg:items-center lg:justify-between">
                                 <div className="flex min-w-0 flex-1 flex-col gap-2">
-                                  <div className="flex flex-wrap items-center gap-2">
+                                  <div className="flex flex-wrap items-center gap-1.5">
                                     {showStatusBadge ? (
                                       <Badge className={getFollowUpStepStatusBadgeClass(step.status)}>
                                         {formatFollowUpStepStatus(step.status)}
                                       </Badge>
-                                    ) : null}
-                                    {showTimeBadge ? (
-                                      <Badge className={timeMeta.badgeClassName}>{timeMeta.label}</Badge>
-                                    ) : null}
-                                    {isActive ? (
+                                    ) : (
                                       <Badge className="bg-blue-100 text-blue-900 hover:bg-blue-100">
                                         Current step
                                       </Badge>
+                                    )}
+                                    {showTimeBadge ? (
+                                      <Badge className={timeMeta.badgeClassName}>{timeMeta.label}</Badge>
                                     ) : null}
                                     {isAutoSkipped ? (
                                       <Badge className="bg-rose-100 text-rose-800 hover:bg-rose-100">
@@ -3022,30 +3171,33 @@ export function ContactServiceDetailsPanel({
                                       </Badge>
                                     ) : null}
                                   </div>
-                                  <div className="flex min-w-0 flex-col gap-1">
-                                    <button
-                                      type="button"
-                                      className="w-fit max-w-full cursor-pointer truncate text-left text-sm font-semibold text-slate-950 transition hover:text-blue-800"
-                                      onClick={() => openStepDetailsDialog(step)}
-                                    >
-                                      {step.title}
-                                    </button>
-                                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-slate-500">
-                                      <span className="inline-flex items-center gap-1.5">
-                                        <Clock3 className="size-3.5 text-slate-400" />
-                                        {timeMeta.helper}
-                                      </span>
-                                      <span className="inline-flex min-w-0 items-center gap-1.5">
-                                        <UserRound className="size-3.5 shrink-0 text-slate-400" />
-                                        <span className="truncate">{getFollowUpAssigneeLabel(step.assignedTo)}</span>
-                                      </span>
-                                      {step.note?.trim() ? (
-                                        <span className="inline-flex items-center gap-1.5 text-violet-700">
-                                          <NotebookPen className="size-3.5" />
-                                          Has note
-                                        </span>
-                                      ) : null}
-                                    </div>
+                                  <button
+                                    type="button"
+                                    aria-expanded={isExpanded}
+                                    aria-controls={panelId}
+                                    disabled={isTimelineBusy}
+                                    className="group flex w-fit max-w-full cursor-pointer items-center gap-1.5 text-left text-sm font-semibold text-slate-950 outline-none transition hover:text-slate-700 focus-visible:rounded focus-visible:ring-2 focus-visible:ring-slate-400/40 disabled:cursor-not-allowed disabled:opacity-60"
+                                    onClick={() => toggleStepDetails(step)}
+                                  >
+                                    <span className="truncate">{step.title}</span>
+                                    <ChevronDown
+                                      aria-hidden="true"
+                                      className={cn(
+                                        "size-4 shrink-0 text-slate-400 transition-transform",
+                                        isExpanded && "rotate-180",
+                                      )}
+                                    />
+                                  </button>
+                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <Clock3 aria-hidden="true" className="size-3.5 text-slate-400" />
+                                      {timeMeta.helper}
+                                    </span>
+                                    <FollowUpStepAssigneeAvatar assignee={step.assignedTo} />
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <NotebookPen aria-hidden="true" className="size-3.5 text-slate-400" />
+                                      {step.note?.trim() ? "Note available" : "No note"}
+                                    </span>
                                   </div>
                                   {step.resolutionReason ? (
                                     <p className="line-clamp-1 max-w-3xl text-xs font-medium text-rose-700">
@@ -3053,81 +3205,355 @@ export function ContactServiceDetailsPanel({
                                     </p>
                                   ) : null}
                                 </div>
-                                <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:shrink-0">
+                                <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:shrink-0 lg:justify-end">
                                   {canChangeStatus ? (
                                     <Button
                                       type="button"
                                       variant="outline"
-                                      className="h-9 min-w-[142px] cursor-pointer rounded-full border-slate-200 bg-white text-sm font-medium text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50"
-                                      disabled={mutatingStepId === step.id}
-                                      onClick={() => void prepareStepStatusDialog(step)}
+                                      className="h-9 flex-1 cursor-pointer rounded-lg border-slate-300 bg-white px-3 text-sm font-medium text-slate-800 shadow-none hover:bg-slate-50 sm:flex-none"
+                                      disabled={
+                                        isTimelineBusy ||
+                                        (isExpanded && expandedStepPanelMode === "STATUS")
+                                      }
+                                      onClick={() => void prepareInlineStepStatusEditor(step)}
                                     >
                                       {mutatingStepId === step.id ? (
-                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                                      ) : isStartingEarly ? (
+                                        "Start early"
                                       ) : (
+                                        "Update step"
+                                      )}
+                                    </Button>
+                                  ) : null}
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="h-9 cursor-pointer rounded-lg border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 shadow-none hover:bg-slate-50"
+                                        disabled={isTimelineBusy}
+                                        aria-label={`More actions for ${step.title}`}
+                                      >
+                                        More
+                                        <Ellipsis aria-hidden="true" className="size-4" />
+                                      </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="end" className="w-48">
+                                      <DropdownMenuGroup>
+                                        <DropdownMenuItem onSelect={() => openStepNoteDialog(step)}>
+                                          <NotebookPen aria-hidden="true" />
+                                          Add note
+                                        </DropdownMenuItem>
+                                        <DropdownMenuItem onSelect={() => openStepTaskDialog(step)}>
+                                          <ListTodo aria-hidden="true" />
+                                          Create task
+                                        </DropdownMenuItem>
+                                      </DropdownMenuGroup>
+                                      {canReopen ? (
                                         <>
-                                          {isCompletingEarly ? "Complete early" : "Change status"}
-                                          <ChevronDown className="h-4 w-4" />
+                                          <DropdownMenuSeparator />
+                                          <DropdownMenuGroup>
+                                            <DropdownMenuItem onSelect={() => void reopenStep(step)}>
+                                              <RotateCcw aria-hidden="true" />
+                                              {currentStatus === "POSTPONED"
+                                                ? "Undo postpone"
+                                                : "Reopen step"}
+                                            </DropdownMenuItem>
+                                          </DropdownMenuGroup>
                                         </>
-                                      )}
-                                    </Button>
-                                  ) : null}
-                                  {canReopen ? (
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      className="h-9 cursor-pointer rounded-full border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50"
-                                      disabled={mutatingStepId === step.id}
-                                      onClick={() => void reopenStep(step)}
-                                    >
-                                      {mutatingStepId === step.id ? (
-                                        <Loader2 className="h-4 w-4 animate-spin" />
-                                      ) : currentStatus === "POSTPONED" ? (
-                                        "Undo postpone"
-                                      ) : (
-                                        "Reopen step"
-                                      )}
-                                    </Button>
-                                  ) : null}
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="icon"
-                                        className="h-9 w-9 cursor-pointer rounded-xl border-slate-200 bg-white text-fuchsia-700 hover:border-fuchsia-200 hover:bg-white hover:text-fuchsia-800"
-                                        onClick={() => openStepNoteDialog(step)}
-                                        aria-label={`Add note for ${step.title}`}
-                                      >
-                                        <NotebookPen className="h-4 w-4" />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="top" sideOffset={6}>Add note</TooltipContent>
-                                  </Tooltip>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="icon"
-                                        className="h-9 w-9 cursor-pointer rounded-xl border-slate-200 bg-white text-cyan-700 hover:border-cyan-200 hover:bg-white hover:text-cyan-800"
-                                        onClick={() => openStepTaskDialog(step)}
-                                        aria-label={`Create task for ${step.title}`}
-                                      >
-                                        <ListTodo className="h-4 w-4" />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="top" sideOffset={6}>Create task</TooltipContent>
-                                  </Tooltip>
+                                      ) : null}
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
                                 </div>
-                            </div>
-                          </article>
+                              </div>
+
+                              <CollapsibleContent id={panelId}>
+                                <div className="border-t border-slate-200 px-4 py-4">
+                                  {expandedStepPanelMode === "DETAILS" ? (
+                                    <div className="flex flex-col gap-4">
+                                      <div className="grid gap-4 sm:grid-cols-3">
+                                        <div>
+                                          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                            Status
+                                          </p>
+                                          <p className="mt-1 text-sm font-medium text-slate-900">
+                                            {formatFollowUpStepStatus(step.status)}
+                                          </p>
+                                        </div>
+                                        <div>
+                                          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                            Due
+                                          </p>
+                                          <p className="mt-1 text-sm font-medium text-slate-900">
+                                            {step.effectiveDueAt || step.dueAt
+                                              ? formatDateTimeForDisplay(
+                                                  step.effectiveDueAt ?? step.dueAt ?? "",
+                                                  item.timezone,
+                                                )
+                                              : "No due date"}
+                                          </p>
+                                        </div>
+                                        <div>
+                                          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                            Assignee
+                                          </p>
+                                          <div className="mt-1">
+                                            <FollowUpStepAssigneeAvatar assignee={step.assignedTo} />
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div className="grid gap-4 border-t border-slate-200 pt-4 lg:grid-cols-2">
+                                        <div>
+                                          <p className="text-xs font-semibold text-slate-700">Description</p>
+                                          <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                                            {step.notesTemplate?.trim() ||
+                                              "No description provided for this step."}
+                                          </p>
+                                        </div>
+                                        <div>
+                                          <p className="text-xs font-semibold text-slate-700">Latest note</p>
+                                          <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                                            {step.note?.trim() || "No step note recorded yet."}
+                                          </p>
+                                        </div>
+                                      </div>
+                                      {canManageSensitiveServiceActions ? (
+                                        <div className="border-t border-slate-200 pt-4">
+                                          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                                            <Field
+                                              data-invalid={Boolean(stepAssigneeError)}
+                                              data-disabled={
+                                                isLoadingAssignees || isSavingStepAssignee
+                                              }
+                                              className="min-w-0 flex-1 gap-2"
+                                            >
+                                              <FieldLabel htmlFor={`follow-up-owner-${step.id}`}>
+                                                Step assignee
+                                              </FieldLabel>
+                                              <FollowUpStepAssigneeInput
+                                                id={`follow-up-owner-${step.id}`}
+                                                value={stepAssignedToUserId}
+                                                options={followUpAssigneeOptions}
+                                                currentAssignee={
+                                                  step.assignedTo
+                                                    ? {
+                                                        value: step.assignedTo.id,
+                                                        label: getFollowUpAssigneeLabel(
+                                                          step.assignedTo,
+                                                        ),
+                                                        email: step.assignedTo.email ?? "",
+                                                        image: step.assignedTo.image ?? null,
+                                                      }
+                                                    : null
+                                                }
+                                                disabled={
+                                                  isLoadingAssignees || isSavingStepAssignee
+                                                }
+                                                ariaInvalid={Boolean(stepAssigneeError)}
+                                                onValueChange={(value) => {
+                                                  setStepAssignedToUserId(value)
+                                                  setStepAssigneeError(null)
+                                                }}
+                                              />
+                                              <FieldDescription>
+                                                This assignment applies only to this follow-up step.
+                                              </FieldDescription>
+                                              <FieldError>{stepAssigneeError}</FieldError>
+                                            </Field>
+                                            <Button
+                                              type="button"
+                                              className="h-11 cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+                                              disabled={
+                                                isSavingStepAssignee ||
+                                                (step.assignedToUserId ??
+                                                  FOLLOW_UP_UNASSIGNED_VALUE) ===
+                                                  stepAssignedToUserId
+                                              }
+                                              onClick={() => void saveStepAssignee()}
+                                            >
+                                              {isSavingStepAssignee ? (
+                                                <>
+                                                  <Loader2
+                                                    aria-hidden="true"
+                                                    className="size-4 animate-spin"
+                                                  />
+                                                  Saving
+                                                </>
+                                              ) : (
+                                                "Save assignee"
+                                              )}
+                                            </Button>
+                                          </div>
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  ) : expandedStepPanelMode === "STATUS" ? (
+                                    <div className="flex flex-col gap-4">
+                                      {step.effectiveDueAt &&
+                                      new Date(step.effectiveDueAt).getTime() > Date.now() ? (
+                                        <p className="border-l-2 border-blue-600 pl-3 text-sm text-slate-600">
+                                          This step is scheduled for later. Starting it now keeps the
+                                          original due date in the follow-up history.
+                                        </p>
+                                      ) : null}
+                                      <div className="grid gap-2">
+                                        <Label id={`follow-up-status-label-${step.id}`}>
+                                          New status
+                                        </Label>
+                                        <ToggleGroup
+                                          type="single"
+                                          value={stepStatusValue}
+                                          aria-labelledby={`follow-up-status-label-${step.id}`}
+                                          variant="outline"
+                                          size="sm"
+                                          disabled={isSavingStepStatus || mutatingStepId === step.id}
+                                          onValueChange={(value) => {
+                                            if (!value) return
+                                            const nextValue = value as FollowUpStepStatus
+                                            setStepStatusValue(nextValue)
+                                            if (nextValue !== "POSTPONED") {
+                                              setStepPostponeInput({ date: "", time: "" })
+                                            }
+                                            if (nextValue !== "COMPLETED") {
+                                              setStepNextFollowUpInput({ date: "", time: "" })
+                                            }
+                                          }}
+                                          className="grid w-full grid-cols-3"
+                                        >
+                                          <ToggleGroupItem
+                                            value="COMPLETED"
+                                            className="w-full data-[state=on]:bg-slate-900 data-[state=on]:text-white"
+                                          >
+                                            Completed
+                                          </ToggleGroupItem>
+                                          <ToggleGroupItem
+                                            value="POSTPONED"
+                                            className="w-full data-[state=on]:bg-slate-900 data-[state=on]:text-white"
+                                          >
+                                            Postponed
+                                          </ToggleGroupItem>
+                                          <ToggleGroupItem
+                                            value="SKIPPED"
+                                            className="w-full data-[state=on]:bg-slate-900 data-[state=on]:text-white"
+                                          >
+                                            Skipped
+                                          </ToggleGroupItem>
+                                        </ToggleGroup>
+                                      </div>
+                                      <div className="grid gap-2">
+                                        <Label htmlFor={`follow-up-status-note-${step.id}`}>
+                                          Step note <span className="font-normal text-slate-500">(optional)</span>
+                                        </Label>
+                                        <Textarea
+                                          id={`follow-up-status-note-${step.id}`}
+                                          rows={3}
+                                          placeholder="Add context for this update..."
+                                          value={stepStatusNote}
+                                          disabled={isSavingStepStatus}
+                                          onChange={(event) => setStepStatusNote(event.target.value)}
+                                        />
+                                      </div>
+                                      {stepStatusValue === "POSTPONED" ? (
+                                        <div className="grid gap-2">
+                                          <Label htmlFor={`follow-up-postpone-date-${step.id}`}>
+                                            Postpone to
+                                          </Label>
+                                          <Label
+                                            htmlFor={`follow-up-postpone-time-${step.id}`}
+                                            className="sr-only"
+                                          >
+                                            Postpone time
+                                          </Label>
+                                          <DateTimeInput
+                                            id={`follow-up-postpone-date-${step.id}`}
+                                            timeId={`follow-up-postpone-time-${step.id}`}
+                                            value={stepPostponeInput}
+                                            onValueChange={setStepPostponeInput}
+                                            disabled={isSavingStepStatus}
+                                            disabledDate={isBeforeToday}
+                                          />
+                                          <p className="text-xs text-slate-500">
+                                            This step and upcoming pending or active steps will shift
+                                            to match the new timing.
+                                          </p>
+                                        </div>
+                                      ) : null}
+                                      {stepStatusValue === "COMPLETED" &&
+                                      step.completionRequirement?.type === "NEXT_FOLLOW_UP_AT" ? (
+                                        <div className="grid gap-2 border-l-2 border-blue-600 pl-3">
+                                          <Label htmlFor={`follow-up-next-date-${step.id}`}>
+                                            {step.completionRequirement.prompt}
+                                          </Label>
+                                          <Label
+                                            htmlFor={`follow-up-next-time-${step.id}`}
+                                            className="sr-only"
+                                          >
+                                            Next follow-up time
+                                          </Label>
+                                          <DateTimeInput
+                                            id={`follow-up-next-date-${step.id}`}
+                                            timeId={`follow-up-next-time-${step.id}`}
+                                            value={stepNextFollowUpInput}
+                                            onValueChange={setStepNextFollowUpInput}
+                                            disabled={isSavingStepStatus}
+                                            disabledDate={isBeforeToday}
+                                          />
+                                          <p className="text-xs text-slate-500">
+                                            The workflow will pause and activate the selected next
+                                            step at this time.
+                                          </p>
+                                        </div>
+                                      ) : null}
+                                      <div className="flex flex-col-reverse gap-2 border-t border-slate-200 pt-4 sm:flex-row sm:justify-end">
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          className="cursor-pointer"
+                                          disabled={isSavingStepStatus}
+                                          onClick={() => {
+                                            setExpandedStepId(null)
+                                            setExpandedStepPanelMode(null)
+                                            setStepStatusNote("")
+                                            setStepPostponeInput({ date: "", time: "" })
+                                            setStepNextFollowUpInput({ date: "", time: "" })
+                                          }}
+                                        >
+                                          Cancel
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+                                          disabled={!stepStatusValue || isSavingStepStatus}
+                                          onClick={() => void saveStepStatus()}
+                                        >
+                                          {isSavingStepStatus ? (
+                                            <>
+                                              <Loader2
+                                                aria-hidden="true"
+                                                className="size-4 animate-spin"
+                                              />
+                                              Saving
+                                            </>
+                                          ) : (
+                                            "Save update"
+                                          )}
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </CollapsibleContent>
+                            </article>
+                          </Collapsible>
                         </div>
                       )
                     })}
                     {filteredFollowUpSteps.length === 0 ? (
                       <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                        No {followUpFilter === "OPEN" ? "open" : "completed"} follow-up steps in this workflow.
+                        {followUpFilter === "ALL"
+                          ? "No follow-up steps are enrolled in this workflow."
+                          : `No ${followUpFilter === "OPEN" ? "open" : "completed"} follow-up steps in this workflow.`}
                       </div>
                     ) : null}
                   </div>
@@ -3138,7 +3564,12 @@ export function ContactServiceDetailsPanel({
                         variant="outline"
                         size="sm"
                         className="cursor-pointer rounded-full border-slate-200 bg-white"
-                        disabled={safeFollowUpPage <= 1}
+                        disabled={
+                          safeFollowUpPage <= 1 ||
+                          isSavingStepStatus ||
+                          isSavingStepAssignee ||
+                          Boolean(mutatingStepId)
+                        }
                         onClick={() => setFollowUpPage((current) => Math.max(1, current - 1))}
                       >
                         Previous
@@ -3151,7 +3582,12 @@ export function ContactServiceDetailsPanel({
                         variant="outline"
                         size="sm"
                         className="cursor-pointer rounded-full border-slate-200 bg-white"
-                        disabled={safeFollowUpPage >= followUpPageCount}
+                        disabled={
+                          safeFollowUpPage >= followUpPageCount ||
+                          isSavingStepStatus ||
+                          isSavingStepAssignee ||
+                          Boolean(mutatingStepId)
+                        }
                         onClick={() => setFollowUpPage((current) => Math.min(followUpPageCount, current + 1))}
                       >
                         Next
@@ -4458,124 +4894,6 @@ export function ContactServiceDetailsPanel({
       </Dialog>
 
       <Dialog
-        open={isStepStatusDialogOpen}
-        onOpenChange={(open) => {
-          setIsStepStatusDialogOpen(open)
-          if (!open) {
-            setActiveStep(null)
-            setStepStatusNote("")
-            setStepPostponeInput({ date: "", time: "" })
-            setStepNextFollowUpInput({ date: "", time: "" })
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Update step status</DialogTitle>
-            <DialogDescription>
-              Move the current step forward and add an optional note. The active step is set automatically by the follow-up flow.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-1">
-            {activeStep ? (
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                <p><span className="font-medium text-slate-900">Service:</span> {item.service.name}</p>
-                <p><span className="font-medium text-slate-900">Template:</span> {item.followUpTemplate?.name ?? "No template selected"}</p>
-                <p><span className="font-medium text-slate-900">Step:</span> {activeStep.title}</p>
-              </div>
-            ) : null}
-            {activeStep?.effectiveDueAt &&
-            new Date(activeStep.effectiveDueAt).getTime() > Date.now() ? (
-              <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
-                This step is scheduled for a later time. You can complete it now; its original due
-                date will remain in the follow-up history.
-              </div>
-            ) : null}
-            <div className="grid gap-2">
-              <Label>Status</Label>
-              <Select
-                value={stepStatusValue}
-                onValueChange={(value) => {
-                  const nextValue = value as FollowUpStepStatus
-                  setStepStatusValue(nextValue)
-                  if (nextValue !== "POSTPONED") {
-                    setStepPostponeInput({ date: "", time: "" })
-                  }
-                  if (nextValue !== "COMPLETED") {
-                    setStepNextFollowUpInput({ date: "", time: "" })
-                  }
-                }}
-              >
-                <SelectTrigger className="cursor-pointer">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="COMPLETED" className="cursor-pointer">Completed</SelectItem>
-                  <SelectItem value="SKIPPED" className="cursor-pointer">Skipped</SelectItem>
-                  <SelectItem value="POSTPONED" className="cursor-pointer">Postponed</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label>Step note (optional)</Label>
-              <Textarea
-                rows={4}
-                placeholder="Add context about why this step was completed, skipped, or updated..."
-                value={stepStatusNote}
-                onChange={(event) => setStepStatusNote(event.target.value)}
-              />
-            </div>
-            {stepStatusValue === "POSTPONED" ? (
-              <div className="grid gap-2">
-                <Label>Postpone to</Label>
-                <DateTimeInput
-                  value={stepPostponeInput}
-                  onValueChange={setStepPostponeInput}
-                  disabledDate={isBeforeToday}
-                />
-                <p className="text-xs text-slate-500">
-                  This step and all upcoming pending or active steps will shift to match the new timing.
-                </p>
-              </div>
-            ) : null}
-            {stepStatusValue === "COMPLETED" &&
-            activeStep?.completionRequirement?.type === "NEXT_FOLLOW_UP_AT" ? (
-              <div className="grid gap-2 rounded-xl border border-blue-200 bg-blue-50/60 p-3">
-                <Label>{activeStep.completionRequirement.prompt}</Label>
-                <DateTimeInput
-                  value={stepNextFollowUpInput}
-                  onValueChange={setStepNextFollowUpInput}
-                  disabledDate={isBeforeToday}
-                />
-                <p className="text-xs text-slate-600">
-                  The workflow will pause and activate the next selected step at this time.
-                </p>
-              </div>
-            ) : null}
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setIsStepStatusDialogOpen(false)}
-              disabled={isSavingStepStatus}
-              className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void saveStepStatus()}
-              disabled={isSavingStepStatus}
-              className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
-            >
-              {isSavingStepStatus ? "Saving..." : "Save status"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
         open={isRescheduleWaitOpen}
         onOpenChange={(open) => {
           setIsRescheduleWaitOpen(open)
@@ -4614,133 +4932,6 @@ export function ContactServiceDetailsPanel({
               onClick={() => void rescheduleManualWait()}
             >
               {isReschedulingWait ? "Saving..." : "Save date"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={isStepDetailsDialogOpen}
-        onOpenChange={(open) => {
-          setIsStepDetailsDialogOpen(open)
-          if (!open) {
-            setActiveStep(null)
-            setStepAssignedToUserId("")
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Follow-up step details</DialogTitle>
-            <DialogDescription>
-              Review the description and current details for this follow-up step.
-            </DialogDescription>
-          </DialogHeader>
-          {activeStep ? (
-            <div className="space-y-4 py-1">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                <p><span className="font-medium text-slate-900">Service:</span> {item.service.name}</p>
-                <p><span className="font-medium text-slate-900">Template:</span> {item.followUpTemplate?.name ?? "No template selected"}</p>
-                <p><span className="font-medium text-slate-900">Step:</span> {activeStep.title}</p>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                  <p className="text-xs font-semibold uppercase text-slate-500">Status</p>
-                  <p className="mt-1 text-sm capitalize text-slate-900">
-                    {(activeStep.status ?? "PENDING").toLowerCase().replace(/_/g, " ")}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                  <p className="text-xs font-semibold uppercase text-slate-500">Due</p>
-                  <p className="mt-1 text-sm text-slate-900">
-                    {activeStep.dueAt ? new Date(activeStep.dueAt).toLocaleString() : "No due date"}
-                  </p>
-                </div>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
-                <p className="text-xs font-semibold uppercase text-slate-500">Follow-up owner</p>
-                <div className="mt-3 flex items-center gap-3">
-                  <Avatar className="h-10 w-10 shrink-0 border border-slate-200">
-                    <AvatarImage
-                      src={activeStep.assignedTo?.image ?? undefined}
-                      alt={getFollowUpAssigneeLabel(activeStep.assignedTo)}
-                    />
-                    <AvatarFallback className="bg-slate-200 text-xs font-semibold text-slate-700">
-                      {getInitials(getFollowUpAssigneeLabel(activeStep.assignedTo))}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-900">
-                      {getFollowUpAssigneeLabel(activeStep.assignedTo)}
-                    </p>
-                    <p className="text-xs text-slate-500">
-                      {activeStep.assignedTo?.email || "No owner assigned yet."}
-                    </p>
-                  </div>
-                </div>
-                {canManageSensitiveServiceActions ? (
-                  <div className="mt-4 grid gap-2">
-                    <Label>Change follow-up owner</Label>
-                    <Select
-                      value={stepAssignedToUserId || "__none__"}
-                      onValueChange={(value) =>
-                        setStepAssignedToUserId(value === "__none__" ? "" : value)
-                      }
-                      disabled={isLoadingAssignees || isSavingStepAssignee}
-                    >
-                      <SelectTrigger className="cursor-pointer">
-                        <SelectValue placeholder="Select follow-up owner" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none__">Unassigned</SelectItem>
-                        {followUpAssigneeOptions.map((assignee) => (
-                          <SelectItem key={assignee.value} value={assignee.value}>
-                            {assignee.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-slate-500">
-                      Change the owner to rebalance follow-up execution for this service.
-                    </p>
-                  </div>
-                ) : null}
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
-                <p className="text-xs font-semibold uppercase text-slate-500">Description</p>
-                <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
-                  {activeStep.notesTemplate?.trim() || "No description provided for this step."}
-                </p>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
-                <p className="text-xs font-semibold uppercase text-slate-500">Latest step note</p>
-                <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
-                  {activeStep.note?.trim() || "No step note recorded yet."}
-                </p>
-              </div>
-            </div>
-          ) : null}
-          <DialogFooter>
-            {canManageSensitiveServiceActions ? (
-              <Button
-                type="button"
-                onClick={() => void saveStepAssignee()}
-                disabled={
-                  isSavingStepAssignee ||
-                  (activeStep?.assignedToUserId ?? "") === stepAssignedToUserId
-                }
-                className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
-              >
-                {isSavingStepAssignee ? "Saving..." : "Save owner"}
-              </Button>
-            ) : null}
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setIsStepDetailsDialogOpen(false)}
-              className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
-            >
-              Close
             </Button>
           </DialogFooter>
         </DialogContent>
