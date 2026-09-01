@@ -602,6 +602,9 @@ const CHECKLIST_STATUS_BY_VALUE = Object.fromEntries(
   CHECKLIST_STATUS_OPTIONS.map((option) => [option.value, option]),
 ) as Record<ContactServiceChecklistStatus, ChecklistStatusOption>
 
+const FOLLOW_UP_INLINE_SAVE_BUTTON_CLASS =
+  "h-8 shrink-0 cursor-pointer rounded-full bg-blue-950 px-3 py-1 text-xs font-semibold text-white shadow-sm ring-1 ring-black/5 transition hover:bg-blue-900 hover:text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+
 const formatDateTime = (value: string | null | undefined) => {
   if (!value) return "-"
   return new Date(value).toLocaleString()
@@ -3254,7 +3257,7 @@ export function ContactServiceDetailsPanel({
                                       ) : isStartingEarly ? (
                                         "Start early"
                                       ) : (
-                                        "Update step"
+                                        "Update"
                                       )}
                                     </Button>
                                   ) : null}
@@ -3379,7 +3382,8 @@ export function ContactServiceDetailsPanel({
                                               {hasStepAssigneeChange || isSavingStepAssignee ? (
                                                 <Button
                                                   type="button"
-                                                  className="h-11 shrink-0 cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+                                                  variant="ghost"
+                                                  className={FOLLOW_UP_INLINE_SAVE_BUTTON_CLASS}
                                                   disabled={isSavingStepAssignee}
                                                   onClick={() => void saveStepAssignee()}
                                                 >
@@ -3540,7 +3544,8 @@ export function ContactServiceDetailsPanel({
                                         </Button>
                                         <Button
                                           type="button"
-                                          className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+                                          variant="ghost"
+                                          className={FOLLOW_UP_INLINE_SAVE_BUTTON_CLASS}
                                           disabled={!stepStatusValue || isSavingStepStatus}
                                           onClick={() => void saveStepStatus()}
                                         >
