@@ -756,9 +756,9 @@ function FollowUpStepAssigneeAvatar({
           role="img"
           tabIndex={0}
           aria-label={`Step assignee: ${label}`}
-          className="inline-flex size-7 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+          className="inline-flex size-8 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
         >
-          <Avatar size="sm" aria-hidden="true" className="ring-2 ring-blue-50">
+          <Avatar aria-hidden="true" className="ring-2 ring-blue-50">
             {assignee?.image ? (
               <AvatarImage src={assignee.image} alt="" />
             ) : null}
@@ -1926,6 +1926,16 @@ export function ContactServiceDetailsPanel({
 
   const saveStepAssignee = async () => {
     if (!item || !expandedStep || expandedStepPanelMode !== "DETAILS") return
+    if (["COMPLETED", "SKIPPED"].includes(expandedStep.status ?? "PENDING")) {
+      setStepAssigneeError("Completed or skipped steps cannot be reassigned.")
+      return
+    }
+    if (
+      (expandedStep.assignedToUserId ?? FOLLOW_UP_UNASSIGNED_VALUE) ===
+      stepAssignedToUserId
+    ) {
+      return
+    }
 
     setIsSavingStepAssignee(true)
     try {
@@ -1948,9 +1958,14 @@ export function ContactServiceDetailsPanel({
         const message =
           backendError === "INVALID_ASSIGNEE"
             ? "Selected assignee is not an active member of this tenant."
-            : "Could not update the step assignee."
+            : backendError === "FOLLOW_UP_STEP_ASSIGNEE_LOCKED"
+              ? "Completed or skipped steps cannot be reassigned."
+              : "Could not update the step assignee."
         setStepAssigneeError(message)
         toast.error(message)
+        if (backendError === "FOLLOW_UP_STEP_ASSIGNEE_LOCKED") {
+          await refreshData(true)
+        }
       } else {
         const message = "Could not update the step assignee."
         setStepAssigneeError(message)
@@ -3121,10 +3136,17 @@ export function ContactServiceDetailsPanel({
                         (currentStatus === "COMPLETED" ||
                           currentStatus === "SKIPPED" ||
                           currentStatus === "POSTPONED")
+                      const canChangeStepAssignee =
+                        canManageSensitiveServiceActions && !isDone
                       const isExpanded = expandedStepId === step.id
                       const isTimelineBusy =
                         Boolean(mutatingStepId) || isSavingStepStatus || isSavingStepAssignee
                       const panelId = `follow-up-step-panel-${step.id}`
+                      const hasStepAssigneeChange =
+                        isExpanded &&
+                        expandedStepPanelMode === "DETAILS" &&
+                        (step.assignedToUserId ?? FOLLOW_UP_UNASSIGNED_VALUE) !==
+                          stepAssignedToUserId
 
                       return (
                         <li
@@ -3197,42 +3219,13 @@ export function ContactServiceDetailsPanel({
                                       </Badge>
                                     ) : null}
                                   </div>
-                                  <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-[minmax(0,1.5fr)_auto_minmax(7rem,0.7fr)]">
-                                    <div className="col-span-2 min-w-0 sm:col-span-1">
-                                      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-                                        Due
-                                      </dt>
-                                      <dd className="mt-1 flex min-w-0 items-center gap-1.5 text-xs font-medium text-slate-600">
-                                        <Clock3
-                                          aria-hidden="true"
-                                          className="size-3.5 shrink-0 text-slate-400"
-                                        />
-                                        <span className="truncate">{timeMeta.helper}</span>
-                                      </dd>
-                                    </div>
-                                    <div>
-                                      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-                                        Assignee
-                                      </dt>
-                                      <dd className="mt-0.5">
-                                        <FollowUpStepAssigneeAvatar assignee={step.assignedTo} />
-                                      </dd>
-                                    </div>
-                                    <div className="min-w-0">
-                                      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-                                        Latest note
-                                      </dt>
-                                      <dd className="mt-1 flex min-w-0 items-center gap-1.5 text-xs font-medium text-slate-600">
-                                        <NotebookPen
-                                          aria-hidden="true"
-                                          className="size-3.5 shrink-0 text-slate-400"
-                                        />
-                                        <span className="truncate">
-                                          {step.note?.trim() ? "Available" : "Not added"}
-                                        </span>
-                                      </dd>
-                                    </div>
-                                  </dl>
+                                  <div className="mt-3 flex max-w-xl min-w-0 items-center gap-1.5 text-xs font-medium text-slate-600">
+                                    <Clock3
+                                      aria-hidden="true"
+                                      className="size-3.5 shrink-0 text-slate-400"
+                                    />
+                                    <span className="truncate">{timeMeta.helper}</span>
+                                  </div>
                                   {step.resolutionReason ? (
                                     <div className="mt-4 border-l-2 border-rose-400 pl-3">
                                       <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-rose-600">
@@ -3265,45 +3258,64 @@ export function ContactServiceDetailsPanel({
                                       )}
                                     </Button>
                                   ) : null}
-                                  <DropdownMenu>
-                                    <DropdownMenuTrigger asChild>
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        className="h-9 cursor-pointer px-3 text-sm font-medium text-slate-600"
-                                        disabled={isTimelineBusy}
-                                        aria-label={`More actions for ${step.title}`}
-                                      >
-                                        More
-                                        <Ellipsis aria-hidden="true" className="size-4" />
-                                      </Button>
-                                    </DropdownMenuTrigger>
-                                    <DropdownMenuContent align="end" className="w-48">
-                                      <DropdownMenuGroup>
-                                        <DropdownMenuItem onSelect={() => openStepNoteDialog(step)}>
-                                          <NotebookPen aria-hidden="true" />
-                                          Add note
-                                        </DropdownMenuItem>
-                                        <DropdownMenuItem onSelect={() => openStepTaskDialog(step)}>
-                                          <ListTodo aria-hidden="true" />
-                                          Create task
-                                        </DropdownMenuItem>
-                                      </DropdownMenuGroup>
-                                      {canReopen ? (
-                                        <>
-                                          <DropdownMenuSeparator />
-                                          <DropdownMenuGroup>
-                                            <DropdownMenuItem onSelect={() => void reopenStep(step)}>
-                                              <RotateCcw aria-hidden="true" />
-                                              {currentStatus === "POSTPONED"
-                                                ? "Undo postpone"
-                                                : "Reopen step"}
-                                            </DropdownMenuItem>
-                                          </DropdownMenuGroup>
-                                        </>
-                                      ) : null}
-                                    </DropdownMenuContent>
-                                  </DropdownMenu>
+                                  <div className="ml-auto flex shrink-0 items-center gap-1 sm:ml-0">
+                                    <FollowUpStepAssigneeAvatar assignee={step.assignedTo} />
+                                    <DropdownMenu>
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <DropdownMenuTrigger asChild>
+                                            <Button
+                                              type="button"
+                                              variant="ghost"
+                                              size="icon-sm"
+                                              className="rounded-full"
+                                              disabled={isTimelineBusy}
+                                              aria-label={`More actions for ${step.title}`}
+                                            >
+                                              <Ellipsis aria-hidden="true" />
+                                            </Button>
+                                          </DropdownMenuTrigger>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="top" sideOffset={6}>
+                                          More actions
+                                        </TooltipContent>
+                                      </Tooltip>
+                                      <DropdownMenuContent align="end" className="w-48">
+                                        <DropdownMenuGroup>
+                                          <DropdownMenuItem
+                                            className="cursor-pointer"
+                                            onSelect={() => openStepNoteDialog(step)}
+                                          >
+                                            <NotebookPen aria-hidden="true" />
+                                            Add note
+                                          </DropdownMenuItem>
+                                          <DropdownMenuItem
+                                            className="cursor-pointer"
+                                            onSelect={() => openStepTaskDialog(step)}
+                                          >
+                                            <ListTodo aria-hidden="true" />
+                                            Create task
+                                          </DropdownMenuItem>
+                                        </DropdownMenuGroup>
+                                        {canReopen ? (
+                                          <>
+                                            <DropdownMenuSeparator />
+                                            <DropdownMenuGroup>
+                                              <DropdownMenuItem
+                                                className="cursor-pointer"
+                                                onSelect={() => void reopenStep(step)}
+                                              >
+                                                <RotateCcw aria-hidden="true" />
+                                                {currentStatus === "POSTPONED"
+                                                  ? "Undo postpone"
+                                                  : "Reopen step"}
+                                              </DropdownMenuItem>
+                                            </DropdownMenuGroup>
+                                          </>
+                                        ) : null}
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
+                                  </div>
                                 </div>
                               </div>
 
@@ -3311,44 +3323,34 @@ export function ContactServiceDetailsPanel({
                                 <div className="border-t border-slate-200 py-5 pr-1 pl-1">
                                   {expandedStepPanelMode === "DETAILS" ? (
                                     <div className="flex flex-col gap-5">
-                                      <div className="grid gap-5 lg:grid-cols-2 lg:gap-8">
-                                        <section aria-labelledby={`step-description-${step.id}`}>
-                                          <h3
-                                            id={`step-description-${step.id}`}
-                                            className="text-xs font-semibold text-slate-800"
-                                          >
-                                            Description
-                                          </h3>
-                                          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
-                                            {step.notesTemplate?.trim() ||
-                                              "No description provided for this step."}
-                                          </p>
-                                        </section>
-                                        <section aria-labelledby={`step-note-${step.id}`}>
-                                          <h3
-                                            id={`step-note-${step.id}`}
-                                            className="text-xs font-semibold text-slate-800"
-                                          >
-                                            Latest note
-                                          </h3>
-                                          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
-                                            {step.note?.trim() || "No step note recorded yet."}
-                                          </p>
-                                        </section>
-                                      </div>
-                                      {canManageSensitiveServiceActions ? (
+                                      <section
+                                        aria-labelledby={`step-description-${step.id}`}
+                                        className="max-w-3xl"
+                                      >
+                                        <h3
+                                          id={`step-description-${step.id}`}
+                                          className="text-xs font-semibold text-slate-800"
+                                        >
+                                          Description
+                                        </h3>
+                                        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                                          {step.notesTemplate?.trim() ||
+                                            "No description provided for this step."}
+                                        </p>
+                                      </section>
+                                      {canChangeStepAssignee ? (
                                         <div className="border-t border-slate-200 pt-4">
-                                          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-                                            <Field
-                                              data-invalid={Boolean(stepAssigneeError)}
-                                              data-disabled={
-                                                isLoadingAssignees || isSavingStepAssignee
-                                              }
-                                              className="min-w-0 flex-1 gap-2"
-                                            >
-                                              <FieldLabel htmlFor={`follow-up-owner-${step.id}`}>
-                                                Step assignee
-                                              </FieldLabel>
+                                          <Field
+                                            data-invalid={Boolean(stepAssigneeError)}
+                                            data-disabled={
+                                              isLoadingAssignees || isSavingStepAssignee
+                                            }
+                                            className="max-w-md gap-2"
+                                          >
+                                            <FieldLabel htmlFor={`follow-up-owner-${step.id}`}>
+                                              Step assignee
+                                            </FieldLabel>
+                                            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
                                               <FollowUpStepAssigneeInput
                                                 id={`follow-up-owner-${step.id}`}
                                                 value={stepAssignedToUserId}
@@ -3374,35 +3376,32 @@ export function ContactServiceDetailsPanel({
                                                   setStepAssigneeError(null)
                                                 }}
                                               />
-                                              <FieldDescription>
-                                                This assignment applies only to this follow-up step.
-                                              </FieldDescription>
-                                              <FieldError>{stepAssigneeError}</FieldError>
-                                            </Field>
-                                            <Button
-                                              type="button"
-                                              className="h-11 cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
-                                              disabled={
-                                                isSavingStepAssignee ||
-                                                (step.assignedToUserId ??
-                                                  FOLLOW_UP_UNASSIGNED_VALUE) ===
-                                                  stepAssignedToUserId
-                                              }
-                                              onClick={() => void saveStepAssignee()}
-                                            >
-                                              {isSavingStepAssignee ? (
-                                                <>
-                                                  <Loader2
-                                                    aria-hidden="true"
-                                                    className="size-4 animate-spin"
-                                                  />
-                                                  Saving
-                                                </>
-                                              ) : (
-                                                "Save assignee"
-                                              )}
-                                            </Button>
-                                          </div>
+                                              {hasStepAssigneeChange || isSavingStepAssignee ? (
+                                                <Button
+                                                  type="button"
+                                                  className="h-11 shrink-0 cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+                                                  disabled={isSavingStepAssignee}
+                                                  onClick={() => void saveStepAssignee()}
+                                                >
+                                                  {isSavingStepAssignee ? (
+                                                    <>
+                                                      <Loader2
+                                                        aria-hidden="true"
+                                                        className="size-4 animate-spin"
+                                                      />
+                                                      Saving
+                                                    </>
+                                                  ) : (
+                                                    "Save assignee"
+                                                  )}
+                                                </Button>
+                                              ) : null}
+                                            </div>
+                                            <FieldDescription>
+                                              This assignment applies only to this follow-up step.
+                                            </FieldDescription>
+                                            <FieldError>{stepAssigneeError}</FieldError>
+                                          </Field>
                                         </div>
                                       ) : null}
                                     </div>

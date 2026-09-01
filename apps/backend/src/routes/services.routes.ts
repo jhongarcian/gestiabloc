@@ -32,6 +32,7 @@ import {
   resolveEffectiveNextFollowUp,
   serializeEffectiveNextFollowUp,
 } from "../lib/service-followup-next-follow-up.js"
+import { canChangeServiceFollowUpStepAssignee } from "../lib/service-followup-step-permissions.js"
 import {
   continueFollowUpRunFromStepTx,
   createFollowUpRunTx,
@@ -4505,6 +4506,17 @@ router.patch(
         return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
       }
       const isReopenAction = payload.action === "REOPEN"
+      const isAssigneeOnlyUpdate =
+        payload.assignedToUserId !== undefined &&
+        Object.keys(payload).every((key) => key === "assignedToUserId")
+
+      if (
+        payload.assignedToUserId !== undefined &&
+        !canChangeServiceFollowUpStepAssignee(existing.status)
+      ) {
+        return res.status(409).json({ error: "FOLLOW_UP_STEP_ASSIGNEE_LOCKED" })
+      }
+
       const versionedRun = existing.runId
         ? await prismaWithServices.contactServiceFollowUpRun.findUnique({
             where: { id: existing.runId },
@@ -4524,7 +4536,7 @@ router.patch(
         ? new Date(payload.nextFollowUpAt)
         : null
 
-      if (existing.runId && !isReopenAction) {
+      if (existing.runId && !isReopenAction && !isAssigneeOnlyUpdate) {
         const isCurrentStep =
           versionedRun?.activeStepId === existing.id ||
           (versionedRun?.activeStepId === null &&

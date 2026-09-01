@@ -4867,7 +4867,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: The step is not the current active step, is already resolved, or cannot be reopened.
+          description: The step is not the current active step, is already resolved, cannot be reopened, or its assignee is locked because the step is completed or skipped.
           content:
             application/json:
               schema:
