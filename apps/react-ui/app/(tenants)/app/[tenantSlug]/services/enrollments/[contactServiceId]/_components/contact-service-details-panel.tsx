@@ -3101,7 +3101,7 @@ export function ContactServiceDetailsPanel({
               </div>
               {followUpSteps.length ? (
                 <div className="flex flex-col gap-4">
-                  <div className="flex flex-col gap-3">
+                  <ol className="border-y border-slate-200">
                     {visibleFollowUpSteps.map((step, visibleIndex) => {
                       const stepNumber = followUpSteps.findIndex((candidate) => candidate.id === step.id) + 1
                       const currentStatus = step.status ?? "PENDING"
@@ -3127,32 +3127,58 @@ export function ContactServiceDetailsPanel({
                       const panelId = `follow-up-step-panel-${step.id}`
 
                       return (
-                        <div key={step.id} className="flex gap-3 sm:gap-4">
-                          <div className="relative flex w-8 shrink-0 justify-center pt-4 sm:w-10">
-                            <span className="relative z-10 bg-white px-1 text-xs font-semibold text-slate-500 tabular-nums">
+                        <li
+                          key={step.id}
+                          className={cn(
+                            "relative grid grid-cols-[2.75rem_minmax(0,1fr)] border-b border-slate-200 last:border-b-0 sm:grid-cols-[3.5rem_minmax(0,1fr)]",
+                            isActive &&
+                              "before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-slate-800",
+                            isOverdue &&
+                              "before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-rose-500",
+                          )}
+                        >
+                          <div className="relative flex justify-center pt-5">
+                            <span
+                              className={cn(
+                                "relative z-10 bg-white px-1 text-xs font-semibold tabular-nums",
+                                isOverdue
+                                  ? "text-rose-700"
+                                  : isActive
+                                    ? "text-slate-950"
+                                    : "text-slate-400",
+                              )}
+                            >
                               {String(stepNumber).padStart(2, "0")}
                             </span>
                             {visibleIndex < visibleFollowUpSteps.length - 1 ? (
                               <span
                                 aria-hidden="true"
-                                className="absolute top-8 bottom-[-0.75rem] left-1/2 w-px -translate-x-1/2 bg-slate-200"
+                                className="absolute top-10 right-1/2 bottom-0 w-px translate-x-1/2 bg-slate-200"
                               />
                             ) : null}
                           </div>
                           <Collapsible open={isExpanded} className="min-w-0 flex-1">
-                            <article
-                              className={cn(
-                                "overflow-hidden rounded-2xl border bg-white transition-[border-color,box-shadow]",
-                                isOverdue
-                                  ? "border-rose-300"
-                                  : isActive
-                                    ? "border-slate-400 shadow-xs"
-                                    : "border-slate-200",
-                              )}
-                            >
-                              <div className="flex flex-col gap-3 px-4 py-3.5 lg:flex-row lg:items-center lg:justify-between">
-                                <div className="flex min-w-0 flex-1 flex-col gap-2">
-                                  <div className="flex flex-wrap items-center gap-1.5">
+                            <article className="min-w-0">
+                              <div className="flex flex-col gap-4 py-5 pr-1 pl-1 lg:grid lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start lg:gap-6">
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <button
+                                      type="button"
+                                      aria-expanded={isExpanded}
+                                      aria-controls={panelId}
+                                      disabled={isTimelineBusy}
+                                      className="group flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 text-left text-base font-semibold text-slate-950 outline-none transition hover:text-slate-700 focus-visible:rounded focus-visible:ring-2 focus-visible:ring-slate-400/40 disabled:cursor-not-allowed disabled:opacity-60"
+                                      onClick={() => toggleStepDetails(step)}
+                                    >
+                                      <span className="truncate">{step.title}</span>
+                                      <ChevronDown
+                                        aria-hidden="true"
+                                        className={cn(
+                                          "size-4 shrink-0 text-slate-400 transition-transform",
+                                          isExpanded && "rotate-180",
+                                        )}
+                                      />
+                                    </button>
                                     {showStatusBadge ? (
                                       <Badge className={getFollowUpStepStatusBadgeClass(step.status)}>
                                         {formatFollowUpStepStatus(step.status)}
@@ -3171,38 +3197,51 @@ export function ContactServiceDetailsPanel({
                                       </Badge>
                                     ) : null}
                                   </div>
-                                  <button
-                                    type="button"
-                                    aria-expanded={isExpanded}
-                                    aria-controls={panelId}
-                                    disabled={isTimelineBusy}
-                                    className="group flex w-fit max-w-full cursor-pointer items-center gap-1.5 text-left text-sm font-semibold text-slate-950 outline-none transition hover:text-slate-700 focus-visible:rounded focus-visible:ring-2 focus-visible:ring-slate-400/40 disabled:cursor-not-allowed disabled:opacity-60"
-                                    onClick={() => toggleStepDetails(step)}
-                                  >
-                                    <span className="truncate">{step.title}</span>
-                                    <ChevronDown
-                                      aria-hidden="true"
-                                      className={cn(
-                                        "size-4 shrink-0 text-slate-400 transition-transform",
-                                        isExpanded && "rotate-180",
-                                      )}
-                                    />
-                                  </button>
-                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
-                                    <span className="inline-flex items-center gap-1.5">
-                                      <Clock3 aria-hidden="true" className="size-3.5 text-slate-400" />
-                                      {timeMeta.helper}
-                                    </span>
-                                    <FollowUpStepAssigneeAvatar assignee={step.assignedTo} />
-                                    <span className="inline-flex items-center gap-1.5">
-                                      <NotebookPen aria-hidden="true" className="size-3.5 text-slate-400" />
-                                      {step.note?.trim() ? "Note available" : "No note"}
-                                    </span>
-                                  </div>
+                                  <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-[minmax(0,1.5fr)_auto_minmax(7rem,0.7fr)]">
+                                    <div className="col-span-2 min-w-0 sm:col-span-1">
+                                      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                                        Due
+                                      </dt>
+                                      <dd className="mt-1 flex min-w-0 items-center gap-1.5 text-xs font-medium text-slate-600">
+                                        <Clock3
+                                          aria-hidden="true"
+                                          className="size-3.5 shrink-0 text-slate-400"
+                                        />
+                                        <span className="truncate">{timeMeta.helper}</span>
+                                      </dd>
+                                    </div>
+                                    <div>
+                                      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                                        Assignee
+                                      </dt>
+                                      <dd className="mt-0.5">
+                                        <FollowUpStepAssigneeAvatar assignee={step.assignedTo} />
+                                      </dd>
+                                    </div>
+                                    <div className="min-w-0">
+                                      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                                        Latest note
+                                      </dt>
+                                      <dd className="mt-1 flex min-w-0 items-center gap-1.5 text-xs font-medium text-slate-600">
+                                        <NotebookPen
+                                          aria-hidden="true"
+                                          className="size-3.5 shrink-0 text-slate-400"
+                                        />
+                                        <span className="truncate">
+                                          {step.note?.trim() ? "Available" : "Not added"}
+                                        </span>
+                                      </dd>
+                                    </div>
+                                  </dl>
                                   {step.resolutionReason ? (
-                                    <p className="line-clamp-1 max-w-3xl text-xs font-medium text-rose-700">
-                                      {step.resolutionReason}
-                                    </p>
+                                    <div className="mt-4 border-l-2 border-rose-400 pl-3">
+                                      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-rose-600">
+                                        Workflow note
+                                      </p>
+                                      <p className="mt-1 text-xs font-medium text-rose-700">
+                                        {step.resolutionReason}
+                                      </p>
+                                    </div>
                                   ) : null}
                                 </div>
                                 <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:shrink-0 lg:justify-end">
@@ -3230,8 +3269,8 @@ export function ContactServiceDetailsPanel({
                                     <DropdownMenuTrigger asChild>
                                       <Button
                                         type="button"
-                                        variant="outline"
-                                        className="h-9 cursor-pointer rounded-lg border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 shadow-none hover:bg-slate-50"
+                                        variant="ghost"
+                                        className="h-9 cursor-pointer px-3 text-sm font-medium text-slate-600"
                                         disabled={isTimelineBusy}
                                         aria-label={`More actions for ${step.title}`}
                                       >
@@ -3269,54 +3308,33 @@ export function ContactServiceDetailsPanel({
                               </div>
 
                               <CollapsibleContent id={panelId}>
-                                <div className="border-t border-slate-200 px-4 py-4">
+                                <div className="border-t border-slate-200 py-5 pr-1 pl-1">
                                   {expandedStepPanelMode === "DETAILS" ? (
-                                    <div className="flex flex-col gap-4">
-                                      <div className="grid gap-4 sm:grid-cols-3">
-                                        <div>
-                                          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                                            Status
-                                          </p>
-                                          <p className="mt-1 text-sm font-medium text-slate-900">
-                                            {formatFollowUpStepStatus(step.status)}
-                                          </p>
-                                        </div>
-                                        <div>
-                                          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                                            Due
-                                          </p>
-                                          <p className="mt-1 text-sm font-medium text-slate-900">
-                                            {step.effectiveDueAt || step.dueAt
-                                              ? formatDateTimeForDisplay(
-                                                  step.effectiveDueAt ?? step.dueAt ?? "",
-                                                  item.timezone,
-                                                )
-                                              : "No due date"}
-                                          </p>
-                                        </div>
-                                        <div>
-                                          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                                            Assignee
-                                          </p>
-                                          <div className="mt-1">
-                                            <FollowUpStepAssigneeAvatar assignee={step.assignedTo} />
-                                          </div>
-                                        </div>
-                                      </div>
-                                      <div className="grid gap-4 border-t border-slate-200 pt-4 lg:grid-cols-2">
-                                        <div>
-                                          <p className="text-xs font-semibold text-slate-700">Description</p>
-                                          <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                                    <div className="flex flex-col gap-5">
+                                      <div className="grid gap-5 lg:grid-cols-2 lg:gap-8">
+                                        <section aria-labelledby={`step-description-${step.id}`}>
+                                          <h3
+                                            id={`step-description-${step.id}`}
+                                            className="text-xs font-semibold text-slate-800"
+                                          >
+                                            Description
+                                          </h3>
+                                          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
                                             {step.notesTemplate?.trim() ||
                                               "No description provided for this step."}
                                           </p>
-                                        </div>
-                                        <div>
-                                          <p className="text-xs font-semibold text-slate-700">Latest note</p>
-                                          <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                                        </section>
+                                        <section aria-labelledby={`step-note-${step.id}`}>
+                                          <h3
+                                            id={`step-note-${step.id}`}
+                                            className="text-xs font-semibold text-slate-800"
+                                          >
+                                            Latest note
+                                          </h3>
+                                          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
                                             {step.note?.trim() || "No step note recorded yet."}
                                           </p>
-                                        </div>
+                                        </section>
                                       </div>
                                       {canManageSensitiveServiceActions ? (
                                         <div className="border-t border-slate-200 pt-4">
@@ -3546,17 +3564,17 @@ export function ContactServiceDetailsPanel({
                               </CollapsibleContent>
                             </article>
                           </Collapsible>
-                        </div>
+                        </li>
                       )
                     })}
                     {filteredFollowUpSteps.length === 0 ? (
-                      <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                      <li className="px-4 py-8 text-center text-sm text-slate-500">
                         {followUpFilter === "ALL"
                           ? "No follow-up steps are enrolled in this workflow."
                           : `No ${followUpFilter === "OPEN" ? "open" : "completed"} follow-up steps in this workflow.`}
-                      </div>
+                      </li>
                     ) : null}
-                  </div>
+                  </ol>
                   {followUpPageCount > 1 ? (
                     <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
                       <Button
@@ -3596,7 +3614,7 @@ export function ContactServiceDetailsPanel({
                   ) : null}
                 </div>
               ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                <div className="border-y border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
                   No follow-up steps are enrolled for this service yet.
                 </div>
               )}
