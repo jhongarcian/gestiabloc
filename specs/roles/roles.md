@@ -171,6 +171,17 @@ Deletion behavior:
 - Linked CRM tasks are preserved, while their contact-service and follow-up-step references are cleared
 - The backend permission check is authoritative; hiding the UI control is not treated as the security boundary
 
+## Service Professional Assignment
+
+The enrollment's assigned professional is separate from its follow-up coordinator and step assignees.
+
+- Active `TENANT_ADMIN` and active `TENANT_USER + MEDIUM/MAX` can select or clear the professional from the enrollment header.
+- Active `TENANT_USER + LOW` sees the professional as read-only. Direct PATCH requests are rejected with `403 INSUFFICIENT_SECURITY_LEVEL`.
+- Inactive and non-member users are rejected by the active-membership guard before enrollment lookup.
+- The selected professional must be configured for the same service in the same tenant. Invalid IDs return `400 INVALID_ASSIGNED_SERVICE_PROFESSIONAL`.
+- Changes are audited with the authenticated actor and previous/new professional, do not cascade to follow-up ownership, and remain permitted after workflow completion.
+- The existing sensitive-service permission is enforced on the server; hiding the selector is not the security boundary.
+
 ## Service Follow-Up Ownership
 
 Service follow-up responsibility is separated into three records:

@@ -108,6 +108,13 @@ type ContactServiceItem = {
   paidCents: number
   remainingCents: number
   currency: string
+  followUpCoordinatorUserId?: string | null
+  followUpCoordinator?: {
+    id: string
+    name: string | null
+    email: string | null
+    image: string | null
+  } | null
   service: {
     id: string
     name: string
@@ -129,11 +136,28 @@ type ContactServiceItem = {
     effectiveDueAt?: string | null
     completedAt?: string | null
     assignedTo?: {
+      id: string
+      name: string | null
+      email: string | null
+      image: string | null
+    } | null
+    resolvedBy?: {
+      id: string
       name: string | null
       email: string | null
       image: string | null
     } | null
   }>
+}
+
+type FollowUpParticipant = {
+  id: string
+  name: string | null
+  email: string | null
+  image: string | null
+  isCoordinator: boolean
+  assignedStepCount: number
+  resolvedStepCount: number
 }
 
 type ContactServicesResponse = {
@@ -347,9 +371,10 @@ function LoadingServiceRows({ count }: { count: number }) {
         <Skeleton className="h-4 w-20" />
       </TableCell>
       <TableCell className="px-4 py-0">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center">
           <Skeleton className="size-7 rounded-full" />
-          <Skeleton className="h-4 w-24" />
+          <Skeleton className="-ml-2 size-7 rounded-full" />
+          <Skeleton className="-ml-2 size-7 rounded-full" />
         </div>
       </TableCell>
       <TableCell className="px-4 py-0">
@@ -375,6 +400,138 @@ function getInitials(value: string) {
   if (parts.length === 0) return "?"
 
   return parts.map((part) => part[0]?.toUpperCase() ?? "").join("")
+}
+
+function getFollowUpParticipants(item: ContactServiceItem) {
+  const participants = new Map<string, FollowUpParticipant>()
+
+  const addParticipant = (
+    user: {
+      id: string
+      name: string | null
+      email: string | null
+      image: string | null
+    } | null | undefined,
+    role: "COORDINATOR" | "ASSIGNEE" | "RESOLVER",
+  ) => {
+    if (!user?.id) return
+
+    const participant = participants.get(user.id) ?? {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      image: user.image,
+      isCoordinator: false,
+      assignedStepCount: 0,
+      resolvedStepCount: 0,
+    }
+
+    if (role === "COORDINATOR") participant.isCoordinator = true
+    if (role === "ASSIGNEE") participant.assignedStepCount += 1
+    if (role === "RESOLVER") participant.resolvedStepCount += 1
+    participants.set(user.id, participant)
+  }
+
+  addParticipant(item.followUpCoordinator, "COORDINATOR")
+  item.followUpSteps.forEach((step) => {
+    addParticipant(step.assignedTo, "ASSIGNEE")
+    addParticipant(step.resolvedBy, "RESOLVER")
+  })
+
+  return Array.from(participants.values())
+}
+
+function getFollowUpParticipantLabel(participant: FollowUpParticipant) {
+  return participant.name?.trim() || participant.email?.trim() || "Unnamed user"
+}
+
+function getFollowUpParticipantRoles(participant: FollowUpParticipant) {
+  const roles: string[] = []
+  if (participant.isCoordinator) roles.push("Follow-up coordinator")
+  if (participant.assignedStepCount) {
+    roles.push(
+      `Assigned to ${participant.assignedStepCount} ${participant.assignedStepCount === 1 ? "step" : "steps"}`,
+    )
+  }
+  if (participant.resolvedStepCount) {
+    roles.push(
+      `Resolved ${participant.resolvedStepCount} ${participant.resolvedStepCount === 1 ? "step" : "steps"}`,
+    )
+  }
+  return roles.join(" · ")
+}
+
+function FollowUpParticipantAvatar({ participant }: { participant: FollowUpParticipant }) {
+  const label = getFollowUpParticipantLabel(participant)
+  const roles = getFollowUpParticipantRoles(participant)
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          tabIndex={0}
+          aria-label={`${label}: ${roles}`}
+          className="-ml-2 inline-flex shrink-0 cursor-default rounded-full outline-none first:ml-0 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          <Avatar size="sm" className="border-2 border-background">
+            {participant.image ? (
+              <AvatarImage src={participant.image} alt={`${label} profile photo`} />
+            ) : null}
+            <AvatarFallback>{getInitials(label)}</AvatarFallback>
+          </Avatar>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-64">
+        <p className="font-medium">{label}</p>
+        <p className="text-xs opacity-80">{roles}</p>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function FollowUpParticipants({ participants }: { participants: FollowUpParticipant[] }) {
+  if (!participants.length) {
+    return <span className="text-xs text-muted-foreground">Unassigned</span>
+  }
+
+  const visibleParticipants = participants.slice(0, 6)
+  const remainingParticipants = participants.slice(6)
+
+  return (
+    <div
+      className="flex min-w-0 items-center"
+      aria-label={`${participants.length} ${participants.length === 1 ? "person" : "people"} involved in this follow-up`}
+    >
+      {visibleParticipants.map((participant) => (
+        <FollowUpParticipantAvatar key={participant.id} participant={participant} />
+      ))}
+      {remainingParticipants.length ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              tabIndex={0}
+              aria-label={`${remainingParticipants.length} additional people involved`}
+              className="-ml-2 inline-flex shrink-0 cursor-default rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              <Avatar size="sm" className="border-2 border-background">
+                <AvatarFallback>+{remainingParticipants.length}</AvatarFallback>
+              </Avatar>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-72">
+            <p className="font-medium">Additional follow-up participants</p>
+            <ul className="mt-1 flex flex-col gap-1 text-xs opacity-80">
+              {remainingParticipants.map((participant) => (
+                <li key={participant.id}>
+                  {getFollowUpParticipantLabel(participant)} — {getFollowUpParticipantRoles(participant)}
+                </li>
+              ))}
+            </ul>
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+    </div>
+  )
 }
 
 function getProfessionalLabel(professional: ServiceProfessional) {
@@ -1428,16 +1585,6 @@ export function ContactServicesPanel({
     return nextStep?.effectiveDueAt ?? nextStep?.dueAt ?? nextStep?.availableAt ?? null
   }
 
-  const getCurrentFollowUpAssignee = (item: ContactServiceItem) => {
-    const nextStep =
-      item.followUpSteps.find((step) => step.status === "ACTIVE") ??
-      item.followUpSteps.find((step) => step.status === "POSTPONED") ??
-      item.followUpSteps.find((step) => step.status === "PENDING") ??
-      null
-
-    return nextStep?.assignedTo ?? null
-  }
-
   const createServiceTotalCents = useMemo(() => {
     if (!createServiceDetails) return null
 
@@ -1684,24 +1831,26 @@ export function ContactServicesPanel({
                       Next follow-up
                     </TableHead>
                     <TableHead className="w-[15%] border-y bg-background px-4">
-                    <div className="flex items-center gap-1">
-                      <span>Owner</span>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            className="inline-flex size-4 cursor-pointer items-center justify-center text-slate-400 transition hover:text-slate-600"
-                            onClick={(event) => event.stopPropagation()}
-                            aria-label="Owner column help"
-                          >
-                            <CircleHelp className="h-3.5 w-3.5" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>Assigned person to the follow up.</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
+                      <div className="flex items-center gap-1">
+                        <span>Follow-up team</span>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              className="inline-flex size-4 cursor-pointer items-center justify-center text-slate-400 transition hover:text-slate-600"
+                              onClick={(event) => event.stopPropagation()}
+                              aria-label="Follow-up team column help"
+                            >
+                              <CircleHelp className="h-3.5 w-3.5" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-72">
+                            <p>
+                              Coordinator, step assignees, and users who completed or skipped steps.
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
                     </TableHead>
                     <TableHead className="w-[9%] border-y bg-background px-4">Paid</TableHead>
                     <TableHead className="w-[9%] border-y bg-background px-4">Balance</TableHead>
@@ -1720,9 +1869,7 @@ export function ContactServicesPanel({
                   ) : (
                     <>
                       {items.map((item) => {
-                        const assignee = getCurrentFollowUpAssignee(item)
-                        const assigneeLabel =
-                          assignee?.name?.trim() || assignee?.email?.trim() || "Unassigned"
+                        const followUpParticipants = getFollowUpParticipants(item)
                         const progress = getServiceProgress(item)
 
                         return (
@@ -1765,26 +1912,8 @@ export function ContactServicesPanel({
                                 ) : null}
                               </div>
                             </TableCell>
-                            <TableCell className="px-4 py-0">
-                              <div className="flex min-w-0 items-center gap-2.5">
-                                <Avatar size="sm">
-                                  {assignee?.image ? (
-                                    <AvatarImage
-                                      src={assignee.image}
-                                      alt={`${assigneeLabel} profile photo`}
-                                    />
-                                  ) : null}
-                                  <AvatarFallback>
-                                    {assignee ? getInitials(assigneeLabel) : "—"}
-                                  </AvatarFallback>
-                                </Avatar>
-                                <span
-                                  className="truncate text-foreground"
-                                  title={assigneeLabel}
-                                >
-                                  {assigneeLabel}
-                                </span>
-                              </div>
+                            <TableCell className="relative z-20 px-4 py-0">
+                              <FollowUpParticipants participants={followUpParticipants} />
                             </TableCell>
                             <TableCell className="px-4 py-0 text-foreground">
                               {currencyFormatter(item.paidCents, item.currency)}

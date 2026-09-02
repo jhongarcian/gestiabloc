@@ -4305,6 +4305,7 @@ paths:
     patch:
       tags: [Services]
       summary: Update a contact service process
+      description: Updates enrollment fields, including the assigned professional. A professional must be configured for this enrollment's service; null clears the assignment. Professional changes are audited atomically and do not change the follow-up coordinator or step assignees.
       security:
         - cookieAuth: []
       parameters:
@@ -4328,7 +4329,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ContactServiceMutationResponse"
         "400":
-          description: Invalid request
+          description: Invalid request, no changes provided, or assigned professional is not configured for this service (INVALID_ASSIGNED_SERVICE_PROFESSIONAL)
           content:
             application/json:
               schema:
@@ -4340,7 +4341,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
-          description: User is not an active member of the tenant
+          description: Requires an active tenant admin or an active tenant user with MEDIUM or MAX security; LOW users, inactive members, and non-members are denied
           content:
             application/json:
               schema:
@@ -8944,6 +8945,14 @@ components:
             - $ref: "#/components/schemas/ContactServiceListItem"
             - type: object
               properties:
+                service:
+                  type: object
+                  properties:
+                    professionals:
+                      type: array
+                      description: Available internal and external professionals configured for this service, in display order.
+                      items:
+                        $ref: "#/components/schemas/ServiceCatalogProfessional"
                 contactId:
                   type: string
                 contactName:
@@ -8976,6 +8985,14 @@ components:
             - $ref: "#/components/schemas/ContactServiceListItem"
             - type: object
               properties:
+                service:
+                  type: object
+                  properties:
+                    professionals:
+                      type: array
+                      description: Available internal and external professionals configured for this service, in display order.
+                      items:
+                        $ref: "#/components/schemas/ServiceCatalogProfessional"
                 paymentSummary:
                   $ref: "#/components/schemas/ContactServicePaymentSummary"
     ContactServicePaymentSummary:
@@ -8992,6 +9009,11 @@ components:
     UpdateContactServiceRequest:
       type: object
       properties:
+        assignedProfessionalId:
+          type: string
+          nullable: true
+          minLength: 1
+          description: ServiceProfessional ID configured for this enrollment's service. Null clears the assignment; omission leaves it unchanged. A real change creates a SERVICE_PROFESSIONAL_CHANGED Activity entry with previous/new IDs and names and the authenticated actor.
         status:
           type: string
           enum: [PENDING, IN_PROGRESS, COMPLETED, CANCELED]
@@ -9024,6 +9046,11 @@ components:
         contactService:
           type: object
           properties:
+            assignedProfessionalId:
+              type: string
+              nullable: true
+            assignedProfessional:
+              $ref: "#/components/schemas/ContactServiceAssignedProfessional"
             id:
               type: string
             status:

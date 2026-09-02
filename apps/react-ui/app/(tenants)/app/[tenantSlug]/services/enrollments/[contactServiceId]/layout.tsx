@@ -32,6 +32,7 @@ export default async function ServiceEnrollmentLayout({
           tenantSlug={tenantSlug}
           contactServiceId={contactServiceId}
           membershipSecurityLevel={membership.securityLevel}
+          canManageProfessional={membership.role === "TENANT_ADMIN" || membership.securityLevel !== "LOW"}
         />
       </Suspense>
       {children}

@@ -98,7 +98,19 @@ This is the main overview band at the top.
 - back button linking to `/app/{slug}/contacts/{contactId}/services`
 - main title: service name
 - secondary line: `Professional: {assigned professional label}`
+- eligible users can click the rounded professional selector to choose a configured internal or external professional, or `No assigned professional`
 - optional service description below if it exists
+
+#### Changing the service professional
+
+- Available professionals are included in `service.professionals` in the overview and full-detail responses, so opening the picker needs no additional request.
+- The picker uses avatars/initials, searchable names and contact details, a selected check, and the shared rounded header-control style.
+- Selection saves immediately through `PATCH /api/services/{tenantId}/contact-services/{contactServiceId}` with `assignedProfessionalId`; `null` clears the assignment and omitting it leaves the professional unchanged.
+- Only a professional configured for this enrollment's service is accepted. Cross-service or cross-tenant professional IDs return `400 INVALID_ASSIGNED_SERVICE_PROFESSIONAL`.
+- Active tenant admins and `MEDIUM`/`MAX` tenant users can edit. `LOW` tenant users see read-only text; the server rejects unauthorized changes.
+- The picker is disabled during saving. Failed requests keep the previous professional and leave the picker available for retry.
+- Real changes create a `SERVICE_PROFESSIONAL_CHANGED` Activity entry with the previous/new professional IDs and names, authenticated actor, and timestamp. Re-selecting the current value creates no duplicate activity. The assignment and activity save atomically.
+- Professional assignment remains independent of the follow-up coordinator and every step assignee, and can be corrected even after workflow completion.
 
 #### Right side action cluster
 

@@ -10,6 +10,7 @@ type ServiceEnrollmentWorkspaceProps = {
   tenantSlug: string
   contactServiceId: string
   membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
+  canManageProfessional: boolean
 }
 
 export function ServiceEnrollmentWorkspace({
@@ -17,6 +18,7 @@ export function ServiceEnrollmentWorkspace({
   tenantSlug,
   contactServiceId,
   membershipSecurityLevel,
+  canManageProfessional,
 }: ServiceEnrollmentWorkspaceProps) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -30,6 +32,7 @@ export function ServiceEnrollmentWorkspace({
       tenantSlug={tenantSlug}
       contactServiceId={contactServiceId}
       membershipSecurityLevel={membershipSecurityLevel}
+      canManageProfessional={canManageProfessional}
       activeView={activeView}
       returnTo={searchParams.get("returnTo")}
     />

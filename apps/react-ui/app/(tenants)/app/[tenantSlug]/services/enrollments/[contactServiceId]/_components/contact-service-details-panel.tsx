@@ -140,6 +140,19 @@ type PendingUpload = {
   file: File
 }
 
+type ServiceProfessional = {
+  id: string
+  kind: "INTERNAL_USER" | "EXTERNAL"
+  userId: string | null
+  externalProfessionalName: string | null
+  externalContact: string | null
+  user?: {
+    name: string | null
+    email: string | null
+    image?: string | null
+  } | null
+}
+
 type ContactServiceDetails = {
   id: string
   contactId: string
@@ -172,6 +185,7 @@ type ContactServiceDetails = {
     minimumPartialPaymentCents: number | null
     installmentCount: number | null
     installmentFrequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null
+    professionals: ServiceProfessional[]
   }
   tenantBilling?: {
     taxEnabled: boolean
@@ -209,18 +223,7 @@ type ContactServiceDetails = {
     source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
     projected: boolean
   } | null
-  assignedProfessional?: {
-    id: string
-    kind: "INTERNAL_USER" | "EXTERNAL"
-    userId: string | null
-    externalProfessionalName: string | null
-    externalContact: string | null
-    user?: {
-      name: string | null
-      email: string | null
-      image?: string | null
-    } | null
-  } | null
+  assignedProfessional?: ServiceProfessional | null
   followUpSteps: Array<{
     id: string
     title: string
@@ -358,6 +361,7 @@ type ContactServiceDetailsPanelProps = {
   tenantSlug: string
   contactServiceId: string
   membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
+  canManageProfessional: boolean
   activeView: ServiceEnrollmentView
   returnTo?: string | null
 }
@@ -940,6 +944,7 @@ function FollowUpStepAssigneeInput({
 
 const normalizeContactServiceDetails = (details: ContactServiceDetails): ContactServiceDetails => ({
   ...details,
+  service: { ...details.service, professionals: details.service.professionals ?? [] },
   followUpSteps: details.followUpSteps ?? [],
   payments: details.payments ?? [],
   serviceNotes: (details.serviceNotes ?? []).map((note) => ({
@@ -962,6 +967,7 @@ const normalizeContactServiceOverview = (
   details: ContactServiceOverview,
 ): ContactServiceOverview => ({
   ...details,
+  service: { ...details.service, professionals: details.service.professionals ?? [] },
   followUpSteps: details.followUpSteps ?? [],
   checklistItems: (details.checklistItems ?? []).map((checklistItem) => ({
     ...checklistItem,
@@ -983,6 +989,7 @@ export function ContactServiceDetailsPanel({
   tenantSlug,
   contactServiceId,
   membershipSecurityLevel,
+  canManageProfessional,
   activeView,
   returnTo,
 }: ContactServiceDetailsPanelProps) {
@@ -1005,6 +1012,8 @@ export function ContactServiceDetailsPanel({
   const [isChecklistSavingId, setIsChecklistSavingId] = useState<string | null>(null)
   const [statusOpen, setStatusOpen] = useState(false)
   const [isStatusSaving, setIsStatusSaving] = useState(false)
+  const [professionalOpen, setProfessionalOpen] = useState(false)
+  const [isProfessionalSaving, setIsProfessionalSaving] = useState(false)
   const [isChecklistSheetOpen, setIsChecklistSheetOpen] = useState(false)
   const [isActivitySheetOpen, setIsActivitySheetOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
@@ -1135,6 +1144,7 @@ export function ContactServiceDetailsPanel({
     setStepAssignedToUserId(FOLLOW_UP_UNASSIGNED_VALUE)
     setStepAssigneeError(null)
     setExpandedNoteIds(new Set())
+    setProfessionalOpen(false)
   }, [encodedContactServiceId])
 
   useEffect(() => {
@@ -1794,6 +1804,49 @@ export function ContactServiceDetailsPanel({
       null,
     [followUpSteps],
   )
+  const updateAssignedProfessional = async (assignedProfessionalId: string | null) => {
+    if (!serviceData || isProfessionalSaving) return
+    if (!canManageProfessional) {
+      toast.error("You do not have permission to change the assigned professional.")
+      return
+    }
+    if ((serviceData.assignedProfessional?.id ?? null) === assignedProfessionalId) {
+      setProfessionalOpen(false)
+      return
+    }
+
+    setIsProfessionalSaving(true)
+    try {
+      const { data } = await api.patch<{
+        contactService: { assignedProfessional: ServiceProfessional | null }
+      }>(`/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}`, {
+        assignedProfessionalId,
+      })
+      // Reflect the persisted result immediately; failed requests leave both caches unchanged.
+      setOverview((current) => current ? {
+        ...current, assignedProfessional: data.contactService.assignedProfessional,
+      } : current)
+      setItem((current) => current ? {
+        ...current, assignedProfessional: data.contactService.assignedProfessional,
+      } : current)
+      setProfessionalOpen(false)
+      toast.success("Assigned professional updated.")
+      await refreshData(true)
+      router.refresh()
+    } catch (error) {
+      const backendError = isAxiosError(error) ? error.response?.data?.error : null
+      toast.error(
+        backendError === "INVALID_ASSIGNED_SERVICE_PROFESSIONAL"
+          ? "This professional is no longer available for this service. Refresh and try again."
+          : backendError === "INSUFFICIENT_SECURITY_LEVEL"
+            ? "You do not have permission to change the assigned professional."
+            : "Could not update the assigned professional. Please try again.",
+      )
+    } finally {
+      setIsProfessionalSaving(false)
+    }
+  }
+
   const updateFollowUpCoordinator = async (nextUserId: string) => {
     const currentService = item ?? overview
     if (!currentService) return
@@ -2807,9 +2860,119 @@ export function ContactServiceDetailsPanel({
               </>
             ) : null}
             <span className="size-1 rounded-full bg-slate-300" aria-hidden="true" />
-            <span>
-              Professional: {getAssignedProfessionalLabel(serviceData.assignedProfessional)}
-            </span>
+            <div className="flex min-w-0 max-w-full items-center gap-2">
+              <span>Professional:</span>
+              {canManageProfessional ? (
+                <Popover
+                  open={professionalOpen}
+                  onOpenChange={(open) => {
+                    if (!isProfessionalSaving) setProfessionalOpen(open)
+                  }}
+                >
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <PopoverTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          aria-label={`Change assigned professional: ${getAssignedProfessionalLabel(serviceData.assignedProfessional)}`}
+                          aria-expanded={professionalOpen}
+                          disabled={isProfessionalSaving || isDeleting}
+                          className="h-8 min-w-0 max-w-[260px] cursor-pointer gap-2 rounded-full px-2.5 shadow-sm"
+                        >
+                          <Avatar aria-hidden="true" className="size-5 shrink-0">
+                            <AvatarImage src={serviceData.assignedProfessional?.user?.image ?? undefined} alt="" />
+                            <AvatarFallback>
+                              {serviceData.assignedProfessional
+                                ? getInitials(getAssignedProfessionalLabel(serviceData.assignedProfessional))
+                                : "—"}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="truncate text-xs">
+                            {getAssignedProfessionalLabel(serviceData.assignedProfessional)}
+                          </span>
+                          {isProfessionalSaving ? (
+                            <Loader2 aria-hidden="true" className="size-3.5 shrink-0 animate-spin" />
+                          ) : (
+                            <ChevronDown aria-hidden="true" className="size-3.5 shrink-0" />
+                          )}
+                        </Button>
+                      </PopoverTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Change the service professional. Coordinator and step assignments stay unchanged.
+                    </TooltipContent>
+                  </Tooltip>
+                  <PopoverContent
+                    align="start"
+                    className="w-80 max-w-[calc(100vw-2rem)] p-0"
+                    onEscapeKeyDown={(event) => { if (isProfessionalSaving) event.preventDefault() }}
+                    onInteractOutside={(event) => { if (isProfessionalSaving) event.preventDefault() }}
+                  >
+                    <Command>
+                      <CommandInput
+                        placeholder="Search professionals..."
+                        aria-label="Search service professionals"
+                        disabled={isProfessionalSaving}
+                      />
+                      <CommandList aria-busy={isProfessionalSaving}>
+                        <CommandEmpty>No professionals found.</CommandEmpty>
+                        <CommandGroup heading="Service professionals">
+                          <CommandItem
+                            value="No assigned professional unassigned"
+                            onSelect={() => void updateAssignedProfessional(null)}
+                            disabled={isProfessionalSaving}
+                            className="cursor-pointer gap-2 py-2"
+                          >
+                            <Avatar aria-hidden="true" className="size-6 shrink-0">
+                              <AvatarFallback>—</AvatarFallback>
+                            </Avatar>
+                            <span className="min-w-0 flex-1 truncate">No assigned professional</span>
+                            <Check aria-hidden="true" className={cn(!serviceData.assignedProfessional ? "opacity-100" : "opacity-0")} />
+                            {!serviceData.assignedProfessional ? <span className="sr-only">Selected</span> : null}
+                          </CommandItem>
+                          {serviceData.service.professionals.map((professional) => {
+                            const label = getAssignedProfessionalLabel(professional)
+                            const context = professional.kind === "EXTERNAL"
+                              ? professional.externalContact || "External professional"
+                              : professional.user?.email || "Internal professional"
+                            const selected = serviceData.assignedProfessional?.id === professional.id
+                            return (
+                              <CommandItem
+                                key={professional.id}
+                                value={`${label} ${context} ${professional.id}`}
+                                onSelect={() => void updateAssignedProfessional(professional.id)}
+                                disabled={isProfessionalSaving}
+                                className="cursor-pointer gap-2 py-2"
+                              >
+                                <Avatar aria-hidden="true" className="size-6 shrink-0">
+                                  <AvatarImage src={professional.user?.image ?? undefined} alt="" />
+                                  <AvatarFallback>{getInitials(label)}</AvatarFallback>
+                                </Avatar>
+                                <span className="flex min-w-0 flex-1 flex-col">
+                                  <span className="truncate font-medium">{label}</span>
+                                  <span className="truncate text-xs text-muted-foreground">{context}</span>
+                                </span>
+                                <Check aria-hidden="true" className={cn(selected ? "opacity-100" : "opacity-0")} />
+                                {selected ? <span className="sr-only">Selected</span> : null}
+                              </CommandItem>
+                            )
+                          })}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                    {!serviceData.service.professionals.length ? (
+                      <p className="px-3 pb-3 text-xs text-muted-foreground">
+                        No professionals are configured for this service.
+                      </p>
+                    ) : null}
+                  </PopoverContent>
+                </Popover>
+              ) : (
+                <span className="truncate">{getAssignedProfessionalLabel(serviceData.assignedProfessional)}</span>
+              )}
+            </div>
           </div>
         </div>
 

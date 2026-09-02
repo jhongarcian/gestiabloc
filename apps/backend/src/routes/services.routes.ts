@@ -6,6 +6,10 @@ import { z } from "zod"
 import { decryptCustomFieldValue } from "../lib/contact-custom-field-encryption.js"
 import { canManageContactServices } from "../lib/contact-service-permissions.js"
 import {
+  assignedServiceProfessionalIdSchema,
+  resolveServiceProfessionalChange,
+} from "../lib/contact-service-professional.js"
+import {
   buildContactServiceChecklistActivityData,
   CONTACT_SERVICE_CHECKLIST_STATUSES,
   hasExactlyOneChecklistStatusInput,
@@ -485,6 +489,7 @@ const UpdateContactServiceSchema = z.object({
   canceledAt: z.string().datetime().nullable().optional(),
   totalPriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
   notes: z.string().trim().max(4000).nullable().optional(),
+  assignedProfessionalId: assignedServiceProfessionalIdSchema,
 })
 
 const UpdateFollowUpCoordinatorSchema = z.object({
@@ -3120,6 +3125,24 @@ router.get(
                 minimumPartialPaymentCents: true,
                 installmentCount: true,
                 installmentFrequency: true,
+                professionals: {
+                  orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+                  select: {
+                    id: true,
+                    kind: true,
+                    userId: true,
+                    externalProfessionalName: true,
+                    externalContact: true,
+                    sortOrder: true,
+                    user: {
+                      select: {
+                        name: true,
+                        email: true,
+                        image: true,
+                      },
+                    },
+                  },
+                },
                 tenant: {
                   select: {
                     taxEnabled: true,
@@ -3334,6 +3357,7 @@ router.get(
             minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
             installmentCount: item.service.installmentCount,
             installmentFrequency: item.service.installmentFrequency,
+            professionals: item.service.professionals,
           },
           tenantBilling: {
             taxEnabled: item.service.tenant.taxEnabled,
@@ -3633,6 +3657,24 @@ router.get(
                 minimumPartialPaymentCents: true,
                 installmentCount: true,
                 installmentFrequency: true,
+                professionals: {
+                  orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+                  select: {
+                    id: true,
+                    kind: true,
+                    userId: true,
+                    externalProfessionalName: true,
+                    externalContact: true,
+                    sortOrder: true,
+                    user: {
+                      select: {
+                        name: true,
+                        email: true,
+                        image: true,
+                      },
+                    },
+                  },
+                },
                 tenant: {
                   select: {
                     taxEnabled: true,
@@ -3961,6 +4003,7 @@ router.get(
             minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
             installmentCount: item.service.installmentCount,
             installmentFrequency: item.service.installmentFrequency,
+            professionals: item.service.professionals,
           },
           tenantBilling: {
             taxEnabled: item.service.tenant.taxEnabled,
@@ -4416,11 +4459,61 @@ router.patch(
         },
         select: {
           id: true,
+          status: true,
+          contactId: true,
+          followUpTemplateId: true,
+          assignedProfessionalId: true,
+          assignedProfessional: {
+            select: {
+              id: true,
+              kind: true,
+              userId: true,
+              externalProfessionalName: true,
+              externalContact: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+          },
+          service: {
+            select: {
+              id: true,
+              name: true,
+              professionals: {
+                select: {
+                  id: true,
+                  kind: true,
+                  userId: true,
+                  externalProfessionalName: true,
+                  externalContact: true,
+                  user: {
+                    select: {
+                      name: true,
+                      email: true,
+                      image: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       })
 
       if (!existing) {
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const professionalChange = resolveServiceProfessionalChange({
+        assignedProfessionalId: payload.assignedProfessionalId,
+        previousProfessional: existing.assignedProfessional,
+        professionals: existing.service.professionals,
+      })
+      if (!professionalChange.valid) {
+        return res.status(400).json({ error: "INVALID_ASSIGNED_SERVICE_PROFESSIONAL" })
       }
 
       const statusUpdate =
@@ -4444,8 +4537,35 @@ router.patch(
                   canceledAt: null,
                 }
 
-      const updated = await prismaWithServices.contactService.update({
-        where: { id: contactServiceId },
+      const executionLogs = []
+      if (payload.status !== undefined && payload.status !== existing.status && existing.followUpTemplateId) {
+        executionLogs.push({
+          tenantId,
+          templateId: existing.followUpTemplateId,
+          contactId: existing.contactId,
+          actorUserId: authed.user.id,
+          eventType: "SERVICE_STATUS_UPDATED",
+          title: `Service status updated: ${existing.service.name}`,
+          details: `Service moved from ${existing.status.toLowerCase().replace(/_/g, " ")} to ${payload.status.toLowerCase().replace(/_/g, " ")}.`,
+          payload: { previousStatus: existing.status, status: payload.status },
+        })
+      }
+      if (professionalChange.activity) {
+        executionLogs.push({
+          tenantId,
+          templateId: existing.followUpTemplateId,
+          contactId: existing.contactId,
+          actorUserId: authed.user.id,
+          eventType: "SERVICE_PROFESSIONAL_CHANGED",
+          title: `Assigned professional updated: ${existing.service.name}`,
+          details: `Changed from ${professionalChange.activity.previousProfessionalName} to ${professionalChange.activity.professionalName}.`,
+          payload: professionalChange.activity,
+        })
+      }
+
+      // Nested activity creation and the enrollment update commit or roll back together.
+      const updated = await prisma.contactService.update({
+        where: { id: contactServiceId, tenantId },
         data: {
           ...statusUpdate,
           ...(payload.startedAt !== undefined
@@ -4462,6 +4582,10 @@ router.patch(
                     : null,
               }
             : {}),
+          ...(payload.assignedProfessionalId !== undefined
+            ? { assignedProfessionalId: payload.assignedProfessionalId }
+            : {}),
+          ...(executionLogs.length ? { executionLogs: { create: executionLogs } } : {}),
         },
         select: {
           id: true,
@@ -4472,27 +4596,25 @@ router.patch(
           canceledAt: true,
           totalPriceCents: true,
           notes: true,
-        },
-      })
-
-      if (payload.status !== undefined && payload.status !== existing.status && existing.followUpTemplateId) {
-        await prismaWithServices.serviceFollowUpExecutionLog.create({
-          data: {
-            tenantId,
-            templateId: existing.followUpTemplateId,
-            contactServiceId,
-            contactId: existing.contactId,
-            actorUserId: authed.user.id,
-            eventType: "SERVICE_STATUS_UPDATED",
-            title: `Service status updated: ${existing.service.name}`,
-            details: `Service moved from ${existing.status.toLowerCase().replace(/_/g, " ")} to ${updated.status.toLowerCase().replace(/_/g, " ")}.`,
-            payload: {
-              previousStatus: existing.status,
-              status: updated.status,
+          assignedProfessionalId: true,
+          assignedProfessional: {
+            select: {
+              id: true,
+              kind: true,
+              userId: true,
+              externalProfessionalName: true,
+              externalContact: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
             },
           },
-        })
-      }
+        },
+      })
 
       return res.json({
         ok: true,
