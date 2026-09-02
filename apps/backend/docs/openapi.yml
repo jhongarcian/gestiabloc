@@ -4389,6 +4389,63 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-coordinator:
+    patch:
+      tags: [Services]
+      summary: Change the overall coordinator for a service follow-up
+      description: Updates only the enrollment-level coordinator. Existing step assignees are not changed.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContactServiceFollowUpCoordinatorRequest"
+      responses:
+        "200":
+          description: Follow-up coordinator updated without changing step assignments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactServiceFollowUpCoordinatorMutationResponse"
+        "400":
+          description: The selected coordinator is not an active tenant member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member or has LOW security
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Follow-up is not configured or its final coordinator is locked after completion
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/notes:
     post:
       tags: [Services]
@@ -8482,6 +8539,19 @@ components:
         assignedToUserId:
           type: string
           nullable: true
+          description: User responsible for this individual step.
+        assignedTo:
+          $ref: "#/components/schemas/ContactServiceFollowUpUser"
+        resolvedByUserId:
+          type: string
+          nullable: true
+          description: Authenticated user who most recently completed or user-skipped this step. Null for system resolution or unknown historical data.
+        resolvedBy:
+          $ref: "#/components/schemas/ContactServiceFollowUpUser"
+        resolvedAt:
+          type: string
+          format: date-time
+          nullable: true
         sortOrder:
           type: integer
         canCompleteNow:
@@ -8532,6 +8602,12 @@ components:
         notes:
           type: string
           nullable: true
+        followUpCoordinatorUserId:
+          type: string
+          nullable: true
+          description: Overall coordinator for this service follow-up. Independent from step assignees.
+        followUpCoordinator:
+          $ref: "#/components/schemas/ContactServiceFollowUpUser"
         assignedProfessional:
           $ref: "#/components/schemas/ContactServiceAssignedProfessional"
         contactName:
@@ -8777,6 +8853,21 @@ components:
             name:
               type: string
               nullable: true
+    ContactServiceFollowUpUser:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        image:
+          type: string
+          nullable: true
     ContactServicesListResponse:
       type: object
       properties:
@@ -8812,6 +8903,7 @@ components:
         followUpAssignedToUserId:
           type: string
           nullable: true
+          description: Optional initial follow-up coordinator. The same user seeds each generated step assignee at enrollment creation only.
         assignedProfessionalId:
           type: string
           nullable: true
@@ -8958,6 +9050,25 @@ components:
             notes:
               type: string
               nullable: true
+    UpdateContactServiceFollowUpCoordinatorRequest:
+      type: object
+      required: [assignedToUserId]
+      properties:
+        assignedToUserId:
+          type: string
+          nullable: true
+          description: Active tenant user, or null to leave the overall follow-up unassigned. Does not update step assignees.
+    ContactServiceFollowUpCoordinatorMutationResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        followUpCoordinatorUserId:
+          type: string
+          nullable: true
+        followUpCoordinator:
+          $ref: "#/components/schemas/ContactServiceFollowUpUser"
     UpdateContactServiceChecklistItemRequest:
       type: object
       description: Provide exactly one of status or the deprecated completed field.

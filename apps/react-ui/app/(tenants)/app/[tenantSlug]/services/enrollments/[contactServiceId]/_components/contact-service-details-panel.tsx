@@ -156,6 +156,13 @@ type ContactServiceDetails = {
   allowPartialPayments: boolean
   notes: string | null
   timezone?: string | null
+  followUpCoordinatorUserId: string | null
+  followUpCoordinator?: {
+    id: string
+    name: string | null
+    email: string | null
+    image?: string | null
+  } | null
   service: {
     id: string
     name: string
@@ -227,7 +234,15 @@ type ContactServiceDetails = {
     resolutionSource?: "USER_COMPLETED" | "USER_SKIPPED" | "CONDITION_SKIPPED" | "FLOW_SKIPPED" | null
     resolutionReason?: string | null
     assignedToUserId: string | null
+    resolvedByUserId?: string | null
+    resolvedAt?: string | null
     assignedTo?: {
+      id: string
+      name: string | null
+      email: string | null
+      image?: string | null
+    } | null
+    resolvedBy?: {
       id: string
       name: string | null
       email: string | null
@@ -278,6 +293,7 @@ type ContactServiceDetails = {
     actor?: {
       id: string
       name: string | null
+      email: string | null
     } | null
   }>
   checklistActivityLogs: Array<{
@@ -758,7 +774,7 @@ function FollowUpStepAssigneeAvatar({
         <span
           role="img"
           tabIndex={0}
-          aria-label={`Step assignee: ${label}`}
+          aria-label={`Responsible: ${label}`}
           className="inline-flex size-8 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
         >
           <Avatar aria-hidden="true" className="ring-2 ring-blue-50">
@@ -777,7 +793,7 @@ function FollowUpStepAssigneeAvatar({
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={6}>
-        {label}
+        Responsible: {label}
       </TooltipContent>
     </Tooltip>
   )
@@ -1022,7 +1038,7 @@ export function ContactServiceDetailsPanel({
     useState<FollowUpStepPanelMode | null>(null)
   const [isStepNoteDialogOpen, setIsStepNoteDialogOpen] = useState(false)
   const [isStepTaskDialogOpen, setIsStepTaskDialogOpen] = useState(false)
-  const [followUpOwnerOpen, setFollowUpOwnerOpen] = useState(false)
+  const [followUpCoordinatorOpen, setFollowUpCoordinatorOpen] = useState(false)
   const [activeStep, setActiveStep] = useState<ContactServiceDetails["followUpSteps"][number] | null>(
     null,
   )
@@ -1757,21 +1773,18 @@ export function ContactServiceDetailsPanel({
   }, [remainingScheduledInstallments, serviceData, suggestedInstallmentPaymentCents])
   const canAddPayments = Boolean(serviceData && serviceData.remainingCents > 0)
   const currentStatusOption = serviceData ? STATUS_OPTION_BY_VALUE[serviceData.status] : null
-  const openFollowUpSteps = useMemo(
-    () =>
-      followUpSteps.filter(
-        (step) => step.status !== "COMPLETED" && step.status !== "SKIPPED",
-      ),
-    [followUpSteps],
+  const followUpCoordinator = serviceData?.followUpCoordinator ?? null
+  const isFollowUpWorkflowCompleted = Boolean(
+    serviceData?.followUpRun?.status === "COMPLETED" ||
+      (followUpSteps.length > 0 &&
+        followUpSteps.every(
+          (step) => step.status === "COMPLETED" || step.status === "SKIPPED",
+        )),
   )
-  const currentFollowUpOwner = useMemo(
-    () =>
-      openFollowUpSteps.find((step) => step.status === "ACTIVE")?.assignedTo ??
-      openFollowUpSteps.find((step) => step.status === "POSTPONED")?.assignedTo ??
-      openFollowUpSteps.find((step) => step.status === "PENDING")?.assignedTo ??
-      openFollowUpSteps[0]?.assignedTo ??
-      null,
-    [openFollowUpSteps],
+  const canChangeFollowUpCoordinator = Boolean(
+    canManageSensitiveServiceActions &&
+      (serviceData?.followUpRun || followUpSteps.length > 0) &&
+      !isFollowUpWorkflowCompleted,
   )
   const nextFollowUpStep = useMemo(
     () =>
@@ -1781,63 +1794,46 @@ export function ContactServiceDetailsPanel({
       null,
     [followUpSteps],
   )
-  const hasMixedOpenStepOwners = useMemo(() => {
-    const assignedUserIds = new Set(
-      openFollowUpSteps.map((step) => step.assignedToUserId ?? "").filter((value) => value.length > 0),
-    )
-    const hasUnassignedOpenStep = openFollowUpSteps.some((step) => !step.assignedToUserId)
-    return assignedUserIds.size > 1 || (assignedUserIds.size > 0 && hasUnassignedOpenStep)
-  }, [openFollowUpSteps])
-  const currentFollowUpOwnerUserId = useMemo(() => {
-    const uniqueOpenOwnerIds = Array.from(
-      new Set(openFollowUpSteps.map((step) => step.assignedToUserId ?? "")),
-    )
-    return uniqueOpenOwnerIds.length === 1 ? (uniqueOpenOwnerIds[0] ?? "") : ""
-  }, [openFollowUpSteps])
-
-  const updateFollowUpOwner = async (nextUserId: string) => {
+  const updateFollowUpCoordinator = async (nextUserId: string) => {
     const currentService = item ?? overview
     if (!currentService) return
-    if (!openFollowUpSteps.length) {
-      toast.error("There are no open follow-up steps to reassign.")
+    if (!canChangeFollowUpCoordinator) {
+      toast.error("The follow-up coordinator cannot be changed after completion.")
       return
     }
-
-    const stepsToUpdate = openFollowUpSteps.filter(
-      (step) => (step.assignedToUserId ?? "") !== nextUserId,
-    )
-
-    if (!stepsToUpdate.length) {
-      setFollowUpOwnerOpen(false)
+    if ((currentService.followUpCoordinatorUserId ?? "") === nextUserId) {
+      setFollowUpCoordinatorOpen(false)
       return
     }
 
     setIsSavingFollowUpOwner(true)
     try {
-      await Promise.all(
-        stepsToUpdate.map((step) =>
-          api.patch(
-            `/api/services/${encodedTenantId}/contact-services/${currentService.id}/follow-up-steps/${step.id}`,
-            {
-              assignedToUserId: nextUserId || null,
-            },
-          ),
-        ),
+      await api.patch(
+        `/api/services/${encodedTenantId}/contact-services/${currentService.id}/follow-up-coordinator`,
+        {
+          assignedToUserId: nextUserId || null,
+        },
       )
-      toast.success("Open step assignees updated.")
+      toast.success("Follow-up coordinator updated.")
       await refreshData(true)
       router.refresh()
-      setFollowUpOwnerOpen(false)
+      setFollowUpCoordinatorOpen(false)
     } catch (error) {
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
-        toast.error(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ")
-            : "Could not update follow-up owner.",
-        )
+        const message =
+          backendError === "INVALID_FOLLOW_UP_COORDINATOR"
+            ? "The selected coordinator is not an active member of this tenant."
+            : backendError === "FOLLOW_UP_COORDINATOR_LOCKED"
+              ? "The final coordinator is locked after the workflow is completed."
+              : backendError === "FOLLOW_UP_NOT_CONFIGURED"
+                ? "This service does not have a follow-up workflow."
+                : backendError === "INSUFFICIENT_SECURITY_LEVEL"
+                  ? "You do not have permission to change the follow-up coordinator."
+                  : "Could not update the follow-up coordinator."
+        toast.error(message)
       } else {
-        toast.error("Could not update follow-up owner.")
+        toast.error("Could not update the follow-up coordinator.")
       }
     } finally {
       setIsSavingFollowUpOwner(false)
@@ -2398,11 +2394,14 @@ export function ContactServiceDetailsPanel({
     })
 
     item.executionLogs.forEach((log) => {
+      const actorLabel = log.actor?.name?.trim() || log.actor?.email?.trim() || null
       entries.push({
         id: `execution-${log.id}`,
         createdAt: log.createdAt,
         title: log.title,
-        description: log.details ?? (log.actor?.name ? `Updated by ${log.actor.name}` : "Follow-up activity recorded."),
+        description: `${log.details ?? "Follow-up activity recorded."}${
+          actorLabel ? ` · Updated by ${actorLabel}` : ""
+        }`,
         tone:
           log.eventType === "STEP_STATUS_UPDATED"
             ? "border-blue-200 bg-blue-50/80 text-blue-800"
@@ -2611,143 +2610,164 @@ export function ContactServiceDetailsPanel({
               </PopoverContent>
             </Popover>
 
-            {canManageSensitiveServiceActions && followUpSteps.length ? (
+            {canChangeFollowUpCoordinator ? (
               <Popover
-                open={followUpOwnerOpen}
+                open={followUpCoordinatorOpen}
                 onOpenChange={(open) => {
-                  if (!canManageSensitiveServiceActions || !followUpSteps.length) return
-                  setFollowUpOwnerOpen(open)
+                  if (!canChangeFollowUpCoordinator) return
+                  setFollowUpCoordinatorOpen(open)
                 }}
               >
-                <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    aria-label="Change follow-up assignee"
-                    className="h-8 max-w-[260px] cursor-pointer rounded-full border border-white/70 bg-white/70 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/90"
-                    disabled={isSavingFollowUpOwner || isLoadingAssignees}
-                  >
-                    {hasMixedOpenStepOwners ? (
-                      <div className="flex min-w-0 max-w-full items-center gap-2">
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                          <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
-                        </span>
-                        <span className="truncate text-xs font-medium text-slate-700">
-                          Mixed assignees
-                        </span>
-                      </div>
-                    ) : currentFollowUpOwner ? (
-                      <div className="flex min-w-0 max-w-full items-center gap-2">
-                        <Avatar className="h-5 w-5 shrink-0">
-                          <AvatarImage
-                            src={currentFollowUpOwner.image ?? undefined}
-                            alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        aria-label="Change follow-up coordinator"
+                        className="h-8 max-w-[260px] cursor-pointer rounded-full border border-white/70 bg-white/70 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/90"
+                        disabled={isSavingFollowUpOwner || isLoadingAssignees}
+                      >
+                        {followUpCoordinator ? (
+                          <div className="flex min-w-0 max-w-full items-center gap-2">
+                            <Avatar className="size-5 shrink-0">
+                              <AvatarImage
+                                src={followUpCoordinator.image ?? undefined}
+                                alt={getFollowUpAssigneeLabel(followUpCoordinator)}
+                              />
+                              <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                                {getInitials(getFollowUpAssigneeLabel(followUpCoordinator))}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className="truncate text-xs font-medium text-slate-700">
+                              {getFollowUpAssigneeLabel(followUpCoordinator)}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex min-w-0 max-w-full items-center gap-2">
+                            <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                              <UserRound aria-hidden="true" />
+                            </span>
+                            <span className="truncate text-xs font-medium text-slate-600">
+                              Unassigned
+                            </span>
+                          </div>
+                        )}
+                        {isLoadingAssignees || isSavingFollowUpOwner ? (
+                          <Loader2
+                            data-icon="inline-end"
+                            className="ml-1 shrink-0 animate-spin text-slate-500"
+                            aria-hidden="true"
                           />
-                          <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
-                            {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
-                          </AvatarFallback>
-                        </Avatar>
-                        <span className="truncate text-xs font-medium text-slate-700">
-                          {getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="flex min-w-0 max-w-full items-center gap-2">
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                          <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
-                        </span>
-                        <span className="truncate text-xs font-medium text-slate-600">
-                          Unassigned
-                        </span>
-                      </div>
-                    )}
-                    {isLoadingAssignees || isSavingFollowUpOwner ? (
-                      <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin text-slate-500" />
-                    ) : (
-                      <ChevronDown className="ml-1 h-3.5 w-3.5 shrink-0 text-slate-500" />
-                    )}
-                  </Button>
-                </PopoverTrigger>
+                        ) : (
+                          <ChevronDown
+                            data-icon="inline-end"
+                            className="ml-1 shrink-0 text-slate-500"
+                            aria-hidden="true"
+                          />
+                        )}
+                      </Button>
+                    </PopoverTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8}>
+                    Follow-up coordinator. Step assignments remain independent.
+                  </TooltipContent>
+                </Tooltip>
                 <PopoverContent align="end" className="w-[320px] p-0">
                   <Command>
-                    <CommandInput placeholder="Change follow-up owner..." />
+                    <CommandInput placeholder="Change follow-up coordinator..." />
                     <CommandList>
-                      <CommandEmpty>No assignees found.</CommandEmpty>
-                      <CommandItem
-                        onSelect={() => void updateFollowUpOwner("")}
-                        className="cursor-pointer gap-2 px-3 py-2"
-                        disabled={isSavingFollowUpOwner}
-                      >
-                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                          <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
-                          Unassigned
-                        </span>
-                        <Check
-                          className={cn(
-                            "h-4 w-4 text-blue-950",
-                            !hasMixedOpenStepOwners && currentFollowUpOwnerUserId === ""
-                              ? "opacity-100"
-                              : "opacity-0",
-                          )}
-                        />
-                      </CommandItem>
-                      {followUpAssigneeOptions.map((assignee) => (
+                      <CommandEmpty>No team members found.</CommandEmpty>
+                      <CommandGroup heading="Coordinator">
                         <CommandItem
-                          key={assignee.value}
-                          onSelect={() => void updateFollowUpOwner(assignee.value)}
+                          onSelect={() => void updateFollowUpCoordinator("")}
                           className="cursor-pointer gap-2 px-3 py-2"
                           disabled={isSavingFollowUpOwner}
                         >
-                          <Avatar className="h-6 w-6 shrink-0">
-                            <AvatarImage src={assignee.image ?? undefined} alt={assignee.label} />
-                            <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
-                              {getInitials(assignee.label)}
-                            </AvatarFallback>
-                          </Avatar>
+                          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                            <UserRound aria-hidden="true" />
+                          </span>
                           <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
-                            {assignee.label}
+                            Unassigned
                           </span>
                           <Check
                             className={cn(
-                              "h-4 w-4 text-blue-950",
-                              !hasMixedOpenStepOwners &&
-                                currentFollowUpOwnerUserId === assignee.value
+                              "text-blue-950",
+                              !serviceData.followUpCoordinatorUserId
                                 ? "opacity-100"
                                 : "opacity-0",
                             )}
                           />
                         </CommandItem>
-                      ))}
+                        {followUpAssigneeOptions.map((assignee) => (
+                          <CommandItem
+                            key={assignee.value}
+                            onSelect={() => void updateFollowUpCoordinator(assignee.value)}
+                            className="cursor-pointer gap-2 px-3 py-2"
+                            disabled={isSavingFollowUpOwner}
+                          >
+                            <Avatar className="size-6 shrink-0">
+                              <AvatarImage src={assignee.image ?? undefined} alt={assignee.label} />
+                              <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                                {getInitials(assignee.label)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
+                              {assignee.label}
+                            </span>
+                            <Check
+                              className={cn(
+                                "text-blue-950",
+                                serviceData.followUpCoordinatorUserId === assignee.value
+                                  ? "opacity-100"
+                                  : "opacity-0",
+                              )}
+                            />
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
                     </CommandList>
                   </Command>
                 </PopoverContent>
               </Popover>
-            ) : hasMixedOpenStepOwners ? (
-              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-2.5 text-xs font-medium text-slate-700 shadow-sm">
-                <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
-                Mixed assignees
-              </span>
-            ) : currentFollowUpOwner ? (
-              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-2.5 text-xs font-medium text-slate-700 shadow-sm">
-                <Avatar className="h-5 w-5 shrink-0">
-                  <AvatarImage
-                    src={currentFollowUpOwner.image ?? undefined}
-                    alt={getFollowUpAssigneeLabel(currentFollowUpOwner)}
-                  />
-                  <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
-                    {getInitials(getFollowUpAssigneeLabel(currentFollowUpOwner))}
-                  </AvatarFallback>
-                </Avatar>
-                {getFollowUpAssigneeLabel(currentFollowUpOwner)}
-              </span>
-            ) : (
-              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-2.5 text-xs font-medium text-slate-600 shadow-sm">
-                <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
-                Unassigned
-              </span>
-            )}
+            ) : serviceData.followUpRun || followUpSteps.length ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    role="img"
+                    tabIndex={0}
+                    aria-label={`Follow-up coordinator: ${getFollowUpAssigneeLabel(followUpCoordinator)}`}
+                    className="inline-flex h-8 max-w-[260px] items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-2.5 text-xs font-medium text-slate-700 shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+                  >
+                    {followUpCoordinator ? (
+                      <>
+                        <Avatar aria-hidden="true" className="size-5 shrink-0">
+                          <AvatarImage src={followUpCoordinator.image ?? undefined} alt="" />
+                          <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                            {getInitials(getFollowUpAssigneeLabel(followUpCoordinator))}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="truncate">
+                          {getFollowUpAssigneeLabel(followUpCoordinator)}
+                        </span>
+                      </>
+                    ) : (
+                      <div className="flex min-w-0 max-w-full items-center gap-2">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                          <UserRound aria-hidden="true" />
+                        </span>
+                        <span className="truncate">Unassigned</span>
+                      </div>
+                    )}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>
+                  {isFollowUpWorkflowCompleted
+                    ? "Final follow-up coordinator. Reopen a step to make this editable."
+                    : "Follow-up coordinator. Step assignments remain independent."}
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
 
             {canManageSensitiveServiceActions ? (
               <Tooltip>
@@ -3129,6 +3149,13 @@ export function ContactServiceDetailsPanel({
                       const isAutoSkipped =
                         step.resolutionSource === "CONDITION_SKIPPED" ||
                         step.resolutionSource === "FLOW_SKIPPED"
+                      const resolutionActorLabel = step.resolvedBy
+                        ? getFollowUpAssigneeLabel(step.resolvedBy)
+                        : isAutoSkipped
+                          ? "System"
+                          : "Unknown user"
+                      const resolutionTimestamp = step.resolvedAt ?? step.completedAt
+                      const resolutionVerb = currentStatus === "SKIPPED" ? "Skipped" : "Completed"
                       const isOverdue = timeMeta.label === "Overdue" && !isDone
                       const showStatusBadge = currentStatus !== "ACTIVE"
                       const showTimeBadge = currentStatus === "PENDING" || currentStatus === "ACTIVE"
@@ -3222,13 +3249,22 @@ export function ContactServiceDetailsPanel({
                                       </Badge>
                                     ) : null}
                                   </div>
-                                  <div className="mt-3 flex max-w-xl min-w-0 items-center gap-1.5 text-xs font-medium text-slate-600">
-                                    <Clock3
-                                      aria-hidden="true"
-                                      className="size-3.5 shrink-0 text-slate-400"
-                                    />
-                                    <span className="truncate">{timeMeta.helper}</span>
-                                  </div>
+                                  {isDone ? (
+                                    <p className="mt-3 truncate text-xs font-medium text-slate-600">
+                                      {resolutionVerb} by {resolutionActorLabel}
+                                      {resolutionTimestamp
+                                        ? ` · ${formatDateTimeForDisplay(resolutionTimestamp, item.timezone)}`
+                                        : ""}
+                                    </p>
+                                  ) : (
+                                    <div className="mt-3 flex max-w-xl min-w-0 items-center gap-1.5 text-xs font-medium text-slate-600">
+                                      <Clock3
+                                        aria-hidden="true"
+                                        className="size-3.5 shrink-0 text-slate-400"
+                                      />
+                                      <span className="truncate">{timeMeta.helper}</span>
+                                    </div>
+                                  )}
                                   {step.resolutionReason ? (
                                     <div className="mt-4 border-l-2 border-rose-400 pl-3">
                                       <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-rose-600">
@@ -3342,9 +3378,77 @@ export function ContactServiceDetailsPanel({
                                         </h3>
                                         <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
                                           {step.notesTemplate?.trim() ||
-                                            "No description provided for this step."}
+                                          "No description provided for this step."}
                                         </p>
                                       </section>
+                                      {isDone ? (
+                                        <section
+                                          aria-labelledby={`step-responsibility-${step.id}`}
+                                          className="max-w-3xl border-t border-slate-200 pt-4"
+                                        >
+                                          <h3
+                                            id={`step-responsibility-${step.id}`}
+                                            className="text-xs font-semibold text-slate-800"
+                                          >
+                                            Responsibility
+                                          </h3>
+                                          <dl className="mt-3 grid gap-4 text-sm sm:grid-cols-2">
+                                            <div className="min-w-0">
+                                              <dt className="text-xs text-slate-500">Step assignee</dt>
+                                              <dd className="mt-1.5 flex min-w-0 items-center gap-2 font-medium text-slate-800">
+                                                {step.assignedTo ? (
+                                                  <Avatar className="size-6 shrink-0">
+                                                    <AvatarImage
+                                                      src={step.assignedTo.image ?? undefined}
+                                                      alt={getFollowUpAssigneeLabel(step.assignedTo)}
+                                                    />
+                                                    <AvatarFallback className="bg-blue-950 text-[10px] font-semibold text-white">
+                                                      {getInitials(
+                                                        getFollowUpAssigneeLabel(step.assignedTo),
+                                                      )}
+                                                    </AvatarFallback>
+                                                  </Avatar>
+                                                ) : (
+                                                  <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                                                    <UserRound aria-hidden="true" />
+                                                  </span>
+                                                )}
+                                                <span className="truncate">
+                                                  {getFollowUpAssigneeLabel(step.assignedTo)}
+                                                </span>
+                                              </dd>
+                                            </div>
+                                            <div className="min-w-0">
+                                              <dt className="text-xs text-slate-500">
+                                                {resolutionVerb} by
+                                              </dt>
+                                              <dd className="mt-1.5 flex min-w-0 items-center gap-2 font-medium text-slate-800">
+                                                {step.resolvedBy ? (
+                                                  <Avatar className="size-6 shrink-0">
+                                                    <AvatarImage
+                                                      src={step.resolvedBy.image ?? undefined}
+                                                      alt={resolutionActorLabel}
+                                                    />
+                                                    <AvatarFallback className="bg-slate-700 text-[10px] font-semibold text-white">
+                                                      {getInitials(resolutionActorLabel)}
+                                                    </AvatarFallback>
+                                                  </Avatar>
+                                                ) : (
+                                                  <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                                                    <UserRound aria-hidden="true" />
+                                                  </span>
+                                                )}
+                                                <span className="min-w-0 truncate">
+                                                  {resolutionActorLabel}
+                                                  {resolutionTimestamp
+                                                    ? ` · ${formatDateTimeForDisplay(resolutionTimestamp, item.timezone)}`
+                                                    : ""}
+                                                </span>
+                                              </dd>
+                                            </div>
+                                          </dl>
+                                        </section>
+                                      ) : null}
                                       {canChangeStepAssignee ? (
                                         <div className="border-t border-slate-200 pt-4">
                                           <Field
@@ -3354,12 +3458,12 @@ export function ContactServiceDetailsPanel({
                                             }
                                             className="max-w-md gap-2"
                                           >
-                                            <FieldLabel htmlFor={`follow-up-owner-${step.id}`}>
+                                            <FieldLabel htmlFor={`follow-up-step-assignee-${step.id}`}>
                                               Step assignee
                                             </FieldLabel>
                                             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
                                               <FollowUpStepAssigneeInput
-                                                id={`follow-up-owner-${step.id}`}
+                                                id={`follow-up-step-assignee-${step.id}`}
                                                 value={stepAssignedToUserId}
                                                 options={followUpAssigneeOptions}
                                                 currentAssignee={

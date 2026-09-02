@@ -348,6 +348,8 @@ model User {
   recordedServicePayments           ContactServicePayment[]           @relation("ContactServicePaymentRecordedBy")
   contactServiceChecklistActivities ContactServiceChecklistActivity[] @relation("ContactServiceChecklistActivityActor")
   assignedServiceFollowUps          ContactServiceFollowUpStep[]      @relation("ContactServiceFollowUpAssignedUser")
+  resolvedServiceFollowUps          ContactServiceFollowUpStep[]      @relation("ContactServiceFollowUpResolvedBy")
+  coordinatedContactServices        ContactService[]                  @relation("ContactServiceFollowUpCoordinator")
   serviceFollowUpExecutionLogs      ServiceFollowUpExecutionLog[]     @relation("ServiceFollowUpExecutionLogActor")
   publishedFollowUpVersions         ServiceFollowUpTemplateVersion[]  @relation("ServiceFollowUpVersionPublisher")
   startedFollowUpRuns               ContactServiceFollowUpRun[]       @relation("FollowUpRunStarter")
@@ -426,13 +428,13 @@ model Session {
 }
 
 model LoginChallenge {
-  id            String   @id @default(uuid())
-  userId        String   @unique
-  nonceHash     String   @unique
+  id            String    @id @default(uuid())
+  userId        String    @unique
+  nonceHash     String    @unique
   expiresAt     DateTime
-  otpSendCount  Int      @default(0)
+  otpSendCount  Int       @default(0)
   otpLastSentAt DateTime?
-  createdAt     DateTime @default(now())
+  createdAt     DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -737,6 +739,7 @@ model ContactService {
   serviceId                 String
   followUpTemplateId        String?
   followUpTemplateVersionId String?
+  followUpCoordinatorUserId String?
   assignedProfessionalId    String?
   status                    ContactServiceStatus @default(IN_PROGRESS)
   startedAt                 DateTime?
@@ -754,6 +757,7 @@ model ContactService {
   followUpTemplate        ServiceFollowUpTemplate?          @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
   followUpTemplateVersion ServiceFollowUpTemplateVersion?   @relation(fields: [followUpTemplateVersionId], references: [id], onDelete: SetNull)
   followUpRun             ContactServiceFollowUpRun?
+  followUpCoordinator     User?                             @relation("ContactServiceFollowUpCoordinator", fields: [followUpCoordinatorUserId], references: [id], onDelete: SetNull)
   assignedProfessional    ServiceProfessional?              @relation("ContactServiceAssignedProfessional", fields: [assignedProfessionalId], references: [id], onDelete: SetNull)
   payments                ContactServicePayment[]
   followUpSteps           ContactServiceFollowUpStep[]
@@ -772,6 +776,7 @@ model ContactService {
   @@index([tenantId, serviceId, createdAt])
   @@index([tenantId, followUpTemplateId])
   @@index([tenantId, followUpTemplateVersionId])
+  @@index([tenantId, followUpCoordinatorUserId])
   @@index([tenantId, assignedProfessionalId])
   @@index([tenantId, status, createdAt])
 }
@@ -809,8 +814,8 @@ model ContactServiceChecklistActivity {
   status                        ContactServiceChecklistStatus
   actorUserId                   String?
 
-  tenant                      Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  contactService              ContactService              @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
+  tenant                      Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactService              ContactService               @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
   contactServiceChecklistItem ContactServiceChecklistItem? @relation(fields: [contactServiceChecklistItemId], references: [id], onDelete: SetNull)
   actor                       User?                        @relation("ContactServiceChecklistActivityActor", fields: [actorUserId], references: [id], onDelete: SetNull)
 
@@ -858,6 +863,8 @@ model ContactServiceFollowUpStep {
   resolutionSource     FollowUpStepResolutionSource?
   resolutionReason     String?
   assignedToUserId     String?
+  resolvedByUserId     String?
+  resolvedAt           DateTime?
   overdueNotifiedAt    DateTime?
   overdueNotifiedDueAt DateTime?
   note                 String?
@@ -867,6 +874,7 @@ model ContactServiceFollowUpStep {
   contactService ContactService             @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
   run            ContactServiceFollowUpRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
   assignedTo     User?                      @relation("ContactServiceFollowUpAssignedUser", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  resolvedBy     User?                      @relation("ContactServiceFollowUpResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
   contactNotes   ContactNote[]
   tasks          Task[]
 
@@ -879,6 +887,7 @@ model ContactServiceFollowUpStep {
   @@index([tenantId, contactServiceId, templateNodeId])
   @@index([tenantId, runId, sortOrder])
   @@index([tenantId, assignedToUserId, dueAt])
+  @@index([tenantId, resolvedByUserId, resolvedAt])
   @@index([tenantId, status, dueAt, overdueNotifiedDueAt])
 }
 
@@ -982,7 +991,7 @@ model ContactServiceNoteAttachment {
 model ServiceFollowUpExecutionLog {
   id                String  @id @default(uuid())
   tenantId          String
-  templateId        String
+  templateId        String?
   templateVersionId String?
   runId             String?
   contactServiceId  String
@@ -996,7 +1005,7 @@ model ServiceFollowUpExecutionLog {
   payload           Json?
 
   tenant          Tenant                          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  template        ServiceFollowUpTemplate         @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  template        ServiceFollowUpTemplate?        @relation(fields: [templateId], references: [id], onDelete: SetNull)
   templateVersion ServiceFollowUpTemplateVersion? @relation(fields: [templateVersionId], references: [id], onDelete: SetNull)
   run             ContactServiceFollowUpRun?      @relation(fields: [runId], references: [id], onDelete: SetNull)
   contactService  ContactService                  @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)

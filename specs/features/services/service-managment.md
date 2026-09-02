@@ -294,15 +294,16 @@ Because of this:
 - The selected follow-up template should be attached to the created transaction or post-purchase workflow
 - Leaving the field on the default option should use the default published template behavior for the service
 
-### Follow-up ownership rules
+### Follow-up coordination rules
 
 - The transaction flow should allow the user to choose a tenant user who will be in charge of the enrolled follow-up work
-- The follow-up owner is selected in the dedicated `Follow up` step
-- Follow-up owner choices should come from active tenant users
-- Assigning a follow-up owner during transaction creation is optional
-- If selected, the chosen user should be stamped onto the enrolled `ContactServiceFollowUpStep` records as `assignedToUserId`
-- If not selected, the enrolled follow-up steps should remain unassigned
-- The follow-up owner picker should use the same compact popover-command interaction style used by other assignee pickers in the product
+- The follow-up coordinator is selected in the dedicated `Follow up` step
+- Coordinator choices should come from active tenant users
+- Assigning a coordinator during transaction creation is optional
+- If selected, the user is stored on the contact service as `followUpCoordinatorUserId` and seeds generated step `assignedToUserId` values
+- Changing the coordinator after creation never changes existing step assignees
+- If no coordinator is selected, the coordinator and generated steps remain unassigned
+- The coordinator picker should use the same compact popover-command interaction style used by other assignee pickers in the product
 
 ### Detailed step behavior
 
@@ -338,16 +339,16 @@ Current service step inputs:
 Current follow-up step inputs:
 
 - `Follow-Up Template`
-- `Follow-Up Owner`
+- `Follow-Up Coordinator`
 
 Follow-up step rules:
 
 - The follow-up template list is unlocked by the selected service
-- The follow-up owner list should come from active tenant users
-- The follow-up owner assignment is optional
-- The selected follow-up owner should apply to the follow-up steps enrolled for the new contact service
-- If no follow-up owner is selected, the enrolled follow-up steps remain unassigned
-- The step should clearly communicate that the selected user is the person in charge of the follow-up work created by the transaction
+- The coordinator list should come from active tenant users
+- Coordinator assignment is optional
+- The selected coordinator should seed the initial assignee on every generated step
+- If no coordinator is selected, the coordinator and enrolled steps remain unassigned
+- The step should clearly communicate that later coordinator changes do not reassign individual steps
 
 #### Step 4. Checklist
 
@@ -718,11 +719,14 @@ Restricted to `TENANT_ADMIN` or members with `securityLevel !== LOW`:
 - delete payment
 - update contact service status
 - delete contact service enrollment
+- change the enrollment-level follow-up coordinator
 
 Restricted by follow-up-step state, regardless of security level:
 
 - step status cannot be changed unless the step is currently `ACTIVE`
 - assigning a step requires the assignee to have an active membership in the same tenant
+- completed and skipped steps preserve their final assignee and cannot be reassigned
+- completing or user-skipping a step records the authenticated actor separately from the assignee
 
 Current frontend behavior also reflects part of this:
 

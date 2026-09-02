@@ -47,8 +47,8 @@ Sensitive actions currently gated by this rule include:
 - changing service status
 - adding payments
 - editing or deleting payments
-- changing follow-up owner
-- changing follow-up step owner
+- changing the overall follow-up coordinator
+- changing a follow-up step assignee
 
 Other actions such as checklist toggles, note creation, and task creation are currently available in the panel behavior and should be documented as active operational tools.
 
@@ -80,8 +80,8 @@ Loaded from:
 
 Used for:
 
-- changing overall follow-up owner
-- changing individual step owner
+- changing the overall follow-up coordinator
+- changing an individual step assignee
 
 ## Page Structure
 
@@ -117,14 +117,14 @@ Buttons appear as compact rounded pills.
 - only shown when a remaining balance exists and the user can manage sensitive service actions
 - opens the add payment dialog
 
-##### Follow-up owner pill
+##### Follow-up coordinator pill
 
-- only shown when the service has follow-up steps and the user can manage sensitive service actions
-- displays:
-  - current open-step owner avatar + name
-  - or `Mixed assignees`
-  - or `Unassigned`
-- clicking opens the change follow-up owner dialog
+- shown when the service has follow-up work
+- displays the enrollment-level coordinator avatar and name, or `Unassigned`
+- the tooltip explains that step assignments remain independent
+- eligible users can change it while the workflow is open
+- after completion it remains visible as the read-only final coordinator until a step is reopened
+- changing it never rewrites existing step assignees
 
 ##### Status pill
 
@@ -297,7 +297,7 @@ Each follow-up step card includes:
   - `Current step` when active
 - clickable step title opening the step details dialog
 - helper line describing timing state
-- owner row with avatar and owner name
+- assignee avatar with the responsible user's name in a tooltip
 - step description from `notesTemplate`
 - optional latest step note block
 
@@ -324,7 +324,9 @@ Important follow-up behaviors:
 - only the active step can be status-mutated directly
 - postponed status requires a new date/time
 - postponing cascades future pending/active steps
-- overall follow-up owner management is separate from per-step owner management
+- overall follow-up coordinator management is separate from per-step assignment
+- completed and skipped rows retain the final step assignee
+- resolved rows identify who completed or skipped the step and when; automated skips identify the system instead of a user
 
 Empty state:
 
@@ -391,19 +393,19 @@ Empty state:
 
 This page relies heavily on contextual dialogs. They are a major part of the UX.
 
-### Change Follow-Up Owner Dialog
+### Change Follow-Up Coordinator Popover
 
 Purpose:
 
-- bulk update owner on all open follow-up steps
+- update the enrollment-level coordinator without changing step assignments
 
 Contains:
 
-- current owner preview card
-- count of affected open steps
-- follow-up owner select
-- `Cancel`
-- `Save owner`
+- current coordinator avatar and name
+- searchable active tenant users
+- explicit `Unassigned` option
+- selected check indicator
+- explanatory tooltip that step assignments remain independent
 
 ### Add Payment Dialog
 
@@ -483,19 +485,19 @@ Important validation:
 
 Purpose:
 
-- inspect a single step in more detail and optionally reassign the owner
+- inspect a single step in more detail and optionally change its assignee
 
 Contains:
 
 - service/template/step context block
 - status summary
 - due date summary
-- follow-up owner summary
-- optional owner change select for users with permission
+- step assignee summary
+- optional step-assignee select for users with permission
 - description block
 - latest step note block
 - actions:
-  - `Save owner` when allowed
+  - `Save assignee` when allowed
   - `Close`
 
 ### Add Step Note Dialog
@@ -547,8 +549,8 @@ The following derived values are central to the screen and should be preserved i
 - next scheduled payment date
 - payment plan summary
 - follow-up completion percentage
-- current follow-up owner
-- mixed-owner detection for open steps
+- current follow-up coordinator
+- individual step assignees and resolution actors
 - tax amount and tax messaging
 - activity/history merged timeline
 
@@ -559,7 +561,7 @@ These derived pieces make the screen useful without forcing the user to manually
 The most important things on this page are:
 
 1. service identity and assigned professional
-2. status and follow-up ownership
+2. status and follow-up coordination
 3. total paid vs remaining balance
 4. current follow-up step and progress
 5. checklist completion state
@@ -581,7 +583,7 @@ Top-level visible buttons and controls currently used:
 - back button
 - delete
 - add payment
-- follow-up owner trigger
+- follow-up coordinator trigger
 - service status trigger
 - checklist status selector in the checklist sheet
 - payment row click for edit
@@ -595,7 +597,7 @@ Top-level visible buttons and controls currently used:
 Dialog-level buttons currently used:
 
 - cancel
-- save owner
+- save assignee
 - add payment
 - save payment
 - delete payment

@@ -34,6 +34,10 @@ import {
 } from "../lib/service-followup-next-follow-up.js"
 import { canChangeServiceFollowUpStepAssignee } from "../lib/service-followup-step-permissions.js"
 import {
+  buildFollowUpStepResolutionUpdate,
+  isServiceFollowUpWorkflowCompleted,
+} from "../lib/service-followup-ownership.js"
+import {
   continueFollowUpRunFromStepTx,
   createFollowUpRunTx,
   executeFollowUpRun,
@@ -63,6 +67,9 @@ const sanitizeMultilineText = (value: string) =>
     .map((line) => line.replace(/\s+/g, " ").trim())
     .join("\n")
     .trim()
+const getServiceUserLabel = (
+  user: { name?: string | null; email?: string | null } | null | undefined,
+) => user?.name?.trim() || user?.email?.trim() || "Unassigned"
 const normalizeSearchValue = (value: string | null | undefined) =>
   value?.trim().toLowerCase().replace(/\s+/g, " ") ?? ""
 const normalizePhoneSearchValue = (value: string | null | undefined) => (value ?? "").replace(/\D/g, "")
@@ -478,6 +485,10 @@ const UpdateContactServiceSchema = z.object({
   canceledAt: z.string().datetime().nullable().optional(),
   totalPriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
   notes: z.string().trim().max(4000).nullable().optional(),
+})
+
+const UpdateFollowUpCoordinatorSchema = z.object({
+  assignedToUserId: z.string().trim().min(1).nullable(),
 })
 
 const ContactServiceNoteAttachmentIdsSchema = z
@@ -2432,6 +2443,15 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           purchasedAt: true,
           totalPriceCents: true,
           currency: true,
+          followUpCoordinatorUserId: true,
+          followUpCoordinator: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
           service: {
             select: {
               id: true,
@@ -2470,8 +2490,19 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               availableAt: true,
               dueAt: true,
               completedAt: true,
+              assignedToUserId: true,
+              resolvedByUserId: true,
+              resolvedAt: true,
               sortOrder: true,
               assignedTo: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+              resolvedBy: {
                 select: {
                   id: true,
                   name: true,
@@ -2573,6 +2604,15 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           purchasedAt: true,
           totalPriceCents: true,
           currency: true,
+          followUpCoordinatorUserId: true,
+          followUpCoordinator: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
           service: {
             select: {
               id: true,
@@ -2611,8 +2651,19 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               availableAt: true,
               dueAt: true,
               completedAt: true,
+              assignedToUserId: true,
+              resolvedByUserId: true,
+              resolvedAt: true,
               sortOrder: true,
               assignedTo: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+              resolvedBy: {
                 select: {
                   id: true,
                   name: true,
@@ -2694,6 +2745,8 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           paidCents,
           remainingCents: Math.max(0, item.totalPriceCents - paidCents),
           currency: item.currency,
+          followUpCoordinatorUserId: item.followUpCoordinatorUserId,
+          followUpCoordinator: item.followUpCoordinator,
           service: item.service,
           nextFollowUp: followUpMetadata.nextFollowUp,
           followUpRun: followUpMetadata.followUpRun,
@@ -2888,6 +2941,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           serviceId: payload.serviceId,
           followUpTemplateId: selectedPublishedTemplate?.id ?? null,
           followUpTemplateVersionId: selectedPublishedTemplate?.activeVersion?.id ?? null,
+          followUpCoordinatorUserId: payload.followUpAssignedToUserId ?? null,
           assignedProfessionalId: selectedAssignedProfessional?.id ?? null,
           status: "IN_PROGRESS",
           startedAt,
@@ -3024,6 +3078,15 @@ router.get(
             currency: true,
             allowPartialPayments: true,
             notes: true,
+            followUpCoordinatorUserId: true,
+            followUpCoordinator: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
             assignedProfessional: {
               select: {
                 id: true,
@@ -3120,7 +3183,17 @@ router.get(
                 resolutionSource: true,
                 resolutionReason: true,
                 assignedToUserId: true,
+                resolvedByUserId: true,
+                resolvedAt: true,
                 assignedTo: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+                resolvedBy: {
                   select: {
                     id: true,
                     name: true,
@@ -3246,6 +3319,8 @@ router.get(
           currency: item.currency,
           allowPartialPayments: item.allowPartialPayments,
           notes: item.notes,
+          followUpCoordinatorUserId: item.followUpCoordinatorUserId,
+          followUpCoordinator: item.followUpCoordinator,
           assignedProfessional: item.assignedProfessional,
           contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
             .filter(Boolean)
@@ -3291,6 +3366,148 @@ router.get(
           },
         },
       })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.patch(
+  "/:tenantId/contact-services/:contactServiceId/follow-up-coordinator",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+      const payload = UpdateFollowUpCoordinatorSchema.parse(req.body)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+      if (!canManageContactServices(membership)) {
+        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+      }
+
+      const nextCoordinatorMembership = payload.assignedToUserId
+        ? await prisma.membership.findUnique({
+            where: {
+              userId_tenantId: {
+                userId: payload.assignedToUserId,
+                tenantId,
+              },
+            },
+            select: {
+              status: true,
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+            },
+          })
+        : null
+
+      if (
+        payload.assignedToUserId &&
+        (!nextCoordinatorMembership || nextCoordinatorMembership.status !== "ACTIVE")
+      ) {
+        return res.status(400).json({ error: "INVALID_FOLLOW_UP_COORDINATOR" })
+      }
+
+      const existing = await prismaWithServices.contactService.findFirst({
+        where: { id: contactServiceId, tenantId },
+        select: {
+          id: true,
+          contactId: true,
+          followUpTemplateId: true,
+          followUpCoordinatorUserId: true,
+          followUpCoordinator: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
+          followUpRun: {
+            select: { status: true },
+          },
+          followUpSteps: {
+            select: { status: true },
+          },
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+      if (!existing.followUpRun && existing.followUpSteps.length === 0) {
+        return res.status(409).json({ error: "FOLLOW_UP_NOT_CONFIGURED" })
+      }
+      if (
+        isServiceFollowUpWorkflowCompleted({
+          runStatus: existing.followUpRun?.status ?? null,
+          stepStatuses: existing.followUpSteps.map((step: any) => step.status),
+        })
+      ) {
+        return res.status(409).json({ error: "FOLLOW_UP_COORDINATOR_LOCKED" })
+      }
+
+      const nextCoordinatorUserId = payload.assignedToUserId ?? null
+      if (existing.followUpCoordinatorUserId === nextCoordinatorUserId) {
+        return res.json({
+          ok: true,
+          followUpCoordinatorUserId: existing.followUpCoordinatorUserId,
+          followUpCoordinator: existing.followUpCoordinator,
+        })
+      }
+
+      const nextCoordinator = nextCoordinatorMembership?.user ?? null
+      const updated = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const contactService = await prismaTx.contactService.update({
+          where: { id: contactServiceId },
+          data: { followUpCoordinatorUserId: nextCoordinatorUserId },
+          select: {
+            followUpCoordinatorUserId: true,
+            followUpCoordinator: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+          },
+        })
+
+        const previousLabel = getServiceUserLabel(existing.followUpCoordinator)
+        const nextLabel = getServiceUserLabel(nextCoordinator)
+        await prismaTx.serviceFollowUpExecutionLog.create({
+          data: {
+            tenantId,
+            templateId: existing.followUpTemplateId,
+            contactServiceId,
+            contactId: existing.contactId,
+            actorUserId: authed.user.id,
+            eventType: "FOLLOW_UP_COORDINATOR_CHANGED",
+            title: "Follow-up coordinator updated",
+            details: `Changed from ${previousLabel} to ${nextLabel}.`,
+            payload: {
+              previousUserId: existing.followUpCoordinatorUserId,
+              previousUserName: previousLabel,
+              userId: nextCoordinatorUserId,
+              userName: nextLabel,
+            },
+          },
+        })
+
+        return contactService
+      })
+
+      return res.json({ ok: true, ...updated })
     } catch (error) {
       return next(error)
     }
@@ -3374,6 +3591,15 @@ router.get(
             currency: true,
             allowPartialPayments: true,
             notes: true,
+            followUpCoordinatorUserId: true,
+            followUpCoordinator: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
             assignedProfessional: {
               select: {
                 id: true,
@@ -3522,6 +3748,7 @@ router.get(
                   select: {
                     id: true,
                     name: true,
+                    email: true,
                   },
                 },
               },
@@ -3557,7 +3784,17 @@ router.get(
                 resolutionSource: true,
                 resolutionReason: true,
                 assignedToUserId: true,
+                resolvedByUserId: true,
+                resolvedAt: true,
                 assignedTo: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+                resolvedBy: {
                   select: {
                     id: true,
                     name: true,
@@ -3709,6 +3946,8 @@ router.get(
           currency: item.currency,
           allowPartialPayments: item.allowPartialPayments,
           notes: item.notes,
+          followUpCoordinatorUserId: item.followUpCoordinatorUserId,
+          followUpCoordinator: item.followUpCoordinator,
           assignedProfessional: item.assignedProfessional,
           contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
             .filter(Boolean)
@@ -4465,22 +4704,32 @@ router.patch(
       const membership = await requireActiveMembership(authed, res, tenantId)
       if (!membership) return
 
-      if (payload.assignedToUserId) {
-        const assigneeMembership = await prisma.membership.findUnique({
-          where: {
-            userId_tenantId: {
-              userId: payload.assignedToUserId,
-              tenantId,
+      const requestedAssigneeMembership = payload.assignedToUserId
+        ? await prisma.membership.findUnique({
+            where: {
+              userId_tenantId: {
+                userId: payload.assignedToUserId,
+                tenantId,
+              },
             },
-          },
-          select: {
-            status: true,
-          },
-        })
+            select: {
+              status: true,
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+          })
+        : null
 
-        if (!assigneeMembership || assigneeMembership.status !== "ACTIVE") {
-          return res.status(400).json({ error: "INVALID_ASSIGNEE" })
-        }
+      if (
+        payload.assignedToUserId &&
+        (!requestedAssigneeMembership || requestedAssigneeMembership.status !== "ACTIVE")
+      ) {
+        return res.status(400).json({ error: "INVALID_ASSIGNEE" })
       }
 
       const existing = await prismaWithServices.contactServiceFollowUpStep.findFirst({
@@ -4491,6 +4740,7 @@ router.patch(
         },
         select: {
           id: true,
+          title: true,
           status: true,
           completedAt: true,
           dueAt: true,
@@ -4499,6 +4749,13 @@ router.patch(
           templateNodeId: true,
           runId: true,
           resolutionSource: true,
+          assignedToUserId: true,
+          assignedTo: {
+            select: {
+              name: true,
+              email: true,
+            },
+          },
         },
       })
 
@@ -4601,11 +4858,14 @@ router.patch(
       if (
         ["COMPLETED", "SKIPPED"].includes(existing.status) &&
         !isReopenAction &&
-        (payload.status !== undefined || payload.postponeTo !== undefined)
+        (payload.status !== undefined ||
+          payload.completedAt !== undefined ||
+          payload.postponeTo !== undefined)
       ) {
         return res.status(409).json({ error: "STEP_REOPEN_REQUIRED" })
       }
 
+      const mutationTime = new Date()
       const statusUpdate =
         isReopenAction
           ? {
@@ -4627,12 +4887,20 @@ router.patch(
           : payload.status === "COMPLETED"
             ? {
                 status: "COMPLETED" as const,
-                completedAt: payload.completedAt ? new Date(payload.completedAt) : new Date(),
+                completedAt: payload.completedAt ? new Date(payload.completedAt) : mutationTime,
               }
             : {
                 status: payload.status,
                 completedAt: null,
               }
+      const resolutionUpdate = buildFollowUpStepResolutionUpdate({
+        action: isReopenAction ? "REOPEN" : undefined,
+        nextStatus: payload.status,
+        completedAtProvided: payload.completedAt !== undefined,
+        completedAtValue: payload.completedAt,
+        actorUserId: authed.user.id,
+        now: mutationTime,
+      })
 
       const postponeToDate = payload.postponeTo ? new Date(payload.postponeTo) : null
       if (payload.postponeTo && Number.isNaN(postponeToDate?.getTime() ?? NaN)) {
@@ -4734,6 +5002,7 @@ router.patch(
                 }
               : {}),
             ...statusUpdate,
+            ...resolutionUpdate,
             ...(isReopenAction
               ? { resolutionSource: null, resolutionReason: null }
               : payload.status === "SKIPPED"
@@ -4770,6 +5039,24 @@ router.patch(
             dueAt: true,
             completedAt: true,
             assignedToUserId: true,
+            resolvedByUserId: true,
+            resolvedAt: true,
+            assignedTo: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+            resolvedBy: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
             note: true,
             sortOrder: true,
             templateNodeId: true,
@@ -4788,7 +5075,38 @@ router.patch(
         })
 
         if (
-          contactServiceRecord?.followUpTemplateId &&
+          contactServiceRecord &&
+          payload.assignedToUserId !== undefined &&
+          existing.assignedToUserId !== updated.assignedToUserId
+        ) {
+          const previousAssigneeLabel = getServiceUserLabel(existing.assignedTo)
+          const nextAssigneeLabel = getServiceUserLabel(
+            requestedAssigneeMembership?.user ?? null,
+          )
+          await prismaTx.serviceFollowUpExecutionLog.create({
+            data: {
+              tenantId,
+              templateId: contactServiceRecord.followUpTemplateId,
+              contactServiceId,
+              contactId: contactServiceRecord.contactId,
+              actorUserId: authed.user.id,
+              flowNodeId: updated.templateNodeId ?? null,
+              stepId: updated.id,
+              eventType: "STEP_ASSIGNEE_CHANGED",
+              title: `Step assignee updated: ${updated.title}`,
+              details: `Changed from ${previousAssigneeLabel} to ${nextAssigneeLabel}.`,
+              payload: {
+                previousUserId: existing.assignedToUserId,
+                previousUserName: previousAssigneeLabel,
+                userId: updated.assignedToUserId,
+                userName: nextAssigneeLabel,
+              },
+            },
+          })
+        }
+
+        if (
+          contactServiceRecord &&
           (isReopenAction ||
             payload.status !== undefined ||
             payload.completedAt !== undefined ||
@@ -4812,6 +5130,10 @@ router.patch(
                 status: updated.status,
                 dueAt: updated.dueAt,
                 completedAt: updated.completedAt,
+                resolvedAt: updated.resolvedAt,
+                resolvedByUserId: updated.resolvedByUserId,
+                assignedToUserId: updated.assignedToUserId,
+                assignedToName: getServiceUserLabel(updated.assignedTo),
                 postponeTo: payload.postponeTo ?? null,
                 action: payload.action ?? null,
               },
@@ -5040,6 +5362,8 @@ router.post(
       if (nextStatus === "ACTIVE" && hasActiveStep) {
         return res.status(409).json({ error: "FOLLOW_UP_ALREADY_HAS_ACTIVE_STEP" })
       }
+      const resolvedAt =
+        nextStatus === "COMPLETED" || nextStatus === "SKIPPED" ? new Date() : null
       const nextDueAt = payload.dueAt ? new Date(payload.dueAt) : null
       const nextAvailableAt =
         payload.availableAt !== undefined
@@ -5062,7 +5386,15 @@ router.post(
           status: nextStatus,
           availableAt: nextAvailableAt,
           dueAt: nextDueAt,
-          completedAt: nextStatus === "COMPLETED" ? new Date() : null,
+          completedAt: nextStatus === "COMPLETED" ? resolvedAt : null,
+          resolvedByUserId: resolvedAt ? authed.user.id : null,
+          resolvedAt,
+          resolutionSource:
+            nextStatus === "COMPLETED"
+              ? "USER_COMPLETED"
+              : nextStatus === "SKIPPED"
+                ? "USER_SKIPPED"
+                : null,
           assignedToUserId: payload.assignedToUserId || null,
           note:
             payload.note && payload.note.trim().length
@@ -5079,6 +5411,16 @@ router.post(
           dueAt: true,
           completedAt: true,
           assignedToUserId: true,
+          resolvedByUserId: true,
+          resolvedAt: true,
+          resolvedBy: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
           note: true,
           sortOrder: true,
         },

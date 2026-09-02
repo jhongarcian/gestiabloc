@@ -171,6 +171,25 @@ Deletion behavior:
 - Linked CRM tasks are preserved, while their contact-service and follow-up-step references are cleared
 - The backend permission check is authoritative; hiding the UI control is not treated as the security boundary
 
+## Service Follow-Up Ownership
+
+Service follow-up responsibility is separated into three records:
+
+- **Follow-up coordinator:** the overall owner of the enrollment's follow-up workflow
+- **Step assignee:** the tenant user responsible for one specific follow-up step
+- **Resolved by:** the authenticated user who completed or user-skipped the step; automated resolution has no user actor
+
+Coordinator permission matrix:
+
+- Active `TENANT_ADMIN`: can view and change the coordinator while the workflow is open
+- Active `TENANT_USER + MEDIUM`: can view and change the coordinator while the workflow is open
+- Active `TENANT_USER + MAX`: can view and change the coordinator while the workflow is open
+- Active `TENANT_USER + LOW`: can view the coordinator but cannot edit it; direct API requests return `403 INSUFFICIENT_SECURITY_LEVEL`
+- Inactive or non-member users: denied by the active-membership guard
+- Any role after workflow completion: the final coordinator is read-only until a step is reopened
+
+Changing the coordinator never changes existing step assignees. Existing step-assignment permissions remain unchanged, and completed or skipped steps cannot be reassigned. The backend permission and workflow-state checks are authoritative.
+
 ## Sensitive Custom Field Access Configuration
 
 Sensitive custom fields use a specific approval model:
