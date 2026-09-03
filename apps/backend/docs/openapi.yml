@@ -4448,6 +4448,74 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/notes:
+    get:
+      tags: [Services]
+      summary: List notes associated with a contact service process
+      description: Returns a tenant-scoped, merged history of service notes, follow-up notes, and linked contact notes. Note history is read-only from the service page.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            enum: [10, 25, 50]
+            default: 10
+        - in: query
+          name: q
+          description: Case-insensitive search across title, note details, and author name or email.
+          schema:
+            type: string
+            maxLength: 160
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [updated_desc, created_desc, updated_asc]
+            default: updated_desc
+      responses:
+        "200":
+          description: Paginated merged service note history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactServiceNotesPageResponse"
+        "400":
+          description: Invalid pagination, search, or sort query
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     post:
       tags: [Services]
       summary: Add a note to a contact service process
@@ -8830,6 +8898,114 @@ components:
             image:
               type: string
               nullable: true
+    ContactServiceNoteActivityItem:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+            image:
+              type: string
+              nullable: true
+    ContactServiceNoteAttachment:
+      type: object
+      properties:
+        id:
+          type: string
+        fileId:
+          type: string
+        key:
+          type: string
+        fileName:
+          type: string
+        contentType:
+          type: string
+        size:
+          type: integer
+          nullable: true
+    PaginatedContactServiceNoteItem:
+      type: object
+      required: [id, kind, title, body, createdAt, updatedAt, attachments]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [SERVICE_NOTE, FOLLOW_UP_NOTE, LINKED_CONTACT_NOTE]
+        title:
+          type: string
+        body:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        author:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            email:
+              type: string
+              nullable: true
+            image:
+              type: string
+              nullable: true
+        followUpTemplateName:
+          type: string
+          nullable: true
+        followUpStepTitle:
+          type: string
+          nullable: true
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactServiceNoteAttachment"
+    ContactServiceNotesPageResponse:
+      type: object
+      required: [ok, items, pagination]
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PaginatedContactServiceNoteItem"
+        pagination:
+          type: object
+          required: [page, pageSize, total, totalPages]
+          properties:
+            page:
+              type: integer
+            pageSize:
+              type: integer
+              enum: [10, 25, 50]
+            total:
+              type: integer
+            totalPages:
+              type: integer
     ContactServiceExecutionLogItem:
       type: object
       properties:
@@ -8961,10 +9137,11 @@ components:
                   type: array
                   items:
                     $ref: "#/components/schemas/ContactServicePaymentItem"
-                serviceNotes:
+                noteActivityItems:
                   type: array
+                  description: Lightweight note metadata used by the Activity sheet. Full bodies and attachments are loaded through the paginated notes endpoint.
                   items:
-                    $ref: "#/components/schemas/ContactServiceNoteItem"
+                    $ref: "#/components/schemas/ContactServiceNoteActivityItem"
                 executionLogs:
                   type: array
                   items:
@@ -9200,7 +9377,12 @@ components:
           maxLength: 160
         body:
           type: string
-          maxLength: 8000
+          maxLength: 5000
+        attachmentFileIds:
+          type: array
+          maxItems: 10
+          items:
+            type: string
     CreateContactServiceNoteResponse:
       type: object
       properties:

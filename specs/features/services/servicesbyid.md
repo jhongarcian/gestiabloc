@@ -345,29 +345,41 @@ Empty state:
 - dashed empty card
 - `No follow-up steps are enrolled for this service yet.`
 
-### 6. Service Notes Card
+### 6. Service Notes Table
 
 Purpose:
 
-- keep notes specific to this service enrollment separate from general contact notes
+- provide a compact, independently loaded history of service, follow-up, and linked contact notes
+- keep the enrollment detail response lightweight by loading complete note bodies and attachments only in the Notes view
 
 Header contains:
 
 - section label: `Service Notes`
-- helper copy
-- button: `Add note`
+- debounced search across title, details, and author
+- sorting for recently updated, newest created, and oldest updated
+- compact primary button: `Add note`
 
-Each note row includes:
+The contact-table-style shell uses fixed columns for:
 
-- author avatar
-- note title
-- metadata line with author and created date/time
-- note body
+- title
+- truncated note details
+- source
+- author
+- created date/time
+- attachments
+
+Rows are keyboard accessible and open a read-only, viewport-bounded note-details dialog. Attachment controls open files directly without opening the row dialog.
+
+Pagination is server-backed. The endpoint accepts `page`, `pageSize` (`10`, `25`, or `50`), `q`, and `sort`; it merges both note models before applying the selected global order and page. Requested pages beyond the available result set are clamped to the final page.
+
+The Add note action opens a viewport-bounded dialog with a fixed contextual header and footer and one scrolling form body. Title and details are required and limited to 160 and 5,000 characters. Up to ten supported attachments upload sequentially with progress. The dialog cannot be dismissed while saving, retains content after a failure, and reloads page one after success.
+
+Existing notes are read-only from the service page. Editing and deletion are intentionally unavailable.
 
 Empty state:
 
-- dashed empty card
-- `No service notes have been added yet.`
+- `No notes yet` when no service history exists
+- `No matching notes` when the current search has no results
 
 ### 7. Service History Card
 

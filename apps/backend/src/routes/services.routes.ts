@@ -4,6 +4,13 @@ import { type Response, Router } from "express"
 import { z } from "zod"
 
 import { decryptCustomFieldValue } from "../lib/contact-custom-field-encryption.js"
+import {
+  ContactServiceNotesQuerySchema,
+  compareContactServiceNotes,
+  getContactServiceNotesPage,
+  resolveContactServiceNoteKind,
+  type ContactServiceNoteSort,
+} from "../lib/contact-service-notes.js"
 import { canManageContactServices } from "../lib/contact-service-permissions.js"
 import {
   assignedServiceProfessionalIdSchema,
@@ -170,30 +177,39 @@ const fileNameFromKey = (key: string) => {
   const segments = key.split("/")
   return segments[segments.length - 1] ?? key
 }
-const hasServiceNoteAttachmentQueryError = (error: unknown) =>
-  error instanceof Error &&
-  (error.message.includes("ContactServiceNoteAttachment") ||
-    error.message.includes("Unknown field `attachments`"))
-const serializeRelatedServiceNote = (
+const getServiceNoteOrderBy = (sort: ContactServiceNoteSort) => {
+  if (sort === "created_desc") {
+    return [{ createdAt: "desc" as const }, { id: "asc" as const }]
+  }
+  if (sort === "updated_asc") {
+    return [
+      { updatedAt: "asc" as const },
+      { createdAt: "desc" as const },
+      { id: "asc" as const },
+    ]
+  }
+  return [
+    { updatedAt: "desc" as const },
+    { createdAt: "desc" as const },
+    { id: "asc" as const },
+  ]
+}
+
+const serializePaginatedServiceNote = (
   note: {
     id: string
     title: string
     body: string
     createdAt: Date
+    updatedAt: Date
     createdBy?: {
       id: string
       name: string | null
-      email?: string | null
+      email: string | null
       image?: string | null
     } | null
-    followUpTemplate?: {
-      id: string
-      name: string
-    } | null
-    contactServiceFollowUpStep?: {
-      id: string
-      title: string
-    } | null
+    followUpTemplate?: { name: string } | null
+    contactServiceFollowUpStep?: { title: string } | null
     attachments?: Array<{
       id: string
       file: {
@@ -207,22 +223,24 @@ const serializeRelatedServiceNote = (
   kind: "SERVICE_NOTE" | "FOLLOW_UP_NOTE" | "LINKED_CONTACT_NOTE",
 ) => ({
   id: note.id,
+  kind,
   title: note.title,
   body: note.body,
   createdAt: note.createdAt,
-  kind,
-  followUpTemplateName: note.followUpTemplate?.name ?? null,
-  followUpStepTitle: note.contactServiceFollowUpStep?.title ?? null,
-  createdBy: note.createdBy
+  updatedAt: note.updatedAt,
+  author: note.createdBy
     ? {
         id: note.createdBy.id,
         name:
           note.createdBy.name?.trim() ||
           note.createdBy.email?.trim() ||
           "Unknown user",
+        email: note.createdBy.email,
         image: note.createdBy.image ?? null,
       }
     : null,
+  followUpTemplateName: note.followUpTemplate?.name ?? null,
+  followUpStepTitle: note.contactServiceFollowUpStep?.title ?? null,
   attachments: (note.attachments ?? []).map((attachment) => ({
     id: attachment.id,
     fileId: attachment.file.id,
@@ -503,7 +521,7 @@ const ContactServiceNoteAttachmentIdsSchema = z
 
 const CreateContactServiceNoteSchema = z.object({
   title: z.string().trim().min(1).max(160),
-  body: z.string().trim().min(1).max(8000),
+  body: z.string().trim().min(1).max(5000),
   attachmentFileIds: ContactServiceNoteAttachmentIdsSchema,
 })
 
@@ -3549,47 +3567,16 @@ router.get(
       const membership = await requireActiveMembership(authed, res, tenantId)
       if (!membership) return
 
-      const serviceNotesSelectWithAttachments = {
+      const activityNotesSelect = {
         select: {
           id: true,
           title: true,
-          body: true,
           createdAt: true,
           createdBy: {
             select: {
               id: true,
               name: true,
-              image: true,
-            },
-          },
-          attachments: {
-            orderBy: { createdAt: "asc" as const },
-            select: {
-              id: true,
-              file: {
-                select: {
-                  id: true,
-                  key: true,
-                  contentType: true,
-                  size: true,
-                },
-              },
-            },
-          },
-        },
-        orderBy: [{ createdAt: "desc" as const }],
-      }
-
-      const serviceNotesSelectWithoutAttachments = {
-        select: {
-          id: true,
-          title: true,
-          body: true,
-          createdAt: true,
-          createdBy: {
-            select: {
-              id: true,
-              name: true,
+              email: true,
               image: true,
             },
           },
@@ -3597,7 +3584,7 @@ router.get(
         orderBy: [{ createdAt: "desc" as const }],
       }
 
-      const fetchItem = async (includeServiceNoteAttachments = true) =>
+      const fetchItem = async () =>
         prismaWithServices.contactService.findFirst({
           where: {
             id: contactServiceId,
@@ -3733,14 +3720,11 @@ router.get(
               },
               orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
             },
-            serviceNotes: includeServiceNoteAttachments
-              ? serviceNotesSelectWithAttachments
-              : serviceNotesSelectWithoutAttachments,
+            serviceNotes: activityNotesSelect,
             contactNotes: {
               select: {
                 id: true,
                 title: true,
-                body: true,
                 createdAt: true,
                 createdBy: {
                   select: {
@@ -3748,32 +3732,6 @@ router.get(
                     name: true,
                     email: true,
                     image: true,
-                  },
-                },
-                followUpTemplate: {
-                  select: {
-                    id: true,
-                    name: true,
-                  },
-                },
-                contactServiceFollowUpStep: {
-                  select: {
-                    id: true,
-                    title: true,
-                  },
-                },
-                attachments: {
-                  orderBy: { createdAt: "asc" },
-                  select: {
-                    id: true,
-                    file: {
-                      select: {
-                        id: true,
-                        key: true,
-                        contentType: true,
-                        size: true,
-                      },
-                    },
                   },
                 },
               },
@@ -3873,15 +3831,7 @@ router.get(
           },
         })
 
-      let item: Awaited<ReturnType<typeof fetchItem>> | null
-      try {
-        item = await fetchItem(true)
-      } catch (error) {
-        if (!hasServiceNoteAttachmentQueryError(error)) {
-          throw error
-        }
-        item = await fetchItem(false)
-      }
+      let item: Awaited<ReturnType<typeof fetchItem>> | null = await fetchItem()
 
       if (!item) {
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
@@ -3937,14 +3887,7 @@ router.get(
         syncResult.checklistBackfilled ||
         syncResult.statusReconciled
       ) {
-        try {
-          item = await fetchItem(true)
-        } catch (error) {
-          if (!hasServiceNoteAttachmentQueryError(error)) {
-            throw error
-          }
-          item = await fetchItem(false)
-        }
+        item = await fetchItem()
       }
 
       if (!item) {
@@ -3955,19 +3898,7 @@ router.get(
         (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
         0,
       )
-      const combinedNotes = [
-        ...item.serviceNotes.map((note: any) =>
-          serializeRelatedServiceNote(note, "SERVICE_NOTE"),
-        ),
-        ...item.contactNotes.map((note: any) =>
-          serializeRelatedServiceNote(
-            note,
-            note.followUpTemplate || note.contactServiceFollowUpStep
-              ? "FOLLOW_UP_NOTE"
-              : "LINKED_CONTACT_NOTE",
-          ),
-        ),
-      ].sort(
+      const noteActivityItems = [...item.serviceNotes, ...item.contactNotes].sort(
         (left, right) =>
           new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
       )
@@ -4020,7 +3951,7 @@ router.get(
             getSafeTimezone(item.service.tenant.timezone),
           ),
           payments: item.payments,
-          serviceNotes: combinedNotes,
+          noteActivityItems,
           executionLogs: item.executionLogs,
           checklistActivityLogs: item.checklistActivities.map((activity: any) => ({
             id: activity.id,
@@ -4041,6 +3972,139 @@ router.get(
             isRequired: Boolean(checklistItem.checklistItem?.isRequired),
             sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
           })),
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.get(
+  "/:tenantId/contact-services/:contactServiceId/notes",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+      const query = ContactServiceNotesQuerySchema.parse(req.query)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const enrollment = await prismaWithServices.contactService.findFirst({
+        where: { id: contactServiceId, tenantId },
+        select: { id: true },
+      })
+      if (!enrollment) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const authorSearch = {
+        is: {
+          OR: [
+            { name: { contains: query.q, mode: "insensitive" as const } },
+            { email: { contains: query.q, mode: "insensitive" as const } },
+          ],
+        },
+      }
+      const searchWhere = query.q
+        ? {
+            OR: [
+              { title: { contains: query.q, mode: "insensitive" as const } },
+              { body: { contains: query.q, mode: "insensitive" as const } },
+              { createdBy: authorSearch },
+            ],
+          }
+        : {}
+      const serviceWhere = { tenantId, contactServiceId, ...searchWhere }
+      const contactWhere = { tenantId, contactServiceId, ...searchWhere }
+
+      const [serviceTotal, contactTotal] = await Promise.all([
+        prismaWithServices.contactServiceNote.count({ where: serviceWhere }),
+        prismaWithServices.contactNote.count({ where: contactWhere }),
+      ])
+      const page = getContactServiceNotesPage(
+        query.page,
+        query.pageSize,
+        serviceTotal + contactTotal,
+      )
+      const orderBy = getServiceNoteOrderBy(query.sort)
+      const noteSelect = {
+        id: true,
+        title: true,
+        body: true,
+        createdAt: true,
+        updatedAt: true,
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            image: true,
+          },
+        },
+        attachments: {
+          orderBy: { createdAt: "asc" as const },
+          select: {
+            id: true,
+            file: {
+              select: {
+                id: true,
+                key: true,
+                contentType: true,
+                size: true,
+              },
+            },
+          },
+        },
+      }
+
+      const [serviceNotes, contactNotes] = await Promise.all([
+        prismaWithServices.contactServiceNote.findMany({
+          where: serviceWhere,
+          select: noteSelect,
+          orderBy,
+          take: page.candidateTake,
+        }),
+        prismaWithServices.contactNote.findMany({
+          where: contactWhere,
+          select: {
+            ...noteSelect,
+            followUpTemplate: { select: { name: true } },
+            contactServiceFollowUpStep: { select: { title: true } },
+          },
+          orderBy,
+          take: page.candidateTake,
+        }),
+      ])
+
+      const items = [
+        ...serviceNotes.map((note: any) =>
+          serializePaginatedServiceNote(note, "SERVICE_NOTE"),
+        ),
+        ...contactNotes.map((note: any) =>
+          serializePaginatedServiceNote(
+            note,
+            resolveContactServiceNoteKind({
+              isServiceNote: false,
+              hasFollowUpTemplate: Boolean(note.followUpTemplate),
+              hasFollowUpStep: Boolean(note.contactServiceFollowUpStep),
+            }),
+          ),
+        ),
+      ]
+        .sort((left, right) => compareContactServiceNotes(left, right, query.sort))
+        .slice(page.offset, page.offset + page.pageSize)
+
+      return res.json({
+        ok: true,
+        items,
+        pagination: {
+          page: page.page,
+          pageSize: page.pageSize,
+          total: page.total,
+          totalPages: page.totalPages,
         },
       })
     } catch (error) {

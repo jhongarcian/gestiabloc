@@ -8,7 +8,9 @@ import {
   CircleDollarSign,
   Check,
   CheckCircle2,
+  ChevronLeft,
   ChevronDown,
+  ChevronRight,
   Clock3,
   CreditCard,
   Ellipsis,
@@ -21,6 +23,7 @@ import {
   Paperclip,
   Play,
   RotateCcw,
+  Search,
   SendHorizontal,
   Trash2,
   Upload,
@@ -88,6 +91,15 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   Tooltip,
@@ -138,6 +150,36 @@ type NoteAttachment = {
 type PendingUpload = {
   id: string
   file: File
+}
+
+type ServiceNoteKind = "SERVICE_NOTE" | "FOLLOW_UP_NOTE" | "LINKED_CONTACT_NOTE"
+type ServiceNoteSort = "updated_desc" | "created_desc" | "updated_asc"
+type ServiceNoteItem = {
+  id: string
+  kind: ServiceNoteKind
+  title: string
+  body: string
+  createdAt: string
+  updatedAt: string
+  author?: {
+    id: string
+    name: string
+    email?: string | null
+    image?: string | null
+  } | null
+  followUpTemplateName?: string | null
+  followUpStepTitle?: string | null
+  attachments: NoteAttachment[]
+}
+type ServiceNotesResponse = {
+  ok: boolean
+  items: ServiceNoteItem[]
+  pagination: {
+    page: number
+    pageSize: 10 | 25 | 50
+    total: number
+    totalPages: number
+  }
 }
 
 type ServiceProfessional = {
@@ -272,20 +314,15 @@ type ContactServiceDetails = {
       name: string
     } | null
   }>
-  serviceNotes: Array<{
+  noteActivityItems: Array<{
     id: string
     title: string
-    body: string
     createdAt: string
-    kind: "SERVICE_NOTE" | "FOLLOW_UP_NOTE" | "LINKED_CONTACT_NOTE"
-    followUpTemplateName?: string | null
-    followUpStepTitle?: string | null
     createdBy?: {
       id: string
-      name: string
+      name: string | null
       image?: string | null
     } | null
-    attachments: NoteAttachment[]
   }>
   executionLogs: Array<{
     id: string
@@ -325,7 +362,7 @@ type ContactServiceDetails = {
 
 type ContactServiceOverview = Omit<
   ContactServiceDetails,
-  "payments" | "serviceNotes" | "executionLogs" | "checklistActivityLogs"
+  "payments" | "noteActivityItems" | "executionLogs" | "checklistActivityLogs"
 > & {
   paymentSummary?: {
     latestPaidAt: string | null
@@ -541,8 +578,8 @@ const INSTALLMENT_FREQUENCY_LABELS = {
 } as const
 
 const PAYMENTS_PAGE_SIZE = 5
-const NOTES_PAGE_SIZE = 5
 const FOLLOW_UP_PAGE_SIZE = 5
+const SERVICE_NOTE_PAGE_SIZES = [10, 25, 50] as const
 const SERVICE_SECTIONS: Array<{ value: ServiceEnrollmentView; label: string }> = [
   { value: "overview", label: "Overview" },
   { value: "payments", label: "Payments" },
@@ -553,6 +590,20 @@ const formatPaymentMethod = (value: string | null | undefined) => {
   if (!value) return null
 
   return PAYMENT_METHOD_OPTIONS.find((option) => option.value === value)?.label ?? value
+}
+
+const getServiceNoteSourceLabel = (note: ServiceNoteItem) => {
+  if (note.kind === "SERVICE_NOTE") return "Service note"
+  if (note.kind === "FOLLOW_UP_NOTE") {
+    return note.followUpStepTitle ? `Follow-up · ${note.followUpStepTitle}` : "Follow-up note"
+  }
+  return "Linked contact note"
+}
+
+const getVisiblePageNumbers = (page: number, totalPages: number) => {
+  const count = Math.min(5, totalPages)
+  const start = Math.min(Math.max(1, page - 2), Math.max(1, totalPages - count + 1))
+  return Array.from({ length: count }, (_, index) => start + index)
 }
 
 const IN_PROGRESS_STATUS_OPTION: ServiceStatusOption = {
@@ -947,10 +998,7 @@ const normalizeContactServiceDetails = (details: ContactServiceDetails): Contact
   service: { ...details.service, professionals: details.service.professionals ?? [] },
   followUpSteps: details.followUpSteps ?? [],
   payments: details.payments ?? [],
-  serviceNotes: (details.serviceNotes ?? []).map((note) => ({
-    ...note,
-    attachments: note.attachments ?? [],
-  })),
+  noteActivityItems: details.noteActivityItems ?? [],
   executionLogs: details.executionLogs ?? [],
   checklistActivityLogs: details.checklistActivityLogs ?? [],
   checklistItems: (details.checklistItems ?? []).map((checklistItem) => ({
@@ -1034,14 +1082,33 @@ export function ContactServiceDetailsPanel({
   const [editPaymentNote, setEditPaymentNote] = useState("")
   const [serviceNoteTitle, setServiceNoteTitle] = useState("")
   const [serviceNoteBody, setServiceNoteBody] = useState("")
+  const [serviceNoteFieldErrors, setServiceNoteFieldErrors] = useState<{
+    title?: string
+    body?: string
+  }>({})
   const [pendingServiceNoteUploads, setPendingServiceNoteUploads] = useState<PendingUpload[]>([])
   const [serviceNoteAttachmentError, setServiceNoteAttachmentError] = useState<string | null>(null)
   const [downloadingServiceNoteKey, setDownloadingServiceNoteKey] = useState<string | null>(null)
+  const [isCreateNoteDialogOpen, setIsCreateNoteDialogOpen] = useState(false)
+  const [selectedServiceNote, setSelectedServiceNote] = useState<ServiceNoteItem | null>(null)
+  const [serviceNoteItems, setServiceNoteItems] = useState<ServiceNoteItem[]>([])
+  const [serviceNotePagination, setServiceNotePagination] = useState<
+    ServiceNotesResponse["pagination"]
+  >({ page: 1, pageSize: 10, total: 0, totalPages: 1 })
+  const [serviceNotePage, setServiceNotePage] = useState(1)
+  const [serviceNotePageSize, setServiceNotePageSize] = useState<10 | 25 | 50>(10)
+  const [serviceNoteSearch, setServiceNoteSearch] = useState("")
+  const [debouncedServiceNoteSearch, setDebouncedServiceNoteSearch] = useState("")
+  const [serviceNoteSort, setServiceNoteSort] = useState<ServiceNoteSort>("updated_desc")
+  const [isServiceNotesLoading, setIsServiceNotesLoading] = useState(false)
+  const [serviceNotesError, setServiceNotesError] = useState<string | null>(null)
+  const [serviceNoteUploadProgress, setServiceNoteUploadProgress] = useState<{
+    completed: number
+    total: number
+  } | null>(null)
   const [paymentPage, setPaymentPage] = useState(1)
-  const [notesPage, setNotesPage] = useState(1)
   const [followUpFilter, setFollowUpFilter] = useState<FollowUpFilter>("ALL")
   const [followUpPage, setFollowUpPage] = useState(1)
-  const [expandedNoteIds, setExpandedNoteIds] = useState<Set<string>>(() => new Set())
   const [expandedStepId, setExpandedStepId] = useState<string | null>(null)
   const [expandedStepPanelMode, setExpandedStepPanelMode] =
     useState<FollowUpStepPanelMode | null>(null)
@@ -1115,6 +1182,43 @@ export function ContactServiceDetailsPanel({
     }
   }, [encodedContactServiceId, encodedTenantId])
 
+  const loadServiceNotes = useCallback(
+    async (pageOverride?: number) => {
+      setIsServiceNotesLoading(true)
+      setServiceNotesError(null)
+      try {
+        const { data } = await api.get<ServiceNotesResponse>(
+          `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/notes`,
+          {
+            params: {
+              page: pageOverride ?? serviceNotePage,
+              pageSize: serviceNotePageSize,
+              q: debouncedServiceNoteSearch || undefined,
+              sort: serviceNoteSort,
+            },
+          },
+        )
+        setServiceNoteItems(data.items ?? [])
+        setServiceNotePagination(data.pagination)
+        if (data.pagination.page !== serviceNotePage) {
+          setServiceNotePage(data.pagination.page)
+        }
+      } catch {
+        setServiceNotesError("We could not load the service notes. Please try again.")
+      } finally {
+        setIsServiceNotesLoading(false)
+      }
+    },
+    [
+      debouncedServiceNoteSearch,
+      encodedContactServiceId,
+      encodedTenantId,
+      serviceNotePage,
+      serviceNotePageSize,
+      serviceNoteSort,
+    ],
+  )
+
   const loadFollowUpAssignees = useCallback(async () => {
     setIsLoadingAssignees(true)
     try {
@@ -1136,14 +1240,20 @@ export function ContactServiceDetailsPanel({
     setItem(null)
     setIsDetailLoadError(false)
     setPaymentPage(1)
-    setNotesPage(1)
+    setServiceNoteItems([])
+    setServiceNotePagination({ page: 1, pageSize: 10, total: 0, totalPages: 1 })
+    setServiceNotePage(1)
+    setServiceNotePageSize(10)
+    setServiceNoteSearch("")
+    setDebouncedServiceNoteSearch("")
+    setServiceNoteSort("updated_desc")
+    setServiceNotesError(null)
     setFollowUpFilter("ALL")
     setFollowUpPage(1)
     setExpandedStepId(null)
     setExpandedStepPanelMode(null)
     setStepAssignedToUserId(FOLLOW_UP_UNASSIGNED_VALUE)
     setStepAssigneeError(null)
-    setExpandedNoteIds(new Set())
     setProfessionalOpen(false)
   }, [encodedContactServiceId])
 
@@ -1160,6 +1270,20 @@ export function ContactServiceDetailsPanel({
   useEffect(() => {
     void loadFollowUpAssignees()
   }, [loadFollowUpAssignees])
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedServiceNoteSearch(serviceNoteSearch.trim())
+      setServiceNotePage(1)
+    }, 350)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [serviceNoteSearch])
+
+  useEffect(() => {
+    if (activeView !== "notes") return
+    void loadServiceNotes()
+  }, [activeView, loadServiceNotes])
 
   const resetPaymentForm = () => {
     setPaymentEntryMode("FULL")
@@ -1179,8 +1303,10 @@ export function ContactServiceDetailsPanel({
   const resetNoteForm = () => {
     setServiceNoteTitle("")
     setServiceNoteBody("")
+    setServiceNoteFieldErrors({})
     setPendingServiceNoteUploads([])
     setServiceNoteAttachmentError(null)
+    setServiceNoteUploadProgress(null)
     if (serviceNoteFileInputRef.current) {
       serviceNoteFileInputRef.current.value = ""
     }
@@ -1456,11 +1582,22 @@ export function ContactServiceDetailsPanel({
   }
 
   const onAddServiceNote = async () => {
-    if (!item) return
     const trimmedTitle = serviceNoteTitle.trim()
     const trimmedBody = serviceNoteBody.trim()
-    if (!trimmedTitle || !trimmedBody) {
-      toast.error("Enter a title and note before sending.")
+    const fieldErrors = {
+      ...(!trimmedTitle
+        ? { title: "Enter a note title." }
+        : trimmedTitle.length > 160
+          ? { title: "Use 160 characters or fewer." }
+          : {}),
+      ...(!trimmedBody
+        ? { body: "Enter note details." }
+        : trimmedBody.length > 5000
+          ? { body: "Use 5,000 characters or fewer." }
+          : {}),
+    }
+    setServiceNoteFieldErrors(fieldErrors)
+    if (Object.keys(fieldErrors).length > 0) {
       return
     }
     if (pendingServiceNoteUploads.length > MAX_NOTE_ATTACHMENTS) {
@@ -1471,21 +1608,62 @@ export function ContactServiceDetailsPanel({
     }
 
     setIsNoteSaving(true)
+    setServiceNoteUploadProgress(
+      pendingServiceNoteUploads.length
+        ? { completed: 0, total: pendingServiceNoteUploads.length }
+        : null,
+    )
     try {
       const uploadedFiles = []
       for (const pendingUpload of pendingServiceNoteUploads) {
         uploadedFiles.push(await uploadAttachment(tenantId, pendingUpload.file))
+        setServiceNoteUploadProgress((current) =>
+          current ? { ...current, completed: current.completed + 1 } : null,
+        )
       }
 
-      await api.post(`/api/services/${encodedTenantId}/contact-services/${item.id}/notes`, {
-        title: trimmedTitle,
-        body: trimmedBody,
-        attachmentFileIds: uploadedFiles.map((attachment) => attachment.fileId),
-      })
+      const { data } = await api.post<{
+        ok: boolean
+        note: {
+          id: string
+          title: string
+          createdAt: string
+          createdBy?: { id: string; name: string | null; image?: string | null } | null
+        }
+      }>(
+        `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/notes`,
+        {
+          title: trimmedTitle,
+          body: trimmedBody,
+          attachmentFileIds: uploadedFiles.map((attachment) => attachment.fileId),
+        },
+      )
       toast.success("Service note added.")
+      setItem((current) =>
+        current
+          ? {
+              ...current,
+              noteActivityItems: [
+                {
+                  id: data.note.id,
+                  title: data.note.title,
+                  createdAt: data.note.createdAt,
+                  createdBy: data.note.createdBy
+                    ? {
+                        ...data.note.createdBy,
+                        name: data.note.createdBy.name?.trim() || "Unknown user",
+                      }
+                    : null,
+                },
+                ...current.noteActivityItems,
+              ],
+            }
+          : current,
+      )
+      setIsCreateNoteDialogOpen(false)
       resetNoteForm()
-      setNotesPage(1)
-      await refreshData(true)
+      setServiceNotePage(1)
+      await loadServiceNotes(1)
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
@@ -1506,6 +1684,7 @@ export function ContactServiceDetailsPanel({
       }
     } finally {
       setIsNoteSaving(false)
+      setServiceNoteUploadProgress(null)
     }
   }
 
@@ -1620,16 +1799,6 @@ export function ContactServiceDetailsPanel({
     },
     [payments, safePaymentPage],
   )
-  const serviceNotes = useMemo(() => item?.serviceNotes ?? [], [item?.serviceNotes])
-  const notesPageCount = Math.max(1, Math.ceil(serviceNotes.length / NOTES_PAGE_SIZE))
-  const safeNotesPage = Math.min(notesPage, notesPageCount)
-  const visibleServiceNotes = useMemo(
-    () => {
-      const startIndex = (safeNotesPage - 1) * NOTES_PAGE_SIZE
-      return serviceNotes.slice(startIndex, startIndex + NOTES_PAGE_SIZE)
-    },
-    [safeNotesPage, serviceNotes],
-  )
   const checklistItems = useMemo(
     () => item?.checklistItems ?? overview?.checklistItems ?? [],
     [item?.checklistItems, overview?.checklistItems],
@@ -1713,10 +1882,6 @@ export function ContactServiceDetailsPanel({
   useEffect(() => {
     setPaymentPage((current) => Math.min(current, paymentPageCount))
   }, [paymentPageCount])
-
-  useEffect(() => {
-    setNotesPage((current) => Math.min(current, notesPageCount))
-  }, [notesPageCount])
 
   useEffect(() => {
     setFollowUpPage(1)
@@ -2435,7 +2600,7 @@ export function ContactServiceDetailsPanel({
       })
     })
 
-    serviceNotes.forEach((note) => {
+    item.noteActivityItems.forEach((note) => {
       entries.push({
         id: `note-${note.id}`,
         createdAt: note.createdAt,
@@ -2470,7 +2635,7 @@ export function ContactServiceDetailsPanel({
     return entries.sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     )
-  }, [item, payments, serviceNotes])
+  }, [item, payments])
   if (isLoading) {
     return (
       <section className="rounded-[26px] border border-slate-200 bg-white p-5 text-sm text-slate-500">
@@ -4153,346 +4318,327 @@ export function ContactServiceDetailsPanel({
         ) : null}
 
         {activeView === "notes" ? (
-        <section aria-labelledby="service-notes-title">
-          {!item ? (
-            <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-10 text-center">
-              <h2 id="service-notes-title" className="text-base font-semibold text-slate-950">
-                Notes workspace
-              </h2>
-              <p className="mt-2 text-sm font-medium text-slate-700">
-                {isDetailLoading || !isDetailLoadError
-                  ? "Loading service notes..."
-                  : "We could not load the service notes."}
-              </p>
-              {isDetailLoadError ? (
+          <section aria-labelledby="service-notes-title" className="overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-sm">
+            <div className="flex flex-col gap-4 border-b border-slate-200 px-4 py-4 sm:px-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Service notes</p>
+                  <h2 id="service-notes-title" className="mt-1 text-lg font-semibold text-slate-950">Notes</h2>
+                  <p className="mt-1 text-sm text-slate-600">Review service, follow-up, and linked contact notes.</p>
+                </div>
                 <Button
                   type="button"
-                  variant="outline"
-                  className="mt-4 cursor-pointer rounded-full border-slate-200 bg-white"
-                  onClick={() => void ensureDetailLoaded()}
+                  size="sm"
+                  className="h-9 cursor-pointer rounded-full bg-blue-950 px-4 text-white shadow-sm hover:bg-blue-900"
+                  onClick={() => setIsCreateNoteDialogOpen(true)}
                 >
-                  Retry
+                  <NotebookPen className="size-4" />
+                  Add note
                 </Button>
-              ) : null}
+              </div>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="relative w-full lg:max-w-md">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                  <Input
+                    value={serviceNoteSearch}
+                    onChange={(event) => setServiceNoteSearch(event.target.value.slice(0, 160))}
+                    placeholder="Search title, details, or author"
+                    aria-label="Search service notes"
+                    className="h-10 rounded-full border-slate-200 bg-white pl-9 pr-4 shadow-none"
+                  />
+                </div>
+                <Select
+                  value={serviceNoteSort}
+                  onValueChange={(value) => {
+                    setServiceNoteSort(value as ServiceNoteSort)
+                    setServiceNotePage(1)
+                  }}
+                >
+                  <SelectTrigger className="h-10 w-full cursor-pointer rounded-full border-slate-200 bg-white px-4 shadow-none lg:w-[190px]" aria-label="Sort service notes">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="updated_desc" className="cursor-pointer">Recently updated</SelectItem>
+                      <SelectItem value="created_desc" className="cursor-pointer">Newest created</SelectItem>
+                      <SelectItem value="updated_asc" className="cursor-pointer">Oldest updated</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-          ) : (
-            <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-              <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase text-slate-500">Service notes</p>
-                  <h2 id="service-notes-title" className="mt-1 text-lg font-semibold text-slate-950">
-                    Notes workspace
-                  </h2>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Review all notes tied to this purchased service, including follow-up step notes.
-                  </p>
-                </div>
-                <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
-                  {serviceNotes.length} note{serviceNotes.length === 1 ? "" : "s"}
-                </div>
-              </div>
-              <div className="grid items-start gap-5 xl:grid-cols-[minmax(320px,0.8fr)_minmax(0,1.2fr)]">
-              <div className="order-2 min-w-0">
-              {serviceNotes.length ? (
-                <div className="overflow-hidden rounded-[20px] border border-slate-200 bg-white">
-                  <div className="border-b border-slate-200 bg-slate-50/70 px-4 py-2.5 text-xs text-slate-500">
-                    Showing {(safeNotesPage - 1) * NOTES_PAGE_SIZE + 1}–{Math.min(safeNotesPage * NOTES_PAGE_SIZE, serviceNotes.length)} of {serviceNotes.length} notes
-                  </div>
-                  <div className="divide-y divide-slate-200">
-                  {visibleServiceNotes.map((note) => {
-                    const isExpanded = expandedNoteIds.has(note.id)
-                    const canExpand = note.body.length > 220 || note.body.split("\n").length > 3
 
-                    return (
-                    <article key={note.id} className="px-4 py-4">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="flex min-w-0 items-start gap-3">
-                          <Avatar className="size-9 shrink-0">
-                            <AvatarImage
-                              src={note.createdBy?.image ?? undefined}
-                              alt={note.createdBy?.name ?? "Service note author"}
-                            />
-                            <AvatarFallback className="bg-blue-950 text-xs font-semibold text-white">
-                              {getInitials(note.createdBy?.name)}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div className="min-w-0">
-                            <h3 className="text-sm font-semibold text-slate-950">{note.title}</h3>
-                            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                              <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2 py-1">
-                                {note.createdBy?.name ? `Added by ${note.createdBy.name}` : "Added to this service"}
-                              </span>
-                              <span
-                                className={cn(
-                                  "inline-flex items-center gap-1.5 rounded-full px-2 py-1",
-                                  note.kind === "SERVICE_NOTE"
-                                    ? "bg-sky-50 text-sky-700"
-                                    : note.kind === "FOLLOW_UP_NOTE"
-                                      ? "bg-violet-50 text-violet-700"
-                                      : "bg-slate-100 text-slate-700",
-                                )}
-                              >
-                                {note.kind === "SERVICE_NOTE"
-                                  ? "Service note"
-                                  : note.kind === "FOLLOW_UP_NOTE"
-                                    ? "Follow-up note"
-                                    : "Linked contact note"}
-                              </span>
-                              {note.followUpTemplateName ? (
-                                <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-50 px-2 py-1 text-violet-700">
-                                  Template: {note.followUpTemplateName}
-                                </span>
-                              ) : null}
-                              {note.followUpStepTitle ? (
-                                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2 py-1 text-amber-700">
-                                  Step: {note.followUpStepTitle}
-                                </span>
-                              ) : null}
-                              <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2 py-1">
-                                {formatDateTime(note.createdAt)}
-                              </span>
+            <div className="min-h-[560px] overflow-x-auto px-3 py-3 sm:px-4">
+              <Table className="min-w-[1120px] table-fixed border-separate border-spacing-0">
+                <TableHeader>
+                  <TableRow className="border-0 hover:bg-transparent">
+                    <TableHead className="h-11 w-[190px] rounded-l-xl bg-slate-100 px-4 text-xs font-semibold text-slate-600">Title</TableHead>
+                    <TableHead className="h-11 w-[320px] bg-slate-100 px-4 text-xs font-semibold text-slate-600">Note details</TableHead>
+                    <TableHead className="h-11 w-[185px] bg-slate-100 px-4 text-xs font-semibold text-slate-600">Source</TableHead>
+                    <TableHead className="h-11 w-[165px] bg-slate-100 px-4 text-xs font-semibold text-slate-600">Author</TableHead>
+                    <TableHead className="h-11 w-[150px] bg-slate-100 px-4 text-xs font-semibold text-slate-600">Created</TableHead>
+                    <TableHead className="h-11 w-[180px] rounded-r-xl bg-slate-100 px-4 text-xs font-semibold text-slate-600">Attachments</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {isServiceNotesLoading ? Array.from({ length: serviceNotePageSize }, (_, index) => (
+                    <TableRow key={`note-loading-${index}`} className="h-14 border-b border-slate-100 hover:bg-transparent">
+                      {Array.from({ length: 6 }, (__, cellIndex) => (
+                        <TableCell key={cellIndex} className="px-4"><Skeleton className="h-4 w-full max-w-[160px]" /></TableCell>
+                      ))}
+                    </TableRow>
+                  )) : serviceNotesError ? (
+                    <TableRow className="h-[510px] hover:bg-transparent">
+                      <TableCell colSpan={6} className="text-center">
+                        <p className="text-sm font-medium text-slate-900">Could not load notes</p>
+                        <p className="mt-1 text-sm text-slate-500">{serviceNotesError}</p>
+                        <Button type="button" variant="outline" size="sm" className="mt-4 cursor-pointer rounded-full border-slate-200" onClick={() => void loadServiceNotes()}>
+                          Retry
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ) : serviceNoteItems.length === 0 ? (
+                    <TableRow className="h-[510px] hover:bg-transparent">
+                      <TableCell colSpan={6} className="text-center">
+                        <p className="text-sm font-medium text-slate-900">{debouncedServiceNoteSearch ? "No matching notes" : "No notes yet"}</p>
+                        <p className="mt-1 text-sm text-slate-500">
+                          {debouncedServiceNoteSearch ? "Try a different search term." : "Create the first note for this service."}
+                        </p>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    <>
+                      {serviceNoteItems.map((note) => (
+                        <TableRow
+                          key={`${note.kind}-${note.id}`}
+                          tabIndex={0}
+                          role="button"
+                          aria-label={`Open note: ${note.title}`}
+                          className="h-14 cursor-pointer border-b border-slate-100 outline-none hover:bg-slate-50 focus-visible:bg-blue-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-700"
+                          onClick={() => setSelectedServiceNote(note)}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return
+                            event.preventDefault()
+                            setSelectedServiceNote(note)
+                          }}
+                        >
+                          <TableCell className="px-4"><p className="truncate text-sm font-medium text-slate-950" title={note.title}>{note.title}</p></TableCell>
+                          <TableCell className="px-4"><p className="truncate text-sm text-slate-600" title={note.body}>{note.body}</p></TableCell>
+                          <TableCell className="px-4"><p className="truncate text-sm text-slate-600" title={getServiceNoteSourceLabel(note)}>{getServiceNoteSourceLabel(note)}</p></TableCell>
+                          <TableCell className="px-4">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <Avatar className="size-7 shrink-0"><AvatarImage src={note.author?.image ?? undefined} alt="" /><AvatarFallback className="bg-slate-100 text-[10px] font-semibold text-slate-700">{getInitials(note.author?.name)}</AvatarFallback></Avatar>
+                              <span className="truncate text-sm text-slate-700" title={note.author?.name ?? "Unknown user"}>{note.author?.name ?? "Unknown user"}</span>
                             </div>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="mt-2.5 pl-12">
-                        <p className={cn("whitespace-pre-wrap text-sm leading-6 text-slate-700", !isExpanded && "line-clamp-3")}>
-                          {note.body}
-                        </p>
-                        {canExpand ? (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="mt-1 h-7 cursor-pointer rounded-full px-2 text-xs text-blue-700"
-                            aria-expanded={isExpanded}
-                            onClick={() =>
-                              setExpandedNoteIds((current) => {
-                                const next = new Set(current)
-                                if (next.has(note.id)) next.delete(note.id)
-                                else next.add(note.id)
-                                return next
-                              })
-                            }
-                          >
-                            {isExpanded ? "Show less" : "Show more"}
-                          </Button>
-                        ) : null}
-                      </div>
-                      {note.attachments.length > 0 ? (
-                        <div className="mt-3 flex flex-wrap gap-2 border-t border-dashed border-slate-200 pt-3 pl-12">
-                          {note.attachments.map((attachment) => {
-                            const AttachmentIcon = attachmentIcon(attachment.contentType)
-                            const tone = attachmentTone(attachment.contentType)
-
-                            return (
-                              <button
-                                key={attachment.id}
-                                type="button"
-                                onClick={() => void handleOpenServiceNoteAttachment(attachment)}
-                                disabled={downloadingServiceNoteKey === attachment.key}
-                                className={`inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-60 ${tone.chip}`}
-                              >
-                                {downloadingServiceNoteKey === attachment.key ? (
-                                  <Loader2 className="h-3 w-3 animate-spin text-slate-500" />
-                                ) : (
-                                  <AttachmentIcon className={`h-3 w-3 ${tone.icon}`} />
-                                )}
-                                <span className="truncate">{attachment.fileName}</span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      ) : null}
-                    </article>
-                    )
-                  })}
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                  No service notes have been added yet.
-                </div>
-              )}
-              {notesPageCount > 1 ? (
-                <div className="mt-3 flex items-center justify-between gap-3">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700"
-                    disabled={safeNotesPage <= 1}
-                    onClick={() => setNotesPage((current) => Math.max(1, current - 1))}
-                  >
-                    Previous
-                  </Button>
-                  <span className="text-xs font-medium text-slate-500 tabular-nums">
-                    Page {safeNotesPage} of {notesPageCount}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700"
-                    disabled={safeNotesPage >= notesPageCount}
-                    onClick={() => setNotesPage((current) => Math.min(notesPageCount, current + 1))}
-                  >
-                    Next
-                  </Button>
-                </div>
-              ) : null}
-              </div>
-              <form
-                className="order-1 rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] px-4 py-4 shadow-sm xl:sticky xl:top-[calc(var(--tenant-shell-header-height)+7.5rem)]"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  void onAddServiceNote()
-                }}
-              >
-                <div className="space-y-4">
-                  <div>
-                    <p className="text-xs font-semibold uppercase text-slate-500">
-                      New Service Note
-                    </p>
-                    <p className="mt-1 text-sm text-slate-600">
-                      Capture the service context and attach supporting files in one place.
-                    </p>
-                  </div>
-                  <div className="grid gap-3">
-                    <Input
-                      value={serviceNoteTitle}
-                      onChange={(event) => setServiceNoteTitle(event.target.value)}
-                      placeholder="Note title"
-                      disabled={isNoteSaving}
-                      className="h-11 rounded-[18px] border-slate-200 bg-white px-4 shadow-sm placeholder:text-slate-400 focus-visible:border-blue-200 focus-visible:ring-2 focus-visible:ring-blue-100"
-                    />
-                    <Textarea
-                      value={serviceNoteBody}
-                      onChange={(event) => setServiceNoteBody(event.target.value)}
-                      rows={4}
-                      placeholder="Add a service note..."
-                      disabled={isNoteSaving}
-                      className="min-h-[132px] resize-none rounded-[18px] border-slate-200 bg-white px-4 py-3 text-sm leading-6 shadow-sm placeholder:text-slate-400 focus-visible:border-blue-200 focus-visible:ring-2 focus-visible:ring-blue-100"
-                    />
-                  </div>
-
-                  <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50/80 px-4 py-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <p className="text-xs font-semibold uppercase text-slate-400">
-                          Attachments
-                        </p>
-                        <p className="mt-1 text-sm text-slate-600">
-                          Supported files: PNG, JPG, WEBP, and PDF.
-                        </p>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => serviceNoteFileInputRef.current?.click()}
-                        disabled={isNoteSaving}
-                        className="cursor-pointer border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                      >
-                        <Upload className="h-4 w-4" />
-                        Add files
-                      </Button>
-                    </div>
-
-                    <input
-                      ref={serviceNoteFileInputRef}
-                      type="file"
-                      accept=".png,.jpg,.jpeg,.webp,.pdf,image/png,image/jpeg,image/webp,application/pdf"
-                      multiple
-                      className="hidden"
-                      onChange={handleSelectServiceNoteFiles}
-                      disabled={isNoteSaving}
-                    />
-
-                    {serviceNoteAttachmentError ? (
-                      <p className="mt-3 text-sm text-rose-600">{serviceNoteAttachmentError}</p>
-                    ) : null}
-
-                    <div className="mt-4 space-y-3">
-                      {pendingServiceNoteUploads.map((attachment) => {
-                        const contentType = inferContentType(attachment.file)
-                        const AttachmentIcon = attachmentIcon(contentType)
-                        const tone = attachmentTone(contentType)
-
-                        return (
-                          <div
-                            key={attachment.id}
-                            className={`flex items-center justify-between gap-3 rounded-xl border border-dashed px-3 py-3 ${tone.panel}`}
-                          >
-                            <div className="min-w-0 flex items-center gap-3">
-                              <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/90">
-                                <AttachmentIcon className={`h-4 w-4 ${tone.icon}`} />
-                              </span>
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-medium text-slate-900">
-                                  {attachment.file.name}
-                                </p>
-                                <p className="text-xs text-slate-500">
-                                  Will upload when you save this note
-                                </p>
+                          </TableCell>
+                          <TableCell className="px-4 text-sm text-slate-600">{formatDateTime(note.createdAt)}</TableCell>
+                          <TableCell className="px-4">
+                            {note.attachments.length ? (
+                              <div className="flex items-center gap-1.5">
+                                {note.attachments.slice(0, 2).map((attachment) => {
+                                  const AttachmentIcon = attachmentIcon(attachment.contentType)
+                                  return (
+                                    <button
+                                      key={attachment.id}
+                                      type="button"
+                                      className="inline-flex size-8 cursor-pointer items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                      aria-label={`Open ${attachment.fileName}`}
+                                      title={attachment.fileName}
+                                      disabled={downloadingServiceNoteKey === attachment.key}
+                                      onClick={(event) => { event.stopPropagation(); void handleOpenServiceNoteAttachment(attachment) }}
+                                      onKeyDown={(event) => event.stopPropagation()}
+                                    >
+                                      {downloadingServiceNoteKey === attachment.key ? <Loader2 className="size-3.5 animate-spin" /> : <AttachmentIcon className="size-3.5" />}
+                                    </button>
+                                  )
+                                })}
+                                {note.attachments.length > 2 ? (
+                                  <button
+                                    type="button"
+                                    className="cursor-pointer text-xs font-medium text-slate-600 hover:text-slate-950"
+                                    onClick={(event) => { event.stopPropagation(); setSelectedServiceNote(note) }}
+                                    onKeyDown={(event) => event.stopPropagation()}
+                                    aria-label={`View all ${note.attachments.length} attachments for ${note.title}`}
+                                  >
+                                    +{note.attachments.length - 2}
+                                  </button>
+                                ) : null}
                               </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setPendingServiceNoteUploads((current) =>
-                                  current.filter((item) => item.id !== attachment.id),
-                                )
-                              }
-                              disabled={isNoteSaving}
-                              className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full text-slate-400 transition hover:bg-white hover:text-rose-600"
-                              aria-label={`Remove ${attachment.file.name}`}
-                            >
-                              <X className="h-4 w-4" />
-                            </button>
-                          </div>
-                        )
-                      })}
+                            ) : <span className="text-sm text-slate-400">None</span>}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {Array.from({ length: Math.max(0, serviceNotePageSize - serviceNoteItems.length) }, (_, index) => (
+                        <TableRow key={`note-placeholder-${index}`} aria-hidden="true" className="h-14 border-b border-slate-100 hover:bg-transparent"><TableCell colSpan={6} /></TableRow>
+                      ))}
+                    </>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
 
-                      {pendingServiceNoteUploads.length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center">
-                          <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-                            <Paperclip className="h-4 w-4" />
-                          </span>
-                          <p className="mt-3 text-sm font-medium text-slate-700">
-                            No files selected yet
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            Attach supporting documents or screenshots to this service note.
-                          </p>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div className="flex justify-end">
-                    <Button
-                      type="submit"
-                      disabled={isNoteSaving || !serviceNoteTitle.trim() || !serviceNoteBody.trim()}
-                      className="cursor-pointer rounded-full bg-blue-950 text-white shadow-sm hover:bg-blue-900"
-                    >
-                      {isNoteSaving ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <SendHorizontal className="h-3.5 w-3.5" />
-                      )}
-                      Add service note
-                    </Button>
-                  </div>
-                </div>
-              </form>
+            <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                <span>Rows per page</span>
+                <Select value={String(serviceNotePageSize)} onValueChange={(value) => { setServiceNotePageSize(Number(value) as 10 | 25 | 50); setServiceNotePage(1) }}>
+                  <SelectTrigger className="h-8 w-[72px] cursor-pointer rounded-full border-slate-200 bg-white text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectGroup>{SERVICE_NOTE_PAGE_SIZES.map((size) => <SelectItem key={size} value={String(size)} className="cursor-pointer">{size}</SelectItem>)}</SelectGroup></SelectContent>
+                </Select>
+                <span className="tabular-nums">{serviceNotePagination.total} total</span>
               </div>
-            </section>
-          )}
-        </section>
+              <nav aria-label="Service notes pagination" className="flex items-center gap-1">
+                <Button type="button" variant="outline" size="icon-sm" className="cursor-pointer rounded-full border-slate-200 bg-white" disabled={serviceNotePagination.page <= 1 || isServiceNotesLoading} onClick={() => setServiceNotePage((current) => Math.max(1, current - 1))} aria-label="Previous notes page"><ChevronLeft className="size-4" /></Button>
+                {getVisiblePageNumbers(serviceNotePagination.page, serviceNotePagination.totalPages).map((pageNumber) => (
+                  <Button key={pageNumber} type="button" variant={pageNumber === serviceNotePagination.page ? "default" : "outline"} size="icon-sm" className={cn("cursor-pointer rounded-full", pageNumber === serviceNotePagination.page ? "bg-blue-950 text-white hover:bg-blue-900" : "border-slate-200 bg-white")} disabled={isServiceNotesLoading} onClick={() => setServiceNotePage(pageNumber)} aria-label={`Go to notes page ${pageNumber}`} aria-current={pageNumber === serviceNotePagination.page ? "page" : undefined}>{pageNumber}</Button>
+                ))}
+                <Button type="button" variant="outline" size="icon-sm" className="cursor-pointer rounded-full border-slate-200 bg-white" disabled={serviceNotePagination.page >= serviceNotePagination.totalPages || isServiceNotesLoading} onClick={() => setServiceNotePage((current) => Math.min(serviceNotePagination.totalPages, current + 1))} aria-label="Next notes page"><ChevronRight className="size-4" /></Button>
+              </nav>
+            </div>
+          </section>
         ) : null}
 
         </div>
         </div>
+
+      <Dialog
+        open={isCreateNoteDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && isNoteSaving) return
+          setIsCreateNoteDialogOpen(open)
+          if (!open) resetNoteForm()
+        }}
+      >
+        <DialogContent
+          className="grid max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 p-0 sm:max-w-3xl [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:p-2"
+          onEscapeKeyDown={(event) => { if (isNoteSaving) event.preventDefault() }}
+          onInteractOutside={(event) => { if (isNoteSaving) event.preventDefault() }}
+        >
+          <DialogHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 pr-14 text-left sm:px-7">
+            <div aria-hidden="true" className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]" />
+            <div className="relative">
+              <p className="text-xs font-semibold text-blue-700">Service activity</p>
+              <DialogTitle className="mt-1.5 text-xl font-semibold text-slate-950 sm:text-2xl">Create a note</DialogTitle>
+              <DialogDescription className="mt-1.5 max-w-xl text-sm leading-6 text-slate-600">
+                Add context to {serviceData.service.name}. The note will also appear in the linked contact history.
+              </DialogDescription>
+            </div>
+          </DialogHeader>
+
+          <form id="create-service-note-form" className="contents" onSubmit={(event) => { event.preventDefault(); void onAddServiceNote() }}>
+            <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+              <FieldGroup>
+                <Field data-invalid={Boolean(serviceNoteFieldErrors.title)}>
+                  <div className="flex items-center justify-between gap-3">
+                    <FieldLabel htmlFor="service-note-title">Title <span className="text-rose-600" aria-hidden="true">*</span></FieldLabel>
+                    <span className="text-xs text-slate-400 tabular-nums">{serviceNoteTitle.length}/160</span>
+                  </div>
+                  <Input
+                    id="service-note-title"
+                    value={serviceNoteTitle}
+                    maxLength={160}
+                    disabled={isNoteSaving}
+                    aria-invalid={Boolean(serviceNoteFieldErrors.title)}
+                    onChange={(event) => { setServiceNoteTitle(event.target.value); setServiceNoteFieldErrors((current) => ({ ...current, title: undefined })) }}
+                    placeholder="Give this note a clear title"
+                    className="h-11 rounded-xl border-slate-200"
+                  />
+                  {serviceNoteFieldErrors.title ? <FieldError>{serviceNoteFieldErrors.title}</FieldError> : null}
+                </Field>
+
+                <Field data-invalid={Boolean(serviceNoteFieldErrors.body)}>
+                  <div className="flex items-center justify-between gap-3">
+                    <FieldLabel htmlFor="service-note-body">Note details <span className="text-rose-600" aria-hidden="true">*</span></FieldLabel>
+                    <span className="text-xs text-slate-400 tabular-nums">{serviceNoteBody.length}/5,000</span>
+                  </div>
+                  <Textarea
+                    id="service-note-body"
+                    value={serviceNoteBody}
+                    maxLength={5000}
+                    rows={7}
+                    disabled={isNoteSaving}
+                    aria-invalid={Boolean(serviceNoteFieldErrors.body)}
+                    onChange={(event) => { setServiceNoteBody(event.target.value); setServiceNoteFieldErrors((current) => ({ ...current, body: undefined })) }}
+                    placeholder="Record the full service context"
+                    className="min-h-[168px] resize-y rounded-xl border-slate-200 text-sm leading-6"
+                  />
+                  {serviceNoteFieldErrors.body ? <FieldError>{serviceNoteFieldErrors.body}</FieldError> : null}
+                </Field>
+
+                <Field>
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <FieldLabel>Supporting files</FieldLabel>
+                        <FieldDescription>PNG, JPG, WEBP, or PDF. Up to ten files.</FieldDescription>
+                      </div>
+                      <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-slate-200 bg-white" disabled={isNoteSaving || pendingServiceNoteUploads.length >= MAX_NOTE_ATTACHMENTS} onClick={() => serviceNoteFileInputRef.current?.click()}>
+                        <Upload className="size-4" /> Add files
+                      </Button>
+                    </div>
+                    <input ref={serviceNoteFileInputRef} type="file" accept=".png,.jpg,.jpeg,.webp,.pdf,image/png,image/jpeg,image/webp,application/pdf" multiple className="hidden" onChange={handleSelectServiceNoteFiles} disabled={isNoteSaving} />
+                    {serviceNoteAttachmentError ? <p className="mt-3 text-sm text-rose-600">{serviceNoteAttachmentError}</p> : null}
+                    <div className="mt-4 space-y-2">
+                      {pendingServiceNoteUploads.length === 0 ? (
+                        <p className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-5 text-center text-sm text-slate-500">No files selected.</p>
+                      ) : pendingServiceNoteUploads.map((attachment, index) => {
+                        const AttachmentIcon = attachmentIcon(inferContentType(attachment.file))
+                        const isUploaded = Boolean(serviceNoteUploadProgress && index < serviceNoteUploadProgress.completed)
+                        return (
+                          <div key={attachment.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <AttachmentIcon className="size-4 shrink-0 text-slate-500" />
+                              <div className="min-w-0"><p className="truncate text-sm font-medium text-slate-800">{attachment.file.name}</p><p className="text-xs text-slate-500">{isUploaded ? "Uploaded" : isNoteSaving ? "Waiting to upload" : "Ready to upload"}</p></div>
+                            </div>
+                            <button type="button" className="inline-flex size-8 cursor-pointer items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50" disabled={isNoteSaving} aria-label={`Remove ${attachment.file.name}`} onClick={() => setPendingServiceNoteUploads((current) => current.filter((item) => item.id !== attachment.id))}><X className="size-4" /></button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {serviceNoteUploadProgress ? (
+                      <div className="mt-4" role="status" aria-live="polite">
+                        <div className="mb-1.5 flex justify-between text-xs text-slate-500"><span>Uploading files</span><span>{serviceNoteUploadProgress.completed} of {serviceNoteUploadProgress.total}</span></div>
+                        <Progress value={(serviceNoteUploadProgress.completed / serviceNoteUploadProgress.total) * 100} className="h-2" />
+                      </div>
+                    ) : null}
+                  </div>
+                </Field>
+              </FieldGroup>
+            </div>
+
+            <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
+              <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-slate-200 bg-white px-4" disabled={isNoteSaving} onClick={() => setIsCreateNoteDialogOpen(false)}>Cancel</Button>
+              <Button type="submit" size="sm" className="cursor-pointer rounded-full bg-blue-950 px-4 text-white hover:bg-blue-900" disabled={isNoteSaving}>
+                {isNoteSaving ? <Loader2 className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
+                {isNoteSaving ? "Saving note" : "Save note"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(selectedServiceNote)} onOpenChange={(open) => { if (!open) setSelectedServiceNote(null) }}>
+        <DialogContent className="grid max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 p-0 sm:max-w-3xl [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:p-2">
+          <DialogHeader className="border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 pr-14 text-left sm:px-7">
+            <p className="text-xs font-semibold text-blue-700">Service activity</p>
+            <DialogTitle className="mt-1.5 text-xl font-semibold text-slate-950 sm:text-2xl">{selectedServiceNote?.title}</DialogTitle>
+            <DialogDescription className="mt-1.5 text-sm leading-6 text-slate-600">Read-only note details and supporting files.</DialogDescription>
+          </DialogHeader>
+          {selectedServiceNote ? (
+            <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+              <dl className="grid gap-4 border-b border-slate-200 pb-5 text-sm sm:grid-cols-4">
+                <div><dt className="text-xs font-medium text-slate-500">Source</dt><dd className="mt-1 font-medium text-slate-900">{getServiceNoteSourceLabel(selectedServiceNote)}</dd></div>
+                <div><dt className="text-xs font-medium text-slate-500">Author</dt><dd className="mt-1 font-medium text-slate-900">{selectedServiceNote.author?.name ?? "Unknown user"}</dd></div>
+                <div><dt className="text-xs font-medium text-slate-500">Created</dt><dd className="mt-1 font-medium text-slate-900">{formatDateTime(selectedServiceNote.createdAt)}</dd></div>
+                <div><dt className="text-xs font-medium text-slate-500">Updated</dt><dd className="mt-1 font-medium text-slate-900">{formatDateTime(selectedServiceNote.updatedAt)}</dd></div>
+              </dl>
+              {selectedServiceNote.followUpTemplateName ? <p className="mt-4 text-sm text-slate-600"><span className="font-medium text-slate-900">Template:</span> {selectedServiceNote.followUpTemplateName}</p> : null}
+              <div className="mt-5"><h3 className="text-sm font-semibold text-slate-950">Note details</h3><p className="mt-2 whitespace-pre-wrap break-words text-sm leading-7 text-slate-700">{selectedServiceNote.body}</p></div>
+              <div className="mt-6 border-t border-slate-200 pt-5"><h3 className="text-sm font-semibold text-slate-950">Attachments</h3>{selectedServiceNote.attachments.length ? <div className="mt-3 flex flex-wrap gap-2">{selectedServiceNote.attachments.map((attachment) => { const AttachmentIcon = attachmentIcon(attachment.contentType); return <Button key={attachment.id} type="button" variant="outline" size="sm" className="max-w-full cursor-pointer rounded-full border-slate-200 bg-white" disabled={downloadingServiceNoteKey === attachment.key} onClick={() => void handleOpenServiceNoteAttachment(attachment)}>{downloadingServiceNoteKey === attachment.key ? <Loader2 className="size-3.5 animate-spin" /> : <AttachmentIcon className="size-3.5" />}<span className="truncate">{attachment.fileName}</span></Button> })}</div> : <p className="mt-2 text-sm text-slate-500">No attachments.</p>}</div>
+            </div>
+          ) : null}
+          <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:px-7"><Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-slate-200 bg-white px-4" onClick={() => setSelectedServiceNote(null)}>Close</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Sheet
         open={isChecklistSheetOpen}
