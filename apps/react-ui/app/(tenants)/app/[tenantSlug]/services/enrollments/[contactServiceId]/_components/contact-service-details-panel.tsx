@@ -12,6 +12,7 @@ import {
   ChevronDown,
   Clock3,
   CreditCard,
+  Download,
   Ellipsis,
   FileText,
   ImageIcon,
@@ -1071,6 +1072,10 @@ export function ContactServiceDetailsPanel({
   const [pendingServiceNoteUploads, setPendingServiceNoteUploads] = useState<PendingUpload[]>([])
   const [serviceNoteAttachmentError, setServiceNoteAttachmentError] = useState<string | null>(null)
   const [downloadingServiceNoteKey, setDownloadingServiceNoteKey] = useState<string | null>(null)
+  const [previewServiceNoteAttachment, setPreviewServiceNoteAttachment] =
+    useState<NoteAttachment | null>(null)
+  const [serviceNotePreviewUrl, setServiceNotePreviewUrl] = useState<string | null>(null)
+  const [serviceNotePreviewError, setServiceNotePreviewError] = useState<string | null>(null)
   const [isCreateNoteDialogOpen, setIsCreateNoteDialogOpen] = useState(false)
   const [selectedServiceNote, setSelectedServiceNote] = useState<ServiceNoteItem | null>(null)
   const [serviceNoteItems, setServiceNoteItems] = useState<ServiceNoteItem[]>([])
@@ -1230,6 +1235,10 @@ export function ContactServiceDetailsPanel({
     setDebouncedServiceNoteSearch("")
     setServiceNoteSort("updated_desc")
     setServiceNotesError(null)
+    setSelectedServiceNote(null)
+    setPreviewServiceNoteAttachment(null)
+    setServiceNotePreviewUrl(null)
+    setServiceNotePreviewError(null)
     setFollowUpFilter("ALL")
     setFollowUpPage(1)
     setExpandedStepId(null)
@@ -1547,17 +1556,20 @@ export function ContactServiceDetailsPanel({
     event.target.value = ""
   }
 
-  const handleOpenServiceNoteAttachment = async (attachment: NoteAttachment) => {
+  const handlePreviewServiceNoteAttachment = async (attachment: NoteAttachment) => {
     setDownloadingServiceNoteKey(attachment.key)
+    setPreviewServiceNoteAttachment(attachment)
+    setServiceNotePreviewUrl(null)
+    setServiceNotePreviewError(null)
     try {
       const { data } = await api.post<{ url: string }>("/api/files/presign-download", {
         tenantId,
         key: attachment.key,
       })
 
-      window.open(data.url, "_blank", "noopener,noreferrer")
+      setServiceNotePreviewUrl(data.url)
     } catch {
-      toast.error("Could not open this attachment.")
+      setServiceNotePreviewError("Could not load attachment preview.")
     } finally {
       setDownloadingServiceNoteKey(null)
     }
@@ -4425,7 +4437,7 @@ export function ContactServiceDetailsPanel({
                                       <button
                                         key={attachment.id}
                                         type="button"
-                                        onClick={() => void handleOpenServiceNoteAttachment(attachment)}
+                                        onClick={() => void handlePreviewServiceNoteAttachment(attachment)}
                                         disabled={downloadingServiceNoteKey === attachment.key}
                                         className={cn(
                                           "inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-60",
@@ -4619,10 +4631,125 @@ export function ContactServiceDetailsPanel({
               </dl>
               {selectedServiceNote.followUpTemplateName ? <p className="mt-4 text-sm text-slate-600"><span className="font-medium text-slate-900">Template:</span> {selectedServiceNote.followUpTemplateName}</p> : null}
               <div className="mt-5"><h3 className="text-sm font-semibold text-slate-950">Note details</h3><p className="mt-2 whitespace-pre-wrap break-words text-sm leading-7 text-slate-700">{selectedServiceNote.body}</p></div>
-              <div className="mt-6 border-t border-slate-200 pt-5"><h3 className="text-sm font-semibold text-slate-950">Attachments</h3>{selectedServiceNote.attachments.length ? <div className="mt-3 flex flex-wrap gap-2">{selectedServiceNote.attachments.map((attachment) => { const AttachmentIcon = attachmentIcon(attachment.contentType); return <Button key={attachment.id} type="button" variant="outline" size="sm" className="max-w-full cursor-pointer rounded-full border-slate-200 bg-white" disabled={downloadingServiceNoteKey === attachment.key} onClick={() => void handleOpenServiceNoteAttachment(attachment)}>{downloadingServiceNoteKey === attachment.key ? <Loader2 className="size-3.5 animate-spin" /> : <AttachmentIcon className="size-3.5" />}<span className="truncate">{attachment.fileName}</span></Button> })}</div> : <p className="mt-2 text-sm text-slate-500">No attachments.</p>}</div>
+              <div className="mt-6 border-t border-slate-200 pt-5"><h3 className="text-sm font-semibold text-slate-950">Attachments</h3>{selectedServiceNote.attachments.length ? <div className="mt-3 flex flex-wrap gap-2">{selectedServiceNote.attachments.map((attachment) => { const AttachmentIcon = attachmentIcon(attachment.contentType); return <Button key={attachment.id} type="button" variant="outline" size="sm" className="max-w-full cursor-pointer rounded-full border-slate-200 bg-white" disabled={downloadingServiceNoteKey === attachment.key} onClick={() => void handlePreviewServiceNoteAttachment(attachment)}>{downloadingServiceNoteKey === attachment.key ? <Loader2 className="size-3.5 animate-spin" /> : <AttachmentIcon className="size-3.5" />}<span className="truncate">{attachment.fileName}</span></Button> })}</div> : <p className="mt-2 text-sm text-slate-500">No attachments.</p>}</div>
             </div>
           ) : null}
           <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:px-7"><Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-slate-200 bg-white px-4" onClick={() => setSelectedServiceNote(null)}>Close</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={previewServiceNoteAttachment !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPreviewServiceNoteAttachment(null)
+            setServiceNotePreviewUrl(null)
+            setServiceNotePreviewError(null)
+          }
+        }}
+      >
+        <DialogContent className="h-[94vh] w-[96vw] max-w-[96vw] overflow-hidden p-0 sm:max-w-[96vw] [&>button]:right-4 [&>button]:top-4 [&>button]:flex [&>button]:size-9 [&>button]:cursor-pointer [&>button]:items-center [&>button]:justify-center [&>button]:rounded-full [&>button]:border [&>button]:border-blue-900 [&>button]:bg-blue-950 [&>button]:p-0 [&>button]:text-white [&>button]:opacity-100 [&>button]:shadow-sm [&>button]:transition [&>button:hover]:border-blue-950 [&>button:hover]:bg-blue-900 [&>button:focus-visible]:ring-2 [&>button:focus-visible]:ring-blue-200 [&>button_svg]:size-3.5 [&>button_svg]:shrink-0 [&>button_svg]:text-white">
+          <div className="flex h-full max-h-[94vh] flex-col bg-slate-50">
+            <DialogHeader className="border-b border-slate-200 bg-white px-6 py-4 text-left">
+              <div className="flex items-start justify-between gap-4 pr-10">
+                <div className="flex min-w-0 flex-col gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <DialogTitle className="truncate text-base font-semibold text-slate-950">
+                      {previewServiceNoteAttachment?.fileName ?? "Attachment preview"}
+                    </DialogTitle>
+                    {previewServiceNoteAttachment ? (
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "rounded-full px-2.5 py-1 text-[11px] font-medium",
+                          attachmentTone(previewServiceNoteAttachment.contentType).chip,
+                        )}
+                      >
+                        {isPdfAttachment(previewServiceNoteAttachment.contentType)
+                          ? "PDF"
+                          : isImageAttachment(previewServiceNoteAttachment.contentType)
+                            ? "Image"
+                            : "File"}
+                      </Badge>
+                    ) : null}
+                  </div>
+
+                  {previewServiceNoteAttachment &&
+                  !isPdfAttachment(previewServiceNoteAttachment.contentType) ? (
+                    <DialogDescription className="text-sm text-slate-500">
+                      {isImageAttachment(previewServiceNoteAttachment.contentType)
+                        ? "Preview the selected image without leaving this page."
+                        : "Preview is limited for this file type. You can still download it."}
+                    </DialogDescription>
+                  ) : null}
+                </div>
+
+                {serviceNotePreviewUrl ? (
+                  <Button asChild variant="outline" size="sm">
+                    <a
+                      href={serviceNotePreviewUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      download={previewServiceNoteAttachment?.fileName}
+                    >
+                      <Download data-icon="inline-start" />
+                      Download
+                    </a>
+                  </Button>
+                ) : null}
+              </div>
+            </DialogHeader>
+
+            <div className="min-h-0 flex-1">
+              {previewServiceNoteAttachment &&
+              downloadingServiceNoteKey === previewServiceNoteAttachment.key ? (
+                <div className="flex h-full min-h-[420px] items-center justify-center">
+                  <div className="rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-500 shadow-sm">
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                      Loading preview...
+                    </span>
+                  </div>
+                </div>
+              ) : serviceNotePreviewError ? (
+                <div className="flex h-full min-h-[420px] flex-col items-center justify-center gap-4 px-6 text-center">
+                  <div className="flex flex-col gap-2 rounded-2xl border border-rose-200 bg-white px-6 py-5 shadow-sm">
+                    <p className="text-sm font-medium text-rose-700">{serviceNotePreviewError}</p>
+                    <p className="text-sm text-slate-500">Try opening the file again.</p>
+                  </div>
+                </div>
+              ) : previewServiceNoteAttachment && serviceNotePreviewUrl ? (
+                isImageAttachment(previewServiceNoteAttachment.contentType) ? (
+                  <div className="flex h-full min-h-[420px] items-center justify-center p-8">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- Presigned file URLs are rendered directly instead of next/image. */}
+                    <img
+                      src={serviceNotePreviewUrl}
+                      alt={previewServiceNoteAttachment.fileName}
+                      className="max-h-full max-w-full rounded-2xl border border-slate-200 bg-white object-contain shadow-sm"
+                    />
+                  </div>
+                ) : isPdfAttachment(previewServiceNoteAttachment.contentType) ? (
+                  <div className="h-full bg-slate-200/70 p-3">
+                    <iframe
+                      src={serviceNotePreviewUrl}
+                      title={previewServiceNoteAttachment.fileName}
+                      className="h-full min-h-0 w-full rounded-xl border border-slate-200 bg-white shadow-sm"
+                    />
+                  </div>
+                ) : (
+                  <div className="flex h-full min-h-[420px] flex-col items-center justify-center gap-4 px-6 text-center">
+                    <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-6 py-5 shadow-sm">
+                      <FileText className="mx-auto size-10 text-slate-400" aria-hidden="true" />
+                      <div className="flex flex-col gap-1">
+                        <p className="text-sm font-medium text-slate-900">Preview is not available for this file type.</p>
+                        <p className="text-sm text-slate-500">Use the download action to open it in your preferred app.</p>
+                      </div>
+                    </div>
+                  </div>
+                )
+              ) : null}
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 

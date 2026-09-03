@@ -368,7 +368,7 @@ The Notes view uses the same restrained timeline pattern as the contact Notes pa
 - a pale note surface with the title and a three-line details preview
 - attachment pills below a dashed separator
 
-The note surface is keyboard accessible and opens a read-only, viewport-bounded note-details dialog. Attachment pills open files directly without opening the note dialog.
+The note surface is keyboard accessible and opens a read-only, viewport-bounded note-details dialog. Attachment pills open the same full-viewport preview dialog used by contact Notes. Images render within the dialog, PDFs use an embedded viewer, unsupported formats retain a download action, and loading or failed-preview states remain inside the dialog.
 
 Pagination is server-backed. The endpoint accepts `page`, `pageSize` (`10`, `25`, or `50`), `q`, and `sort`; it merges both note models before applying the selected global order and page. Requested pages beyond the available result set are clamped to the final page.
 
