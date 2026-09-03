@@ -4451,7 +4451,7 @@ paths:
     get:
       tags: [Services]
       summary: List notes associated with a contact service process
-      description: Returns a tenant-scoped, merged history of service notes, follow-up notes, and linked contact notes. Note history is read-only from the service page.
+      description: Returns a tenant-scoped, merged history of service notes, follow-up notes, and linked contact notes. Service notes expose viewer-specific edit and delete permissions; linked contact and follow-up notes remain read-only here.
       security:
         - cookieAuth: []
       parameters:
@@ -4561,6 +4561,104 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/notes/{noteId}:
+    patch:
+      tags: [Services]
+      summary: Update a service note
+      description: Updates a service-created note and atomically replaces its attachment links. The author or a tenant admin may update it.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: noteId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContactServiceNoteRequest"
+      responses:
+        "200":
+          description: Service note updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateContactServiceNoteResponse"
+        "400":
+          description: Invalid note fields or attachment file IDs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not the note author or a tenant admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process note not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Services]
+      summary: Delete a service note
+      description: Permanently deletes a service-created note and removes files that are no longer referenced. The author or a tenant admin may delete it.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: noteId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Service note deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, example: true }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not the note author or a tenant admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process note not found
           content:
             application/json:
               schema:
@@ -8941,7 +9039,7 @@ components:
           nullable: true
     PaginatedContactServiceNoteItem:
       type: object
-      required: [id, kind, title, body, createdAt, updatedAt, attachments]
+      required: [id, kind, title, body, createdAt, updatedAt, permissions, attachments]
       properties:
         id:
           type: string
@@ -8978,6 +9076,16 @@ components:
         followUpStepTitle:
           type: string
           nullable: true
+        permissions:
+          type: object
+          required: [canEdit, canDelete]
+          properties:
+            canEdit:
+              type: boolean
+              description: True only for service-created notes when the viewer is the author or a tenant admin.
+            canDelete:
+              type: boolean
+              description: True only for service-created notes when the viewer is the author or a tenant admin.
         attachments:
           type: array
           items:
@@ -9391,6 +9499,18 @@ components:
           example: true
         note:
           $ref: "#/components/schemas/ContactServiceNoteItem"
+    UpdateContactServiceNoteRequest:
+      allOf:
+        - $ref: "#/components/schemas/CreateContactServiceNoteRequest"
+    UpdateContactServiceNoteResponse:
+      type: object
+      required: [ok, note]
+      properties:
+        ok:
+          type: boolean
+          example: true
+        note:
+          $ref: "#/components/schemas/PaginatedContactServiceNoteItem"
     DeleteContactServicePaymentResponse:
       type: object
       properties:

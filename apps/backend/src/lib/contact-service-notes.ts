@@ -12,6 +12,25 @@ export type ContactServiceNoteKind =
   | "FOLLOW_UP_NOTE"
   | "LINKED_CONTACT_NOTE"
 
+export const canManageContactServiceNote = (
+  membership: { role: string },
+  createdById: string,
+  userId: string,
+) => membership.role === "TENANT_ADMIN" || createdById === userId
+
+export const resolveContactServiceNoteAttachmentChanges = (
+  existingFileIds: string[],
+  nextFileIds: string[],
+) => {
+  const existing = new Set(existingFileIds)
+  const next = new Set(nextFileIds)
+
+  return {
+    fileIdsToRemove: [...existing].filter((fileId) => !next.has(fileId)),
+    fileIdsToAdd: [...next].filter((fileId) => !existing.has(fileId)),
+  }
+}
+
 export const ContactServiceNotesQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce

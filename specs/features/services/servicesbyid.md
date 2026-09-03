@@ -368,13 +368,13 @@ The Notes view uses the same restrained timeline pattern as the contact Notes pa
 - a pale note surface with the title and a three-line details preview
 - attachment pills below a dashed separator
 
-The note surface is keyboard accessible and opens a read-only, viewport-bounded note-details dialog. Attachment pills open the same full-viewport preview dialog used by contact Notes. Images render within the dialog, PDFs use an embedded viewer, unsupported formats retain a download action, and loading or failed-preview states remain inside the dialog.
+The note title is keyboard accessible. Service-created notes open the same viewport-bounded edit dialog used by contact Notes when the viewer is the author or a tenant admin. Linked contact and follow-up notes open a read-only details dialog. Attachment pills open the same full-viewport preview dialog used by contact Notes. Images render within the dialog, PDFs use an embedded viewer, unsupported formats retain a download action, and loading or failed-preview states remain inside the dialog.
 
 Pagination is server-backed. The endpoint accepts `page`, `pageSize` (`10`, `25`, or `50`), `q`, and `sort`; it merges both note models before applying the selected global order and page. Requested pages beyond the available result set are clamped to the final page.
 
 The Add note action opens a viewport-bounded dialog with a fixed contextual header and footer and one scrolling form body. Title and details are required and limited to 160 and 5,000 characters. Up to ten supported attachments upload sequentially with progress. The dialog cannot be dismissed while saving, retains content after a failure, and reloads page one after success.
 
-Existing notes are read-only from the service page. Editing and deletion are intentionally unavailable.
+The edit dialog exposes Update and Delete actions only when the API grants permission. The note author and tenant admins can edit or delete service-created notes; all other note sources remain read-only. Selecting new files replaces the note's prior attachment set only after every new upload succeeds and the note update commits. Failed uploads or failed updates leave the saved attachments intact. Removed attachments are deleted from storage after their links are removed and no other note references the file.
 
 Empty state:
 

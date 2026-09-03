@@ -3,10 +3,44 @@ import test from "node:test"
 
 import {
   ContactServiceNotesQuerySchema,
+  canManageContactServiceNote,
   compareContactServiceNotes,
   getContactServiceNotesPage,
+  resolveContactServiceNoteAttachmentChanges,
   resolveContactServiceNoteKind,
 } from "./contact-service-notes.js"
+
+test("allows service-note management for the creator or a tenant admin", () => {
+  assert.equal(
+    canManageContactServiceNote({ role: "TENANT_USER" }, "author-1", "author-1"),
+    true,
+  )
+  assert.equal(
+    canManageContactServiceNote({ role: "TENANT_ADMIN" }, "author-1", "admin-1"),
+    true,
+  )
+  assert.equal(
+    canManageContactServiceNote({ role: "TENANT_USER" }, "author-1", "user-2"),
+    false,
+  )
+})
+
+test("replaces old service-note attachments only in the final note update", () => {
+  assert.deepEqual(
+    resolveContactServiceNoteAttachmentChanges(
+      ["old-1", "old-2"],
+      ["new-1", "new-2", "new-1"],
+    ),
+    {
+      fileIdsToRemove: ["old-1", "old-2"],
+      fileIdsToAdd: ["new-1", "new-2"],
+    },
+  )
+  assert.deepEqual(
+    resolveContactServiceNoteAttachmentChanges(["keep"], ["keep"]),
+    { fileIdsToRemove: [], fileIdsToAdd: [] },
+  )
+})
 
 const notes = [
   {

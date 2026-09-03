@@ -201,6 +201,18 @@ Coordinator permission matrix:
 
 Changing the coordinator never changes existing step assignees. Existing step-assignment permissions remain unchanged, and completed or skipped steps cannot be reassigned. The backend permission and workflow-state checks are authoritative.
 
+## Service Note Management
+
+Service-created notes use the same ownership policy as contact notes:
+
+- Active `TENANT_ADMIN`: can edit and delete any service-created note in the tenant
+- Active `TENANT_USER` at any security level: can edit and delete only service-created notes they authored
+- Other active members: can view the note but do not receive edit or delete controls
+- Linked contact notes and follow-up notes: read-only from the service enrollment page
+- Inactive or non-member users: denied by the active-membership guard
+
+The API validates tenant, enrollment, note source, and authorship before updating or deleting. Client-side visibility is only a presentation rule and is not the authorization boundary.
+
 ## Sensitive Custom Field Access Configuration
 
 Sensitive custom fields use a specific approval model:

@@ -23,7 +23,6 @@ import {
   Paperclip,
   Play,
   RotateCcw,
-  SendHorizontal,
   StickyNote,
   Trash2,
   Upload,
@@ -160,6 +159,10 @@ type ServiceNoteItem = {
   } | null
   followUpTemplateName?: string | null
   followUpStepTitle?: string | null
+  permissions: {
+    canEdit: boolean
+    canDelete: boolean
+  }
   attachments: NoteAttachment[]
 }
 type ServiceNotesResponse = {
@@ -1070,6 +1073,9 @@ export function ContactServiceDetailsPanel({
     body?: string
   }>({})
   const [pendingServiceNoteUploads, setPendingServiceNoteUploads] = useState<PendingUpload[]>([])
+  const [existingServiceNoteAttachments, setExistingServiceNoteAttachments] = useState<
+    NoteAttachment[]
+  >([])
   const [serviceNoteAttachmentError, setServiceNoteAttachmentError] = useState<string | null>(null)
   const [downloadingServiceNoteKey, setDownloadingServiceNoteKey] = useState<string | null>(null)
   const [previewServiceNoteAttachment, setPreviewServiceNoteAttachment] =
@@ -1077,6 +1083,12 @@ export function ContactServiceDetailsPanel({
   const [serviceNotePreviewUrl, setServiceNotePreviewUrl] = useState<string | null>(null)
   const [serviceNotePreviewError, setServiceNotePreviewError] = useState<string | null>(null)
   const [isCreateNoteDialogOpen, setIsCreateNoteDialogOpen] = useState(false)
+  const [serviceNoteDialogMode, setServiceNoteDialogMode] = useState<"create" | "edit">(
+    "create",
+  )
+  const [activeEditableServiceNote, setActiveEditableServiceNote] =
+    useState<ServiceNoteItem | null>(null)
+  const [isDeletingServiceNote, setIsDeletingServiceNote] = useState(false)
   const [selectedServiceNote, setSelectedServiceNote] = useState<ServiceNoteItem | null>(null)
   const [serviceNoteItems, setServiceNoteItems] = useState<ServiceNoteItem[]>([])
   const [serviceNotePagination, setServiceNotePagination] = useState<
@@ -1136,6 +1148,10 @@ export function ContactServiceDetailsPanel({
   const backHref = resolvedContactId
     ? getSafeContactServicesReturnTo({ returnTo, tenantSlug, contactId: resolvedContactId })
     : `/app/${encodeURIComponent(tenantSlug)}/services`
+  const isServiceNoteMutating = isNoteSaving || isDeletingServiceNote
+  const canEditActiveServiceNote =
+    serviceNoteDialogMode === "create" ||
+    Boolean(activeEditableServiceNote?.permissions.canEdit)
 
   const loadOverview = useCallback(async (showInitialLoading = true) => {
     if (showInitialLoading) setIsLoading(true)
@@ -1292,15 +1308,39 @@ export function ContactServiceDetailsPanel({
   }
 
   const resetNoteForm = () => {
+    setServiceNoteDialogMode("create")
+    setActiveEditableServiceNote(null)
     setServiceNoteTitle("")
     setServiceNoteBody("")
     setServiceNoteFieldErrors({})
+    setExistingServiceNoteAttachments([])
     setPendingServiceNoteUploads([])
     setServiceNoteAttachmentError(null)
     setServiceNoteUploadProgress(null)
     if (serviceNoteFileInputRef.current) {
       serviceNoteFileInputRef.current.value = ""
     }
+  }
+
+  const openCreateServiceNoteDialog = () => {
+    resetNoteForm()
+    setServiceNoteDialogMode("create")
+    setIsCreateNoteDialogOpen(true)
+  }
+
+  const openServiceNote = (note: ServiceNoteItem) => {
+    if (!note.permissions.canEdit) {
+      setSelectedServiceNote(note)
+      return
+    }
+
+    resetNoteForm()
+    setServiceNoteDialogMode("edit")
+    setActiveEditableServiceNote(note)
+    setServiceNoteTitle(note.title)
+    setServiceNoteBody(note.body)
+    setExistingServiceNoteAttachments(note.attachments)
+    setIsCreateNoteDialogOpen(true)
   }
 
   const refreshData = useCallback(
@@ -1575,7 +1615,7 @@ export function ContactServiceDetailsPanel({
     }
   }
 
-  const onAddServiceNote = async () => {
+  const onSaveServiceNote = async () => {
     const trimmedTitle = serviceNoteTitle.trim()
     const trimmedBody = serviceNoteBody.trim()
     const fieldErrors = {
@@ -1616,7 +1656,25 @@ export function ContactServiceDetailsPanel({
         )
       }
 
-      const { data } = await api.post<{
+      const attachmentFileIds =
+        pendingServiceNoteUploads.length > 0
+          ? uploadedFiles.map((attachment) => attachment.fileId)
+          : existingServiceNoteAttachments.map((attachment) => attachment.fileId)
+      const requestBody = {
+        title: trimmedTitle,
+        body: trimmedBody,
+        attachmentFileIds,
+      }
+      const response =
+        serviceNoteDialogMode === "edit" && activeEditableServiceNote
+          ? await api.patch<{
+              ok: boolean
+              note: ServiceNoteItem
+            }>(
+              `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/notes/${encodeURIComponent(activeEditableServiceNote.id)}`,
+              requestBody,
+            )
+          : await api.post<{
         ok: boolean
         note: {
           id: string
@@ -1626,34 +1684,54 @@ export function ContactServiceDetailsPanel({
         }
       }>(
         `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/notes`,
-        {
-          title: trimmedTitle,
-          body: trimmedBody,
-          attachmentFileIds: uploadedFiles.map((attachment) => attachment.fileId),
-        },
+        requestBody,
       )
-      toast.success("Service note added.")
-      setItem((current) =>
-        current
-          ? {
-              ...current,
-              noteActivityItems: [
-                {
-                  id: data.note.id,
-                  title: data.note.title,
-                  createdAt: data.note.createdAt,
-                  createdBy: data.note.createdBy
-                    ? {
-                        ...data.note.createdBy,
-                        name: data.note.createdBy.name?.trim() || "Unknown user",
-                      }
-                    : null,
-                },
-                ...current.noteActivityItems,
-              ],
-            }
-          : current,
+      const savedNote = response.data.note
+      toast.success(
+        serviceNoteDialogMode === "edit" ? "Service note updated." : "Service note added.",
       )
+      if (serviceNoteDialogMode === "create") {
+        const createdNote = savedNote as {
+          id: string
+          title: string
+          createdAt: string
+          createdBy?: { id: string; name: string | null; image?: string | null } | null
+        }
+        setItem((current) =>
+          current
+            ? {
+                ...current,
+                noteActivityItems: [
+                  {
+                    id: createdNote.id,
+                    title: createdNote.title,
+                    createdAt: createdNote.createdAt,
+                    createdBy: createdNote.createdBy
+                      ? {
+                          ...createdNote.createdBy,
+                          name: createdNote.createdBy.name?.trim() || "Unknown user",
+                        }
+                      : null,
+                  },
+                  ...current.noteActivityItems,
+                ],
+              }
+            : current,
+        )
+      } else if (activeEditableServiceNote) {
+        setItem((current) =>
+          current
+            ? {
+                ...current,
+                noteActivityItems: current.noteActivityItems.map((note) =>
+                  note.id === activeEditableServiceNote.id
+                    ? { ...note, title: trimmedTitle }
+                    : note,
+                ),
+              }
+            : current,
+        )
+      }
       setIsCreateNoteDialogOpen(false)
       resetNoteForm()
       setServiceNotePage(1)
@@ -1668,17 +1746,52 @@ export function ContactServiceDetailsPanel({
           toast.error(
             typeof backendError === "string"
               ? backendError.replace(/_/g, " ")
-              : "Could not add service note.",
+              : "Could not save service note.",
           )
         }
       } else if (error instanceof Error && error.message === "UNSUPPORTED_CONTENT_TYPE") {
         toast.error("Only PNG, JPG, WEBP, and PDF files are supported.")
+      } else if (error instanceof Error && error.message === "FILE_TOO_LARGE") {
+        toast.error("Images must be 5 MB or less and PDFs must be 20 MB or less.")
       } else {
-        toast.error("Could not add service note.")
+        toast.error("Could not save service note.")
       }
     } finally {
       setIsNoteSaving(false)
       setServiceNoteUploadProgress(null)
+    }
+  }
+
+  const onDeleteServiceNote = async () => {
+    if (!activeEditableServiceNote?.permissions.canDelete) return
+    const noteId = activeEditableServiceNote.id
+
+    setIsDeletingServiceNote(true)
+    try {
+      await api.delete(
+        `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/notes/${encodeURIComponent(noteId)}`,
+      )
+      toast.success("Service note deleted.")
+      setItem((current) =>
+        current
+          ? {
+              ...current,
+              noteActivityItems: current.noteActivityItems.filter((note) => note.id !== noteId),
+            }
+          : current,
+      )
+      setIsCreateNoteDialogOpen(false)
+      resetNoteForm()
+      if (serviceNoteItems.length === 1 && serviceNotePage > 1) {
+        setServiceNotePage((current) => Math.max(1, current - 1))
+      } else {
+        await loadServiceNotes()
+      }
+      router.refresh()
+    } catch {
+      toast.error("Could not delete service note.")
+    } finally {
+      setIsDeletingServiceNote(false)
     }
   }
 
@@ -4348,7 +4461,7 @@ export function ContactServiceDetailsPanel({
                   <Button
                     type="button"
                     className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
-                    onClick={() => setIsCreateNoteDialogOpen(true)}
+                    onClick={openCreateServiceNoteDialog}
                   >
                     Add note
                   </Button>
@@ -4414,19 +4527,21 @@ export function ContactServiceDetailsPanel({
                                 ) : null}
                               </div>
 
-                              <button
-                                type="button"
-                                className="block w-full cursor-pointer rounded-2xl bg-slate-50/80 px-3 py-2.5 text-left outline-none transition hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-blue-700/40"
-                                onClick={() => setSelectedServiceNote(note)}
-                                aria-label={`Open note: ${note.title}`}
-                              >
-                                <span className="block truncate text-sm font-semibold tracking-tight text-slate-950 underline-offset-4 transition hover:text-blue-950 hover:underline">
-                                  {note.title}
-                                </span>
-                                <span className="mt-1 block line-clamp-3 whitespace-pre-wrap text-[13px] leading-5 text-slate-700">
+                              <div className="rounded-2xl bg-slate-50/80 px-3 py-2.5">
+                                <button
+                                  type="button"
+                                  className="block w-full cursor-pointer text-left outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-blue-700/40"
+                                  onClick={() => openServiceNote(note)}
+                                  aria-label={`${note.permissions.canEdit ? "Edit" : "Open"} note: ${note.title}`}
+                                >
+                                  <span className="block truncate text-sm font-semibold tracking-tight text-slate-950 underline-offset-4 transition hover:text-blue-950 hover:underline">
+                                    {note.title}
+                                  </span>
+                                </button>
+                                <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-[13px] leading-5 text-slate-700">
                                   {note.body}
-                                </span>
-                              </button>
+                                </p>
+                              </div>
 
                               {note.attachments.length > 0 ? (
                                 <div className="flex flex-wrap gap-2 border-t border-dashed border-slate-200 pt-2">
@@ -4488,7 +4603,7 @@ export function ContactServiceDetailsPanel({
                   <span className="inline-flex size-12 items-center justify-center rounded-full bg-slate-100 text-slate-500"><StickyNote className="size-5" aria-hidden="true" /></span>
                   <h3 className="mt-4 text-lg font-semibold text-slate-950">{debouncedServiceNoteSearch ? "No matching notes" : "No notes yet"}</h3>
                   <p className="mt-2 text-sm text-slate-500">{debouncedServiceNoteSearch ? "Try a different keyword or clear the search to see more notes." : "Add the first note to keep important context and attachments with this service."}</p>
-                  {!debouncedServiceNoteSearch ? <Button type="button" className="mt-5 cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90" onClick={() => setIsCreateNoteDialogOpen(true)}>Add first note</Button> : null}
+                  {!debouncedServiceNoteSearch ? <Button type="button" className="mt-5 cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90" onClick={openCreateServiceNoteDialog}>Add first note</Button> : null}
                 </div>
               )}
             </div>
@@ -4501,28 +4616,30 @@ export function ContactServiceDetailsPanel({
       <Dialog
         open={isCreateNoteDialogOpen}
         onOpenChange={(open) => {
-          if (!open && isNoteSaving) return
+          if (!open && isServiceNoteMutating) return
           setIsCreateNoteDialogOpen(open)
           if (!open) resetNoteForm()
         }}
       >
         <DialogContent
           className="grid max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 p-0 sm:max-w-3xl [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:p-2"
-          onEscapeKeyDown={(event) => { if (isNoteSaving) event.preventDefault() }}
-          onInteractOutside={(event) => { if (isNoteSaving) event.preventDefault() }}
+          onEscapeKeyDown={(event) => { if (isServiceNoteMutating) event.preventDefault() }}
+          onInteractOutside={(event) => { if (isServiceNoteMutating) event.preventDefault() }}
         >
           <DialogHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 pr-14 text-left sm:px-7">
             <div aria-hidden="true" className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]" />
             <div className="relative">
               <p className="text-xs font-semibold text-blue-700">Service activity</p>
-              <DialogTitle className="mt-1.5 text-xl font-semibold text-slate-950 sm:text-2xl">Create a note</DialogTitle>
+              <DialogTitle className="mt-1.5 text-xl font-semibold text-slate-950 sm:text-2xl">
+                {serviceNoteDialogMode === "create" ? "Create a note" : "Edit note"}
+              </DialogTitle>
               <DialogDescription className="mt-1.5 max-w-xl text-sm leading-6 text-slate-600">
-                Add context to {serviceData.service.name}. The note will also appear in the linked contact history.
+                Capture the context your team needs and keep supporting files with {serviceData.service.name}.
               </DialogDescription>
             </div>
           </DialogHeader>
 
-          <form id="create-service-note-form" className="contents" onSubmit={(event) => { event.preventDefault(); void onAddServiceNote() }}>
+          <form id="service-note-form" className="contents" onSubmit={(event) => { event.preventDefault(); void onSaveServiceNote() }}>
             <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
               <FieldGroup>
                 <Field data-invalid={Boolean(serviceNoteFieldErrors.title)}>
@@ -4534,7 +4651,7 @@ export function ContactServiceDetailsPanel({
                     id="service-note-title"
                     value={serviceNoteTitle}
                     maxLength={160}
-                    disabled={isNoteSaving}
+                    disabled={!canEditActiveServiceNote || isServiceNoteMutating}
                     aria-invalid={Boolean(serviceNoteFieldErrors.title)}
                     onChange={(event) => { setServiceNoteTitle(event.target.value); setServiceNoteFieldErrors((current) => ({ ...current, title: undefined })) }}
                     placeholder="Give this note a clear title"
@@ -4553,7 +4670,7 @@ export function ContactServiceDetailsPanel({
                     value={serviceNoteBody}
                     maxLength={5000}
                     rows={7}
-                    disabled={isNoteSaving}
+                    disabled={!canEditActiveServiceNote || isServiceNoteMutating}
                     aria-invalid={Boolean(serviceNoteFieldErrors.body)}
                     onChange={(event) => { setServiceNoteBody(event.target.value); setServiceNoteFieldErrors((current) => ({ ...current, body: undefined })) }}
                     placeholder="Record the full service context"
@@ -4563,51 +4680,97 @@ export function ContactServiceDetailsPanel({
                 </Field>
 
                 <Field>
-                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4">
+                  <section className="flex flex-col gap-4 rounded-[22px] border border-blue-100 bg-[#f1f7ff] p-4 sm:p-5">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <FieldLabel>Supporting files</FieldLabel>
-                        <FieldDescription>PNG, JPG, WEBP, or PDF. Up to ten files.</FieldDescription>
+                      <div className="flex flex-col gap-1">
+                        <h3 className="text-sm font-semibold text-slate-950">Supporting files</h3>
+                        <p className="text-xs leading-5 text-slate-600">
+                          PNG, JPG, or WEBP up to 5 MB; PDF up to 20 MB.
+                        </p>
                       </div>
-                      <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-slate-200 bg-white" disabled={isNoteSaving || pendingServiceNoteUploads.length >= MAX_NOTE_ATTACHMENTS} onClick={() => serviceNoteFileInputRef.current?.click()}>
-                        <Upload className="size-4" /> Add files
+                      <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-xl border-blue-200 bg-white text-blue-950 shadow-sm hover:bg-blue-50" disabled={!canEditActiveServiceNote || isServiceNoteMutating || pendingServiceNoteUploads.length >= MAX_NOTE_ATTACHMENTS} onClick={() => serviceNoteFileInputRef.current?.click()}>
+                        <Upload data-icon="inline-start" />
+                        {existingServiceNoteAttachments.length + pendingServiceNoteUploads.length > 0 ? "Add files" : "Choose files"}
                       </Button>
                     </div>
-                    <input ref={serviceNoteFileInputRef} type="file" accept=".png,.jpg,.jpeg,.webp,.pdf,image/png,image/jpeg,image/webp,application/pdf" multiple className="hidden" onChange={handleSelectServiceNoteFiles} disabled={isNoteSaving} />
-                    {serviceNoteAttachmentError ? <p className="mt-3 text-sm text-rose-600">{serviceNoteAttachmentError}</p> : null}
-                    <div className="mt-4 space-y-2">
-                      {pendingServiceNoteUploads.length === 0 ? (
-                        <p className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-5 text-center text-sm text-slate-500">No files selected.</p>
-                      ) : pendingServiceNoteUploads.map((attachment, index) => {
+                    <input ref={serviceNoteFileInputRef} type="file" accept=".png,.jpg,.jpeg,.webp,.pdf,image/png,image/jpeg,image/webp,application/pdf" multiple className="hidden" onChange={handleSelectServiceNoteFiles} disabled={!canEditActiveServiceNote || isServiceNoteMutating} />
+                    {serviceNoteDialogMode === "edit" && existingServiceNoteAttachments.length > 0 ? (
+                      <p className="text-xs leading-5 text-slate-600">
+                        New files replace the current attachments only after every upload and the note update succeed.
+                      </p>
+                    ) : null}
+                    {serviceNoteAttachmentError ? <p role="alert" className="text-sm text-rose-600">{serviceNoteAttachmentError}</p> : null}
+                    <div className="flex flex-col gap-2.5">
+                      {existingServiceNoteAttachments.map((attachment) => {
+                            const AttachmentIcon = attachmentIcon(attachment.contentType)
+                            return (
+                              <div key={attachment.id} className="flex items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-white px-3 py-3 shadow-sm">
+                                <div className="flex min-w-0 items-center gap-3">
+                                  <span className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl bg-slate-50">
+                                    <AttachmentIcon className="size-4 text-slate-500" aria-hidden="true" />
+                                  </span>
+                                  <div className="min-w-0">
+                                    <p className="truncate text-sm font-medium text-slate-900">{attachment.fileName}</p>
+                                    <p className="text-xs text-slate-500">
+                                      {pendingServiceNoteUploads.length > 0
+                                        ? "Current attachment · kept until the update succeeds"
+                                        : "Saved attachment"}
+                                    </p>
+                                  </div>
+                                </div>
+                                {pendingServiceNoteUploads.length === 0 ? (
+                                  <Button type="button" variant="ghost" size="icon-sm" className="cursor-pointer rounded-full text-slate-400 hover:bg-rose-50 hover:text-rose-600" disabled={!canEditActiveServiceNote || isServiceNoteMutating} aria-label={`Remove ${attachment.fileName}`} onClick={() => setExistingServiceNoteAttachments((current) => current.filter((item) => item.id !== attachment.id))}>
+                                    <X />
+                                  </Button>
+                                ) : null}
+                              </div>
+                            )
+                          })}
+                      {pendingServiceNoteUploads.map((attachment, index) => {
                         const AttachmentIcon = attachmentIcon(inferContentType(attachment.file))
                         const isUploaded = Boolean(serviceNoteUploadProgress && index < serviceNoteUploadProgress.completed)
                         return (
-                          <div key={attachment.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5">
+                          <div key={attachment.id} className="flex items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-white px-3 py-3 shadow-sm">
                             <div className="flex min-w-0 items-center gap-3">
-                              <AttachmentIcon className="size-4 shrink-0 text-slate-500" />
+                              <span className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl bg-slate-50">
+                                {isUploaded ? <CheckCircle2 className="size-4 text-blue-700" aria-hidden="true" /> : <AttachmentIcon className="size-4 text-slate-500" aria-hidden="true" />}
+                              </span>
                               <div className="min-w-0"><p className="truncate text-sm font-medium text-slate-800">{attachment.file.name}</p><p className="text-xs text-slate-500">{isUploaded ? "Uploaded" : isNoteSaving ? "Waiting to upload" : "Ready to upload"}</p></div>
                             </div>
-                            <button type="button" className="inline-flex size-8 cursor-pointer items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50" disabled={isNoteSaving} aria-label={`Remove ${attachment.file.name}`} onClick={() => setPendingServiceNoteUploads((current) => current.filter((item) => item.id !== attachment.id))}><X className="size-4" /></button>
+                            <Button type="button" variant="ghost" size="icon-sm" className="cursor-pointer rounded-full text-slate-400 hover:bg-rose-50 hover:text-rose-600" disabled={isServiceNoteMutating} aria-label={`Remove ${attachment.file.name}`} onClick={() => setPendingServiceNoteUploads((current) => current.filter((item) => item.id !== attachment.id))}><X /></Button>
                           </div>
                         )
                       })}
+                      {existingServiceNoteAttachments.length === 0 && pendingServiceNoteUploads.length === 0 ? (
+                        <button type="button" onClick={() => serviceNoteFileInputRef.current?.click()} disabled={!canEditActiveServiceNote || isServiceNoteMutating} className="flex cursor-pointer flex-col items-center gap-2 rounded-2xl border border-dashed border-blue-200 bg-white/70 px-4 py-6 text-center transition hover:border-blue-300 hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:pointer-events-none disabled:opacity-60">
+                          <Upload className="size-4 text-blue-800" aria-hidden="true" />
+                          <span className="text-sm font-medium text-slate-800">Add an image or document</span>
+                          <span className="text-xs text-slate-500">Up to {MAX_NOTE_ATTACHMENTS} supporting files</span>
+                        </button>
+                      ) : null}
                     </div>
                     {serviceNoteUploadProgress ? (
-                      <div className="mt-4" role="status" aria-live="polite">
+                      <div className="flex flex-col gap-2 rounded-2xl border border-blue-200 bg-white p-4 shadow-sm" role="status" aria-live="polite">
                         <div className="mb-1.5 flex justify-between text-xs text-slate-500"><span>Uploading files</span><span>{serviceNoteUploadProgress.completed} of {serviceNoteUploadProgress.total}</span></div>
-                        <Progress value={(serviceNoteUploadProgress.completed / serviceNoteUploadProgress.total) * 100} className="h-2" />
+                        <Progress value={(serviceNoteUploadProgress.completed / serviceNoteUploadProgress.total) * 100} aria-label="Note upload progress" className="h-2" />
                       </div>
                     ) : null}
-                  </div>
+                  </section>
                 </Field>
               </FieldGroup>
             </div>
 
             <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
-              <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-slate-200 bg-white px-4" disabled={isNoteSaving} onClick={() => setIsCreateNoteDialogOpen(false)}>Cancel</Button>
-              <Button type="submit" size="sm" className="cursor-pointer rounded-full bg-blue-950 px-4 text-white hover:bg-blue-900" disabled={isNoteSaving}>
-                {isNoteSaving ? <Loader2 className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
-                {isNoteSaving ? "Saving note" : "Save note"}
+              {serviceNoteDialogMode === "edit" && activeEditableServiceNote?.permissions.canDelete ? (
+                <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-rose-200 px-4 text-rose-600 hover:bg-rose-50 hover:text-rose-700 sm:mr-auto" disabled={isServiceNoteMutating} onClick={() => void onDeleteServiceNote()}>
+                  {isDeletingServiceNote ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Trash2 data-icon="inline-start" />}
+                  Delete
+                </Button>
+              ) : null}
+              <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-slate-200 bg-white px-4" disabled={isServiceNoteMutating} onClick={() => setIsCreateNoteDialogOpen(false)}>Cancel</Button>
+              <Button type="submit" size="sm" className="cursor-pointer rounded-full bg-blue-950 px-4 text-white hover:bg-blue-900" disabled={isServiceNoteMutating || !canEditActiveServiceNote}>
+                {isNoteSaving ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <StickyNote data-icon="inline-start" />}
+                {isNoteSaving ? "Saving..." : serviceNoteDialogMode === "create" ? "Save note" : "Update note"}
               </Button>
             </DialogFooter>
           </form>

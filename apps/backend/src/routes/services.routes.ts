@@ -6,8 +6,10 @@ import { z } from "zod"
 import { decryptCustomFieldValue } from "../lib/contact-custom-field-encryption.js"
 import {
   ContactServiceNotesQuerySchema,
+  canManageContactServiceNote,
   compareContactServiceNotes,
   getContactServiceNotesPage,
+  resolveContactServiceNoteAttachmentChanges,
   resolveContactServiceNoteKind,
   type ContactServiceNoteSort,
 } from "../lib/contact-service-notes.js"
@@ -24,6 +26,7 @@ import {
   resolveContactServiceChecklistTransition,
 } from "../lib/contact-service-checklist-status.js"
 import { prisma } from "../lib/prisma.js"
+import { deletePrivateObject } from "../lib/private-storage.js"
 import { generateServiceFitExplanation } from "../lib/service-fit-explanations.js"
 import { routeServiceQuestion } from "../lib/service-fit-question-router.js"
 import {
@@ -200,6 +203,7 @@ const serializePaginatedServiceNote = (
     id: string
     title: string
     body: string
+    createdById: string
     createdAt: Date
     updatedAt: Date
     createdBy?: {
@@ -221,6 +225,7 @@ const serializePaginatedServiceNote = (
     }>
   },
   kind: "SERVICE_NOTE" | "FOLLOW_UP_NOTE" | "LINKED_CONTACT_NOTE",
+  viewer: { membership: { role: string }; userId: string },
 ) => ({
   id: note.id,
   kind,
@@ -241,6 +246,22 @@ const serializePaginatedServiceNote = (
     : null,
   followUpTemplateName: note.followUpTemplate?.name ?? null,
   followUpStepTitle: note.contactServiceFollowUpStep?.title ?? null,
+  permissions: {
+    canEdit:
+      kind === "SERVICE_NOTE" &&
+      canManageContactServiceNote(
+        viewer.membership,
+        note.createdById,
+        viewer.userId,
+      ),
+    canDelete:
+      kind === "SERVICE_NOTE" &&
+      canManageContactServiceNote(
+        viewer.membership,
+        note.createdById,
+        viewer.userId,
+      ),
+  },
   attachments: (note.attachments ?? []).map((attachment) => ({
     id: attachment.id,
     fileId: attachment.file.id,
@@ -265,6 +286,10 @@ const TenantContactServicePathSchema = TenantPathSchema.extend({
 
 const TenantContactServicePaymentPathSchema = TenantContactServicePathSchema.extend({
   paymentId: z.string().trim().min(1),
+})
+
+const TenantContactServiceNotePathSchema = TenantContactServicePathSchema.extend({
+  noteId: z.string().trim().min(1),
 })
 
 const TenantFollowUpStepPathSchema = TenantContactServicePathSchema.extend({
@@ -525,6 +550,8 @@ const CreateContactServiceNoteSchema = z.object({
   attachmentFileIds: ContactServiceNoteAttachmentIdsSchema,
 })
 
+const UpdateContactServiceNoteSchema = CreateContactServiceNoteSchema
+
 async function getValidatedServiceNoteFiles(
   tenantId: string,
   attachmentFileIds: string[],
@@ -555,6 +582,43 @@ async function getValidatedServiceNoteFiles(
   return uniqueFileIds
     .map((fileId) => files.find((file) => file.id === fileId))
     .filter((file): file is NonNullable<typeof file> => Boolean(file))
+}
+
+async function deleteServiceNoteFilesIfUnreferenced(fileIds: string[]) {
+  const uniqueFileIds = [...new Set(fileIds)]
+  if (uniqueFileIds.length === 0) return
+
+  const [serviceAttachments, contactAttachments] = await Promise.all([
+    prismaWithServices.contactServiceNoteAttachment.findMany({
+      where: { fileId: { in: uniqueFileIds } },
+      select: { fileId: true },
+    }),
+    prismaWithServices.contactNoteAttachment.findMany({
+      where: { fileId: { in: uniqueFileIds } },
+      select: { fileId: true },
+    }),
+  ])
+  const referencedFileIds = new Set<string>([
+    ...serviceAttachments.map((attachment: { fileId: string }) => attachment.fileId),
+    ...contactAttachments.map((attachment: { fileId: string }) => attachment.fileId),
+  ])
+  const orphanFileIds = uniqueFileIds.filter((fileId) => !referencedFileIds.has(fileId))
+  if (orphanFileIds.length === 0) return
+
+  const orphanFiles = await prisma.file.findMany({
+    where: { id: { in: orphanFileIds } },
+    select: { id: true, key: true },
+  })
+  if (orphanFiles.length === 0) return
+
+  await prisma.file.deleteMany({
+    where: { id: { in: orphanFiles.map((file) => file.id) } },
+  })
+  await Promise.all(
+    orphanFiles.map((file) =>
+      deletePrivateObject({ path: file.key }).catch(() => undefined),
+    ),
+  )
 }
 
 const UpdateFollowUpStepSchema = z.object({
@@ -4034,6 +4098,7 @@ router.get(
         id: true,
         title: true,
         body: true,
+        createdById: true,
         createdAt: true,
         updatedAt: true,
         createdBy: {
@@ -4081,7 +4146,10 @@ router.get(
 
       const items = [
         ...serviceNotes.map((note: any) =>
-          serializePaginatedServiceNote(note, "SERVICE_NOTE"),
+          serializePaginatedServiceNote(note, "SERVICE_NOTE", {
+            membership,
+            userId: authed.user.id,
+          }),
         ),
         ...contactNotes.map((note: any) =>
           serializePaginatedServiceNote(
@@ -4091,6 +4159,7 @@ router.get(
               hasFollowUpTemplate: Boolean(note.followUpTemplate),
               hasFollowUpStep: Boolean(note.contactServiceFollowUpStep),
             }),
+            { membership, userId: authed.user.id },
           ),
         ),
       ]
@@ -4208,6 +4277,183 @@ router.post(
           })),
         },
       })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.patch(
+  "/:tenantId/contact-services/:contactServiceId/notes/:noteId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId, noteId } =
+        TenantContactServiceNotePathSchema.parse(req.params)
+      const payload = UpdateContactServiceNoteSchema.parse(req.body)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const [existingNote, files] = await Promise.all([
+        prismaWithServices.contactServiceNote.findFirst({
+          where: { id: noteId, tenantId, contactServiceId },
+          select: {
+            id: true,
+            createdById: true,
+            attachments: { select: { fileId: true } },
+          },
+        }),
+        getValidatedServiceNoteFiles(tenantId, payload.attachmentFileIds),
+      ])
+
+      if (!existingNote) {
+        return res.status(404).json({ error: "NOTE_NOT_FOUND" })
+      }
+      if (
+        !canManageContactServiceNote(
+          membership,
+          existingNote.createdById,
+          authed.user.id,
+        )
+      ) {
+        return res.status(403).json({ error: "FORBIDDEN" })
+      }
+      if (!files) {
+        return res.status(400).json({ error: "INVALID_NOTE_ATTACHMENTS" })
+      }
+
+      const existingFileIds = existingNote.attachments.map(
+        (attachment: { fileId: string }) => attachment.fileId,
+      )
+      const nextFileIds = files.map((file: { id: string }) => file.id)
+      const { fileIdsToRemove, fileIdsToAdd } =
+        resolveContactServiceNoteAttachmentChanges(
+          existingFileIds,
+          nextFileIds,
+        )
+
+      const updated = await prisma.$transaction(async (tx) => {
+        const txWithServices = tx as any
+        await txWithServices.contactServiceNote.update({
+          where: { id: noteId },
+          data: {
+            title: sanitizeSingleLineText(payload.title),
+            body: sanitizeMultilineText(payload.body),
+          },
+        })
+
+        if (fileIdsToRemove.length > 0) {
+          await txWithServices.contactServiceNoteAttachment.deleteMany({
+            where: {
+              tenantId,
+              noteId,
+              fileId: { in: fileIdsToRemove },
+            },
+          })
+        }
+        if (fileIdsToAdd.length > 0) {
+          await txWithServices.contactServiceNoteAttachment.createMany({
+            data: fileIdsToAdd.map((fileId) => ({
+              tenantId,
+              noteId,
+              fileId,
+            })),
+            skipDuplicates: true,
+          })
+        }
+
+        return txWithServices.contactServiceNote.findUniqueOrThrow({
+          where: { id: noteId },
+          select: {
+            id: true,
+            title: true,
+            body: true,
+            createdById: true,
+            createdAt: true,
+            updatedAt: true,
+            createdBy: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+            attachments: {
+              orderBy: { createdAt: "asc" },
+              select: {
+                id: true,
+                file: {
+                  select: {
+                    id: true,
+                    key: true,
+                    contentType: true,
+                    size: true,
+                  },
+                },
+              },
+            },
+          },
+        })
+      })
+
+      await deleteServiceNoteFilesIfUnreferenced(fileIdsToRemove)
+
+      return res.json({
+        ok: true,
+        note: serializePaginatedServiceNote(updated, "SERVICE_NOTE", {
+          membership,
+          userId: authed.user.id,
+        }),
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.delete(
+  "/:tenantId/contact-services/:contactServiceId/notes/:noteId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId, noteId } =
+        TenantContactServiceNotePathSchema.parse(req.params)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const existingNote = await prismaWithServices.contactServiceNote.findFirst({
+        where: { id: noteId, tenantId, contactServiceId },
+        select: {
+          id: true,
+          createdById: true,
+          attachments: { select: { fileId: true } },
+        },
+      })
+      if (!existingNote) {
+        return res.status(404).json({ error: "NOTE_NOT_FOUND" })
+      }
+      if (
+        !canManageContactServiceNote(
+          membership,
+          existingNote.createdById,
+          authed.user.id,
+        )
+      ) {
+        return res.status(403).json({ error: "FORBIDDEN" })
+      }
+
+      const attachmentFileIds = existingNote.attachments.map(
+        (attachment: { fileId: string }) => attachment.fileId,
+      )
+      await prismaWithServices.contactServiceNote.delete({ where: { id: noteId } })
+      await deleteServiceNoteFilesIfUnreferenced(attachmentFileIds)
+
+      return res.json({ ok: true })
     } catch (error) {
       return next(error)
     }
