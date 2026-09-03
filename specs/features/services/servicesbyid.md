@@ -345,30 +345,30 @@ Empty state:
 - dashed empty card
 - `No follow-up steps are enrolled for this service yet.`
 
-### 6. Service Notes Table
+### 6. Service Notes Timeline
 
 Purpose:
 
 - provide a compact, independently loaded history of service, follow-up, and linked contact notes
 - keep the enrollment detail response lightweight by loading complete note bodies and attachments only in the Notes view
 
-Header contains:
+Toolbar contains:
 
-- section label: `Service Notes`
 - debounced search across title, details, and author
 - sorting for recently updated, newest created, and oldest updated
-- compact primary button: `Add note`
+- primary button: `Add note`
 
-The contact-table-style shell uses fixed columns for:
+The Notes view uses the same restrained timeline pattern as the contact Notes page:
 
-- title
-- truncated note details
-- source
-- author
-- created date/time
-- attachments
+- a neutral note icon and vertical rail
+- author and created date/time metadata
+- an edited timestamp when the note has changed
+- a compact source badge for service, follow-up, or contact notes
+- optional follow-up template and step context
+- a pale note surface with the title and a three-line details preview
+- attachment pills below a dashed separator
 
-Rows are keyboard accessible and open a read-only, viewport-bounded note-details dialog. Attachment controls open files directly without opening the row dialog.
+The note surface is keyboard accessible and opens a read-only, viewport-bounded note-details dialog. Attachment pills open files directly without opening the note dialog.
 
 Pagination is server-backed. The endpoint accepts `page`, `pageSize` (`10`, `25`, or `50`), `q`, and `sort`; it merges both note models before applying the selected global order and page. Requested pages beyond the available result set are clamped to the final page.
 

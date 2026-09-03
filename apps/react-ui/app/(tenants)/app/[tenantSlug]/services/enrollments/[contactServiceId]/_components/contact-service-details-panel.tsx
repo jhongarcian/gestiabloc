@@ -6,11 +6,10 @@ import { isAxiosError } from "axios"
 import {
   ArrowLeft,
   CircleDollarSign,
+  CalendarDays,
   Check,
   CheckCircle2,
-  ChevronLeft,
   ChevronDown,
-  ChevronRight,
   Clock3,
   CreditCard,
   Ellipsis,
@@ -23,8 +22,8 @@ import {
   Paperclip,
   Play,
   RotateCcw,
-  Search,
   SendHorizontal,
+  StickyNote,
   Trash2,
   Upload,
   UserRound,
@@ -91,15 +90,6 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   Tooltip,
@@ -593,17 +583,9 @@ const formatPaymentMethod = (value: string | null | undefined) => {
 }
 
 const getServiceNoteSourceLabel = (note: ServiceNoteItem) => {
-  if (note.kind === "SERVICE_NOTE") return "Service note"
-  if (note.kind === "FOLLOW_UP_NOTE") {
-    return note.followUpStepTitle ? `Follow-up · ${note.followUpStepTitle}` : "Follow-up note"
-  }
-  return "Linked contact note"
-}
-
-const getVisiblePageNumbers = (page: number, totalPages: number) => {
-  const count = Math.min(5, totalPages)
-  const start = Math.min(Math.max(1, page - 2), Math.max(1, totalPages - count + 1))
-  return Array.from({ length: count }, (_, index) => start + index)
+  if (note.kind === "SERVICE_NOTE") return "service note"
+  if (note.kind === "FOLLOW_UP_NOTE") return "follow-up note"
+  return "contact note"
 }
 
 const IN_PROGRESS_STATUS_OPTION: ServiceStatusOption = {
@@ -4318,181 +4300,185 @@ export function ContactServiceDetailsPanel({
         ) : null}
 
         {activeView === "notes" ? (
-          <section aria-labelledby="service-notes-title" className="overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-sm">
-            <div className="flex flex-col gap-4 border-b border-slate-200 px-4 py-4 sm:px-5">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Service notes</p>
-                  <h2 id="service-notes-title" className="mt-1 text-lg font-semibold text-slate-950">Notes</h2>
-                  <p className="mt-1 text-sm text-slate-600">Review service, follow-up, and linked contact notes.</p>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-9 cursor-pointer rounded-full bg-blue-950 px-4 text-white shadow-sm hover:bg-blue-900"
-                  onClick={() => setIsCreateNoteDialogOpen(true)}
-                >
-                  <NotebookPen className="size-4" />
-                  Add note
-                </Button>
-              </div>
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div className="relative w-full lg:max-w-md">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+          <section aria-labelledby="service-notes-title" className="flex min-h-full flex-1 flex-col gap-4">
+            <h2 id="service-notes-title" className="sr-only">Service notes</h2>
+            <div className="flex min-h-[calc(100vh-18rem)] flex-1 flex-col gap-3 rounded-2xl border border-slate-200/80 bg-white p-3 sm:p-4">
+              <div className="flex flex-col gap-3 border-b border-slate-100 pb-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex-1 lg:max-w-xl">
                   <Input
                     value={serviceNoteSearch}
                     onChange={(event) => setServiceNoteSearch(event.target.value.slice(0, 160))}
-                    placeholder="Search title, details, or author"
+                    placeholder="Search title, note details, or author"
                     aria-label="Search service notes"
-                    className="h-10 rounded-full border-slate-200 bg-white pl-9 pr-4 shadow-none"
+                    className="w-full"
                   />
                 </div>
-                <Select
-                  value={serviceNoteSort}
-                  onValueChange={(value) => {
-                    setServiceNoteSort(value as ServiceNoteSort)
-                    setServiceNotePage(1)
-                  }}
-                >
-                  <SelectTrigger className="h-10 w-full cursor-pointer rounded-full border-slate-200 bg-white px-4 shadow-none lg:w-[190px]" aria-label="Sort service notes">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="updated_desc" className="cursor-pointer">Recently updated</SelectItem>
-                      <SelectItem value="created_desc" className="cursor-pointer">Newest created</SelectItem>
-                      <SelectItem value="updated_asc" className="cursor-pointer">Oldest updated</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
 
-            <div className="min-h-[560px] overflow-x-auto px-3 py-3 sm:px-4">
-              <Table className="min-w-[1120px] table-fixed border-separate border-spacing-0">
-                <TableHeader>
-                  <TableRow className="border-0 hover:bg-transparent">
-                    <TableHead className="h-11 w-[190px] rounded-l-xl bg-slate-100 px-4 text-xs font-semibold text-slate-600">Title</TableHead>
-                    <TableHead className="h-11 w-[320px] bg-slate-100 px-4 text-xs font-semibold text-slate-600">Note details</TableHead>
-                    <TableHead className="h-11 w-[185px] bg-slate-100 px-4 text-xs font-semibold text-slate-600">Source</TableHead>
-                    <TableHead className="h-11 w-[165px] bg-slate-100 px-4 text-xs font-semibold text-slate-600">Author</TableHead>
-                    <TableHead className="h-11 w-[150px] bg-slate-100 px-4 text-xs font-semibold text-slate-600">Created</TableHead>
-                    <TableHead className="h-11 w-[180px] rounded-r-xl bg-slate-100 px-4 text-xs font-semibold text-slate-600">Attachments</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {isServiceNotesLoading ? Array.from({ length: serviceNotePageSize }, (_, index) => (
-                    <TableRow key={`note-loading-${index}`} className="h-14 border-b border-slate-100 hover:bg-transparent">
-                      {Array.from({ length: 6 }, (__, cellIndex) => (
-                        <TableCell key={cellIndex} className="px-4"><Skeleton className="h-4 w-full max-w-[160px]" /></TableCell>
-                      ))}
-                    </TableRow>
-                  )) : serviceNotesError ? (
-                    <TableRow className="h-[510px] hover:bg-transparent">
-                      <TableCell colSpan={6} className="text-center">
-                        <p className="text-sm font-medium text-slate-900">Could not load notes</p>
-                        <p className="mt-1 text-sm text-slate-500">{serviceNotesError}</p>
-                        <Button type="button" variant="outline" size="sm" className="mt-4 cursor-pointer rounded-full border-slate-200" onClick={() => void loadServiceNotes()}>
-                          Retry
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ) : serviceNoteItems.length === 0 ? (
-                    <TableRow className="h-[510px] hover:bg-transparent">
-                      <TableCell colSpan={6} className="text-center">
-                        <p className="text-sm font-medium text-slate-900">{debouncedServiceNoteSearch ? "No matching notes" : "No notes yet"}</p>
-                        <p className="mt-1 text-sm text-slate-500">
-                          {debouncedServiceNoteSearch ? "Try a different search term." : "Create the first note for this service."}
-                        </p>
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    <>
-                      {serviceNoteItems.map((note) => (
-                        <TableRow
-                          key={`${note.kind}-${note.id}`}
-                          tabIndex={0}
-                          role="button"
-                          aria-label={`Open note: ${note.title}`}
-                          className="h-14 cursor-pointer border-b border-slate-100 outline-none hover:bg-slate-50 focus-visible:bg-blue-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-700"
-                          onClick={() => setSelectedServiceNote(note)}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Enter" && event.key !== " ") return
-                            event.preventDefault()
-                            setSelectedServiceNote(note)
-                          }}
-                        >
-                          <TableCell className="px-4"><p className="truncate text-sm font-medium text-slate-950" title={note.title}>{note.title}</p></TableCell>
-                          <TableCell className="px-4"><p className="truncate text-sm text-slate-600" title={note.body}>{note.body}</p></TableCell>
-                          <TableCell className="px-4"><p className="truncate text-sm text-slate-600" title={getServiceNoteSourceLabel(note)}>{getServiceNoteSourceLabel(note)}</p></TableCell>
-                          <TableCell className="px-4">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <Avatar className="size-7 shrink-0"><AvatarImage src={note.author?.image ?? undefined} alt="" /><AvatarFallback className="bg-slate-100 text-[10px] font-semibold text-slate-700">{getInitials(note.author?.name)}</AvatarFallback></Avatar>
-                              <span className="truncate text-sm text-slate-700" title={note.author?.name ?? "Unknown user"}>{note.author?.name ?? "Unknown user"}</span>
-                            </div>
-                          </TableCell>
-                          <TableCell className="px-4 text-sm text-slate-600">{formatDateTime(note.createdAt)}</TableCell>
-                          <TableCell className="px-4">
-                            {note.attachments.length ? (
-                              <div className="flex items-center gap-1.5">
-                                {note.attachments.slice(0, 2).map((attachment) => {
-                                  const AttachmentIcon = attachmentIcon(attachment.contentType)
-                                  return (
-                                    <button
-                                      key={attachment.id}
-                                      type="button"
-                                      className="inline-flex size-8 cursor-pointer items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                      aria-label={`Open ${attachment.fileName}`}
-                                      title={attachment.fileName}
-                                      disabled={downloadingServiceNoteKey === attachment.key}
-                                      onClick={(event) => { event.stopPropagation(); void handleOpenServiceNoteAttachment(attachment) }}
-                                      onKeyDown={(event) => event.stopPropagation()}
-                                    >
-                                      {downloadingServiceNoteKey === attachment.key ? <Loader2 className="size-3.5 animate-spin" /> : <AttachmentIcon className="size-3.5" />}
-                                    </button>
-                                  )
-                                })}
-                                {note.attachments.length > 2 ? (
-                                  <button
-                                    type="button"
-                                    className="cursor-pointer text-xs font-medium text-slate-600 hover:text-slate-950"
-                                    onClick={(event) => { event.stopPropagation(); setSelectedServiceNote(note) }}
-                                    onKeyDown={(event) => event.stopPropagation()}
-                                    aria-label={`View all ${note.attachments.length} attachments for ${note.title}`}
-                                  >
-                                    +{note.attachments.length - 2}
-                                  </button>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <Select
+                    value={serviceNoteSort}
+                    onValueChange={(value) => {
+                      setServiceNoteSort(value as ServiceNoteSort)
+                      setServiceNotePage(1)
+                    }}
+                  >
+                    <SelectTrigger className="w-full cursor-pointer sm:w-[180px]" aria-label="Sort service notes">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="updated_desc" className="cursor-pointer">Recently updated</SelectItem>
+                        <SelectItem value="created_desc" className="cursor-pointer">Newest created</SelectItem>
+                        <SelectItem value="updated_asc" className="cursor-pointer">Oldest updated</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    type="button"
+                    className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+                    onClick={() => setIsCreateNoteDialogOpen(true)}
+                  >
+                    Add note
+                  </Button>
+                </div>
+              </div>
+
+              {isServiceNotesLoading ? (
+                <div className="flex flex-1 items-center justify-center px-4 py-16 text-sm text-slate-500" role="status">
+                  <Loader2 className="mr-2 size-4 animate-spin" aria-hidden="true" />
+                  Loading notes...
+                </div>
+              ) : serviceNotesError ? (
+                <div className="flex flex-1 flex-col items-center justify-center px-4 py-16 text-center">
+                  <span className="inline-flex size-12 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                    <StickyNote className="size-5" aria-hidden="true" />
+                  </span>
+                  <h3 className="mt-4 text-lg font-semibold text-slate-950">Could not load notes</h3>
+                  <p className="mt-2 text-sm text-slate-500">{serviceNotesError}</p>
+                  <Button type="button" variant="outline" className="mt-5 cursor-pointer" onClick={() => void loadServiceNotes()}>Retry</Button>
+                </div>
+              ) : serviceNoteItems.length > 0 ? (
+                <div className="flex flex-1 flex-col">
+                  <div className="divide-y divide-slate-100">
+                    {serviceNoteItems.map((note) => (
+                      <article
+                        key={`${note.kind}-${note.id}`}
+                        className="relative grid gap-3 px-3 py-4 transition-colors hover:bg-slate-50/70"
+                      >
+                        <div className="min-w-0">
+                          <div className="relative flex items-start gap-2.5">
+                            <span className="absolute bottom-0 left-4 top-8 hidden w-px -translate-x-1/2 rounded-full bg-slate-200 lg:block" aria-hidden="true" />
+                            <span className="relative mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                              <StickyNote className="size-3.5" aria-hidden="true" />
+                            </span>
+
+                            <div className="flex min-w-0 flex-1 flex-col gap-2">
+                              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+                                <span className="inline-flex items-center gap-1.5">
+                                  <UserRound className="size-3" aria-hidden="true" />
+                                  <span className="font-medium text-slate-700">{note.author?.name ?? "Unknown user"}</span>
+                                </span>
+                                <span className="inline-flex items-center gap-1.5">
+                                  <CalendarDays className="size-3" aria-hidden="true" />
+                                  {formatDateTime(note.createdAt)}
+                                </span>
+                                {note.updatedAt !== note.createdAt ? (
+                                  <span className="inline-flex items-center gap-1.5 text-amber-700">
+                                    <Clock3 className="size-3" aria-hidden="true" />
+                                    Edited {formatDateTime(note.updatedAt)}
+                                  </span>
                                 ) : null}
                               </div>
-                            ) : <span className="text-sm text-slate-400">None</span>}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                      {Array.from({ length: Math.max(0, serviceNotePageSize - serviceNoteItems.length) }, (_, index) => (
-                        <TableRow key={`note-placeholder-${index}`} aria-hidden="true" className="h-14 border-b border-slate-100 hover:bg-transparent"><TableCell colSpan={6} /></TableRow>
-                      ))}
-                    </>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
 
-            <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <span>Rows per page</span>
-                <Select value={String(serviceNotePageSize)} onValueChange={(value) => { setServiceNotePageSize(Number(value) as 10 | 25 | 50); setServiceNotePage(1) }}>
-                  <SelectTrigger className="h-8 w-[72px] cursor-pointer rounded-full border-slate-200 bg-white text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectGroup>{SERVICE_NOTE_PAGE_SIZES.map((size) => <SelectItem key={size} value={String(size)} className="cursor-pointer">{size}</SelectItem>)}</SelectGroup></SelectContent>
-                </Select>
-                <span className="tabular-nums">{serviceNotePagination.total} total</span>
-              </div>
-              <nav aria-label="Service notes pagination" className="flex items-center gap-1">
-                <Button type="button" variant="outline" size="icon-sm" className="cursor-pointer rounded-full border-slate-200 bg-white" disabled={serviceNotePagination.page <= 1 || isServiceNotesLoading} onClick={() => setServiceNotePage((current) => Math.max(1, current - 1))} aria-label="Previous notes page"><ChevronLeft className="size-4" /></Button>
-                {getVisiblePageNumbers(serviceNotePagination.page, serviceNotePagination.totalPages).map((pageNumber) => (
-                  <Button key={pageNumber} type="button" variant={pageNumber === serviceNotePagination.page ? "default" : "outline"} size="icon-sm" className={cn("cursor-pointer rounded-full", pageNumber === serviceNotePagination.page ? "bg-blue-950 text-white hover:bg-blue-900" : "border-slate-200 bg-white")} disabled={isServiceNotesLoading} onClick={() => setServiceNotePage(pageNumber)} aria-label={`Go to notes page ${pageNumber}`} aria-current={pageNumber === serviceNotePagination.page ? "page" : undefined}>{pageNumber}</Button>
-                ))}
-                <Button type="button" variant="outline" size="icon-sm" className="cursor-pointer rounded-full border-slate-200 bg-white" disabled={serviceNotePagination.page >= serviceNotePagination.totalPages || isServiceNotesLoading} onClick={() => setServiceNotePage((current) => Math.min(serviceNotePagination.totalPages, current + 1))} aria-label="Next notes page"><ChevronRight className="size-4" /></Button>
-              </nav>
+                              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+                                <Badge variant="secondary" className="rounded-full px-2 py-1 font-medium text-slate-700">
+                                  {getServiceNoteSourceLabel(note)}
+                                </Badge>
+                                {note.followUpTemplateName ? (
+                                  <span>Template: <span className="font-medium text-slate-700">{note.followUpTemplateName}</span></span>
+                                ) : null}
+                                {note.followUpStepTitle ? (
+                                  <span>Step: <span className="font-medium text-slate-700">{note.followUpStepTitle}</span></span>
+                                ) : null}
+                              </div>
+
+                              <button
+                                type="button"
+                                className="block w-full cursor-pointer rounded-2xl bg-slate-50/80 px-3 py-2.5 text-left outline-none transition hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-blue-700/40"
+                                onClick={() => setSelectedServiceNote(note)}
+                                aria-label={`Open note: ${note.title}`}
+                              >
+                                <span className="block truncate text-sm font-semibold tracking-tight text-slate-950 underline-offset-4 transition hover:text-blue-950 hover:underline">
+                                  {note.title}
+                                </span>
+                                <span className="mt-1 block line-clamp-3 whitespace-pre-wrap text-[13px] leading-5 text-slate-700">
+                                  {note.body}
+                                </span>
+                              </button>
+
+                              {note.attachments.length > 0 ? (
+                                <div className="flex flex-wrap gap-2 border-t border-dashed border-slate-200 pt-2">
+                                  {note.attachments.map((attachment) => {
+                                    const AttachmentIcon = attachmentIcon(attachment.contentType)
+                                    const tone = attachmentTone(attachment.contentType)
+                                    return (
+                                      <button
+                                        key={attachment.id}
+                                        type="button"
+                                        onClick={() => void handleOpenServiceNoteAttachment(attachment)}
+                                        disabled={downloadingServiceNoteKey === attachment.key}
+                                        className={cn(
+                                          "inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-60",
+                                          tone.chip,
+                                        )}
+                                      >
+                                        {downloadingServiceNoteKey === attachment.key ? (
+                                          <Loader2 className="size-3 animate-spin text-slate-500" aria-hidden="true" />
+                                        ) : (
+                                          <AttachmentIcon className={cn("size-3", tone.icon)} aria-hidden="true" />
+                                        )}
+                                        <span className="truncate">{attachment.fileName}</span>
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+
+                  <div className="mt-auto flex flex-col gap-3 border-t border-slate-100 px-2 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <p className="text-sm text-slate-500">
+                        Showing <span className="font-semibold text-slate-950">{serviceNoteItems.length}</span> of <span className="font-semibold text-slate-950">{serviceNotePagination.total}</span>
+                      </p>
+                      <Select value={String(serviceNotePageSize)} onValueChange={(value) => { setServiceNotePageSize(Number(value) as 10 | 25 | 50); setServiceNotePage(1) }}>
+                        <SelectTrigger className="w-[110px] cursor-pointer"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            {SERVICE_NOTE_PAGE_SIZES.map((size) => <SelectItem key={size} value={String(size)} className="cursor-pointer">{size} / page</SelectItem>)}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="mr-2 text-sm text-slate-500">Page <span className="font-semibold text-slate-900">{serviceNotePagination.page}</span> of <span className="font-semibold text-slate-900">{serviceNotePagination.totalPages}</span></p>
+                      <Button type="button" variant="outline" className="cursor-pointer" disabled={serviceNotePagination.page <= 1 || isServiceNotesLoading} onClick={() => setServiceNotePage((current) => Math.max(1, current - 1))}>Previous</Button>
+                      <Button type="button" variant="outline" className="cursor-pointer" disabled={serviceNotePagination.page >= serviceNotePagination.totalPages || isServiceNotesLoading} onClick={() => setServiceNotePage((current) => Math.min(serviceNotePagination.totalPages, current + 1))}>Next</Button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-1 flex-col items-center justify-center px-4 py-16 text-center">
+                  <span className="inline-flex size-12 items-center justify-center rounded-full bg-slate-100 text-slate-500"><StickyNote className="size-5" aria-hidden="true" /></span>
+                  <h3 className="mt-4 text-lg font-semibold text-slate-950">{debouncedServiceNoteSearch ? "No matching notes" : "No notes yet"}</h3>
+                  <p className="mt-2 text-sm text-slate-500">{debouncedServiceNoteSearch ? "Try a different keyword or clear the search to see more notes." : "Add the first note to keep important context and attachments with this service."}</p>
+                  {!debouncedServiceNoteSearch ? <Button type="button" className="mt-5 cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90" onClick={() => setIsCreateNoteDialogOpen(true)}>Add first note</Button> : null}
+                </div>
+              )}
             </div>
           </section>
         ) : null}
