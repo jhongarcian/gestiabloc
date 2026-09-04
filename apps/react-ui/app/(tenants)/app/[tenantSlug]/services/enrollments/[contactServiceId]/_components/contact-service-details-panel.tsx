@@ -683,8 +683,14 @@ const CHECKLIST_STATUS_BY_VALUE = Object.fromEntries(
   CHECKLIST_STATUS_OPTIONS.map((option) => [option.value, option]),
 ) as Record<ContactServiceChecklistStatus, ChecklistStatusOption>
 
-const FOLLOW_UP_INLINE_SAVE_BUTTON_CLASS =
+const COMPACT_PRIMARY_BUTTON_CLASS =
   "h-8 shrink-0 cursor-pointer rounded-full bg-blue-950 px-3 py-1 text-xs font-semibold text-white shadow-sm ring-1 ring-black/5 transition hover:bg-blue-900 hover:text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+
+const COMPACT_SECONDARY_BUTTON_CLASS =
+  "h-8 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+
+const COMPACT_DESTRUCTIVE_BUTTON_CLASS =
+  "h-8 shrink-0 cursor-pointer rounded-full border-rose-200 bg-white px-3 py-1 text-xs font-semibold text-rose-600 shadow-sm transition hover:bg-rose-50 hover:text-rose-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
 
 const formatDateTime = (value: string | null | undefined) => {
   if (!value) return "-"
@@ -3983,7 +3989,7 @@ export function ContactServiceDetailsPanel({
                                                 <Button
                                                   type="button"
                                                   variant="ghost"
-                                                  className={FOLLOW_UP_INLINE_SAVE_BUTTON_CLASS}
+                                                  className={COMPACT_PRIMARY_BUTTON_CLASS}
                                                   disabled={isSavingStepAssignee}
                                                   onClick={() => void saveStepAssignee()}
                                                 >
@@ -4145,7 +4151,7 @@ export function ContactServiceDetailsPanel({
                                         <Button
                                           type="button"
                                           variant="ghost"
-                                          className={FOLLOW_UP_INLINE_SAVE_BUTTON_CLASS}
+                                          className={COMPACT_PRIMARY_BUTTON_CLASS}
                                           disabled={!stepStatusValue || isSavingStepStatus}
                                           onClick={() => void saveStepStatus()}
                                         >
@@ -4504,7 +4510,11 @@ export function ContactServiceDetailsPanel({
                       setServiceNotePage(1)
                     }}
                   >
-                    <SelectTrigger className="w-full cursor-pointer sm:w-[180px]" aria-label="Sort service notes">
+                    <SelectTrigger
+                      size="sm"
+                      className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full justify-between sm:w-[180px]")}
+                      aria-label="Sort service notes"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -4517,7 +4527,9 @@ export function ContactServiceDetailsPanel({
                   </Select>
                   <Button
                     type="button"
-                    className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
+                    variant="ghost"
+                    size="sm"
+                    className={COMPACT_PRIMARY_BUTTON_CLASS}
                     onClick={openCreateServiceNoteDialog}
                   >
                     Add note
@@ -4761,7 +4773,7 @@ export function ContactServiceDetailsPanel({
                           </p>
                         </div>
                       </div>
-                      <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-xl border-blue-200 bg-white text-blue-950 shadow-sm hover:bg-blue-50" disabled={!canEditActiveServiceNote || isServiceNoteMutating || pendingServiceNoteUploads.length >= MAX_NOTE_ATTACHMENTS} onClick={() => serviceNoteFileInputRef.current?.click()}>
+                      <Button type="button" variant="outline" size="sm" className={COMPACT_SECONDARY_BUTTON_CLASS} disabled={!canEditActiveServiceNote || isServiceNoteMutating || pendingServiceNoteUploads.length >= MAX_NOTE_ATTACHMENTS} onClick={() => serviceNoteFileInputRef.current?.click()}>
                         <Upload data-icon="inline-start" />
                         {existingServiceNoteAttachments.length + pendingServiceNoteUploads.length > 0 ? "Add files" : "Choose files"}
                       </Button>
@@ -4835,15 +4847,21 @@ export function ContactServiceDetailsPanel({
 
             <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
               {serviceNoteDialogMode === "edit" && activeEditableServiceNote?.permissions?.canDelete === true ? (
-                <Button type="button" variant="outline" className="cursor-pointer border-rose-200 text-rose-600 hover:bg-rose-50 hover:text-rose-700 sm:mr-auto" disabled={isServiceNoteMutating} onClick={() => void onDeleteServiceNote()}>
-                  {isDeletingServiceNote ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Trash2 data-icon="inline-start" />}
-                  Delete
+                <Button type="button" variant="outline" size="sm" className={cn(COMPACT_DESTRUCTIVE_BUTTON_CLASS, "sm:mr-auto")} disabled={isServiceNoteMutating} onClick={() => void onDeleteServiceNote()}>
+                  {isDeletingServiceNote ? <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" /> : <Trash2 data-icon="inline-start" aria-hidden="true" />}
+                  {isDeletingServiceNote ? "Deleting..." : "Delete"}
                 </Button>
               ) : null}
-              <Button type="button" variant="outline" className="cursor-pointer border-slate-200 bg-white text-slate-700 hover:bg-slate-100" disabled={isServiceNoteMutating} onClick={() => setIsCreateNoteDialogOpen(false)}>Cancel</Button>
-              <Button type="submit" className="min-w-32 cursor-pointer bg-blue-950 text-white shadow-sm hover:bg-blue-900" disabled={isServiceNoteMutating || !canEditActiveServiceNote}>
-                {isNoteSaving ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <StickyNote data-icon="inline-start" />}
-                {isNoteSaving ? "Saving..." : serviceNoteDialogMode === "create" ? "Save note" : "Update note"}
+              <Button type="button" variant="outline" size="sm" className={COMPACT_SECONDARY_BUTTON_CLASS} disabled={isServiceNoteMutating} onClick={() => setIsCreateNoteDialogOpen(false)}>Cancel</Button>
+              <Button type="submit" variant="ghost" size="sm" className={cn(COMPACT_PRIMARY_BUTTON_CLASS, "min-w-32")} disabled={isServiceNoteMutating || !canEditActiveServiceNote}>
+                {isNoteSaving ? <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" /> : null}
+                {isNoteSaving
+                  ? serviceNoteDialogMode === "create"
+                    ? "Creating..."
+                    : "Updating..."
+                  : serviceNoteDialogMode === "create"
+                    ? "Save note"
+                    : "Update note"}
               </Button>
             </DialogFooter>
           </form>
