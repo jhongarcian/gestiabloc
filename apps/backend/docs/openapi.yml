@@ -1139,7 +1139,7 @@ paths:
     post:
       tags: [Contacts]
       summary: Create a note for a contact
-      description: Any active tenant member can create a note. Attachments must reference existing tenant files uploaded through the presign endpoint.
+      description: Any active tenant member can create a note. Title and body are stored as plain text after HTML tags, unsafe control characters, and excess whitespace are removed. Attachments must reference existing tenant files uploaded through the presign endpoint.
       security:
         - cookieAuth: []
       parameters:
@@ -1190,7 +1190,7 @@ paths:
     patch:
       tags: [Contacts]
       summary: Update a contact note
-      description: Only the note creator or a tenant admin can update the note.
+      description: Only the note creator or a tenant admin can update the note. Title and body receive the same plain-text sanitization as note creation.
       security:
         - cookieAuth: []
       parameters:
@@ -4451,7 +4451,7 @@ paths:
     get:
       tags: [Services]
       summary: List notes associated with a contact service process
-      description: Returns a tenant-scoped, merged history of service notes, follow-up notes, and linked contact notes. Service notes expose viewer-specific edit and delete permissions; linked contact and follow-up notes remain read-only here.
+      description: Returns a tenant-scoped, merged history of service notes, follow-up notes, and linked contact notes. Every item exposes viewer-specific edit and delete permissions using the shared note author-or-admin policy.
       security:
         - cookieAuth: []
       parameters:
@@ -4519,6 +4519,7 @@ paths:
     post:
       tags: [Services]
       summary: Add a note to a contact service process
+      description: Creates a service note after sanitizing the title and body as required plain text.
       security:
         - cookieAuth: []
       parameters:
@@ -4569,7 +4570,7 @@ paths:
     patch:
       tags: [Services]
       summary: Update a service note
-      description: Updates a service-created note and atomically replaces its attachment links. The author or a tenant admin may update it.
+      description: Updates a service-created note, sanitizes its title and body as required plain text, and atomically replaces its attachment links. The author or a tenant admin may update it.
       security:
         - cookieAuth: []
       parameters:
@@ -7143,10 +7144,12 @@ components:
           type: string
           minLength: 1
           maxLength: 160
+          description: Plain-text title. HTML tags and unsafe control characters are removed, whitespace is collapsed, and a value that becomes empty is rejected.
         body:
           type: string
           minLength: 1
           maxLength: 5000
+          description: Plain-text note details. HTML tags and unsafe control characters are removed, line breaks are normalized, and a value that becomes empty is rejected.
         contactServiceId:
           type: string
           nullable: true
@@ -9082,10 +9085,10 @@ components:
           properties:
             canEdit:
               type: boolean
-              description: True only for service-created notes when the viewer is the author or a tenant admin.
+              description: True when the viewer is the note author or a tenant admin.
             canDelete:
               type: boolean
-              description: True only for service-created notes when the viewer is the author or a tenant admin.
+              description: True when the viewer is the note author or a tenant admin.
         attachments:
           type: array
           items:
@@ -9482,10 +9485,14 @@ components:
       properties:
         title:
           type: string
+          minLength: 1
           maxLength: 160
+          description: Plain-text title. HTML tags and unsafe control characters are removed, whitespace is collapsed, and a value that becomes empty is rejected.
         body:
           type: string
+          minLength: 1
           maxLength: 5000
+          description: Plain-text note details. HTML tags and unsafe control characters are removed, line breaks are normalized, and a value that becomes empty is rejected.
         attachmentFileIds:
           type: array
           maxItems: 10

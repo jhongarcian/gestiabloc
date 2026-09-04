@@ -203,15 +203,14 @@ Changing the coordinator never changes existing step assignees. Existing step-as
 
 ## Service Note Management
 
-Service-created notes use the same ownership policy as contact notes:
+Service, linked-contact, and follow-up notes shown on an enrollment use the same ownership policy as contact notes:
 
-- Active `TENANT_ADMIN`: can edit and delete any service-created note in the tenant
-- Active `TENANT_USER` at any security level: can edit and delete only service-created notes they authored
+- Active `TENANT_ADMIN`: can edit and delete any displayed note in the tenant
+- Active `TENANT_USER` at any security level: can edit and delete only displayed notes they authored
 - Other active members: can view the note but do not receive edit or delete controls
-- Linked contact notes and follow-up notes: read-only from the service enrollment page
 - Inactive or non-member users: denied by the active-membership guard
 
-The API validates tenant, enrollment, note source, and authorship before updating or deleting. Client-side visibility is only a presentation rule and is not the authorization boundary.
+The API validates tenant, enrollment/contact ownership, note source, and authorship before updating or deleting. Service-created notes use the service-note endpoint; linked contact and follow-up notes use the existing contact-note endpoint. Client-side visibility is only a presentation rule and is not the authorization boundary.
 
 ## Sensitive Custom Field Access Configuration
 

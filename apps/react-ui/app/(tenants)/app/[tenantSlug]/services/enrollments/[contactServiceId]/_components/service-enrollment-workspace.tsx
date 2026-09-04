@@ -9,6 +9,8 @@ type ServiceEnrollmentWorkspaceProps = {
   tenantId: string
   tenantSlug: string
   contactServiceId: string
+  currentUserId: string
+  membershipRole: string
   membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
   canManageProfessional: boolean
 }
@@ -17,6 +19,8 @@ export function ServiceEnrollmentWorkspace({
   tenantId,
   tenantSlug,
   contactServiceId,
+  currentUserId,
+  membershipRole,
   membershipSecurityLevel,
   canManageProfessional,
 }: ServiceEnrollmentWorkspaceProps) {
@@ -31,6 +35,8 @@ export function ServiceEnrollmentWorkspace({
       tenantId={tenantId}
       tenantSlug={tenantSlug}
       contactServiceId={contactServiceId}
+      currentUserId={currentUserId}
+      membershipRole={membershipRole}
       membershipSecurityLevel={membershipSecurityLevel}
       canManageProfessional={canManageProfessional}
       activeView={activeView}

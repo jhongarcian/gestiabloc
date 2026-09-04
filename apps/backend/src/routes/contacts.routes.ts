@@ -7,6 +7,10 @@ import {
 } from "../lib/contact-custom-field-encryption.js"
 import { normalizeCustomFieldValue } from "../lib/contact-custom-field-values.js"
 import { summarizeVisibleContactFollowUpServices } from "../lib/contact-followup-visibility.js"
+import {
+  NoteBodyInputSchema,
+  NoteTitleInputSchema,
+} from "../lib/note-inputs.js"
 import { prisma } from "../lib/prisma.js"
 import { emitNotificationCreated } from "../lib/realtime.js"
 import { deletePrivateObject } from "../lib/private-storage.js"
@@ -144,8 +148,8 @@ const ContactNoteAttachmentIdsSchema = z
   .default([])
 
 const CreateContactNoteSchema = z.object({
-  title: z.string().trim().min(1).max(160),
-  body: z.string().trim().min(1).max(5000),
+  title: NoteTitleInputSchema,
+  body: NoteBodyInputSchema,
   contactServiceId: z.string().trim().min(1).nullable().optional(),
   followUpTemplateId: z.string().trim().min(1).nullable().optional(),
   contactServiceFollowUpStepId: z.string().trim().min(1).nullable().optional(),
@@ -153,8 +157,8 @@ const CreateContactNoteSchema = z.object({
 })
 
 const UpdateContactNoteSchema = z.object({
-  title: z.string().trim().min(1).max(160),
-  body: z.string().trim().min(1).max(5000),
+  title: NoteTitleInputSchema,
+  body: NoteBodyInputSchema,
   attachmentFileIds: ContactNoteAttachmentIdsSchema,
 })
 
@@ -2697,8 +2701,8 @@ router.post(
             contactServiceId: resolvedContactServiceId,
             followUpTemplateId: resolvedFollowUpTemplateId,
             contactServiceFollowUpStepId: resolvedContactServiceFollowUpStepId,
-            title: sanitizeSingleLineText(payload.title),
-            body: sanitizeMultilineText(payload.body),
+            title: payload.title,
+            body: payload.body,
             createdById: authed.user.id,
             attachments: {
               create: files.map((file: { id: string }) => ({

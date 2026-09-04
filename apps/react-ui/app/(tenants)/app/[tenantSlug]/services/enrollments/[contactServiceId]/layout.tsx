@@ -12,7 +12,7 @@ export default async function ServiceEnrollmentLayout({
   params: Promise<{ tenantSlug: string; contactServiceId: string }>
 }>) {
   const { tenantSlug, contactServiceId } = await params
-  const { membership, tenantId } = await getTenantMembershipContext(tenantSlug)
+  const { membership, tenantId, user } = await getTenantMembershipContext(tenantSlug)
 
   if (!membership?.tenant?.id) {
     redirect(`/app/${tenantSlug}`)
@@ -31,6 +31,8 @@ export default async function ServiceEnrollmentLayout({
           tenantId={tenantId}
           tenantSlug={tenantSlug}
           contactServiceId={contactServiceId}
+          currentUserId={user.id}
+          membershipRole={membership.role}
           membershipSecurityLevel={membership.securityLevel}
           canManageProfessional={membership.role === "TENANT_ADMIN" || membership.securityLevel !== "LOW"}
         />

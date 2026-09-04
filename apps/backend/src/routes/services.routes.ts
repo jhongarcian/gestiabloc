@@ -25,6 +25,10 @@ import {
   resolveContactServiceChecklistStatus,
   resolveContactServiceChecklistTransition,
 } from "../lib/contact-service-checklist-status.js"
+import {
+  NoteBodyInputSchema,
+  NoteTitleInputSchema,
+} from "../lib/note-inputs.js"
 import { prisma } from "../lib/prisma.js"
 import { deletePrivateObject } from "../lib/private-storage.js"
 import { generateServiceFitExplanation } from "../lib/service-fit-explanations.js"
@@ -247,20 +251,16 @@ const serializePaginatedServiceNote = (
   followUpTemplateName: note.followUpTemplate?.name ?? null,
   followUpStepTitle: note.contactServiceFollowUpStep?.title ?? null,
   permissions: {
-    canEdit:
-      kind === "SERVICE_NOTE" &&
-      canManageContactServiceNote(
-        viewer.membership,
-        note.createdById,
-        viewer.userId,
-      ),
-    canDelete:
-      kind === "SERVICE_NOTE" &&
-      canManageContactServiceNote(
-        viewer.membership,
-        note.createdById,
-        viewer.userId,
-      ),
+    canEdit: canManageContactServiceNote(
+      viewer.membership,
+      note.createdById,
+      viewer.userId,
+    ),
+    canDelete: canManageContactServiceNote(
+      viewer.membership,
+      note.createdById,
+      viewer.userId,
+    ),
   },
   attachments: (note.attachments ?? []).map((attachment) => ({
     id: attachment.id,
@@ -545,8 +545,8 @@ const ContactServiceNoteAttachmentIdsSchema = z
   .default([])
 
 const CreateContactServiceNoteSchema = z.object({
-  title: z.string().trim().min(1).max(160),
-  body: z.string().trim().min(1).max(5000),
+  title: NoteTitleInputSchema,
+  body: NoteBodyInputSchema,
   attachmentFileIds: ContactServiceNoteAttachmentIdsSchema,
 })
 
@@ -4225,8 +4225,8 @@ router.post(
           tenantId,
           contactServiceId,
           createdById: authed.user.id,
-          title: sanitizeSingleLineText(payload.title),
-          body: sanitizeMultilineText(payload.body),
+          title: payload.title,
+          body: payload.body,
           attachments: {
             create: files.map((file: { id: string }) => ({
               tenantId,
@@ -4339,8 +4339,8 @@ router.patch(
         await txWithServices.contactServiceNote.update({
           where: { id: noteId },
           data: {
-            title: sanitizeSingleLineText(payload.title),
-            body: sanitizeMultilineText(payload.body),
+            title: payload.title,
+            body: payload.body,
           },
         })
 

@@ -144,6 +144,10 @@ type PendingUpload = {
 
 type ServiceNoteKind = "SERVICE_NOTE" | "FOLLOW_UP_NOTE" | "LINKED_CONTACT_NOTE"
 type ServiceNoteSort = "updated_desc" | "created_desc" | "updated_asc"
+type ServiceNotePermissions = {
+  canEdit: boolean
+  canDelete: boolean
+}
 type ServiceNoteItem = {
   id: string
   kind: ServiceNoteKind
@@ -159,20 +163,38 @@ type ServiceNoteItem = {
   } | null
   followUpTemplateName?: string | null
   followUpStepTitle?: string | null
-  permissions: {
-    canEdit: boolean
-    canDelete: boolean
-  }
+  permissions: ServiceNotePermissions
   attachments: NoteAttachment[]
+}
+type ServiceNoteApiItem = Omit<ServiceNoteItem, "permissions" | "attachments"> & {
+  permissions?: Partial<ServiceNotePermissions> | null
+  attachments?: NoteAttachment[] | null
 }
 type ServiceNotesResponse = {
   ok: boolean
-  items: ServiceNoteItem[]
+  items: ServiceNoteApiItem[]
   pagination: {
     page: number
     pageSize: 10 | 25 | 50
     total: number
     totalPages: number
+  }
+}
+
+const normalizeServiceNoteItem = (
+  note: ServiceNoteApiItem,
+  viewer: { userId: string; role: string },
+): ServiceNoteItem => {
+  const canManageFromSession =
+    viewer.role === "TENANT_ADMIN" || note.author?.id === viewer.userId
+
+  return {
+    ...note,
+    permissions: {
+      canEdit: note.permissions?.canEdit === true || canManageFromSession,
+      canDelete: note.permissions?.canDelete === true || canManageFromSession,
+    },
+    attachments: note.attachments ?? [],
   }
 }
 
@@ -391,6 +413,8 @@ type ContactServiceDetailsPanelProps = {
   tenantId: string
   tenantSlug: string
   contactServiceId: string
+  currentUserId: string
+  membershipRole: string
   membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
   canManageProfessional: boolean
   activeView: ServiceEnrollmentView
@@ -1022,6 +1046,8 @@ export function ContactServiceDetailsPanel({
   tenantId,
   tenantSlug,
   contactServiceId,
+  currentUserId,
+  membershipRole,
   membershipSecurityLevel,
   canManageProfessional,
   activeView,
@@ -1089,7 +1115,6 @@ export function ContactServiceDetailsPanel({
   const [activeEditableServiceNote, setActiveEditableServiceNote] =
     useState<ServiceNoteItem | null>(null)
   const [isDeletingServiceNote, setIsDeletingServiceNote] = useState(false)
-  const [selectedServiceNote, setSelectedServiceNote] = useState<ServiceNoteItem | null>(null)
   const [serviceNoteItems, setServiceNoteItems] = useState<ServiceNoteItem[]>([])
   const [serviceNotePagination, setServiceNotePagination] = useState<
     ServiceNotesResponse["pagination"]
@@ -1151,7 +1176,7 @@ export function ContactServiceDetailsPanel({
   const isServiceNoteMutating = isNoteSaving || isDeletingServiceNote
   const canEditActiveServiceNote =
     serviceNoteDialogMode === "create" ||
-    Boolean(activeEditableServiceNote?.permissions.canEdit)
+    activeEditableServiceNote?.permissions?.canEdit === true
 
   const loadOverview = useCallback(async (showInitialLoading = true) => {
     if (showInitialLoading) setIsLoading(true)
@@ -1201,7 +1226,14 @@ export function ContactServiceDetailsPanel({
             },
           },
         )
-        setServiceNoteItems(data.items ?? [])
+        setServiceNoteItems(
+          (data.items ?? []).map((note) =>
+            normalizeServiceNoteItem(note, {
+              userId: currentUserId,
+              role: membershipRole,
+            }),
+          ),
+        )
         setServiceNotePagination(data.pagination)
         if (data.pagination.page !== serviceNotePage) {
           setServiceNotePage(data.pagination.page)
@@ -1214,8 +1246,10 @@ export function ContactServiceDetailsPanel({
     },
     [
       debouncedServiceNoteSearch,
+      currentUserId,
       encodedContactServiceId,
       encodedTenantId,
+      membershipRole,
       serviceNotePage,
       serviceNotePageSize,
       serviceNoteSort,
@@ -1251,7 +1285,6 @@ export function ContactServiceDetailsPanel({
     setDebouncedServiceNoteSearch("")
     setServiceNoteSort("updated_desc")
     setServiceNotesError(null)
-    setSelectedServiceNote(null)
     setPreviewServiceNoteAttachment(null)
     setServiceNotePreviewUrl(null)
     setServiceNotePreviewError(null)
@@ -1329,10 +1362,7 @@ export function ContactServiceDetailsPanel({
   }
 
   const openServiceNote = (note: ServiceNoteItem) => {
-    if (!note.permissions.canEdit) {
-      setSelectedServiceNote(note)
-      return
-    }
+    if (note.permissions?.canEdit !== true) return
 
     resetNoteForm()
     setServiceNoteDialogMode("edit")
@@ -1665,28 +1695,47 @@ export function ContactServiceDetailsPanel({
         body: trimmedBody,
         attachmentFileIds,
       }
-      const response =
-        serviceNoteDialogMode === "edit" && activeEditableServiceNote
-          ? await api.patch<{
-              ok: boolean
-              note: ServiceNoteItem
-            }>(
-              `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/notes/${encodeURIComponent(activeEditableServiceNote.id)}`,
-              requestBody,
-            )
-          : await api.post<{
-        ok: boolean
-        note: {
+      const editNotePath = activeEditableServiceNote
+        ? activeEditableServiceNote.kind === "SERVICE_NOTE"
+          ? `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/notes/${encodeURIComponent(activeEditableServiceNote.id)}`
+          : resolvedContactId
+            ? `/api/contacts/${encodedTenantId}/${encodeURIComponent(resolvedContactId)}/notes/${encodeURIComponent(activeEditableServiceNote.id)}`
+            : null
+        : null
+      let savedNote:
+        | ServiceNoteItem
+        | {
           id: string
           title: string
           createdAt: string
           createdBy?: { id: string; name: string | null; image?: string | null } | null
         }
-      }>(
-        `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/notes`,
-        requestBody,
-      )
-      const savedNote = response.data.note
+
+      if (serviceNoteDialogMode === "edit") {
+        if (!activeEditableServiceNote || !editNotePath) {
+          toast.error("Could not identify the linked contact for this note.")
+          return
+        }
+        const { data } = await api.patch<{ ok: boolean; note: ServiceNoteItem }>(
+          editNotePath,
+          requestBody,
+        )
+        savedNote = data.note
+      } else {
+        const { data } = await api.post<{
+          ok: boolean
+          note: {
+            id: string
+            title: string
+            createdAt: string
+            createdBy?: { id: string; name: string | null; image?: string | null } | null
+          }
+        }>(
+          `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/notes`,
+          requestBody,
+        )
+        savedNote = data.note
+      }
       toast.success(
         serviceNoteDialogMode === "edit" ? "Service note updated." : "Service note added.",
       )
@@ -1763,14 +1812,22 @@ export function ContactServiceDetailsPanel({
   }
 
   const onDeleteServiceNote = async () => {
-    if (!activeEditableServiceNote?.permissions.canDelete) return
+    if (activeEditableServiceNote?.permissions?.canDelete !== true) return
     const noteId = activeEditableServiceNote.id
+    const deleteNotePath =
+      activeEditableServiceNote.kind === "SERVICE_NOTE"
+        ? `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/notes/${encodeURIComponent(noteId)}`
+        : resolvedContactId
+          ? `/api/contacts/${encodedTenantId}/${encodeURIComponent(resolvedContactId)}/notes/${encodeURIComponent(noteId)}`
+          : null
+    if (!deleteNotePath) {
+      toast.error("Could not identify the linked contact for this note.")
+      return
+    }
 
     setIsDeletingServiceNote(true)
     try {
-      await api.delete(
-        `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/notes/${encodeURIComponent(noteId)}`,
-      )
+      await api.delete(deleteNotePath)
       toast.success("Service note deleted.")
       setItem((current) =>
         current
@@ -4528,16 +4585,22 @@ export function ContactServiceDetailsPanel({
                               </div>
 
                               <div className="rounded-2xl bg-slate-50/80 px-3 py-2.5">
-                                <button
-                                  type="button"
-                                  className="block w-full cursor-pointer text-left outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-blue-700/40"
-                                  onClick={() => openServiceNote(note)}
-                                  aria-label={`${note.permissions.canEdit ? "Edit" : "Open"} note: ${note.title}`}
-                                >
-                                  <span className="block truncate text-sm font-semibold tracking-tight text-slate-950 underline-offset-4 transition hover:text-blue-950 hover:underline">
+                                {note.permissions?.canEdit === true ? (
+                                  <button
+                                    type="button"
+                                    className="block w-full cursor-pointer text-left outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-blue-700/40"
+                                    onClick={() => openServiceNote(note)}
+                                    aria-label={`Edit note: ${note.title}`}
+                                  >
+                                    <span className="block truncate text-sm font-semibold tracking-tight text-slate-950 underline-offset-4 transition hover:text-blue-950 hover:underline">
+                                      {note.title}
+                                    </span>
+                                  </button>
+                                ) : (
+                                  <h3 className="truncate text-sm font-semibold tracking-tight text-slate-950">
                                     {note.title}
-                                  </span>
-                                </button>
+                                  </h3>
+                                )}
                                 <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-[13px] leading-5 text-slate-700">
                                   {note.body}
                                 </p>
@@ -4622,31 +4685,31 @@ export function ContactServiceDetailsPanel({
         }}
       >
         <DialogContent
-          className="grid max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 p-0 sm:max-w-3xl [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:p-2"
+          className="grid max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 bg-white p-0 shadow-2xl sm:max-w-3xl [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:opacity-100 [&>button]:shadow-sm [&>button]:backdrop-blur"
           onEscapeKeyDown={(event) => { if (isServiceNoteMutating) event.preventDefault() }}
           onInteractOutside={(event) => { if (isServiceNoteMutating) event.preventDefault() }}
         >
-          <DialogHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 pr-14 text-left sm:px-7">
+          <DialogHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
             <div aria-hidden="true" className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]" />
-            <div className="relative">
-              <p className="text-xs font-semibold text-blue-700">Service activity</p>
-              <DialogTitle className="mt-1.5 text-xl font-semibold text-slate-950 sm:text-2xl">
-                {serviceNoteDialogMode === "create" ? "Create a note" : "Edit note"}
-              </DialogTitle>
-              <DialogDescription className="mt-1.5 max-w-xl text-sm leading-6 text-slate-600">
-                Capture the context your team needs and keep supporting files with {serviceData.service.name}.
-              </DialogDescription>
+            <div aria-hidden="true" className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl" />
+            <div className="relative pr-10">
+              <div className="flex max-w-2xl min-w-0 flex-col gap-1.5">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-700">Service activity</p>
+                <DialogTitle className="text-xl font-semibold tracking-tight text-slate-950 sm:text-2xl">
+                  {serviceNoteDialogMode === "create" ? "Create a note" : "Edit note"}
+                </DialogTitle>
+                <DialogDescription className="max-w-xl text-sm leading-6 text-slate-600">
+                  Capture the context your team needs and keep supporting files with {serviceData.service.name}.
+                </DialogDescription>
+              </div>
             </div>
           </DialogHeader>
 
           <form id="service-note-form" className="contents" onSubmit={(event) => { event.preventDefault(); void onSaveServiceNote() }}>
             <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
-              <FieldGroup>
-                <Field data-invalid={Boolean(serviceNoteFieldErrors.title)}>
-                  <div className="flex items-center justify-between gap-3">
-                    <FieldLabel htmlFor="service-note-title">Title <span className="text-rose-600" aria-hidden="true">*</span></FieldLabel>
-                    <span className="text-xs text-slate-400 tabular-nums">{serviceNoteTitle.length}/160</span>
-                  </div>
+              <FieldGroup className="gap-5">
+                <Field data-invalid={Boolean(serviceNoteFieldErrors.title)} data-disabled={!canEditActiveServiceNote || isServiceNoteMutating} className="gap-2">
+                  <FieldLabel htmlFor="service-note-title" className="text-slate-800">Note title</FieldLabel>
                   <Input
                     id="service-note-title"
                     value={serviceNoteTitle}
@@ -4654,17 +4717,18 @@ export function ContactServiceDetailsPanel({
                     disabled={!canEditActiveServiceNote || isServiceNoteMutating}
                     aria-invalid={Boolean(serviceNoteFieldErrors.title)}
                     onChange={(event) => { setServiceNoteTitle(event.target.value); setServiceNoteFieldErrors((current) => ({ ...current, title: undefined })) }}
-                    placeholder="Give this note a clear title"
-                    className="h-11 rounded-xl border-slate-200"
+                    placeholder="Example: Medicare paperwork pending"
+                    className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
                   />
-                  {serviceNoteFieldErrors.title ? <FieldError>{serviceNoteFieldErrors.title}</FieldError> : null}
+                  <FieldDescription className="flex items-start justify-between gap-4 text-xs">
+                    <span>Make it easy to recognize in the activity timeline.</span>
+                    <span className="shrink-0 tabular-nums">{serviceNoteTitle.length}/160</span>
+                  </FieldDescription>
+                  <FieldError>{serviceNoteFieldErrors.title}</FieldError>
                 </Field>
 
-                <Field data-invalid={Boolean(serviceNoteFieldErrors.body)}>
-                  <div className="flex items-center justify-between gap-3">
-                    <FieldLabel htmlFor="service-note-body">Note details <span className="text-rose-600" aria-hidden="true">*</span></FieldLabel>
-                    <span className="text-xs text-slate-400 tabular-nums">{serviceNoteBody.length}/5,000</span>
-                  </div>
+                <Field data-invalid={Boolean(serviceNoteFieldErrors.body)} data-disabled={!canEditActiveServiceNote || isServiceNoteMutating} className="gap-2">
+                  <FieldLabel htmlFor="service-note-body" className="text-slate-800">Note details</FieldLabel>
                   <Textarea
                     id="service-note-body"
                     value={serviceNoteBody}
@@ -4673,20 +4737,29 @@ export function ContactServiceDetailsPanel({
                     disabled={!canEditActiveServiceNote || isServiceNoteMutating}
                     aria-invalid={Boolean(serviceNoteFieldErrors.body)}
                     onChange={(event) => { setServiceNoteBody(event.target.value); setServiceNoteFieldErrors((current) => ({ ...current, body: undefined })) }}
-                    placeholder="Record the full service context"
-                    className="min-h-[168px] resize-y rounded-xl border-slate-200 text-sm leading-6"
+                    placeholder="Add the context, decisions, and follow-up details the team should know..."
+                    className="min-h-40 resize-y rounded-xl border-slate-200 bg-slate-50/60 px-4 py-3 leading-6 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
                   />
-                  {serviceNoteFieldErrors.body ? <FieldError>{serviceNoteFieldErrors.body}</FieldError> : null}
+                  <FieldDescription className="flex items-start justify-between gap-4 text-xs">
+                    <span>Include useful context and any next steps.</span>
+                    <span className="shrink-0 tabular-nums">{serviceNoteBody.length}/5000</span>
+                  </FieldDescription>
+                  <FieldError>{serviceNoteFieldErrors.body}</FieldError>
                 </Field>
 
                 <Field>
                   <section className="flex flex-col gap-4 rounded-[22px] border border-blue-100 bg-[#f1f7ff] p-4 sm:p-5">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex flex-col gap-1">
-                        <h3 className="text-sm font-semibold text-slate-950">Supporting files</h3>
-                        <p className="text-xs leading-5 text-slate-600">
-                          PNG, JPG, or WEBP up to 5 MB; PDF up to 20 MB.
-                        </p>
+                      <div className="flex items-start gap-3">
+                        <span className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-blue-100 bg-white text-blue-800 shadow-sm">
+                          <Paperclip className="size-4" aria-hidden="true" />
+                        </span>
+                        <div className="flex flex-col gap-1">
+                          <h3 className="text-sm font-semibold text-slate-950">Supporting files</h3>
+                          <p className="text-xs leading-5 text-slate-600">
+                            PNG, JPG, or WEBP up to 5 MB; PDF up to 20 MB.
+                          </p>
+                        </div>
                       </div>
                       <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-xl border-blue-200 bg-white text-blue-950 shadow-sm hover:bg-blue-50" disabled={!canEditActiveServiceNote || isServiceNoteMutating || pendingServiceNoteUploads.length >= MAX_NOTE_ATTACHMENTS} onClick={() => serviceNoteFileInputRef.current?.click()}>
                         <Upload data-icon="inline-start" />
@@ -4761,43 +4834,19 @@ export function ContactServiceDetailsPanel({
             </div>
 
             <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
-              {serviceNoteDialogMode === "edit" && activeEditableServiceNote?.permissions.canDelete ? (
-                <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-rose-200 px-4 text-rose-600 hover:bg-rose-50 hover:text-rose-700 sm:mr-auto" disabled={isServiceNoteMutating} onClick={() => void onDeleteServiceNote()}>
+              {serviceNoteDialogMode === "edit" && activeEditableServiceNote?.permissions?.canDelete === true ? (
+                <Button type="button" variant="outline" className="cursor-pointer border-rose-200 text-rose-600 hover:bg-rose-50 hover:text-rose-700 sm:mr-auto" disabled={isServiceNoteMutating} onClick={() => void onDeleteServiceNote()}>
                   {isDeletingServiceNote ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Trash2 data-icon="inline-start" />}
                   Delete
                 </Button>
               ) : null}
-              <Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-slate-200 bg-white px-4" disabled={isServiceNoteMutating} onClick={() => setIsCreateNoteDialogOpen(false)}>Cancel</Button>
-              <Button type="submit" size="sm" className="cursor-pointer rounded-full bg-blue-950 px-4 text-white hover:bg-blue-900" disabled={isServiceNoteMutating || !canEditActiveServiceNote}>
+              <Button type="button" variant="outline" className="cursor-pointer border-slate-200 bg-white text-slate-700 hover:bg-slate-100" disabled={isServiceNoteMutating} onClick={() => setIsCreateNoteDialogOpen(false)}>Cancel</Button>
+              <Button type="submit" className="min-w-32 cursor-pointer bg-blue-950 text-white shadow-sm hover:bg-blue-900" disabled={isServiceNoteMutating || !canEditActiveServiceNote}>
                 {isNoteSaving ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <StickyNote data-icon="inline-start" />}
                 {isNoteSaving ? "Saving..." : serviceNoteDialogMode === "create" ? "Save note" : "Update note"}
               </Button>
             </DialogFooter>
           </form>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={Boolean(selectedServiceNote)} onOpenChange={(open) => { if (!open) setSelectedServiceNote(null) }}>
-        <DialogContent className="grid max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 p-0 sm:max-w-3xl [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:p-2">
-          <DialogHeader className="border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 pr-14 text-left sm:px-7">
-            <p className="text-xs font-semibold text-blue-700">Service activity</p>
-            <DialogTitle className="mt-1.5 text-xl font-semibold text-slate-950 sm:text-2xl">{selectedServiceNote?.title}</DialogTitle>
-            <DialogDescription className="mt-1.5 text-sm leading-6 text-slate-600">Read-only note details and supporting files.</DialogDescription>
-          </DialogHeader>
-          {selectedServiceNote ? (
-            <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
-              <dl className="grid gap-4 border-b border-slate-200 pb-5 text-sm sm:grid-cols-4">
-                <div><dt className="text-xs font-medium text-slate-500">Source</dt><dd className="mt-1 font-medium text-slate-900">{getServiceNoteSourceLabel(selectedServiceNote)}</dd></div>
-                <div><dt className="text-xs font-medium text-slate-500">Author</dt><dd className="mt-1 font-medium text-slate-900">{selectedServiceNote.author?.name ?? "Unknown user"}</dd></div>
-                <div><dt className="text-xs font-medium text-slate-500">Created</dt><dd className="mt-1 font-medium text-slate-900">{formatDateTime(selectedServiceNote.createdAt)}</dd></div>
-                <div><dt className="text-xs font-medium text-slate-500">Updated</dt><dd className="mt-1 font-medium text-slate-900">{formatDateTime(selectedServiceNote.updatedAt)}</dd></div>
-              </dl>
-              {selectedServiceNote.followUpTemplateName ? <p className="mt-4 text-sm text-slate-600"><span className="font-medium text-slate-900">Template:</span> {selectedServiceNote.followUpTemplateName}</p> : null}
-              <div className="mt-5"><h3 className="text-sm font-semibold text-slate-950">Note details</h3><p className="mt-2 whitespace-pre-wrap break-words text-sm leading-7 text-slate-700">{selectedServiceNote.body}</p></div>
-              <div className="mt-6 border-t border-slate-200 pt-5"><h3 className="text-sm font-semibold text-slate-950">Attachments</h3>{selectedServiceNote.attachments.length ? <div className="mt-3 flex flex-wrap gap-2">{selectedServiceNote.attachments.map((attachment) => { const AttachmentIcon = attachmentIcon(attachment.contentType); return <Button key={attachment.id} type="button" variant="outline" size="sm" className="max-w-full cursor-pointer rounded-full border-slate-200 bg-white" disabled={downloadingServiceNoteKey === attachment.key} onClick={() => void handlePreviewServiceNoteAttachment(attachment)}>{downloadingServiceNoteKey === attachment.key ? <Loader2 className="size-3.5 animate-spin" /> : <AttachmentIcon className="size-3.5" />}<span className="truncate">{attachment.fileName}</span></Button> })}</div> : <p className="mt-2 text-sm text-slate-500">No attachments.</p>}</div>
-            </div>
-          ) : null}
-          <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:px-7"><Button type="button" variant="outline" size="sm" className="cursor-pointer rounded-full border-slate-200 bg-white px-4" onClick={() => setSelectedServiceNote(null)}>Close</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
