@@ -171,6 +171,47 @@ Deletion behavior:
 - Linked CRM tasks are preserved, while their contact-service and follow-up-step references are cleared
 - The backend permission check is authoritative; hiding the UI control is not treated as the security boundary
 
+## Service Professional Assignment
+
+The enrollment's assigned professional is separate from its follow-up coordinator and step assignees.
+
+- Active `TENANT_ADMIN` and active `TENANT_USER + MEDIUM/MAX` can select or clear the professional from the enrollment header.
+- Active `TENANT_USER + LOW` sees the professional as read-only. Direct PATCH requests are rejected with `403 INSUFFICIENT_SECURITY_LEVEL`.
+- Inactive and non-member users are rejected by the active-membership guard before enrollment lookup.
+- The selected professional must be configured for the same service in the same tenant. Invalid IDs return `400 INVALID_ASSIGNED_SERVICE_PROFESSIONAL`.
+- Changes are audited with the authenticated actor and previous/new professional, do not cascade to follow-up ownership, and remain permitted after workflow completion.
+- The existing sensitive-service permission is enforced on the server; hiding the selector is not the security boundary.
+
+## Service Follow-Up Ownership
+
+Service follow-up responsibility is separated into three records:
+
+- **Follow-up coordinator:** the overall owner of the enrollment's follow-up workflow
+- **Step assignee:** the tenant user responsible for one specific follow-up step
+- **Resolved by:** the authenticated user who completed or user-skipped the step; automated resolution has no user actor
+
+Coordinator permission matrix:
+
+- Active `TENANT_ADMIN`: can view and change the coordinator while the workflow is open
+- Active `TENANT_USER + MEDIUM`: can view and change the coordinator while the workflow is open
+- Active `TENANT_USER + MAX`: can view and change the coordinator while the workflow is open
+- Active `TENANT_USER + LOW`: can view the coordinator but cannot edit it; direct API requests return `403 INSUFFICIENT_SECURITY_LEVEL`
+- Inactive or non-member users: denied by the active-membership guard
+- Any role after workflow completion: the final coordinator is read-only until a step is reopened
+
+Changing the coordinator never changes existing step assignees. Existing step-assignment permissions remain unchanged, and completed or skipped steps cannot be reassigned. The backend permission and workflow-state checks are authoritative.
+
+## Service Note Management
+
+Service, linked-contact, and follow-up notes shown on an enrollment use the same ownership policy as contact notes:
+
+- Active `TENANT_ADMIN`: can edit and delete any displayed note in the tenant
+- Active `TENANT_USER` at any security level: can edit and delete only displayed notes they authored
+- Other active members: can view the note but do not receive edit or delete controls
+- Inactive or non-member users: denied by the active-membership guard
+
+The API validates tenant, enrollment/contact ownership, note source, and authorship before updating or deleting. Service-created notes use the service-note endpoint; linked contact and follow-up notes use the existing contact-note endpoint. Client-side visibility is only a presentation rule and is not the authorization boundary.
+
 ## Sensitive Custom Field Access Configuration
 
 Sensitive custom fields use a specific approval model:

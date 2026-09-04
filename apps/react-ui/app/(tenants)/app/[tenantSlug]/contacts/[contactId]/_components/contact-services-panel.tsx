@@ -86,6 +86,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
+import {
+  CONTACT_SERVICES_PAGE_SIZES,
+  getContactServicesHref,
+  getServiceEnrollmentHref,
+  type ContactServicesPageSize,
+} from "@/lib/routes"
 import { cn } from "@/lib/utils"
 import {
   FIT_STATUS_STYLES,
@@ -102,6 +108,13 @@ type ContactServiceItem = {
   paidCents: number
   remainingCents: number
   currency: string
+  followUpCoordinatorUserId?: string | null
+  followUpCoordinator?: {
+    id: string
+    name: string | null
+    email: string | null
+    image: string | null
+  } | null
   service: {
     id: string
     name: string
@@ -123,11 +136,28 @@ type ContactServiceItem = {
     effectiveDueAt?: string | null
     completedAt?: string | null
     assignedTo?: {
+      id: string
+      name: string | null
+      email: string | null
+      image: string | null
+    } | null
+    resolvedBy?: {
+      id: string
       name: string | null
       email: string | null
       image: string | null
     } | null
   }>
+}
+
+type FollowUpParticipant = {
+  id: string
+  name: string | null
+  email: string | null
+  image: string | null
+  isCoordinator: boolean
+  assignedStepCount: number
+  resolvedStepCount: number
 }
 
 type ContactServicesResponse = {
@@ -147,7 +177,7 @@ type ContactServicesResponse = {
   }
 }
 
-const PAGE_SIZE_OPTIONS = [10, 25] as const
+const PAGE_SIZE_OPTIONS = CONTACT_SERVICES_PAGE_SIZES
 
 type ServiceOptionsResponse = {
   ok: boolean
@@ -225,6 +255,8 @@ type ContactServicesPanelProps = {
   membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
   initialCreateServiceId?: string | null
   initialCreateOpen?: boolean
+  initialPage?: number
+  initialPageSize?: ContactServicesPageSize
 }
 
 const currencyFormatter = (valueCents: number, currency: string) =>
@@ -339,9 +371,10 @@ function LoadingServiceRows({ count }: { count: number }) {
         <Skeleton className="h-4 w-20" />
       </TableCell>
       <TableCell className="px-4 py-0">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center">
           <Skeleton className="size-7 rounded-full" />
-          <Skeleton className="h-4 w-24" />
+          <Skeleton className="-ml-2 size-7 rounded-full" />
+          <Skeleton className="-ml-2 size-7 rounded-full" />
         </div>
       </TableCell>
       <TableCell className="px-4 py-0">
@@ -367,6 +400,138 @@ function getInitials(value: string) {
   if (parts.length === 0) return "?"
 
   return parts.map((part) => part[0]?.toUpperCase() ?? "").join("")
+}
+
+function getFollowUpParticipants(item: ContactServiceItem) {
+  const participants = new Map<string, FollowUpParticipant>()
+
+  const addParticipant = (
+    user: {
+      id: string
+      name: string | null
+      email: string | null
+      image: string | null
+    } | null | undefined,
+    role: "COORDINATOR" | "ASSIGNEE" | "RESOLVER",
+  ) => {
+    if (!user?.id) return
+
+    const participant = participants.get(user.id) ?? {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      image: user.image,
+      isCoordinator: false,
+      assignedStepCount: 0,
+      resolvedStepCount: 0,
+    }
+
+    if (role === "COORDINATOR") participant.isCoordinator = true
+    if (role === "ASSIGNEE") participant.assignedStepCount += 1
+    if (role === "RESOLVER") participant.resolvedStepCount += 1
+    participants.set(user.id, participant)
+  }
+
+  addParticipant(item.followUpCoordinator, "COORDINATOR")
+  item.followUpSteps.forEach((step) => {
+    addParticipant(step.assignedTo, "ASSIGNEE")
+    addParticipant(step.resolvedBy, "RESOLVER")
+  })
+
+  return Array.from(participants.values())
+}
+
+function getFollowUpParticipantLabel(participant: FollowUpParticipant) {
+  return participant.name?.trim() || participant.email?.trim() || "Unnamed user"
+}
+
+function getFollowUpParticipantRoles(participant: FollowUpParticipant) {
+  const roles: string[] = []
+  if (participant.isCoordinator) roles.push("Follow-up coordinator")
+  if (participant.assignedStepCount) {
+    roles.push(
+      `Assigned to ${participant.assignedStepCount} ${participant.assignedStepCount === 1 ? "step" : "steps"}`,
+    )
+  }
+  if (participant.resolvedStepCount) {
+    roles.push(
+      `Resolved ${participant.resolvedStepCount} ${participant.resolvedStepCount === 1 ? "step" : "steps"}`,
+    )
+  }
+  return roles.join(" · ")
+}
+
+function FollowUpParticipantAvatar({ participant }: { participant: FollowUpParticipant }) {
+  const label = getFollowUpParticipantLabel(participant)
+  const roles = getFollowUpParticipantRoles(participant)
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          tabIndex={0}
+          aria-label={`${label}: ${roles}`}
+          className="-ml-2 inline-flex shrink-0 cursor-default rounded-full outline-none first:ml-0 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          <Avatar size="sm" className="border-2 border-background">
+            {participant.image ? (
+              <AvatarImage src={participant.image} alt={`${label} profile photo`} />
+            ) : null}
+            <AvatarFallback>{getInitials(label)}</AvatarFallback>
+          </Avatar>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-64">
+        <p className="font-medium">{label}</p>
+        <p className="text-xs opacity-80">{roles}</p>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function FollowUpParticipants({ participants }: { participants: FollowUpParticipant[] }) {
+  if (!participants.length) {
+    return <span className="text-xs text-muted-foreground">Unassigned</span>
+  }
+
+  const visibleParticipants = participants.slice(0, 6)
+  const remainingParticipants = participants.slice(6)
+
+  return (
+    <div
+      className="flex min-w-0 items-center"
+      aria-label={`${participants.length} ${participants.length === 1 ? "person" : "people"} involved in this follow-up`}
+    >
+      {visibleParticipants.map((participant) => (
+        <FollowUpParticipantAvatar key={participant.id} participant={participant} />
+      ))}
+      {remainingParticipants.length ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              tabIndex={0}
+              aria-label={`${remainingParticipants.length} additional people involved`}
+              className="-ml-2 inline-flex shrink-0 cursor-default rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              <Avatar size="sm" className="border-2 border-background">
+                <AvatarFallback>+{remainingParticipants.length}</AvatarFallback>
+              </Avatar>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-72">
+            <p className="font-medium">Additional follow-up participants</p>
+            <ul className="mt-1 flex flex-col gap-1 text-xs opacity-80">
+              {remainingParticipants.map((participant) => (
+                <li key={participant.id}>
+                  {getFollowUpParticipantLabel(participant)} — {getFollowUpParticipantRoles(participant)}
+                </li>
+              ))}
+            </ul>
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+    </div>
+  )
 }
 
 function getProfessionalLabel(professional: ServiceProfessional) {
@@ -834,14 +999,16 @@ export function ContactServicesPanel({
   contactId,
   initialCreateServiceId,
   initialCreateOpen,
+  initialPage = 1,
+  initialPageSize = 10,
 }: ContactServicesPanelProps) {
   const router = useRouter()
   const [items, setItems] = useState<ContactServiceItem[]>([])
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(10)
-  const [pagination, setPagination] = useState({
-    page: 1,
-    pageSize: 10,
+  const [page, setPage] = useState(initialPage)
+  const [pageSize, setPageSize] = useState<ContactServicesPageSize>(initialPageSize)
+  const [pagination, setPagination] = useState<ContactServicesResponse["pagination"]>({
+    page: initialPage,
+    pageSize: initialPageSize,
     total: 0,
     totalPages: 1,
   })
@@ -882,6 +1049,21 @@ export function ContactServicesPanel({
   >({})
 
   const hasItems = items.length > 0
+  const currentListHref = useMemo(
+    () => getContactServicesHref({ tenantSlug, contactId, page, pageSize }),
+    [contactId, page, pageSize, tenantSlug],
+  )
+
+  const navigateListPage = useCallback((nextPage: number, nextPageSize: ContactServicesPageSize) => {
+    const safePage = Math.max(1, nextPage)
+    setPage(safePage)
+    setPageSize(nextPageSize)
+  }, [])
+
+  useEffect(() => {
+    if (initialCreateOpen) return
+    router.replace(currentListHref, { scroll: false })
+  }, [currentListHref, initialCreateOpen, router])
 
   const resetCreate = useCallback(() => {
     setCreateStep(1)
@@ -908,9 +1090,9 @@ export function ContactServicesPanel({
     setIsCreateOpen(false)
     resetCreate()
     if (initialCreateOpen) {
-      router.replace(`/app/${tenantSlug}/contacts/${contactId}/services`)
+      router.replace(currentListHref, { scroll: false })
     }
-  }, [contactId, initialCreateOpen, resetCreate, router, tenantSlug])
+  }, [currentListHref, initialCreateOpen, resetCreate, router])
 
   const loadServices = useCallback(async () => {
     setIsLoading(true)
@@ -925,6 +1107,9 @@ export function ContactServicesPanel({
       setItems(data.items)
       setPagination(data.pagination)
       setSummary(data.summary)
+      if (page > Math.max(1, data.pagination.totalPages)) {
+        navigateListPage(Math.max(1, data.pagination.totalPages), pageSize)
+      }
     } catch {
       setItems([])
       setSummary(null)
@@ -938,7 +1123,7 @@ export function ContactServicesPanel({
     } finally {
       setIsLoading(false)
     }
-  }, [tenantId, contactId, page, pageSize])
+  }, [tenantId, contactId, navigateListPage, page, pageSize])
 
   const loadFitRecommendations = useCallback(async () => {
     setIsLoadingFitRecommendations(true)
@@ -1400,16 +1585,6 @@ export function ContactServicesPanel({
     return nextStep?.effectiveDueAt ?? nextStep?.dueAt ?? nextStep?.availableAt ?? null
   }
 
-  const getCurrentFollowUpAssignee = (item: ContactServiceItem) => {
-    const nextStep =
-      item.followUpSteps.find((step) => step.status === "ACTIVE") ??
-      item.followUpSteps.find((step) => step.status === "POSTPONED") ??
-      item.followUpSteps.find((step) => step.status === "PENDING") ??
-      null
-
-    return nextStep?.assignedTo ?? null
-  }
-
   const createServiceTotalCents = useMemo(() => {
     if (!createServiceDetails) return null
 
@@ -1479,7 +1654,13 @@ export function ContactServicesPanel({
       if (hasRunFitScan) {
         await loadFitRecommendations()
       }
-      router.push(`/app/${tenantSlug}/contacts/${contactId}/services/${data.contactService.id}`)
+      router.push(
+        getServiceEnrollmentHref({
+          tenantSlug,
+          contactServiceId: data.contactService.id,
+          returnTo: currentListHref,
+        }),
+      )
       router.refresh()
     } catch (error) {
       if (isAxiosError(error)) {
@@ -1650,24 +1831,26 @@ export function ContactServicesPanel({
                       Next follow-up
                     </TableHead>
                     <TableHead className="w-[15%] border-y bg-background px-4">
-                    <div className="flex items-center gap-1">
-                      <span>Owner</span>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            className="inline-flex size-4 cursor-pointer items-center justify-center text-slate-400 transition hover:text-slate-600"
-                            onClick={(event) => event.stopPropagation()}
-                            aria-label="Owner column help"
-                          >
-                            <CircleHelp className="h-3.5 w-3.5" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>Assigned person to the follow up.</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
+                      <div className="flex items-center gap-1">
+                        <span>Follow-up team</span>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              className="inline-flex size-4 cursor-pointer items-center justify-center text-slate-400 transition hover:text-slate-600"
+                              onClick={(event) => event.stopPropagation()}
+                              aria-label="Follow-up team column help"
+                            >
+                              <CircleHelp className="h-3.5 w-3.5" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-72">
+                            <p>
+                              Coordinator, step assignees, and users who completed or skipped steps.
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
                     </TableHead>
                     <TableHead className="w-[9%] border-y bg-background px-4">Paid</TableHead>
                     <TableHead className="w-[9%] border-y bg-background px-4">Balance</TableHead>
@@ -1686,9 +1869,7 @@ export function ContactServicesPanel({
                   ) : (
                     <>
                       {items.map((item) => {
-                        const assignee = getCurrentFollowUpAssignee(item)
-                        const assigneeLabel =
-                          assignee?.name?.trim() || assignee?.email?.trim() || "Unassigned"
+                        const followUpParticipants = getFollowUpParticipants(item)
                         const progress = getServiceProgress(item)
 
                         return (
@@ -1698,7 +1879,11 @@ export function ContactServicesPanel({
                           >
                             <TableCell className="px-4 py-0">
                               <Link
-                                href={`/app/${tenantSlug}/contacts/${contactId}/services/${item.id}`}
+                                href={getServiceEnrollmentHref({
+                                  tenantSlug,
+                                  contactServiceId: item.id,
+                                  returnTo: currentListHref,
+                                })}
                                 className="block truncate font-medium text-foreground transition-colors before:absolute before:inset-0 before:z-10 before:rounded-md hover:text-blue-800 focus-visible:outline-none focus-visible:before:ring-2 focus-visible:before:ring-ring focus-visible:before:ring-offset-1"
                                 title={item.service.name}
                                 aria-label={`Open ${item.service.name}`}
@@ -1727,26 +1912,8 @@ export function ContactServicesPanel({
                                 ) : null}
                               </div>
                             </TableCell>
-                            <TableCell className="px-4 py-0">
-                              <div className="flex min-w-0 items-center gap-2.5">
-                                <Avatar size="sm">
-                                  {assignee?.image ? (
-                                    <AvatarImage
-                                      src={assignee.image}
-                                      alt={`${assigneeLabel} profile photo`}
-                                    />
-                                  ) : null}
-                                  <AvatarFallback>
-                                    {assignee ? getInitials(assigneeLabel) : "—"}
-                                  </AvatarFallback>
-                                </Avatar>
-                                <span
-                                  className="truncate text-foreground"
-                                  title={assigneeLabel}
-                                >
-                                  {assigneeLabel}
-                                </span>
-                              </div>
+                            <TableCell className="relative z-20 px-4 py-0">
+                              <FollowUpParticipants participants={followUpParticipants} />
                             </TableCell>
                             <TableCell className="px-4 py-0 text-foreground">
                               {currencyFormatter(item.paidCents, item.currency)}
@@ -1822,8 +1989,7 @@ export function ContactServicesPanel({
                     onValueChange={(value) => {
                       const nextPageSize = Number(value)
                       if (nextPageSize === 10 || nextPageSize === 25) {
-                        setPageSize(nextPageSize)
-                        setPage(1)
+                        navigateListPage(1, nextPageSize)
                       }
                     }}
                   >
@@ -1853,7 +2019,7 @@ export function ContactServicesPanel({
                   size="icon-sm"
                   aria-label="Previous page"
                   disabled={!canGoPrevious || isLoading}
-                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  onClick={() => navigateListPage(Math.max(1, page - 1), pageSize)}
                 >
                   <ChevronLeft />
                 </Button>
@@ -1871,7 +2037,7 @@ export function ContactServicesPanel({
                     }
                     aria-current={pageNumber === page ? "page" : undefined}
                     disabled={isLoading}
-                    onClick={() => setPage(pageNumber)}
+                    onClick={() => navigateListPage(pageNumber, pageSize)}
                   >
                     {pageNumber}
                   </Button>
@@ -1883,7 +2049,7 @@ export function ContactServicesPanel({
                   size="icon-sm"
                   aria-label="Next page"
                   disabled={!canGoNext || isLoading}
-                  onClick={() => setPage((current) => current + 1)}
+                  onClick={() => navigateListPage(page + 1, pageSize)}
                 >
                   <ChevronRight />
                 </Button>

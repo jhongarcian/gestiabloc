@@ -47,8 +47,8 @@ Sensitive actions currently gated by this rule include:
 - changing service status
 - adding payments
 - editing or deleting payments
-- changing follow-up owner
-- changing follow-up step owner
+- changing the overall follow-up coordinator
+- changing a follow-up step assignee
 
 Other actions such as checklist toggles, note creation, and task creation are currently available in the panel behavior and should be documented as active operational tools.
 
@@ -80,8 +80,8 @@ Loaded from:
 
 Used for:
 
-- changing overall follow-up owner
-- changing individual step owner
+- changing the overall follow-up coordinator
+- changing an individual step assignee
 
 ## Page Structure
 
@@ -98,7 +98,19 @@ This is the main overview band at the top.
 - back button linking to `/app/{slug}/contacts/{contactId}/services`
 - main title: service name
 - secondary line: `Professional: {assigned professional label}`
+- eligible users can click the rounded professional selector to choose a configured internal or external professional, or `No assigned professional`
 - optional service description below if it exists
+
+#### Changing the service professional
+
+- Available professionals are included in `service.professionals` in the overview and full-detail responses, so opening the picker needs no additional request.
+- The picker uses avatars/initials, searchable names and contact details, a selected check, and the shared rounded header-control style.
+- Selection saves immediately through `PATCH /api/services/{tenantId}/contact-services/{contactServiceId}` with `assignedProfessionalId`; `null` clears the assignment and omitting it leaves the professional unchanged.
+- Only a professional configured for this enrollment's service is accepted. Cross-service or cross-tenant professional IDs return `400 INVALID_ASSIGNED_SERVICE_PROFESSIONAL`.
+- Active tenant admins and `MEDIUM`/`MAX` tenant users can edit. `LOW` tenant users see read-only text; the server rejects unauthorized changes.
+- The picker is disabled during saving. Failed requests keep the previous professional and leave the picker available for retry.
+- Real changes create a `SERVICE_PROFESSIONAL_CHANGED` Activity entry with the previous/new professional IDs and names, authenticated actor, and timestamp. Re-selecting the current value creates no duplicate activity. The assignment and activity save atomically.
+- Professional assignment remains independent of the follow-up coordinator and every step assignee, and can be corrected even after workflow completion.
 
 #### Right side action cluster
 
@@ -117,14 +129,14 @@ Buttons appear as compact rounded pills.
 - only shown when a remaining balance exists and the user can manage sensitive service actions
 - opens the add payment dialog
 
-##### Follow-up owner pill
+##### Follow-up coordinator pill
 
-- only shown when the service has follow-up steps and the user can manage sensitive service actions
-- displays:
-  - current open-step owner avatar + name
-  - or `Mixed assignees`
-  - or `Unassigned`
-- clicking opens the change follow-up owner dialog
+- shown when the service has follow-up work
+- displays the enrollment-level coordinator avatar and name, or `Unassigned`
+- the tooltip explains that step assignments remain independent
+- eligible users can change it while the workflow is open
+- after completion it remains visible as the read-only final coordinator until a step is reopened
+- changing it never rewrites existing step assignees
 
 ##### Status pill
 
@@ -199,30 +211,29 @@ These four cards are critical. They are the fastest way to understand the financ
 
 After the KPI cards, the page continues with stacked operational cards.
 
-### 3. Checklist Tracking Card
+### 3. Checklist Sheet
 
 Purpose:
 
-- operationally track documents or requirements received for this contact service
+- operationally track the current state of documents or requirements for this contact service
 
-Header contains:
+The sheet is opened from the checklist quick action in the service header. Its header contains:
 
 - section label: `Checklist Tracking`
 - helper copy explaining the intent
-- badge showing `{completed}/{total} received`
+- badge showing `{completed}/{total}` and completion percentage; only `RECEIVED` items count
 
 Each checklist row includes:
 
 - item label
 - `Required` badge when applicable
-- `Received` or `Pending` badge
+- a compact selector with `Not received`, `Informed`, `Missing`, and `Received`
 - optional description
 - helper line with:
-  - received timestamp, or
-  - prompt telling the user to click the circle
-- trailing circular action button:
-  - unchecked circle for pending
-  - filled success icon for completed
+  - received timestamp for `RECEIVED`, or
+  - operational helper text for the selected status
+- status treatments are neutral for `NOT_RECEIVED`, blue for `INFORMED`, amber for `MISSING`, and emerald for `RECEIVED`
+- all selectors and sheet dismissal are disabled while one update is saving
 
 Empty state:
 
@@ -298,7 +309,7 @@ Each follow-up step card includes:
   - `Current step` when active
 - clickable step title opening the step details dialog
 - helper line describing timing state
-- owner row with avatar and owner name
+- assignee avatar with the responsible user's name in a tooltip
 - step description from `notesTemplate`
 - optional latest step note block
 
@@ -325,36 +336,52 @@ Important follow-up behaviors:
 - only the active step can be status-mutated directly
 - postponed status requires a new date/time
 - postponing cascades future pending/active steps
-- overall follow-up owner management is separate from per-step owner management
+- overall follow-up coordinator management is separate from per-step assignment
+- completed and skipped rows retain the final step assignee
+- resolved rows identify who completed or skipped the step and when; automated skips identify the system instead of a user
 
 Empty state:
 
 - dashed empty card
 - `No follow-up steps are enrolled for this service yet.`
 
-### 6. Service Notes Card
+### 6. Service Notes Timeline
 
 Purpose:
 
-- keep notes specific to this service enrollment separate from general contact notes
+- provide a compact, independently loaded history of service, follow-up, and linked contact notes
+- keep the enrollment detail response lightweight by loading complete note bodies and attachments only in the Notes view
 
-Header contains:
+Toolbar contains:
 
-- section label: `Service Notes`
-- helper copy
-- button: `Add note`
+- debounced search across title, details, and author
+- sorting for recently updated, newest created, and oldest updated
+- primary button: `Add note`
 
-Each note row includes:
+The Notes view uses the same restrained timeline pattern as the contact Notes page:
 
-- author avatar
-- note title
-- metadata line with author and created date/time
-- note body
+- a neutral note icon and vertical rail
+- author and created date/time metadata
+- an edited timestamp when the note has changed
+- a compact source badge for service, follow-up, or contact notes
+- optional follow-up template and step context
+- a pale note surface with the title and a three-line details preview
+- attachment pills below a dashed separator
+
+The note title is keyboard accessible when the viewer can edit it. Service, linked-contact, and follow-up notes open the same viewport-bounded editor used by contact Notes when the viewer is the author or a tenant admin. Users without permission see a static title rather than a separate preview dialog. Attachment pills open the same full-viewport preview dialog used by contact Notes. Images render within the dialog, PDFs use an embedded viewer, unsupported formats retain a download action, and loading or failed-preview states remain inside the dialog.
+
+Pagination is server-backed. The endpoint accepts `page`, `pageSize` (`10`, `25`, or `50`), `q`, and `sort`; it merges both note models before applying the selected global order and page. Requested pages beyond the available result set are clamped to the final page.
+
+The Add note action opens a viewport-bounded dialog with a fixed contextual header and footer and one scrolling form body. Title and details are required and limited to 160 and 5,000 characters. Up to ten supported attachments upload sequentially with progress. The dialog cannot be dismissed while saving, retains content after a failure, and reloads page one after success.
+
+All service, linked-contact, and follow-up note create and edit requests sanitize the title and details at the API boundary. Notes are stored as plain text: HTML tags and unsafe control characters are removed, title whitespace is collapsed, body line breaks are normalized, and values that become empty after sanitization are rejected.
+
+The edit dialog exposes Update and Delete actions only when the API grants permission. The note author and tenant admins can edit or delete any displayed note through its owning service-note or contact-note endpoint. Selecting new files replaces the note's prior attachment set only after every new upload succeeds and the note update commits. Failed uploads or failed updates leave the saved attachments intact. Removed attachments are deleted from storage after their links are removed and no other note references the file.
 
 Empty state:
 
-- dashed empty card
-- `No service notes have been added yet.`
+- `No notes yet` when no service history exists
+- `No matching notes` when the current search has no results
 
 ### 7. Service History Card
 
@@ -372,7 +399,7 @@ History sources merged into one list:
 - service purchased
 - service completed
 - service canceled
-- checklist completions
+- durable checklist status transitions, including previous status, new status, actor, and timestamp
 - payments
 - service notes
 
@@ -392,19 +419,19 @@ Empty state:
 
 This page relies heavily on contextual dialogs. They are a major part of the UX.
 
-### Change Follow-Up Owner Dialog
+### Change Follow-Up Coordinator Popover
 
 Purpose:
 
-- bulk update owner on all open follow-up steps
+- update the enrollment-level coordinator without changing step assignments
 
 Contains:
 
-- current owner preview card
-- count of affected open steps
-- follow-up owner select
-- `Cancel`
-- `Save owner`
+- current coordinator avatar and name
+- searchable active tenant users
+- explicit `Unassigned` option
+- selected check indicator
+- explanatory tooltip that step assignments remain independent
 
 ### Add Payment Dialog
 
@@ -484,19 +511,19 @@ Important validation:
 
 Purpose:
 
-- inspect a single step in more detail and optionally reassign the owner
+- inspect a single step in more detail and optionally change its assignee
 
 Contains:
 
 - service/template/step context block
 - status summary
 - due date summary
-- follow-up owner summary
-- optional owner change select for users with permission
+- step assignee summary
+- optional step-assignee select for users with permission
 - description block
 - latest step note block
 - actions:
-  - `Save owner` when allowed
+  - `Save assignee` when allowed
   - `Close`
 
 ### Add Step Note Dialog
@@ -548,8 +575,8 @@ The following derived values are central to the screen and should be preserved i
 - next scheduled payment date
 - payment plan summary
 - follow-up completion percentage
-- current follow-up owner
-- mixed-owner detection for open steps
+- current follow-up coordinator
+- individual step assignees and resolution actors
 - tax amount and tax messaging
 - activity/history merged timeline
 
@@ -560,7 +587,7 @@ These derived pieces make the screen useful without forcing the user to manually
 The most important things on this page are:
 
 1. service identity and assigned professional
-2. status and follow-up ownership
+2. status and follow-up coordination
 3. total paid vs remaining balance
 4. current follow-up step and progress
 5. checklist completion state
@@ -582,9 +609,9 @@ Top-level visible buttons and controls currently used:
 - back button
 - delete
 - add payment
-- follow-up owner trigger
+- follow-up coordinator trigger
 - service status trigger
-- checklist toggle control
+- checklist status selector in the checklist sheet
 - payment row click for edit
 - load more payments
 - show less payments
@@ -596,7 +623,7 @@ Top-level visible buttons and controls currently used:
 Dialog-level buttons currently used:
 
 - cancel
-- save owner
+- save assignee
 - add payment
 - save payment
 - delete payment

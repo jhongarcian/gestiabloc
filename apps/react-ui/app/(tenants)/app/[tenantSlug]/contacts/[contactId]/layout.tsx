@@ -3,33 +3,19 @@ import Link from "next/link"
 import {
   ArrowLeft,
   ChevronRight,
-  ListTodo,
-  NotebookPen,
-  ShoppingBag,
 } from "lucide-react"
 
 import {
   StackedAvatarGroup,
   type StackedAvatarGroupItem,
 } from "@/components/stacked-avatar-group"
-import { Button } from "@/components/ui/button"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
-import { CreateAppointmentDialog } from "../../calendar/_components/create-appointment-dialog"
+import { getServiceEnrollmentHref } from "@/lib/routes"
 import { getCalendarMeta, type CalendarMetaResponse } from "../../calendar/_lib/calendar-api"
-import { CreateContactNoteDialog } from "../_components/create-contact-note-dialog"
-import { AddContactOpportunityDialog } from "../../opportunities/_components/add-contact-opportunity-dialog"
-import { CreateTaskDialog } from "../../tasks/_components/create-task-dialog"
 import { ContactBreadcrumbSync } from "./_components/contact-breadcrumb-sync"
 import { ContactDetailNavigation } from "./_components/contact-detail-navigation"
-import { ContactHeaderAssignee } from "./_components/contact-header-assignee"
-import { ContactHeaderStatus } from "./_components/contact-header-status"
+import { ContactHeaderActions } from "./_components/contact-header-actions"
 import { ContactServiceProgress } from "./_components/contact-service-progress"
 import {
   formatContactDate,
@@ -340,119 +326,34 @@ export default async function ContactDetailsLayout({
                 </h1>
               </div>
             </div>
-            <div className="flex w-full max-w-full shrink-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] xl:w-auto xl:justify-end xl:overflow-visible xl:pb-0 [&::-webkit-scrollbar]:hidden">
-                <AddContactOpportunityDialog
-                  tenantId={tenantId}
-                  initialContact={{
-                    id: contact.id,
-                    fullName: contact.fullName,
-                    email: contact.email,
-                    phoneNumber: contact.phoneNumber,
-                  }}
-                  lockContact
-                  iconOnly
-                  triggerTooltip="Create opportunity"
-                  triggerClassName="inline-flex h-8 w-8 items-center justify-center border-white/70 shadow-sm backdrop-blur transition hover:bg-blue-900"
-                />
-                <CreateAppointmentDialog
-                  tenantId={tenantId}
-                  tenantTimezone={tenantTimezone}
-                  currentUserId={currentUserId}
-                  initialContact={{
-                    id: contact.id,
-                    fullName: contact.fullName,
-                    email: contact.email,
-                    phoneNumber: contact.phoneNumber,
-                  }}
-                  lockContact
-                  meetingIntervalMinutes={calendarMeta.settings.meetingIntervalMinutes}
-                  meetingDurationMinutes={calendarMeta.settings.meetingDurationMinutes}
-                  serviceOptions={calendarMeta.filters.services}
-                  assigneeOptions={calendarMeta.filters.users}
-                  iconOnly
-                  triggerTooltip="Create appointment"
-                  triggerClassName="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
-                />
-                <CreateTaskDialog
-                  tenantId={tenantId}
-                  tenantTimezone={tenantTimezone}
-                  statusOptions={taskStatusOptions}
-                  assigneeOptions={assigneeOptions}
-                  initialContact={{
-                    id: contact.id,
-                    fullName: contact.fullName,
-                    email: contact.email,
-                    phoneNumber: contact.phoneNumber,
-                  }}
-                  lockContact
-                  hideContact
-                  triggerTooltip="Create task"
-                  trigger={
-                    <Button
-                      type="button"
-                      size="icon"
-                      aria-label="Create task"
-                      className="h-8 w-8 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
-                    >
-                      <ListTodo className="size-4" aria-hidden="true" />
-                    </Button>
-                  }
-                />
-                <CreateContactNoteDialog
-                  tenantId={tenantId}
-                  contactId={contactId}
-                  presentation="drawer"
-                  triggerTooltip="Add note"
-                  trigger={
-                    <Button
-                      type="button"
-                      size="icon"
-                      aria-label="Add note"
-                      className="h-8 w-8 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
-                    >
-                      <NotebookPen className="size-4" aria-hidden="true" />
-                    </Button>
-                  }
-                />
-                <TooltipProvider delayDuration={120}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        asChild
-                        size="icon"
-                        className="h-8 w-8 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900"
-                      >
-                        <Link
-                          href={`/app/${tenantSlug}/contacts/${contactId}/services?create=1`}
-                          aria-label="Purchase service"
-                        >
-                          <ShoppingBag className="size-4" aria-hidden="true" />
-                        </Link>
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top" sideOffset={8}>
-                      Purchase service
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-                <ContactHeaderStatus
-                  tenantId={tenantId}
-                  contactId={contactId}
-                  initialStatus={{
-                    label: contact.status,
-                    value: contact.statusConfigId,
-                    bgColor: contact.statusBgColor,
-                    textColor: contact.statusTextColor,
-                  }}
-                  statusOptions={statusOptions}
-                />
-                <ContactHeaderAssignee
-                  tenantId={tenantId}
-                  contactId={contactId}
-                  initialAssignedTo={contact.assignedTo}
-                  assigneeOptions={assigneeOptions}
-                />
-              </div>
+            <ContactHeaderActions
+              tenantId={tenantId}
+              tenantSlug={tenantSlug}
+              contactId={contactId}
+              tenantTimezone={tenantTimezone}
+              currentUserId={currentUserId}
+              initialContact={{
+                id: contact.id,
+                fullName: contact.fullName,
+                email: contact.email,
+                phoneNumber: contact.phoneNumber,
+              }}
+              meetingIntervalMinutes={calendarMeta.settings.meetingIntervalMinutes}
+              meetingDurationMinutes={calendarMeta.settings.meetingDurationMinutes}
+              calendarServiceOptions={calendarMeta.filters.services}
+              calendarAssigneeOptions={calendarMeta.filters.users}
+              taskStatusOptions={taskStatusOptions}
+              taskAssigneeOptions={assigneeOptions}
+              initialStatus={{
+                label: contact.status,
+                value: contact.statusConfigId,
+                bgColor: contact.statusBgColor,
+                textColor: contact.statusTextColor,
+              }}
+              contactStatusOptions={statusOptions}
+              initialAssignedTo={contact.assignedTo}
+              contactAssigneeOptions={assigneeOptions}
+            />
             </div>
         </header>
 
@@ -530,7 +431,10 @@ export default async function ContactDetailsLayout({
               {visibleActiveFollowUpServices.map((service) => (
                 <Link
                   key={service.id}
-                  href={`/app/${tenantSlug}/contacts/${contactId}/services/${service.id}`}
+                  href={getServiceEnrollmentHref({
+                    tenantSlug,
+                    contactServiceId: service.id,
+                  })}
                   aria-label={`Open ${service.name} service details`}
                   className={
                     service.isOverdue

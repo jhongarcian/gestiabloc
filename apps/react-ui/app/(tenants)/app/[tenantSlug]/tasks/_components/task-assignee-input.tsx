@@ -74,7 +74,7 @@ export function TaskAssigneeInput({
           disabled={disabled}
           aria-invalid={ariaInvalid}
           aria-expanded={open}
-          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+          className="h-11 w-full justify-between rounded-full border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
         >
           <span className="flex min-w-0 items-center gap-2.5">
             <Avatar size="sm" className="ring-2 ring-blue-50">

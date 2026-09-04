@@ -109,7 +109,7 @@ At the moment of sale, the system:
 2. links the selected service
 3. optionally links a follow-up template
 4. optionally assigns a service professional
-5. optionally assigns a follow-up owner
+5. optionally assigns a follow-up coordinator
 6. creates the service enrollment
 7. creates an initial payment if one was entered
 8. creates contact checklist items from the service checklist
@@ -191,25 +191,37 @@ When the transaction is created:
 - its steps are copied into `ContactServiceFollowUpStep`
 - each copied step becomes part of the operational execution for that contact
 
-### Follow-up ownership
+### Follow-up coordination and step responsibility
 
-The transaction flow can assign a follow-up owner.
+The transaction flow can assign an optional follow-up coordinator.
 
-That owner is a tenant user who becomes responsible for the follow-up steps created for the enrollment.
+That coordinator is the tenant user with overall responsibility for the enrolled follow-up. At creation, the selected coordinator also seeds the assignee on every generated step. Later coordinator changes do not alter any step assignee.
+
+Each step keeps its own assignee. When a step is completed or skipped, the system separately records the authenticated user who performed that resolution. This distinguishes planned responsibility from actual execution.
 
 This is different from the assigned service professional.
 
-### Difference between professional and follow-up owner
+### Difference between professional and follow-up coordination
 
 Assigned professional:
 
 - who is associated with delivering the service
 - can be an internal user or an external professional
 
-Follow-up owner:
+Follow-up coordinator:
 
-- who is responsible for follow-up execution
+- who coordinates the follow-up workflow overall
 - must be an internal tenant user
+
+Step assignee:
+
+- who is responsible for one specific follow-up step
+- remains attached to a completed step as its final responsible user
+
+Resolved by:
+
+- who actually completed or user-skipped the step
+- is recorded separately from the assignee
 
 These are related, but they are not the same concept.
 

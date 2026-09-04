@@ -387,7 +387,8 @@ async function logRunEvent(params: {
       runId: run.id,
       contactServiceId: run.contactServiceId,
       contactId: run.contactService.contactId,
-      actorUserId: actorUserId ?? run.startedByUserId ?? null,
+      actorUserId:
+        actorUserId === undefined ? run.startedByUserId ?? null : actorUserId,
       flowNodeId: nodeId ?? null,
       stepId: stepId ?? null,
       eventType,
@@ -423,11 +424,14 @@ async function markExclusiveStepsSkipped(params: {
     select: { id: true, templateNodeId: true, title: true },
   })
   for (const step of steps) {
+    const resolvedAt = new Date()
     await prismaTx.contactServiceFollowUpStep.update({
       where: { id: step.id },
       data: {
         status: "SKIPPED",
-        completedAt: new Date(),
+        completedAt: resolvedAt,
+        resolvedByUserId: null,
+        resolvedAt,
         resolutionSource: "CONDITION_SKIPPED",
         resolutionReason: reason,
       },
@@ -435,6 +439,7 @@ async function markExclusiveStepsSkipped(params: {
     await logRunEvent({
       prismaTx,
       run,
+      actorUserId: null,
       nodeId: step.templateNodeId,
       stepId: step.id,
       eventType: "STEP_AUTO_SKIPPED",
@@ -475,11 +480,14 @@ async function markForwardGoToStepsSkipped(params: {
     select: { id: true, templateNodeId: true, title: true },
   })
   for (const step of steps) {
+    const resolvedAt = new Date()
     await prismaTx.contactServiceFollowUpStep.update({
       where: { id: step.id },
       data: {
         status: "SKIPPED",
-        completedAt: new Date(),
+        completedAt: resolvedAt,
+        resolvedByUserId: null,
+        resolvedAt,
         resolutionSource: "CONDITION_SKIPPED",
         resolutionReason: reason,
       },
@@ -487,6 +495,7 @@ async function markForwardGoToStepsSkipped(params: {
     await logRunEvent({
       prismaTx,
       run,
+      actorUserId: null,
       nodeId: step.templateNodeId,
       stepId: step.id,
       eventType: "STEP_AUTO_SKIPPED",
@@ -788,14 +797,28 @@ export async function advanceFollowUpRunTx(params: {
         select: { id: true, title: true, templateNodeId: true },
       })
       for (const step of pendingSteps) {
+        const resolvedAt = new Date()
+        const resolutionReason = "This step was not part of the selected workflow path."
         await prismaTx.contactServiceFollowUpStep.update({
           where: { id: step.id },
           data: {
             status: "SKIPPED",
-            completedAt: new Date(),
+            completedAt: resolvedAt,
+            resolvedByUserId: null,
+            resolvedAt,
             resolutionSource: "FLOW_SKIPPED",
-            resolutionReason: "This step was not part of the selected workflow path.",
+            resolutionReason,
           },
+        })
+        await logRunEvent({
+          prismaTx,
+          run,
+          actorUserId: null,
+          nodeId: step.templateNodeId,
+          stepId: step.id,
+          eventType: "STEP_AUTO_SKIPPED",
+          title: `Automatically skipped step: ${step.title}`,
+          details: resolutionReason,
         })
       }
       await prismaTx.serviceFollowUpNodeExecution.update({

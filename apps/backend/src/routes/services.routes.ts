@@ -4,8 +4,33 @@ import { type Response, Router } from "express"
 import { z } from "zod"
 
 import { decryptCustomFieldValue } from "../lib/contact-custom-field-encryption.js"
+import {
+  ContactServiceNotesQuerySchema,
+  canManageContactServiceNote,
+  compareContactServiceNotes,
+  getContactServiceNotesPage,
+  resolveContactServiceNoteAttachmentChanges,
+  resolveContactServiceNoteKind,
+  type ContactServiceNoteSort,
+} from "../lib/contact-service-notes.js"
 import { canManageContactServices } from "../lib/contact-service-permissions.js"
+import {
+  assignedServiceProfessionalIdSchema,
+  resolveServiceProfessionalChange,
+} from "../lib/contact-service-professional.js"
+import {
+  buildContactServiceChecklistActivityData,
+  CONTACT_SERVICE_CHECKLIST_STATUSES,
+  hasExactlyOneChecklistStatusInput,
+  resolveContactServiceChecklistStatus,
+  resolveContactServiceChecklistTransition,
+} from "../lib/contact-service-checklist-status.js"
+import {
+  NoteBodyInputSchema,
+  NoteTitleInputSchema,
+} from "../lib/note-inputs.js"
 import { prisma } from "../lib/prisma.js"
+import { deletePrivateObject } from "../lib/private-storage.js"
 import { generateServiceFitExplanation } from "../lib/service-fit-explanations.js"
 import { routeServiceQuestion } from "../lib/service-fit-question-router.js"
 import {
@@ -25,6 +50,11 @@ import {
   resolveEffectiveNextFollowUp,
   serializeEffectiveNextFollowUp,
 } from "../lib/service-followup-next-follow-up.js"
+import { canChangeServiceFollowUpStepAssignee } from "../lib/service-followup-step-permissions.js"
+import {
+  buildFollowUpStepResolutionUpdate,
+  isServiceFollowUpWorkflowCompleted,
+} from "../lib/service-followup-ownership.js"
 import {
   continueFollowUpRunFromStepTx,
   createFollowUpRunTx,
@@ -55,6 +85,9 @@ const sanitizeMultilineText = (value: string) =>
     .map((line) => line.replace(/\s+/g, " ").trim())
     .join("\n")
     .trim()
+const getServiceUserLabel = (
+  user: { name?: string | null; email?: string | null } | null | undefined,
+) => user?.name?.trim() || user?.email?.trim() || "Unassigned"
 const normalizeSearchValue = (value: string | null | undefined) =>
   value?.trim().toLowerCase().replace(/\s+/g, " ") ?? ""
 const normalizePhoneSearchValue = (value: string | null | undefined) => (value ?? "").replace(/\D/g, "")
@@ -151,30 +184,40 @@ const fileNameFromKey = (key: string) => {
   const segments = key.split("/")
   return segments[segments.length - 1] ?? key
 }
-const hasServiceNoteAttachmentQueryError = (error: unknown) =>
-  error instanceof Error &&
-  (error.message.includes("ContactServiceNoteAttachment") ||
-    error.message.includes("Unknown field `attachments`"))
-const serializeRelatedServiceNote = (
+const getServiceNoteOrderBy = (sort: ContactServiceNoteSort) => {
+  if (sort === "created_desc") {
+    return [{ createdAt: "desc" as const }, { id: "asc" as const }]
+  }
+  if (sort === "updated_asc") {
+    return [
+      { updatedAt: "asc" as const },
+      { createdAt: "desc" as const },
+      { id: "asc" as const },
+    ]
+  }
+  return [
+    { updatedAt: "desc" as const },
+    { createdAt: "desc" as const },
+    { id: "asc" as const },
+  ]
+}
+
+const serializePaginatedServiceNote = (
   note: {
     id: string
     title: string
     body: string
+    createdById: string
     createdAt: Date
+    updatedAt: Date
     createdBy?: {
       id: string
       name: string | null
-      email?: string | null
+      email: string | null
       image?: string | null
     } | null
-    followUpTemplate?: {
-      id: string
-      name: string
-    } | null
-    contactServiceFollowUpStep?: {
-      id: string
-      title: string
-    } | null
+    followUpTemplate?: { name: string } | null
+    contactServiceFollowUpStep?: { title: string } | null
     attachments?: Array<{
       id: string
       file: {
@@ -186,24 +229,39 @@ const serializeRelatedServiceNote = (
     }>
   },
   kind: "SERVICE_NOTE" | "FOLLOW_UP_NOTE" | "LINKED_CONTACT_NOTE",
+  viewer: { membership: { role: string }; userId: string },
 ) => ({
   id: note.id,
+  kind,
   title: note.title,
   body: note.body,
   createdAt: note.createdAt,
-  kind,
-  followUpTemplateName: note.followUpTemplate?.name ?? null,
-  followUpStepTitle: note.contactServiceFollowUpStep?.title ?? null,
-  createdBy: note.createdBy
+  updatedAt: note.updatedAt,
+  author: note.createdBy
     ? {
         id: note.createdBy.id,
         name:
           note.createdBy.name?.trim() ||
           note.createdBy.email?.trim() ||
           "Unknown user",
+        email: note.createdBy.email,
         image: note.createdBy.image ?? null,
       }
     : null,
+  followUpTemplateName: note.followUpTemplate?.name ?? null,
+  followUpStepTitle: note.contactServiceFollowUpStep?.title ?? null,
+  permissions: {
+    canEdit: canManageContactServiceNote(
+      viewer.membership,
+      note.createdById,
+      viewer.userId,
+    ),
+    canDelete: canManageContactServiceNote(
+      viewer.membership,
+      note.createdById,
+      viewer.userId,
+    ),
+  },
   attachments: (note.attachments ?? []).map((attachment) => ({
     id: attachment.id,
     fileId: attachment.file.id,
@@ -228,6 +286,10 @@ const TenantContactServicePathSchema = TenantPathSchema.extend({
 
 const TenantContactServicePaymentPathSchema = TenantContactServicePathSchema.extend({
   paymentId: z.string().trim().min(1),
+})
+
+const TenantContactServiceNotePathSchema = TenantContactServicePathSchema.extend({
+  noteId: z.string().trim().min(1),
 })
 
 const TenantFollowUpStepPathSchema = TenantContactServicePathSchema.extend({
@@ -470,6 +532,11 @@ const UpdateContactServiceSchema = z.object({
   canceledAt: z.string().datetime().nullable().optional(),
   totalPriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
   notes: z.string().trim().max(4000).nullable().optional(),
+  assignedProfessionalId: assignedServiceProfessionalIdSchema,
+})
+
+const UpdateFollowUpCoordinatorSchema = z.object({
+  assignedToUserId: z.string().trim().min(1).nullable(),
 })
 
 const ContactServiceNoteAttachmentIdsSchema = z
@@ -478,10 +545,12 @@ const ContactServiceNoteAttachmentIdsSchema = z
   .default([])
 
 const CreateContactServiceNoteSchema = z.object({
-  title: z.string().trim().min(1).max(160),
-  body: z.string().trim().min(1).max(8000),
+  title: NoteTitleInputSchema,
+  body: NoteBodyInputSchema,
   attachmentFileIds: ContactServiceNoteAttachmentIdsSchema,
 })
+
+const UpdateContactServiceNoteSchema = CreateContactServiceNoteSchema
 
 async function getValidatedServiceNoteFiles(
   tenantId: string,
@@ -515,6 +584,43 @@ async function getValidatedServiceNoteFiles(
     .filter((file): file is NonNullable<typeof file> => Boolean(file))
 }
 
+async function deleteServiceNoteFilesIfUnreferenced(fileIds: string[]) {
+  const uniqueFileIds = [...new Set(fileIds)]
+  if (uniqueFileIds.length === 0) return
+
+  const [serviceAttachments, contactAttachments] = await Promise.all([
+    prismaWithServices.contactServiceNoteAttachment.findMany({
+      where: { fileId: { in: uniqueFileIds } },
+      select: { fileId: true },
+    }),
+    prismaWithServices.contactNoteAttachment.findMany({
+      where: { fileId: { in: uniqueFileIds } },
+      select: { fileId: true },
+    }),
+  ])
+  const referencedFileIds = new Set<string>([
+    ...serviceAttachments.map((attachment: { fileId: string }) => attachment.fileId),
+    ...contactAttachments.map((attachment: { fileId: string }) => attachment.fileId),
+  ])
+  const orphanFileIds = uniqueFileIds.filter((fileId) => !referencedFileIds.has(fileId))
+  if (orphanFileIds.length === 0) return
+
+  const orphanFiles = await prisma.file.findMany({
+    where: { id: { in: orphanFileIds } },
+    select: { id: true, key: true },
+  })
+  if (orphanFiles.length === 0) return
+
+  await prisma.file.deleteMany({
+    where: { id: { in: orphanFiles.map((file) => file.id) } },
+  })
+  await Promise.all(
+    orphanFiles.map((file) =>
+      deletePrivateObject({ path: file.key }).catch(() => undefined),
+    ),
+  )
+}
+
 const UpdateFollowUpStepSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   notesTemplate: z.string().trim().max(1000).nullable().optional(),
@@ -546,9 +652,20 @@ const CreateFollowUpStepSchema = z.object({
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
 })
 
-const UpdateContactServiceChecklistItemSchema = z.object({
-  completed: z.boolean().optional(),
-})
+const UpdateContactServiceChecklistItemSchema = z
+  .object({
+    status: z.enum(CONTACT_SERVICE_CHECKLIST_STATUSES).optional(),
+    completed: z.boolean().optional(),
+  })
+  .superRefine((payload, context) => {
+    if (!hasExactlyOneChecklistStatusInput(payload)) {
+      context.addIssue({
+        code: "custom",
+        path: [payload.status !== undefined ? "completed" : "status"],
+        message: "Provide exactly one of status or completed.",
+      })
+    }
+  })
 
 async function requireActiveMembership(
   req: AuthedRequest,
@@ -2413,6 +2530,15 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           purchasedAt: true,
           totalPriceCents: true,
           currency: true,
+          followUpCoordinatorUserId: true,
+          followUpCoordinator: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
           service: {
             select: {
               id: true,
@@ -2451,8 +2577,19 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               availableAt: true,
               dueAt: true,
               completedAt: true,
+              assignedToUserId: true,
+              resolvedByUserId: true,
+              resolvedAt: true,
               sortOrder: true,
               assignedTo: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+              resolvedBy: {
                 select: {
                   id: true,
                   name: true,
@@ -2467,6 +2604,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               checklistItemId: true,
+              status: true,
               completedAt: true,
               checklistItem: {
                 select: {
@@ -2553,6 +2691,15 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           purchasedAt: true,
           totalPriceCents: true,
           currency: true,
+          followUpCoordinatorUserId: true,
+          followUpCoordinator: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
           service: {
             select: {
               id: true,
@@ -2591,8 +2738,19 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               availableAt: true,
               dueAt: true,
               completedAt: true,
+              assignedToUserId: true,
+              resolvedByUserId: true,
+              resolvedAt: true,
               sortOrder: true,
               assignedTo: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+              resolvedBy: {
                 select: {
                   id: true,
                   name: true,
@@ -2607,6 +2765,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               checklistItemId: true,
+              status: true,
               completedAt: true,
               checklistItem: {
                 select: {
@@ -2673,6 +2832,8 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           paidCents,
           remainingCents: Math.max(0, item.totalPriceCents - paidCents),
           currency: item.currency,
+          followUpCoordinatorUserId: item.followUpCoordinatorUserId,
+          followUpCoordinator: item.followUpCoordinator,
           service: item.service,
           nextFollowUp: followUpMetadata.nextFollowUp,
           followUpRun: followUpMetadata.followUpRun,
@@ -2867,6 +3028,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           serviceId: payload.serviceId,
           followUpTemplateId: selectedPublishedTemplate?.id ?? null,
           followUpTemplateVersionId: selectedPublishedTemplate?.activeVersion?.id ?? null,
+          followUpCoordinatorUserId: payload.followUpAssignedToUserId ?? null,
           assignedProfessionalId: selectedAssignedProfessional?.id ?? null,
           status: "IN_PROGRESS",
           startedAt,
@@ -3003,6 +3165,15 @@ router.get(
             currency: true,
             allowPartialPayments: true,
             notes: true,
+            followUpCoordinatorUserId: true,
+            followUpCoordinator: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
             assignedProfessional: {
               select: {
                 id: true,
@@ -3036,6 +3207,24 @@ router.get(
                 minimumPartialPaymentCents: true,
                 installmentCount: true,
                 installmentFrequency: true,
+                professionals: {
+                  orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+                  select: {
+                    id: true,
+                    kind: true,
+                    userId: true,
+                    externalProfessionalName: true,
+                    externalContact: true,
+                    sortOrder: true,
+                    user: {
+                      select: {
+                        name: true,
+                        email: true,
+                        image: true,
+                      },
+                    },
+                  },
+                },
                 tenant: {
                   select: {
                     taxEnabled: true,
@@ -3099,7 +3288,17 @@ router.get(
                 resolutionSource: true,
                 resolutionReason: true,
                 assignedToUserId: true,
+                resolvedByUserId: true,
+                resolvedAt: true,
                 assignedTo: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+                resolvedBy: {
                   select: {
                     id: true,
                     name: true,
@@ -3116,6 +3315,7 @@ router.get(
               select: {
                 id: true,
                 checklistItemId: true,
+                status: true,
                 completedAt: true,
                 checklistItem: {
                   select: {
@@ -3224,6 +3424,8 @@ router.get(
           currency: item.currency,
           allowPartialPayments: item.allowPartialPayments,
           notes: item.notes,
+          followUpCoordinatorUserId: item.followUpCoordinatorUserId,
+          followUpCoordinator: item.followUpCoordinator,
           assignedProfessional: item.assignedProfessional,
           contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
             .filter(Boolean)
@@ -3237,6 +3439,7 @@ router.get(
             minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
             installmentCount: item.service.installmentCount,
             installmentFrequency: item.service.installmentFrequency,
+            professionals: item.service.professionals,
           },
           tenantBilling: {
             taxEnabled: item.service.tenant.taxEnabled,
@@ -3255,6 +3458,7 @@ router.get(
           checklistItems: item.checklistItems.map((checklistItem: any) => ({
             id: checklistItem.id,
             checklistItemId: checklistItem.checklistItemId,
+            status: checklistItem.status,
             completedAt: checklistItem.completedAt,
             label: checklistItem.checklistItem?.label ?? "",
             description: checklistItem.checklistItem?.description ?? null,
@@ -3274,6 +3478,148 @@ router.get(
   },
 )
 
+router.patch(
+  "/:tenantId/contact-services/:contactServiceId/follow-up-coordinator",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+      const payload = UpdateFollowUpCoordinatorSchema.parse(req.body)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+      if (!canManageContactServices(membership)) {
+        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+      }
+
+      const nextCoordinatorMembership = payload.assignedToUserId
+        ? await prisma.membership.findUnique({
+            where: {
+              userId_tenantId: {
+                userId: payload.assignedToUserId,
+                tenantId,
+              },
+            },
+            select: {
+              status: true,
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
+            },
+          })
+        : null
+
+      if (
+        payload.assignedToUserId &&
+        (!nextCoordinatorMembership || nextCoordinatorMembership.status !== "ACTIVE")
+      ) {
+        return res.status(400).json({ error: "INVALID_FOLLOW_UP_COORDINATOR" })
+      }
+
+      const existing = await prismaWithServices.contactService.findFirst({
+        where: { id: contactServiceId, tenantId },
+        select: {
+          id: true,
+          contactId: true,
+          followUpTemplateId: true,
+          followUpCoordinatorUserId: true,
+          followUpCoordinator: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
+          followUpRun: {
+            select: { status: true },
+          },
+          followUpSteps: {
+            select: { status: true },
+          },
+        },
+      })
+
+      if (!existing) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+      if (!existing.followUpRun && existing.followUpSteps.length === 0) {
+        return res.status(409).json({ error: "FOLLOW_UP_NOT_CONFIGURED" })
+      }
+      if (
+        isServiceFollowUpWorkflowCompleted({
+          runStatus: existing.followUpRun?.status ?? null,
+          stepStatuses: existing.followUpSteps.map((step: any) => step.status),
+        })
+      ) {
+        return res.status(409).json({ error: "FOLLOW_UP_COORDINATOR_LOCKED" })
+      }
+
+      const nextCoordinatorUserId = payload.assignedToUserId ?? null
+      if (existing.followUpCoordinatorUserId === nextCoordinatorUserId) {
+        return res.json({
+          ok: true,
+          followUpCoordinatorUserId: existing.followUpCoordinatorUserId,
+          followUpCoordinator: existing.followUpCoordinator,
+        })
+      }
+
+      const nextCoordinator = nextCoordinatorMembership?.user ?? null
+      const updated = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const contactService = await prismaTx.contactService.update({
+          where: { id: contactServiceId },
+          data: { followUpCoordinatorUserId: nextCoordinatorUserId },
+          select: {
+            followUpCoordinatorUserId: true,
+            followUpCoordinator: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+          },
+        })
+
+        const previousLabel = getServiceUserLabel(existing.followUpCoordinator)
+        const nextLabel = getServiceUserLabel(nextCoordinator)
+        await prismaTx.serviceFollowUpExecutionLog.create({
+          data: {
+            tenantId,
+            templateId: existing.followUpTemplateId,
+            contactServiceId,
+            contactId: existing.contactId,
+            actorUserId: authed.user.id,
+            eventType: "FOLLOW_UP_COORDINATOR_CHANGED",
+            title: "Follow-up coordinator updated",
+            details: `Changed from ${previousLabel} to ${nextLabel}.`,
+            payload: {
+              previousUserId: existing.followUpCoordinatorUserId,
+              previousUserName: previousLabel,
+              userId: nextCoordinatorUserId,
+              userName: nextLabel,
+            },
+          },
+        })
+
+        return contactService
+      })
+
+      return res.json({ ok: true, ...updated })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
 router.get(
   "/:tenantId/contact-services/:contactServiceId",
   requireAuth,
@@ -3285,47 +3631,16 @@ router.get(
       const membership = await requireActiveMembership(authed, res, tenantId)
       if (!membership) return
 
-      const serviceNotesSelectWithAttachments = {
+      const activityNotesSelect = {
         select: {
           id: true,
           title: true,
-          body: true,
           createdAt: true,
           createdBy: {
             select: {
               id: true,
               name: true,
-              image: true,
-            },
-          },
-          attachments: {
-            orderBy: { createdAt: "asc" as const },
-            select: {
-              id: true,
-              file: {
-                select: {
-                  id: true,
-                  key: true,
-                  contentType: true,
-                  size: true,
-                },
-              },
-            },
-          },
-        },
-        orderBy: [{ createdAt: "desc" as const }],
-      }
-
-      const serviceNotesSelectWithoutAttachments = {
-        select: {
-          id: true,
-          title: true,
-          body: true,
-          createdAt: true,
-          createdBy: {
-            select: {
-              id: true,
-              name: true,
+              email: true,
               image: true,
             },
           },
@@ -3333,7 +3648,7 @@ router.get(
         orderBy: [{ createdAt: "desc" as const }],
       }
 
-      const fetchItem = async (includeServiceNoteAttachments = true) =>
+      const fetchItem = async () =>
         prismaWithServices.contactService.findFirst({
           where: {
             id: contactServiceId,
@@ -3351,6 +3666,15 @@ router.get(
             currency: true,
             allowPartialPayments: true,
             notes: true,
+            followUpCoordinatorUserId: true,
+            followUpCoordinator: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
             assignedProfessional: {
               select: {
                 id: true,
@@ -3384,6 +3708,24 @@ router.get(
                 minimumPartialPaymentCents: true,
                 installmentCount: true,
                 installmentFrequency: true,
+                professionals: {
+                  orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+                  select: {
+                    id: true,
+                    kind: true,
+                    userId: true,
+                    externalProfessionalName: true,
+                    externalContact: true,
+                    sortOrder: true,
+                    user: {
+                      select: {
+                        name: true,
+                        email: true,
+                        image: true,
+                      },
+                    },
+                  },
+                },
                 tenant: {
                   select: {
                     taxEnabled: true,
@@ -3442,14 +3784,11 @@ router.get(
               },
               orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
             },
-            serviceNotes: includeServiceNoteAttachments
-              ? serviceNotesSelectWithAttachments
-              : serviceNotesSelectWithoutAttachments,
+            serviceNotes: activityNotesSelect,
             contactNotes: {
               select: {
                 id: true,
                 title: true,
-                body: true,
                 createdAt: true,
                 createdBy: {
                   select: {
@@ -3457,32 +3796,6 @@ router.get(
                     name: true,
                     email: true,
                     image: true,
-                  },
-                },
-                followUpTemplate: {
-                  select: {
-                    id: true,
-                    name: true,
-                  },
-                },
-                contactServiceFollowUpStep: {
-                  select: {
-                    id: true,
-                    title: true,
-                  },
-                },
-                attachments: {
-                  orderBy: { createdAt: "asc" },
-                  select: {
-                    id: true,
-                    file: {
-                      select: {
-                        id: true,
-                        key: true,
-                        contentType: true,
-                        size: true,
-                      },
-                    },
                   },
                 },
               },
@@ -3494,6 +3807,24 @@ router.get(
                 eventType: true,
                 title: true,
                 details: true,
+                createdAt: true,
+                actor: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                  },
+                },
+              },
+              orderBy: [{ createdAt: "desc" }],
+            },
+            checklistActivities: {
+              select: {
+                id: true,
+                contactServiceChecklistItemId: true,
+                itemLabel: true,
+                previousStatus: true,
+                status: true,
                 createdAt: true,
                 actor: {
                   select: {
@@ -3517,7 +3848,17 @@ router.get(
                 resolutionSource: true,
                 resolutionReason: true,
                 assignedToUserId: true,
+                resolvedByUserId: true,
+                resolvedAt: true,
                 assignedTo: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+                resolvedBy: {
                   select: {
                     id: true,
                     name: true,
@@ -3534,6 +3875,7 @@ router.get(
               select: {
                 id: true,
                 checklistItemId: true,
+                status: true,
                 completedAt: true,
                 checklistItem: {
                   select: {
@@ -3553,15 +3895,7 @@ router.get(
           },
         })
 
-      let item: Awaited<ReturnType<typeof fetchItem>> | null
-      try {
-        item = await fetchItem(true)
-      } catch (error) {
-        if (!hasServiceNoteAttachmentQueryError(error)) {
-          throw error
-        }
-        item = await fetchItem(false)
-      }
+      let item: Awaited<ReturnType<typeof fetchItem>> | null = await fetchItem()
 
       if (!item) {
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
@@ -3617,14 +3951,7 @@ router.get(
         syncResult.checklistBackfilled ||
         syncResult.statusReconciled
       ) {
-        try {
-          item = await fetchItem(true)
-        } catch (error) {
-          if (!hasServiceNoteAttachmentQueryError(error)) {
-            throw error
-          }
-          item = await fetchItem(false)
-        }
+        item = await fetchItem()
       }
 
       if (!item) {
@@ -3635,19 +3962,7 @@ router.get(
         (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
         0,
       )
-      const combinedNotes = [
-        ...item.serviceNotes.map((note: any) =>
-          serializeRelatedServiceNote(note, "SERVICE_NOTE"),
-        ),
-        ...item.contactNotes.map((note: any) =>
-          serializeRelatedServiceNote(
-            note,
-            note.followUpTemplate || note.contactServiceFollowUpStep
-              ? "FOLLOW_UP_NOTE"
-              : "LINKED_CONTACT_NOTE",
-          ),
-        ),
-      ].sort(
+      const noteActivityItems = [...item.serviceNotes, ...item.contactNotes].sort(
         (left, right) =>
           new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
       )
@@ -3668,6 +3983,8 @@ router.get(
           currency: item.currency,
           allowPartialPayments: item.allowPartialPayments,
           notes: item.notes,
+          followUpCoordinatorUserId: item.followUpCoordinatorUserId,
+          followUpCoordinator: item.followUpCoordinator,
           assignedProfessional: item.assignedProfessional,
           contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
             .filter(Boolean)
@@ -3681,6 +3998,7 @@ router.get(
             minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
             installmentCount: item.service.installmentCount,
             installmentFrequency: item.service.installmentFrequency,
+            professionals: item.service.professionals,
           },
           tenantBilling: {
             taxEnabled: item.service.tenant.taxEnabled,
@@ -3697,16 +4015,165 @@ router.get(
             getSafeTimezone(item.service.tenant.timezone),
           ),
           payments: item.payments,
-          serviceNotes: combinedNotes,
+          noteActivityItems,
+          executionLogs: item.executionLogs,
+          checklistActivityLogs: item.checklistActivities.map((activity: any) => ({
+            id: activity.id,
+            checklistItemId: activity.contactServiceChecklistItemId,
+            label: activity.itemLabel,
+            previousStatus: activity.previousStatus,
+            status: activity.status,
+            createdAt: activity.createdAt,
+            actor: activity.actor,
+          })),
           checklistItems: item.checklistItems.map((checklistItem: any) => ({
             id: checklistItem.id,
             checklistItemId: checklistItem.checklistItemId,
+            status: checklistItem.status,
             completedAt: checklistItem.completedAt,
             label: checklistItem.checklistItem?.label ?? "",
             description: checklistItem.checklistItem?.description ?? null,
             isRequired: Boolean(checklistItem.checklistItem?.isRequired),
             sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
           })),
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.get(
+  "/:tenantId/contact-services/:contactServiceId/notes",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+      const query = ContactServiceNotesQuerySchema.parse(req.query)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const enrollment = await prismaWithServices.contactService.findFirst({
+        where: { id: contactServiceId, tenantId },
+        select: { id: true },
+      })
+      if (!enrollment) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const authorSearch = {
+        is: {
+          OR: [
+            { name: { contains: query.q, mode: "insensitive" as const } },
+            { email: { contains: query.q, mode: "insensitive" as const } },
+          ],
+        },
+      }
+      const searchWhere = query.q
+        ? {
+            OR: [
+              { title: { contains: query.q, mode: "insensitive" as const } },
+              { body: { contains: query.q, mode: "insensitive" as const } },
+              { createdBy: authorSearch },
+            ],
+          }
+        : {}
+      const serviceWhere = { tenantId, contactServiceId, ...searchWhere }
+      const contactWhere = { tenantId, contactServiceId, ...searchWhere }
+
+      const [serviceTotal, contactTotal] = await Promise.all([
+        prismaWithServices.contactServiceNote.count({ where: serviceWhere }),
+        prismaWithServices.contactNote.count({ where: contactWhere }),
+      ])
+      const page = getContactServiceNotesPage(
+        query.page,
+        query.pageSize,
+        serviceTotal + contactTotal,
+      )
+      const orderBy = getServiceNoteOrderBy(query.sort)
+      const noteSelect = {
+        id: true,
+        title: true,
+        body: true,
+        createdById: true,
+        createdAt: true,
+        updatedAt: true,
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            image: true,
+          },
+        },
+        attachments: {
+          orderBy: { createdAt: "asc" as const },
+          select: {
+            id: true,
+            file: {
+              select: {
+                id: true,
+                key: true,
+                contentType: true,
+                size: true,
+              },
+            },
+          },
+        },
+      }
+
+      const [serviceNotes, contactNotes] = await Promise.all([
+        prismaWithServices.contactServiceNote.findMany({
+          where: serviceWhere,
+          select: noteSelect,
+          orderBy,
+          take: page.candidateTake,
+        }),
+        prismaWithServices.contactNote.findMany({
+          where: contactWhere,
+          select: {
+            ...noteSelect,
+            followUpTemplate: { select: { name: true } },
+            contactServiceFollowUpStep: { select: { title: true } },
+          },
+          orderBy,
+          take: page.candidateTake,
+        }),
+      ])
+
+      const items = [
+        ...serviceNotes.map((note: any) =>
+          serializePaginatedServiceNote(note, "SERVICE_NOTE", {
+            membership,
+            userId: authed.user.id,
+          }),
+        ),
+        ...contactNotes.map((note: any) =>
+          serializePaginatedServiceNote(
+            note,
+            resolveContactServiceNoteKind({
+              isServiceNote: false,
+              hasFollowUpTemplate: Boolean(note.followUpTemplate),
+              hasFollowUpStep: Boolean(note.contactServiceFollowUpStep),
+            }),
+            { membership, userId: authed.user.id },
+          ),
+        ),
+      ]
+        .sort((left, right) => compareContactServiceNotes(left, right, query.sort))
+        .slice(page.offset, page.offset + page.pageSize)
+
+      return res.json({
+        ok: true,
+        items,
+        pagination: {
+          page: page.page,
+          pageSize: page.pageSize,
+          total: page.total,
+          totalPages: page.totalPages,
         },
       })
     } catch (error) {
@@ -3758,8 +4225,8 @@ router.post(
           tenantId,
           contactServiceId,
           createdById: authed.user.id,
-          title: sanitizeSingleLineText(payload.title),
-          body: sanitizeMultilineText(payload.body),
+          title: payload.title,
+          body: payload.body,
           attachments: {
             create: files.map((file: { id: string }) => ({
               tenantId,
@@ -3810,6 +4277,183 @@ router.post(
           })),
         },
       })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.patch(
+  "/:tenantId/contact-services/:contactServiceId/notes/:noteId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId, noteId } =
+        TenantContactServiceNotePathSchema.parse(req.params)
+      const payload = UpdateContactServiceNoteSchema.parse(req.body)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const [existingNote, files] = await Promise.all([
+        prismaWithServices.contactServiceNote.findFirst({
+          where: { id: noteId, tenantId, contactServiceId },
+          select: {
+            id: true,
+            createdById: true,
+            attachments: { select: { fileId: true } },
+          },
+        }),
+        getValidatedServiceNoteFiles(tenantId, payload.attachmentFileIds),
+      ])
+
+      if (!existingNote) {
+        return res.status(404).json({ error: "NOTE_NOT_FOUND" })
+      }
+      if (
+        !canManageContactServiceNote(
+          membership,
+          existingNote.createdById,
+          authed.user.id,
+        )
+      ) {
+        return res.status(403).json({ error: "FORBIDDEN" })
+      }
+      if (!files) {
+        return res.status(400).json({ error: "INVALID_NOTE_ATTACHMENTS" })
+      }
+
+      const existingFileIds = existingNote.attachments.map(
+        (attachment: { fileId: string }) => attachment.fileId,
+      )
+      const nextFileIds = files.map((file: { id: string }) => file.id)
+      const { fileIdsToRemove, fileIdsToAdd } =
+        resolveContactServiceNoteAttachmentChanges(
+          existingFileIds,
+          nextFileIds,
+        )
+
+      const updated = await prisma.$transaction(async (tx) => {
+        const txWithServices = tx as any
+        await txWithServices.contactServiceNote.update({
+          where: { id: noteId },
+          data: {
+            title: payload.title,
+            body: payload.body,
+          },
+        })
+
+        if (fileIdsToRemove.length > 0) {
+          await txWithServices.contactServiceNoteAttachment.deleteMany({
+            where: {
+              tenantId,
+              noteId,
+              fileId: { in: fileIdsToRemove },
+            },
+          })
+        }
+        if (fileIdsToAdd.length > 0) {
+          await txWithServices.contactServiceNoteAttachment.createMany({
+            data: fileIdsToAdd.map((fileId) => ({
+              tenantId,
+              noteId,
+              fileId,
+            })),
+            skipDuplicates: true,
+          })
+        }
+
+        return txWithServices.contactServiceNote.findUniqueOrThrow({
+          where: { id: noteId },
+          select: {
+            id: true,
+            title: true,
+            body: true,
+            createdById: true,
+            createdAt: true,
+            updatedAt: true,
+            createdBy: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+            attachments: {
+              orderBy: { createdAt: "asc" },
+              select: {
+                id: true,
+                file: {
+                  select: {
+                    id: true,
+                    key: true,
+                    contentType: true,
+                    size: true,
+                  },
+                },
+              },
+            },
+          },
+        })
+      })
+
+      await deleteServiceNoteFilesIfUnreferenced(fileIdsToRemove)
+
+      return res.json({
+        ok: true,
+        note: serializePaginatedServiceNote(updated, "SERVICE_NOTE", {
+          membership,
+          userId: authed.user.id,
+        }),
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.delete(
+  "/:tenantId/contact-services/:contactServiceId/notes/:noteId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId, noteId } =
+        TenantContactServiceNotePathSchema.parse(req.params)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const existingNote = await prismaWithServices.contactServiceNote.findFirst({
+        where: { id: noteId, tenantId, contactServiceId },
+        select: {
+          id: true,
+          createdById: true,
+          attachments: { select: { fileId: true } },
+        },
+      })
+      if (!existingNote) {
+        return res.status(404).json({ error: "NOTE_NOT_FOUND" })
+      }
+      if (
+        !canManageContactServiceNote(
+          membership,
+          existingNote.createdById,
+          authed.user.id,
+        )
+      ) {
+        return res.status(403).json({ error: "FORBIDDEN" })
+      }
+
+      const attachmentFileIds = existingNote.attachments.map(
+        (attachment: { fileId: string }) => attachment.fileId,
+      )
+      await prismaWithServices.contactServiceNote.delete({ where: { id: noteId } })
+      await deleteServiceNoteFilesIfUnreferenced(attachmentFileIds)
+
+      return res.json({ ok: true })
     } catch (error) {
       return next(error)
     }
@@ -4125,11 +4769,61 @@ router.patch(
         },
         select: {
           id: true,
+          status: true,
+          contactId: true,
+          followUpTemplateId: true,
+          assignedProfessionalId: true,
+          assignedProfessional: {
+            select: {
+              id: true,
+              kind: true,
+              userId: true,
+              externalProfessionalName: true,
+              externalContact: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+          },
+          service: {
+            select: {
+              id: true,
+              name: true,
+              professionals: {
+                select: {
+                  id: true,
+                  kind: true,
+                  userId: true,
+                  externalProfessionalName: true,
+                  externalContact: true,
+                  user: {
+                    select: {
+                      name: true,
+                      email: true,
+                      image: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       })
 
       if (!existing) {
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const professionalChange = resolveServiceProfessionalChange({
+        assignedProfessionalId: payload.assignedProfessionalId,
+        previousProfessional: existing.assignedProfessional,
+        professionals: existing.service.professionals,
+      })
+      if (!professionalChange.valid) {
+        return res.status(400).json({ error: "INVALID_ASSIGNED_SERVICE_PROFESSIONAL" })
       }
 
       const statusUpdate =
@@ -4153,8 +4847,35 @@ router.patch(
                   canceledAt: null,
                 }
 
-      const updated = await prismaWithServices.contactService.update({
-        where: { id: contactServiceId },
+      const executionLogs = []
+      if (payload.status !== undefined && payload.status !== existing.status && existing.followUpTemplateId) {
+        executionLogs.push({
+          tenantId,
+          templateId: existing.followUpTemplateId,
+          contactId: existing.contactId,
+          actorUserId: authed.user.id,
+          eventType: "SERVICE_STATUS_UPDATED",
+          title: `Service status updated: ${existing.service.name}`,
+          details: `Service moved from ${existing.status.toLowerCase().replace(/_/g, " ")} to ${payload.status.toLowerCase().replace(/_/g, " ")}.`,
+          payload: { previousStatus: existing.status, status: payload.status },
+        })
+      }
+      if (professionalChange.activity) {
+        executionLogs.push({
+          tenantId,
+          templateId: existing.followUpTemplateId,
+          contactId: existing.contactId,
+          actorUserId: authed.user.id,
+          eventType: "SERVICE_PROFESSIONAL_CHANGED",
+          title: `Assigned professional updated: ${existing.service.name}`,
+          details: `Changed from ${professionalChange.activity.previousProfessionalName} to ${professionalChange.activity.professionalName}.`,
+          payload: professionalChange.activity,
+        })
+      }
+
+      // Nested activity creation and the enrollment update commit or roll back together.
+      const updated = await prisma.contactService.update({
+        where: { id: contactServiceId, tenantId },
         data: {
           ...statusUpdate,
           ...(payload.startedAt !== undefined
@@ -4171,6 +4892,10 @@ router.patch(
                     : null,
               }
             : {}),
+          ...(payload.assignedProfessionalId !== undefined
+            ? { assignedProfessionalId: payload.assignedProfessionalId }
+            : {}),
+          ...(executionLogs.length ? { executionLogs: { create: executionLogs } } : {}),
         },
         select: {
           id: true,
@@ -4181,27 +4906,25 @@ router.patch(
           canceledAt: true,
           totalPriceCents: true,
           notes: true,
-        },
-      })
-
-      if (payload.status !== undefined && payload.status !== existing.status && existing.followUpTemplateId) {
-        await prismaWithServices.serviceFollowUpExecutionLog.create({
-          data: {
-            tenantId,
-            templateId: existing.followUpTemplateId,
-            contactServiceId,
-            contactId: existing.contactId,
-            actorUserId: authed.user.id,
-            eventType: "SERVICE_STATUS_UPDATED",
-            title: `Service status updated: ${existing.service.name}`,
-            details: `Service moved from ${existing.status.toLowerCase().replace(/_/g, " ")} to ${updated.status.toLowerCase().replace(/_/g, " ")}.`,
-            payload: {
-              previousStatus: existing.status,
-              status: updated.status,
+          assignedProfessionalId: true,
+          assignedProfessional: {
+            select: {
+              id: true,
+              kind: true,
+              userId: true,
+              externalProfessionalName: true,
+              externalContact: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
+              },
             },
           },
-        })
-      }
+        },
+      })
 
       return res.json({
         ok: true,
@@ -4258,75 +4981,140 @@ router.patch(
   requireAuth,
   async (req, res, next) => {
     try {
+      const authed = req as AuthedRequest
       const { tenantId, contactServiceId, checklistItemId } =
         TenantContactServiceChecklistItemPathSchema.parse(req.params)
-      const payload = UpdateContactServiceChecklistItemSchema.parse(req.body)
+      const parsedPayload = UpdateContactServiceChecklistItemSchema.safeParse(req.body)
 
-      const membership = await requireActiveMembership(req as AuthedRequest, res, tenantId)
-      if (!membership) return
-
-      if (payload.completed === undefined) {
-        return res.status(400).json({ error: "NO_CHANGES_PROVIDED" })
+      if (!parsedPayload.success) {
+        return res.status(400).json({
+          error: "INVALID_CHECKLIST_STATUS_UPDATE",
+          issues: parsedPayload.error.issues,
+        })
       }
 
-      const existing = await prismaWithServices.contactServiceChecklistItem.findFirst({
-        where: {
-          id: checklistItemId,
-          tenantId,
-          contactServiceId,
-        },
-        select: {
-          id: true,
-          checklistItemId: true,
-          completedAt: true,
-          checklistItem: {
-            select: {
-              id: true,
-              label: true,
-              description: true,
-              isRequired: true,
-              sortOrder: true,
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const nextStatus = resolveContactServiceChecklistStatus(parsedPayload.data)
+      const result = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const existing = await prismaTx.contactServiceChecklistItem.findFirst({
+          where: {
+            id: checklistItemId,
+            tenantId,
+            contactServiceId,
+          },
+          select: {
+            id: true,
+            checklistItemId: true,
+            status: true,
+            completedAt: true,
+            checklistItem: {
+              select: {
+                id: true,
+                label: true,
+                description: true,
+                isRequired: true,
+                sortOrder: true,
+              },
             },
           },
-        },
+        })
+
+        if (!existing) return null
+
+        const transition = resolveContactServiceChecklistTransition({
+          currentStatus: existing.status,
+          currentCompletedAt: existing.completedAt,
+          nextStatus,
+          now: new Date(),
+        })
+
+        if (!transition.changed) {
+          return { checklistItem: existing, activity: null }
+        }
+
+        const updated = await prismaTx.contactServiceChecklistItem.update({
+          where: { id: checklistItemId },
+          data: {
+            status: nextStatus,
+            completedAt: transition.completedAt,
+          },
+          select: {
+            id: true,
+            checklistItemId: true,
+            status: true,
+            completedAt: true,
+            checklistItem: {
+              select: {
+                id: true,
+                label: true,
+                description: true,
+                isRequired: true,
+                sortOrder: true,
+              },
+            },
+          },
+        })
+        const activity = await prismaTx.contactServiceChecklistActivity.create({
+          data: buildContactServiceChecklistActivityData({
+            tenantId,
+            contactServiceId,
+            contactServiceChecklistItemId: existing.id,
+            itemLabel: existing.checklistItem?.label ?? "Checklist item",
+            previousStatus: existing.status,
+            status: nextStatus,
+            actorUserId: authed.user.id,
+          }),
+          select: {
+            id: true,
+            contactServiceChecklistItemId: true,
+            itemLabel: true,
+            previousStatus: true,
+            status: true,
+            createdAt: true,
+            actor: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        })
+
+        return { checklistItem: updated, activity }
       })
 
-      if (!existing) {
+      if (!result) {
         return res.status(404).json({ error: "CONTACT_SERVICE_CHECKLIST_ITEM_NOT_FOUND" })
       }
 
-      const updated = await prismaWithServices.contactServiceChecklistItem.update({
-        where: { id: checklistItemId },
-        data: {
-          completedAt: payload.completed ? new Date() : null,
-        },
-        select: {
-          id: true,
-          checklistItemId: true,
-          completedAt: true,
-          checklistItem: {
-            select: {
-              id: true,
-              label: true,
-              description: true,
-              isRequired: true,
-              sortOrder: true,
-            },
-          },
-        },
-      })
+      const updated = result.checklistItem
 
       return res.json({
         ok: true,
         checklistItem: {
           id: updated.id,
           checklistItemId: updated.checklistItemId,
+          status: updated.status,
           completedAt: updated.completedAt,
           label: updated.checklistItem?.label ?? "",
           description: updated.checklistItem?.description ?? null,
           isRequired: Boolean(updated.checklistItem?.isRequired),
           sortOrder: updated.checklistItem?.sortOrder ?? 0,
         },
+        activity: result.activity
+          ? {
+              id: result.activity.id,
+              checklistItemId: result.activity.contactServiceChecklistItemId,
+              label: result.activity.itemLabel,
+              previousStatus: result.activity.previousStatus,
+              status: result.activity.status,
+              createdAt: result.activity.createdAt,
+              actor: result.activity.actor,
+            }
+          : null,
       })
     } catch (error) {
       return next(error)
@@ -4348,22 +5136,32 @@ router.patch(
       const membership = await requireActiveMembership(authed, res, tenantId)
       if (!membership) return
 
-      if (payload.assignedToUserId) {
-        const assigneeMembership = await prisma.membership.findUnique({
-          where: {
-            userId_tenantId: {
-              userId: payload.assignedToUserId,
-              tenantId,
+      const requestedAssigneeMembership = payload.assignedToUserId
+        ? await prisma.membership.findUnique({
+            where: {
+              userId_tenantId: {
+                userId: payload.assignedToUserId,
+                tenantId,
+              },
             },
-          },
-          select: {
-            status: true,
-          },
-        })
+            select: {
+              status: true,
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+          })
+        : null
 
-        if (!assigneeMembership || assigneeMembership.status !== "ACTIVE") {
-          return res.status(400).json({ error: "INVALID_ASSIGNEE" })
-        }
+      if (
+        payload.assignedToUserId &&
+        (!requestedAssigneeMembership || requestedAssigneeMembership.status !== "ACTIVE")
+      ) {
+        return res.status(400).json({ error: "INVALID_ASSIGNEE" })
       }
 
       const existing = await prismaWithServices.contactServiceFollowUpStep.findFirst({
@@ -4374,6 +5172,7 @@ router.patch(
         },
         select: {
           id: true,
+          title: true,
           status: true,
           completedAt: true,
           dueAt: true,
@@ -4382,6 +5181,13 @@ router.patch(
           templateNodeId: true,
           runId: true,
           resolutionSource: true,
+          assignedToUserId: true,
+          assignedTo: {
+            select: {
+              name: true,
+              email: true,
+            },
+          },
         },
       })
 
@@ -4389,6 +5195,17 @@ router.patch(
         return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
       }
       const isReopenAction = payload.action === "REOPEN"
+      const isAssigneeOnlyUpdate =
+        payload.assignedToUserId !== undefined &&
+        Object.keys(payload).every((key) => key === "assignedToUserId")
+
+      if (
+        payload.assignedToUserId !== undefined &&
+        !canChangeServiceFollowUpStepAssignee(existing.status)
+      ) {
+        return res.status(409).json({ error: "FOLLOW_UP_STEP_ASSIGNEE_LOCKED" })
+      }
+
       const versionedRun = existing.runId
         ? await prismaWithServices.contactServiceFollowUpRun.findUnique({
             where: { id: existing.runId },
@@ -4408,7 +5225,7 @@ router.patch(
         ? new Date(payload.nextFollowUpAt)
         : null
 
-      if (existing.runId && !isReopenAction) {
+      if (existing.runId && !isReopenAction && !isAssigneeOnlyUpdate) {
         const isCurrentStep =
           versionedRun?.activeStepId === existing.id ||
           (versionedRun?.activeStepId === null &&
@@ -4473,11 +5290,14 @@ router.patch(
       if (
         ["COMPLETED", "SKIPPED"].includes(existing.status) &&
         !isReopenAction &&
-        (payload.status !== undefined || payload.postponeTo !== undefined)
+        (payload.status !== undefined ||
+          payload.completedAt !== undefined ||
+          payload.postponeTo !== undefined)
       ) {
         return res.status(409).json({ error: "STEP_REOPEN_REQUIRED" })
       }
 
+      const mutationTime = new Date()
       const statusUpdate =
         isReopenAction
           ? {
@@ -4499,12 +5319,20 @@ router.patch(
           : payload.status === "COMPLETED"
             ? {
                 status: "COMPLETED" as const,
-                completedAt: payload.completedAt ? new Date(payload.completedAt) : new Date(),
+                completedAt: payload.completedAt ? new Date(payload.completedAt) : mutationTime,
               }
             : {
                 status: payload.status,
                 completedAt: null,
               }
+      const resolutionUpdate = buildFollowUpStepResolutionUpdate({
+        action: isReopenAction ? "REOPEN" : undefined,
+        nextStatus: payload.status,
+        completedAtProvided: payload.completedAt !== undefined,
+        completedAtValue: payload.completedAt,
+        actorUserId: authed.user.id,
+        now: mutationTime,
+      })
 
       const postponeToDate = payload.postponeTo ? new Date(payload.postponeTo) : null
       if (payload.postponeTo && Number.isNaN(postponeToDate?.getTime() ?? NaN)) {
@@ -4606,6 +5434,7 @@ router.patch(
                 }
               : {}),
             ...statusUpdate,
+            ...resolutionUpdate,
             ...(isReopenAction
               ? { resolutionSource: null, resolutionReason: null }
               : payload.status === "SKIPPED"
@@ -4642,6 +5471,24 @@ router.patch(
             dueAt: true,
             completedAt: true,
             assignedToUserId: true,
+            resolvedByUserId: true,
+            resolvedAt: true,
+            assignedTo: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+            resolvedBy: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
             note: true,
             sortOrder: true,
             templateNodeId: true,
@@ -4660,7 +5507,38 @@ router.patch(
         })
 
         if (
-          contactServiceRecord?.followUpTemplateId &&
+          contactServiceRecord &&
+          payload.assignedToUserId !== undefined &&
+          existing.assignedToUserId !== updated.assignedToUserId
+        ) {
+          const previousAssigneeLabel = getServiceUserLabel(existing.assignedTo)
+          const nextAssigneeLabel = getServiceUserLabel(
+            requestedAssigneeMembership?.user ?? null,
+          )
+          await prismaTx.serviceFollowUpExecutionLog.create({
+            data: {
+              tenantId,
+              templateId: contactServiceRecord.followUpTemplateId,
+              contactServiceId,
+              contactId: contactServiceRecord.contactId,
+              actorUserId: authed.user.id,
+              flowNodeId: updated.templateNodeId ?? null,
+              stepId: updated.id,
+              eventType: "STEP_ASSIGNEE_CHANGED",
+              title: `Step assignee updated: ${updated.title}`,
+              details: `Changed from ${previousAssigneeLabel} to ${nextAssigneeLabel}.`,
+              payload: {
+                previousUserId: existing.assignedToUserId,
+                previousUserName: previousAssigneeLabel,
+                userId: updated.assignedToUserId,
+                userName: nextAssigneeLabel,
+              },
+            },
+          })
+        }
+
+        if (
+          contactServiceRecord &&
           (isReopenAction ||
             payload.status !== undefined ||
             payload.completedAt !== undefined ||
@@ -4684,6 +5562,10 @@ router.patch(
                 status: updated.status,
                 dueAt: updated.dueAt,
                 completedAt: updated.completedAt,
+                resolvedAt: updated.resolvedAt,
+                resolvedByUserId: updated.resolvedByUserId,
+                assignedToUserId: updated.assignedToUserId,
+                assignedToName: getServiceUserLabel(updated.assignedTo),
                 postponeTo: payload.postponeTo ?? null,
                 action: payload.action ?? null,
               },
@@ -4912,6 +5794,8 @@ router.post(
       if (nextStatus === "ACTIVE" && hasActiveStep) {
         return res.status(409).json({ error: "FOLLOW_UP_ALREADY_HAS_ACTIVE_STEP" })
       }
+      const resolvedAt =
+        nextStatus === "COMPLETED" || nextStatus === "SKIPPED" ? new Date() : null
       const nextDueAt = payload.dueAt ? new Date(payload.dueAt) : null
       const nextAvailableAt =
         payload.availableAt !== undefined
@@ -4934,7 +5818,15 @@ router.post(
           status: nextStatus,
           availableAt: nextAvailableAt,
           dueAt: nextDueAt,
-          completedAt: nextStatus === "COMPLETED" ? new Date() : null,
+          completedAt: nextStatus === "COMPLETED" ? resolvedAt : null,
+          resolvedByUserId: resolvedAt ? authed.user.id : null,
+          resolvedAt,
+          resolutionSource:
+            nextStatus === "COMPLETED"
+              ? "USER_COMPLETED"
+              : nextStatus === "SKIPPED"
+                ? "USER_SKIPPED"
+                : null,
           assignedToUserId: payload.assignedToUserId || null,
           note:
             payload.note && payload.note.trim().length
@@ -4951,6 +5843,16 @@ router.post(
           dueAt: true,
           completedAt: true,
           assignedToUserId: true,
+          resolvedByUserId: true,
+          resolvedAt: true,
+          resolvedBy: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
           note: true,
           sortOrder: true,
         },

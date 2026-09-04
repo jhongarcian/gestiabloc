@@ -63,6 +63,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { formatDateTimeForDisplay } from "@/lib/date-time"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
+import { getServiceEnrollmentFollowUpsHref } from "@/lib/routes"
 import { cn } from "@/lib/utils"
 
 type FollowUpsTableProps = {
@@ -1028,7 +1029,10 @@ export function FollowUpsTable({
                 </TableRow>
               ) : enrollments.length ? (
                 enrollments.map((item) => {
-                  const href = `/app/${tenantSlug}/contacts/${item.contactId}/services/${item.id}`
+                  const href = getServiceEnrollmentFollowUpsHref({
+                    tenantSlug,
+                    contactServiceId: item.id,
+                  })
 
                   return (
                     <TableRow

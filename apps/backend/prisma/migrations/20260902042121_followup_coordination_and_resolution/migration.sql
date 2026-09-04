@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "ContactServiceFollowUpStep_tenantId_resolvedByUserId_res_idx" RENAME TO "ContactServiceFollowUpStep_tenantId_resolvedByUserId_resolv_idx";

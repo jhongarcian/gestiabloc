@@ -412,7 +412,7 @@ It should feel like the same product flow, not a completely different modal.
 - the user should choose the contact first
 - then choose the follow-up template for this service
 - optionally assign a service professional
-- optionally choose the follow-up owner
+- optionally choose the follow-up coordinator
 - review checklist items that will be created
 - complete payment details
 
@@ -422,7 +422,7 @@ The service detail transaction dialog should keep the same foundational behavior
 
 - same multi-step structure
 - same contact search and selection behavior
-- same follow-up owner behavior
+- same follow-up coordinator behavior
 - same checklist review behavior
 - same payment behavior
 - same success outcome after transaction creation
@@ -438,7 +438,7 @@ The service detail transaction dialog should keep the same foundational behavior
 
 - choose a published follow-up template or leave default
 - optionally assign a configured service professional
-- optionally assign a tenant user as follow-up owner
+- optionally assign a tenant user as follow-up coordinator
 
 #### Checklist
 
@@ -521,7 +521,7 @@ Current validation coverage includes:
 - contact is required
 - selected follow-up template must belong to the service
 - selected professional must belong to the service
-- selected follow-up owner must be a valid tenant assignee option
+- selected follow-up coordinator must be a valid tenant assignee option
 - partial payment is only valid when the service allows it
 - partial payment must be greater than zero and not exceed total service price
 - partial payment must respect `minimumPartialPaymentCents`

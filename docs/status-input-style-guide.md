@@ -9,6 +9,9 @@ Reference implementations:
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/tasks/_components/task-status-select.tsx`
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/tasks/_components/create-task-dialog.tsx`
 
+For short, fixed option lists that do not need filtering, also follow
+`docs/select-input-no-search.md`.
+
 ## Component contract
 
 Use a domain-specific status selector around the shared shadcn `Select`. Do not rebuild status styling in every form.
@@ -171,4 +174,3 @@ Before merging a status input, verify:
 - Disabled and invalid states are programmatically exposed.
 - Server validation errors render beneath the field.
 - The selected configuration ID submits unchanged.
-

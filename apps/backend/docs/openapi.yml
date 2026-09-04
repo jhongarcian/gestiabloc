@@ -1139,7 +1139,7 @@ paths:
     post:
       tags: [Contacts]
       summary: Create a note for a contact
-      description: Any active tenant member can create a note. Attachments must reference existing tenant files uploaded through the presign endpoint.
+      description: Any active tenant member can create a note. Title and body are stored as plain text after HTML tags, unsafe control characters, and excess whitespace are removed. Attachments must reference existing tenant files uploaded through the presign endpoint.
       security:
         - cookieAuth: []
       parameters:
@@ -1190,7 +1190,7 @@ paths:
     patch:
       tags: [Contacts]
       summary: Update a contact note
-      description: Only the note creator or a tenant admin can update the note.
+      description: Only the note creator or a tenant admin can update the note. Title and body receive the same plain-text sanitization as note creation.
       security:
         - cookieAuth: []
       parameters:
@@ -4305,6 +4305,7 @@ paths:
     patch:
       tags: [Services]
       summary: Update a contact service process
+      description: Updates enrollment fields, including the assigned professional. A professional must be configured for this enrollment's service; null clears the assignment. Professional changes are audited atomically and do not change the follow-up coordinator or step assignees.
       security:
         - cookieAuth: []
       parameters:
@@ -4328,7 +4329,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ContactServiceMutationResponse"
         "400":
-          description: Invalid request
+          description: Invalid request, no changes provided, or assigned professional is not configured for this service (INVALID_ASSIGNED_SERVICE_PROFESSIONAL)
           content:
             application/json:
               schema:
@@ -4340,7 +4341,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
-          description: User is not an active member of the tenant
+          description: Requires an active tenant admin or an active tenant user with MEDIUM or MAX security; LOW users, inactive members, and non-members are denied
           content:
             application/json:
               schema:
@@ -4389,10 +4390,136 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-coordinator:
+    patch:
+      tags: [Services]
+      summary: Change the overall coordinator for a service follow-up
+      description: Updates only the enrollment-level coordinator. Existing step assignees are not changed.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContactServiceFollowUpCoordinatorRequest"
+      responses:
+        "200":
+          description: Follow-up coordinator updated without changing step assignments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactServiceFollowUpCoordinatorMutationResponse"
+        "400":
+          description: The selected coordinator is not an active tenant member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member or has LOW security
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Follow-up is not configured or its final coordinator is locked after completion
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/notes:
+    get:
+      tags: [Services]
+      summary: List notes associated with a contact service process
+      description: Returns a tenant-scoped, merged history of service notes, follow-up notes, and linked contact notes. Every item exposes viewer-specific edit and delete permissions using the shared note author-or-admin policy.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            enum: [10, 25, 50]
+            default: 10
+        - in: query
+          name: q
+          description: Case-insensitive search across title, note details, and author name or email.
+          schema:
+            type: string
+            maxLength: 160
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [updated_desc, created_desc, updated_asc]
+            default: updated_desc
+      responses:
+        "200":
+          description: Paginated merged service note history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactServiceNotesPageResponse"
+        "400":
+          description: Invalid pagination, search, or sort query
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     post:
       tags: [Services]
       summary: Add a note to a contact service process
+      description: Creates a service note after sanitizing the title and body as required plain text.
       security:
         - cookieAuth: []
       parameters:
@@ -4439,6 +4566,104 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/notes/{noteId}:
+    patch:
+      tags: [Services]
+      summary: Update a service note
+      description: Updates a service-created note, sanitizes its title and body as required plain text, and atomically replaces its attachment links. The author or a tenant admin may update it.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: noteId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContactServiceNoteRequest"
+      responses:
+        "200":
+          description: Service note updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateContactServiceNoteResponse"
+        "400":
+          description: Invalid note fields or attachment file IDs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not the note author or a tenant admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process note not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Services]
+      summary: Delete a service note
+      description: Permanently deletes a service-created note and removes files that are no longer referenced. The author or a tenant admin may delete it.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: noteId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Service note deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, example: true }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not the note author or a tenant admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process note not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/checklist-items/{checklistItemId}:
     patch:
       tags: [Services]
@@ -4471,7 +4696,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ContactServiceChecklistItemMutationResponse"
         "400":
-          description: Invalid request
+          description: Invalid status, both status fields supplied, or no status field supplied
           content:
             application/json:
               schema:
@@ -4867,7 +5092,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: The step is not the current active step, is already resolved, or cannot be reopened.
+          description: The step is not the current active step, is already resolved, cannot be reopened, or its assignee is locked because the step is completed or skipped.
           content:
             application/json:
               schema:
@@ -6919,10 +7144,12 @@ components:
           type: string
           minLength: 1
           maxLength: 160
+          description: Plain-text title. HTML tags and unsafe control characters are removed, whitespace is collapsed, and a value that becomes empty is rejected.
         body:
           type: string
           minLength: 1
           maxLength: 5000
+          description: Plain-text note details. HTML tags and unsafe control characters are removed, line breaks are normalized, and a value that becomes empty is rejected.
         contactServiceId:
           type: string
           nullable: true
@@ -8482,6 +8709,19 @@ components:
         assignedToUserId:
           type: string
           nullable: true
+          description: User responsible for this individual step.
+        assignedTo:
+          $ref: "#/components/schemas/ContactServiceFollowUpUser"
+        resolvedByUserId:
+          type: string
+          nullable: true
+          description: Authenticated user who most recently completed or user-skipped this step. Null for system resolution or unknown historical data.
+        resolvedBy:
+          $ref: "#/components/schemas/ContactServiceFollowUpUser"
+        resolvedAt:
+          type: string
+          format: date-time
+          nullable: true
         sortOrder:
           type: integer
         canCompleteNow:
@@ -8532,6 +8772,12 @@ components:
         notes:
           type: string
           nullable: true
+        followUpCoordinatorUserId:
+          type: string
+          nullable: true
+          description: Overall coordinator for this service follow-up. Independent from step assignees.
+        followUpCoordinator:
+          $ref: "#/components/schemas/ContactServiceFollowUpUser"
         assignedProfessional:
           $ref: "#/components/schemas/ContactServiceAssignedProfessional"
         contactName:
@@ -8652,6 +8898,10 @@ components:
           type: boolean
         sortOrder:
           type: integer
+    ContactServiceChecklistStatus:
+      type: string
+      enum: [NOT_RECEIVED, INFORMED, MISSING, RECEIVED]
+      description: RECEIVED is the only checklist status that counts as complete.
     ContactServiceChecklistItem:
       type: object
       properties:
@@ -8659,6 +8909,8 @@ components:
           type: string
         checklistItemId:
           type: string
+        status:
+          $ref: "#/components/schemas/ContactServiceChecklistStatus"
         label:
           type: string
         description:
@@ -8672,6 +8924,34 @@ components:
           type: string
           format: date-time
           nullable: true
+          description: Received timestamp. Set only while status is RECEIVED.
+    ContactServiceChecklistActivityItem:
+      type: object
+      properties:
+        id:
+          type: string
+        checklistItemId:
+          type: string
+          nullable: true
+        label:
+          type: string
+          description: Checklist label snapshot captured when the transition occurred.
+        previousStatus:
+          $ref: "#/components/schemas/ContactServiceChecklistStatus"
+        status:
+          $ref: "#/components/schemas/ContactServiceChecklistStatus"
+        createdAt:
+          type: string
+          format: date-time
+        actor:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+              nullable: true
     ContactServicePaymentItem:
       type: object
       properties:
@@ -8719,6 +8999,124 @@ components:
             image:
               type: string
               nullable: true
+    ContactServiceNoteActivityItem:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+            image:
+              type: string
+              nullable: true
+    ContactServiceNoteAttachment:
+      type: object
+      properties:
+        id:
+          type: string
+        fileId:
+          type: string
+        key:
+          type: string
+        fileName:
+          type: string
+        contentType:
+          type: string
+        size:
+          type: integer
+          nullable: true
+    PaginatedContactServiceNoteItem:
+      type: object
+      required: [id, kind, title, body, createdAt, updatedAt, permissions, attachments]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [SERVICE_NOTE, FOLLOW_UP_NOTE, LINKED_CONTACT_NOTE]
+        title:
+          type: string
+        body:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        author:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            email:
+              type: string
+              nullable: true
+            image:
+              type: string
+              nullable: true
+        followUpTemplateName:
+          type: string
+          nullable: true
+        followUpStepTitle:
+          type: string
+          nullable: true
+        permissions:
+          type: object
+          required: [canEdit, canDelete]
+          properties:
+            canEdit:
+              type: boolean
+              description: True when the viewer is the note author or a tenant admin.
+            canDelete:
+              type: boolean
+              description: True when the viewer is the note author or a tenant admin.
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactServiceNoteAttachment"
+    ContactServiceNotesPageResponse:
+      type: object
+      required: [ok, items, pagination]
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PaginatedContactServiceNoteItem"
+        pagination:
+          type: object
+          required: [page, pageSize, total, totalPages]
+          properties:
+            page:
+              type: integer
+            pageSize:
+              type: integer
+              enum: [10, 25, 50]
+            total:
+              type: integer
+            totalPages:
+              type: integer
     ContactServiceExecutionLogItem:
       type: object
       properties:
@@ -8743,6 +9141,21 @@ components:
             name:
               type: string
               nullable: true
+    ContactServiceFollowUpUser:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        image:
+          type: string
+          nullable: true
     ContactServicesListResponse:
       type: object
       properties:
@@ -8778,6 +9191,7 @@ components:
         followUpAssignedToUserId:
           type: string
           nullable: true
+          description: Optional initial follow-up coordinator. The same user seeds each generated step assignee at enrollment creation only.
         assignedProfessionalId:
           type: string
           nullable: true
@@ -8818,6 +9232,14 @@ components:
             - $ref: "#/components/schemas/ContactServiceListItem"
             - type: object
               properties:
+                service:
+                  type: object
+                  properties:
+                    professionals:
+                      type: array
+                      description: Available internal and external professionals configured for this service, in display order.
+                      items:
+                        $ref: "#/components/schemas/ServiceCatalogProfessional"
                 contactId:
                   type: string
                 contactName:
@@ -8826,14 +9248,20 @@ components:
                   type: array
                   items:
                     $ref: "#/components/schemas/ContactServicePaymentItem"
-                serviceNotes:
+                noteActivityItems:
                   type: array
+                  description: Lightweight note metadata used by the Activity sheet. Full bodies and attachments are loaded through the paginated notes endpoint.
                   items:
-                    $ref: "#/components/schemas/ContactServiceNoteItem"
+                    $ref: "#/components/schemas/ContactServiceNoteActivityItem"
                 executionLogs:
                   type: array
                   items:
                     $ref: "#/components/schemas/ContactServiceExecutionLogItem"
+                checklistActivityLogs:
+                  type: array
+                  description: Durable checklist status transitions, newest first.
+                  items:
+                    $ref: "#/components/schemas/ContactServiceChecklistActivityItem"
     ContactServiceOverviewResponse:
       type: object
       properties:
@@ -8845,6 +9273,14 @@ components:
             - $ref: "#/components/schemas/ContactServiceListItem"
             - type: object
               properties:
+                service:
+                  type: object
+                  properties:
+                    professionals:
+                      type: array
+                      description: Available internal and external professionals configured for this service, in display order.
+                      items:
+                        $ref: "#/components/schemas/ServiceCatalogProfessional"
                 paymentSummary:
                   $ref: "#/components/schemas/ContactServicePaymentSummary"
     ContactServicePaymentSummary:
@@ -8861,6 +9297,11 @@ components:
     UpdateContactServiceRequest:
       type: object
       properties:
+        assignedProfessionalId:
+          type: string
+          nullable: true
+          minLength: 1
+          description: ServiceProfessional ID configured for this enrollment's service. Null clears the assignment; omission leaves it unchanged. A real change creates a SERVICE_PROFESSIONAL_CHANGED Activity entry with previous/new IDs and names and the authenticated actor.
         status:
           type: string
           enum: [PENDING, IN_PROGRESS, COMPLETED, CANCELED]
@@ -8893,6 +9334,11 @@ components:
         contactService:
           type: object
           properties:
+            assignedProfessionalId:
+              type: string
+              nullable: true
+            assignedProfessional:
+              $ref: "#/components/schemas/ContactServiceAssignedProfessional"
             id:
               type: string
             status:
@@ -8919,11 +9365,42 @@ components:
             notes:
               type: string
               nullable: true
-    UpdateContactServiceChecklistItemRequest:
+    UpdateContactServiceFollowUpCoordinatorRequest:
+      type: object
+      required: [assignedToUserId]
+      properties:
+        assignedToUserId:
+          type: string
+          nullable: true
+          description: Active tenant user, or null to leave the overall follow-up unassigned. Does not update step assignees.
+    ContactServiceFollowUpCoordinatorMutationResponse:
       type: object
       properties:
+        ok:
+          type: boolean
+          example: true
+        followUpCoordinatorUserId:
+          type: string
+          nullable: true
+        followUpCoordinator:
+          $ref: "#/components/schemas/ContactServiceFollowUpUser"
+    UpdateContactServiceChecklistItemRequest:
+      type: object
+      description: Provide exactly one of status or the deprecated completed field.
+      properties:
+        status:
+          $ref: "#/components/schemas/ContactServiceChecklistStatus"
         completed:
           type: boolean
+          deprecated: true
+          description: Compatibility field. True maps to RECEIVED; false maps to NOT_RECEIVED.
+      oneOf:
+        - required: [status]
+          not:
+            required: [completed]
+        - required: [completed]
+          not:
+            required: [status]
     ContactServiceChecklistItemMutationResponse:
       type: object
       properties:
@@ -8932,6 +9409,11 @@ components:
           example: true
         checklistItem:
           $ref: "#/components/schemas/ContactServiceChecklistItem"
+        activity:
+          allOf:
+            - $ref: "#/components/schemas/ContactServiceChecklistActivityItem"
+          nullable: true
+          description: Newly created transition event, or null when the selected status was unchanged.
     CreateContactServicePaymentRequest:
       type: object
       required: [amountCents]
@@ -9003,10 +9485,19 @@ components:
       properties:
         title:
           type: string
+          minLength: 1
           maxLength: 160
+          description: Plain-text title. HTML tags and unsafe control characters are removed, whitespace is collapsed, and a value that becomes empty is rejected.
         body:
           type: string
-          maxLength: 8000
+          minLength: 1
+          maxLength: 5000
+          description: Plain-text note details. HTML tags and unsafe control characters are removed, line breaks are normalized, and a value that becomes empty is rejected.
+        attachmentFileIds:
+          type: array
+          maxItems: 10
+          items:
+            type: string
     CreateContactServiceNoteResponse:
       type: object
       properties:
@@ -9015,6 +9506,18 @@ components:
           example: true
         note:
           $ref: "#/components/schemas/ContactServiceNoteItem"
+    UpdateContactServiceNoteRequest:
+      allOf:
+        - $ref: "#/components/schemas/CreateContactServiceNoteRequest"
+    UpdateContactServiceNoteResponse:
+      type: object
+      required: [ok, note]
+      properties:
+        ok:
+          type: boolean
+          example: true
+        note:
+          $ref: "#/components/schemas/PaginatedContactServiceNoteItem"
     DeleteContactServicePaymentResponse:
       type: object
       properties:

@@ -47,6 +47,7 @@ import {
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
+import { getServiceEnrollmentHref } from "@/lib/routes"
 import { uploadPrivateFileToSignedUrl } from "@/lib/supabase-storage"
 import { cn } from "@/lib/utils"
 
@@ -646,7 +647,10 @@ export function ContactNotesPanel({
                                   </span>
                                   {note.source.contactServiceId && note.source.serviceName ? (
                                     <Link
-                                      href={`/app/${tenantSlug}/contacts/${contactId}/services/${note.source.contactServiceId}`}
+                                      href={getServiceEnrollmentHref({
+                                        tenantSlug,
+                                        contactServiceId: note.source.contactServiceId,
+                                      })}
                                       className="text-blue-700 transition hover:text-blue-800 hover:underline"
                                     >
                                       Service: {note.source.serviceName}

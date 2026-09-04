@@ -635,7 +635,7 @@ Because of the current transaction design:
 
 - service selection needs a configured service
 - professional assignment needs configured professionals
-- follow-up ownership only makes sense when follow-up templates exist
+- follow-up coordination only makes sense when follow-up templates exist
 - checklist review depends on configured checklist items
 - payment step depends on the billing, tax, and installment rules from the overview tab
 

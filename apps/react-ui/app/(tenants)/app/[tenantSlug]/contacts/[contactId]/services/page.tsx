@@ -1,12 +1,18 @@
 import { ContactServicesPanel } from "../_components/contact-services-panel"
 import { getContactDetailsContext } from "../_lib/contact-details"
+import { parseContactServicesPageSize, parsePositivePage } from "@/lib/routes"
 
 export default async function ContactServicesPage({
   params,
   searchParams,
 }: {
   params: Promise<{ tenantSlug: string; contactId: string }>
-  searchParams?: Promise<{ create?: string; serviceId?: string }>
+  searchParams?: Promise<{
+    create?: string
+    serviceId?: string
+    page?: string
+    pageSize?: string
+  }>
 }) {
   const { tenantSlug, contactId } = await params
   const resolvedSearchParams = searchParams ? await searchParams : undefined
@@ -20,6 +26,8 @@ export default async function ContactServicesPage({
       membershipSecurityLevel={membershipSecurityLevel}
       initialCreateOpen={resolvedSearchParams?.create === "1"}
       initialCreateServiceId={resolvedSearchParams?.serviceId ?? null}
+      initialPage={parsePositivePage(resolvedSearchParams?.page)}
+      initialPageSize={parseContactServicesPageSize(resolvedSearchParams?.pageSize)}
     />
   )
 }
