@@ -6844,6 +6844,10 @@ components:
         statusConfigId:
           type: string
           nullable: true
+        assignedToUserId:
+          type: string
+          nullable: true
+          description: Optional contact assignee. Omit this field to preserve the current assignee; send null to make the contact unassigned.
         customFieldValues:
           type: array
           items:
