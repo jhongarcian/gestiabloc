@@ -5,6 +5,7 @@ import {
   decryptCustomFieldValue,
   encryptCustomFieldValue,
 } from "../lib/contact-custom-field-encryption.js"
+import { buildContactAssigneeUpdate } from "../lib/contact-assignee-update.js"
 import { normalizeCustomFieldValue } from "../lib/contact-custom-field-values.js"
 import { summarizeVisibleContactFollowUpServices } from "../lib/contact-followup-visibility.js"
 import {
@@ -3763,13 +3764,13 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
       }
     }
 
-    let resolvedAssignedToUserId = payload.assignedToUserId ?? null
-    if (resolvedAssignedToUserId) {
+    const assigneeUpdate = buildContactAssigneeUpdate(payload.assignedToUserId)
+    if (assigneeUpdate.assignedToUserId) {
       const assigneeMembership = await prisma.membership.findUnique({
         where: {
           userId_tenantId: {
             tenantId,
-            userId: resolvedAssignedToUserId,
+            userId: assigneeUpdate.assignedToUserId,
           },
         },
         select: {
@@ -3868,7 +3869,7 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           postalCode: payload.postalCode ?? null,
           country: payload.country ?? null,
           statusConfigId: resolvedStatusConfigId,
-          assignedToUserId: resolvedAssignedToUserId,
+          ...assigneeUpdate,
         },
         select: {
           id: true,
