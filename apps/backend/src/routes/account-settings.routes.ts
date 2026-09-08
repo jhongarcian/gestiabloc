@@ -3943,7 +3943,7 @@ router.get(
                 { contact: { firstName: { contains: search, mode: "insensitive" as const } } },
                 { contact: { middleName: { contains: search, mode: "insensitive" as const } } },
                 { contact: { lastName: { contains: search, mode: "insensitive" as const } } },
-                { contact: { phoneNumber: { contains: search, mode: "insensitive" as const } } },
+                { contact: { phone: { contains: search, mode: "insensitive" as const } } },
               ],
             }
           : {}),
@@ -3971,7 +3971,7 @@ router.get(
                 firstName: true,
                 middleName: true,
                 lastName: true,
-                phoneNumber: true,
+                phone: true,
               },
             },
             service: {
@@ -4085,7 +4085,7 @@ router.get(
               name: [item.contact.firstName, item.contact.middleName, item.contact.lastName]
                 .filter(Boolean)
                 .join(" "),
-              phoneNumber: item.contact.phoneNumber ?? null,
+              phoneNumber: item.contact.phone ?? null,
             },
             service: item.service,
             currentStep: activeStep
