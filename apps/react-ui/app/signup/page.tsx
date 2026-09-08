@@ -1,40 +1,55 @@
 "use client"
 
-import Link from "next/link"
 import { Suspense, useState } from "react"
+import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
-import { tenantSignup } from "@/lib/api"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { isAxiosError } from "axios"
 import {
   ArrowRight,
-  Bolt,
+  Box,
   Building2,
   Check,
+  CheckCircle2,
   Circle,
   Eye,
   EyeOff,
+  Loader2,
   Lock,
   Mail,
-  Rocket,
   User,
 } from "lucide-react"
-import Image from "next/image"
-import signup_image from "@/public/illustrations/signup.png"
+
+import { Button } from "@/components/ui/button"
 import {
-  getPlanByKey,
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { tenantSignup } from "@/lib/api"
+import { cn } from "@/lib/utils"
+import {
   isPlanKey,
   subscriptionPlans,
   type PlanKey,
 } from "@/lib/subscription-plans"
 
+const AUTH_INPUT_CLASS =
+  "h-11 rounded-full border-white bg-white px-4 text-sm text-slate-950 shadow-sm focus-visible:border-blue-300 focus-visible:ring-blue-300/40 aria-invalid:border-rose-300 aria-invalid:ring-rose-200/30 disabled:bg-blue-50 disabled:opacity-80"
+
+const AUTH_PRIMARY_BUTTON_CLASS =
+  "h-11 w-full cursor-pointer rounded-full bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm ring-1 ring-white/15 transition hover:bg-blue-500 hover:text-white disabled:cursor-not-allowed disabled:bg-blue-900 disabled:text-blue-300"
+
 export default function SignUpPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-slate-100 text-sm text-slate-500">
+        <div className="flex min-h-[100svh] items-center justify-center bg-blue-950 text-sm text-blue-100/70">
           Loading signup…
         </div>
       }
@@ -60,15 +75,18 @@ function SignUpContent() {
   const [confirmPassword, setConfirmPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+
   const passwordsMatch =
     confirmPassword.length > 0 && adminPassword === confirmPassword
-  const hasLength = adminPassword.length >= 8
-  const hasLetter = /[A-Za-z]/.test(adminPassword)
-  const hasNumber = /[0-9]/.test(adminPassword)
-  const hasSymbol = /[^A-Za-z0-9]/.test(adminPassword)
+  const passwordRequirements = [
+    { label: "8 or more characters", met: adminPassword.length >= 8 },
+    { label: "At least one letter", met: /[A-Za-z]/.test(adminPassword) },
+    { label: "At least one number", met: /[0-9]/.test(adminPassword) },
+    { label: "At least one symbol", met: /[^A-Za-z0-9]/.test(adminPassword) },
+    { label: "Passwords match", met: passwordsMatch },
+  ]
 
   const isLoading = status === "loading"
-  const selectedPlan = getPlanByKey(planKey)
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -77,7 +95,7 @@ function SignUpContent() {
     setFieldErrors({})
 
     const form = event.currentTarget
-    const formData = new FormData(event.currentTarget)
+    const formData = new FormData(form)
     const payload = {
       adminName: String(formData.get("adminName") || "").trim(),
       adminEmail: String(formData.get("adminEmail") || "").trim(),
@@ -90,10 +108,12 @@ function SignUpContent() {
     const clientErrors: Record<string, string> = {}
     if (!payload.adminName) clientErrors.adminName = "Full name is required."
     if (!payload.adminEmail) clientErrors.adminEmail = "Email is required."
-    if (!payload.adminPassword)
+    if (!payload.adminPassword) {
       clientErrors.adminPassword = "Password is required."
-    if (!payload.tenantName)
+    }
+    if (!payload.tenantName) {
       clientErrors.tenantName = "Workspace name is required."
+    }
 
     if (confirmPassword && confirmPassword !== payload.adminPassword) {
       clientErrors.adminPassword = "Passwords do not match."
@@ -131,12 +151,6 @@ function SignUpContent() {
         }
         switch (code) {
           case "EMAIL_IN_USE":
-            setFieldErrors((prev) => ({
-              ...prev,
-              adminEmail: "That email is already in use.",
-            }))
-            message = null
-            break
           case "TENANT_EMAIL_IN_USE":
             setFieldErrors((prev) => ({
               ...prev,
@@ -172,507 +186,419 @@ function SignUpContent() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900  md:h-screen md:overflow-hidden overflow-x-hidden">
-      <div className="mx-auto flex w-full  items-stretch justify-center md:h-full">
-        <div
-          id="signup-container"
-          className="w-full  flex flex-col md:flex-row relative z-10 md:h-full md:min-h-0"
-        >
-          <div className="hidden md:flex md:w-1/2 bg-white/50 backdrop-blur-sm relative items-center justify-center p-12 lg:p-20 overflow-hidden md:sticky md:top-0 md:self-start md:h-full">
-            <div className="absolute inset-0 bg-gradient-to-br from-indigo-600/5 to-purple-600/5" />
+    <main className="relative min-h-[100svh] overflow-x-hidden bg-blue-950 text-white">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,.12)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.12)_1px,transparent_1px)] [background-size:44px_44px]"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -bottom-40 left-1/2 size-[32rem] -translate-x-1/2 rounded-full bg-blue-500/25 blur-3xl"
+      />
 
-            <div className="relative z-20 max-w-lg">
-              <div className="mb-12 flex justify-center">
-                <div className="w-full max-w-md h-64 sm:h-72 lg:h-80 relative flex items-center justify-center">
-                  <Image
-                    src={signup_image}
-                    alt="Signup illustration"
-                    fill
-                    sizes="(min-width: 1024px) 420px, (min-width: 640px) 360px, 280px"
-                    className="object-contain"
-                    priority
+      <div
+        id="signup-container"
+        className="relative z-10 flex min-h-[100svh] w-full justify-center px-4 py-8 sm:px-8 sm:py-12"
+      >
+        <section className="w-full max-w-[680px]">
+          <header className="mb-9 text-center">
+            <Link
+              href="/"
+              className="inline-flex items-center gap-3 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+              aria-label="Gestiabloc home"
+            >
+              <span className="flex size-10 items-center justify-center rounded-2xl border border-white/15 bg-white/10 text-white shadow-sm">
+                <Box className="size-5" aria-hidden="true" />
+              </span>
+              <span className="text-xl font-semibold tracking-tight text-white">
+                Gestiabloc
+              </span>
+            </Link>
+            <h1 className="mt-7 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+              Create your workspace
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-blue-100/75">
+              Start your 7-day free trial. No card required.
+            </p>
+          </header>
+
+          <form
+            id="create-account-form"
+            className="flex flex-col gap-8"
+            onSubmit={onSubmit}
+          >
+            <FieldGroup className="gap-5">
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                <Field
+                  data-invalid={Boolean(fieldErrors.adminName)}
+                  data-disabled={isLoading}
+                  className="gap-2"
+                >
+                  <FieldLabel
+                    htmlFor="adminName"
+                    className="text-sm font-medium text-blue-50"
+                  >
+                    Full name
+                  </FieldLabel>
+                  <div className="relative">
+                    <User
+                      className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <Input
+                      type="text"
+                      id="adminName"
+                      name="adminName"
+                      autoComplete="name"
+                      placeholder="John Doe"
+                      required
+                      disabled={isLoading}
+                      aria-invalid={Boolean(fieldErrors.adminName)}
+                      aria-describedby={
+                        fieldErrors.adminName ? "admin-name-error" : undefined
+                      }
+                      className={cn(AUTH_INPUT_CLASS, "pl-11")}
+                    />
+                  </div>
+                  <FieldError
+                    id="admin-name-error"
+                    className="text-xs text-rose-200"
+                  >
+                    {fieldErrors.adminName}
+                  </FieldError>
+                </Field>
+
+                <Field
+                  data-invalid={Boolean(fieldErrors.adminEmail)}
+                  data-disabled={isLoading}
+                  className="gap-2"
+                >
+                  <FieldLabel
+                    htmlFor="adminEmail"
+                    className="text-sm font-medium text-blue-50"
+                  >
+                    Work email
+                  </FieldLabel>
+                  <div className="relative">
+                    <Mail
+                      className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <Input
+                      type="email"
+                      id="adminEmail"
+                      name="adminEmail"
+                      autoComplete="email"
+                      placeholder="name@company.com"
+                      required
+                      disabled={isLoading}
+                      aria-invalid={Boolean(fieldErrors.adminEmail)}
+                      aria-describedby={
+                        fieldErrors.adminEmail ? "admin-email-error" : undefined
+                      }
+                      className={cn(AUTH_INPUT_CLASS, "pl-11")}
+                    />
+                  </div>
+                  <FieldError
+                    id="admin-email-error"
+                    className="text-xs text-rose-200"
+                  >
+                    {fieldErrors.adminEmail}
+                  </FieldError>
+                </Field>
+              </div>
+
+              <Field
+                data-invalid={Boolean(fieldErrors.tenantName)}
+                data-disabled={isLoading}
+                className="gap-2"
+              >
+                <FieldLabel
+                  htmlFor="tenantName"
+                  className="text-sm font-medium text-blue-50"
+                >
+                  Workspace name
+                </FieldLabel>
+                <div className="relative">
+                  <Building2
+                    className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-slate-400"
+                    aria-hidden="true"
+                  />
+                  <Input
+                    type="text"
+                    id="tenantName"
+                    name="tenantName"
+                    autoComplete="organization"
+                    placeholder="Acme Agency"
+                    required
+                    disabled={isLoading}
+                    aria-invalid={Boolean(fieldErrors.tenantName)}
+                    aria-describedby={
+                      fieldErrors.tenantName ? "tenant-name-error" : undefined
+                    }
+                    className={cn(AUTH_INPUT_CLASS, "pl-11")}
                   />
                 </div>
-              </div>
+                <FieldError
+                  id="tenant-name-error"
+                  className="text-xs text-rose-200"
+                >
+                  {fieldErrors.tenantName}
+                </FieldError>
+              </Field>
 
-              <div className="space-y-6 text-center">
-                <h2 className="text-3xl lg:text-4xl font-bold text-slate-900 leading-tight">
-                  Build the workspace your{" "}
-                  <span className="text-indigo-600">agency team</span> can grow
-                  into
-                </h2>
-                <p className="text-slate-500 text-lg">
-                  Pick a plan, create the admin account, and start organizing
-                  clients, follow-ups, and team activity in one place.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="w-full md:w-1/2 flex flex-col justify-start items-center p-4 sm:p-6 lg:p-8 bg-white shadow-2xl md:shadow-none md:h-full md:overflow-y-auto">
-            <div className="max-w-2xl mx-auto px-0 sm:px-2 md:px-6 py-8 sm:py-10 lg:py-16">
-              <div className="mb-10">
-                <h2 className="text-3xl font-bold text-slate-900 mb-2">
-                  Create your account
-                </h2>
-                <p className="text-slate-500">
-                  Start your 7-day free trial and attach the right plan to your
-                  workspace from day one.
-                </p>
-                <p className="mt-3 text-sm text-slate-500">
-                  Already have a workspace?{" "}
-                  <Link className="text-indigo-600 hover:underline" href="/login">
-                    Sign in
-                  </Link>
-                </p>
-              </div>
-
-              <div className="mb-8 rounded-2xl border border-amber-200 bg-amber-50/80 p-4 text-sm text-slate-700">
-                <p className="font-semibold text-slate-900">
-                  Selected plan: {selectedPlan.name}
-                </p>
-                <p className="mt-1 leading-6">
-                  {selectedPlan.description} This signup flow records your plan
-                  choice and starts the workspace on a 7-day trial while billing
-                  checkout is finalized.
-                </p>
-              </div>
-
-              <form
-                id="create-account-form"
-                className="space-y-6"
-                onSubmit={onSubmit}
-              >
-                <div className="space-y-4">
-                  <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">
-                    Personal Information
-                  </h3>
-
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    <div className="space-y-1.5">
-                      <Label
-                        htmlFor="adminName"
-                        className="text-sm font-semibold text-slate-700"
-                      >
-                        Full Name
-                      </Label>
-                      <div className="relative">
-                        <User className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                        <Input
-                          type="text"
-                          id="adminName"
-                          name="adminName"
-                          placeholder="John Doe"
-                          required
-                          className={`w-full pl-10 pr-4 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
-                            fieldErrors.adminName
-                              ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
-                              : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
-                          }`}
-                        />
-                      </div>
-                      {fieldErrors.adminName ? (
-                        <p className="text-xs text-red-600">
-                          {fieldErrors.adminName}
-                        </p>
-                      ) : null}
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <Label
-                        htmlFor="adminEmail"
-                        className="text-sm font-semibold text-slate-700"
-                      >
-                        Work Email
-                      </Label>
-                      <div className="relative">
-                        <Mail className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                        <Input
-                          type="email"
-                          id="adminEmail"
-                          name="adminEmail"
-                          placeholder="name@company.com"
-                          required
-                          className={`w-full pl-10 pr-4 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
-                            fieldErrors.adminEmail
-                              ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
-                              : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
-                          }`}
-                        />
-                      </div>
-                      {fieldErrors.adminEmail ? (
-                        <p className="text-xs text-red-600">
-                          {fieldErrors.adminEmail}
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">
-                    Workspace Information
-                  </h3>
-
-                  <div className="space-y-1.5">
-                    <Label
-                      htmlFor="tenantName"
-                      className="text-sm font-semibold text-slate-700"
-                    >
-                      Workspace Name
-                    </Label>
-                    <div className="relative">
-                      <Building2 className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                      <Input
-                        type="text"
-                        id="tenantName"
-                        name="tenantName"
-                        placeholder="Acme Inc."
-                        required
-                        className={`w-full pl-10 pr-4 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
-                          fieldErrors.tenantName
-                            ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
-                            : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
-                        }`}
-                      />
-                    </div>
-                    <p className="text-xs text-slate-400 pl-1">
-                      Your workspace URL will be: gestiabloc.com/workspaces/
-                      <span className="font-medium text-indigo-500">
-                        acme-inc
-                      </span>
-                    </p>
-                    {fieldErrors.tenantName ? (
-                      <p className="text-xs text-red-600">
-                        {fieldErrors.tenantName}
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">
-                    Security
-                  </h3>
-
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    <div className="space-y-1.5">
-                      <Label
-                        htmlFor="adminPassword"
-                        className="text-sm font-semibold text-slate-700"
-                      >
-                        Password
-                      </Label>
-                      <div className="relative">
-                        <Lock className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                        <Input
-                          type={showPassword ? "text" : "password"}
-                          id="adminPassword"
-                          name="adminPassword"
-                          placeholder="Create a password"
-                          value={adminPassword}
-                          required
-                          onChange={(event) =>
-                            setAdminPassword(event.target.value)
-                          }
-                          className={`w-full pl-10 pr-10 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
-                            fieldErrors.adminPassword
-                              ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
-                              : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
-                          }`}
-                        />
-                        <button
-                          type="button"
-                          className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                          aria-label={
-                            showPassword ? "Hide password" : "Show password"
-                          }
-                          onClick={() => setShowPassword((prev) => !prev)}
-                        >
-                          {showPassword ? (
-                            <EyeOff className="h-4 w-4" />
-                          ) : (
-                            <Eye className="h-4 w-4" />
-                          )}
-                        </button>
-                      </div>
-                      {fieldErrors.adminPassword ? (
-                        <p className="text-xs text-red-600">
-                          {fieldErrors.adminPassword}
-                        </p>
-                      ) : null}
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <Label
-                        htmlFor="confirmPassword"
-                        className="text-sm font-semibold text-slate-700"
-                      >
-                        Confirm Password
-                      </Label>
-                      <div className="relative">
-                        <Lock className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                        <Input
-                          type={showConfirmPassword ? "text" : "password"}
-                          id="confirmPassword"
-                          name="confirmPassword"
-                          placeholder="Confirm password"
-                          value={confirmPassword}
-                          required
-                          onChange={(event) =>
-                            setConfirmPassword(event.target.value)
-                          }
-                          className={`w-full pl-10 pr-10 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all shadow-sm ${
-                            fieldErrors.confirmPassword
-                              ? "border-red-300 focus:ring-red-200/60 focus:border-red-400"
-                              : "border-slate-200 focus:ring-indigo-500/20 focus:border-indigo-500"
-                          }`}
-                        />
-                        <button
-                          type="button"
-                          className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                          aria-label={
-                            showConfirmPassword
-                              ? "Hide confirm password"
-                              : "Show confirm password"
-                          }
-                          onClick={() =>
-                            setShowConfirmPassword((prev) => !prev)
-                          }
-                        >
-                          {showConfirmPassword ? (
-                            <EyeOff className="h-4 w-4" />
-                          ) : (
-                            <Eye className="h-4 w-4" />
-                          )}
-                        </button>
-                      </div>
-                      {confirmPassword.length > 0 ? (
-                        <p
-                          className={
-                            passwordsMatch
-                              ? "text-xs text-emerald-600"
-                              : "text-xs text-red-600"
-                          }
-                        >
-                          {passwordsMatch
-                            ? "✓ Passwords match"
-                            : "Passwords do not match"}
-                        </p>
-                      ) : null}
-                      {fieldErrors.confirmPassword ? (
-                        <p className="text-xs text-red-600">
-                          {fieldErrors.confirmPassword}
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div className="bg-indigo-50 rounded-xl p-4 border border-indigo-200 shadow-sm">
-                    <h4 className="text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
-                      Password Requirements
-                    </h4>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-600">
-                      <div className="validation-item flex items-center gap-2">
-                        <Circle
-                          className={`h-2.5 w-2.5 ${
-                            hasLength ? "text-emerald-500" : "text-slate-400"
-                          }`}
-                        />
-                        <span
-                          className={hasLength ? "text-emerald-700" : undefined}
-                        >
-                          At least 8 characters
-                        </span>
-                      </div>
-
-                      <div className="validation-item flex items-center gap-2">
-                        <Circle
-                          className={`h-2.5 w-2.5 ${
-                            hasLetter ? "text-emerald-500" : "text-slate-400"
-                          }`}
-                        />
-                        <span
-                          className={hasLetter ? "text-emerald-700" : undefined}
-                        >
-                          At least 1 letter
-                        </span>
-                      </div>
-
-                      <div className="validation-item flex items-center gap-2">
-                        <Circle
-                          className={`h-2.5 w-2.5 ${
-                            hasNumber ? "text-emerald-500" : "text-slate-400"
-                          }`}
-                        />
-                        <span
-                          className={hasNumber ? "text-emerald-700" : undefined}
-                        >
-                          At least 1 number
-                        </span>
-                      </div>
-
-                      <div className="validation-item flex items-center gap-2">
-                        <Circle
-                          className={`h-2.5 w-2.5 ${
-                            hasSymbol ? "text-emerald-500" : "text-slate-400"
-                          }`}
-                        />
-                        <span
-                          className={hasSymbol ? "text-emerald-700" : undefined}
-                        >
-                          At least 1 symbol
-                        </span>
-                      </div>
-
-                      <div className="validation-item flex items-center gap-2 col-span-1 sm:col-span-2">
-                        <Circle
-                          className={`h-2.5 w-2.5 ${
-                            passwordsMatch
-                              ? "text-emerald-500"
-                              : "text-slate-400"
-                          }`}
-                        />
-                        <span
-                          className={
-                            passwordsMatch ? "text-emerald-700" : undefined
-                          }
-                        >
-                          Passwords match
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">
-                    Select Plan
-                  </h3>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {subscriptionPlans.map((plan) => (
-                      <label key={plan.key} className="cursor-pointer relative group">
-                        <input
-                          type="radio"
-                          name="planKey"
-                          value={plan.key}
-                          checked={planKey === plan.key}
-                          onChange={() => setPlanKey(plan.key)}
-                          className="peer sr-only"
-                        />
-                        <div className="p-4 rounded-xl bg-white border border-slate-200 hover:border-indigo-300 transition-all h-full flex flex-col justify-between relative overflow-hidden peer-checked:border-indigo-500 peer-checked:ring-2 peer-checked:ring-indigo-200">
-                          {plan.featured ? (
-                            <div className="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-lg z-10">
-                              POPULAR
-                            </div>
-                          ) : null}
-
-                          <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs opacity-0 scale-50 transition-all duration-300 peer-checked:opacity-100 peer-checked:scale-100">
-                            <Check className="h-3 w-3" />
-                          </div>
-
-                          <div>
-                            <div
-                              className={`w-10 h-10 rounded-lg flex items-center justify-center mb-3 ${
-                                plan.key === "STARTER"
-                                  ? "bg-orange-100 text-orange-600"
-                                  : plan.key === "PRO"
-                                    ? "bg-indigo-100 text-indigo-600"
-                                    : "bg-emerald-100 text-emerald-600"
-                              }`}
-                            >
-                              {plan.key === "STARTER" ? (
-                                <Rocket className="h-5 w-5" />
-                              ) : plan.key === "PRO" ? (
-                                <Bolt className="h-5 w-5" />
-                              ) : (
-                                <Building2 className="h-5 w-5" />
-                              )}
-                            </div>
-                            <h3 className="font-bold text-slate-800">
-                              {plan.name}
-                            </h3>
-                            <p className="text-xs text-slate-500 mt-1">
-                              {plan.audience}
-                            </p>
-                          </div>
-
-                          <div className="mt-4 pt-4 border-t border-slate-100">
-                            <span className="text-lg font-bold text-slate-900">
-                              {plan.monthlyPrice}
-                            </span>
-                            <span className="text-xs text-slate-500">
-                              /month
-                            </span>
-                            <p className="mt-2 text-xs text-slate-500">
-                              {plan.seatLimit} seats included
-                            </p>
-                          </div>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-
-                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-                    <p className="text-sm font-bold text-slate-800">
-                      Billing note
-                    </p>
-                    <p className="mt-1 text-xs leading-5 text-slate-500">
-                      Your selected plan is saved during registration. The
-                      workspace starts in trial mode first, so there is no card
-                      charge inside this step yet.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-2">
-                  <Button
-                    type="submit"
-                    disabled={isLoading}
-                    className={`w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl shadow-lg hover:shadow-indigo-500/30 transition-all duration-300 transform hover:-translate-y-0.5 flex items-center justify-center gap-2 group ${
-                      isLoading ? "opacity-70 cursor-not-allowed" : ""
-                    }`}
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                <Field
+                  data-invalid={Boolean(fieldErrors.adminPassword)}
+                  data-disabled={isLoading}
+                  className="gap-2"
+                >
+                  <FieldLabel
+                    htmlFor="adminPassword"
+                    className="text-sm font-medium text-blue-50"
                   >
-                    <span>
-                      {isLoading ? "Creating account..." : "Create Account"}
+                    Password
+                  </FieldLabel>
+                  <div className="relative">
+                    <Lock
+                      className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <Input
+                      type={showPassword ? "text" : "password"}
+                      id="adminPassword"
+                      name="adminPassword"
+                      autoComplete="new-password"
+                      placeholder="Create a password"
+                      value={adminPassword}
+                      required
+                      disabled={isLoading}
+                      onChange={(event) => setAdminPassword(event.target.value)}
+                      aria-invalid={Boolean(fieldErrors.adminPassword)}
+                      aria-describedby={
+                        fieldErrors.adminPassword
+                          ? "admin-password-error"
+                          : "password-requirements"
+                      }
+                      className={cn(AUTH_INPUT_CLASS, "pl-11 pr-11")}
+                    />
+                    <button
+                      type="button"
+                      disabled={isLoading}
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      className="absolute right-2 top-1/2 flex size-9 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-slate-400 transition hover:bg-blue-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label={
+                        showPassword ? "Hide password" : "Show password"
+                      }
+                    >
+                      {showPassword ? (
+                        <EyeOff className="size-4" aria-hidden="true" />
+                      ) : (
+                        <Eye className="size-4" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+                  <FieldError
+                    id="admin-password-error"
+                    className="text-xs text-rose-200"
+                  >
+                    {fieldErrors.adminPassword}
+                  </FieldError>
+                </Field>
+
+                <Field
+                  data-invalid={Boolean(fieldErrors.confirmPassword)}
+                  data-disabled={isLoading}
+                  className="gap-2"
+                >
+                  <FieldLabel
+                    htmlFor="confirmPassword"
+                    className="text-sm font-medium text-blue-50"
+                  >
+                    Confirm password
+                  </FieldLabel>
+                  <div className="relative">
+                    <Lock
+                      className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <Input
+                      type={showConfirmPassword ? "text" : "password"}
+                      id="confirmPassword"
+                      name="confirmPassword"
+                      autoComplete="new-password"
+                      placeholder="Repeat your password"
+                      value={confirmPassword}
+                      required
+                      disabled={isLoading}
+                      onChange={(event) =>
+                        setConfirmPassword(event.target.value)
+                      }
+                      aria-invalid={Boolean(fieldErrors.confirmPassword)}
+                      aria-describedby={
+                        fieldErrors.confirmPassword
+                          ? "confirm-password-error"
+                          : "password-requirements"
+                      }
+                      className={cn(AUTH_INPUT_CLASS, "pl-11 pr-11")}
+                    />
+                    <button
+                      type="button"
+                      disabled={isLoading}
+                      onClick={() =>
+                        setShowConfirmPassword((prev) => !prev)
+                      }
+                      className="absolute right-2 top-1/2 flex size-9 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-slate-400 transition hover:bg-blue-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label={
+                        showConfirmPassword
+                          ? "Hide confirm password"
+                          : "Show confirm password"
+                      }
+                    >
+                      {showConfirmPassword ? (
+                        <EyeOff className="size-4" aria-hidden="true" />
+                      ) : (
+                        <Eye className="size-4" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+                  <FieldError
+                    id="confirm-password-error"
+                    className="text-xs text-rose-200"
+                  >
+                    {fieldErrors.confirmPassword}
+                  </FieldError>
+                </Field>
+              </div>
+
+              <div
+                id="password-requirements"
+                className="grid grid-cols-1 gap-x-5 gap-y-2 rounded-2xl border border-white/15 bg-white/[0.06] px-4 py-4 text-xs text-blue-100/75 sm:grid-cols-2"
+              >
+                {passwordRequirements.map((requirement) => (
+                  <div
+                    key={requirement.label}
+                    className="flex items-center gap-2"
+                  >
+                    {requirement.met ? (
+                      <Check
+                        className="size-3.5 text-emerald-300"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Circle
+                        className="size-3.5 text-blue-200/50"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span
+                      className={requirement.met ? "text-blue-50" : undefined}
+                    >
+                      {requirement.label}
                     </span>
-                    <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
-                  </Button>
+                  </div>
+                ))}
+              </div>
+            </FieldGroup>
 
-                  {status === "success" ? (
-                    <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                      Account created. Check your email for verification steps.
-                    </p>
-                  ) : null}
+            <FieldSet className="gap-1" disabled={isLoading}>
+              <FieldLegend className="mb-0 text-sm font-medium text-blue-50">
+                Choose your plan
+              </FieldLegend>
+              <FieldDescription className="!mt-0 text-xs text-blue-100/65">
+                You can change plans later. Billing starts after your trial.
+              </FieldDescription>
+              <ToggleGroup
+                type="single"
+                value={planKey}
+                onValueChange={(value) => {
+                  if (isPlanKey(value)) setPlanKey(value)
+                }}
+                disabled={isLoading}
+                aria-label="Subscription plan"
+                className="mt-2 grid w-full grid-cols-1 gap-3 sm:grid-cols-3"
+              >
+                {subscriptionPlans.map((plan) => {
+                  const isSelected = plan.key === planKey
 
-                  {status === "error" && error ? (
-                    <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                      {error}
-                    </p>
-                  ) : null}
+                  return (
+                    <ToggleGroupItem
+                      key={plan.key}
+                      value={plan.key}
+                      aria-label={`Choose ${plan.name} plan for ${plan.monthlyPrice} per month`}
+                      className="h-auto min-h-24 w-full cursor-pointer flex-col items-stretch justify-between gap-3 rounded-2xl border border-white/15 bg-white/[0.06] p-4 text-left text-white shadow-sm transition hover:border-white/30 hover:bg-white/10 hover:text-white data-[state=on]:border-blue-300 data-[state=on]:bg-white/15 data-[state=on]:text-white focus-visible:border-blue-300 focus-visible:ring-blue-300/40"
+                    >
+                      <span className="flex w-full items-center justify-between gap-2">
+                        <span className="font-semibold">{plan.name}</span>
+                        {isSelected ? (
+                          <CheckCircle2
+                            className="size-4 text-blue-200"
+                            aria-hidden="true"
+                          />
+                        ) : null}
+                      </span>
+                      <span className="flex w-full items-end justify-between gap-2">
+                        <span>
+                          <span className="text-lg font-semibold">
+                            {plan.monthlyPrice}
+                          </span>
+                          <span className="text-xs text-blue-100/60">/mo</span>
+                        </span>
+                        <span className="text-xs text-blue-100/70">
+                          {plan.seatLimit} seats
+                        </span>
+                      </span>
+                    </ToggleGroupItem>
+                  )
+                })}
+              </ToggleGroup>
+            </FieldSet>
 
-                  <p className="text-xs text-center text-slate-400 mt-4">
-                    By clicking &quot;Create Account&quot;, you agree to our{" "}
-                    <Link href="#" className="text-indigo-600 hover:underline">
-                      Terms of Service
-                    </Link>{" "}
-                    and{" "}
-                    <Link href="#" className="text-indigo-600 hover:underline">
-                      Privacy Policy
-                    </Link>
-                    .
-                  </p>
-                </div>
-              </form>
+            {error ? (
+              <p
+                role="alert"
+                className="rounded-2xl border border-rose-200/40 bg-rose-50/10 px-4 py-3 text-sm text-rose-100"
+              >
+                {error}
+              </p>
+            ) : null}
+
+            <div className="flex flex-col gap-4">
+              <Button
+                type="submit"
+                disabled={isLoading}
+                className={AUTH_PRIMARY_BUTTON_CLASS}
+              >
+                {isLoading ? (
+                  <Loader2
+                    data-icon="inline-start"
+                    className="animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : null}
+                {isLoading ? "Creating workspace" : "Create workspace"}
+                {!isLoading ? (
+                  <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                ) : null}
+              </Button>
+
+              <p className="text-center text-xs leading-5 text-blue-100/55">
+                By creating a workspace, you agree to the Terms of Service and
+                Privacy Policy.
+              </p>
+              <p className="text-center text-sm text-blue-100/70">
+                Already have a workspace?{" "}
+                <Link
+                  className="font-semibold text-white underline-offset-4 hover:underline"
+                  href="/login"
+                >
+                  Sign in
+                </Link>
+              </p>
             </div>
-
-            <div className="mt-12 text-center text-xs text-slate-400">
-              © 2024 Gestiabloc Inc. All rights reserved.
-            </div>
-          </div>
-        </div>
+          </form>
+        </section>
       </div>
-    </div>
+    </main>
   )
 }
