@@ -8364,6 +8364,14 @@ components:
         enrolledAt:
           type: string
           format: date-time
+        enrollmentStatus:
+          type: string
+          enum: [SUCCESS, ERROR]
+          description: Whether the enrollment is healthy or its workflow currently reports an execution error
+        errorMessage:
+          type: string
+          nullable: true
+          description: Workflow failure detail when enrollmentStatus is ERROR
         contact:
           type: object
           properties:

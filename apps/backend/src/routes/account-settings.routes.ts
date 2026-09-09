@@ -3958,6 +3958,12 @@ router.get(
           select: {
             id: true,
             createdAt: true,
+            followUpRun: {
+              select: {
+                status: true,
+                failureMessage: true,
+              },
+            },
             contact: {
               select: {
                 id: true,
@@ -3977,6 +3983,16 @@ router.get(
         items: enrollments.map((enrollment) => ({
           id: enrollment.id,
           enrolledAt: enrollment.createdAt,
+          enrollmentStatus:
+            enrollment.followUpRun?.status === "FAILED" ||
+            enrollment.followUpRun?.status === "NEEDS_REVIEW"
+              ? "ERROR"
+              : "SUCCESS",
+          errorMessage:
+            enrollment.followUpRun?.status === "FAILED" ||
+            enrollment.followUpRun?.status === "NEEDS_REVIEW"
+              ? enrollment.followUpRun.failureMessage
+              : null,
           contact: {
             id: enrollment.contact.id,
             name:

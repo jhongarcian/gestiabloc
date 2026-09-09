@@ -24,7 +24,6 @@ import {
   Calculator,
   Check,
   CheckSquare,
-  ChevronDown,
   Clock3,
   FileEdit,
   FileText,
@@ -59,7 +58,6 @@ import {
 } from "@/components/ui/command"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -68,6 +66,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { formatDateTimeForDisplay } from "@/lib/date-time"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
@@ -80,6 +79,12 @@ import {
   type WorkflowValidationIssue,
 } from "./service-followup-builder-state"
 import { ServiceFollowUpTemplateContactsTab } from "./service-followup-template-contacts-tab"
+import {
+  COMPACT_DESTRUCTIVE_BUTTON_CLASS,
+  COMPACT_HEADER_SECONDARY_BUTTON_CLASS,
+  COMPACT_PRIMARY_BUTTON_CLASS,
+  COMPACT_SECONDARY_BUTTON_CLASS,
+} from "./service-followup-template-styles"
 
 type PersistedNodeKind =
   | "start"
@@ -1023,6 +1028,8 @@ type ExecutionLogItem = {
 type ExecutionLogEnrollment = {
   id: string
   enrolledAt: string
+  enrollmentStatus: "SUCCESS" | "ERROR"
+  errorMessage: string | null
   contact: {
     id: string
     name: string
@@ -1038,6 +1045,21 @@ type ExecutionLogsResponse = {
   pageSize: number
   totalCount: number
   totalPages: number
+}
+
+function getExecutionLogWaitingUntil(log: ExecutionLogItem) {
+  if (log.eventType !== "FLOW_WAITING") return null
+
+  const payloadResumeAt = log.payload?.resumeAt
+  if (typeof payloadResumeAt === "string" && !Number.isNaN(new Date(payloadResumeAt).getTime())) {
+    return payloadResumeAt
+  }
+
+  const legacyTitleMatch = log.title.match(/^Waiting until (.+)$/i)
+  const legacyResumeAt = legacyTitleMatch?.[1]
+  return legacyResumeAt && !Number.isNaN(new Date(legacyResumeAt).getTime())
+    ? legacyResumeAt
+    : null
 }
 
 type ExecutionLogEnrollmentsResponse = {
@@ -1653,8 +1675,8 @@ function AdditionalBranchConditions({
         </select>
         <Button
           type="button"
-          size="sm"
           variant="outline"
+          className={COMPACT_SECONDARY_BUTTON_CLASS}
           onClick={() =>
             onChange({
               ...branch,
@@ -1775,9 +1797,8 @@ function AdditionalBranchConditions({
             />
             <Button
               type="button"
-              size="sm"
-              variant="ghost"
-              className="text-red-600"
+              variant="destructive"
+              className={COMPACT_DESTRUCTIVE_BUTTON_CLASS}
               onClick={() =>
                 onChange({
                   ...branch,
@@ -2022,7 +2043,6 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const [isExecutionEnrollmentsLoading, setIsExecutionEnrollmentsLoading] = useState(false)
   const [executionEnrollmentSearchInput, setExecutionEnrollmentSearchInput] = useState("")
   const [executionEnrollmentSearch, setExecutionEnrollmentSearch] = useState("")
-  const [executionEnrollmentPickerOpen, setExecutionEnrollmentPickerOpen] = useState(false)
   const [executionEnrollmentsPage, setExecutionEnrollmentsPage] = useState(1)
   const [executionEnrollmentsTotalPages, setExecutionEnrollmentsTotalPages] = useState(1)
   const [executionEnrollmentsTotalCount, setExecutionEnrollmentsTotalCount] = useState(0)
@@ -4635,16 +4655,22 @@ export function ServiceFollowUpTemplateFlowBuilder({
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-3 md:p-4">
-      <section className="shrink-0 rounded-[20px] border border-slate-200 bg-white px-5 py-3 shadow-sm">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Follow-Up Builder</p>
-            <div className="flex items-center gap-2">
+      <section className="shrink-0 rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
+            <div className="flex flex-col gap-1">
+              <h1 className="text-2xl font-semibold text-slate-950">Follow-up template builder</h1>
+              <p className="text-sm text-slate-600">
+                Build, publish, and review the contacts and activity for this follow-up template.
+              </p>
+            </div>
+            <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center">
               <Input
                 value={name}
                 disabled={!canEditTemplateName || isSaving}
                 onChange={(event) => setName(event.target.value)}
-                className="h-9 max-w-md"
+                aria-label="Template name"
+                className="h-8 max-w-md bg-white/80 text-sm font-medium shadow-sm"
               />
               <button
                 type="button"
@@ -4652,78 +4678,89 @@ export function ServiceFollowUpTemplateFlowBuilder({
                 aria-checked={isPublished}
                 onClick={() => void onTogglePublished()}
                 disabled={isPublishSaving}
-                className="inline-flex h-9 cursor-pointer items-center rounded-full border border-slate-300 bg-white px-1 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
+                className="inline-flex h-8 shrink-0 cursor-pointer items-center rounded-full border border-white/70 bg-white/70 px-1 text-xs font-semibold text-slate-700 shadow-sm backdrop-blur transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-70"
               >
                 <span
                   className={`rounded-full px-3 py-1 transition ${
-                    !isPublished ? "bg-slate-900 text-white" : "text-slate-600"
+                    !isPublished ? "bg-slate-700 text-white" : "text-slate-600"
                   }`}
                 >
                   Draft
                 </span>
                 <span
                   className={`rounded-full px-3 py-1 transition ${
-                    isPublished ? "bg-emerald-600 text-white" : "text-slate-600"
+                    isPublished ? "bg-blue-950 text-white" : "text-slate-600"
                   }`}
                 >
                   Publish
                 </span>
               </button>
             </div>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-600">
               {canEditTemplateName
                 ? "Template name can be edited once."
                 : "Template name is locked after the first rename."}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge
-              variant="outline"
-              className={
-                hasUnsavedChanges
-                  ? "border-amber-200 bg-amber-50 text-amber-800"
-                  : "border-emerald-200 bg-emerald-50 text-emerald-700"
-              }
-            >
-              {hasUnsavedChanges ? "Unsaved changes" : "Saved"}
-            </Badge>
-            {template.activeVersion ? (
-              <Badge variant="outline">Version {template.activeVersion.versionNumber}</Badge>
-            ) : null}
-            {template.needsRepair ? (
-              <Badge className="border border-red-200 bg-red-50 text-red-800 hover:bg-red-50">
-                Needs repair
+          <div className="flex flex-col gap-3 md:self-center">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Badge
+                variant="outline"
+                className={
+                  hasUnsavedChanges
+                    ? "border-amber-200 bg-amber-50 text-amber-800"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                }
+              >
+                {hasUnsavedChanges ? "Unsaved changes" : "Saved"}
               </Badge>
-            ) : null}
-            <Button
-              type="button"
-              variant="outline"
-              className="cursor-pointer"
-              onClick={() =>
-                navigateWithUnsavedCheck(
-                  `/app/${tenantSlug}/account-settings/services/${serviceId}`,
-                )
-              }
-            >
-              Back to service
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              className="cursor-pointer"
-              onClick={onDelete}
-              disabled={isDeleting}
-            >
-              {isDeleting ? "Deleting..." : "Delete"}
-            </Button>
-            <Button
-              type="button"
-              className="cursor-pointer"
-              onClick={onSave}
-              disabled={isSaving || !hasUnsavedChanges}
-            >
-              {isSaving ? "Saving..." : hasUnsavedChanges ? "Save" : "Saved"}
-            </Button>
+              {template.activeVersion ? (
+                <Badge variant="outline">Version {template.activeVersion.versionNumber}</Badge>
+              ) : null}
+              {template.needsRepair ? (
+                <Badge className="border border-red-200 bg-red-50 text-red-800 hover:bg-red-50">
+                  Needs repair
+                </Badge>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                className={COMPACT_HEADER_SECONDARY_BUTTON_CLASS}
+                onClick={() =>
+                  navigateWithUnsavedCheck(
+                    `/app/${tenantSlug}/account-settings/services/${serviceId}`,
+                  )
+                }
+              >
+                Back to service
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                className={COMPACT_DESTRUCTIVE_BUTTON_CLASS}
+                onClick={onDelete}
+                disabled={isDeleting}
+              >
+                {isDeleting ? (
+                  <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" />
+                ) : null}
+                {isDeleting ? "Deleting" : "Delete"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className={COMPACT_PRIMARY_BUTTON_CLASS}
+                onClick={onSave}
+                disabled={isSaving || !hasUnsavedChanges}
+              >
+                {isSaving ? (
+                  <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" />
+                ) : null}
+                {isSaving ? "Saving" : hasUnsavedChanges ? "Save changes" : "Saved"}
+              </Button>
+            </div>
           </div>
         </div>
         {validationIssues.length ? (
@@ -4748,40 +4785,23 @@ export function ServiceFollowUpTemplateFlowBuilder({
         ) : null}
       </section>
 
-      <div className="flex items-center gap-2 px-1">
-        <button
-          type="button"
-          className={`inline-flex h-9 cursor-pointer items-center rounded-full border px-4 text-sm font-medium transition ${
-            activeTab === "builder"
-              ? "border-slate-900 bg-slate-900 text-white"
-              : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-          }`}
-          onClick={() => setActiveTab("builder")}
+      <div className="flex flex-wrap items-center gap-2 px-1">
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => setActiveTab(value as "builder" | "contacts" | "logs")}
         >
-          Builder
-        </button>
-        <button
-          type="button"
-          className={`inline-flex h-9 cursor-pointer items-center rounded-full border px-4 text-sm font-medium transition ${
-            activeTab === "contacts"
-              ? "border-slate-900 bg-slate-900 text-white"
-              : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-          }`}
-          onClick={() => setActiveTab("contacts")}
-        >
-          Contacts
-        </button>
-        <button
-          type="button"
-          className={`inline-flex h-9 cursor-pointer items-center rounded-full border px-4 text-sm font-medium transition ${
-            activeTab === "logs"
-              ? "border-slate-900 bg-slate-900 text-white"
-              : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-          }`}
-          onClick={() => setActiveTab("logs")}
-        >
-          Execution Logs
-        </button>
+          <TabsList className="h-9 rounded-full border border-slate-200 bg-white p-1 shadow-sm">
+            <TabsTrigger className="h-7 cursor-pointer rounded-full px-3 text-xs font-semibold" value="builder">
+              Builder
+            </TabsTrigger>
+            <TabsTrigger className="h-7 cursor-pointer rounded-full px-3 text-xs font-semibold" value="contacts">
+              Contacts
+            </TabsTrigger>
+            <TabsTrigger className="h-7 cursor-pointer rounded-full px-3 text-xs font-semibold" value="logs">
+              Execution logs
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
         {activeTab === "logs" ? (
           <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-600">
             {executionLogsTotalCount} total
@@ -4800,8 +4820,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
           ) : null}
           {sidebarMode === "hidden" && !pendingMoveNodeId ? (
             <div className="absolute right-4 top-4 z-20">
-              <Button type="button" size="sm" variant="outline" onClick={() => openCreateStepPanel()}>
-                <Plus className="h-4 w-4" />
+              <Button type="button" variant="ghost" className={COMPACT_PRIMARY_BUTTON_CLASS} onClick={() => openCreateStepPanel()}>
+                <Plus data-icon="inline-start" aria-hidden="true" />
                 Add action
               </Button>
             </div>
@@ -4972,7 +4992,12 @@ export function ServiceFollowUpTemplateFlowBuilder({
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <h4 className="text-sm font-semibold text-slate-900">{NODE_KIND_LABEL[newStepDraft.kind]}</h4>
-                      <Button type="button" size="sm" variant="outline" onClick={() => setCreatePanelView("options")}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className={COMPACT_SECONDARY_BUTTON_CLASS}
+                        onClick={() => setCreatePanelView("options")}
+                      >
                         Back to options
                       </Button>
                     </div>
@@ -5052,9 +5077,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
                           <Label>Branches</Label>
                           <Button
                             type="button"
-                            size="sm"
                             variant="outline"
-                            className="cursor-pointer"
+                            className={COMPACT_SECONDARY_BUTTON_CLASS}
                             onClick={() =>
                               setNewStepDraft((prev) => {
                                 const nextIndex =
@@ -5120,9 +5144,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                   />
                                   <Button
                                     type="button"
-                                    size="sm"
-                                    variant="ghost"
-                                    className="cursor-pointer text-red-600 hover:text-red-700"
+                                    variant="destructive"
+                                    className={COMPACT_DESTRUCTIVE_BUTTON_CLASS}
                                     onClick={() =>
                                       setNewStepDraft((prev) => ({
                                         ...prev,
@@ -6160,7 +6183,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                   <Button
                                     type="button"
                                     variant="outline"
-                                    className="w-full cursor-pointer"
+                                    className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full")}
                                     onClick={() => void createTagFromQuery()}
                                     disabled={isCreatingTag}
                                   >
@@ -6483,9 +6506,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
                             <Label>Documents (optional)</Label>
                             <Button
                               type="button"
-                              size="sm"
                               variant="outline"
-                              className="cursor-pointer"
+                              className={COMPACT_SECONDARY_BUTTON_CLASS}
                               onClick={() => openNoteAttachmentPicker("create")}
                               disabled={
                                 isUploadingNoteAttachment ||
@@ -6493,9 +6515,9 @@ export function ServiceFollowUpTemplateFlowBuilder({
                               }
                             >
                               {isUploadingNoteAttachment ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
+                                <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" />
                               ) : (
-                                <Upload className="h-4 w-4" />
+                                <Upload data-icon="inline-start" aria-hidden="true" />
                               )}
                               Add files
                             </Button>
@@ -6556,7 +6578,12 @@ export function ServiceFollowUpTemplateFlowBuilder({
                         }
                       />
                     </div>
-                    <Button type="button" className="w-full" onClick={addStepNode}>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className={cn(COMPACT_PRIMARY_BUTTON_CLASS, "w-full")}
+                      onClick={addStepNode}
+                    >
                       Create action
                     </Button>
                   </div>
@@ -6682,9 +6709,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
                               <Label>Branches</Label>
                               <Button
                                 type="button"
-                                size="sm"
                                 variant="outline"
-                                className="cursor-pointer"
+                                className={COMPACT_SECONDARY_BUTTON_CLASS}
                                 onClick={() =>
                                   updateSelectedNode((data) => {
                                     const currentBranches = data.ifElseBranches ?? [
@@ -6780,9 +6806,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                       />
                                       <Button
                                         type="button"
-                                        size="sm"
-                                        variant="ghost"
-                                        className="cursor-pointer text-red-600 hover:text-red-700"
+                                        variant="destructive"
+                                        className={COMPACT_DESTRUCTIVE_BUTTON_CLASS}
                                         onClick={() =>
                                           updateSelectedNode((data) => ({
                                             ...data,
@@ -7930,7 +7955,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                       <Button
                                         type="button"
                                         variant="outline"
-                                        className="w-full cursor-pointer"
+                                        className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full")}
                                         onClick={async () => {
                                           setIsCreatingTag(true)
                                           try {
@@ -8417,9 +8442,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
                               <Label>Documents (optional)</Label>
                               <Button
                                 type="button"
-                                size="sm"
                                 variant="outline"
-                                className="cursor-pointer"
+                                className={COMPACT_SECONDARY_BUTTON_CLASS}
                                 onClick={() => openNoteAttachmentPicker("edit")}
                                 disabled={
                                   isUploadingNoteAttachment ||
@@ -8428,9 +8452,9 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                 }
                               >
                                 {isUploadingNoteAttachment ? (
-                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" />
                                 ) : (
-                                  <Upload className="h-4 w-4" />
+                                  <Upload data-icon="inline-start" aria-hidden="true" />
                                 )}
                                 Add files
                               </Button>
@@ -8527,8 +8551,8 @@ export function ServiceFollowUpTemplateFlowBuilder({
           timezone={timezone}
         />
       ) : (
-        <section className="min-h-0 flex-1 rounded-[20px] border border-slate-200 bg-white p-5">
-          <div className="mb-4 flex items-center justify-between gap-3">
+        <section className="grid min-h-0 flex-1 gap-3 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_minmax(320px,28rem)] lg:grid-rows-[auto_minmax(0,1fr)] lg:overflow-hidden">
+          <div className="flex items-center justify-between gap-3 rounded-[20px] border border-slate-200 bg-white px-5 py-4 lg:col-start-1 lg:row-start-1">
             <div>
               <p className="text-sm font-semibold text-slate-900">Execution logs</p>
               <p className="text-xs text-slate-500">
@@ -8538,7 +8562,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
             <Button
               type="button"
               variant="outline"
-              className="cursor-pointer"
+              className={COMPACT_SECONDARY_BUTTON_CLASS}
               onClick={() => {
                 void Promise.all([
                   loadExecutionLogs(executionLogsPage),
@@ -8547,16 +8571,19 @@ export function ServiceFollowUpTemplateFlowBuilder({
               }}
               disabled={isExecutionLogsLoading || isExecutionEnrollmentsLoading}
             >
+              {isExecutionLogsLoading || isExecutionEnrollmentsLoading ? (
+                <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" />
+              ) : null}
               {isExecutionLogsLoading || isExecutionEnrollmentsLoading ? "Refreshing..." : "Refresh"}
             </Button>
           </div>
 
-          <div className="min-h-0 space-y-4">
-            <div className="rounded-[18px] border border-slate-200 bg-slate-50/70 p-4">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                <div className="space-y-1">
+          <div className="contents">
+            <aside className="flex h-full min-h-0 w-full max-w-md shrink-0 justify-self-end overflow-hidden rounded-[20px] border border-slate-200 bg-white/95 shadow-sm backdrop-blur lg:col-start-2 lg:row-span-2 lg:row-start-1">
+              <div className="flex h-full w-full flex-col gap-4 overflow-y-auto p-4">
+                <div className="flex flex-col gap-1 border-b border-slate-200 pb-3">
                   <div className="flex items-center gap-2">
-                    <p className="text-sm font-semibold text-slate-900">Contact Filter</p>
+                    <p className="text-sm font-semibold text-slate-900">Filter execution logs</p>
                     <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
                       {executionEnrollmentsTotalCount}
                     </Badge>
@@ -8565,100 +8592,80 @@ export function ServiceFollowUpTemplateFlowBuilder({
                     Default view shows all execution logs. Pick a contact when you need one enrollment only.
                   </p>
                 </div>
-                <div className="flex flex-col gap-2 lg:min-w-[380px]">
-                  <Popover open={executionEnrollmentPickerOpen} onOpenChange={setExecutionEnrollmentPickerOpen}>
-                    <PopoverTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        role="combobox"
-                        className="h-10 w-full cursor-pointer justify-between bg-white text-left font-normal"
-                        disabled={isExecutionEnrollmentsLoading && !executionLogEnrollments.length}
-                      >
-                        <span className="truncate">
-                          {selectedExecutionEnrollment
-                            ? `${selectedExecutionEnrollment.contact.name || "Contact"}${selectedExecutionEnrollment.contact.phoneNumber ? ` · ${selectedExecutionEnrollment.contact.phoneNumber}` : ""}`
-                            : "All enrolled contacts"}
-                        </span>
-                        <ChevronDown className="h-4 w-4 shrink-0 opacity-60" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-[380px] p-0" align="end">
-                      <Command shouldFilter={false}>
-                        <CommandInput
-                          value={executionEnrollmentSearchInput}
-                          onValueChange={(value) => {
-                            setExecutionEnrollmentSearchInput(value)
-                            setExecutionEnrollmentsPage(1)
+                <div className="flex flex-col gap-3">
+                  <Command shouldFilter={false} className="rounded-xl border border-slate-200">
+                    <CommandInput
+                      value={executionEnrollmentSearchInput}
+                      onValueChange={(value) => {
+                        setExecutionEnrollmentSearchInput(value)
+                        setExecutionEnrollmentsPage(1)
+                      }}
+                      placeholder="Search by contact or phone"
+                    />
+                    <CommandList className="max-h-[min(420px,45vh)]">
+                      <CommandGroup>
+                        <CommandItem
+                          value="all-enrollments"
+                          className="cursor-pointer"
+                          onSelect={() => {
+                            setSelectedExecutionContactServiceId(null)
+                            setSelectedExecutionEnrollment(null)
+                            setExecutionLogsPage(1)
                           }}
-                          placeholder="Search by contact or phone"
-                        />
-                        <CommandList>
-                          <CommandItem
-                            value="all-enrollments"
-                            className="cursor-pointer"
-                            onSelect={() => {
-                              setSelectedExecutionContactServiceId(null)
-                              setSelectedExecutionEnrollment(null)
-                              setExecutionLogsPage(1)
-                              setExecutionEnrollmentPickerOpen(false)
-                            }}
-                          >
-                            <Check
-                              className={cn(
-                                "mr-2 h-4 w-4",
-                                selectedExecutionContactServiceId ? "opacity-0" : "opacity-100",
-                              )}
-                            />
-                            <div className="flex flex-col">
-                              <span>All enrolled contacts</span>
-                              <span className="text-xs text-slate-500">
-                                Show execution activity for the entire template.
-                              </span>
-                            </div>
-                          </CommandItem>
-                          {executionLogEnrollments.length ? (
-                            <CommandGroup heading="Contacts">
-                              {executionLogEnrollments.map((enrollment) => (
-                                <CommandItem
-                                  key={enrollment.id}
-                                  value={`${enrollment.contact.name} ${enrollment.contact.phoneNumber ?? ""}`}
-                                  className="cursor-pointer"
-                                  onSelect={() => {
-                                    setSelectedExecutionContactServiceId(enrollment.id)
-                                    setSelectedExecutionEnrollment(enrollment)
-                                    setExecutionLogsPage(1)
-                                    setExecutionEnrollmentPickerOpen(false)
-                                  }}
-                                >
-                                  <Check
-                                    className={cn(
-                                      "mr-2 h-4 w-4",
-                                      selectedExecutionContactServiceId === enrollment.id ? "opacity-100" : "opacity-0",
-                                    )}
-                                  />
-                                  <div className="min-w-0 flex-1">
-                                    <p className="truncate text-sm font-medium text-slate-900">
-                                      {enrollment.contact.name || "Contact"}
-                                    </p>
-                                    <p className="truncate text-xs text-slate-500">
-                                      {enrollment.contact.email || "No email"} · {formatPhoneNumber(enrollment.contact.phoneNumber)}
-                                    </p>
-                                  </div>
-                                </CommandItem>
-                              ))}
-                            </CommandGroup>
-                          ) : (
-                            <CommandEmpty>
-                              {isExecutionEnrollmentsLoading
-                                ? "Loading enrolled contacts..."
-                                : "No contacts match this search."}
-                            </CommandEmpty>
-                          )}
-                        </CommandList>
-                      </Command>
-                    </PopoverContent>
-                  </Popover>
+                        >
+                          <Check
+                            className={cn(
+                              "mr-2 h-4 w-4",
+                              selectedExecutionContactServiceId ? "opacity-0" : "opacity-100",
+                            )}
+                          />
+                          <div className="flex flex-col">
+                            <span>All enrolled contacts</span>
+                            <span className="text-xs text-slate-500">
+                              Show execution activity for the entire template.
+                            </span>
+                          </div>
+                        </CommandItem>
+                      </CommandGroup>
+                      {executionLogEnrollments.length ? (
+                        <CommandGroup heading="Contacts">
+                          {executionLogEnrollments.map((enrollment) => (
+                            <CommandItem
+                              key={enrollment.id}
+                              value={`${enrollment.contact.name} ${enrollment.contact.phoneNumber ?? ""}`}
+                              className="cursor-pointer"
+                              onSelect={() => {
+                                setSelectedExecutionContactServiceId(enrollment.id)
+                                setSelectedExecutionEnrollment(enrollment)
+                                setExecutionLogsPage(1)
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 h-4 w-4",
+                                  selectedExecutionContactServiceId === enrollment.id ? "opacity-100" : "opacity-0",
+                                )}
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium text-slate-900">
+                                  {enrollment.contact.name || "Contact"}
+                                </p>
+                                <p className="truncate text-xs text-slate-500">
+                                  {enrollment.contact.email || "No email"} · {formatPhoneNumber(enrollment.contact.phoneNumber)}
+                                </p>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      ) : (
+                        <CommandEmpty>
+                          {isExecutionEnrollmentsLoading
+                            ? "Loading enrolled contacts..."
+                            : "No contacts match this search."}
+                        </CommandEmpty>
+                      )}
+                    </CommandList>
+                  </Command>
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-xs text-slate-500">
                       {executionEnrollmentsTotalCount
@@ -8669,8 +8676,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                       <Button
                         type="button"
                         variant="outline"
-                        size="sm"
-                        className="cursor-pointer"
+                        className={COMPACT_SECONDARY_BUTTON_CLASS}
                         onClick={() => setExecutionEnrollmentsPage((current) => Math.max(1, current - 1))}
                         disabled={executionEnrollmentsPage <= 1 || isExecutionEnrollmentsLoading}
                       >
@@ -8682,8 +8688,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                       <Button
                         type="button"
                         variant="outline"
-                        size="sm"
-                        className="cursor-pointer"
+                        className={COMPACT_SECONDARY_BUTTON_CLASS}
                         onClick={() =>
                           setExecutionEnrollmentsPage((current) =>
                             Math.min(executionEnrollmentsTotalPages, current + 1),
@@ -8697,9 +8702,9 @@ export function ServiceFollowUpTemplateFlowBuilder({
                   </div>
                 </div>
               </div>
-            </div>
+            </aside>
 
-            <div className="min-h-0 rounded-[18px] border border-slate-200 bg-white p-4">
+            <div className="min-h-0 overflow-y-auto rounded-[20px] border border-slate-200 bg-white p-4 lg:col-start-1 lg:row-start-2">
               <div className="mx-auto w-full max-w-5xl">
               {selectedExecutionEnrollment ? (
                 <>
@@ -8732,6 +8737,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                       {executionLogs.map((log, index) => {
                         const stepTitle =
                           log.contactService.steps.find((step) => step.id === log.stepId)?.title ?? null
+                        const waitingUntil = getExecutionLogWaitingUntil(log)
                         return (
                           <div key={log.id} className="flex gap-3">
                             <div className="flex w-6 shrink-0 flex-col items-center pt-1">
@@ -8744,9 +8750,22 @@ export function ServiceFollowUpTemplateFlowBuilder({
                               <div className="flex flex-wrap items-start justify-between gap-3">
                                 <div className="space-y-1">
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <p className="text-sm font-semibold text-slate-900">{log.title}</p>
+                                    <p className="text-sm font-semibold text-slate-900">
+                                      {waitingUntil ? (
+                                        <>
+                                          Waiting until{" "}
+                                          <time dateTime={waitingUntil}>
+                                            {formatDateTimeForDisplay(waitingUntil, timezone)}
+                                          </time>
+                                        </>
+                                      ) : (
+                                        log.title
+                                      )}
+                                    </p>
                                     <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
-                                      {log.eventType.toLowerCase().replace(/_/g, " ")}
+                                      {waitingUntil
+                                        ? "Waiting"
+                                        : log.eventType.toLowerCase().replace(/_/g, " ")}
                                     </Badge>
                                   </div>
                                   <p className="text-xs text-slate-500">
@@ -8774,7 +8793,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                           <Button
                             type="button"
                             variant="outline"
-                            className="cursor-pointer"
+                            className={COMPACT_SECONDARY_BUTTON_CLASS}
                             disabled={executionLogsPage <= 1 || isExecutionLogsLoading}
                             onClick={() => setExecutionLogsPage((current) => Math.max(1, current - 1))}
                           >
@@ -8783,7 +8802,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                           <Button
                             type="button"
                             variant="outline"
-                            className="cursor-pointer"
+                            className={COMPACT_SECONDARY_BUTTON_CLASS}
                             disabled={executionLogsPage >= executionLogsTotalPages || isExecutionLogsLoading}
                             onClick={() =>
                               setExecutionLogsPage((current) =>
@@ -8824,6 +8843,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                       {executionLogs.map((log, index) => {
                         const stepTitle =
                           log.contactService.steps.find((step) => step.id === log.stepId)?.title ?? null
+                        const waitingUntil = getExecutionLogWaitingUntil(log)
                         return (
                           <div key={log.id} className="flex gap-3">
                             <div className="flex w-6 shrink-0 flex-col items-center pt-1">
@@ -8836,9 +8856,22 @@ export function ServiceFollowUpTemplateFlowBuilder({
                               <div className="flex flex-wrap items-start justify-between gap-3">
                                 <div className="space-y-1">
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <p className="text-sm font-semibold text-slate-900">{log.title}</p>
+                                    <p className="text-sm font-semibold text-slate-900">
+                                      {waitingUntil ? (
+                                        <>
+                                          Waiting until{" "}
+                                          <time dateTime={waitingUntil}>
+                                            {formatDateTimeForDisplay(waitingUntil, timezone)}
+                                          </time>
+                                        </>
+                                      ) : (
+                                        log.title
+                                      )}
+                                    </p>
                                     <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
-                                      {log.eventType.toLowerCase().replace(/_/g, " ")}
+                                      {waitingUntil
+                                        ? "Waiting"
+                                        : log.eventType.toLowerCase().replace(/_/g, " ")}
                                     </Badge>
                                   </div>
                                   <p className="text-xs text-slate-500">
@@ -8867,7 +8900,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                           <Button
                             type="button"
                             variant="outline"
-                            className="cursor-pointer"
+                            className={COMPACT_SECONDARY_BUTTON_CLASS}
                             disabled={executionLogsPage <= 1 || isExecutionLogsLoading}
                             onClick={() => setExecutionLogsPage((current) => Math.max(1, current - 1))}
                           >
@@ -8876,7 +8909,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                           <Button
                             type="button"
                             variant="outline"
-                            className="cursor-pointer"
+                            className={COMPACT_SECONDARY_BUTTON_CLASS}
                             disabled={executionLogsPage >= executionLogsTotalPages || isExecutionLogsLoading}
                             onClick={() =>
                               setExecutionLogsPage((current) =>
