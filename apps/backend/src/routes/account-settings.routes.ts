@@ -97,6 +97,18 @@ const TenantStatusConfigPathSchema = TenantPathSchema.extend({
 const TenantRecordPathSchema = TenantPathSchema.extend({
   recordId: z.string().trim().min(1),
 });
+
+const FollowUpTemplateEnrollmentsQuerySchema = z.object({
+  search: z.string().trim().max(200).optional().default(""),
+  page: z.coerce.number().int().min(1).optional().default(1),
+  pageSize: z.coerce.number().int().min(5).max(50).optional().default(10),
+});
+
+const FollowUpTemplateExecutionLogsQuerySchema = z.object({
+  contactServiceId: z.string().trim().min(1).optional(),
+  page: z.coerce.number().int().min(1).optional().default(1),
+  pageSize: z.coerce.number().int().min(5).max(50).optional().default(20),
+});
 const TenantStatusConfigRecordPathSchema = TenantStatusConfigPathSchema.extend({
   recordId: z.string().trim().min(1),
 });
@@ -3898,122 +3910,149 @@ router.get(
 );
 
 router.get(
-  "/:tenantId/services/:recordId/follow-up-templates/:templateId/execution-logs",
+  "/:tenantId/services/:recordId/follow-up-templates/:templateId/enrollments",
   ...readMiddlewares,
   async (req, res, next) => {
     try {
       const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
       const templateId = z.string().trim().min(1).parse(req.params.templateId);
-      const contactServiceId =
-        typeof req.query.contactServiceId === "string" && req.query.contactServiceId.trim().length
-          ? req.query.contactServiceId.trim()
-          : null;
-      const search =
-        typeof req.query.search === "string" ? req.query.search.trim() : "";
-      const page = Math.max(1, Number.parseInt(String(req.query.page ?? "1"), 10) || 1);
-      const pageSize = Math.min(
-        50,
-        Math.max(5, Number.parseInt(String(req.query.pageSize ?? "20"), 10) || 20),
-      );
-      const enrollmentsPage = Math.max(
-        1,
-        Number.parseInt(String(req.query.enrollmentsPage ?? "1"), 10) || 1,
-      );
-      const enrollmentsPageSize = Math.min(
-        25,
-        Math.max(5, Number.parseInt(String(req.query.enrollmentsPageSize ?? "10"), 10) || 10),
-      );
+      const { search, page, pageSize } = FollowUpTemplateEnrollmentsQuerySchema.parse(req.query);
 
-      const template = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
-        where: { id: templateId },
-        select: { id: true, tenantId: true, serviceId: true },
+      const template = await prisma.serviceFollowUpTemplate.findFirst({
+        where: { id: templateId, tenantId, serviceId: recordId },
+        select: { id: true },
       });
 
-      if (!template || template.tenantId !== tenantId || template.serviceId !== recordId) {
+      if (!template) {
         return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
       }
 
-      const enrollmentWhere = {
+      const where: Prisma.ContactServiceWhereInput = {
         tenantId,
         serviceId: recordId,
         followUpTemplateId: templateId,
         ...(search
           ? {
-              OR: [
-                { contact: { firstName: { contains: search, mode: "insensitive" as const } } },
-                { contact: { middleName: { contains: search, mode: "insensitive" as const } } },
-                { contact: { lastName: { contains: search, mode: "insensitive" as const } } },
-                { contact: { phoneNumber: { contains: search, mode: "insensitive" as const } } },
-              ],
+              contact: {
+                is: {
+                  OR: [
+                    { firstName: { contains: search, mode: "insensitive" } },
+                    { middleName: { contains: search, mode: "insensitive" } },
+                    { lastName: { contains: search, mode: "insensitive" } },
+                    { email: { contains: search, mode: "insensitive" } },
+                    { phone: { contains: search, mode: "insensitive" } },
+                  ],
+                },
+              },
             }
           : {}),
       };
 
-      const [enrollmentsTotalCount, enrollments, totalCount, items] = await Promise.all([
-        prismaWithContacts.contactService.count({
-          where: enrollmentWhere,
-        }),
-        prismaWithContacts.contactService.findMany({
-          where: enrollmentWhere,
-          orderBy: [{ createdAt: "desc" }],
-          skip: (enrollmentsPage - 1) * enrollmentsPageSize,
-          take: enrollmentsPageSize,
+      const [totalCount, enrollments] = await Promise.all([
+        prisma.contactService.count({ where }),
+        prisma.contactService.findMany({
+          where,
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          skip: (page - 1) * pageSize,
+          take: pageSize,
           select: {
             id: true,
-            status: true,
             createdAt: true,
-            purchasedAt: true,
-            startedAt: true,
-            completedAt: true,
+            followUpRun: {
+              select: {
+                status: true,
+                failureMessage: true,
+              },
+            },
             contact: {
               select: {
                 id: true,
                 firstName: true,
                 middleName: true,
                 lastName: true,
-                phoneNumber: true,
-              },
-            },
-            service: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-            followUpSteps: {
-              orderBy: [{ sortOrder: "asc" }],
-              select: {
-                id: true,
-                title: true,
-                status: true,
-                sortOrder: true,
-                dueAt: true,
-              },
-            },
-            executionLogs: {
-              orderBy: [{ createdAt: "desc" }],
-              take: 1,
-              select: {
-                createdAt: true,
-                title: true,
+                email: true,
+                phone: true,
               },
             },
           },
         }),
-        prismaWithContacts.serviceFollowUpExecutionLog.count({
+      ]);
+
+      return res.json({
+        ok: true,
+        items: enrollments.map((enrollment) => ({
+          id: enrollment.id,
+          enrolledAt: enrollment.createdAt,
+          enrollmentStatus:
+            enrollment.followUpRun?.status === "FAILED" ||
+            enrollment.followUpRun?.status === "NEEDS_REVIEW"
+              ? "ERROR"
+              : "SUCCESS",
+          errorMessage:
+            enrollment.followUpRun?.status === "FAILED" ||
+            enrollment.followUpRun?.status === "NEEDS_REVIEW"
+              ? enrollment.followUpRun.failureMessage
+              : null,
+          contact: {
+            id: enrollment.contact.id,
+            name:
+              [
+                enrollment.contact.firstName,
+                enrollment.contact.middleName,
+                enrollment.contact.lastName,
+              ]
+                .filter(Boolean)
+                .join(" ") || enrollment.contact.email || "Unnamed contact",
+            email: enrollment.contact.email ?? null,
+            phoneNumber: enrollment.contact.phone ?? null,
+          },
+        })),
+        search,
+        page,
+        pageSize,
+        totalCount,
+        totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.get(
+  "/:tenantId/services/:recordId/follow-up-templates/:templateId/execution-logs",
+  ...readMiddlewares,
+  async (req, res, next) => {
+    try {
+      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
+      const templateId = z.string().trim().min(1).parse(req.params.templateId);
+      const { contactServiceId, page, pageSize } =
+        FollowUpTemplateExecutionLogsQuerySchema.parse(req.query);
+
+      const template = await prisma.serviceFollowUpTemplate.findFirst({
+        where: { id: templateId, tenantId, serviceId: recordId },
+        select: { id: true },
+      });
+
+      if (!template) {
+        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
+      }
+
+      const [totalCount, items] = await Promise.all([
+        prisma.serviceFollowUpExecutionLog.count({
           where: {
             tenantId,
             templateId,
             ...(contactServiceId ? { contactServiceId } : {}),
           },
         }),
-        prismaWithContacts.serviceFollowUpExecutionLog.findMany({
+        prisma.serviceFollowUpExecutionLog.findMany({
           where: {
             tenantId,
             templateId,
             ...(contactServiceId ? { contactServiceId } : {}),
           },
-          orderBy: [{ createdAt: "desc" }],
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
           skip: (page - 1) * pageSize,
           take: pageSize,
           select: {
@@ -4062,51 +4101,7 @@ router.get(
 
       return res.json({
         ok: true,
-        enrollments: enrollments.map((item: any) => {
-          const activeStep =
-            item.followUpSteps.find((step: any) => step.status === "ACTIVE") ??
-            item.followUpSteps.find((step: any) => step.status === "POSTPONED") ??
-            item.followUpSteps.find((step: any) => step.status === "PENDING") ??
-            item.followUpSteps[item.followUpSteps.length - 1] ??
-            null;
-          const completedCount = item.followUpSteps.filter(
-            (step: any) => step.status === "COMPLETED" || step.status === "SKIPPED",
-          ).length;
-
-          return {
-            id: item.id,
-            status: item.status,
-            createdAt: item.createdAt,
-            purchasedAt: item.purchasedAt,
-            startedAt: item.startedAt,
-            completedAt: item.completedAt,
-            contact: {
-              id: item.contact.id,
-              name: [item.contact.firstName, item.contact.middleName, item.contact.lastName]
-                .filter(Boolean)
-                .join(" "),
-              phoneNumber: item.contact.phoneNumber ?? null,
-            },
-            service: item.service,
-            currentStep: activeStep
-              ? {
-                  id: activeStep.id,
-                  title: activeStep.title,
-                  status: activeStep.status,
-                  dueAt: activeStep.dueAt,
-                }
-              : null,
-            completedCount,
-            totalCount: item.followUpSteps.length,
-            lastExecution: item.executionLogs[0]
-              ? {
-                  createdAt: item.executionLogs[0].createdAt,
-                  title: item.executionLogs[0].title,
-                }
-              : null,
-          };
-        }),
-        items: items.map((item: any) => ({
+        items: items.map((item) => ({
           id: item.id,
           eventType: item.eventType,
           title: item.title,
@@ -4128,15 +4123,6 @@ router.get(
             steps: item.contactService.followUpSteps,
           },
         })),
-        selectedContactServiceId:
-          contactServiceId && enrollments.some((item: any) => item.id === contactServiceId)
-            ? contactServiceId
-            : null,
-        search,
-        enrollmentsPage,
-        enrollmentsPageSize,
-        enrollmentsTotalCount,
-        enrollmentsTotalPages: Math.max(1, Math.ceil(enrollmentsTotalCount / enrollmentsPageSize)),
         page,
         pageSize,
         totalCount,

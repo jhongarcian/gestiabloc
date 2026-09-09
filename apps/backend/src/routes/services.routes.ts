@@ -3072,6 +3072,8 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         const run = await createFollowUpRunTx({
           prismaTx,
           tenantId,
+          templateId: selectedPublishedTemplate.id,
+          contactId: payload.contactId,
           contactServiceId: contactService.id,
           templateVersion: selectedPublishedTemplate.activeVersion,
           startedByUserId: authed.user.id,

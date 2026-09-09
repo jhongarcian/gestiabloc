@@ -134,6 +134,8 @@ async function createExecutionLog(params: {
   prismaTx: PrismaTx
   tenantId: string
   templateId: string
+  templateVersionId?: string | null
+  runId?: string | null
   contactServiceId: string
   contactId: string
   actorUserId?: string | null
@@ -148,6 +150,8 @@ async function createExecutionLog(params: {
     prismaTx,
     tenantId,
     templateId,
+    templateVersionId,
+    runId,
     contactServiceId,
     contactId,
     actorUserId,
@@ -163,6 +167,8 @@ async function createExecutionLog(params: {
     data: {
       tenantId,
       templateId,
+      templateVersionId: templateVersionId ?? null,
+      runId: runId ?? null,
       contactServiceId,
       contactId,
       actorUserId: actorUserId ?? null,
@@ -559,7 +565,7 @@ export async function executeActionNode(params: {
   runId?: string | null
   node: FlowNode
   customFieldByKey: Map<string, CustomFieldMetadata>
-}) {
+}): Promise<boolean> {
   const {
     prismaTx,
     tenantId,
@@ -572,6 +578,14 @@ export async function executeActionNode(params: {
     runId,
   } = params
   const kind = node.data?.kind
+  const createActionExecutionLog = (
+    log: Parameters<typeof createExecutionLog>[0],
+  ) =>
+    createExecutionLog({
+      ...log,
+      templateVersionId: templateVersionId ?? null,
+      runId: runId ?? null,
+    })
 
   if (kind === "assign" && node.data?.assigneeUserId) {
     const membership = await prismaTx.membership.findUnique({
@@ -587,7 +601,7 @@ export async function executeActionNode(params: {
       where: { id: contactService.contactId },
       data: { assignedToUserId: node.data.assigneeUserId },
     })
-    await createExecutionLog({
+    await createActionExecutionLog({
       prismaTx,
       tenantId,
       templateId,
@@ -600,7 +614,7 @@ export async function executeActionNode(params: {
       details: "Assigned the contact to a user from the follow-up workflow.",
       payload: { kind, assigneeUserId: node.data.assigneeUserId },
     })
-    return
+    return true
   }
 
   if (kind === "removeUser") {
@@ -621,7 +635,7 @@ export async function executeActionNode(params: {
           additionalAgentUserId: null,
         },
       })
-      await createExecutionLog({
+      await createActionExecutionLog({
         prismaTx,
         tenantId,
         templateId,
@@ -634,10 +648,10 @@ export async function executeActionNode(params: {
         details: "Cleared all assigned users from the contact.",
         payload: { kind, removeTarget },
       })
-      return
+      return true
     }
 
-    if (!node.data?.assigneeUserId) return
+    if (!node.data?.assigneeUserId) return false
     const contact = await prismaTx.contact.findUnique({
       where: { id: contactService.contactId },
       select: {
@@ -647,7 +661,7 @@ export async function executeActionNode(params: {
       },
     })
 
-    if (!contact) return
+    if (!contact) return false
 
     await prismaTx.contact.update({
       where: { id: contactService.contactId },
@@ -666,7 +680,7 @@ export async function executeActionNode(params: {
             : undefined,
       },
     })
-    await createExecutionLog({
+    await createActionExecutionLog({
       prismaTx,
       tenantId,
       templateId,
@@ -679,12 +693,12 @@ export async function executeActionNode(params: {
       details: "Removed a specific assigned user from the contact.",
       payload: { kind, removeTarget, assigneeUserId: node.data.assigneeUserId },
     })
-    return
+    return true
   }
 
   if (kind === "tagAdd") {
     const tagNames = getNodeTagNames(node)
-    if (!tagNames.length) return
+    if (!tagNames.length) return false
 
     for (const tagName of tagNames) {
       const tag = await ensureTenantTag(prismaTx, tenantId, tagName)
@@ -706,7 +720,7 @@ export async function executeActionNode(params: {
         },
       })
     }
-    await createExecutionLog({
+    await createActionExecutionLog({
       prismaTx,
       tenantId,
       templateId,
@@ -719,12 +733,12 @@ export async function executeActionNode(params: {
       details: `Added ${tagNames.length} tag${tagNames.length === 1 ? "" : "s"} to the contact.`,
       payload: { kind, tagNames },
     })
-    return
+    return true
   }
 
   if (kind === "tagRemove") {
     const tagNames = getNodeTagNames(node)
-    if (!tagNames.length) return
+    if (!tagNames.length) return false
 
     const tags = await prismaTx.tenantTag.findMany({
       where: {
@@ -733,7 +747,7 @@ export async function executeActionNode(params: {
       },
       select: { id: true },
     })
-    if (!tags.length) return
+    if (!tags.length) return false
 
     await prismaTx.contactTag.deleteMany({
       where: {
@@ -742,7 +756,7 @@ export async function executeActionNode(params: {
         tagId: { in: tags.map((tag: { id: string }) => tag.id) },
       },
     })
-    await createExecutionLog({
+    await createActionExecutionLog({
       prismaTx,
       tenantId,
       templateId,
@@ -755,7 +769,7 @@ export async function executeActionNode(params: {
       details: `Removed ${tagNames.length} tag${tagNames.length === 1 ? "" : "s"} from the contact.`,
       payload: { kind, tagNames },
     })
-    return
+    return true
   }
 
   if (kind === "statusUpdate" && node.data?.statusValue) {
@@ -763,7 +777,7 @@ export async function executeActionNode(params: {
       where: { id: contactService.contactId },
       data: { statusConfigId: node.data.statusValue },
     })
-    await createExecutionLog({
+    await createActionExecutionLog({
       prismaTx,
       tenantId,
       templateId,
@@ -776,7 +790,7 @@ export async function executeActionNode(params: {
       details: "Updated the contact status from the follow-up workflow.",
       payload: { kind, statusValue: node.data.statusValue },
     })
-    return
+    return true
   }
 
   if (kind === "contactFieldUpdate") {
@@ -787,7 +801,7 @@ export async function executeActionNode(params: {
       node,
       customFieldByKey,
     )
-    await createExecutionLog({
+    await createActionExecutionLog({
       prismaTx,
       tenantId,
       templateId,
@@ -805,7 +819,7 @@ export async function executeActionNode(params: {
         fieldOperation: node.data?.fieldOperation ?? null,
       },
     })
-    return
+    return true
   }
 
   if (kind === "addNote") {
@@ -841,7 +855,7 @@ export async function executeActionNode(params: {
           : undefined,
       },
     })
-    await createExecutionLog({
+    await createActionExecutionLog({
       prismaTx,
       tenantId,
       templateId,
@@ -854,7 +868,7 @@ export async function executeActionNode(params: {
       details: "Created a contact note from the follow-up workflow.",
       payload: { kind, attachmentCount: validAttachments.length },
     })
-    return
+    return true
   }
 
   if (kind === "addTask") {
@@ -894,7 +908,7 @@ export async function executeActionNode(params: {
       type: "CREATED",
       title: "Task created by follow-up workflow",
     })
-    await createExecutionLog({
+    await createActionExecutionLog({
       prismaTx,
       tenantId,
       templateId,
@@ -907,7 +921,7 @@ export async function executeActionNode(params: {
       details: "Created a task from the follow-up workflow.",
       payload: { kind, taskId: task.id },
     })
-    return
+    return true
   }
 
   if (kind === "reminder") {
@@ -945,7 +959,7 @@ export async function executeActionNode(params: {
       }
     }
     recipientUserIds = [...new Set(recipientUserIds)]
-    if (!recipientUserIds.length) return
+    if (!recipientUserIds.length) return false
 
     const contactName = contactService.contactName.trim() || "Contact"
     const reminderLabel = node.data?.label?.trim()
@@ -995,7 +1009,7 @@ export async function executeActionNode(params: {
         emitNotificationCreated(serialized.userId, serialized)
       }
     }
-    await createExecutionLog({
+    await createActionExecutionLog({
       prismaTx,
       tenantId,
       templateId,
@@ -1008,7 +1022,10 @@ export async function executeActionNode(params: {
       details: "Sent a reminder notification from the follow-up workflow.",
       payload: { kind, notificationIds, recipientCount: recipientUserIds.length, templateVersionId: templateVersionId ?? null },
     })
+    return true
   }
+
+  return false
 }
 
 export async function syncContactServiceActiveStep(params: {
