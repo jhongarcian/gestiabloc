@@ -1045,6 +1045,7 @@ export async function advanceFollowUpRunTx(params: {
     }
 
     let output: unknown = null
+    let actionExecutionLogged = false
     if (node.kind === "mathOperation" || node.kind === "numberFormatter" || node.kind === "dateTimeFormatter") {
       try {
         output = transformerOutput({ node, contact, customFields, variables })
@@ -1059,7 +1060,7 @@ export async function advanceFollowUpRunTx(params: {
       if (node.kind === "mathOperation") {
         const data = recordValue(node.data)
         if (typeof data.mathResultFieldKey === "string" && data.mathResultFieldKey) {
-          await executeActionNode({
+          actionExecutionLogged = await executeActionNode({
             prismaTx,
             tenantId: run.tenantId,
             templateId: run.templateVersion.templateId,
@@ -1091,7 +1092,7 @@ export async function advanceFollowUpRunTx(params: {
     } else if (ACTION_KINDS.has(node.kind)) {
       const interpolatedData = recordValue(interpolateValue(node.data, variables))
       try {
-        await executeActionNode({
+        actionExecutionLogged = await executeActionNode({
           prismaTx,
           tenantId: run.tenantId,
           templateId: run.templateVersion.templateId,
@@ -1121,7 +1122,9 @@ export async function advanceFollowUpRunTx(params: {
       where: { id: run.id },
       data: { cursorNodeId: onlyTarget(definition, node.id), variables, branchDecisions },
     })
-    await logRunEvent({ prismaTx, run, actorUserId, nodeId: node.id, eventType: "NODE_SUCCEEDED", title: node.label || `Completed ${node.kind}`, payload: output === null ? { kind: node.kind } : { kind: node.kind, outputKey: recordValue(node.data).outputKey ?? null } })
+    if (!actionExecutionLogged) {
+      await logRunEvent({ prismaTx, run, actorUserId, nodeId: node.id, eventType: "NODE_SUCCEEDED", title: node.label || `Completed ${node.kind}`, payload: output === null ? { kind: node.kind } : { kind: node.kind, outputKey: recordValue(node.data).outputKey ?? null } })
+    }
     cursor = onlyTarget(definition, node.id)
   }
 
@@ -1364,12 +1367,23 @@ export function workflowStepDefinitions(definitionValue: unknown) {
 export async function createFollowUpRunTx(params: {
   prismaTx: PrismaTx
   tenantId: string
+  templateId: string
+  contactId: string
   contactServiceId: string
   templateVersion: { id: string; definition: unknown }
   startedByUserId: string
   assignedToUserId?: string | null
 }) {
-  const { prismaTx, tenantId, contactServiceId, templateVersion, startedByUserId, assignedToUserId } = params
+  const {
+    prismaTx,
+    tenantId,
+    templateId,
+    contactId,
+    contactServiceId,
+    templateVersion,
+    startedByUserId,
+    assignedToUserId,
+  } = params
   const definition = runtimeWorkflowDefinition(templateVersion.definition)
   const startId = definition.nodes.find((node) => node.kind === "start")?.id
   if (!startId) throw new Error("Published workflow is missing Start.")
@@ -1383,6 +1397,22 @@ export async function createFollowUpRunTx(params: {
       cursorNodeId: startId,
       variables: {},
       branchDecisions: {},
+    },
+  })
+  await prismaTx.serviceFollowUpExecutionLog.create({
+    data: {
+      tenantId,
+      templateId,
+      templateVersionId: templateVersion.id,
+      runId: run.id,
+      contactServiceId,
+      contactId,
+      actorUserId: startedByUserId,
+      flowNodeId: startId,
+      eventType: "FLOW_STARTED",
+      title: "Follow-up flow started",
+      details: "Started the published follow-up workflow for this service enrollment.",
+      payload: null,
     },
   })
   const steps = workflowStepDefinitions(definition)

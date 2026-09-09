@@ -64,6 +64,7 @@ export default async function FollowUpTemplateBuilderPage({
         tenantId={membership.tenant.id}
         tenantSlug={tenantSlug}
         serviceId={serviceId}
+        timezone={membership.tenant.timezone}
         template={data.template}
       />
     )

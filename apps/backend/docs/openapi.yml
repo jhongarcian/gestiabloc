@@ -2223,6 +2223,46 @@ paths:
       responses:
         "200":
           description: Template unpublished
+  /api/account-settings/{tenantId}/services/{recordId}/follow-up-templates/{templateId}/enrollments:
+    get:
+      tags: [Account Settings]
+      summary: List contact enrollments for a follow-up template
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: search
+          description: Case-insensitive contact name, email, or phone search
+          schema:
+            type: string
+            maxLength: 200
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            minimum: 5
+            maximum: 50
+            default: 10
+      responses:
+        "200":
+          description: Template enrollments returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateEnrollmentsResponse"
   /api/account-settings/{tenantId}/services/{recordId}/follow-up-templates/{templateId}/execution-logs:
     get:
       tags: [Account Settings]
@@ -2241,26 +2281,20 @@ paths:
           name: page
           schema:
             type: integer
+            minimum: 1
             default: 1
         - in: query
           name: pageSize
           schema:
             type: integer
+            minimum: 5
+            maximum: 50
             default: 20
         - in: query
-          name: search
+          name: contactServiceId
+          description: Restrict the timeline to one template enrollment
           schema:
             type: string
-        - in: query
-          name: enrollmentsPage
-          schema:
-            type: integer
-            default: 1
-        - in: query
-          name: enrollmentsPageSize
-          schema:
-            type: integer
-            default: 10
       responses:
         "200":
           description: Execution logs returned
@@ -8312,97 +8346,68 @@ components:
                   type: string
                 name:
                   type: string
+            steps:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  title:
+                    type: string
+    AccountSettingsServiceFollowUpTemplateEnrollmentItem:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Contact service enrollment ID
+        enrolledAt:
+          type: string
+          format: date-time
+        contact:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+              nullable: true
+            phoneNumber:
+              type: string
+              nullable: true
+    AccountSettingsServiceFollowUpTemplateEnrollmentsResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateEnrollmentItem"
+        search:
+          type: string
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        totalCount:
+          type: integer
+        totalPages:
+          type: integer
     AccountSettingsServiceFollowUpTemplateExecutionLogsResponse:
       type: object
       properties:
         ok:
           type: boolean
           example: true
-        enrollments:
-          type: array
-          items:
-            type: object
-            properties:
-              id:
-                type: string
-              status:
-                type: string
-              createdAt:
-                type: string
-                format: date-time
-              purchasedAt:
-                type: string
-                format: date-time
-                nullable: true
-              startedAt:
-                type: string
-                format: date-time
-                nullable: true
-              completedAt:
-                type: string
-                format: date-time
-                nullable: true
-              contact:
-                type: object
-                properties:
-                  id:
-                    type: string
-                  name:
-                    type: string
-                  phoneNumber:
-                    type: string
-                    nullable: true
-              service:
-                type: object
-                properties:
-                  id:
-                    type: string
-                  name:
-                    type: string
-              currentStep:
-                type: object
-                nullable: true
-                properties:
-                  id:
-                    type: string
-                  title:
-                    type: string
-                  status:
-                    type: string
-                  dueAt:
-                    type: string
-                    format: date-time
-                    nullable: true
-              completedCount:
-                type: integer
-              totalCount:
-                type: integer
-              lastExecution:
-                type: object
-                nullable: true
-                properties:
-                  createdAt:
-                    type: string
-                    format: date-time
-                  title:
-                    type: string
         items:
           type: array
           items:
             $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateExecutionLogItem"
-        selectedContactServiceId:
-          type: string
-          nullable: true
-        search:
-          type: string
-        enrollmentsPage:
-          type: integer
-        enrollmentsPageSize:
-          type: integer
-        enrollmentsTotalCount:
-          type: integer
-        enrollmentsTotalPages:
-          type: integer
         page:
           type: integer
         pageSize:

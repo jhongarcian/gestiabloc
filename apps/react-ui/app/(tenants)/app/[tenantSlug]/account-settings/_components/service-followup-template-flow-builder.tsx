@@ -69,6 +69,8 @@ import {
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
+import { formatDateTimeForDisplay } from "@/lib/date-time"
+import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { uploadPrivateFileToSignedUrl } from "@/lib/supabase-storage"
 import { cn } from "@/lib/utils"
 import {
@@ -77,6 +79,7 @@ import {
   toPersistedBuilderSnapshot,
   type WorkflowValidationIssue,
 } from "./service-followup-builder-state"
+import { ServiceFollowUpTemplateContactsTab } from "./service-followup-template-contacts-tab"
 
 type PersistedNodeKind =
   | "start"
@@ -923,6 +926,7 @@ type FollowUpTemplateFlowBuilderProps = {
   tenantId: string
   tenantSlug: string
   serviceId: string
+  timezone?: string | null
   template: {
     id: string
     name: string
@@ -1002,7 +1006,6 @@ type ExecutionLogItem = {
   contact: {
     id: string
     name: string
-    phoneNumber: string | null
   }
   contactService: {
     id: string
@@ -1019,44 +1022,28 @@ type ExecutionLogItem = {
 
 type ExecutionLogEnrollment = {
   id: string
-  status: "IN_PROGRESS" | "PENDING_PAYMENT" | "COMPLETED" | "CANCELED"
-  createdAt: string
-  purchasedAt: string | null
-  startedAt: string | null
-  completedAt: string | null
+  enrolledAt: string
   contact: {
     id: string
     name: string
+    email: string | null
     phoneNumber: string | null
   }
-  service: {
-    id: string
-    name: string
-  }
-  currentStep: {
-    id: string
-    title: string
-    status: string
-    dueAt: string | null
-  } | null
-  completedCount: number
-  totalCount: number
-  lastExecution: {
-    createdAt: string
-    title: string
-  } | null
 }
 
 type ExecutionLogsResponse = {
   ok: boolean
-  enrollments: ExecutionLogEnrollment[]
   items: ExecutionLogItem[]
-  selectedContactServiceId: string | null
+  page: number
+  pageSize: number
+  totalCount: number
+  totalPages: number
+}
+
+type ExecutionLogEnrollmentsResponse = {
+  ok: boolean
+  items: ExecutionLogEnrollment[]
   search: string
-  enrollmentsPage: number
-  enrollmentsPageSize: number
-  enrollmentsTotalCount: number
-  enrollmentsTotalPages: number
   page: number
   pageSize: number
   totalCount: number
@@ -1986,6 +1973,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
   tenantId,
   tenantSlug,
   serviceId,
+  timezone,
   template,
 }: FollowUpTemplateFlowBuilderProps) {
   const router = useRouter()
@@ -2022,7 +2010,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const [customFieldOptions, setCustomFieldOptions] = useState<CustomFieldOption[]>([])
   const [isCustomFieldsLoading, setIsCustomFieldsLoading] = useState(false)
   const [hasLoadedCustomFields, setHasLoadedCustomFields] = useState(false)
-  const [activeTab, setActiveTab] = useState<"builder" | "logs">("builder")
+  const [activeTab, setActiveTab] = useState<"builder" | "contacts" | "logs">("builder")
   const [isContactInfoSectionOpen, setIsContactInfoSectionOpen] = useState(false)
   const [isCustomFieldsSectionOpen, setIsCustomFieldsSectionOpen] = useState(false)
   const [isCreatingTag, setIsCreatingTag] = useState(false)
@@ -2031,6 +2019,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const [executionLogs, setExecutionLogs] = useState<ExecutionLogItem[]>([])
   const [executionLogEnrollments, setExecutionLogEnrollments] = useState<ExecutionLogEnrollment[]>([])
   const [isExecutionLogsLoading, setIsExecutionLogsLoading] = useState(false)
+  const [isExecutionEnrollmentsLoading, setIsExecutionEnrollmentsLoading] = useState(false)
   const [executionEnrollmentSearchInput, setExecutionEnrollmentSearchInput] = useState("")
   const [executionEnrollmentSearch, setExecutionEnrollmentSearch] = useState("")
   const [executionEnrollmentPickerOpen, setExecutionEnrollmentPickerOpen] = useState(false)
@@ -2041,6 +2030,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
   const [executionLogsTotalPages, setExecutionLogsTotalPages] = useState(1)
   const [executionLogsTotalCount, setExecutionLogsTotalCount] = useState(0)
   const [selectedExecutionContactServiceId, setSelectedExecutionContactServiceId] = useState<string | null>(null)
+  const [selectedExecutionEnrollment, setSelectedExecutionEnrollment] = useState<ExecutionLogEnrollment | null>(null)
   const [isUploadingNoteAttachment, setIsUploadingNoteAttachment] = useState(false)
   const [noteAttachmentTarget, setNoteAttachmentTarget] =
     useState<NoteAttachmentTarget>("create")
@@ -2142,9 +2132,6 @@ export function ServiceFollowUpTemplateFlowBuilder({
           `/api/account-settings/${tenantId}/services/${serviceId}/follow-up-templates/${template.id}/execution-logs`,
           {
             params: {
-              search: executionEnrollmentSearch || undefined,
-              enrollmentsPage: executionEnrollmentsPage,
-              enrollmentsPageSize: 5,
               page,
               pageSize: 20,
               ...(selectedExecutionContactServiceId
@@ -2153,28 +2140,20 @@ export function ServiceFollowUpTemplateFlowBuilder({
             },
           },
         )
-        setExecutionLogEnrollments(data.enrollments)
         setExecutionLogs(data.items)
-        setExecutionEnrollmentsPage(data.enrollmentsPage)
-        setExecutionEnrollmentsTotalPages(data.enrollmentsTotalPages)
-        setExecutionEnrollmentsTotalCount(data.enrollmentsTotalCount)
         setExecutionLogsPage(data.page)
         setExecutionLogsTotalPages(data.totalPages)
         setExecutionLogsTotalCount(data.totalCount)
-        setSelectedExecutionContactServiceId(data.selectedContactServiceId)
       } catch {
-        setExecutionLogEnrollments([])
         setExecutionLogs([])
-        setExecutionEnrollmentsTotalPages(1)
-        setExecutionEnrollmentsTotalCount(0)
+        setExecutionLogsTotalPages(1)
+        setExecutionLogsTotalCount(0)
         toast.error("Could not load execution logs.")
       } finally {
         setIsExecutionLogsLoading(false)
       }
     },
     [
-      executionEnrollmentSearch,
-      executionEnrollmentsPage,
       selectedExecutionContactServiceId,
       serviceId,
       template.id,
@@ -2182,24 +2161,51 @@ export function ServiceFollowUpTemplateFlowBuilder({
     ],
   )
 
+  const loadExecutionEnrollments = useCallback(
+    async (page: number) => {
+      setIsExecutionEnrollmentsLoading(true)
+      try {
+        const { data } = await api.get<ExecutionLogEnrollmentsResponse>(
+          `/api/account-settings/${tenantId}/services/${serviceId}/follow-up-templates/${template.id}/enrollments`,
+          {
+            params: {
+              search: executionEnrollmentSearch || undefined,
+              page,
+              pageSize: 5,
+            },
+          },
+        )
+
+        if (page > data.totalPages) {
+          setExecutionEnrollmentsPage(data.totalPages)
+          return
+        }
+
+        setExecutionLogEnrollments(data.items)
+        setExecutionEnrollmentsPage(data.page)
+        setExecutionEnrollmentsTotalPages(data.totalPages)
+        setExecutionEnrollmentsTotalCount(data.totalCount)
+      } catch {
+        setExecutionLogEnrollments([])
+        setExecutionEnrollmentsTotalPages(1)
+        setExecutionEnrollmentsTotalCount(0)
+        toast.error("Could not load enrolled contacts.")
+      } finally {
+        setIsExecutionEnrollmentsLoading(false)
+      }
+    },
+    [executionEnrollmentSearch, serviceId, template.id, tenantId],
+  )
+
   useEffect(() => {
     if (activeTab !== "logs") return
     void loadExecutionLogs(executionLogsPage)
-  }, [activeTab, executionEnrollmentSearch, executionEnrollmentsPage, executionLogsPage, loadExecutionLogs])
+  }, [activeTab, executionLogsPage, loadExecutionLogs])
 
   useEffect(() => {
-    if (!selectedExecutionContactServiceId) return
-    if (executionLogEnrollments.some((item) => item.id === selectedExecutionContactServiceId)) return
-    setSelectedExecutionContactServiceId(null)
-    setExecutionLogsPage(1)
-  }, [executionLogEnrollments, selectedExecutionContactServiceId])
-
-  const selectedExecutionEnrollment = useMemo(
-    () =>
-      executionLogEnrollments.find((item) => item.id === selectedExecutionContactServiceId) ??
-      null,
-    [executionLogEnrollments, selectedExecutionContactServiceId],
-  )
+    if (activeTab !== "logs") return
+    void loadExecutionEnrollments(executionEnrollmentsPage)
+  }, [activeTab, executionEnrollmentsPage, loadExecutionEnrollments])
 
   useEffect(() => {
     if (!hasUnsavedChanges) return
@@ -4753,6 +4759,17 @@ export function ServiceFollowUpTemplateFlowBuilder({
           onClick={() => setActiveTab("builder")}
         >
           Builder
+        </button>
+        <button
+          type="button"
+          className={`inline-flex h-9 cursor-pointer items-center rounded-full border px-4 text-sm font-medium transition ${
+            activeTab === "contacts"
+              ? "border-slate-900 bg-slate-900 text-white"
+              : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+          }`}
+          onClick={() => setActiveTab("contacts")}
+        >
+          Contacts
         </button>
         <button
           type="button"
@@ -8501,6 +8518,14 @@ export function ServiceFollowUpTemplateFlowBuilder({
           </aside>
         ) : null}
       </section>
+      ) : activeTab === "contacts" ? (
+        <ServiceFollowUpTemplateContactsTab
+          tenantId={tenantId}
+          tenantSlug={tenantSlug}
+          serviceId={serviceId}
+          templateId={template.id}
+          timezone={timezone}
+        />
       ) : (
         <section className="min-h-0 flex-1 rounded-[20px] border border-slate-200 bg-white p-5">
           <div className="mb-4 flex items-center justify-between gap-3">
@@ -8514,10 +8539,15 @@ export function ServiceFollowUpTemplateFlowBuilder({
               type="button"
               variant="outline"
               className="cursor-pointer"
-              onClick={() => void loadExecutionLogs(executionLogsPage)}
-              disabled={isExecutionLogsLoading}
+              onClick={() => {
+                void Promise.all([
+                  loadExecutionLogs(executionLogsPage),
+                  loadExecutionEnrollments(executionEnrollmentsPage),
+                ])
+              }}
+              disabled={isExecutionLogsLoading || isExecutionEnrollmentsLoading}
             >
-              {isExecutionLogsLoading ? "Refreshing..." : "Refresh"}
+              {isExecutionLogsLoading || isExecutionEnrollmentsLoading ? "Refreshing..." : "Refresh"}
             </Button>
           </div>
 
@@ -8543,6 +8573,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                         variant="outline"
                         role="combobox"
                         className="h-10 w-full cursor-pointer justify-between bg-white text-left font-normal"
+                        disabled={isExecutionEnrollmentsLoading && !executionLogEnrollments.length}
                       >
                         <span className="truncate">
                           {selectedExecutionEnrollment
@@ -8568,6 +8599,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                             className="cursor-pointer"
                             onSelect={() => {
                               setSelectedExecutionContactServiceId(null)
+                              setSelectedExecutionEnrollment(null)
                               setExecutionLogsPage(1)
                               setExecutionEnrollmentPickerOpen(false)
                             }}
@@ -8594,6 +8626,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                   className="cursor-pointer"
                                   onSelect={() => {
                                     setSelectedExecutionContactServiceId(enrollment.id)
+                                    setSelectedExecutionEnrollment(enrollment)
                                     setExecutionLogsPage(1)
                                     setExecutionEnrollmentPickerOpen(false)
                                   }}
@@ -8609,14 +8642,18 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                       {enrollment.contact.name || "Contact"}
                                     </p>
                                     <p className="truncate text-xs text-slate-500">
-                                      {enrollment.contact.phoneNumber || "No phone"} · {enrollment.service.name}
+                                      {enrollment.contact.email || "No email"} · {formatPhoneNumber(enrollment.contact.phoneNumber)}
                                     </p>
                                   </div>
                                 </CommandItem>
                               ))}
                             </CommandGroup>
                           ) : (
-                            <CommandEmpty>No contacts match this search.</CommandEmpty>
+                            <CommandEmpty>
+                              {isExecutionEnrollmentsLoading
+                                ? "Loading enrolled contacts..."
+                                : "No contacts match this search."}
+                            </CommandEmpty>
                           )}
                         </CommandList>
                       </Command>
@@ -8635,7 +8672,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                         size="sm"
                         className="cursor-pointer"
                         onClick={() => setExecutionEnrollmentsPage((current) => Math.max(1, current - 1))}
-                        disabled={executionEnrollmentsPage <= 1 || isExecutionLogsLoading}
+                        disabled={executionEnrollmentsPage <= 1 || isExecutionEnrollmentsLoading}
                       >
                         Previous
                       </Button>
@@ -8652,7 +8689,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                             Math.min(executionEnrollmentsTotalPages, current + 1),
                           )
                         }
-                        disabled={executionEnrollmentsPage >= executionEnrollmentsTotalPages || isExecutionLogsLoading}
+                        disabled={executionEnrollmentsPage >= executionEnrollmentsTotalPages || isExecutionEnrollmentsLoading}
                       >
                         Next
                       </Button>
@@ -8672,23 +8709,17 @@ export function ServiceFollowUpTemplateFlowBuilder({
                         {selectedExecutionEnrollment.contact.name || "Contact"}
                       </p>
                       <p className="text-sm text-slate-500">
-                        {selectedExecutionEnrollment.service.name}
+                        {selectedExecutionEnrollment.contact.email ||
+                          formatPhoneNumber(selectedExecutionEnrollment.contact.phoneNumber)}
                       </p>
                       <p className="text-xs text-slate-500">
-                        Current step: {selectedExecutionEnrollment.currentStep?.title ?? "No active step"}
+                        Entered this template on {formatDateTimeForDisplay(selectedExecutionEnrollment.enrolledAt, timezone)}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {selectedExecutionEnrollment.currentStep?.status ? (
-                        <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
-                          {selectedExecutionEnrollment.currentStep.status.toLowerCase().replace(/_/g, " ")}
-                        </Badge>
-                      ) : null}
-                      {selectedExecutionEnrollment.currentStep?.dueAt ? (
-                        <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
-                          Due {new Date(selectedExecutionEnrollment.currentStep.dueAt).toLocaleDateString()}
-                        </Badge>
-                      ) : null}
+                      <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-800">
+                        Enrollment filtered
+                      </Badge>
                     </div>
                   </div>
 
@@ -8724,7 +8755,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                   </p>
                                 </div>
                                 <p className="text-xs text-slate-500">
-                                  {new Date(log.createdAt).toLocaleString()}
+                                  {formatDateTimeForDisplay(log.createdAt, timezone)}
                                 </p>
                               </div>
                               {log.details ? (
@@ -8817,7 +8848,7 @@ export function ServiceFollowUpTemplateFlowBuilder({
                                   </p>
                                 </div>
                                 <p className="text-xs text-slate-500">
-                                  {new Date(log.createdAt).toLocaleString()}
+                                  {formatDateTimeForDisplay(log.createdAt, timezone)}
                                 </p>
                               </div>
                               {log.details ? (

@@ -77,6 +77,112 @@ test("branch-exclusive steps exclude the shared join", () => {
   assert.deepEqual(branchExclusiveStepNodeIds(definition, "if", "if-left"), ["right"])
 })
 
+test("creating a versioned run records one fully linked flow-start event", async () => {
+  process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
+  const { createFollowUpRunTx } = await import("./service-followup-v2-execution.js")
+  const logWrites: Array<Record<string, any>> = []
+  const stepWrites: Array<Record<string, any>> = []
+  const prismaTx = {
+    contactServiceFollowUpRun: {
+      create: async () => ({ id: "run-1" }),
+    },
+    serviceFollowUpExecutionLog: {
+      create: async (value: Record<string, any>) => {
+        logWrites.push(value)
+        return value
+      },
+    },
+    contactServiceFollowUpStep: {
+      createMany: async (value: Record<string, any>) => {
+        stepWrites.push(value)
+        return { count: value.data.length }
+      },
+    },
+  }
+
+  await createFollowUpRunTx({
+    prismaTx,
+    tenantId: "tenant-1",
+    templateId: "template-1",
+    contactId: "contact-1",
+    contactServiceId: "enrollment-1",
+    templateVersion: {
+      id: "version-1",
+      definition: {
+        schemaVersion: 3,
+        start: { id: "start", label: "Start" },
+        end: { id: "end", label: "End" },
+        steps: [{ id: "review", name: "Review", dueDaysFromStart: 0 }],
+        transitions: [
+          { id: "start-transition", fromId: "start", actions: [], route: { kind: "NEXT" } },
+          { id: "review-transition", fromId: "review", actions: [], route: { kind: "NEXT" } },
+        ],
+      },
+    },
+    startedByUserId: "user-1",
+  })
+
+  assert.equal(logWrites.length, 1)
+  assert.equal(logWrites[0]?.data.eventType, "FLOW_STARTED")
+  assert.equal(logWrites[0]?.data.templateId, "template-1")
+  assert.equal(logWrites[0]?.data.templateVersionId, "version-1")
+  assert.equal(logWrites[0]?.data.runId, "run-1")
+  assert.equal(logWrites[0]?.data.contactServiceId, "enrollment-1")
+  assert.equal(logWrites[0]?.data.contactId, "contact-1")
+  assert.equal(logWrites[0]?.data.actorUserId, "user-1")
+  assert.equal(stepWrites.length, 1)
+})
+
+test("an executed action returns its logged outcome with run and version linkage", async () => {
+  process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
+  const { executeActionNode } = await import("./service-followup-execution.js")
+  const logWrites: Array<Record<string, any>> = []
+  const prismaTx = {
+    membership: {
+      findUnique: async () => ({ status: "ACTIVE" }),
+    },
+    contact: {
+      update: async () => ({ id: "contact-1" }),
+    },
+    serviceFollowUpExecutionLog: {
+      create: async (value: Record<string, any>) => {
+        logWrites.push(value)
+        return value
+      },
+    },
+  }
+
+  const actionWasLogged = await executeActionNode({
+    prismaTx,
+    tenantId: "tenant-1",
+    templateId: "template-1",
+    templateVersionId: "version-1",
+    runId: "run-1",
+    actorUserId: "user-1",
+    contactService: {
+      id: "enrollment-1",
+      contactId: "contact-1",
+      serviceName: "Service",
+      contactName: "Ada Lovelace",
+    },
+    node: {
+      id: "assign-owner",
+      data: {
+        kind: "assign",
+        label: "Assign owner",
+        assigneeUserId: "owner-1",
+      },
+    },
+    customFieldByKey: new Map(),
+  })
+
+  assert.equal(actionWasLogged, true)
+  assert.equal(logWrites.length, 1)
+  assert.equal(logWrites[0]?.data.eventType, "ACTION_EXECUTED")
+  assert.equal(logWrites[0]?.data.templateVersionId, "version-1")
+  assert.equal(logWrites[0]?.data.runId, "run-1")
+})
+
 test("stages a user-scheduled Wait input before workflow traversal", async () => {
   process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
   const { stageUserScheduledWaitInputTx } = await import("./service-followup-v2-execution.js")
