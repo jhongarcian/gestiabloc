@@ -4,36 +4,53 @@ import { Suspense, useEffect, useState } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { isAxiosError } from "axios"
-
-import { forgotPassword } from "@/lib/api"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Skeleton } from "@/components/ui/skeleton"
 import {
   ArrowLeft,
+  ArrowRight,
   Box,
   CheckCircle2,
-  KeyRound,
-  Lightbulb,
+  Loader2,
   Mail,
-  Send,
+  TriangleAlert,
 } from "lucide-react"
 
-export default function ResetPasswordPanel() {
+import { Button } from "@/components/ui/button"
+import {
+  Field,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
+import { forgotPassword } from "@/lib/api"
+
+const AUTH_PRIMARY_BUTTON_CLASS =
+  "h-11 w-full cursor-pointer rounded-full bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm ring-1 ring-white/15 transition hover:bg-blue-500 hover:text-white disabled:cursor-not-allowed disabled:bg-blue-900 disabled:text-blue-300"
+
+const AUTH_SECONDARY_BUTTON_CLASS =
+  "h-11 w-full cursor-pointer rounded-full border-white/25 bg-white/10 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-white/15 hover:text-white"
+
+export default function ResetPasswordPage() {
   return (
-    <Suspense fallback={<ResetPasswordSkeleton />}>
-      <ResetPasswordPanelContent />
+    <Suspense
+      fallback={
+        <div className="flex min-h-[100svh] items-center justify-center bg-blue-950 text-sm text-blue-100/70">
+          Loading password reset…
+        </div>
+      }
+    >
+      <ResetPasswordContent />
     </Suspense>
   )
 }
 
-function ResetPasswordPanelContent() {
+function ResetPasswordContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [email, setEmail] = useState("")
   const [status, setStatus] = useState<"idle" | "loading" | "success">("idle")
   const [error, setError] = useState<string | null>(null)
+  const [emailError, setEmailError] = useState<string | null>(null)
 
   const isLoading = status === "loading"
 
@@ -47,10 +64,11 @@ function ResetPasswordPanelContent() {
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError(null)
+    setEmailError(null)
     setStatus("loading")
 
     if (!email.trim()) {
-      setError("Email is required.")
+      setEmailError("Email is required.")
       setStatus("idle")
       return
     }
@@ -69,176 +87,158 @@ function ResetPasswordPanelContent() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 flex items-center justify-center px-4 py-6 sm:px-6 sm:py-8">
-      <div className="w-full max-w-xl gradient-border rounded-3xl shadow-2xl p-6 sm:p-8 flex flex-col justify-center bg-white">
-        <div className="w-full max-w-lg mx-auto space-y-6 animate-slide-up">
-        <div className="text-center">
-          <div className="flex flex-col items-center justify-center gap-3 mb-4">
-            <div className="w-12 h-12 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-2xl flex items-center justify-center text-white shadow-lg">
-              <Box className="h-5 w-5" />
-            </div>
-            <h1 className="font-bold text-2xl tracking-tight text-slate-900">
-              Gestiabloc
+    <main className="relative min-h-[100svh] overflow-x-hidden bg-blue-950 text-white">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,.12)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.12)_1px,transparent_1px)] [background-size:44px_44px]"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -bottom-40 left-1/2 size-[32rem] -translate-x-1/2 rounded-full bg-blue-500/25 blur-3xl"
+      />
+
+      <div className="relative z-10 flex min-h-[100svh] w-full items-start justify-center px-4 py-5 sm:items-center sm:px-8 sm:py-10">
+        <section className="w-full max-w-[460px] py-6 sm:py-10">
+          <header className="mb-8 text-center">
+            <Link
+              href="/"
+              className="inline-flex items-center gap-3 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+              aria-label="Gestiabloc home"
+            >
+              <span className="flex size-10 items-center justify-center rounded-2xl border border-white/15 bg-white/10 text-white shadow-sm">
+                <Box className="size-5" aria-hidden="true" />
+              </span>
+              <span className="text-xl font-semibold tracking-tight text-white">
+                Gestiabloc
+              </span>
+            </Link>
+
+            <h1 className="mt-8 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+              Reset your password
             </h1>
-          </div>
-
-          <h2 className="text-3xl font-bold text-slate-900 mb-2">
-            Reset Your Password
-          </h2>
-          <p className="text-slate-500 text-sm sm:text-base">
-            Enter your email and we&apos;ll send you instructions to reset your
-            password
-          </p>
-        </div>
-
-        <form
-          id="forgot-password-form"
-          className="space-y-4"
-          onSubmit={onSubmit}
-        >
-          <div className="space-y-2">
-            <Label
-              htmlFor="email"
-              className="text-sm font-semibold text-slate-700 flex items-center gap-2"
-            >
-              <Mail className="h-4 w-4 text-indigo-600" />
-              Email Address
-            </Label>
-
-            <div className="relative group">
-              <Input
-                type="email"
-                id="email"
-                className="block w-full px-4 py-3 bg-slate-50 border-2 border-slate-200 rounded-2xl text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-4 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm sm:text-base group-hover:border-slate-300"
-                placeholder="your.email@example.com"
-                required
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-              />
-              <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none text-slate-300 group-focus-within:text-indigo-500 transition-colors">
-                <CheckCircle2 className="h-5 w-5" />
-              </div>
-            </div>
-          </div>
-
-          <Button
-            type="submit"
-            disabled={isLoading}
-            className="w-full flex justify-center items-center gap-2 py-3.5 px-5 border-2 border-transparent rounded-2xl text-sm sm:text-base font-bold text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 focus:outline-none focus:ring-4 focus:ring-indigo-500/30 transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            <Send className="h-4 w-4" />
-            {isLoading ? "Sending..." : "Send Reset Instructions"}
-          </Button>
-
-          {status === "success" ? (
-            <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-              If an account exists for that email, we&apos;ve sent a reset link.
+            <p className="mt-2 text-sm leading-6 text-blue-100/75">
+              Enter your email and we&apos;ll send you a secure reset link.
             </p>
-          ) : null}
+          </header>
 
-          {error ? (
-            <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {error}
-            </p>
-          ) : null}
-
-          <div className="relative flex items-center justify-center gap-3">
-            <div className="h-px bg-slate-200 flex-1" />
-            <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-              Or
-            </span>
-            <div className="h-px bg-slate-200 flex-1" />
-          </div>
-
-          <Link
-            href="/login"
-            className="flex items-center justify-center gap-2 py-3.5 text-sm font-semibold text-slate-700 hover:text-indigo-600 transition-colors group"
+          <form
+            id="forgot-password-form"
+            className="flex flex-col gap-5"
+            onSubmit={onSubmit}
           >
-            <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" />
-            Return to Sign In
-          </Link>
-        </form>
+            <FieldGroup className="gap-5">
+              <Field
+                data-invalid={Boolean(emailError)}
+                data-disabled={isLoading}
+                className="gap-2"
+              >
+                <FieldLabel
+                  htmlFor="email"
+                  className="text-sm font-medium text-blue-50"
+                >
+                  Email address
+                </FieldLabel>
+                <div className="relative">
+                  <Mail
+                    className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-slate-400"
+                    aria-hidden="true"
+                  />
+                  <Input
+                    type="email"
+                    id="email"
+                    name="email"
+                    autoComplete="email"
+                    className="h-11 rounded-full border-white bg-white pl-11 pr-4 text-sm text-slate-950 shadow-sm focus-visible:border-blue-300 focus-visible:ring-blue-300/40 aria-invalid:border-rose-300 aria-invalid:ring-rose-200/30 disabled:bg-blue-50 disabled:opacity-80"
+                    placeholder="name@company.com"
+                    required
+                    disabled={isLoading}
+                    aria-invalid={Boolean(emailError)}
+                    aria-describedby={emailError ? "email-error" : undefined}
+                    value={email}
+                    onChange={(event) => {
+                      setEmail(event.target.value)
+                      if (emailError) setEmailError(null)
+                    }}
+                  />
+                </div>
+                <FieldError id="email-error" className="text-xs text-rose-200">
+                  {emailError}
+                </FieldError>
+              </Field>
+            </FieldGroup>
 
-        <div className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-2xl p-5 space-y-3 border border-indigo-100">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-sm">
-              <Lightbulb className="h-5 w-5 text-indigo-600" />
-            </div>
-            <h3 className="text-base font-bold text-slate-800">
-              What happens next?
-            </h3>
-          </div>
-
-          <div className="space-y-2 pl-13">
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 bg-indigo-600 text-white rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
-                1
+            {status === "success" ? (
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex w-full flex-col items-center rounded-2xl border border-white/15 bg-white/[0.06] px-5 py-4 text-center shadow-sm backdrop-blur-sm"
+              >
+                <span className="flex size-9 items-center justify-center rounded-full border border-white/10 bg-white/10">
+                  <CheckCircle2
+                    className="size-4 text-emerald-300"
+                    aria-hidden="true"
+                  />
+                </span>
+                <p className="mt-3 text-sm font-semibold text-white">
+                  Check your inbox
+                </p>
+                <p className="mt-1 text-xs leading-5 text-blue-100/70">
+                  If an account exists for that email, we sent a password reset
+                  link.
+                </p>
               </div>
-              <p className="text-sm text-slate-600 leading-relaxed">
-                Check your email inbox for our message
-              </p>
-            </div>
+            ) : null}
 
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 bg-indigo-600 text-white rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
-                2
+            {error ? (
+              <div
+                role="alert"
+                className="flex w-full flex-col items-center rounded-2xl border border-white/15 bg-white/[0.06] px-5 py-4 text-center shadow-sm backdrop-blur-sm"
+              >
+                <span className="flex size-9 items-center justify-center rounded-full border border-white/10 bg-white/10">
+                  <TriangleAlert
+                    className="size-4 text-rose-300"
+                    aria-hidden="true"
+                  />
+                </span>
+                <p className="mt-3 text-sm text-rose-100">{error}</p>
               </div>
-              <p className="text-sm text-slate-600 leading-relaxed">
-                Click the secure reset link (valid for 1 hour)
-              </p>
-            </div>
+            ) : null}
 
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 bg-indigo-600 text-white rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
-                3
-              </div>
-              <p className="text-sm text-slate-600 leading-relaxed">
-                Create your new password and sign in
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="text-center pt-2">
-          <p className="text-sm text-slate-500">
-            Need assistance?
-            <a
-              href="#"
-              className="font-bold text-indigo-600 hover:text-indigo-700 hover:underline transition-all ml-1"
+            <Button
+              type="submit"
+              disabled={isLoading}
+              className={AUTH_PRIMARY_BUTTON_CLASS}
             >
-              Contact Support Team
-            </a>
-          </p>
-        </div>
-        </div>
-      </div>
-    </div>
-  )
-}
+              {isLoading ? (
+                <Loader2
+                  data-icon="inline-start"
+                  className="animate-spin"
+                  aria-hidden="true"
+                />
+              ) : null}
+              {isLoading
+                ? "Sending reset link"
+                : status === "success"
+                  ? "Send another link"
+                  : "Send reset link"}
+              {!isLoading ? (
+                <ArrowRight data-icon="inline-end" aria-hidden="true" />
+              ) : null}
+            </Button>
 
-function ResetPasswordSkeleton() {
-  return (
-    <div className="min-h-screen bg-slate-100 flex items-center justify-center px-4 py-6 sm:px-6 sm:py-8">
-      <div className="w-full max-w-xl rounded-3xl shadow-2xl p-6 sm:p-8 bg-white">
-        <div className="w-full max-w-lg mx-auto space-y-6">
-          <div className="space-y-4">
-            <div className="flex flex-col items-center justify-center gap-3">
-              <Skeleton className="h-12 w-12 rounded-2xl" />
-              <Skeleton className="h-8 w-36" />
-            </div>
-            <div className="space-y-2 text-center">
-              <Skeleton className="mx-auto h-8 w-64" />
-              <Skeleton className="mx-auto h-4 w-72" />
-            </div>
-          </div>
-          <div className="space-y-4">
-            <Skeleton className="h-4 w-28" />
-            <Skeleton className="h-12 w-full rounded-2xl" />
-            <Skeleton className="h-12 w-full rounded-2xl" />
-            <Skeleton className="h-24 w-full rounded-2xl" />
-          </div>
-        </div>
+            <Button
+              asChild
+              variant="outline"
+              className={AUTH_SECONDARY_BUTTON_CLASS}
+            >
+              <Link href="/login">
+                <ArrowLeft data-icon="inline-start" aria-hidden="true" />
+                Back to sign in
+              </Link>
+            </Button>
+          </form>
+        </section>
       </div>
-    </div>
+    </main>
   )
 }
