@@ -1,77 +1,68 @@
-"use client"
-
 import Link from "next/link"
+import { ArrowRight, Box, MailCheck } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { Box, MailCheck, ShieldCheck } from "lucide-react"
+
+const AUTH_PRIMARY_BUTTON_CLASS =
+  "h-11 w-full cursor-pointer rounded-full bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm ring-1 ring-white/15 transition hover:bg-blue-500 hover:text-white"
 
 export default function SignupSuccessPage() {
   return (
-    <div className="min-h-screen bg-white/50 backdrop-blur-sm text-slate-900 px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10 flex items-center justify-center relative overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-br from-indigo-600/5 to-purple-600/5" />
-      <div className="w-full max-w-[1440px] flex items-center justify-center relative z-10 px-4 sm:px-6">
-        <div className="w-full max-w-2xl bg-white rounded-3xl shadow-2xl p-8 sm:p-10 lg:p-16 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-br from-indigo-500/5 to-purple-500/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2" />
-          <div className="absolute bottom-0 left-0 w-48 h-48 bg-gradient-to-tr from-blue-500/5 to-cyan-500/5 rounded-full blur-2xl translate-y-1/2 -translate-x-1/2" />
+    <main className="relative min-h-[100svh] overflow-x-hidden bg-blue-950 text-white">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,.12)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.12)_1px,transparent_1px)] [background-size:44px_44px]"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -bottom-40 left-1/2 size-[32rem] -translate-x-1/2 rounded-full bg-blue-500/25 blur-3xl"
+      />
 
-          <div className="relative z-10 text-center space-y-8">
-            <div className="flex items-center justify-center gap-3">
-              <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center text-white shadow-glow">
-                <Box className="h-5 w-5" />
-              </div>
-              <h1 className="font-bold text-2xl tracking-tight text-slate-900">
-                Gestiabloc
-              </h1>
-            </div>
+      <div className="relative z-10 flex min-h-[100svh] w-full items-center justify-center px-4 py-5 sm:px-8 sm:py-10">
+        <section className="w-full max-w-[460px] py-6 text-center sm:py-10">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-3 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+            aria-label="Gestiabloc home"
+          >
+            <span className="flex size-10 items-center justify-center rounded-2xl border border-white/15 bg-white/10 text-white shadow-sm">
+              <Box className="size-5" aria-hidden="true" />
+            </span>
+            <span className="text-xl font-semibold tracking-tight text-white">
+              Gestiabloc
+            </span>
+          </Link>
 
-            <div className="flex justify-center">
-              <div className="w-20 h-20 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center">
-                <MailCheck className="h-10 w-10" />
-              </div>
-            </div>
+          <div role="status" className="mt-10 flex flex-col items-center">
+            <span className="flex size-12 items-center justify-center rounded-full border border-white/10 bg-white/10">
+              <MailCheck
+                className="size-6 text-emerald-300"
+                aria-hidden="true"
+              />
+            </span>
 
-            <div className="space-y-3">
-              <h2 className="text-3xl sm:text-4xl font-bold text-slate-900">
-                Check your email to verify
-              </h2>
-              <p className="text-base sm:text-lg text-slate-500 max-w-md mx-auto">
-                We sent a verification link to your admin email. Click it to
-                activate your workspace.
-              </p>
-            </div>
-
-            <div className="bg-gradient-to-br from-indigo-50 to-purple-50 border border-indigo-100 rounded-2xl p-6 text-left">
-              <div className="flex items-start gap-4">
-                <div className="w-12 h-12 bg-indigo-500 rounded-xl flex items-center justify-center text-white flex-shrink-0">
-                  <ShieldCheck className="h-6 w-6" />
-                </div>
-                <div className="flex-1">
-                  <h3 className="font-bold text-slate-900 mb-1">
-                    Once verified, you&apos;re ready
-                  </h3>
-                  <p className="text-sm text-slate-600">
-                    After verification you can sign in and start inviting your
-                    team right away.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-4 pt-2">
-              <Button
-                asChild
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl shadow-lg hover:shadow-indigo-500/30 transition-all duration-300 transform hover:-translate-y-0.5"
-              >
-                <Link href="/login">Go to sign in</Link>
-              </Button>
-            </div>
+            <h1 className="mt-5 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+              Check your email
+            </h1>
+            <p className="mt-2 max-w-sm text-sm leading-6 text-blue-100/75">
+              We sent a secure verification link to your admin email. Open it
+              to activate your workspace before signing in.
+            </p>
           </div>
 
-          <div className="mt-10 text-center text-xs text-slate-400 relative z-10">
-            © 2024 Gestiabloc Inc. All rights reserved.
-          </div>
-        </div>
+          <Button asChild className={`${AUTH_PRIMARY_BUTTON_CLASS} mt-8`}>
+            <Link href="/login">
+              Continue to sign in
+              <ArrowRight data-icon="inline-end" aria-hidden="true" />
+            </Link>
+          </Button>
+
+          <p className="mt-5 text-xs leading-5 text-blue-100/60">
+            The link may take a few minutes to arrive. Check your spam folder
+            if you don&apos;t see it.
+          </p>
+        </section>
       </div>
-    </div>
+    </main>
   )
 }
