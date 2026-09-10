@@ -46,11 +46,14 @@ import {
   syncContactServiceActiveStep,
 } from "../lib/service-followup-execution.js"
 import {
+  FOLLOW_UP_LIST_SERVICE_STATUSES,
   canCompleteFollowUpStepNow,
   resolveEffectiveNextFollowUp,
+  selectFollowUpListStep,
   serializeEffectiveNextFollowUp,
 } from "../lib/service-followup-next-follow-up.js"
 import { canChangeServiceFollowUpStepAssignee } from "../lib/service-followup-step-permissions.js"
+import { getFollowUpListDateRanges } from "../lib/service-followup-list-date-range.js"
 import {
   buildFollowUpStepResolutionUpdate,
   isServiceFollowUpWorkflowCompleted,
@@ -700,7 +703,7 @@ function getSafeTimezone(timezone?: string | null) {
   return timezone?.trim() || DEFAULT_TIMEZONE
 }
 
-function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
+function resolveVersionedFollowUpState(item: any) {
   const definition = item.followUpTemplateVersion?.definition
   const waitingAction = item.followUpRun?.waitingNodeId
     ? getWorkflowWaitByActionId(definition, item.followUpRun.waitingNodeId)
@@ -714,6 +717,22 @@ function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
     isUserScheduledWait: Boolean(userScheduledWaitingAction),
     isWorkflowWait: Boolean(waitingAction),
   })
+
+  return {
+    definition,
+    waitingAction,
+    userScheduledWaitingAction,
+    effectiveNextFollowUp,
+  }
+}
+
+function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
+  const {
+    definition,
+    waitingAction,
+    userScheduledWaitingAction,
+    effectiveNextFollowUp,
+  } = resolveVersionedFollowUpState(item)
   const nextFollowUp = serializeEffectiveNextFollowUp(effectiveNextFollowUp)
   const firstUnresolvedStep = (item.followUpSteps ?? []).find(
     (step: any) => !["COMPLETED", "SKIPPED"].includes(step.status),
@@ -788,19 +807,11 @@ function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
 }
 
 function serializeContactServiceListFollowUpMetadata(item: any) {
-  const definition = item.followUpTemplateVersion?.definition
-  const waitingAction = item.followUpRun?.waitingNodeId
-    ? getWorkflowWaitByActionId(definition, item.followUpRun.waitingNodeId)
-    : null
-  const userScheduledWaitingAction = item.followUpRun?.waitingNodeId
-    ? getUserScheduledWaitByActionId(definition, item.followUpRun.waitingNodeId)
-    : null
-  const effectiveNextFollowUp = resolveEffectiveNextFollowUp({
-    steps: item.followUpSteps ?? [],
-    run: item.followUpRun,
-    isUserScheduledWait: Boolean(userScheduledWaitingAction),
-    isWorkflowWait: Boolean(waitingAction),
-  })
+  const {
+    definition,
+    waitingAction,
+    effectiveNextFollowUp,
+  } = resolveVersionedFollowUpState(item)
   const nextFollowUp = serializeEffectiveNextFollowUp(effectiveNextFollowUp)
   const firstUnresolvedStep = (item.followUpSteps ?? []).find(
     (step: any) => !["COMPLETED", "SKIPPED"].includes(step.status),
@@ -2013,47 +2024,81 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
 
     const tenantTimezone = getSafeTimezone(tenant?.timezone)
     const now = new Date()
-    const todayRange = getTodayRange(tenantTimezone)
-    const nextSevenDaysEnd = new Date(todayRange.end.getTime() + 6 * 24 * 60 * 60 * 1000)
+    const { today: todayRange, nextSevenDaysEnd } = getFollowUpListDateRanges(
+      tenantTimezone,
+      now,
+    )
     const skip = (page - 1) * pageSize
 
-    const preferredCurrentStepStatuses = status
-      ? [status]
-      : ["ACTIVE", "POSTPONED", "PENDING", "COMPLETED", "SKIPPED"]
+    const listedStepStatuses = ["ACTIVE", "POSTPONED", "PENDING", "COMPLETED", "SKIPPED"] as const
+    const unresolvedStepStatuses = ["ACTIVE", "POSTPONED", "PENDING"] as const
     const searchableValue = search?.trim()
     const currentStepStatusClause = status
       ? { status }
-      : { status: { in: preferredCurrentStepStatuses } }
-
-    const currentStepWhere =
+      : { status: { in: listedStepStatuses } }
+    const assignedToClause = assignedToUserId ? { assignedToUserId } : {}
+    const baseStepWhere = {
+      ...currentStepStatusClause,
+      ...assignedToClause,
+    }
+    const dateRange =
       dueDatePreset === "OVERDUE"
-        ? {
-            ...currentStepStatusClause,
-            ...(assignedToUserId ? { assignedToUserId } : {}),
-            dueAt: { lt: now },
-          }
+        ? { lt: now }
         : dueDatePreset === "TODAY"
-          ? {
-              ...currentStepStatusClause,
-              ...(assignedToUserId ? { assignedToUserId } : {}),
-              dueAt: { gte: todayRange.start, lt: todayRange.end },
-            }
+          ? { gte: todayRange.start, lt: todayRange.end }
           : dueDatePreset === "NEXT_7_DAYS"
-            ? {
-                ...currentStepStatusClause,
-                ...(assignedToUserId ? { assignedToUserId } : {}),
-                dueAt: { gte: todayRange.start, lt: nextSevenDaysEnd },
-              }
-            : dueDatePreset === "NO_DUE_DATE"
-              ? {
-                  ...currentStepStatusClause,
-                  ...(assignedToUserId ? { assignedToUserId } : {}),
-                  dueAt: null,
-                }
-              : {
-                  ...currentStepStatusClause,
-                  ...(assignedToUserId ? { assignedToUserId } : {}),
-                }
+            ? { gte: todayRange.start, lt: nextSevenDaysEnd }
+            : null
+    const overdueStepStatusClause = status
+      ? unresolvedStepStatuses.includes(status as (typeof unresolvedStepStatuses)[number])
+        ? { status }
+        : { id: "__no_overdue_follow_up_step__" }
+      : { status: { in: unresolvedStepStatuses } }
+    const datedStepWhere = {
+      ...(dueDatePreset === "OVERDUE" ? overdueStepStatusClause : currentStepStatusClause),
+      ...assignedToClause,
+      ...(dateRange ? { dueAt: dateRange } : {}),
+    }
+    const canMatchWaitingProjection =
+      (!status || status === "PENDING") && dueDatePreset !== "NO_DUE_DATE"
+    const waitingProjectionWhere = canMatchWaitingProjection
+      ? {
+          followUpRun: {
+            is: {
+              status: "WAITING",
+              waitingNodeId: { not: null },
+              ...(dateRange ? { resumeAt: dateRange } : { resumeAt: { not: null } }),
+            },
+          },
+          followUpSteps: {
+            some: {
+              status: "PENDING",
+              ...assignedToClause,
+            },
+          },
+        }
+      : null
+    const followUpMatchWhere = dateRange
+      ? {
+          OR: [
+            { followUpSteps: { some: datedStepWhere } },
+            ...(waitingProjectionWhere ? [waitingProjectionWhere] : []),
+          ],
+        }
+      : dueDatePreset === "NO_DUE_DATE"
+        ? { followUpSteps: { some: { ...baseStepWhere, dueAt: null } } }
+        : { followUpSteps: { some: baseStepWhere } }
+    const matchesSelectedDatePreset = (value: Date | string | null | undefined) => {
+      if (!dateRange) return true
+      if (!value) return false
+      const timestamp = new Date(value).getTime()
+      if (Number.isNaN(timestamp)) return false
+      if (dueDatePreset === "OVERDUE") return timestamp < now.getTime()
+      if (dueDatePreset === "TODAY") {
+        return timestamp >= todayRange.start.getTime() && timestamp < todayRange.end.getTime()
+      }
+      return timestamp >= todayRange.start.getTime() && timestamp < nextSevenDaysEnd.getTime()
+    }
 
     const searchOrClauses = searchableValue
       ? [
@@ -2064,7 +2109,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
           {
             followUpSteps: {
               some: {
-                ...currentStepWhere,
+                ...baseStepWhere,
                 OR: [
                   { title: { contains: searchableValue, mode: "insensitive" as const } },
                   { note: { contains: searchableValue, mode: "insensitive" as const } },
@@ -2078,14 +2123,12 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
     const where = {
       tenantId,
       status: {
-        in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
+        in: FOLLOW_UP_LIST_SERVICE_STATUSES,
       },
-      followUpSteps: {
-        some: {
-          ...currentStepWhere,
-        },
-      },
-      ...(searchOrClauses ? { OR: searchOrClauses } : {}),
+      AND: [
+        followUpMatchWhere,
+        ...(searchOrClauses ? [{ OR: searchOrClauses }] : []),
+      ],
       ...(followUpTemplateId
         ? {
             followUpTemplateId,
@@ -2125,13 +2168,14 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
             },
           },
           followUpTemplateVersion: {
-            select: { id: true, versionNumber: true },
+            select: { id: true, versionNumber: true, definition: true },
           },
           followUpRun: {
             select: {
               id: true,
               status: true,
               resumeAt: true,
+              waitingNodeId: true,
               failureNodeId: true,
               failureCode: true,
               failureMessage: true,
@@ -2173,17 +2217,28 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
         },
         followUpSteps: {
           some: {
-            status: "ACTIVE",
+            status: { in: unresolvedStepStatuses },
           },
         },
       },
       select: {
         id: true,
+        followUpTemplateVersion: {
+          select: { definition: true },
+        },
+        followUpRun: {
+          select: {
+            status: true,
+            resumeAt: true,
+            waitingNodeId: true,
+          },
+        },
         followUpSteps: {
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
             id: true,
             status: true,
+            availableAt: true,
             dueAt: true,
             completedAt: true,
           },
@@ -2191,50 +2246,21 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
       },
     })
 
-    const [servicesInProgress, overdueEnrollments, dueToday] = await Promise.all([
-      prismaWithServices.contactService.findMany({
-        where: {
-          tenantId,
-          status: {
-            in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
-          },
-          followUpSteps: {
-            some: {
-              status: "ACTIVE",
-            },
-          },
-        },
-        select: {
-          id: true,
-        },
-      }),
-      prismaWithServices.contactServiceFollowUpStep.count({
-        where: {
-          tenantId,
-          dueAt: { lt: now },
-          status: "ACTIVE",
-          contactService: {
-            tenantId,
-            status: {
-              in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
-            },
-          },
-        },
-      }),
-      prismaWithServices.contactServiceFollowUpStep.count({
-        where: {
-          tenantId,
-          dueAt: { gte: todayRange.start, lt: todayRange.end },
-          status: "ACTIVE",
-          contactService: {
-            tenantId,
-            status: {
-              in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
-            },
-          },
-        },
-      }),
-    ])
+    const summaryEntries = summaryServices.map((service: any) => ({
+      service,
+      effectiveNextFollowUp: resolveVersionedFollowUpState(service).effectiveNextFollowUp,
+    }))
+    const servicesInProgress = summaryServices.length
+    const overdueEnrollments = summaryEntries.filter(
+      ({ effectiveNextFollowUp }: any) =>
+        effectiveNextFollowUp && effectiveNextFollowUp.at.getTime() < now.getTime(),
+    ).length
+    const dueToday = summaryEntries.filter(
+      ({ effectiveNextFollowUp }: any) =>
+        effectiveNextFollowUp &&
+        effectiveNextFollowUp.at.getTime() >= todayRange.start.getTime() &&
+        effectiveNextFollowUp.at.getTime() < todayRange.end.getTime(),
+    ).length
 
     const totalPages = Math.max(1, Math.ceil(total / pageSize))
     const averageProgress = summaryServices.length
@@ -2255,16 +2281,51 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
     return res.json({
       ok: true,
       items: services.map((service: any) => {
-        const currentStep =
-          preferredCurrentStepStatuses
-            .map(
-              (currentStatus) =>
-                service.followUpSteps.find((step: any) => step.status === currentStatus) ?? null,
+        const { effectiveNextFollowUp } = resolveVersionedFollowUpState(service)
+        const selectableSteps = assignedToUserId
+          ? service.followUpSteps.filter(
+              (step: any) => step.assignedToUserId === assignedToUserId,
             )
-            .find(Boolean) ?? null
+          : service.followUpSteps
+        const dateFilteredSteps = selectableSteps.filter((step: any) => {
+          const effectiveForStep =
+            effectiveNextFollowUp?.stepId === step.id ? effectiveNextFollowUp : null
+
+          if (dueDatePreset === "NO_DUE_DATE") {
+            return !step.dueAt && !effectiveForStep
+          }
+          if (!dateRange) return true
+          if (
+            dueDatePreset === "OVERDUE" &&
+            !unresolvedStepStatuses.includes(step.status)
+          ) {
+            return false
+          }
+          return matchesSelectedDatePreset(effectiveForStep?.at ?? step.dueAt)
+        })
+        const currentStep = selectFollowUpListStep({
+          steps: dateFilteredSteps,
+          effectiveNextFollowUp,
+          status,
+        }) as any
         const currentStepIndex = currentStep
           ? service.followUpSteps.findIndex((step: any) => step.id === currentStep.id)
           : -1
+        const effectiveForCurrentStep =
+          currentStep && effectiveNextFollowUp?.stepId === currentStep.id
+            ? effectiveNextFollowUp
+            : null
+        const effectiveDueAt = currentStep
+          ? effectiveForCurrentStep?.at ?? currentStep.dueAt ?? currentStep.availableAt ?? null
+          : null
+        const effectiveDueSource = currentStep
+          ? effectiveForCurrentStep?.source ??
+            (currentStep.dueAt
+              ? "STEP_DUE"
+              : currentStep.availableAt
+                ? "STEP_AVAILABLE"
+                : null)
+          : null
         const totalSteps = service.followUpSteps.length
         const completedSteps = service.followUpSteps.filter(
           (step: any) => step.status === "COMPLETED" || step.status === "SKIPPED",
@@ -2283,7 +2344,12 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
           serviceName: service.service.name,
           followUpTemplateId: service.followUpTemplate?.id ?? null,
           followUpTemplateName: service.followUpTemplate?.name ?? null,
-          followUpTemplateVersion: service.followUpTemplateVersion ?? null,
+          followUpTemplateVersion: service.followUpTemplateVersion
+            ? {
+                id: service.followUpTemplateVersion.id,
+                versionNumber: service.followUpTemplateVersion.versionNumber,
+              }
+            : null,
           followUpRun: service.followUpRun ?? null,
           currentStep: currentStep
             ? {
@@ -2292,6 +2358,9 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
                 status: currentStep.status,
                 availableAt: currentStep.availableAt,
                 dueAt: currentStep.dueAt,
+                effectiveDueAt,
+                effectiveDueSource,
+                effectiveDueProjected: Boolean(effectiveForCurrentStep?.projected),
                 completedAt: currentStep.completedAt,
                 resolutionSource: currentStep.resolutionSource ?? null,
                 resolutionReason: currentStep.resolutionReason ?? null,
@@ -2312,9 +2381,9 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
               : 0,
           },
           overdue:
-            Boolean(currentStep?.dueAt) &&
-            currentStep.status === "ACTIVE" &&
-            new Date(currentStep.dueAt).getTime() < now.getTime(),
+            Boolean(effectiveDueAt) &&
+            unresolvedStepStatuses.includes(currentStep?.status) &&
+            new Date(effectiveDueAt).getTime() < now.getTime(),
         }
       }),
       pagination: {
@@ -2324,7 +2393,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
         totalPages,
       },
       summary: {
-        servicesInProgress: servicesInProgress.length,
+        servicesInProgress,
         overdueEnrollments,
         dueToday,
         averageProgress,

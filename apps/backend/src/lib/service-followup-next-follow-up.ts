@@ -10,11 +10,58 @@ export type EffectiveNextFollowUp = {
   projected: boolean
 }
 
+export const FOLLOW_UP_LIST_SERVICE_STATUSES = [
+  "IN_PROGRESS",
+  "PENDING_PAYMENT",
+  "COMPLETED",
+] as const
+
+export function isFollowUpListServiceStatus(status: string) {
+  return (FOLLOW_UP_LIST_SERVICE_STATUSES as readonly string[]).includes(status)
+}
+
 type FollowUpStepLike = {
   id: string
   status?: string | null
   dueAt?: Date | string | null
   availableAt?: Date | string | null
+}
+
+const TERMINAL_FOLLOW_UP_STEP_STATUSES = new Set(["COMPLETED", "SKIPPED"])
+
+export function selectFollowUpListStep(params: {
+  steps: FollowUpStepLike[]
+  effectiveNextFollowUp?: EffectiveNextFollowUp | null
+  status?: string | null
+}) {
+  const { steps, effectiveNextFollowUp, status } = params
+  const effectiveStep = effectiveNextFollowUp?.stepId
+    ? steps.find((step) => step.id === effectiveNextFollowUp.stepId) ?? null
+    : null
+
+  if (status) {
+    if (effectiveStep?.status === status) return effectiveStep
+    const matchingSteps = steps.filter((step) => step.status === status)
+    return TERMINAL_FOLLOW_UP_STEP_STATUSES.has(status)
+      ? matchingSteps[matchingSteps.length - 1] ?? null
+      : matchingSteps[0] ?? null
+  }
+
+  const activeStep = firstStepWithStatus(steps, "ACTIVE")
+  if (activeStep) return activeStep
+
+  const postponedStep = firstStepWithStatus(steps, "POSTPONED")
+  if (postponedStep) return postponedStep
+
+  if (effectiveStep?.status === "PENDING") return effectiveStep
+
+  const pendingStep = firstStepWithStatus(steps, "PENDING")
+  if (pendingStep) return pendingStep
+
+  const terminalSteps = steps.filter((step) =>
+    TERMINAL_FOLLOW_UP_STEP_STATUSES.has(step.status ?? ""),
+  )
+  return terminalSteps[terminalSteps.length - 1] ?? null
 }
 
 type FollowUpRunLike = {

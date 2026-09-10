@@ -96,6 +96,9 @@ type EnrollmentRow = {
     status: CurrentStepStatus
     availableAt: string | null
     dueAt: string | null
+    effectiveDueAt: string | null
+    effectiveDueSource: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE" | null
+    effectiveDueProjected: boolean
     completedAt: string | null
     assignedToUserId: string | null
     assignedToName: string | null
@@ -144,8 +147,8 @@ type AssigneeOption = {
 }
 
 const PAGE_SIZE_OPTIONS = [10, 25] as const
-const DEFAULT_STATUS = "ACTIVE"
 const ALL_STATUS = "ALL"
+const DEFAULT_STATUS = ALL_STATUS
 const ALL_DUE_DATE_PRESETS = "ALL"
 const ALL_TEMPLATE_FILTER = "ALL"
 const ALL_ASSIGNEE_FILTER = "ALL"
@@ -640,7 +643,7 @@ export function FollowUpsTable({
   )
 
   const summaryLabel = useMemo(() => {
-    if (!total) return "No active service paths found"
+    if (!total) return "No service follow-ups found"
     const start = startIndex + 1
     const end = start + enrollments.length - 1
     return `Showing ${start}-${end} of ${total} service paths`
@@ -1108,7 +1111,7 @@ export function FollowUpsTable({
                       </TableCell>
                       <TableCell className="px-4 py-0">
                         <DueDateCell
-                          dueAt={item.currentStep?.dueAt ?? null}
+                          dueAt={item.currentStep?.effectiveDueAt ?? item.currentStep?.dueAt ?? null}
                           isOverdue={item.overdue}
                           tenantTimezone={tenantTimezone}
                         />
@@ -1125,7 +1128,7 @@ export function FollowUpsTable({
                     colSpan={9}
                     className="px-4 py-0 text-center text-sm text-slate-500"
                   >
-                    No active service paths match these filters.
+                    No service follow-ups match these filters.
                   </TableCell>
                 </TableRow>
               )}
