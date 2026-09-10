@@ -259,11 +259,15 @@ export function TenantShell({
   const router = useRouter()
   const selectedSegments = useSelectedLayoutSegments()
   const tenantShellHeaderRef = useRef<HTMLElement>(null)
+  const compactSearchInputRef = useRef<HTMLInputElement>(null)
+  const compactSearchTriggerRef = useRef<HTMLButtonElement>(null)
   const socketRef = useRef<SocketClient | null>(null)
   const isLoadingNotificationsRef = useRef(false)
   const isLoadingMoreNotificationsRef = useRef(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [isCompactSearchOpen, setIsCompactSearchOpen] = useState(false)
+  const [headerSearchQuery, setHeaderSearchQuery] = useState("")
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [currentUser, setCurrentUser] = useState(user)
   const [contactCrumbLabel, setContactCrumbLabel] = useState<string | null>(null)
@@ -310,6 +314,7 @@ export function TenantShell({
       segments[3] === "follow-up-templates",
     [segments],
   )
+  const isCompactSearchActive = !isFlowBuilderRoute && isCompactSearchOpen
 
   const crumbs = useMemo(() => {
     const items = [
@@ -390,6 +395,23 @@ export function TenantShell({
       observer.disconnect()
       shell.style.removeProperty("--tenant-shell-header-height")
     }
+  }, [])
+
+  useEffect(() => {
+    if (!isCompactSearchActive) return
+
+    const frameId = window.requestAnimationFrame(() => {
+      compactSearchInputRef.current?.focus()
+    })
+
+    return () => window.cancelAnimationFrame(frameId)
+  }, [isCompactSearchActive])
+
+  const closeCompactSearch = useCallback(() => {
+    setIsCompactSearchOpen(false)
+    window.requestAnimationFrame(() => {
+      compactSearchTriggerRef.current?.focus()
+    })
   }, [])
 
   useEffect(() => {
@@ -871,54 +893,112 @@ export function TenantShell({
         </>
       ) : null}
 
-      <SidebarInset className="min-w-0 bg-slate-50 flex min-h-screen flex-col [--tenant-shell-header-height:113px] md:[--tenant-shell-header-height:65px]">
+      <SidebarInset className="min-w-0 bg-slate-50 flex min-h-screen flex-col [--tenant-shell-header-height:65px]">
         <header
           ref={tenantShellHeaderRef}
           className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md supports-backdrop-filter:bg-white/70"
         >
           <div
-            className={`flex flex-col px-4 ${
-              isFlowBuilderRoute
-                ? "gap-2 py-2 md:flex-row md:items-center md:justify-between"
-                : "gap-3 py-3 md:flex-row md:items-center md:justify-between"
+            className={`flex items-center gap-2 px-3 sm:px-4 ${
+              isFlowBuilderRoute ? "py-2" : "py-3"
             }`}
           >
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              {!isFlowBuilderRoute ? (
-                <SidebarTrigger className="size-9 cursor-pointer md:hidden" />
-              ) : null}
-              <Breadcrumb>
-                <BreadcrumbList>
+            {!isFlowBuilderRoute ? (
+              <SidebarTrigger className="size-10 shrink-0 cursor-pointer rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700 lg:hidden" />
+            ) : null}
+
+            <div className="hidden min-w-0 flex-1 overflow-hidden lg:block">
+              <Breadcrumb className="min-w-0 overflow-hidden">
+                <BreadcrumbList className="flex-nowrap overflow-hidden whitespace-nowrap">
                   {crumbs.map((crumb, index) => {
                     const isLast = index === crumbs.length - 1
                     return (
                       <div key={crumb.href} className="contents">
-                        <BreadcrumbItem>
+                        <BreadcrumbItem className="min-w-0">
                           {isLast ? (
-                            <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
+                            <BreadcrumbPage className="block max-w-[min(24rem,32vw)] truncate">
+                              {crumb.label}
+                            </BreadcrumbPage>
                           ) : (
-                            <BreadcrumbLink asChild>
+                            <BreadcrumbLink
+                              asChild
+                              className="block max-w-36 truncate xl:max-w-56"
+                            >
                               <Link href={crumb.href}>{crumb.label}</Link>
                             </BreadcrumbLink>
                           )}
                         </BreadcrumbItem>
-                        {!isLast && <BreadcrumbSeparator />}
+                        {!isLast && <BreadcrumbSeparator className="shrink-0" />}
                       </div>
                     )
                   })}
                 </BreadcrumbList>
               </Breadcrumb>
             </div>
-            <div className="flex items-center gap-3">
-              {!isFlowBuilderRoute ? (
-              <div className="relative flex-1 max-w-md min-w-sm">
+
+            {isCompactSearchActive ? (
+              <div className="relative flex min-w-0 flex-1 items-center lg:hidden">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <Input
+                  ref={compactSearchInputRef}
+                  id="tenant-header-search-compact"
                   placeholder="Search..."
-                  className="pl-9"
+                  value={headerSearchQuery}
+                  onChange={(event) => setHeaderSearchQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Escape") return
+                    event.preventDefault()
+                    closeCompactSearch()
+                  }}
+                  className="h-10 min-w-0 rounded-xl border-slate-200 bg-white pl-9 pr-10 shadow-sm"
                   aria-label="Search"
                 />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  type="button"
+                  className="absolute right-1 size-8 cursor-pointer rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                  aria-label="Close search"
+                  onClick={closeCompactSearch}
+                >
+                  <X className="size-4" />
+                </Button>
               </div>
+            ) : null}
+
+            <div
+              className={`ml-auto flex min-w-0 items-center gap-2 sm:gap-3 ${
+                isCompactSearchActive ? "hidden lg:flex" : "flex"
+              }`}
+            >
+              {!isFlowBuilderRoute ? (
+                <>
+                  <Button
+                    ref={compactSearchTriggerRef}
+                    variant="ghost"
+                    size="icon"
+                    type="button"
+                    className="size-10 shrink-0 cursor-pointer rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700 lg:hidden"
+                    aria-label="Open search"
+                    aria-expanded={isCompactSearchActive}
+                    aria-controls="tenant-header-search-compact"
+                    onClick={() => setIsCompactSearchOpen(true)}
+                  >
+                    <Search className="size-5" />
+                  </Button>
+
+                  <div className="relative hidden w-[clamp(12rem,24vw,28rem)] min-w-0 lg:block">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      id="tenant-header-search-desktop"
+                      placeholder="Search..."
+                      value={headerSearchQuery}
+                      onChange={(event) => setHeaderSearchQuery(event.target.value)}
+                      className="pl-9"
+                      aria-label="Search"
+                    />
+                  </div>
+                </>
               ) : null}
 
               <Button
@@ -942,7 +1022,7 @@ export function TenantShell({
               <button
                 type="button"
                 onClick={() => setProfileOpen(true)}
-                className="rounded-full cursor-pointer transition focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-slate-100"
+                className="shrink-0 rounded-full cursor-pointer transition focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-slate-100"
                 aria-label="Open profile"
               >
                 <Avatar
