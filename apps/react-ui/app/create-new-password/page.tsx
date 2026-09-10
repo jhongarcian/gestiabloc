@@ -2,63 +2,53 @@
 
 import { Suspense, useMemo, useState } from "react"
 import Link from "next/link"
-import { useSearchParams, useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { isAxiosError } from "axios"
-
-import { resetPassword } from "@/lib/api"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Skeleton } from "@/components/ui/skeleton"
 import {
   ArrowLeft,
+  ArrowRight,
   Box,
+  Check,
   CheckCircle2,
   Circle,
   Eye,
   EyeOff,
-  KeyRound,
+  Loader2,
   Lock,
+  TriangleAlert,
 } from "lucide-react"
 
-export default function CreateNewPassword() {
+import { Button } from "@/components/ui/button"
+import {
+  Field,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
+import { resetPassword } from "@/lib/api"
+import { cn } from "@/lib/utils"
+
+const AUTH_INPUT_CLASS =
+  "h-11 rounded-full border-white bg-white px-4 text-sm text-slate-950 shadow-sm focus-visible:border-blue-300 focus-visible:ring-blue-300/40 aria-invalid:border-rose-300 aria-invalid:ring-rose-200/30 disabled:bg-blue-50 disabled:opacity-80"
+
+const AUTH_PRIMARY_BUTTON_CLASS =
+  "h-11 w-full cursor-pointer rounded-full bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm ring-1 ring-white/15 transition hover:bg-blue-500 hover:text-white disabled:cursor-not-allowed disabled:bg-blue-900 disabled:text-blue-300"
+
+const AUTH_SECONDARY_BUTTON_CLASS =
+  "h-11 w-full cursor-pointer rounded-full border-white/25 bg-white/10 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-white/15 hover:text-white"
+
+export default function CreateNewPasswordPage() {
   return (
-    <Suspense fallback={<CreateNewPasswordSkeleton />}>
+    <Suspense
+      fallback={
+        <div className="flex min-h-[100svh] items-center justify-center bg-blue-950 text-sm text-blue-100/70">
+          Loading password reset…
+        </div>
+      }
+    >
       <CreateNewPasswordContent />
     </Suspense>
-  )
-}
-
-function CreateNewPasswordSkeleton() {
-  return (
-    <div className="min-h-screen bg-slate-100 flex items-center justify-center px-4 py-6 sm:px-6 sm:py-8">
-      <div className="w-full max-w-xl rounded-3xl shadow-2xl p-6 sm:p-8 bg-white">
-        <div className="w-full max-w-lg mx-auto space-y-6">
-          <div className="space-y-4">
-            <div className="flex items-center justify-center gap-3">
-              <Skeleton className="h-12 w-12 rounded-2xl" />
-              <Skeleton className="h-8 w-36" />
-            </div>
-            <div className="flex justify-center">
-              <Skeleton className="h-16 w-16 rounded-2xl" />
-            </div>
-            <div className="space-y-2 text-center">
-              <Skeleton className="mx-auto h-8 w-64" />
-              <Skeleton className="mx-auto h-4 w-72" />
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <Skeleton className="h-4 w-32" />
-            <Skeleton className="h-12 w-full rounded-2xl" />
-            <Skeleton className="h-4 w-36" />
-            <Skeleton className="h-12 w-full rounded-2xl" />
-            <Skeleton className="h-24 w-full rounded-xl" />
-            <Skeleton className="h-12 w-full rounded-2xl" />
-          </div>
-        </div>
-      </div>
-    </div>
   )
 }
 
@@ -73,24 +63,29 @@ function CreateNewPasswordContent() {
   const [status, setStatus] = useState<"idle" | "loading" | "success">("idle")
   const [error, setError] = useState<string | null>(null)
 
-  const checks = useMemo(() => {
-    return {
+  const checks = useMemo(
+    () => ({
       length: newPassword.length >= 8,
       letter: /[A-Za-z]/.test(newPassword),
       number: /[0-9]/.test(newPassword),
       symbol: /[^A-Za-z0-9]/.test(newPassword),
       match: newPassword.length > 0 && newPassword === confirmPassword,
-    }
-  }, [newPassword, confirmPassword])
+    }),
+    [newPassword, confirmPassword],
+  )
 
+  const passwordRequirements = [
+    { label: "8 or more characters", met: checks.length },
+    { label: "At least one letter", met: checks.letter },
+    { label: "At least one number", met: checks.number },
+    { label: "At least one symbol", met: checks.symbol },
+    { label: "Passwords match", met: checks.match },
+  ]
+  const passwordIsStrong =
+    checks.length && checks.letter && checks.number && checks.symbol
+  const confirmIsInvalid = confirmPassword.length > 0 && !checks.match
   const isLoading = status === "loading"
-  const canSubmit =
-    token &&
-    checks.length &&
-    checks.letter &&
-    checks.number &&
-    checks.symbol &&
-    checks.match
+  const canSubmit = Boolean(token && passwordIsStrong && checks.match)
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -135,225 +130,284 @@ function CreateNewPasswordContent() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 flex items-center justify-center px-4 py-6 sm:px-6 sm:py-8">
-      <div className="w-full max-w-xl gradient-border rounded-3xl shadow-2xl p-6 sm:p-8 flex flex-col justify-center bg-white">
-        <div className="w-full max-w-lg mx-auto space-y-6 animate-slide-up">
-          <div className="text-center">
-            <div className="flex items-center justify-center gap-3 mb-4">
-              <div className="w-12 h-12 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-2xl flex items-center justify-center text-white shadow-lg">
-                <Box className="h-5 w-5" />
-              </div>
-              <h1 className="font-bold text-2xl tracking-tight text-slate-900">
-                Gestiabloc
-              </h1>
-            </div>
+    <main className="relative min-h-[100svh] overflow-x-hidden bg-blue-950 text-white">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,.12)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.12)_1px,transparent_1px)] [background-size:44px_44px]"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -bottom-40 left-1/2 size-[32rem] -translate-x-1/2 rounded-full bg-blue-500/25 blur-3xl"
+      />
 
-            <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl mb-4 shadow-glow">
-              <KeyRound className="h-7 w-7 text-white" />
-            </div>
-
-            <h2 className="text-3xl font-bold text-slate-900 mb-2">
-              Create New Password
-            </h2>
-            <p className="text-slate-500 text-sm sm:text-base">
-              Set a strong password to secure your account
-            </p>
-          </div>
-
-          <form id="resetPasswordForm" className="space-y-4" onSubmit={onSubmit}>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label
-                  htmlFor="new-password"
-                  className="text-sm font-semibold text-slate-700 flex items-center gap-2"
-                >
-                  <Lock className="h-4 w-4 text-indigo-600" />
-                  New Password
-                </Label>
-
-                <div className="relative group">
-                  <Input
-                    type={showNewPassword ? "text" : "password"}
-                    id="new-password"
-                    className="block w-full px-4 py-3 bg-slate-50 border-2 border-slate-200 rounded-2xl text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-4 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm sm:text-base group-hover:border-slate-300"
-                    placeholder="Enter new password"
-                    required
-                    value={newPassword}
-                    onChange={(event) => setNewPassword(event.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
-                    onClick={() => setShowNewPassword((prev) => !prev)}
-                    aria-label={
-                      showNewPassword ? "Hide password" : "Show password"
-                    }
-                  >
-                    {showNewPassword ? (
-                      <EyeOff className="h-4 w-4" />
-                    ) : (
-                      <Eye className="h-4 w-4" />
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label
-                  htmlFor="confirm-password"
-                  className="text-sm font-semibold text-slate-700 flex items-center gap-2"
-                >
-                  <Lock className="h-4 w-4 text-indigo-600" />
-                  Confirm Password
-                </Label>
-
-                <div className="relative group">
-                  <Input
-                    type={showConfirmPassword ? "text" : "password"}
-                    id="confirm-password"
-                    className="block w-full px-4 py-3 bg-slate-50 border-2 border-slate-200 rounded-2xl text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-4 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm sm:text-base group-hover:border-slate-300"
-                    placeholder="Re-enter password"
-                    required
-                    value={confirmPassword}
-                    onChange={(event) => setConfirmPassword(event.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
-                    onClick={() => setShowConfirmPassword((prev) => !prev)}
-                    aria-label={
-                      showConfirmPassword
-                        ? "Hide password"
-                        : "Show password"
-                    }
-                  >
-                    {showConfirmPassword ? (
-                      <EyeOff className="h-4 w-4" />
-                    ) : (
-                      <Eye className="h-4 w-4" />
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div id="password-strength" className="space-y-2">
-              <div className="flex justify-between items-center">
-                <span className="text-xs font-semibold text-slate-600">
-                  Password Strength:
-                </span>
-                <span className="text-xs font-bold text-slate-400">
-                  {checks.length && checks.letter && checks.number && checks.symbol
-                    ? "Strong"
-                    : checks.length
-                      ? "Medium"
-                      : "Not Set"}
-                </span>
-              </div>
-              <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
-                <div
-                  className="h-full bg-slate-300 rounded-full transition-all duration-300"
-                  style={{
-                    width: `${
-                      (Number(checks.length) +
-                        Number(checks.letter) +
-                        Number(checks.number) +
-                        Number(checks.symbol)) *
-                      25
-                    }%`,
-                  }}
-                />
-              </div>
-            </div>
-
-            <div className="bg-indigo-50/70 rounded-xl p-4 border border-indigo-100">
-              <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">
-                Password Requirements
-              </h4>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-600">
-                <div
-                  className={`validation-item flex items-center gap-2 ${
-                    checks.length ? "text-emerald-600" : ""
-                  }`}
-                >
-                  <Circle className="h-2.5 w-2.5" />
-                  <span>At least 8 characters</span>
-                </div>
-
-                <div
-                  className={`validation-item flex items-center gap-2 ${
-                    checks.letter ? "text-emerald-600" : ""
-                  }`}
-                >
-                  <Circle className="h-2.5 w-2.5" />
-                  <span>At least 1 letter</span>
-                </div>
-
-                <div
-                  className={`validation-item flex items-center gap-2 ${
-                    checks.number ? "text-emerald-600" : ""
-                  }`}
-                >
-                  <Circle className="h-2.5 w-2.5" />
-                  <span>At least 1 number</span>
-                </div>
-
-                <div
-                  className={`validation-item flex items-center gap-2 ${
-                    checks.symbol ? "text-emerald-600" : ""
-                  }`}
-                >
-                  <Circle className="h-2.5 w-2.5" />
-                  <span>At least 1 symbol</span>
-                </div>
-
-                <div
-                  className={`validation-item flex items-center gap-2 col-span-1 sm:col-span-2 ${
-                    checks.match ? "text-emerald-600" : ""
-                  }`}
-                >
-                  <Circle className="h-2.5 w-2.5" />
-                  <span>Passwords match</span>
-                </div>
-              </div>
-            </div>
-
-            <Button
-              type="submit"
-              disabled={!canSubmit || isLoading}
-              className={`w-full flex justify-center items-center gap-2 py-3.5 px-5 border-2 border-transparent rounded-2xl text-sm sm:text-base font-bold text-white bg-slate-900 transition-all duration-300 shadow-lg disabled:bg-slate-300 disabled:cursor-not-allowed ${
-                isLoading ? "opacity-70" : ""
-              }`}
-            >
-              <CheckCircle2 className="h-4 w-4" />
-              {isLoading ? "Resetting..." : "Reset Password"}
-            </Button>
-
-            {error ? (
-              <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {error}
-              </p>
-            ) : null}
-
-            <div className="relative flex items-center justify-center gap-3">
-              <div className="h-px bg-slate-200 flex-1" />
-              <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                Or
-              </span>
-              <div className="h-px bg-slate-200 flex-1" />
-            </div>
-
+      <div className="relative z-10 flex min-h-[100svh] w-full items-start justify-center px-4 py-5 sm:items-center sm:px-8 sm:py-10">
+        <section className="w-full max-w-[460px] py-6 sm:py-10">
+          <header className="mb-8 text-center">
             <Link
-              href="/login"
-              className="flex items-center justify-center gap-2 py-3.5 text-sm font-semibold text-slate-700 hover:text-indigo-600 transition-colors group"
+              href="/"
+              className="inline-flex items-center gap-3 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+              aria-label="Gestiabloc home"
             >
-              <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" />
-              Return to Sign In
+              <span className="flex size-10 items-center justify-center rounded-2xl border border-white/15 bg-white/10 text-white shadow-sm">
+                <Box className="size-5" aria-hidden="true" />
+              </span>
+              <span className="text-xl font-semibold tracking-tight text-white">
+                Gestiabloc
+              </span>
             </Link>
-          </form>
-        </div>
+
+            <h1 className="mt-8 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+              Create a new password
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-blue-100/75">
+              Choose a strong password to protect your account.
+            </p>
+          </header>
+
+          {!token ? (
+            <div className="flex flex-col gap-5">
+              <div
+                role="alert"
+                className="flex w-full flex-col items-center rounded-2xl border border-white/15 bg-white/[0.06] px-5 py-4 text-center shadow-sm backdrop-blur-sm"
+              >
+                <span className="flex size-9 items-center justify-center rounded-full border border-white/10 bg-white/10">
+                  <TriangleAlert
+                    className="size-4 text-amber-300"
+                    aria-hidden="true"
+                  />
+                </span>
+                <p className="mt-3 text-sm font-semibold text-white">
+                  This reset link is invalid
+                </p>
+                <p className="mt-1 text-xs leading-5 text-blue-100/70">
+                  Request a new link to continue resetting your password.
+                </p>
+              </div>
+
+              <Button asChild className={AUTH_PRIMARY_BUTTON_CLASS}>
+                <Link href="/reset-password">
+                  Request a new link
+                  <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                </Link>
+              </Button>
+              <Button
+                asChild
+                variant="outline"
+                className={AUTH_SECONDARY_BUTTON_CLASS}
+              >
+                <Link href="/login">
+                  <ArrowLeft data-icon="inline-start" aria-hidden="true" />
+                  Back to sign in
+                </Link>
+              </Button>
+            </div>
+          ) : (
+            <form
+              id="reset-password-form"
+              className="flex flex-col gap-5"
+              onSubmit={onSubmit}
+            >
+              <FieldGroup className="gap-5">
+                <Field data-disabled={isLoading} className="gap-2">
+                  <FieldLabel
+                    htmlFor="new-password"
+                    className="text-sm font-medium text-blue-50"
+                  >
+                    New password
+                  </FieldLabel>
+                  <div className="relative">
+                    <Lock
+                      className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <Input
+                      type={showNewPassword ? "text" : "password"}
+                      id="new-password"
+                      name="newPassword"
+                      autoComplete="new-password"
+                      className={cn(AUTH_INPUT_CLASS, "pl-11 pr-11")}
+                      placeholder="Create a new password"
+                      required
+                      disabled={isLoading}
+                      aria-describedby="password-requirements"
+                      value={newPassword}
+                      onChange={(event) => setNewPassword(event.target.value)}
+                    />
+                    <button
+                      type="button"
+                      disabled={isLoading}
+                      className="absolute right-2 top-1/2 flex size-9 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-slate-400 transition hover:bg-blue-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => setShowNewPassword((prev) => !prev)}
+                      aria-label={
+                        showNewPassword ? "Hide password" : "Show password"
+                      }
+                    >
+                      {showNewPassword ? (
+                        <EyeOff className="size-4" aria-hidden="true" />
+                      ) : (
+                        <Eye className="size-4" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+                </Field>
+
+                <Field
+                  data-invalid={confirmIsInvalid}
+                  data-disabled={isLoading}
+                  className="gap-2"
+                >
+                  <FieldLabel
+                    htmlFor="confirm-password"
+                    className="text-sm font-medium text-blue-50"
+                  >
+                    Confirm password
+                  </FieldLabel>
+                  <div className="relative">
+                    <Lock
+                      className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <Input
+                      type={showConfirmPassword ? "text" : "password"}
+                      id="confirm-password"
+                      name="confirmPassword"
+                      autoComplete="new-password"
+                      className={cn(AUTH_INPUT_CLASS, "pl-11 pr-11")}
+                      placeholder="Repeat your new password"
+                      required
+                      disabled={isLoading}
+                      aria-invalid={confirmIsInvalid}
+                      aria-describedby={
+                        confirmIsInvalid
+                          ? "confirm-password-error password-requirements"
+                          : "password-requirements"
+                      }
+                      value={confirmPassword}
+                      onChange={(event) =>
+                        setConfirmPassword(event.target.value)
+                      }
+                    />
+                    <button
+                      type="button"
+                      disabled={isLoading}
+                      className="absolute right-2 top-1/2 flex size-9 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-slate-400 transition hover:bg-blue-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => setShowConfirmPassword((prev) => !prev)}
+                      aria-label={
+                        showConfirmPassword
+                          ? "Hide confirm password"
+                          : "Show confirm password"
+                      }
+                    >
+                      {showConfirmPassword ? (
+                        <EyeOff className="size-4" aria-hidden="true" />
+                      ) : (
+                        <Eye className="size-4" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+                  <FieldError
+                    id="confirm-password-error"
+                    className="text-xs text-rose-200"
+                  >
+                    {confirmIsInvalid ? "Passwords do not match." : null}
+                  </FieldError>
+                </Field>
+              </FieldGroup>
+
+              <div
+                id="password-requirements"
+                className="grid grid-cols-1 gap-x-5 gap-y-2 rounded-2xl border border-white/15 bg-white/[0.06] px-4 py-4 text-xs text-blue-100/75 sm:grid-cols-2"
+              >
+                {passwordRequirements.map((requirement) => (
+                  <div
+                    key={requirement.label}
+                    className="flex items-center gap-2"
+                  >
+                    {requirement.met ? (
+                      <Check
+                        className="size-3.5 text-emerald-300"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Circle
+                        className="size-3.5 text-blue-200/50"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span
+                      className={requirement.met ? "text-blue-50" : undefined}
+                    >
+                      {requirement.label}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {status === "success" ? (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="flex w-full flex-col items-center rounded-2xl border border-white/15 bg-white/[0.06] px-5 py-4 text-center shadow-sm backdrop-blur-sm"
+                >
+                  <span className="flex size-9 items-center justify-center rounded-full border border-white/10 bg-white/10">
+                    <CheckCircle2
+                      className="size-4 text-emerald-300"
+                      aria-hidden="true"
+                    />
+                  </span>
+                  <p className="mt-3 text-sm text-blue-50">
+                    Password updated. Taking you to sign in…
+                  </p>
+                </div>
+              ) : null}
+
+              {error ? (
+                <div
+                  role="alert"
+                  className="flex w-full flex-col items-center rounded-2xl border border-white/15 bg-white/[0.06] px-5 py-4 text-center shadow-sm backdrop-blur-sm"
+                >
+                  <span className="flex size-9 items-center justify-center rounded-full border border-white/10 bg-white/10">
+                    <TriangleAlert
+                      className="size-4 text-rose-300"
+                      aria-hidden="true"
+                    />
+                  </span>
+                  <p className="mt-3 text-sm text-rose-100">{error}</p>
+                </div>
+              ) : null}
+
+              <Button
+                type="submit"
+                disabled={!canSubmit || isLoading}
+                className={AUTH_PRIMARY_BUTTON_CLASS}
+              >
+                {isLoading ? (
+                  <Loader2
+                    data-icon="inline-start"
+                    className="animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : null}
+                {isLoading ? "Updating password" : "Update password"}
+                {!isLoading ? (
+                  <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                ) : null}
+              </Button>
+
+              <Button
+                asChild
+                variant="outline"
+                className={AUTH_SECONDARY_BUTTON_CLASS}
+              >
+                <Link href="/login">
+                  <ArrowLeft data-icon="inline-start" aria-hidden="true" />
+                  Back to sign in
+                </Link>
+              </Button>
+            </form>
+          )}
+        </section>
       </div>
-    </div>
+    </main>
   )
 }
