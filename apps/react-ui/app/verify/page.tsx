@@ -9,15 +9,21 @@ import { verifyEmail } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
+  ArrowLeft,
+  ArrowRight,
   Box,
-  CheckCircle,
+  CheckCircle2,
   Loader2,
-  ShieldCheck,
-  UserCheck,
   XCircle,
 } from "lucide-react"
 
 type VerifyState = "idle" | "loading" | "success" | "error"
+
+const AUTH_PRIMARY_BUTTON_CLASS =
+  "h-11 w-full cursor-pointer rounded-full bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm ring-1 ring-white/15 transition hover:bg-blue-500 hover:text-white"
+
+const AUTH_SECONDARY_BUTTON_CLASS =
+  "h-11 w-full cursor-pointer rounded-full border-white/25 bg-white/10 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-white/15 hover:text-white"
 
 export default function VerifyEmailPage() {
   return (
@@ -77,149 +83,140 @@ function VerifyEmailContent() {
     }
   }, [token])
 
-  const isLoading = state === "loading"
+  const isLoading = state === "idle" || state === "loading"
   const isSuccess = state === "success"
   const isError = state === "error"
 
   return (
-    <div className="min-h-screen bg-white/50 backdrop-blur-sm text-slate-900 px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10 flex items-center justify-center relative overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-br from-indigo-600/5 to-purple-600/5" />
+    <main className="relative min-h-[100svh] overflow-x-hidden bg-blue-950 text-white">
       <div
-        id="verification-container"
-        className="w-full max-w-[1440px] flex items-center justify-center relative z-10 px-4 sm:px-6"
-      >
-        <div className="w-full max-w-2xl bg-white rounded-3xl shadow-2xl p-8 sm:p-10 lg:p-16 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-br from-indigo-500/5 to-purple-500/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2" />
-          <div className="absolute bottom-0 left-0 w-48 h-48 bg-gradient-to-tr from-blue-500/5 to-cyan-500/5 rounded-full blur-2xl translate-y-1/2 -translate-x-1/2" />
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,.12)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.12)_1px,transparent_1px)] [background-size:44px_44px]"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -bottom-40 left-1/2 size-[32rem] -translate-x-1/2 rounded-full bg-blue-500/25 blur-3xl"
+      />
 
-          <div className="relative z-10 text-center space-y-8">
-            <div className="flex items-center justify-center gap-3">
-              <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center text-white shadow-glow">
-                <Box className="h-5 w-5" />
-              </div>
-              <h1 className="font-bold text-2xl tracking-tight text-slate-900">
-                Gestiabloc
-              </h1>
-            </div>
+      <div className="relative z-10 flex min-h-[100svh] w-full items-center justify-center px-4 py-5 sm:px-8 sm:py-10">
+        <section
+          id="verification-container"
+          className="w-full max-w-[460px] py-6 text-center sm:py-10"
+          aria-busy={isLoading}
+        >
+          <Link
+            href="/"
+            className="inline-flex items-center gap-3 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+            aria-label="Gestiabloc home"
+          >
+            <span className="flex size-10 items-center justify-center rounded-2xl border border-white/15 bg-white/10 text-white shadow-sm">
+              <Box className="size-5" aria-hidden="true" />
+            </span>
+            <span className="text-xl font-semibold tracking-tight text-white">
+              Gestiabloc
+            </span>
+          </Link>
 
-            <div className="flex justify-center">
+          <div
+            role={isError ? "alert" : "status"}
+            aria-live={isError ? "assertive" : "polite"}
+            aria-atomic="true"
+            className="mt-10 flex flex-col items-center"
+          >
+            <span className="flex size-12 items-center justify-center rounded-full border border-white/10 bg-white/10">
               {isLoading ? (
-                <div className="w-20 h-20 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center">
-                  <Loader2 className="h-8 w-8 animate-spin" />
-                </div>
+                <Loader2
+                  className="size-6 animate-spin text-blue-200 motion-reduce:animate-none"
+                  aria-hidden="true"
+                />
               ) : null}
               {isSuccess ? (
-                <div className="w-20 h-20 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                  <CheckCircle className="h-10 w-10" />
-                </div>
+                <CheckCircle2
+                  className="size-6 text-emerald-300"
+                  aria-hidden="true"
+                />
               ) : null}
               {isError ? (
-                <div className="w-20 h-20 rounded-full bg-red-50 text-red-600 flex items-center justify-center">
-                  <XCircle className="h-10 w-10" />
-                </div>
+                <XCircle
+                  className="size-6 text-rose-300"
+                  aria-hidden="true"
+                />
               ) : null}
-            </div>
+            </span>
 
-            <div className="space-y-3">
-              <h2 className="text-3xl sm:text-4xl font-bold text-slate-900">
-                {isSuccess
-                  ? "Email Verified Successfully!"
-                  : isError
-                    ? "Verification Failed"
-                    : "Verifying Your Email"}
-              </h2>
-              <p className="text-base sm:text-lg text-slate-500 max-w-md mx-auto">
-                {isLoading ? "Verifying your email..." : message}
-              </p>
-            </div>
-
-            {isSuccess ? (
-              <>
-                <div className="bg-gradient-to-br from-indigo-50 to-purple-50 border border-indigo-100 rounded-2xl p-6">
-                  <div className="flex items-start gap-4 text-left">
-                    <div className="w-12 h-12 bg-indigo-500 rounded-xl flex items-center justify-center text-white flex-shrink-0">
-                      <ShieldCheck className="h-6 w-6" />
-                    </div>
-
-                    <div className="flex-1">
-                      <h3 className="font-bold text-slate-900 mb-1">
-                        Your Account is Secure
-                      </h3>
-                      <p className="text-sm text-slate-600">
-                        We&apos;ve verified your email address and your account
-                        is now fully activated. You can start managing your
-                        workspace with confidence.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex justify-center">
-                  <div className="bg-slate-50 rounded-xl p-6 border border-slate-200 max-w-xs w-full">
-                    <div className="w-12 h-12 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600 mx-auto mb-3">
-                      <UserCheck className="h-6 w-6" />
-                    </div>
-                    <h4 className="text-base font-bold text-slate-900 mb-1">
-                      Profile Active
-                    </h4>
-                    <p className="text-sm text-slate-500">
-                      Your account is ready to use
-                    </p>
-                  </div>
-                </div>
-              </>
-            ) : null}
-
-            <div className="space-y-4 pt-2">
-              {isSuccess ? (
-                <Button
-                  asChild
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl shadow-lg hover:shadow-indigo-500/30 transition-all duration-300 transform hover:-translate-y-0.5"
-                >
-                  <Link href="/login">Login Now</Link>
-                </Button>
-              ) : null}
-              {isError ? (
-                <Button
-                  asChild
-                  variant="outline"
-                  className="w-full border-slate-200 text-slate-700 hover:bg-slate-50"
-                >
-                  <Link href="/login">Back to sign in</Link>
-                </Button>
-              ) : null}
-            </div>
+            <h1 className="mt-5 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+              {isSuccess
+                ? "Email verified"
+                : isError
+                  ? "We couldn’t verify your email"
+                  : "Verifying your email"}
+            </h1>
+            <p className="mt-2 max-w-sm text-sm leading-6 text-blue-100/75">
+              {isLoading
+                ? "Please wait while we securely activate your workspace."
+                : message}
+            </p>
           </div>
 
-          <div className="mt-10 text-center text-xs text-slate-400 relative z-10">
-            © 2024 Gestiabloc Inc. All rights reserved.
-          </div>
-        </div>
+          {isSuccess ? (
+            <Button asChild className={`${AUTH_PRIMARY_BUTTON_CLASS} mt-8`}>
+              <Link href="/login">
+                Continue to sign in
+                <ArrowRight data-icon="inline-end" aria-hidden="true" />
+              </Link>
+            </Button>
+          ) : null}
+
+          {isError ? (
+            <Button
+              asChild
+              variant="outline"
+              className={`${AUTH_SECONDARY_BUTTON_CLASS} mt-8`}
+            >
+              <Link href="/login">
+                <ArrowLeft data-icon="inline-start" aria-hidden="true" />
+                Back to sign in
+              </Link>
+            </Button>
+          ) : null}
+
+          {isLoading ? (
+            <p className="mt-5 text-xs leading-5 text-blue-100/60">
+              Keep this page open until verification is complete.
+            </p>
+          ) : null}
+        </section>
       </div>
-    </div>
+    </main>
   )
 }
 
 function VerifyEmailSkeleton() {
   return (
-    <div className="min-h-screen bg-white/50 backdrop-blur-sm px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10 flex items-center justify-center">
-      <div className="w-full max-w-2xl bg-white rounded-3xl shadow-2xl p-8 sm:p-10 lg:p-16">
-        <div className="space-y-8">
-          <div className="flex items-center justify-center gap-3">
-            <Skeleton className="h-10 w-10 rounded-xl" />
-            <Skeleton className="h-8 w-40" />
+    <main className="relative min-h-[100svh] overflow-hidden bg-blue-950">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,.12)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.12)_1px,transparent_1px)] [background-size:44px_44px]"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -bottom-40 left-1/2 size-[32rem] -translate-x-1/2 rounded-full bg-blue-500/25 blur-3xl"
+      />
+
+      <div className="relative z-10 flex min-h-[100svh] items-center justify-center px-4 py-5 sm:px-8 sm:py-10">
+        <div className="flex w-full max-w-[460px] flex-col items-center py-6 sm:py-10">
+          <div className="flex items-center gap-3">
+            <Skeleton className="size-10 rounded-2xl bg-white/10" />
+            <Skeleton className="h-6 w-28 bg-white/10" />
           </div>
-          <div className="flex justify-center">
-            <Skeleton className="h-20 w-20 rounded-full" />
+          <Skeleton className="mt-10 size-12 rounded-full bg-white/10" />
+          <div className="mt-5 flex w-full flex-col items-center gap-3">
+            <Skeleton className="h-8 w-64 max-w-full bg-white/10" />
+            <Skeleton className="h-4 w-80 max-w-full bg-white/10" />
+            <Skeleton className="h-4 w-60 max-w-full bg-white/10" />
           </div>
-          <div className="space-y-3 text-center">
-            <Skeleton className="mx-auto h-10 w-80" />
-            <Skeleton className="mx-auto h-6 w-72" />
-          </div>
-          <Skeleton className="h-36 w-full rounded-2xl" />
-          <Skeleton className="h-12 w-full rounded-xl" />
         </div>
       </div>
-    </div>
+    </main>
   )
 }
