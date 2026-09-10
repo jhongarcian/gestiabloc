@@ -14,7 +14,9 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
+  useTransition,
 } from "react"
 
 import { StackedAvatarGroup } from "@/components/stacked-avatar-group"
@@ -68,6 +70,7 @@ import {
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { cn } from "@/lib/utils"
+import { ContactDetailsLoadingSkeleton } from "./contact-details-loading-skeleton"
 import { CreateContactDialog } from "./create-contact-dialog"
 
 type ContactsTableProps = {
@@ -421,6 +424,27 @@ export function ContactsTable({
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [data, setData] = useState<ContactsListResponse | null>(null)
+  const [openingContactId, setOpeningContactId] = useState<string | null>(null)
+  const openingContactIdRef = useRef<string | null>(null)
+  const [isContactNavigationPending, startContactNavigation] = useTransition()
+
+  const openContact = useCallback(
+    (contactId: string) => {
+      if (openingContactIdRef.current === contactId) return
+
+      openingContactIdRef.current = contactId
+      setOpeningContactId(contactId)
+      startContactNavigation(() => {
+        router.push(`/app/${tenantSlug}/contacts/${contactId}`)
+      })
+    },
+    [router, tenantSlug],
+  )
+
+  useEffect(() => {
+    if (isContactNavigationPending) return
+    openingContactIdRef.current = null
+  }, [isContactNavigationPending])
 
   const selectableStatusOptions = useMemo(
     () => statusOptions.filter((option) => option.value !== ALL_STATUS_VALUE),
@@ -623,6 +647,14 @@ export function ContactsTable({
     const end = start + contacts.length - 1
     return `Showing ${start}-${end} of ${total} contacts`
   }, [contacts.length, startIndex, total])
+
+  if (isContactNavigationPending && openingContactId) {
+    const openingContactName = contacts.find(
+      (contact) => contact.id === openingContactId,
+    )?.fullName
+
+    return <ContactDetailsLoadingSkeleton contactName={openingContactName} />
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-5">
@@ -988,8 +1020,6 @@ export function ContactsTable({
                 </TableRow>
               ) : contacts.length ? (
                 contacts.map((contact) => {
-                  const href = `/app/${tenantSlug}/contacts/${contact.id}`
-
                   return (
                     <TableRow
                       key={contact.id}
@@ -998,12 +1028,12 @@ export function ContactsTable({
                       aria-label={`Open ${contact.fullName} details`}
                       className="h-14 cursor-pointer outline-none hover:bg-blue-50/50 focus-visible:bg-blue-50/50 focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-inset"
                       onClick={() => {
-                        router.push(href)
+                        openContact(contact.id)
                       }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
                           event.preventDefault()
-                          router.push(href)
+                          openContact(contact.id)
                         }
                       }}
                     >
