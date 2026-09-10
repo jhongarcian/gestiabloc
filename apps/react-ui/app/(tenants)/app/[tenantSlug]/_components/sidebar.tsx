@@ -366,7 +366,7 @@ export function SidebarEdgeToggle() {
       variant="ghost"
       size="icon-lg"
       className={cn(
-        "fixed top-[4.75rem] z-40 hidden rounded-xl border border-white/15 bg-[#10213a] text-slate-200 shadow-[0_10px_26px_rgba(2,8,23,0.3)] transition-[left,background-color,color,box-shadow] duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none hover:bg-[#182d49] hover:text-white hover:shadow-[0_12px_30px_rgba(2,8,23,0.38)] focus-visible:border-white/35 focus-visible:ring-white/30 md:inline-flex",
+        "fixed top-[4.75rem] z-40 hidden rounded-xl border border-white/15 bg-[#10213a] text-slate-200 shadow-[0_10px_26px_rgba(2,8,23,0.3)] transition-[left,background-color,color,box-shadow] duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none hover:bg-[#182d49] hover:text-white hover:shadow-[0_12px_30px_rgba(2,8,23,0.38)] focus-visible:border-white/35 focus-visible:ring-white/30 lg:inline-flex",
         isExpanded
           ? "left-[calc(var(--sidebar-width)-1.25rem)]"
           : "left-[calc(var(--sidebar-width-icon)-1.25rem)]",
