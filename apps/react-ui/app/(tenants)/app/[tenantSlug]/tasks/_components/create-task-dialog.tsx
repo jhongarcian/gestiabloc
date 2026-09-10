@@ -109,7 +109,6 @@ type ContactSearchResponse = {
 type LinkedServiceOption = {
   id: string
   name: string
-  type: "SERVICE"
 }
 
 type LinkedServiceOptionsResponse = {
@@ -214,6 +213,16 @@ export function CreateTaskDialog({
     () => statusOptions.filter((option) => option.value !== ALL_STATUS_VALUE),
     [statusOptions],
   )
+  const visibleLinkedServiceOptions = useMemo(() => {
+    const normalizedQuery = debouncedServiceQuery.toLocaleLowerCase()
+    const matchingServices = normalizedQuery
+      ? linkedServiceOptions.filter((service) =>
+          service.name.toLocaleLowerCase().includes(normalizedQuery),
+        )
+      : linkedServiceOptions
+
+    return matchingServices.slice(0, SERVICE_SEARCH_LIMIT)
+  }, [debouncedServiceQuery, linkedServiceOptions])
   const dialogDescription = lockContact
     ? "Create, assign, and schedule work already attached to this contact."
     : "Create, assign, and schedule work for a tenant contact."
@@ -496,17 +505,10 @@ export function CreateTaskDialog({
 
       try {
         const { data } = await api.get<LinkedServiceOptionsResponse>(
-          `/api/services-products/${tenantId}/options`,
-          {
-            params: {
-              q: debouncedServiceQuery || undefined,
-              type: "SERVICE",
-              limit: SERVICE_SEARCH_LIMIT,
-            },
-          },
+          `/api/services/${encodeURIComponent(tenantId)}/options`,
         )
         if (!cancelled) {
-          setLinkedServiceOptions(data.items.slice(0, SERVICE_SEARCH_LIMIT))
+          setLinkedServiceOptions(data.items)
         }
       } catch {
         if (!cancelled) {
@@ -522,7 +524,7 @@ export function CreateTaskDialog({
     return () => {
       cancelled = true
     }
-  }, [debouncedServiceQuery, servicePickerOpen, tenantId])
+  }, [servicePickerOpen, tenantId])
 
   const startDateKey = getDraftDateKey(startedAtInput)
   const dueDateKey = getDraftDateKey(dueDateInput)
@@ -858,8 +860,8 @@ export function CreateTaskDialog({
                         <Loader2 className="animate-spin" />
                         Searching services...
                       </CommandItem>
-                    ) : linkedServiceOptions.length > 0 ? (
-                      linkedServiceOptions.map((service) => (
+                    ) : visibleLinkedServiceOptions.length > 0 ? (
+                      visibleLinkedServiceOptions.map((service) => (
                         <CommandItem
                           key={service.id}
                           value={service.id}
