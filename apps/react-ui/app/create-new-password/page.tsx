@@ -1,6 +1,6 @@
 "use client"
 
-import { Suspense, useMemo, useState } from "react"
+import { Suspense, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { isAxiosError } from "axios"
@@ -87,6 +87,16 @@ function CreateNewPasswordContent() {
   const isLoading = status === "loading"
   const canSubmit = Boolean(token && passwordIsStrong && checks.match)
 
+  useEffect(() => {
+    if (status !== "success") return
+
+    window.history.replaceState(
+      window.history.state,
+      "",
+      "/create-new-password",
+    )
+  }, [status])
+
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError(null)
@@ -103,8 +113,11 @@ function CreateNewPasswordContent() {
     setStatus("loading")
     try {
       await resetPassword({ token, newPassword })
+      setNewPassword("")
+      setConfirmPassword("")
+      setShowNewPassword(false)
+      setShowConfirmPassword(false)
       setStatus("success")
-      router.push("/login")
     } catch (err) {
       setStatus("idle")
       if (isAxiosError(err)) {
@@ -156,15 +169,49 @@ function CreateNewPasswordContent() {
               </span>
             </Link>
 
-            <h1 className="mt-8 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-              Create a new password
-            </h1>
-            <p className="mt-2 text-sm leading-6 text-blue-100/75">
-              Choose a strong password to protect your account.
-            </p>
+            {status !== "success" ? (
+              <>
+                <h1 className="mt-8 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+                  Create a new password
+                </h1>
+                <p className="mt-2 text-sm leading-6 text-blue-100/75">
+                  Choose a strong password to protect your account.
+                </p>
+              </>
+            ) : null}
           </header>
 
-          {!token ? (
+          {status === "success" ? (
+            <div className="flex flex-col gap-5">
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex w-full flex-col items-center px-2 py-2 text-center"
+              >
+                <span className="flex size-11 items-center justify-center rounded-full border border-white/10 bg-white/10">
+                  <CheckCircle2
+                    className="size-5 text-emerald-300"
+                    aria-hidden="true"
+                  />
+                </span>
+                <h1 className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+                  Password changed successfully
+                </h1>
+                <p className="mt-2 text-sm leading-6 text-blue-100/75">
+                  Your new password is ready. Sign in to continue.
+                </p>
+              </div>
+
+              <Button
+                type="button"
+                className={AUTH_PRIMARY_BUTTON_CLASS}
+                onClick={() => router.replace("/login")}
+              >
+                Continue to sign in
+                <ArrowRight data-icon="inline-end" aria-hidden="true" />
+              </Button>
+            </div>
+          ) : !token ? (
             <div className="flex flex-col gap-5">
               <div
                 role="alert"
@@ -342,24 +389,6 @@ function CreateNewPasswordContent() {
                   </div>
                 ))}
               </div>
-
-              {status === "success" ? (
-                <div
-                  role="status"
-                  aria-live="polite"
-                  className="flex w-full flex-col items-center rounded-2xl border border-white/15 bg-white/[0.06] px-5 py-4 text-center shadow-sm backdrop-blur-sm"
-                >
-                  <span className="flex size-9 items-center justify-center rounded-full border border-white/10 bg-white/10">
-                    <CheckCircle2
-                      className="size-4 text-emerald-300"
-                      aria-hidden="true"
-                    />
-                  </span>
-                  <p className="mt-3 text-sm text-blue-50">
-                    Password updated. Taking you to sign in…
-                  </p>
-                </div>
-              ) : null}
 
               {error ? (
                 <div
