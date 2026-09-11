@@ -22,6 +22,7 @@ Use the button type that matches the consequence of the action:
 | --- | --- | --- |
 | Primary | Confirms the main change in the current context | Save assignee, Save changes, Create note |
 | Secondary | Dismisses, returns, or opens a lower-priority interaction | Update step, Cancel, Close, Previous |
+| Selection | Shows the active option in a compact mode switcher | Month, Week, Day, List |
 
 Rules:
 
@@ -157,6 +158,77 @@ Grouping rules:
 - Allow wrapping on narrow screens rather than shrinking labels until they become unreadable.
 - When a save button sits beside an input, use `grid-cols-[minmax(0,1fr)_auto]` and `items-center` so the input can shrink while the button remains stable.
 - Keep helper and error text below the input/action row so they do not change button alignment.
+
+## Calendar toolbar controls
+
+Calendar controls use the same compact pill language while distinguishing selection, navigation, disclosure, and creation. The appointment calendar is the primary workspace; its helper month calendar remains visible only in the large-screen sidebar.
+
+| Control | Treatment | Behavior |
+| --- | --- | --- |
+| Month, Week, Day, List | Segmented `ToggleGroup` | Use a white selected surface with navy text; do not use the primary action fill for view state. |
+| Previous and Next | Icon-only secondary pills | Use `size-8`, an accessible name, and a tooltip that identifies the navigation unit. |
+| Today | Secondary pill | Keep the text visible and use the current view’s normal date-navigation behavior. |
+| Filters | Icon-only secondary action below `xl` | Use the Filter icon, an accessible label, a tooltip, and a compact count badge when extra filters are active. |
+| Create appointment | Icon-only primary action below `xl` | Use the Plus icon with an accessible label and tooltip; preserve the labeled full-width action in the large sidebar. |
+
+Use these calendar-specific classes alongside the shared primary and secondary classes:
+
+```tsx
+const CALENDAR_ICON_BUTTON_CLASS =
+  "size-8 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white p-0 text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+
+const CALENDAR_VIEW_TOGGLE_CLASS =
+  "h-8 shrink-0 cursor-pointer rounded-full border border-transparent px-3 py-1 text-xs font-semibold text-slate-600 shadow-none transition hover:bg-white hover:text-slate-950 data-[state=on]:border-slate-200 data-[state=on]:bg-white data-[state=on]:text-blue-950 data-[state=on]:shadow-sm"
+```
+
+The view selector is one single-choice control:
+
+```tsx
+<ToggleGroup
+  type="single"
+  spacing={1}
+  value={selectedView}
+  aria-label="Calendar view"
+  className="rounded-full border border-slate-200 bg-slate-100 p-1"
+  onValueChange={(value) => {
+    if (value) setSelectedView(value as CalendarView)
+  }}
+>
+  {VIEW_OPTIONS.map((option) => (
+    <ToggleGroupItem
+      key={option.value}
+      value={option.value}
+      aria-label={`${option.label} view`}
+      className={CALENDAR_VIEW_TOGGLE_CLASS}
+    >
+      {option.label}
+    </ToggleGroupItem>
+  ))}
+</ToggleGroup>
+```
+
+Calendar rules:
+
+- Group Previous, Today, and Next together before the current range label.
+- Keep Previous and Next icon-only; add `aria-label="Previous month"` or the matching week/day unit and include the same copy in a tooltip.
+- Use the shared secondary class for Today. Below `xl`, render Filters as an icon-only secondary action with an accessible label and tooltip.
+- Below `xl`, render Create appointment as an icon-only primary action with an accessible label and tooltip; keep it last in the action group. Preserve the labeled full-width action in the large sidebar.
+- Mark leading icons as decorative with `aria-hidden="true"` when visible text already names the action.
+- Below `xl`, open Users, Groups, and Services from Filters in a right-side sheet that follows `docs/dialog-style-guide.md`.
+- Let action groups wrap on narrow screens without changing the `h-8` control height.
+- At `xl` and above, retain the fixed helper sidebar and do not duplicate the Filters button in the main toolbar.
+
+### Responsive calendar header organization
+
+Below the `xl` breakpoint, organize the calendar header into a predictable hierarchy instead of allowing one toolbar row to wrap organically:
+
+1. Show the current range and appointment count first.
+2. Place the icon-only Filters and Create appointment actions together at the right of the range summary on both phone and medium layouts.
+3. Place Previous, Today, and Next in a dedicated navigation group below the summary.
+4. Place the Month, Week, Day, and List selector beside navigation from `sm` upward and on its own full-width row on smaller screens.
+5. Render the active-filter summary only when an additional user, group, or service filter is applied.
+
+Keep the large-screen (`xl` and above) toolbar compact: navigation and range information remain on the left, while the view selector remains on the right.
 
 ## Icons and loading
 
