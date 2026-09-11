@@ -18,9 +18,15 @@ import {
 } from "date-fns"
 import { isAxiosError } from "axios"
 import {
+  BriefcaseBusiness,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Filter,
+  Layers3,
+  Plus,
+  UsersRound,
   X,
 } from "lucide-react"
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react"
@@ -32,6 +38,19 @@ import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -40,15 +59,25 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Sheet,
+  SheetClose,
   SheetContent,
   SheetDescription,
   SheetFooter,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   Tooltip,
   TooltipContent,
@@ -95,6 +124,15 @@ const VIEW_OPTIONS: Array<{ value: CalendarView; label: string }> = [
   { value: "day", label: "Day" },
   { value: "list", label: "List" },
 ]
+
+const CALENDAR_PRIMARY_BUTTON_CLASS =
+  "h-8 shrink-0 cursor-pointer rounded-full bg-blue-950 px-3 py-1 text-xs font-semibold text-white shadow-sm ring-1 ring-black/5 transition hover:bg-blue-900 hover:text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+const CALENDAR_SECONDARY_BUTTON_CLASS =
+  "h-8 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+const CALENDAR_ICON_BUTTON_CLASS =
+  "size-8 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white p-0 text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+const CALENDAR_VIEW_TOGGLE_CLASS =
+  "h-8 shrink-0 cursor-pointer rounded-full border border-transparent px-3 py-1 text-xs font-semibold text-slate-600 shadow-none transition hover:bg-white hover:text-slate-950 data-[state=on]:border-slate-200 data-[state=on]:bg-white data-[state=on]:text-blue-950 data-[state=on]:shadow-sm"
 
 const APPOINTMENT_STATUS_OPTIONS = [
   { value: "SCHEDULED", label: "Scheduled" },
@@ -679,7 +717,7 @@ function MonthView({
   }, [cursorDate])
 
   return (
-    <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-slate-50/50">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-slate-50/50">
       <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-100/70">
         {WEEKDAY_LABELS.map((label) => (
           <div
@@ -691,7 +729,7 @@ function MonthView({
         ))}
       </div>
 
-      <div className="grid grid-cols-7">
+      <div className="grid flex-1 auto-rows-[minmax(132px,1fr)] grid-cols-7">
         {monthDays.map((day) => {
           const dayKey = getDateKey(day, tenantTimezone)
           const dayEvents = eventsByDay[dayKey] ?? []
@@ -705,7 +743,7 @@ function MonthView({
               key={day.toISOString()}
               onClick={() => onSelectDay(day)}
               className={cn(
-                "min-h-[132px] cursor-pointer border-b border-r border-slate-200 bg-white p-2 align-top transition hover:bg-slate-50/80",
+                "cursor-pointer border-b border-r border-slate-200 bg-white p-2 align-top transition hover:bg-slate-50/80",
                 isClosedDay && "bg-slate-100/85 hover:bg-slate-100",
                 !isSameMonth(day, cursorDate) && "bg-slate-50/80",
                 !isSameMonth(day, cursorDate) && isClosedDay && "bg-slate-200/60",
@@ -1226,7 +1264,7 @@ function ListView({
 function CalendarLoadingSkeleton({ view }: { view: CalendarView }) {
   if (view === "month") {
     return (
-      <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-slate-50/50">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-slate-50/50">
         <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-100/70">
           {WEEKDAY_LABELS.map((label) => (
             <div
@@ -1237,11 +1275,11 @@ function CalendarLoadingSkeleton({ view }: { view: CalendarView }) {
             </div>
           ))}
         </div>
-        <div className="grid grid-cols-7">
+        <div className="grid flex-1 auto-rows-[minmax(132px,1fr)] grid-cols-7">
           {Array.from({ length: 35 }).map((_, index) => (
             <div
               key={index}
-              className="min-h-[132px] border-b border-r border-slate-200 bg-white p-2"
+              className="border-b border-r border-slate-200 bg-white p-2"
             >
               <div className="mb-3 flex items-center justify-between">
                 <Skeleton className="h-7 w-7 rounded-full" />
@@ -1362,6 +1400,408 @@ function AuditTrailDialogContent({
   )
 }
 
+function MiniCalendar({
+  selectedDate,
+  month,
+  onMonthChange,
+  onSelect,
+  className,
+}: {
+  selectedDate: Date
+  month: Date
+  onMonthChange: (month: Date) => void
+  onSelect: (day?: Date) => void
+  className?: string
+}) {
+  return (
+    <Calendar
+      mode="single"
+      selected={selectedDate}
+      month={month}
+      onMonthChange={onMonthChange}
+      onSelect={onSelect}
+      className={cn("!w-full", className)}
+      classNames={{
+        root: "w-full",
+        month_grid: "w-full table-fixed border-collapse",
+      }}
+    />
+  )
+}
+
+function CalendarFilterControls({
+  options,
+  selectedFilterMode,
+  selectedUserIds,
+  selectedGroupIds,
+  selectedServiceId,
+  isUsersSectionOpen,
+  isGroupsSectionOpen,
+  onUsersSectionOpenChange,
+  onGroupsSectionOpenChange,
+  onSelectAllUsers,
+  onSelectAllGroups,
+  onToggleUser,
+  onToggleGroup,
+  onServiceChange,
+  constrainLists = true,
+  className,
+}: {
+  options: CalendarMetaResponse["filters"]
+  selectedFilterMode: CalendarFilterMode
+  selectedUserIds: string[]
+  selectedGroupIds: string[]
+  selectedServiceId: string
+  isUsersSectionOpen: boolean
+  isGroupsSectionOpen: boolean
+  onUsersSectionOpenChange: (open: boolean) => void
+  onGroupsSectionOpenChange: (open: boolean) => void
+  onSelectAllUsers: () => void
+  onSelectAllGroups: () => void
+  onToggleUser: (userId: string, checked: boolean) => void
+  onToggleGroup: (groupId: string, checked: boolean) => void
+  onServiceChange: (serviceId: string) => void
+  constrainLists?: boolean
+  className?: string
+}) {
+  const [servicePickerOpen, setServicePickerOpen] = useState(false)
+  const [serviceQuery, setServiceQuery] = useState("")
+  const selectedService = options.services.find(
+    (service) => service.id === selectedServiceId,
+  )
+  const usersSummary =
+    selectedFilterMode !== "users"
+      ? "Not applied"
+      : selectedUserIds.length > 0
+        ? `${selectedUserIds.length} selected`
+        : "All team members"
+  const groupsSummary =
+    selectedFilterMode !== "groups"
+      ? "Not applied"
+      : selectedGroupIds.length > 0
+        ? `${selectedGroupIds.length} selected`
+        : "All groups"
+
+  return (
+    <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
+      <Collapsible
+        open={isUsersSectionOpen}
+        onOpenChange={onUsersSectionOpenChange}
+        className="border-b border-slate-200 pb-1"
+      >
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="group flex w-full cursor-pointer items-center gap-2 py-2 text-left"
+          >
+            <UsersRound
+              className="size-4 shrink-0 text-slate-500"
+              aria-hidden="true"
+            />
+            <span className="flex min-w-0 flex-1 items-baseline gap-2">
+              <span className="shrink-0 text-sm font-semibold text-slate-950">Users</span>
+              <span className="truncate text-xs text-slate-500">
+                {usersSummary}
+              </span>
+            </span>
+            <ChevronDown
+              className="size-4 shrink-0 text-slate-400 transition-transform group-data-[state=open]:rotate-180"
+              aria-hidden="true"
+            />
+          </button>
+        </CollapsibleTrigger>
+
+        <CollapsibleContent className="pb-1">
+          <label
+            className={cn(
+              "flex min-h-8 cursor-pointer items-center gap-2 px-1.5 py-1.5 text-sm transition hover:text-slate-950",
+              selectedFilterMode === "users" && selectedUserIds.length === 0
+                ? "font-semibold text-blue-950"
+                : "font-medium text-slate-700",
+            )}
+          >
+            <Checkbox
+              {...getCheckboxColorProps("#172554")}
+              checked={selectedFilterMode === "users" && selectedUserIds.length === 0}
+              onCheckedChange={(checked) => {
+                if (checked) onSelectAllUsers()
+              }}
+            />
+            <span className="min-w-0 flex-1 truncate">All team</span>
+          </label>
+
+          <div
+            className={cn(
+              "flex flex-col",
+              constrainLists && "max-h-64 overflow-y-auto overscroll-contain",
+            )}
+          >
+            {options.users.length > 0 ? (
+              options.users.map((user) => {
+                const isSelected =
+                  selectedFilterMode === "users" && selectedUserIds.includes(user.id)
+
+                return (
+                  <label
+                    key={user.id}
+                    className={cn(
+                      "flex min-h-8 cursor-pointer items-center gap-2 px-1.5 py-1.5 transition hover:text-slate-950",
+                      isSelected
+                        ? "font-semibold text-blue-950"
+                        : "font-medium text-slate-700",
+                    )}
+                  >
+                    <Checkbox
+                      {...getCheckboxColorProps(user.color)}
+                      checked={isSelected}
+                      onCheckedChange={(checked) =>
+                        onToggleUser(user.id, Boolean(checked))
+                      }
+                    />
+                    <Avatar size="sm" className="ring-2 ring-white">
+                      <AvatarImage
+                        src={user.image ?? undefined}
+                        alt={`${user.label} profile photo`}
+                        className="object-cover"
+                      />
+                      <AvatarFallback className="bg-slate-200 font-semibold text-slate-700">
+                        {getInitials(user.label)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+                      <span className="max-w-[55%] shrink-0 truncate text-sm">
+                        {user.label}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-[11px] font-normal text-slate-400">
+                        {user.email}
+                      </span>
+                    </span>
+                  </label>
+                )
+              })
+            ) : (
+              <p className="px-1.5 py-2 text-xs text-slate-500">
+                No team members available.
+              </p>
+            )}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+
+      <Collapsible
+        open={isGroupsSectionOpen}
+        onOpenChange={onGroupsSectionOpenChange}
+        className="border-b border-slate-200 py-1"
+      >
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="group flex w-full cursor-pointer items-center gap-2 py-2 text-left"
+          >
+            <Layers3
+              className="size-4 shrink-0 text-slate-500"
+              aria-hidden="true"
+            />
+            <span className="flex min-w-0 flex-1 items-baseline gap-2">
+              <span className="shrink-0 text-sm font-semibold text-slate-950">Groups</span>
+              <span className="truncate text-xs text-slate-500">
+                {groupsSummary}
+              </span>
+            </span>
+            <ChevronDown
+              className="size-4 shrink-0 text-slate-400 transition-transform group-data-[state=open]:rotate-180"
+              aria-hidden="true"
+            />
+          </button>
+        </CollapsibleTrigger>
+
+        <CollapsibleContent className="pb-1">
+          <label
+            className={cn(
+              "flex min-h-8 cursor-pointer items-center gap-2 px-1.5 py-1.5 text-sm transition hover:text-slate-950",
+              selectedFilterMode === "groups" && selectedGroupIds.length === 0
+                ? "font-semibold text-blue-950"
+                : "font-medium text-slate-700",
+            )}
+          >
+            <Checkbox
+              checked={selectedFilterMode === "groups" && selectedGroupIds.length === 0}
+              onCheckedChange={(checked) => {
+                if (checked) onSelectAllGroups()
+              }}
+            />
+            <span className="min-w-0 flex-1 truncate">All groups</span>
+          </label>
+
+          <div
+            className={cn(
+              "flex flex-col",
+              constrainLists && "max-h-64 overflow-y-auto overscroll-contain",
+            )}
+          >
+            {options.groups.length > 0 ? (
+              options.groups.map((group) => {
+                const isSelected =
+                  selectedFilterMode === "groups" &&
+                  selectedGroupIds.includes(group.id)
+
+                return (
+                  <label
+                    key={group.id}
+                    className={cn(
+                      "flex min-h-8 cursor-pointer items-center gap-2 px-1.5 py-1.5 transition hover:text-slate-950",
+                      isSelected
+                        ? "font-semibold text-blue-950"
+                        : "font-medium text-slate-700",
+                    )}
+                  >
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={(checked) =>
+                        onToggleGroup(group.id, Boolean(checked))
+                      }
+                    />
+                    <Avatar size="sm" className="ring-2 ring-white">
+                      <AvatarFallback className="bg-slate-200 font-semibold text-slate-700">
+                        {getInitials(group.name)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+                      <span className="min-w-0 flex-1 truncate text-sm">
+                        {group.name}
+                      </span>
+                      <span className="shrink-0 text-[11px] font-normal text-slate-400">
+                        {group.members.length} member
+                        {group.members.length === 1 ? "" : "s"}
+                      </span>
+                    </span>
+                  </label>
+                )
+              })
+            ) : (
+              <p className="px-1.5 py-2 text-xs text-slate-500">
+                No groups created yet.
+              </p>
+            )}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+
+      <div className="pt-2">
+        <div className="flex items-center gap-2 py-1">
+          <BriefcaseBusiness
+            className="size-4 shrink-0 text-slate-500"
+            aria-hidden="true"
+          />
+          <span className="text-sm font-semibold text-slate-950">Service</span>
+        </div>
+
+        <Popover
+          open={servicePickerOpen}
+          onOpenChange={(nextOpen) => {
+            setServicePickerOpen(nextOpen)
+            if (!nextOpen) setServiceQuery("")
+          }}
+        >
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              role="combobox"
+              aria-label="Filter appointments by service"
+              aria-expanded={servicePickerOpen}
+              className="mt-1 h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+            >
+              <span className="flex min-w-0 items-center gap-2.5">
+                <Avatar size="sm" className="ring-2 ring-blue-50">
+                  <AvatarFallback className="bg-blue-50 font-semibold text-blue-950">
+                    {selectedService ? getInitials(selectedService.name) : "—"}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="truncate font-medium text-slate-800">
+                  {selectedService?.name ?? "All services"}
+                </span>
+              </span>
+              <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] p-0"
+          >
+            <Command>
+              <CommandInput
+                value={serviceQuery}
+                onValueChange={setServiceQuery}
+                placeholder="Search services..."
+              />
+              <CommandList className="max-h-64">
+                <CommandEmpty>No services found.</CommandEmpty>
+                <CommandGroup heading="Services">
+                  <CommandItem
+                    value="All services entire service catalog"
+                    onSelect={() => {
+                      onServiceChange("ALL")
+                      setServicePickerOpen(false)
+                      setServiceQuery("")
+                    }}
+                    className="cursor-pointer gap-3 py-2.5"
+                  >
+                    <Avatar size="sm">
+                      <AvatarFallback className="bg-slate-100 font-semibold text-slate-500">
+                        —
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="min-w-0 flex-1 font-medium text-slate-700">
+                      All services
+                    </span>
+                    <Check
+                      className={cn(
+                        "text-blue-800",
+                        selectedServiceId === "ALL" ? "opacity-100" : "opacity-0",
+                      )}
+                    />
+                  </CommandItem>
+
+                  {options.services.map((service) => (
+                    <CommandItem
+                      key={service.id}
+                      value={`${service.name} ${service.id}`}
+                      onSelect={() => {
+                        onServiceChange(service.id)
+                        setServicePickerOpen(false)
+                        setServiceQuery("")
+                      }}
+                      className="cursor-pointer gap-3 py-2.5"
+                    >
+                      <Avatar size="sm" className="ring-2 ring-blue-50">
+                        <AvatarFallback className="bg-blue-50 font-semibold text-blue-950">
+                          {getInitials(service.name)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="min-w-0 flex-1 truncate font-medium text-slate-900">
+                        {service.name}
+                      </span>
+                      <Check
+                        className={cn(
+                          "text-blue-800",
+                          selectedServiceId === service.id
+                            ? "opacity-100"
+                            : "opacity-0",
+                        )}
+                      />
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+      </div>
+    </div>
+  )
+}
+
 export function CalendarWorkspace({
   tenantSlug,
   tenantId,
@@ -1434,10 +1874,15 @@ export function CalendarWorkspace({
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false)
   const [isAuditDialogOpen, setIsAuditDialogOpen] = useState(false)
   const [isCreateAppointmentOpen, setIsCreateAppointmentOpen] = useState(false)
+  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false)
   const [createAppointmentSeedDate, setCreateAppointmentSeedDate] = useState<Date | null>(null)
   const [createAppointmentSeedTime, setCreateAppointmentSeedTime] = useState<string | null>(null)
-  const [isUsersSectionOpen, setIsUsersSectionOpen] = useState(true)
-  const [isGroupsSectionOpen, setIsGroupsSectionOpen] = useState(true)
+  const [isUsersSectionOpen, setIsUsersSectionOpen] = useState(
+    safeFilters.filterMode !== "groups",
+  )
+  const [isGroupsSectionOpen, setIsGroupsSectionOpen] = useState(
+    safeFilters.filterMode === "groups",
+  )
   const drawerAppointment = selectedAppointment
 
   const activeRange = useMemo(
@@ -1629,6 +2074,12 @@ export function CalendarWorkspace({
     setCursorDate(startOfDay(day))
   }
 
+  const onOpenCreateAppointment = () => {
+    setCreateAppointmentSeedDate(null)
+    setCreateAppointmentSeedTime(null)
+    setIsCreateAppointmentOpen(true)
+  }
+
   const onSelectDayHour = (day: Date, hour: number) => {
     const seededDate = startOfDay(day)
     seededDate.setHours(hour, 0, 0, 0)
@@ -1654,12 +2105,26 @@ export function CalendarWorkspace({
     setSelectedUserIds([])
     setSelectedGroupIds([])
     setSelectedServiceId("ALL")
+    setIsUsersSectionOpen(true)
+    setIsGroupsSectionOpen(false)
   }
 
   const onSelectMiniCalendarDate = (day?: Date) => {
     if (!day) return
     setCursorDate(startOfDay(day))
     setMiniCalendarMonth(startOfMonth(day))
+  }
+
+  const onSelectAllUsers = () => {
+    setSelectedFilterMode("users")
+    setSelectedGroupIds([])
+    setSelectedUserIds([])
+  }
+
+  const onSelectAllGroups = () => {
+    setSelectedFilterMode("groups")
+    setSelectedUserIds([])
+    setSelectedGroupIds([])
   }
 
   const onToggleUser = (userId: string, checked: boolean) => {
@@ -1829,219 +2294,149 @@ export function CalendarWorkspace({
     }
   }
 
+  const filterControlsProps = {
+    options: safeMetaFilters,
+    selectedFilterMode,
+    selectedUserIds,
+    selectedGroupIds,
+    selectedServiceId,
+    isUsersSectionOpen,
+    isGroupsSectionOpen,
+    onUsersSectionOpenChange: (open: boolean) => {
+      setIsUsersSectionOpen(open)
+      if (open) setIsGroupsSectionOpen(false)
+    },
+    onGroupsSectionOpenChange: (open: boolean) => {
+      setIsGroupsSectionOpen(open)
+      if (open) setIsUsersSectionOpen(false)
+    },
+    onSelectAllUsers,
+    onSelectAllGroups,
+    onToggleUser,
+    onToggleGroup,
+    onServiceChange: (serviceId: string) => setSelectedServiceId(serviceId),
+  }
+  const navigationUnit =
+    selectedView === "month" ? "month" : selectedView === "week" ? "week" : "day"
+
+  const renderNavigationControls = (responsive = false) => (
+    <div className={cn("flex items-center gap-2", responsive && "w-full sm:w-auto")}>
+      <TooltipProvider delayDuration={150}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              aria-label={`Previous ${navigationUnit}`}
+              className={CALENDAR_ICON_BUTTON_CLASS}
+              onClick={onPrevious}
+            >
+              <ChevronLeft aria-hidden="true" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Previous {navigationUnit}</TooltipContent>
+        </Tooltip>
+
+        <Button
+          type="button"
+          variant="outline"
+          className={cn(
+            CALENDAR_SECONDARY_BUTTON_CLASS,
+            responsive && "min-w-0 flex-1 justify-center sm:flex-none",
+          )}
+          onClick={onToday}
+        >
+          Today
+        </Button>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              aria-label={`Next ${navigationUnit}`}
+              className={CALENDAR_ICON_BUTTON_CLASS}
+              onClick={onNext}
+            >
+              <ChevronRight aria-hidden="true" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Next {navigationUnit}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    </div>
+  )
+
+  const renderViewToggle = (fillAvailable = false) => (
+    <ToggleGroup
+      type="single"
+      spacing={1}
+      value={selectedView}
+      aria-label="Calendar view"
+      className={cn(
+        "rounded-full border border-slate-200 bg-slate-100 p-1",
+        fillAvailable && "grid w-full grid-cols-4",
+      )}
+      onValueChange={(value) => {
+        if (value) setSelectedView(value as CalendarView)
+      }}
+    >
+      {VIEW_OPTIONS.map((option) => (
+        <ToggleGroupItem
+          key={option.value}
+          value={option.value}
+          aria-label={`${option.label} view`}
+          className={cn(
+            CALENDAR_VIEW_TOGGLE_CLASS,
+            fillAvailable && "min-w-0 w-full px-2 sm:px-3",
+          )}
+        >
+          {option.label}
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
+  )
+
   return (
-    <section className="grid h-full min-h-0 gap-4 xl:grid-cols-[292px_minmax(0,1fr)] xl:items-start">
-      <aside className="xl:sticky xl:top-6 xl:self-start">
-        <div className="flex flex-col rounded-[24px] border border-slate-200 bg-white px-4 py-4 shadow-sm md:px-5 md:py-5">
-        <CreateAppointmentDialog
-          tenantId={tenantId}
-          tenantTimezone={tenantTimezone}
-          currentUserId={currentUserId}
-          open={isCreateAppointmentOpen}
-          onOpenChange={setIsCreateAppointmentOpen}
-          initialDate={createAppointmentSeedDate}
-          initialAssignedToUserId={
-            selectedFilterMode === "users" && selectedUserIds.length === 1
-              ? selectedUserIds[0]
-              : currentUserId
-          }
-          preferredSlotTime={createAppointmentSeedTime}
-          triggerLabel="Create appointment"
-          triggerClassName="h-11 w-full justify-center gap-2 rounded-2xl px-4 text-sm font-medium"
-          meetingIntervalMinutes={meta.settings.meetingIntervalMinutes}
-          meetingDurationMinutes={meta.settings.meetingDurationMinutes}
-          serviceOptions={safeMetaFilters.services}
-          assigneeOptions={safeMetaFilters.users}
-          onCreated={loadEvents}
-        />
+    <section className="grid h-full min-h-[calc(100dvh-var(--tenant-shell-header-height)-2rem)] gap-4 md:min-h-[calc(100dvh-var(--tenant-shell-header-height)-3rem)] xl:grid-cols-[292px_minmax(0,1fr)]">
+      <aside className="hidden xl:sticky xl:top-6 xl:block xl:self-start">
+        <div className="flex flex-col rounded-[24px] border border-slate-200 bg-white px-5 py-5 shadow-sm">
+          <Button
+            type="button"
+            variant="ghost"
+            className={cn(CALENDAR_PRIMARY_BUTTON_CLASS, "w-full justify-center")}
+            onClick={onOpenCreateAppointment}
+          >
+            <Plus data-icon="inline-start" aria-hidden="true" />
+            Create appointment
+          </Button>
 
-        <div className="mt-5 pt-2">
-          <Calendar
-            mode="single"
-            selected={cursorDate}
-            month={miniCalendarMonth}
-            onMonthChange={setMiniCalendarMonth}
-            onSelect={onSelectMiniCalendarDate}
-            className="w-full"
-            classNames={{
-              root: "w-full",
-              month: "w-full gap-3",
-              table: "w-full",
-              head_row: "grid grid-cols-7",
-              row: "grid grid-cols-7 mt-2",
-              cell: "text-center",
-              day: "aspect-square",
-            }}
+          <div className="mt-5 pt-2">
+            <MiniCalendar
+              selectedDate={cursorDate}
+              month={miniCalendarMonth}
+              onMonthChange={setMiniCalendarMonth}
+              onSelect={onSelectMiniCalendarDate}
+              className="!p-3"
+            />
+          </div>
+
+          <CalendarFilterControls
+            {...filterControlsProps}
+            className="mt-5 pt-3"
           />
-        </div>
-
-        <div className="mt-5 flex min-h-0 flex-1 flex-col overflow-hidden pt-3">
-
-          <div>
-            <button
-              type="button"
-              className="flex w-full cursor-pointer items-center justify-between py-4 text-left"
-              onClick={() => setIsUsersSectionOpen((current) => !current)}
-            >
-              <div>
-                <p className="text-sm font-semibold text-slate-950">Users</p>
-              </div>
-              <ChevronDown
-                className={cn(
-                  "h-4 w-4 text-slate-500 transition-transform",
-                  isUsersSectionOpen && "rotate-180",
-                )}
-              />
-            </button>
-
-            {isUsersSectionOpen ? (
-              <div className="py-1">
-                <label className="flex cursor-pointer items-center gap-3 py-3">
-                  <Checkbox
-                    {...getCheckboxColorProps("#172554")}
-                    checked={selectedFilterMode === "users" && selectedUserIds.length === 0}
-                    onCheckedChange={(checked) => {
-                      if (checked) {
-                        setSelectedFilterMode("users")
-                        setSelectedGroupIds([])
-                        setSelectedUserIds([])
-                      }
-                    }}
-                  />
-                  <span className="min-w-0 flex-1 text-sm font-medium text-slate-900">
-                    All team
-                  </span>
-                </label>
-
-                <div className="max-h-64 overflow-y-auto">
-                  {safeMetaFilters.users.map((user) => (
-                    <label
-                      key={user.id}
-                      className="flex cursor-pointer items-center gap-3 py-3"
-                    >
-                      <Checkbox
-                        {...getCheckboxColorProps(user.color)}
-                        checked={
-                          selectedFilterMode === "users" &&
-                          selectedUserIds.includes(user.id)
-                        }
-                        onCheckedChange={(checked) => onToggleUser(user.id, Boolean(checked))}
-                      />
-                      <span className="min-w-0 flex-1 text-sm font-medium text-slate-900">
-                        {user.label}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="mt-2">
-            <button
-              type="button"
-              className="flex w-full cursor-pointer items-center justify-between py-4 text-left"
-              onClick={() => setIsGroupsSectionOpen((current) => !current)}
-            >
-              <div>
-                <p className="text-sm font-semibold text-slate-950">Groups</p>
-              </div>
-              <ChevronDown
-                className={cn(
-                  "h-4 w-4 text-slate-500 transition-transform",
-                  isGroupsSectionOpen && "rotate-180",
-                )}
-              />
-            </button>
-
-            {isGroupsSectionOpen ? (
-              <div className="py-1">
-                <label className="flex cursor-pointer items-center gap-3 py-3">
-                  <Checkbox
-                    checked={selectedFilterMode === "groups" && selectedGroupIds.length === 0}
-                    onCheckedChange={(checked) => {
-                      if (checked) {
-                        setSelectedFilterMode("groups")
-                        setSelectedUserIds([])
-                        setSelectedGroupIds([])
-                      }
-                    }}
-                  />
-                  <span className="min-w-0 flex-1 text-sm font-medium text-slate-900">
-                    All groups
-                  </span>
-                </label>
-
-                <div className="max-h-64 overflow-y-auto">
-                  {safeMetaFilters.groups.length > 0 ? (
-                    safeMetaFilters.groups.map((group) => (
-                      <label
-                        key={group.id}
-                        className="flex cursor-pointer items-center gap-3 py-3"
-                      >
-                        <Checkbox
-                          checked={
-                            selectedFilterMode === "groups" &&
-                            selectedGroupIds.includes(group.id)
-                          }
-                          onCheckedChange={(checked) => onToggleGroup(group.id, Boolean(checked))}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium text-slate-900">
-                            {group.name}
-                          </p>
-                          <p className="mt-0.5 text-[11px] text-slate-400">
-                            {group.members.length} member
-                            {group.members.length === 1 ? "" : "s"}
-                          </p>
-                        </div>
-                      </label>
-                    ))
-                  ) : (
-                    <p className="py-4 text-sm text-slate-500">No groups created yet.</p>
-                  )}
-                </div>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="mt-2 py-4">
-            <div className="space-y-1">
-              <p className="text-sm font-semibold text-slate-950">Service</p>
-            </div>
-            <Select value={selectedServiceId} onValueChange={setSelectedServiceId}>
-              <SelectTrigger className="mt-3 border-blue-200 focus-visible:ring-blue-200">
-                <SelectValue placeholder="Choose service" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL">All services</SelectItem>
-                {safeMetaFilters.services.map((service) => (
-                  <SelectItem key={service.id} value={service.id}>
-                    {service.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
         </div>
       </aside>
 
-      <div className="flex min-h-0 flex-1 flex-col rounded-[24px] bg-white shadow-sm">
-        <div className="border-b border-slate-200 px-4 py-4 md:px-5">
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-3 rounded-[20px] border border-slate-200 bg-slate-50/60 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex items-center gap-2">
-                <Button type="button" variant="outline" size="icon" onClick={onPrevious}>
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-                <Button type="button" variant="outline" onClick={onToday}>
-                  Today
-                </Button>
-                <Button type="button" variant="outline" size="icon" onClick={onNext}>
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-                <div className="ml-2">
+      <div className="flex h-full min-h-0 flex-1 flex-col rounded-[24px] bg-white shadow-sm">
+        <div className="border-b border-slate-200 px-3 py-3 sm:px-4 sm:py-4 md:px-5">
+          <div className="flex flex-col gap-3 xl:gap-4">
+            <div className="hidden items-center justify-between gap-4 rounded-[20px] border border-slate-200 bg-slate-50/60 px-4 py-3 xl:flex">
+              <div className="flex min-w-0 items-center gap-3">
+                {renderNavigationControls()}
+                <div className="min-w-0">
                   <p className="text-sm font-semibold text-slate-950">{rangeLabel}</p>
                   <p className="text-xs text-slate-500">
                     {eventsData.items.length} appointment
@@ -2049,76 +2444,180 @@ export function CalendarWorkspace({
                   </p>
                 </div>
               </div>
+              {renderViewToggle()}
+            </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                {VIEW_OPTIONS.map((option) => {
-                  const isActive = selectedView === option.value
+            <div className="flex flex-col gap-3 rounded-[20px] border border-slate-200 bg-slate-50/60 p-3 sm:p-4 xl:hidden">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 px-1">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                    Current range
+                  </p>
+                  <p className="mt-0.5 truncate text-base font-semibold text-slate-950">
+                    {rangeLabel}
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {eventsData.items.length} appointment
+                    {eventsData.items.length === 1 ? "" : "s"} in this range
+                  </p>
+                </div>
 
-                  return (
-                    <Button
-                      key={option.value}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className={cn(
-                        "cursor-pointer border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950",
-                        isActive && "bg-blue-950 text-white hover:bg-blue-900 hover:text-white",
-                      )}
-                      onClick={() => {
-                        if (selectedView !== option.value) {
-                          setSelectedView(option.value)
-                        }
-                      }}
+                <div className="flex shrink-0 items-center gap-2">
+                  <TooltipProvider delayDuration={150}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          aria-label={
+                            activeFilterCount > 0
+                              ? `Filters, ${activeFilterCount} active`
+                              : "Filters"
+                          }
+                          className={cn(CALENDAR_ICON_BUTTON_CLASS, "relative")}
+                          onClick={() => setIsFilterSheetOpen(true)}
+                        >
+                          <Filter aria-hidden="true" />
+                          {activeFilterCount > 0 ? (
+                            <Badge className="pointer-events-none absolute -top-1.5 -right-1.5 h-4 min-w-4 justify-center rounded-full border-2 border-white px-1 text-[9px] leading-none">
+                              {activeFilterCount}
+                            </Badge>
+                          ) : null}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">
+                        {activeFilterCount > 0
+                          ? `Filters (${activeFilterCount} active)`
+                          : "Filters"}
+                      </TooltipContent>
+                    </Tooltip>
+
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          aria-label="Create appointment"
+                          className={cn(
+                            CALENDAR_PRIMARY_BUTTON_CLASS,
+                            "size-8 px-0",
+                          )}
+                          onClick={onOpenCreateAppointment}
+                        >
+                          <Plus aria-hidden="true" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">Create appointment</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+
+                  <Sheet open={isFilterSheetOpen} onOpenChange={setIsFilterSheetOpen}>
+                    <SheetContent
+                      side="right"
+                      className="flex h-full w-full flex-col gap-0 overflow-hidden border-l border-slate-200 bg-white p-0 sm:max-w-lg [&>button]:cursor-pointer"
                     >
-                      {option.label}
-                    </Button>
-                  )
-                })}
+                      <SheetHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
+                        <div
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+                        />
+                        <div
+                          aria-hidden="true"
+                          className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
+                        />
+                        <div className="relative pr-10">
+                          <div className="flex min-w-0 flex-col gap-1.5">
+                            <p className="text-xs font-semibold text-blue-700">Calendar view</p>
+                            <SheetTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                              Filter calendar
+                            </SheetTitle>
+                            <SheetDescription className="max-w-xl text-sm leading-6 text-slate-600">
+                              Choose which users, groups, and services appear in the calendar.
+                            </SheetDescription>
+                          </div>
+                        </div>
+                      </SheetHeader>
+
+                      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+                        <CalendarFilterControls
+                          {...filterControlsProps}
+                          constrainLists={false}
+                        />
+                      </div>
+
+                      <SheetFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:flex-row sm:justify-end sm:px-7">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className={CALENDAR_SECONDARY_BUTTON_CLASS}
+                          disabled={activeFilterCount === 0}
+                          onClick={onClearFilters}
+                        >
+                          Clear filters
+                        </Button>
+                        <SheetClose asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            className={CALENDAR_PRIMARY_BUTTON_CLASS}
+                          >
+                            Done
+                          </Button>
+                        </SheetClose>
+                      </SheetFooter>
+                    </SheetContent>
+                  </Sheet>
+                </div>
+              </div>
+
+              <div className="grid gap-2 border-t border-slate-200/80 pt-3 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
+                {renderNavigationControls(true)}
+                {renderViewToggle(true)}
               </div>
             </div>
 
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">
-                  Active filters
-                </span>
-                {activeFilterBadges.map((badge) => (
-                  <Badge
-                    key={badge.key}
-                    variant="secondary"
-                    className={cn(
-                      "gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700",
-                      badge.removable && "transition hover:bg-slate-100",
-                    )}
-                  >
-                    <span>{badge.label}</span>
-                    {badge.removable ? (
-                      <button
-                        type="button"
-                        aria-label={`Remove ${badge.label} filter`}
-                        onClick={badge.onRemove}
-                        className="inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-200 hover:text-slate-700"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    ) : null}
-                  </Badge>
-                ))}
-                {activeFilterCount === 0 ? (
-                  <span className="text-sm text-slate-500">No extra filters applied.</span>
-                ) : null}
-              </div>
+            {activeFilterCount > 0 ? (
+              <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-3 sm:flex-row sm:items-start sm:justify-between sm:px-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">
+                    Active filters
+                  </span>
+                  {activeFilterBadges.map((badge) => (
+                    <Badge
+                      key={badge.key}
+                      variant="secondary"
+                      className={cn(
+                        "gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700",
+                        badge.removable && "transition hover:bg-slate-100",
+                      )}
+                    >
+                      <span>{badge.label}</span>
+                      {badge.removable ? (
+                        <button
+                          type="button"
+                          aria-label={`Remove ${badge.label} filter`}
+                          onClick={badge.onRemove}
+                          className="inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-200 hover:text-slate-700"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      ) : null}
+                    </Badge>
+                  ))}
+                </div>
 
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
-                onClick={onClearFilters}
-              >
-                Clear filters
-              </Button>
-            </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className={CALENDAR_SECONDARY_BUTTON_CLASS}
+                  onClick={onClearFilters}
+                >
+                  Clear filters
+                </Button>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -2136,6 +2635,27 @@ export function CalendarWorkspace({
             renderView()
           )}
         </div>
+
+        <CreateAppointmentDialog
+          tenantId={tenantId}
+          tenantTimezone={tenantTimezone}
+          currentUserId={currentUserId}
+          open={isCreateAppointmentOpen}
+          onOpenChange={setIsCreateAppointmentOpen}
+          hideTrigger
+          initialDate={createAppointmentSeedDate}
+          initialAssignedToUserId={
+            selectedFilterMode === "users" && selectedUserIds.length === 1
+              ? selectedUserIds[0]
+              : currentUserId
+          }
+          preferredSlotTime={createAppointmentSeedTime}
+          meetingIntervalMinutes={meta.settings.meetingIntervalMinutes}
+          meetingDurationMinutes={meta.settings.meetingDurationMinutes}
+          serviceOptions={safeMetaFilters.services}
+          assigneeOptions={safeMetaFilters.users}
+          onCreated={loadEvents}
+        />
 
         <Sheet
           open={Boolean(selectedAppointment)}
@@ -2227,11 +2747,13 @@ export function CalendarWorkspace({
                                 <SelectValue placeholder="Select status" />
                               </SelectTrigger>
                               <SelectContent>
-                                {APPOINTMENT_STATUS_OPTIONS.map((option) => (
-                                  <SelectItem key={option.value} value={option.value}>
-                                    {option.label}
-                                  </SelectItem>
-                                ))}
+                                <SelectGroup>
+                                  {APPOINTMENT_STATUS_OPTIONS.map((option) => (
+                                    <SelectItem key={option.value} value={option.value}>
+                                      {option.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectGroup>
                               </SelectContent>
                             </Select>
                             <Button
