@@ -6,6 +6,7 @@ import {
   getContactServicesHref,
   getSafeContactServicesReturnTo,
   getSafeServiceEnrollmentReturnTo,
+  getServiceEnrollmentsHref,
   getServiceEnrollmentFollowUpsHref,
   getServiceEnrollmentHref,
   getServiceFollowUpsHref,
@@ -88,6 +89,10 @@ describe("service enrollment routes", () => {
   test("builds canonical services workspace routes", () => {
     assert.equal(getServicesOverviewHref("north agency"), "/app/north%20agency/services")
     assert.equal(
+      getServiceEnrollmentsHref("north agency"),
+      "/app/north%20agency/services/enrollments",
+    )
+    assert.equal(
       getServiceTransactionsHref("north agency"),
       "/app/north%20agency/services/transactions",
     )
@@ -110,6 +115,15 @@ describe("service enrollment routes", () => {
   })
 
   test("keeps safe service workspace return paths and query state", () => {
+    assert.equal(
+      getSafeServiceEnrollmentReturnTo({
+        tenantSlug: "north-agency",
+        contactId: "contact-1",
+        returnTo:
+          "/app/north-agency/services/enrollments?search=Garcia&statuses=IN_PROGRESS%2CCOMPLETED&page=3&pageSize=25",
+      }),
+      "/app/north-agency/services/enrollments?search=Garcia&statuses=IN_PROGRESS%2CCOMPLETED&page=3&pageSize=25",
+    )
     assert.equal(
       getSafeServiceEnrollmentReturnTo({
         tenantSlug: "north-agency",
@@ -138,7 +152,7 @@ describe("service enrollment routes", () => {
   })
 
   test("rejects cross-tenant and unrelated service return paths", () => {
-    const fallback = "/app/north-agency/services/transactions"
+    const fallback = "/app/north-agency/services/enrollments"
     const attempts = [
       "https://example.com/app/north-agency/services/transactions",
       "/app/south-agency/services/transactions",

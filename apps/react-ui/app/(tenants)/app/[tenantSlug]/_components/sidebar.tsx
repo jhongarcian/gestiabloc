@@ -54,6 +54,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChartNoAxesCombined,
+  ClipboardList,
   ReceiptText,
 } from "lucide-react"
 
@@ -77,11 +78,12 @@ const MENU_ITEMS: SidebarItem[] = [
 
 const SERVICE_ITEMS: SidebarItem[] = [
   { key: "services-overview", label: "Overview", path: "/services", icon: ChartNoAxesCombined },
+  { key: "services-enrollments", label: "Enrollments", path: "/services/enrollments", icon: ClipboardList },
   { key: "services-transactions", label: "Transactions", path: "/services/transactions", icon: ReceiptText },
   { key: "services-follow-ups", label: "Follow-ups", path: "/services/follow-ups", icon: RotateCw },
 ]
 
-type ActiveServiceItem = "overview" | "transactions" | "follow-ups" | null
+type ActiveServiceItem = "overview" | "enrollments" | "transactions" | "follow-ups" | null
 
 const SUPPORT_ITEMS: SidebarItem[] = [
   { key: "help", label: "Help", path: "/help", icon: HelpCircle },
@@ -483,9 +485,8 @@ export function AppSidebar({
 
   const activeServiceItem = useMemo<ActiveServiceItem>(() => {
     if (!isServicesRoute) return null
-    if (segments[1] === "transactions" || segments[1] === "enrollments") {
-      return "transactions"
-    }
+    if (segments[1] === "enrollments") return "enrollments"
+    if (segments[1] === "transactions") return "transactions"
     if (segments[1] === "follow-ups") return "follow-ups"
     return "overview"
   }, [isServicesRoute, segments])

@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto"
 import { type Response, Router } from "express"
 import { z } from "zod"
 
+import { Prisma } from "../generated/prisma/index.js"
+
 import { decryptCustomFieldValue } from "../lib/contact-custom-field-encryption.js"
 import {
   ContactServiceNotesQuerySchema,
@@ -58,6 +60,11 @@ import {
   getServiceTransactionContactName,
   getServiceTransactionFinancials,
 } from "../lib/service-transactions.js"
+import {
+  ServiceEnrollmentsListQuerySchema,
+  getLatestServiceEnrollmentActivityAt,
+  getServiceEnrollmentContactName,
+} from "../lib/service-enrollments.js"
 import {
   buildFollowUpStepResolutionUpdate,
   isServiceFollowUpWorkflowCompleted,
@@ -2249,6 +2256,250 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
         pageSize: query.pageSize,
         total,
         totalPages,
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const parsedQuery = ServiceEnrollmentsListQuerySchema.safeParse(req.query)
+
+    if (!parsedQuery.success) {
+      throw parsedQuery.error
+    }
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const query = parsedQuery.data
+    const skip = (query.page - 1) * query.pageSize
+    const conditions: Prisma.Sql[] = [Prisma.sql`cs."tenantId" = ${tenantId}`]
+
+    if (query.statuses?.length) {
+      conditions.push(
+        Prisma.sql`cs."status"::text IN (${Prisma.join(query.statuses)})`,
+      )
+    }
+    if (query.serviceId) {
+      conditions.push(Prisma.sql`cs."serviceId" = ${query.serviceId}`)
+    }
+    if (query.followUpTemplateId) {
+      conditions.push(
+        Prisma.sql`cs."followUpTemplateId" = ${query.followUpTemplateId}`,
+      )
+    } else if (query.withoutTemplate) {
+      conditions.push(Prisma.sql`cs."followUpTemplateId" IS NULL`)
+    }
+    if (query.assignedToUserId) {
+      conditions.push(
+        Prisma.sql`cs."followUpCoordinatorUserId" = ${query.assignedToUserId}`,
+      )
+    } else if (query.unassigned) {
+      conditions.push(Prisma.sql`cs."followUpCoordinatorUserId" IS NULL`)
+    }
+    if (query.search) {
+      const searchPattern = `%${query.search}%`
+      conditions.push(Prisma.sql`(
+        CONCAT_WS(' ', c."firstName", c."middleName", c."lastName") ILIKE ${searchPattern}
+        OR COALESCE(c."phone", '') ILIKE ${searchPattern}
+        OR COALESCE(c."email", '') ILIKE ${searchPattern}
+        OR s."name" ILIKE ${searchPattern}
+        OR COALESCE(template."name", '') ILIKE ${searchPattern}
+        OR COALESCE(coordinator."name", '') ILIKE ${searchPattern}
+        OR COALESCE(coordinator."email", '') ILIKE ${searchPattern}
+      )`)
+    }
+
+    const whereClause = Prisma.sql`${Prisma.join(conditions, " AND ")}`
+    const joins = Prisma.sql`
+      FROM "ContactService" cs
+      INNER JOIN "Contact" c
+        ON c."id" = cs."contactId" AND c."tenantId" = cs."tenantId"
+      INNER JOIN "Service" s
+        ON s."id" = cs."serviceId" AND s."tenantId" = cs."tenantId"
+      LEFT JOIN "ServiceFollowUpTemplate" template
+        ON template."id" = cs."followUpTemplateId" AND template."tenantId" = cs."tenantId"
+      LEFT JOIN "User" coordinator
+        ON coordinator."id" = cs."followUpCoordinatorUserId"
+    `
+
+    type EnrollmentCountRow = { total: bigint }
+    type EnrollmentPageRow = {
+      id: string
+      lastActivityAt: Date
+    }
+
+    const [countRows, pageRows] = await prisma.$transaction([
+      prisma.$queryRaw<EnrollmentCountRow[]>(Prisma.sql`
+        SELECT COUNT(*)::bigint AS total
+        ${joins}
+        WHERE ${whereClause}
+      `),
+      prisma.$queryRaw<EnrollmentPageRow[]>(Prisma.sql`
+        SELECT
+          cs."id" AS id,
+          GREATEST(
+            cs."updatedAt",
+            COALESCE((
+              SELECT MAX(payment."updatedAt")
+              FROM "ContactServicePayment" payment
+              WHERE payment."tenantId" = ${tenantId}
+                AND payment."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(service_note."updatedAt")
+              FROM "ContactServiceNote" service_note
+              WHERE service_note."tenantId" = ${tenantId}
+                AND service_note."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(contact_note."updatedAt")
+              FROM "ContactNote" contact_note
+              WHERE contact_note."tenantId" = ${tenantId}
+                AND contact_note."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(checklist_item."updatedAt")
+              FROM "ContactServiceChecklistItem" checklist_item
+              WHERE checklist_item."tenantId" = ${tenantId}
+                AND checklist_item."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(checklist_activity."createdAt")
+              FROM "ContactServiceChecklistActivity" checklist_activity
+              WHERE checklist_activity."tenantId" = ${tenantId}
+                AND checklist_activity."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(follow_up_step."updatedAt")
+              FROM "ContactServiceFollowUpStep" follow_up_step
+              WHERE follow_up_step."tenantId" = ${tenantId}
+                AND follow_up_step."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(follow_up_run."updatedAt")
+              FROM "ContactServiceFollowUpRun" follow_up_run
+              WHERE follow_up_run."tenantId" = ${tenantId}
+                AND follow_up_run."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(execution_log."createdAt")
+              FROM "ServiceFollowUpExecutionLog" execution_log
+              WHERE execution_log."tenantId" = ${tenantId}
+                AND execution_log."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(linked_task."updatedAt")
+              FROM "Task" linked_task
+              WHERE linked_task."tenantId" = ${tenantId}
+                AND linked_task."contactServiceId" = cs."id"
+            ), cs."updatedAt")
+          ) AS "lastActivityAt"
+        ${joins}
+        WHERE ${whereClause}
+        ORDER BY "lastActivityAt" DESC, cs."id" DESC
+        LIMIT ${query.pageSize}
+        OFFSET ${skip}
+      `),
+    ])
+
+    const selectedIds = pageRows.map((row) => row.id)
+    const enrollments = selectedIds.length
+      ? await prisma.contactService.findMany({
+          where: {
+            tenantId,
+            id: { in: selectedIds },
+          },
+          select: {
+            id: true,
+            status: true,
+            startedAt: true,
+            updatedAt: true,
+            contact: {
+              select: {
+                id: true,
+                firstName: true,
+                middleName: true,
+                lastName: true,
+                phone: true,
+                email: true,
+              },
+            },
+            service: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            followUpTemplate: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            followUpCoordinator: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+          },
+        })
+      : []
+
+    const enrollmentById = new Map(
+      enrollments.map((enrollment) => [enrollment.id, enrollment]),
+    )
+    const activityById = new Map(pageRows.map((row) => [row.id, row.lastActivityAt]))
+    const total = Number(countRows[0]?.total ?? 0)
+
+    return res.json({
+      ok: true,
+      items: selectedIds.flatMap((id) => {
+        const enrollment = enrollmentById.get(id)
+        if (!enrollment) return []
+
+        const coordinator = enrollment.followUpCoordinator
+        const lastActivityAt = getLatestServiceEnrollmentActivityAt([
+          enrollment.updatedAt,
+          activityById.get(id),
+        ])
+
+        return [{
+          id: enrollment.id,
+          contact: {
+            id: enrollment.contact.id,
+            displayName: getServiceEnrollmentContactName(enrollment.contact),
+            phone: enrollment.contact.phone,
+            email: enrollment.contact.email,
+          },
+          service: enrollment.service,
+          template: enrollment.followUpTemplate,
+          status: enrollment.status,
+          coordinator: coordinator
+            ? {
+                id: coordinator.id,
+                name: coordinator.name?.trim() || coordinator.email,
+                email: coordinator.email,
+                image: coordinator.image,
+              }
+            : null,
+          startedAt: enrollment.startedAt,
+          lastActivityAt,
+        }]
+      }),
+      pagination: {
+        page: query.page,
+        pageSize: query.pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
       },
     })
   } catch (error) {

@@ -339,7 +339,7 @@ export function TenantShell({
       const isServicesWorkspaceSegment =
         segments[0] === "services" &&
         index === 1 &&
-        (segment === "transactions" || segment === "follow-ups")
+        (segment === "enrollments" || segment === "transactions" || segment === "follow-ups")
       const isServiceIdSegment =
         (segments[0] === "account-settings" &&
           segments[1] === "services" &&
@@ -358,8 +358,8 @@ export function TenantShell({
       }
       if (isServiceEnrollmentsSegment) {
         items.push({
-          label: "Transactions",
-          href: `${basePath}/services/transactions`,
+          label: "Enrollments",
+          href: `${basePath}/services/enrollments`,
         })
         return
       }

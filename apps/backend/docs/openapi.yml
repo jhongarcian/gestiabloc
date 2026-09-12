@@ -4222,6 +4222,88 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/enrollments:
+    get:
+      tags: [Services]
+      summary: List service enrollments
+      description: Returns a tenant-scoped operational register ordered by the newest persisted enrollment activity, then enrollment ID. The activity timestamp considers enrollment changes, payments, service and contact notes, checklist changes, follow-up steps and runs, execution logs, and linked tasks.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            enum: [10, 25]
+            default: 10
+        - in: query
+          name: search
+          description: Matches contact name, phone, email, service name, template name, or coordinator name and email.
+          schema:
+            type: string
+            maxLength: 200
+        - in: query
+          name: statuses
+          description: Comma-separated enrollment statuses. Omit to include every status.
+          schema:
+            type: string
+          example: IN_PROGRESS,PENDING_PAYMENT
+        - in: query
+          name: serviceId
+          schema:
+            type: string
+        - in: query
+          name: followUpTemplateId
+          description: Cannot be combined with withoutTemplate=true.
+          schema:
+            type: string
+        - in: query
+          name: withoutTemplate
+          description: When true, returns only manual-flow enrollments. Cannot be combined with followUpTemplateId.
+          schema:
+            type: boolean
+        - in: query
+          name: assignedToUserId
+          description: Filters by the enrollment follow-up coordinator. Cannot be combined with unassigned=true.
+          schema:
+            type: string
+        - in: query
+          name: unassigned
+          description: When true, returns only enrollments without a follow-up coordinator. Cannot be combined with assignedToUserId.
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Service enrollments returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceEnrollmentsResponse"
+        "400":
+          description: Invalid or mutually exclusive filters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/catalog/{serviceId}/summary:
     get:
       tags: [Services]
@@ -8841,6 +8923,91 @@ components:
               type: integer
             pageSize:
               type: integer
+            total:
+              type: integer
+            totalPages:
+              type: integer
+    ServiceEnrollmentRegisterItem:
+      type: object
+      required: [id, contact, service, template, status, coordinator, startedAt, lastActivityAt]
+      properties:
+        id:
+          type: string
+        contact:
+          type: object
+          required: [id, displayName, phone, email]
+          properties:
+            id:
+              type: string
+            displayName:
+              type: string
+            phone:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+        service:
+          type: object
+          required: [id, name]
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        template:
+          type: object
+          nullable: true
+          required: [id, name]
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        status:
+          type: string
+          enum: [IN_PROGRESS, PENDING_PAYMENT, COMPLETED, CANCELED]
+        coordinator:
+          type: object
+          nullable: true
+          required: [id, name, email, image]
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            email:
+              type: string
+            image:
+              type: string
+              nullable: true
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastActivityAt:
+          type: string
+          format: date-time
+    ServiceEnrollmentsResponse:
+      type: object
+      required: [ok, items, pagination]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceEnrollmentRegisterItem"
+        pagination:
+          type: object
+          required: [page, pageSize, total, totalPages]
+          properties:
+            page:
+              type: integer
+            pageSize:
+              type: integer
+              enum: [10, 25]
             total:
               type: integer
             totalPages:

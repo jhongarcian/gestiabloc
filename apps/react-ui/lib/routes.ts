@@ -14,6 +14,10 @@ export function getServiceTransactionsHref(tenantSlug: string) {
   return `${getServicesOverviewHref(tenantSlug)}/transactions`
 }
 
+export function getServiceEnrollmentsHref(tenantSlug: string) {
+  return `${getServicesOverviewHref(tenantSlug)}/enrollments`
+}
+
 export function getServiceFollowUpsHref(tenantSlug: string) {
   return `${getServicesOverviewHref(tenantSlug)}/follow-ups`
 }
@@ -143,7 +147,7 @@ export function getSafeServiceEnrollmentReturnTo({
   tenantSlug: string
   contactId?: string | null
 }) {
-  const fallback = getServiceTransactionsHref(tenantSlug)
+  const fallback = getServiceEnrollmentsHref(tenantSlug)
   if (!returnTo?.startsWith("/")) return fallback
 
   try {
@@ -152,6 +156,7 @@ export function getSafeServiceEnrollmentReturnTo({
 
     const allowedPaths = new Set([
       getServicesOverviewHref(tenantSlug),
+      getServiceEnrollmentsHref(tenantSlug),
       getServiceTransactionsHref(tenantSlug),
       getServiceFollowUpsHref(tenantSlug),
       ...(contactId ? [getContactServicesHref({ tenantSlug, contactId })] : []),

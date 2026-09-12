@@ -1181,6 +1181,15 @@ export function ContactServiceDetailsPanel({
     tenantSlug,
     contactId: resolvedContactId,
   })
+  const backLabel = backHref.includes("/services/transactions")
+    ? "Back to transactions"
+    : backHref.includes("/services/follow-ups")
+      ? "Back to follow-ups"
+      : backHref.includes("/services/enrollments")
+        ? "Back to enrollments"
+        : backHref.includes("/contacts/")
+          ? "Back to contact services"
+          : "Back to services"
   const isServiceNoteMutating = isNoteSaving || isDeletingServiceNote
   const canEditActiveServiceNote =
     serviceNoteDialogMode === "create" ||
@@ -2834,8 +2843,8 @@ export function ContactServiceDetailsPanel({
               <div className="flex min-w-0 items-center gap-2">
               <Link
                 href={backHref}
-                aria-label={`Back to ${serviceData.contactName?.trim() || "contact"} services`}
-                title="Back to enrolled services"
+                aria-label={backLabel}
+                title={backLabel}
                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white/85 text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
               >
                 <ArrowLeft className="h-4 w-4" aria-hidden="true" />
