@@ -55,6 +55,10 @@ import {
 import { canChangeServiceFollowUpStepAssignee } from "../lib/service-followup-step-permissions.js"
 import { getFollowUpListDateRanges } from "../lib/service-followup-list-date-range.js"
 import {
+  getServiceTransactionContactName,
+  getServiceTransactionFinancials,
+} from "../lib/service-transactions.js"
+import {
   buildFollowUpStepResolutionUpdate,
   isServiceFollowUpWorkflowCompleted,
 } from "../lib/service-followup-ownership.js"
@@ -439,6 +443,14 @@ const ServicesCatalogSummaryPresetSchema = z.enum([
   "CUSTOM",
 ])
 
+const ServiceTransactionsRangePresetSchema = z.enum([
+  "ALL_TIME",
+  "THIS_MONTH",
+  "LAST_MONTH",
+  "LAST_3_MONTHS",
+  "CUSTOM",
+])
+
 const OptionalDateOnlySchema = z.preprocess(
   (value) => {
     if (typeof value !== "string") return value
@@ -470,6 +482,43 @@ const ServicesCatalogSummaryQuerySchema = z
         code: z.ZodIssueCode.custom,
         path: ["to"],
         message: "to is required when preset is CUSTOM",
+      })
+    }
+  })
+
+const ServiceTransactionsListQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce
+      .number()
+      .int()
+      .refine((value) => value === 10 || value === 25, {
+        message: "pageSize must be 10 or 25",
+      })
+      .default(10),
+    search: z.string().trim().max(200).optional(),
+    serviceId: z.string().trim().min(1).optional(),
+    status: ContactServiceStatusSchema.optional(),
+    rangePreset: ServiceTransactionsRangePresetSchema.default("ALL_TIME"),
+    from: OptionalDateOnlySchema,
+    to: OptionalDateOnlySchema,
+  })
+  .superRefine((value, ctx) => {
+    if (value.rangePreset !== "CUSTOM") return
+
+    if (!value.from) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["from"],
+        message: "from is required when rangePreset is CUSTOM",
+      })
+    }
+
+    if (!value.to) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["to"],
+        message: "to is required when rangePreset is CUSTOM",
       })
     }
   })
@@ -1081,6 +1130,22 @@ function getServicesCatalogSummaryRange(
     from: query.from!,
     to: query.to!,
   }
+}
+
+function getServiceTransactionsRange(
+  query: z.infer<typeof ServiceTransactionsListQuerySchema>,
+  timezone: string,
+) {
+  if (query.rangePreset === "ALL_TIME") return null
+
+  return getServicesCatalogSummaryRange(
+    {
+      preset: query.rangePreset,
+      from: query.from,
+      to: query.to,
+    },
+    timezone,
+  )
 }
 
 async function summarizeContactServicePayments(
@@ -1991,6 +2056,199 @@ router.get("/:tenantId/catalog/:serviceId/summary", requireAuth, async (req, res
           from: range.from,
           to: range.to,
         },
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const query = ServiceTransactionsListQuerySchema.parse(req.query)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { timezone: true },
+    })
+    const timezone = getSafeTimezone(tenant?.timezone)
+    const range = getServiceTransactionsRange(query, timezone)
+    const skip = (query.page - 1) * query.pageSize
+    const searchableValue = query.search?.trim()
+    const andClauses: Array<Record<string, unknown>> = []
+
+    if (range) {
+      andClauses.push({
+        OR: [
+          {
+            purchasedAt: {
+              gte: range.start,
+              lt: range.end,
+            },
+          },
+          {
+            purchasedAt: null,
+            createdAt: {
+              gte: range.start,
+              lt: range.end,
+            },
+          },
+        ],
+      })
+    }
+
+    if (searchableValue) {
+      andClauses.push({
+        OR: [
+          {
+            service: {
+              name: { contains: searchableValue, mode: "insensitive" as const },
+            },
+          },
+          {
+            contact: buildRelatedContactSearchWhere(searchableValue),
+          },
+        ],
+      })
+    }
+
+    const where = {
+      tenantId,
+      ...(query.serviceId ? { serviceId: query.serviceId } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(andClauses.length ? { AND: andClauses } : {}),
+    }
+    const financialWhere = {
+      AND: [where, { status: { not: "CANCELED" as const } }],
+    }
+
+    const [total, transactions, currencies] = await prisma.$transaction([
+      prismaWithServices.contactService.count({ where }),
+      prismaWithServices.contactService.findMany({
+        where,
+        orderBy: [
+          { purchasedAt: { sort: "desc", nulls: "last" } },
+          { createdAt: "desc" },
+          { id: "desc" },
+        ],
+        skip,
+        take: query.pageSize,
+        select: {
+          id: true,
+          status: true,
+          purchasedAt: true,
+          createdAt: true,
+          totalPriceCents: true,
+          currency: true,
+          contact: {
+            select: {
+              id: true,
+              firstName: true,
+              middleName: true,
+              lastName: true,
+              phone: true,
+              email: true,
+            },
+          },
+          service: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          payments: {
+            select: {
+              amountCents: true,
+            },
+          },
+        },
+      }),
+      prismaWithServices.contactService.findMany({
+        where,
+        distinct: ["currency"],
+        select: { currency: true },
+        orderBy: { currency: "asc" },
+      }),
+    ])
+
+    const totalsByCurrency = await Promise.all(
+      currencies.map(async ({ currency }: { currency: string }) => {
+        const currencyWhere = {
+          AND: [financialWhere, { currency }],
+        }
+        const [sales, payments] = await Promise.all([
+          prismaWithServices.contactService.aggregate({
+            where: currencyWhere,
+            _sum: { totalPriceCents: true },
+          }),
+          prismaWithServices.contactServicePayment.aggregate({
+            where: {
+              tenantId,
+              contactService: {
+                is: currencyWhere,
+              },
+            },
+            _sum: { amountCents: true },
+          }),
+        ])
+        const grossSalesCents = sales._sum.totalPriceCents ?? 0
+        const collectedCents = payments._sum.amountCents ?? 0
+
+        return {
+          currency,
+          grossSalesCents,
+          collectedCents,
+          outstandingCents: Math.max(0, grossSalesCents - collectedCents),
+        }
+      }),
+    )
+
+    const totalPages = Math.max(1, Math.ceil(total / query.pageSize))
+
+    return res.json({
+      ok: true,
+      items: transactions.map((transaction: any) => {
+        const financials = getServiceTransactionFinancials(
+          transaction.totalPriceCents,
+          transaction.payments,
+        )
+
+        return {
+          id: transaction.id,
+          purchasedAt: transaction.purchasedAt ?? transaction.createdAt,
+          status: transaction.status,
+          contact: {
+            id: transaction.contact.id,
+            displayName: getServiceTransactionContactName(transaction.contact),
+            phone: transaction.contact.phone,
+            email: transaction.contact.email,
+          },
+          service: transaction.service,
+          currency: transaction.currency,
+          totalPriceCents: transaction.totalPriceCents,
+          ...financials,
+        }
+      }),
+      summary: {
+        transactionCount: total,
+        totalsByCurrency,
+        excludesCanceledTransactions: true,
+      },
+      range: {
+        preset: query.rangePreset,
+        from: range?.from ?? null,
+        to: range?.to ?? null,
+      },
+      pagination: {
+        page: query.page,
+        pageSize: query.pageSize,
+        total,
+        totalPages,
       },
     })
   } catch (error) {

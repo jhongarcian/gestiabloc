@@ -6,6 +6,34 @@ export type ServiceEnrollmentView = (typeof SERVICE_ENROLLMENT_VIEWS)[number]
 
 const encodePathSegment = (value: string) => encodeURIComponent(value)
 
+export function getServicesOverviewHref(tenantSlug: string) {
+  return `/app/${encodePathSegment(tenantSlug)}/services`
+}
+
+export function getServiceTransactionsHref(tenantSlug: string) {
+  return `${getServicesOverviewHref(tenantSlug)}/transactions`
+}
+
+export function getServiceFollowUpsHref(tenantSlug: string) {
+  return `${getServicesOverviewHref(tenantSlug)}/follow-ups`
+}
+
+export function appendSearchParams(
+  href: string,
+  searchParams: Record<string, string | string[] | undefined>,
+) {
+  const query = new URLSearchParams()
+
+  for (const [key, value] of Object.entries(searchParams)) {
+    for (const item of Array.isArray(value) ? value : value !== undefined ? [value] : []) {
+      query.append(key, item)
+    }
+  }
+
+  const queryString = query.toString()
+  return queryString ? `${href}?${queryString}` : href
+}
+
 export function parsePositivePage(value: string | null | undefined, fallback = 1) {
   const parsed = Number(value)
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
@@ -101,6 +129,37 @@ export function getSafeContactServicesReturnTo({
       page: parsePositivePage(parsed.searchParams.get("page")),
       pageSize: parseContactServicesPageSize(parsed.searchParams.get("pageSize")),
     })
+  } catch {
+    return fallback
+  }
+}
+
+export function getSafeServiceEnrollmentReturnTo({
+  returnTo,
+  tenantSlug,
+  contactId,
+}: {
+  returnTo: string | null | undefined
+  tenantSlug: string
+  contactId?: string | null
+}) {
+  const fallback = getServiceTransactionsHref(tenantSlug)
+  if (!returnTo?.startsWith("/")) return fallback
+
+  try {
+    const parsed = new URL(returnTo, "https://gestiabloc.local")
+    if (parsed.origin !== "https://gestiabloc.local") return fallback
+
+    const allowedPaths = new Set([
+      getServicesOverviewHref(tenantSlug),
+      getServiceTransactionsHref(tenantSlug),
+      getServiceFollowUpsHref(tenantSlug),
+      ...(contactId ? [getContactServicesHref({ tenantSlug, contactId })] : []),
+    ])
+
+    if (!allowedPaths.has(parsed.pathname)) return fallback
+
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`
   } catch {
     return fallback
   }

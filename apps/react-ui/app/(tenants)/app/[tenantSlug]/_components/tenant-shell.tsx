@@ -128,8 +128,10 @@ declare global {
   }
 }
 
-const formatSegment = (segment: string) =>
-  segment.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase())
+const formatSegment = (segment: string) => {
+  if (segment === "follow-ups") return "Follow-ups"
+  return segment.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase())
+}
 
 const formatRole = (role?: string | null) =>
   role ? formatSegment(role.toLowerCase()) : null
@@ -334,12 +336,17 @@ export function TenantShell({
         segments[0] === "services" && segments[1] === "enrollments"
       const isServiceEnrollmentsSegment = isServiceEnrollmentRoute && index === 1
       const isServiceEnrollmentViewSegment = isServiceEnrollmentRoute && index >= 3
+      const isServicesWorkspaceSegment =
+        segments[0] === "services" &&
+        index === 1 &&
+        (segment === "transactions" || segment === "follow-ups")
       const isServiceIdSegment =
         (segments[0] === "account-settings" &&
           segments[1] === "services" &&
           index === 2) ||
         (segments[0] === "services" &&
-          index === (isServiceEnrollmentRoute ? 2 : 1))
+          index === (isServiceEnrollmentRoute ? 2 : 1) &&
+          !isServicesWorkspaceSegment)
       const isServiceFollowUpsSegment =
         segments[0] === "account-settings" &&
         segments[1] === "services" &&
@@ -350,6 +357,10 @@ export function TenantShell({
         return
       }
       if (isServiceEnrollmentsSegment) {
+        items.push({
+          label: "Transactions",
+          href: `${basePath}/services/transactions`,
+        })
         return
       }
       if (isServiceEnrollmentViewSegment) {
@@ -476,7 +487,9 @@ export function TenantShell({
         : segments[0] === "services"
           ? segments[1] === "enrollments"
             ? segments[2]
-            : segments[1]
+            : segments[1] === "transactions" || segments[1] === "follow-ups"
+              ? null
+              : segments[1]
           : null
     if (!serviceId) {
       setServiceCrumbLabel(null)

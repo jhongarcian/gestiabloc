@@ -99,7 +99,7 @@ import {
 } from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
 import {
-  getSafeContactServicesReturnTo,
+  getSafeServiceEnrollmentReturnTo,
   getServiceEnrollmentFollowUpsHref,
   getServiceEnrollmentHref,
   type ServiceEnrollmentView,
@@ -1176,9 +1176,11 @@ export function ContactServiceDetailsPanel({
   const [isSavingStepTask, setIsSavingStepTask] = useState(false)
 
   const resolvedContactId = item?.contactId ?? overview?.contactId ?? null
-  const backHref = resolvedContactId
-    ? getSafeContactServicesReturnTo({ returnTo, tenantSlug, contactId: resolvedContactId })
-    : `/app/${encodeURIComponent(tenantSlug)}/services`
+  const backHref = getSafeServiceEnrollmentReturnTo({
+    returnTo,
+    tenantSlug,
+    contactId: resolvedContactId,
+  })
   const isServiceNoteMutating = isNoteSaving || isDeletingServiceNote
   const canEditActiveServiceNote =
     serviceNoteDialogMode === "create" ||
@@ -1443,7 +1445,7 @@ export function ContactServiceDetailsPanel({
 
   const onAddPayment = async () => {
     if (!canManageSensitiveServiceActions) {
-      toast.error("You do not have permission to add transactions.")
+      toast.error("You do not have permission to record payments.")
       return
     }
     if (!item) return
@@ -2882,7 +2884,7 @@ export function ContactServiceDetailsPanel({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    aria-label="Add transaction"
+                  aria-label="Record payment"
                     className="size-8 shrink-0 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900 hover:text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
                     onClick={() => {
                       setIsPaymentOpen(true)
@@ -2894,7 +2896,7 @@ export function ContactServiceDetailsPanel({
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="top" sideOffset={8}>
-                  {canAddPayments ? "Add transaction" : "No remaining balance"}
+                  {canAddPayments ? "Record payment" : "No remaining balance"}
                 </TooltipContent>
               </Tooltip>
             ) : null}
@@ -4266,7 +4268,7 @@ export function ContactServiceDetailsPanel({
                     Payments
                   </h2>
                   <p className="mt-1 text-sm text-slate-600">
-                    Review recorded payments and add a new transaction when more balance is collected.
+                    Review recorded payments and record another payment when more balance is collected.
                   </p>
                 </div>
                 {canManageSensitiveServiceActions ? (
@@ -4278,7 +4280,7 @@ export function ContactServiceDetailsPanel({
                     disabled={!canAddPayments}
                   >
                     <CircleDollarSign data-icon="inline-start" />
-                    Add transaction
+                    Record payment
                   </Button>
                 ) : null}
               </div>
@@ -4371,7 +4373,7 @@ export function ContactServiceDetailsPanel({
                             className="w-fit cursor-pointer rounded-full border-slate-200 bg-white"
                             onClick={() => openEditPayment(payment)}
                           >
-                            Review transaction
+                            Review payment
                           </Button>
                         ) : null}
                       </article>
@@ -5374,7 +5376,7 @@ export function ContactServiceDetailsPanel({
               <div className="flex max-w-xl min-w-0 flex-col gap-1.5">
                 <p className="text-xs font-semibold text-blue-700">Service payment</p>
                 <DialogTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
-                  Add transaction
+                  Record payment
                 </DialogTitle>
                 <DialogDescription className="max-w-lg text-sm leading-6 text-slate-600">
                   Record a payment for {item.service.name} and update the remaining service balance.
@@ -5451,7 +5453,7 @@ export function ContactServiceDetailsPanel({
                     </Select>
                     {paymentEntryMode === "PARTIAL" ? (
                       <FieldDescription className="text-xs">
-                        {addPaymentPlanSummary} The next suggested payment updates after this transaction.
+                        {addPaymentPlanSummary} The next suggested payment updates after this payment.
                       </FieldDescription>
                     ) : null}
                   </Field>
@@ -5556,7 +5558,7 @@ export function ContactServiceDetailsPanel({
                       className="min-h-32 resize-y rounded-xl border-slate-200 bg-slate-50/60 px-4 py-3 text-sm leading-6 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
                     />
                     <FieldDescription className="text-xs">
-                      This context will appear with the transaction in payment history.
+                      This context will appear with the payment in payment history.
                     </FieldDescription>
                   </Field>
                 </FieldGroup>
@@ -5582,7 +5584,7 @@ export function ContactServiceDetailsPanel({
                 {isPaymentSaving ? (
                   <Loader2 data-icon="inline-start" className="animate-spin" />
                 ) : null}
-                {isPaymentSaving ? "Creating..." : "Add transaction"}
+                {isPaymentSaving ? "Recording..." : "Record payment"}
               </Button>
             </DialogFooter>
           </form>

@@ -1,8 +1,8 @@
 import { permanentRedirect } from "next/navigation"
 
-import { appendSearchParams, getServiceFollowUpsHref } from "@/lib/routes"
+import { appendSearchParams, getServiceTransactionsHref } from "@/lib/routes"
 
-export default async function FollowUpsPage({
+export default async function LegacyBillingPage({
   params,
   searchParams,
 }: {
@@ -11,6 +11,6 @@ export default async function FollowUpsPage({
 }) {
   const { tenantSlug } = await params
   permanentRedirect(
-    appendSearchParams(getServiceFollowUpsHref(tenantSlug), await searchParams),
+    appendSearchParams(getServiceTransactionsHref(tenantSlug), await searchParams),
   )
 }

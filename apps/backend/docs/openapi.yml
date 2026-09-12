@@ -4145,6 +4145,83 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/transactions:
+    get:
+      tags: [Services]
+      summary: List sold service transactions
+      description: Returns tenant-scoped sold services with collected and remaining payment amounts. Financial summaries exclude canceled transactions and are grouped by currency.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            enum: [10, 25]
+            default: 10
+        - in: query
+          name: search
+          description: Matches contact name, phone, email, or service name.
+          schema:
+            type: string
+            maxLength: 200
+        - in: query
+          name: serviceId
+          schema:
+            type: string
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [IN_PROGRESS, PENDING_PAYMENT, COMPLETED, CANCELED]
+        - in: query
+          name: rangePreset
+          schema:
+            $ref: "#/components/schemas/ServiceTransactionsRangePreset"
+        - in: query
+          name: from
+          description: Required with a custom range; interpreted in the tenant timezone.
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        - in: query
+          name: to
+          description: Required with a custom range; interpreted in the tenant timezone.
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      responses:
+        "200":
+          description: Service transactions returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceTransactionsResponse"
+        "400":
+          description: Invalid filters or date range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/catalog/{serviceId}/summary:
     get:
       tags: [Services]
@@ -8504,6 +8581,9 @@ components:
     ServicesSummaryRangePreset:
       type: string
       enum: [THIS_MONTH, LAST_MONTH, LAST_3_MONTHS, CUSTOM]
+    ServiceTransactionsRangePreset:
+      type: string
+      enum: [ALL_TIME, THIS_MONTH, LAST_MONTH, LAST_3_MONTHS, CUSTOM]
     InstallmentFrequency:
       type: string
       nullable: true
@@ -8660,6 +8740,111 @@ components:
           example: true
         summary:
           $ref: "#/components/schemas/ServiceSummaryMetrics"
+    ServiceTransactionItem:
+      type: object
+      required: [id, purchasedAt, status, contact, service, currency, totalPriceCents, paidCents, remainingCents, paymentState]
+      properties:
+        id:
+          type: string
+        purchasedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [IN_PROGRESS, PENDING_PAYMENT, COMPLETED, CANCELED]
+        contact:
+          type: object
+          required: [id, displayName]
+          properties:
+            id:
+              type: string
+            displayName:
+              type: string
+            phone:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+        service:
+          type: object
+          required: [id, name]
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        currency:
+          type: string
+        totalPriceCents:
+          type: integer
+        paidCents:
+          type: integer
+        remainingCents:
+          type: integer
+        paymentState:
+          type: string
+          enum: [UNPAID, PARTIAL, PAID]
+    ServiceTransactionCurrencyTotals:
+      type: object
+      required: [currency, grossSalesCents, collectedCents, outstandingCents]
+      properties:
+        currency:
+          type: string
+        grossSalesCents:
+          type: integer
+        collectedCents:
+          type: integer
+        outstandingCents:
+          type: integer
+    ServiceTransactionsResponse:
+      type: object
+      required: [ok, items, summary, range, pagination]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceTransactionItem"
+        summary:
+          type: object
+          required: [transactionCount, totalsByCurrency, excludesCanceledTransactions]
+          properties:
+            transactionCount:
+              type: integer
+            totalsByCurrency:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceTransactionCurrencyTotals"
+            excludesCanceledTransactions:
+              type: boolean
+              enum: [true]
+        range:
+          type: object
+          required: [preset, from, to]
+          properties:
+            preset:
+              $ref: "#/components/schemas/ServiceTransactionsRangePreset"
+            from:
+              type: string
+              nullable: true
+            to:
+              type: string
+              nullable: true
+        pagination:
+          type: object
+          required: [page, pageSize, total, totalPages]
+          properties:
+            page:
+              type: integer
+            pageSize:
+              type: integer
+            total:
+              type: integer
+            totalPages:
+              type: integer
     ContactServiceAssignedProfessional:
       type: object
       nullable: true

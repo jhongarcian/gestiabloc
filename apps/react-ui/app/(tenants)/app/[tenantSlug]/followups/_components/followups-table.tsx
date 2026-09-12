@@ -641,6 +641,10 @@ export function FollowUpsTable({
     { length: visiblePageCount },
     (_, index) => firstVisiblePage + index,
   )
+  const currentReturnTo = useMemo(() => {
+    const queryString = searchParams.toString()
+    return queryString ? `${pathname}?${queryString}` : pathname
+  }, [pathname, searchParams])
 
   const summaryLabel = useMemo(() => {
     if (!total) return "No service follow-ups found"
@@ -1035,6 +1039,7 @@ export function FollowUpsTable({
                   const href = getServiceEnrollmentFollowUpsHref({
                     tenantSlug,
                     contactServiceId: item.id,
+                    returnTo: currentReturnTo,
                   })
 
                   return (
