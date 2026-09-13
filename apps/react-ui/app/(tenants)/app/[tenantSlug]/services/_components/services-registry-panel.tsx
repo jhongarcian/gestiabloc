@@ -1144,6 +1144,7 @@ export function PurchaseTransactionDialog({
         getServiceEnrollmentHref({
           tenantSlug,
           contactServiceId: data.contactService.id,
+          view: "transaction",
           returnTo,
         }),
       )

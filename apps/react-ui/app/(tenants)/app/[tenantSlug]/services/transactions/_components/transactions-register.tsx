@@ -373,6 +373,7 @@ export function TransactionsRegister({
         getServiceEnrollmentHref({
           tenantSlug,
           contactServiceId: transactionId,
+          view: "transaction",
           returnTo: currentReturnTo,
         }),
       )

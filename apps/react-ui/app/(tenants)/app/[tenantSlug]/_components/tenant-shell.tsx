@@ -130,6 +130,7 @@ declare global {
 
 const formatSegment = (segment: string) => {
   if (segment === "follow-ups") return "Follow-ups"
+  if (segment === "follow-up") return "Follow-up"
   return segment.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase())
 }
 
@@ -363,7 +364,7 @@ export function TenantShell({
         })
         return
       }
-      if (isServiceEnrollmentViewSegment) {
+      if (isServiceEnrollmentViewSegment && segment === "overview") {
         return
       }
       if (isServiceIdSegment && !serviceCrumbLabel) {

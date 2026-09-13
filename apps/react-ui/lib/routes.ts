@@ -1,5 +1,10 @@
 export const CONTACT_SERVICES_PAGE_SIZES = [10, 25] as const
-export const SERVICE_ENROLLMENT_VIEWS = ["overview", "payments", "notes"] as const
+export const SERVICE_ENROLLMENT_VIEWS = [
+  "overview",
+  "transaction",
+  "follow-up",
+  "notes",
+] as const
 
 export type ContactServicesPageSize = (typeof CONTACT_SERVICES_PAGE_SIZES)[number]
 export type ServiceEnrollmentView = (typeof SERVICE_ENROLLMENT_VIEWS)[number]
@@ -91,7 +96,7 @@ export function getServiceEnrollmentHref({
   return `${baseHref}?${new URLSearchParams({ returnTo }).toString()}`
 }
 
-export function getServiceEnrollmentFollowUpsHref({
+export function getServiceEnrollmentFollowUpHref({
   tenantSlug,
   contactServiceId,
   returnTo,
@@ -100,12 +105,12 @@ export function getServiceEnrollmentFollowUpsHref({
   contactServiceId: string
   returnTo?: string | null
 }) {
-  return `${getServiceEnrollmentHref({
+  return getServiceEnrollmentHref({
     tenantSlug,
     contactServiceId,
-    view: "overview",
+    view: "follow-up",
     returnTo,
-  })}#service-follow-ups`
+  })
 }
 
 export function getSafeContactServicesReturnTo({

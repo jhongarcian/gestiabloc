@@ -11,7 +11,7 @@ import {
 } from "@/components/stacked-avatar-group"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
-import { getServiceEnrollmentHref } from "@/lib/routes"
+import { getServiceEnrollmentFollowUpHref } from "@/lib/routes"
 import { getCalendarMeta, type CalendarMetaResponse } from "../../calendar/_lib/calendar-api"
 import { ContactBreadcrumbSync } from "./_components/contact-breadcrumb-sync"
 import { ContactDetailNavigation } from "./_components/contact-detail-navigation"
@@ -431,11 +431,11 @@ export default async function ContactDetailsLayout({
               {visibleActiveFollowUpServices.map((service) => (
                 <Link
                   key={service.id}
-                  href={getServiceEnrollmentHref({
+                  href={getServiceEnrollmentFollowUpHref({
                     tenantSlug,
                     contactServiceId: service.id,
                   })}
-                  aria-label={`Open ${service.name} service details`}
+                  aria-label={`Open ${service.name} follow-up`}
                   className={
                     service.isOverdue
                       ? "group relative overflow-hidden rounded-[20px] border border-rose-200 bg-[linear-gradient(145deg,#fff7f7_0%,#ffffff_55%,#fff1f2_100%)] p-3.5 shadow-sm transition hover:-translate-y-0.5 hover:border-rose-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 focus-visible:ring-offset-2"

@@ -100,7 +100,7 @@ import {
 import { api } from "@/lib/api"
 import {
   getSafeServiceEnrollmentReturnTo,
-  getServiceEnrollmentFollowUpsHref,
+  getServiceEnrollmentFollowUpHref,
   getServiceEnrollmentHref,
   type ServiceEnrollmentView,
 } from "@/lib/routes"
@@ -600,7 +600,8 @@ const FOLLOW_UP_PAGE_SIZE = 5
 const SERVICE_NOTE_PAGE_SIZES = [10, 25, 50] as const
 const SERVICE_SECTIONS: Array<{ value: ServiceEnrollmentView; label: string }> = [
   { value: "overview", label: "Overview" },
-  { value: "payments", label: "Payments" },
+  { value: "transaction", label: "Transaction" },
+  { value: "follow-up", label: "Follow-up" },
   { value: "notes", label: "Notes" },
 ]
 
@@ -1062,7 +1063,6 @@ export function ContactServiceDetailsPanel({
   const serviceNoteFileInputRef = useRef<HTMLInputElement | null>(null)
   const stepNoteFileInputRef = useRef<HTMLInputElement | null>(null)
   const hasAutoLoadedDetailRef = useRef(false)
-  const hasHandledFollowUpHashRef = useRef(false)
   const previousActiveViewRef = useRef(activeView)
   const router = useRouter()
   const canManageSensitiveServiceActions = membershipSecurityLevel !== "LOW"
@@ -1932,23 +1932,6 @@ export function ContactServiceDetailsPanel({
     return () => window.cancelAnimationFrame(frame)
   }, [activeView])
 
-  useEffect(() => {
-    if (
-      !serviceData ||
-      activeView !== "overview" ||
-      hasHandledFollowUpHashRef.current ||
-      window.location.hash !== "#service-follow-ups"
-    ) {
-      return
-    }
-
-    hasHandledFollowUpHashRef.current = true
-    const frame = window.requestAnimationFrame(() => {
-      document.getElementById("service-follow-ups")?.scrollIntoView({ block: "start" })
-    })
-
-    return () => window.cancelAnimationFrame(frame)
-  }, [activeView, serviceData])
   const serviceBreadcrumbLabel = serviceData?.service.name ?? null
 
   useEffect(() => {
@@ -3419,7 +3402,6 @@ export function ContactServiceDetailsPanel({
           className="min-h-0 min-w-0 flex-1 scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] bg-background px-4 py-5 md:px-5 md:py-6"
         >
         {activeView === "overview" ? (
-          <div className="space-y-6">
           <section
             className="rounded-[26px] border border-slate-200 bg-slate-50 p-5"
             aria-labelledby="service-overview-title"
@@ -3427,7 +3409,7 @@ export function ContactServiceDetailsPanel({
             <h2 id="service-overview-title" className="sr-only">Service overview</h2>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <Link
-                href={getServiceEnrollmentFollowUpsHref({
+                href={getServiceEnrollmentFollowUpHref({
                   tenantSlug,
                   contactServiceId,
                   returnTo,
@@ -3455,11 +3437,11 @@ export function ContactServiceDetailsPanel({
                 href={getServiceEnrollmentHref({
                   tenantSlug,
                   contactServiceId,
-                  view: "payments",
+                  view: "transaction",
                   returnTo,
                 })}
                 className="group min-w-0 rounded-[22px] outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                aria-label="View service payments"
+                aria-label="View service transaction"
               >
                 <div className="h-full min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur transition group-hover:-translate-y-0.5 group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-md">
                   <p className="text-[11px] font-semibold uppercase text-slate-400">Financial position</p>
@@ -3495,6 +3477,9 @@ export function ContactServiceDetailsPanel({
               </button>
             </div>
           </section>
+        ) : null}
+
+        {activeView === "follow-up" ? (
         <section
           id="service-follow-ups"
           className="scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)]"
@@ -4242,20 +4227,19 @@ export function ContactServiceDetailsPanel({
             </section>
           )}
         </section>
-          </div>
         ) : null}
 
-        {activeView === "payments" ? (
-        <section aria-labelledby="service-payments-title">
+        {activeView === "transaction" ? (
+        <section aria-labelledby="service-transaction-title">
           {!item ? (
             <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-10 text-center">
-              <h2 id="service-payments-title" className="text-base font-semibold text-slate-950">
-                Payments
+              <h2 id="service-transaction-title" className="text-base font-semibold text-slate-950">
+                Transaction
               </h2>
               <p className="mt-2 text-sm font-medium text-slate-700">
                 {isDetailLoading || !isDetailLoadError
-                  ? "Loading payment details..."
-                  : "We could not load the payment history."}
+                  ? "Loading transaction details..."
+                  : "We could not load the transaction."}
               </p>
               {isDetailLoadError ? (
                 <Button
@@ -4272,12 +4256,12 @@ export function ContactServiceDetailsPanel({
             <section className="rounded-[24px] border border-slate-200 bg-white p-5">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="text-xs font-semibold uppercase text-slate-500">Payment history</p>
-                  <h2 id="service-payments-title" className="mt-1 text-lg font-semibold text-slate-950">
-                    Payments
+                  <p className="text-xs font-semibold uppercase text-slate-500">Financial record</p>
+                  <h2 id="service-transaction-title" className="mt-1 text-lg font-semibold text-slate-950">
+                    Transaction
                   </h2>
                   <p className="mt-1 text-sm text-slate-600">
-                    Review recorded payments and record another payment when more balance is collected.
+                    Review this transaction and record another payment when more balance is collected.
                   </p>
                 </div>
                 {canManageSensitiveServiceActions ? (

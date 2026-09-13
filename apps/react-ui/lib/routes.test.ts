@@ -7,7 +7,7 @@ import {
   getSafeContactServicesReturnTo,
   getSafeServiceEnrollmentReturnTo,
   getServiceEnrollmentsHref,
-  getServiceEnrollmentFollowUpsHref,
+  getServiceEnrollmentFollowUpHref,
   getServiceEnrollmentHref,
   getServiceFollowUpsHref,
   getServiceTransactionsHref,
@@ -33,25 +33,49 @@ describe("service enrollment routes", () => {
     )
   })
 
-  test("builds a dedicated enrollment view route", () => {
-    assert.equal(
-      getServiceEnrollmentHref({
-        tenantSlug: "north-agency",
-        contactServiceId: "enrollment-1",
-        view: "notes",
-      }),
-      "/app/north-agency/services/enrollments/enrollment-1/notes",
-    )
+  test("builds every canonical enrollment view route", () => {
+    const views = ["overview", "transaction", "follow-up", "notes"] as const
+
+    for (const view of views) {
+      assert.equal(
+        getServiceEnrollmentHref({
+          tenantSlug: "north-agency",
+          contactServiceId: "enrollment-1",
+          view,
+        }),
+        `/app/north-agency/services/enrollments/enrollment-1/${view}`,
+      )
+    }
   })
 
-  test("builds a follow-up anchor within the overview route", () => {
+  test("builds the dedicated enrollment follow-up route", () => {
     assert.equal(
-      getServiceEnrollmentFollowUpsHref({
+      getServiceEnrollmentFollowUpHref({
         tenantSlug: "north-agency",
         contactServiceId: "enrollment-1",
         returnTo: "/app/north-agency/contacts/contact-1/services?page=2&pageSize=10",
       }),
-      "/app/north-agency/services/enrollments/enrollment-1/overview?returnTo=%2Fapp%2Fnorth-agency%2Fcontacts%2Fcontact-1%2Fservices%3Fpage%3D2%26pageSize%3D10#service-follow-ups",
+      "/app/north-agency/services/enrollments/enrollment-1/follow-up?returnTo=%2Fapp%2Fnorth-agency%2Fcontacts%2Fcontact-1%2Fservices%3Fpage%3D2%26pageSize%3D10",
+    )
+  })
+
+  test("preserves complete query state when redirecting legacy enrollment views", () => {
+    const searchParams = {
+      returnTo: "/app/north-agency/services/transactions?search=Garcia&page=3",
+      focus: ["history", "latest"],
+      empty: undefined,
+    }
+
+    assert.equal(
+      appendSearchParams(
+        getServiceEnrollmentHref({
+          tenantSlug: "north-agency",
+          contactServiceId: "enrollment-1",
+          view: "transaction",
+        }),
+        searchParams,
+      ),
+      "/app/north-agency/services/enrollments/enrollment-1/transaction?returnTo=%2Fapp%2Fnorth-agency%2Fservices%2Ftransactions%3Fsearch%3DGarcia%26page%3D3&focus=history&focus=latest",
     )
   })
 

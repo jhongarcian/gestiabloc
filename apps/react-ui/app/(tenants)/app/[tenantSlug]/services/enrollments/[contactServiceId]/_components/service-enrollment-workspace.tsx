@@ -28,7 +28,11 @@ export function ServiceEnrollmentWorkspace({
   const searchParams = useSearchParams()
   const activeSegment = pathname.split("/").filter(Boolean).at(-1)
   const activeView: ServiceEnrollmentView =
-    activeSegment === "payments" || activeSegment === "notes" ? activeSegment : "overview"
+    activeSegment === "transaction" ||
+    activeSegment === "follow-up" ||
+    activeSegment === "notes"
+      ? activeSegment
+      : "overview"
 
   return (
     <ContactServiceDetailsPanel
