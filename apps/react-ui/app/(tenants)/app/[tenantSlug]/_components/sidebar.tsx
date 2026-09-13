@@ -4,7 +4,7 @@
 import Link from "next/link"
 import { useSelectedLayoutSegments } from "next/navigation"
 import type { ComponentType } from "react"
-import { useCallback, useMemo } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -19,15 +19,29 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
   SidebarSeparator,
   useSidebar,
 } from "@/components/ui/sidebar"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 
 import {
   PanelsTopLeft,
   LayoutGrid,
   Contact2,
-  CreditCard,
   RotateCw,
   Calendar,
   Target,
@@ -37,6 +51,10 @@ import {
   LogOut,
   ArrowUpCircle,
   ChevronLeft,
+  ChevronRight,
+  ChartNoAxesCombined,
+  ClipboardList,
+  ReceiptText,
 } from "lucide-react"
 
 type SidebarItem = {
@@ -51,13 +69,20 @@ type SidebarLink = SidebarItem & { href: string }
 const MENU_ITEMS: SidebarItem[] = [
   { key: "dashboard", label: "Dashboard", path: "", icon: LayoutGrid },
   { key: "contacts", label: "Contacts", path: "/contacts", icon: Contact2 },
-  { key: "billing", label: "Billing", path: "/billing", icon: CreditCard },
-  { key: "followups", label: "Followups", path: "/followups", icon: RotateCw },
+  { key: "services", label: "Services", path: "/services", icon: Briefcase },
   { key: "calendar", label: "Calendar", path: "/calendar", icon: Calendar },
   { key: "opportunities", label: "Opportunities", path: "/opportunities", icon: Target },
-  { key: "services", label: "Services", path: "/services", icon: Briefcase },
   { key: "tasks", label: "Tasks", path: "/tasks", icon: ListChecks },
 ]
+
+const SERVICE_ITEMS: SidebarItem[] = [
+  { key: "services-overview", label: "Overview", path: "/services", icon: ChartNoAxesCombined },
+  { key: "services-enrollments", label: "Enrollments", path: "/services/enrollments", icon: ClipboardList },
+  { key: "services-transactions", label: "Transactions", path: "/services/transactions", icon: ReceiptText },
+  { key: "services-follow-ups", label: "Follow-ups", path: "/services/follow-ups", icon: RotateCw },
+]
+
+type ActiveServiceItem = "overview" | "enrollments" | "transactions" | "follow-ups" | null
 
 const SUPPORT_ITEMS: SidebarItem[] = [
   { key: "help", label: "Help", path: "/help", icon: HelpCircle },
@@ -68,7 +93,11 @@ type SidebarContentProps = {
   tenantName: string
   onNavigate?: (key: string, href: string) => void
   menuItems: SidebarLink[]
+  serviceItems: SidebarLink[]
   supportItems: SidebarLink[]
+  activeServiceItem: ActiveServiceItem
+  servicesOpen: boolean
+  onServicesOpenChange: (open: boolean) => void
   planKey?: string
   isAdmin?: boolean
   basePath: string
@@ -79,11 +108,18 @@ function AppSidebarContent({
   tenantName,
   onNavigate,
   menuItems,
+  serviceItems,
   supportItems,
+  activeServiceItem,
+  servicesOpen,
+  onServicesOpenChange,
   planKey,
   isAdmin,
   basePath,
 }: SidebarContentProps) {
+  const { state, isMobile } = useSidebar()
+  const isDesktopCollapsed = state === "collapsed" && !isMobile
+
   return (
     <>
       <SidebarHeader className="px-4 pt-5 pb-3 group-data-[collapsible=icon]:px-1">
@@ -117,6 +153,135 @@ function AppSidebarContent({
               {menuItems.map((item) => {
                 const Icon = item.icon
                 const isActive = item.key === activeKey
+
+                if (item.key === "services") {
+                  if (isDesktopCollapsed) {
+                    return (
+                      <SidebarMenuItem key={item.key}>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <SidebarMenuButton
+                              isActive={isActive}
+                              aria-label="Open Services navigation"
+                              className={cn(
+                                "mx-auto size-11! justify-center rounded-xl p-0! text-slate-300 hover:bg-white/10 hover:text-white focus-visible:ring-white/60 data-[active=true]:bg-white/10 data-[active=true]:text-white",
+                              )}
+                            >
+                              <span
+                                className={cn(
+                                  "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+                                  isActive
+                                    ? "border-white bg-white text-slate-950"
+                                    : "border-white/15 bg-white/5 text-slate-300",
+                                )}
+                              >
+                                <Icon className="size-3.5" aria-hidden="true" />
+                              </span>
+                            </SidebarMenuButton>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent side="right" align="start" sideOffset={10} className="w-52 rounded-xl p-2">
+                            <DropdownMenuLabel className="px-2 text-xs uppercase tracking-[0.15em] text-slate-500">
+                              Services
+                            </DropdownMenuLabel>
+                            {serviceItems.map((child) => {
+                              const ChildIcon = child.icon
+                              const childKey = child.key.replace("services-", "") as ActiveServiceItem
+                              return (
+                                <DropdownMenuItem
+                                  key={child.key}
+                                  asChild
+                                  className={cn(
+                                    "min-h-10 cursor-pointer rounded-lg",
+                                    activeServiceItem === childKey &&
+                                      "bg-slate-100 font-semibold text-slate-950",
+                                  )}
+                                >
+                                  <Link
+                                    href={child.href}
+                                    aria-current={activeServiceItem === childKey ? "page" : undefined}
+                                    onClick={() => onNavigate?.(child.key, child.href)}
+                                  >
+                                    <ChildIcon className="size-4" aria-hidden="true" />
+                                    {child.label}
+                                  </Link>
+                                </DropdownMenuItem>
+                              )
+                            })}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </SidebarMenuItem>
+                    )
+                  }
+
+                  return (
+                    <Collapsible
+                      key={item.key}
+                      asChild
+                      open={servicesOpen}
+                      onOpenChange={onServicesOpenChange}
+                    >
+                      <SidebarMenuItem>
+                        <CollapsibleTrigger asChild>
+                          <SidebarMenuButton
+                            type="button"
+                            isActive={isActive}
+                            tooltip={item.label}
+                            className={cn(
+                              "min-h-11 cursor-pointer gap-3 rounded-xl px-2.5 text-sm text-slate-300 hover:bg-white/10 hover:text-white focus-visible:ring-white/60 data-[active=true]:bg-white/10 data-[active=true]:font-semibold data-[active=true]:text-white",
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+                                isActive
+                                  ? "border-white bg-white text-slate-950"
+                                  : "border-white/15 bg-white/5 text-slate-300",
+                              )}
+                            >
+                              <Icon className="size-3.5" aria-hidden="true" />
+                            </span>
+                            <span>{item.label}</span>
+                            <ChevronRight
+                              className={cn(
+                                "ml-auto size-4 transition-transform duration-200 motion-reduce:transition-none",
+                                servicesOpen && "rotate-90",
+                              )}
+                              aria-hidden="true"
+                            />
+                          </SidebarMenuButton>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent>
+                          <SidebarMenuSub className="border-white/15 py-1.5">
+                            {serviceItems.map((child) => {
+                              const ChildIcon = child.icon
+                              const childKey = child.key.replace("services-", "") as ActiveServiceItem
+                              const isChildActive = activeServiceItem === childKey
+                              return (
+                                <SidebarMenuSubItem key={child.key}>
+                                  <SidebarMenuSubButton
+                                    asChild
+                                    isActive={isChildActive}
+                                    className="min-h-9 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white focus-visible:ring-white/60 [&>svg]:text-slate-300! data-[active=true]:bg-white/10 data-[active=true]:font-semibold data-[active=true]:text-white data-[active=true]:[&>svg]:text-white!"
+                                  >
+                                    <Link
+                                      href={child.href}
+                                      aria-current={isChildActive ? "page" : undefined}
+                                      onClick={() => onNavigate?.(child.key, child.href)}
+                                    >
+                                      <ChildIcon className="size-3.5" aria-hidden="true" />
+                                      <span>{child.label}</span>
+                                    </Link>
+                                  </SidebarMenuSubButton>
+                                </SidebarMenuSubItem>
+                              )
+                            })}
+                          </SidebarMenuSub>
+                        </CollapsibleContent>
+                      </SidebarMenuItem>
+                    </Collapsible>
+                  )
+                }
+
                 return (
                   <SidebarMenuItem key={item.key}>
                     <SidebarMenuButton
@@ -297,6 +462,24 @@ export function AppSidebar({
       SUPPORT_ITEMS.map((item) => ({ ...item, href: resolveHref(item.path) })),
     [resolveHref],
   )
+  const serviceItems = useMemo(
+    () => SERVICE_ITEMS.map((item) => ({ ...item, href: resolveHref(item.path) })),
+    [resolveHref],
+  )
+  const isServicesRoute = segments[0] === "services"
+  const [servicesOpen, setServicesOpen] = useState(isServicesRoute)
+
+  useEffect(() => {
+    setServicesOpen(isServicesRoute)
+  }, [isServicesRoute])
+
+  const activeServiceItem = useMemo<ActiveServiceItem>(() => {
+    if (!isServicesRoute) return null
+    if (segments[1] === "enrollments") return "enrollments"
+    if (segments[1] === "transactions") return "transactions"
+    if (segments[1] === "follow-ups") return "follow-ups"
+    return "overview"
+  }, [isServicesRoute, segments])
 
   const derivedActiveKey = useMemo(() => {
     const firstSegment = segments[0]
@@ -344,7 +527,11 @@ export function AppSidebar({
             tenantName={tenantName}
             onNavigate={handleNavigate}
             menuItems={menuItems}
+            serviceItems={serviceItems}
             supportItems={supportItems}
+            activeServiceItem={activeServiceItem}
+            servicesOpen={servicesOpen}
+            onServicesOpenChange={setServicesOpen}
             planKey={planKey}
             isAdmin={isAdmin}
             basePath={basePath}

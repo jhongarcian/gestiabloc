@@ -1,10 +1,47 @@
 export const CONTACT_SERVICES_PAGE_SIZES = [10, 25] as const
-export const SERVICE_ENROLLMENT_VIEWS = ["overview", "payments", "notes"] as const
+export const SERVICE_ENROLLMENT_VIEWS = [
+  "overview",
+  "transaction",
+  "follow-up",
+  "notes",
+] as const
 
 export type ContactServicesPageSize = (typeof CONTACT_SERVICES_PAGE_SIZES)[number]
 export type ServiceEnrollmentView = (typeof SERVICE_ENROLLMENT_VIEWS)[number]
 
 const encodePathSegment = (value: string) => encodeURIComponent(value)
+
+export function getServicesOverviewHref(tenantSlug: string) {
+  return `/app/${encodePathSegment(tenantSlug)}/services`
+}
+
+export function getServiceTransactionsHref(tenantSlug: string) {
+  return `${getServicesOverviewHref(tenantSlug)}/transactions`
+}
+
+export function getServiceEnrollmentsHref(tenantSlug: string) {
+  return `${getServicesOverviewHref(tenantSlug)}/enrollments`
+}
+
+export function getServiceFollowUpsHref(tenantSlug: string) {
+  return `${getServicesOverviewHref(tenantSlug)}/follow-ups`
+}
+
+export function appendSearchParams(
+  href: string,
+  searchParams: Record<string, string | string[] | undefined>,
+) {
+  const query = new URLSearchParams()
+
+  for (const [key, value] of Object.entries(searchParams)) {
+    for (const item of Array.isArray(value) ? value : value !== undefined ? [value] : []) {
+      query.append(key, item)
+    }
+  }
+
+  const queryString = query.toString()
+  return queryString ? `${href}?${queryString}` : href
+}
 
 export function parsePositivePage(value: string | null | undefined, fallback = 1) {
   const parsed = Number(value)
@@ -59,7 +96,7 @@ export function getServiceEnrollmentHref({
   return `${baseHref}?${new URLSearchParams({ returnTo }).toString()}`
 }
 
-export function getServiceEnrollmentFollowUpsHref({
+export function getServiceEnrollmentFollowUpHref({
   tenantSlug,
   contactServiceId,
   returnTo,
@@ -68,12 +105,12 @@ export function getServiceEnrollmentFollowUpsHref({
   contactServiceId: string
   returnTo?: string | null
 }) {
-  return `${getServiceEnrollmentHref({
+  return getServiceEnrollmentHref({
     tenantSlug,
     contactServiceId,
-    view: "overview",
+    view: "follow-up",
     returnTo,
-  })}#service-follow-ups`
+  })
 }
 
 export function getSafeContactServicesReturnTo({
@@ -101,6 +138,38 @@ export function getSafeContactServicesReturnTo({
       page: parsePositivePage(parsed.searchParams.get("page")),
       pageSize: parseContactServicesPageSize(parsed.searchParams.get("pageSize")),
     })
+  } catch {
+    return fallback
+  }
+}
+
+export function getSafeServiceEnrollmentReturnTo({
+  returnTo,
+  tenantSlug,
+  contactId,
+}: {
+  returnTo: string | null | undefined
+  tenantSlug: string
+  contactId?: string | null
+}) {
+  const fallback = getServiceEnrollmentsHref(tenantSlug)
+  if (!returnTo?.startsWith("/")) return fallback
+
+  try {
+    const parsed = new URL(returnTo, "https://gestiabloc.local")
+    if (parsed.origin !== "https://gestiabloc.local") return fallback
+
+    const allowedPaths = new Set([
+      getServicesOverviewHref(tenantSlug),
+      getServiceEnrollmentsHref(tenantSlug),
+      getServiceTransactionsHref(tenantSlug),
+      getServiceFollowUpsHref(tenantSlug),
+      ...(contactId ? [getContactServicesHref({ tenantSlug, contactId })] : []),
+    ])
+
+    if (!allowedPaths.has(parsed.pathname)) return fallback
+
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`
   } catch {
     return fallback
   }

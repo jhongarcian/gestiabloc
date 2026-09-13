@@ -650,6 +650,7 @@ export function ContactNotesPanel({
                                       href={getServiceEnrollmentHref({
                                         tenantSlug,
                                         contactServiceId: note.source.contactServiceId,
+                                        view: "notes",
                                       })}
                                       className="text-blue-700 transition hover:text-blue-800 hover:underline"
                                     >

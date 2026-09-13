@@ -63,7 +63,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { formatDateTimeForDisplay } from "@/lib/date-time"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
-import { getServiceEnrollmentFollowUpsHref } from "@/lib/routes"
+import { getServiceEnrollmentFollowUpHref } from "@/lib/routes"
 import { cn } from "@/lib/utils"
 
 type FollowUpsTableProps = {
@@ -641,6 +641,10 @@ export function FollowUpsTable({
     { length: visiblePageCount },
     (_, index) => firstVisiblePage + index,
   )
+  const currentReturnTo = useMemo(() => {
+    const queryString = searchParams.toString()
+    return queryString ? `${pathname}?${queryString}` : pathname
+  }, [pathname, searchParams])
 
   const summaryLabel = useMemo(() => {
     if (!total) return "No service follow-ups found"
@@ -1032,9 +1036,10 @@ export function FollowUpsTable({
                 </TableRow>
               ) : enrollments.length ? (
                 enrollments.map((item) => {
-                  const href = getServiceEnrollmentFollowUpsHref({
+                  const href = getServiceEnrollmentFollowUpHref({
                     tenantSlug,
                     contactServiceId: item.id,
+                    returnTo: currentReturnTo,
                   })
 
                   return (

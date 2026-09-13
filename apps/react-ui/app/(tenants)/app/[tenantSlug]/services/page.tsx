@@ -16,13 +16,11 @@ export default async function ServicesPage({
   }
 
   return (
-    <section className="flex h-full min-h-0 flex-col gap-4">
-      <div className="flex h-full w-full min-h-0 flex-col">
-        <ServicesRegistryPanel
-          tenantId={membership.tenant.id}
-          tenantSlug={tenantSlug}
-        />
-      </div>
-    </section>
+    <div className="flex h-full w-full min-h-0 flex-col">
+      <ServicesRegistryPanel
+        tenantId={membership.tenant.id}
+        tenantSlug={tenantSlug}
+      />
+    </div>
   )
 }

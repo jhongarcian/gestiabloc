@@ -2,7 +2,7 @@ import { permanentRedirect } from "next/navigation"
 
 import { appendSearchParams, getServiceFollowUpsHref } from "@/lib/routes"
 
-export default async function FollowUpsPage({
+export default async function LegacyFollowUpsPage({
   params,
   searchParams,
 }: {

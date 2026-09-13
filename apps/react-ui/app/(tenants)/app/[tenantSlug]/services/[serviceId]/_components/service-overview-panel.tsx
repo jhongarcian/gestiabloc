@@ -1097,6 +1097,7 @@ function CreateTransactionDialog({
         getServiceEnrollmentHref({
           tenantSlug,
           contactServiceId: data.contactService.id,
+          view: "transaction",
         }),
       )
       router.refresh()

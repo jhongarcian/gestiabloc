@@ -73,7 +73,11 @@ import {
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
-import { getServiceEnrollmentHref } from "@/lib/routes"
+import {
+  getServiceEnrollmentHref,
+  getServiceFollowUpsHref,
+  getServiceTransactionsHref,
+} from "@/lib/routes"
 import { cn } from "@/lib/utils"
 
 type ServiceProfessional = {
@@ -744,12 +748,14 @@ function FlowStepCard({
   )
 }
 
-function PurchaseTransactionDialog({
+export function PurchaseTransactionDialog({
   tenantId,
   tenantSlug,
+  returnTo,
 }: {
   tenantId: string
   tenantSlug: string
+  returnTo?: string
 }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
@@ -1138,6 +1144,8 @@ function PurchaseTransactionDialog({
         getServiceEnrollmentHref({
           tenantSlug,
           contactServiceId: data.contactService.id,
+          view: "transaction",
+          returnTo,
         }),
       )
       router.refresh()
@@ -1995,6 +2003,15 @@ export function ServicesRegistryPanel({
   const summaryRangeLabel = summary
     ? formatSummaryRangeLabel(summary.range)
     : ""
+  const transactionsHref = getServiceTransactionsHref(tenantSlug)
+  const transactionsForRangeHref = useMemo(() => {
+    const params = new URLSearchParams({ rangePreset })
+    if (rangePreset === "CUSTOM") {
+      if (customFrom) params.set("from", customFrom)
+      if (customTo) params.set("to", customTo)
+    }
+    return `${transactionsHref}?${params.toString()}`
+  }, [customFrom, customTo, rangePreset, transactionsHref])
 
   const summaryLabel = useMemo(() => {
     if (!total) return "No active services found"
@@ -2126,111 +2143,135 @@ export function ServicesRegistryPanel({
           ) : null}
 
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
-              <div className="flex items-center gap-2 text-slate-400">
-                <Wallet className="h-4 w-4 text-emerald-600" />
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                  Gross Sales
-                </p>
-              </div>
-              {isSummaryLoading && !summary ? (
-                <div className="mt-3 space-y-2">
-                  <Skeleton className="h-8 w-28 rounded-lg" />
-                  <Skeleton className="h-4 w-40 rounded-md" />
+            <Link
+              href={transactionsForRangeHref}
+              aria-label="View transactions for the selected sales range"
+              className="min-w-0 rounded-[24px] outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-blue-500/40 motion-reduce:transition-none"
+            >
+              <article className="h-full min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur transition-shadow hover:shadow-md">
+                <div className="flex items-center gap-2 text-slate-400">
+                  <Wallet className="h-4 w-4 text-emerald-600" />
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                    Gross Sales
+                  </p>
                 </div>
-              ) : (
-                <>
-                  <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
-                    {formatCurrency(summary?.grossSalesCents ?? 0, "USD")}
-                  </p>
-                  <p className="mt-2 text-sm text-slate-500">
-                    {summary
-                      ? summaryRangeLabel
-                      : "Sales booked in the selected range."}
-                  </p>
-                </>
-              )}
-            </article>
+                {isSummaryLoading && !summary ? (
+                  <div className="mt-3 space-y-2">
+                    <Skeleton className="h-8 w-28 rounded-lg" />
+                    <Skeleton className="h-4 w-40 rounded-md" />
+                  </div>
+                ) : (
+                  <>
+                    <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
+                      {formatCurrency(summary?.grossSalesCents ?? 0, "USD")}
+                    </p>
+                    <p className="mt-2 text-sm text-slate-500">
+                      {summary
+                        ? summaryRangeLabel
+                        : "Sales booked in the selected range."}
+                    </p>
+                  </>
+                )}
+              </article>
+            </Link>
 
-            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
-              <div className="flex items-center gap-2 text-slate-400">
-                <CalendarDays className="h-4 w-4 text-blue-600" />
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                  Services Sold
-                </p>
-              </div>
-              {isSummaryLoading && !summary ? (
-                <div className="mt-3 space-y-2">
-                  <Skeleton className="h-8 w-16 rounded-lg" />
-                  <Skeleton className="h-4 w-44 rounded-md" />
+            <Link
+              href={transactionsForRangeHref}
+              aria-label="View sold service transactions for the selected range"
+              className="min-w-0 rounded-[24px] outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-blue-500/40 motion-reduce:transition-none"
+            >
+              <article className="h-full min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur transition-shadow hover:shadow-md">
+                <div className="flex items-center gap-2 text-slate-400">
+                  <CalendarDays className="h-4 w-4 text-blue-600" />
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                    Services Sold
+                  </p>
                 </div>
-              ) : (
-                <>
-                  <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
-                    {summary?.servicesSold ?? 0}
-                  </p>
-                  <p className="mt-2 text-sm text-slate-500">
-                    {summary
-                      ? summaryRangeLabel
-                      : "Transactions created in the selected range."}
-                  </p>
-                </>
-              )}
-            </article>
+                {isSummaryLoading && !summary ? (
+                  <div className="mt-3 space-y-2">
+                    <Skeleton className="h-8 w-16 rounded-lg" />
+                    <Skeleton className="h-4 w-44 rounded-md" />
+                  </div>
+                ) : (
+                  <>
+                    <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
+                      {summary?.servicesSold ?? 0}
+                    </p>
+                    <p className="mt-2 text-sm text-slate-500">
+                      {summary
+                        ? summaryRangeLabel
+                        : "Transactions created in the selected range."}
+                    </p>
+                  </>
+                )}
+              </article>
+            </Link>
 
-            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
-              <div className="flex items-center gap-2 text-slate-400">
-                <Route className="h-4 w-4 text-amber-600" />
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                  Active Follow-Ups
-                </p>
-              </div>
-              {isSummaryLoading && !summary ? (
-                <div className="mt-3 flex flex-col items-start gap-2">
-                  <Skeleton className="h-8 w-16 rounded-lg" />
-                  <Skeleton className="h-6 w-12 rounded-full" />
-                </div>
-              ) : (
-                <div className="mt-3 flex flex-col items-start gap-2">
-                  <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
-                    {summary?.activeFollowUpServices ?? 0}
+            <Link
+              href={getServiceFollowUpsHref(tenantSlug)}
+              aria-label="View active service follow-ups"
+              className="min-w-0 rounded-[24px] outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-blue-500/40 motion-reduce:transition-none"
+            >
+              <article className="h-full min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur transition-shadow hover:shadow-md">
+                <div className="flex items-center gap-2 text-slate-400">
+                  <Route className="h-4 w-4 text-amber-600" />
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                    Active Follow-Ups
                   </p>
-                  <Badge
-                    variant="secondary"
-                    className="border border-amber-200 bg-amber-50 text-amber-700"
-                  >
-                    Live
-                  </Badge>
                 </div>
-              )}
-            </article>
+                {isSummaryLoading && !summary ? (
+                  <div className="mt-3 flex flex-col items-start gap-2">
+                    <Skeleton className="h-8 w-16 rounded-lg" />
+                    <Skeleton className="h-6 w-12 rounded-full" />
+                  </div>
+                ) : (
+                  <div className="mt-3 flex flex-col items-start gap-2">
+                    <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
+                      {summary?.activeFollowUpServices ?? 0}
+                    </p>
+                    <Badge
+                      variant="secondary"
+                      className="border border-amber-200 bg-amber-50 text-amber-700"
+                    >
+                      Live
+                    </Badge>
+                  </div>
+                )}
+              </article>
+            </Link>
 
-            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
-              <div className="flex items-center gap-2 text-slate-400">
-                <Wallet className="h-4 w-4 text-violet-600" />
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                  Remaining Balance
-                </p>
-              </div>
-              {isSummaryLoading && !summary ? (
-                <div className="mt-3 flex flex-col items-start gap-2">
-                  <Skeleton className="h-8 w-28 rounded-lg" />
-                  <Skeleton className="h-6 w-12 rounded-full" />
-                </div>
-              ) : (
-                <div className="mt-3 flex flex-col items-start gap-2">
-                  <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
-                    {formatCurrency(summary?.remainingBalanceCents ?? 0, "USD")}
+            <Link
+              href={transactionsHref}
+              aria-label="View transaction balances"
+              className="min-w-0 rounded-[24px] outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-blue-500/40 motion-reduce:transition-none"
+            >
+              <article className="h-full min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur transition-shadow hover:shadow-md">
+                <div className="flex items-center gap-2 text-slate-400">
+                  <Wallet className="h-4 w-4 text-violet-600" />
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+                    Remaining Balance
                   </p>
-                  <Badge
-                    variant="secondary"
-                    className="border border-violet-200 bg-violet-50 text-violet-700"
-                  >
-                    Live
-                  </Badge>
                 </div>
-              )}
-            </article>
+                {isSummaryLoading && !summary ? (
+                  <div className="mt-3 flex flex-col items-start gap-2">
+                    <Skeleton className="h-8 w-28 rounded-lg" />
+                    <Skeleton className="h-6 w-12 rounded-full" />
+                  </div>
+                ) : (
+                  <div className="mt-3 flex flex-col items-start gap-2">
+                    <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
+                      {formatCurrency(summary?.remainingBalanceCents ?? 0, "USD")}
+                    </p>
+                    <Badge
+                      variant="secondary"
+                      className="border border-violet-200 bg-violet-50 text-violet-700"
+                    >
+                      Live
+                    </Badge>
+                  </div>
+                )}
+              </article>
+            </Link>
           </div>
         </div>
       </div>
@@ -2238,6 +2279,7 @@ export function ServicesRegistryPanel({
       <div className="flex min-h-[680px] w-full flex-1 flex-col rounded-lg bg-white">
         <div className="flex flex-col gap-2 border-b border-slate-100 px-4 py-4 md:px-5">
           <div>
+            <h2 className="font-semibold text-slate-950">Service catalog</h2>
             <p className="text-sm text-slate-500">{summaryLabel}</p>
           </div>
           <div className="grid gap-2 md:grid-cols-[minmax(320px,1fr)_auto_auto]">
@@ -2264,6 +2306,7 @@ export function ServicesRegistryPanel({
             <PurchaseTransactionDialog
               tenantId={tenantId}
               tenantSlug={tenantSlug}
+              returnTo={`/app/${encodeURIComponent(tenantSlug)}/services`}
             />
           </div>
         </div>
