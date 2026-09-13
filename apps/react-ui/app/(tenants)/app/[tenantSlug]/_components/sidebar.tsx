@@ -19,7 +19,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuAction,
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem,
@@ -222,17 +221,15 @@ function AppSidebarContent({
                       onOpenChange={onServicesOpenChange}
                     >
                       <SidebarMenuItem>
-                        <SidebarMenuButton
-                          asChild
-                          isActive={isActive}
-                          tooltip={item.label}
-                          className={cn(
-                            "min-h-11 gap-3 rounded-xl px-2.5 text-sm text-slate-300 hover:bg-white/10 hover:text-white focus-visible:ring-white/60 data-[active=true]:bg-white/10 data-[active=true]:font-semibold data-[active=true]:text-white",
-                          )}
-                          onClick={() => onNavigate?.(item.key, item.href)}
-                          aria-current={activeServiceItem === "overview" ? "page" : undefined}
-                        >
-                          <Link href={item.href}>
+                        <CollapsibleTrigger asChild>
+                          <SidebarMenuButton
+                            type="button"
+                            isActive={isActive}
+                            tooltip={item.label}
+                            className={cn(
+                              "min-h-11 cursor-pointer gap-3 rounded-xl px-2.5 text-sm text-slate-300 hover:bg-white/10 hover:text-white focus-visible:ring-white/60 data-[active=true]:bg-white/10 data-[active=true]:font-semibold data-[active=true]:text-white",
+                            )}
+                          >
                             <span
                               className={cn(
                                 "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
@@ -244,21 +241,14 @@ function AppSidebarContent({
                               <Icon className="size-3.5" aria-hidden="true" />
                             </span>
                             <span>{item.label}</span>
-                          </Link>
-                        </SidebarMenuButton>
-                        <CollapsibleTrigger asChild>
-                          <SidebarMenuAction
-                            aria-label={servicesOpen ? "Collapse Services navigation" : "Expand Services navigation"}
-                            className="right-2 top-3 size-7 text-slate-300 hover:bg-white/10 hover:text-white focus-visible:ring-white/60"
-                          >
                             <ChevronRight
                               className={cn(
-                                "transition-transform duration-200 motion-reduce:transition-none",
+                                "ml-auto size-4 transition-transform duration-200 motion-reduce:transition-none",
                                 servicesOpen && "rotate-90",
                               )}
                               aria-hidden="true"
                             />
-                          </SidebarMenuAction>
+                          </SidebarMenuButton>
                         </CollapsibleTrigger>
                         <CollapsibleContent>
                           <SidebarMenuSub className="border-white/15 py-1.5">
