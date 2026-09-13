@@ -172,6 +172,7 @@ type ServiceNoteApiItem = Omit<ServiceNoteItem, "permissions" | "attachments"> &
 }
 type ServiceNotesResponse = {
   ok: boolean
+  contactService: ContactServiceOverviewPayload
   items: ServiceNoteApiItem[]
   pagination: {
     page: number
@@ -380,6 +381,16 @@ type ContactServiceOverview = Omit<
   ContactServiceDetails,
   "payments" | "noteActivityItems" | "executionLogs" | "checklistActivityLogs"
 > & {
+  followUpSummary?: {
+    totalCount: number
+    completedCount: number
+  }
+  checklistSummary?: {
+    totalCount: number
+    receivedCount: number
+    missingCount: number
+    informedCount: number
+  }
   paymentSummary?: {
     latestPaidAt: string | null
     totalPaymentsCount: number
@@ -387,14 +398,22 @@ type ContactServiceOverview = Omit<
   }
 }
 
+type ContactServiceOverviewPayload = Omit<
+  ContactServiceOverview,
+  "followUpSteps" | "checklistItems"
+> &
+  Partial<Pick<ContactServiceOverview, "followUpSteps" | "checklistItems">>
+
 type ContactServiceResponse = {
   ok: boolean
   contactService: ContactServiceDetails
 }
 
+type ContactServiceDetailScope = "transaction" | "follow-up" | "full"
+
 type ContactServiceOverviewResponse = {
   ok: boolean
-  contactService: ContactServiceOverview
+  contactService: ContactServiceOverviewPayload
 }
 
 type TenantAssigneeOption = {
@@ -1029,7 +1048,7 @@ const normalizeContactServiceDetails = (details: ContactServiceDetails): Contact
 })
 
 const normalizeContactServiceOverview = (
-  details: ContactServiceOverview,
+  details: ContactServiceOverviewPayload,
 ): ContactServiceOverview => ({
   ...details,
   service: { ...details.service, professionals: details.service.professionals ?? [] },
@@ -1041,6 +1060,30 @@ const normalizeContactServiceOverview = (
   tenantBilling: {
     ...DEFAULT_TENANT_BILLING,
     ...(details.tenantBilling ?? {}),
+  },
+  followUpSummary: {
+    totalCount: details.followUpSummary?.totalCount ?? details.followUpSteps?.length ?? 0,
+    completedCount:
+      details.followUpSummary?.completedCount ??
+      details.followUpSteps?.filter((step) =>
+        step.status === "COMPLETED" || step.status === "SKIPPED"
+      ).length ??
+      0,
+  },
+  checklistSummary: {
+    totalCount: details.checklistSummary?.totalCount ?? details.checklistItems?.length ?? 0,
+    receivedCount:
+      details.checklistSummary?.receivedCount ??
+      details.checklistItems?.filter((entry) => entry.status === "RECEIVED").length ??
+      0,
+    missingCount:
+      details.checklistSummary?.missingCount ??
+      details.checklistItems?.filter((entry) => entry.status === "MISSING").length ??
+      0,
+    informedCount:
+      details.checklistSummary?.informedCount ??
+      details.checklistItems?.filter((entry) => entry.status === "INFORMED").length ??
+      0,
   },
   paymentSummary: {
     latestPaidAt: details.paymentSummary?.latestPaidAt ?? null,
@@ -1062,7 +1105,8 @@ export function ContactServiceDetailsPanel({
 }: ContactServiceDetailsPanelProps) {
   const serviceNoteFileInputRef = useRef<HTMLInputElement | null>(null)
   const stepNoteFileInputRef = useRef<HTMLInputElement | null>(null)
-  const hasAutoLoadedDetailRef = useRef(false)
+  const detailRequestIdRef = useRef(0)
+  const fullDetailLoadPromiseRef = useRef<Promise<void> | null>(null)
   const previousActiveViewRef = useRef(activeView)
   const router = useRouter()
   const canManageSensitiveServiceActions = membershipSecurityLevel !== "LOW"
@@ -1070,6 +1114,7 @@ export function ContactServiceDetailsPanel({
   const encodedContactServiceId = encodeURIComponent(contactServiceId)
   const [overview, setOverview] = useState<ContactServiceOverview | null>(null)
   const [item, setItem] = useState<ContactServiceDetails | null>(null)
+  const [detailScope, setDetailScope] = useState<ContactServiceDetailScope | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isDetailLoading, setIsDetailLoading] = useState(false)
   const [isDetailLoadError, setIsDetailLoadError] = useState(false)
@@ -1210,20 +1255,31 @@ export function ContactServiceDetailsPanel({
     }
   }, [encodedContactServiceId, encodedTenantId])
 
-  const loadItem = useCallback(async () => {
+  const loadItem = useCallback(async (scope: ContactServiceDetailScope = "full") => {
+    const requestId = ++detailRequestIdRef.current
     setIsDetailLoading(true)
     setIsDetailLoadError(false)
     try {
       const { data } = await api.get<ContactServiceResponse>(
-        `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}`,
+        `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}${
+          scope === "full" ? "" : `/${scope}`
+        }`,
       )
+      if (requestId !== detailRequestIdRef.current) return
       setItem(normalizeContactServiceDetails(data.contactService))
+      setDetailScope(scope)
     } catch {
-      setItem(null)
+      if (requestId !== detailRequestIdRef.current) return
+      if (scope !== "full") {
+        setItem(null)
+        setDetailScope(null)
+      }
       setIsDetailLoadError(true)
       toast.error("Could not load service details.")
     } finally {
-      setIsDetailLoading(false)
+      if (requestId === detailRequestIdRef.current) {
+        setIsDetailLoading(false)
+      }
     }
   }, [encodedContactServiceId, encodedTenantId])
 
@@ -1243,6 +1299,7 @@ export function ContactServiceDetailsPanel({
             },
           },
         )
+        setOverview(normalizeContactServiceOverview(data.contactService))
         setServiceNoteItems(
           (data.items ?? []).map((note) =>
             normalizeServiceNoteItem(note, {
@@ -1289,9 +1346,11 @@ export function ContactServiceDetailsPanel({
   }, [encodedTenantId])
 
   useEffect(() => {
-    hasAutoLoadedDetailRef.current = false
+    detailRequestIdRef.current += 1
+    fullDetailLoadPromiseRef.current = null
     setOverview(null)
     setItem(null)
+    setDetailScope(null)
     setIsDetailLoadError(false)
     setPaymentPage(1)
     setServiceNoteItems([])
@@ -1315,18 +1374,30 @@ export function ContactServiceDetailsPanel({
   }, [encodedContactServiceId])
 
   useEffect(() => {
-    void loadOverview()
-  }, [loadOverview])
+    if (activeView === "overview") {
+      void loadOverview()
+    } else {
+      setIsLoading(false)
+    }
+  }, [activeView, loadOverview])
 
   useEffect(() => {
-    if (!overview || hasAutoLoadedDetailRef.current) return
-    hasAutoLoadedDetailRef.current = true
-    void loadItem()
-  }, [loadItem, overview])
+    detailRequestIdRef.current += 1
+    setItem(null)
+    setDetailScope(null)
+    setIsDetailLoadError(false)
+
+    if (activeView === "transaction" || activeView === "follow-up") {
+      void loadItem(activeView)
+    } else {
+      setIsDetailLoading(false)
+    }
+  }, [activeView, loadItem])
 
   useEffect(() => {
+    if (activeView !== "follow-up") return
     void loadFollowUpAssignees()
-  }, [loadFollowUpAssignees])
+  }, [activeView, loadFollowUpAssignees])
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -1392,18 +1463,39 @@ export function ContactServiceDetailsPanel({
 
   const refreshData = useCallback(
     async (includeDetail = Boolean(item)) => {
-      await loadOverview(false)
       if (includeDetail) {
-        await loadItem()
+        await loadItem(
+          detailScope ??
+            (activeView === "transaction" || activeView === "follow-up"
+              ? activeView
+              : "full"),
+        )
+        return
+      }
+      if (activeView === "notes") {
+        await loadServiceNotes()
+      } else {
+        await loadOverview(false)
       }
     },
-    [item, loadItem, loadOverview],
+    [activeView, detailScope, item, loadItem, loadOverview, loadServiceNotes],
   )
 
   const ensureDetailLoaded = useCallback(async () => {
-    if (item || isDetailLoading) return
-    await loadItem()
-  }, [isDetailLoading, item, loadItem])
+    if (detailScope === "full") return
+    if (fullDetailLoadPromiseRef.current) {
+      await fullDetailLoadPromiseRef.current
+      return
+    }
+
+    const pendingLoad = loadItem("full").finally(() => {
+      if (fullDetailLoadPromiseRef.current === pendingLoad) {
+        fullDetailLoadPromiseRef.current = null
+      }
+    })
+    fullDetailLoadPromiseRef.current = pendingLoad
+    await pendingLoad
+  }, [detailScope, loadItem])
 
   const openActivitySheet = useCallback(() => {
     setIsActivitySheetOpen(true)
@@ -2013,6 +2105,24 @@ export function ContactServiceDetailsPanel({
     () => (followUpSteps.length ? Math.round((followUpCompletedCount / followUpSteps.length) * 100) : 0),
     [followUpCompletedCount, followUpSteps.length],
   )
+  const overviewFollowUpTotalCount =
+    overview?.followUpSummary?.totalCount ?? followUpSteps.length
+  const overviewFollowUpCompletedCount =
+    overview?.followUpSummary?.completedCount ?? followUpCompletedCount
+  const overviewFollowUpCompletionPercentage = overviewFollowUpTotalCount
+    ? Math.round((overviewFollowUpCompletedCount / overviewFollowUpTotalCount) * 100)
+    : 0
+  const overviewChecklistTotalCount =
+    overview?.checklistSummary?.totalCount ?? checklistItems.length
+  const overviewChecklistReceivedCount =
+    overview?.checklistSummary?.receivedCount ?? checklistCompletedCount
+  const overviewChecklistMissingCount =
+    overview?.checklistSummary?.missingCount ?? checklistMissingCount
+  const overviewChecklistInformedCount =
+    overview?.checklistSummary?.informedCount ?? checklistInformedCount
+  const overviewChecklistCompletionPercentage = overviewChecklistTotalCount
+    ? Math.round((overviewChecklistReceivedCount / overviewChecklistTotalCount) * 100)
+    : 0
   const followUpFilterCounts = useMemo(
     () => ({
       OPEN: followUpSteps.filter(
@@ -2160,7 +2270,7 @@ export function ContactServiceDetailsPanel({
       } : current)
       setProfessionalOpen(false)
       toast.success("Assigned professional updated.")
-      await refreshData(true)
+      await refreshData(Boolean(item))
       router.refresh()
     } catch (error) {
       const backendError = isAxiosError(error) ? error.response?.data?.error : null
@@ -2800,7 +2910,10 @@ export function ContactServiceDetailsPanel({
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     )
   }, [item, payments])
-  if (isLoading) {
+  if (
+    !serviceData &&
+    (isLoading || isDetailLoading || (activeView === "notes" && isServiceNotesLoading))
+  ) {
     return (
       <section className="rounded-[26px] border border-slate-200 bg-white p-5 text-sm text-slate-500">
         Loading service enrollment...
@@ -2848,7 +2961,7 @@ export function ContactServiceDetailsPanel({
             </div>
 
             <div className="flex w-full max-w-full shrink-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] xl:w-auto xl:justify-end xl:overflow-visible xl:pb-0 [&::-webkit-scrollbar]:hidden">
-            <Tooltip>
+            {activeView === "follow-up" ? <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   type="button"
@@ -2867,9 +2980,9 @@ export function ContactServiceDetailsPanel({
               <TooltipContent side="top" sideOffset={8}>
                 {nextFollowUpStep ? "Add follow-up note" : "No open follow-up"}
               </TooltipContent>
-            </Tooltip>
+            </Tooltip> : null}
 
-            {canManageSensitiveServiceActions ? (
+            {activeView === "transaction" && canManageSensitiveServiceActions ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -2880,7 +2993,6 @@ export function ContactServiceDetailsPanel({
                     className="size-8 shrink-0 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900 hover:text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
                     onClick={() => {
                       setIsPaymentOpen(true)
-                      void ensureDetailLoaded()
                     }}
                     disabled={!canAddPayments}
                   >
@@ -2992,7 +3104,7 @@ export function ContactServiceDetailsPanel({
               </PopoverContent>
             </Popover>
 
-            {canChangeFollowUpCoordinator ? (
+            {activeView === "follow-up" && canChangeFollowUpCoordinator ? (
               <Popover
                 open={followUpCoordinatorOpen}
                 onOpenChange={(open) => {
@@ -3112,7 +3224,7 @@ export function ContactServiceDetailsPanel({
                   </Command>
                 </PopoverContent>
               </Popover>
-            ) : serviceData.followUpRun || followUpSteps.length ? (
+            ) : activeView === "follow-up" && (serviceData.followUpRun || followUpSteps.length) ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span
@@ -3420,12 +3532,12 @@ export function ContactServiceDetailsPanel({
                 <div className="h-full min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur transition group-hover:-translate-y-0.5 group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-md">
                   <p className="text-[11px] font-semibold uppercase text-slate-400">Follow-up</p>
                   <p className="mt-2 truncate text-xl font-semibold text-slate-950">
-                    {followUpSteps.length
-                      ? `${followUpCompletedCount} of ${followUpSteps.length} steps`
+                    {overviewFollowUpTotalCount
+                      ? `${overviewFollowUpCompletedCount} of ${overviewFollowUpTotalCount} steps`
                       : "No steps enrolled"}
                   </p>
                   <p className="mt-1 truncate text-xs text-slate-500">
-                    {followUpSteps.length ? `${followUpCompletionPercentage}% complete` : "Workflow not configured"}
+                    {overviewFollowUpTotalCount ? `${overviewFollowUpCompletionPercentage}% complete` : "Workflow not configured"}
                     {serviceData.nextFollowUp?.at
                       ? ` · Next due ${formatDateTimeForDisplay(serviceData.nextFollowUp.at, serviceData.timezone)}`
                       : ""}
@@ -3464,13 +3576,13 @@ export function ContactServiceDetailsPanel({
                 <div className="h-full min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur transition group-hover:-translate-y-0.5 group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-md">
                   <p className="text-[11px] font-semibold uppercase text-slate-400">Checklist readiness</p>
                   <p className="mt-2 truncate text-xl font-semibold text-slate-950">
-                    {checklistItems.length
-                      ? `${checklistCompletedCount} of ${checklistItems.length} received`
+                    {overviewChecklistTotalCount
+                      ? `${overviewChecklistReceivedCount} of ${overviewChecklistTotalCount} received`
                       : "No requirements"}
                   </p>
                   <p className="mt-1 truncate text-xs text-slate-500">
-                    {checklistItems.length
-                      ? `${checklistCompletionPercentage}% received · ${checklistMissingCount} missing · ${checklistInformedCount} informed`
+                    {overviewChecklistTotalCount
+                      ? `${overviewChecklistCompletionPercentage}% received · ${overviewChecklistMissingCount} missing · ${overviewChecklistInformedCount} informed`
                       : "No checklist items are configured"}
                   </p>
                 </div>
@@ -3500,7 +3612,7 @@ export function ContactServiceDetailsPanel({
                   type="button"
                   variant="outline"
                   className="mt-4 cursor-pointer rounded-full border-slate-200 bg-white"
-                  onClick={() => void ensureDetailLoaded()}
+                  onClick={() => void loadItem("follow-up")}
                 >
                   Retry
                 </Button>
@@ -4246,7 +4358,7 @@ export function ContactServiceDetailsPanel({
                   type="button"
                   variant="outline"
                   className="mt-4 cursor-pointer rounded-full border-slate-200 bg-white"
-                  onClick={() => void ensureDetailLoaded()}
+                  onClick={() => void loadItem("transaction")}
                 >
                   Retry
                 </Button>
@@ -5011,7 +5123,7 @@ export function ContactServiceDetailsPanel({
           </SheetHeader>
 
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
-            {isDetailLoading && !item ? (
+            {isDetailLoading && detailScope !== "full" ? (
               <div
                 role="status"
                 className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-5 text-center"
@@ -5024,7 +5136,7 @@ export function ContactServiceDetailsPanel({
                   Gathering the latest checklist progress.
                 </p>
               </div>
-            ) : !item ? (
+            ) : detailScope !== "full" || !item ? (
               <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 text-center">
                 <span className="inline-flex size-10 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm ring-1 ring-slate-200">
                   <ListTodo className="size-4" aria-hidden="true" />
@@ -5251,7 +5363,7 @@ export function ContactServiceDetailsPanel({
           </SheetHeader>
 
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
-            {isDetailLoading && !item ? (
+            {isDetailLoading && detailScope !== "full" ? (
               <div
                 role="status"
                 className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-5 text-center"
@@ -5260,7 +5372,7 @@ export function ContactServiceDetailsPanel({
                 <p className="mt-3 text-sm font-medium text-slate-800">Loading service activity...</p>
                 <p className="mt-1 text-xs text-slate-500">Gathering the complete enrollment history.</p>
               </div>
-            ) : !item ? (
+            ) : detailScope !== "full" || !item ? (
               <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 text-center">
                 <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm ring-1 ring-slate-200">
                   <Clock3 className="h-4 w-4" aria-hidden="true" />

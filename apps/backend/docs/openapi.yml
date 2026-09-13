@@ -4583,6 +4583,84 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/transaction:
+    get:
+      tags: [Services]
+      summary: Get the transaction and payments for one service enrollment
+      description: Returns enrollment header data and financial records only. Follow-up, note, checklist, and activity histories are not loaded.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Enrollment transaction returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactServiceDetailResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up:
+    get:
+      tags: [Services]
+      summary: Get the follow-up workflow for one service enrollment
+      description: Returns enrollment header data and follow-up workflow records only. Payment, note, checklist, and activity histories are not loaded.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Enrollment follow-up workflow returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactServiceDetailResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contact service process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-coordinator:
     patch:
       tags: [Services]
@@ -9464,11 +9542,21 @@ components:
             $ref: "#/components/schemas/ContactServiceNoteAttachment"
     ContactServiceNotesPageResponse:
       type: object
-      required: [ok, items, pagination]
+      required: [ok, contactService, items, pagination]
       properties:
         ok:
           type: boolean
           example: true
+        contactService:
+          description: Enrollment header data returned with the requested notes page.
+          allOf:
+            - $ref: "#/components/schemas/ContactServiceListItem"
+            - type: object
+              properties:
+                contactId:
+                  type: string
+                contactName:
+                  type: string
         items:
           type: array
           items:
@@ -9633,6 +9721,7 @@ components:
                     $ref: "#/components/schemas/ContactServiceChecklistActivityItem"
     ContactServiceOverviewResponse:
       type: object
+      description: Lightweight enrollment header and aggregate summaries. It does not include payment rows, follow-up step records, checklist item details, notes, or activity history.
       properties:
         ok:
           type: boolean
@@ -9652,6 +9741,24 @@ components:
                         $ref: "#/components/schemas/ServiceCatalogProfessional"
                 paymentSummary:
                   $ref: "#/components/schemas/ContactServicePaymentSummary"
+                followUpSummary:
+                  type: object
+                  properties:
+                    totalCount:
+                      type: integer
+                    completedCount:
+                      type: integer
+                checklistSummary:
+                  type: object
+                  properties:
+                    totalCount:
+                      type: integer
+                    receivedCount:
+                      type: integer
+                    missingCount:
+                      type: integer
+                    informedCount:
+                      type: integer
     ContactServicePaymentSummary:
       type: object
       properties:

@@ -862,6 +862,142 @@ function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
   }
 }
 
+const contactServiceWorkspaceBaseSelect = {
+  id: true,
+  contactId: true,
+  status: true,
+  startedAt: true,
+  purchasedAt: true,
+  completedAt: true,
+  canceledAt: true,
+  totalPriceCents: true,
+  currency: true,
+  allowPartialPayments: true,
+  notes: true,
+  followUpCoordinatorUserId: true,
+  followUpCoordinator: {
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      image: true,
+    },
+  },
+  assignedProfessional: {
+    select: {
+      id: true,
+      kind: true,
+      userId: true,
+      externalProfessionalName: true,
+      externalContact: true,
+      user: {
+        select: {
+          name: true,
+          email: true,
+          image: true,
+        },
+      },
+    },
+  },
+  contact: {
+    select: {
+      firstName: true,
+      middleName: true,
+      lastName: true,
+    },
+  },
+  service: {
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      basePriceCents: true,
+      isTaxExempt: true,
+      minimumPartialPaymentCents: true,
+      installmentCount: true,
+      installmentFrequency: true,
+      professionals: {
+        orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        select: {
+          id: true,
+          kind: true,
+          userId: true,
+          externalProfessionalName: true,
+          externalContact: true,
+          sortOrder: true,
+          user: {
+            select: {
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
+        },
+      },
+      tenant: {
+        select: {
+          taxEnabled: true,
+          taxLabel: true,
+          defaultTaxRateBps: true,
+          timezone: true,
+        },
+      },
+    },
+  },
+  followUpTemplate: {
+    select: {
+      id: true,
+      name: true,
+    },
+  },
+} as const
+
+function serializeContactServiceWorkspaceBase(item: any, paidCents: number) {
+  return {
+    id: item.id,
+    contactId: item.contactId,
+    status: item.status,
+    startedAt: item.startedAt,
+    purchasedAt: item.purchasedAt,
+    completedAt: item.completedAt,
+    canceledAt: item.canceledAt,
+    totalPriceCents: item.totalPriceCents,
+    paidCents,
+    remainingCents: Math.max(0, item.totalPriceCents - paidCents),
+    currency: item.currency,
+    allowPartialPayments: item.allowPartialPayments,
+    notes: item.notes,
+    timezone: getSafeTimezone(item.service.tenant.timezone),
+    followUpCoordinatorUserId: item.followUpCoordinatorUserId,
+    followUpCoordinator: item.followUpCoordinator,
+    assignedProfessional: item.assignedProfessional,
+    contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
+      .filter(Boolean)
+      .join(" "),
+    service: {
+      id: item.service.id,
+      name: item.service.name,
+      description: item.service.description,
+      basePriceCents: item.service.basePriceCents,
+      isTaxExempt: item.service.isTaxExempt,
+      minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
+      installmentCount: item.service.installmentCount,
+      installmentFrequency: item.service.installmentFrequency,
+      professionals: item.service.professionals,
+    },
+    tenantBilling: {
+      taxEnabled: item.service.tenant.taxEnabled,
+      taxLabel: item.service.tenant.taxLabel,
+      defaultTaxRatePercent:
+        item.service.tenant.defaultTaxRateBps !== null &&
+        item.service.tenant.defaultTaxRateBps !== undefined
+          ? item.service.tenant.defaultTaxRateBps / 100
+          : null,
+    },
+    followUpTemplate: item.followUpTemplate,
+  }
+}
+
 function serializeContactServiceListFollowUpMetadata(item: any) {
   const {
     definition,
@@ -3816,12 +3952,7 @@ router.get(
                 checklistItems: {
                   select: {
                     id: true,
-                    label: true,
-                    description: true,
-                    isRequired: true,
-                    sortOrder: true,
                   },
-                  orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
                 },
               },
             },
@@ -3847,46 +3978,12 @@ router.get(
                 failedAt: true,
               },
             },
-            payments: {
-              select: {
-                amountCents: true,
-                paidAt: true,
-                note: true,
-              },
-              orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
-            },
             followUpSteps: {
               select: {
                 id: true,
-                templateNodeId: true,
-                title: true,
-                notesTemplate: true,
                 status: true,
                 availableAt: true,
                 dueAt: true,
-                completedAt: true,
-                resolutionSource: true,
-                resolutionReason: true,
-                assignedToUserId: true,
-                resolvedByUserId: true,
-                resolvedAt: true,
-                assignedTo: {
-                  select: {
-                    id: true,
-                    name: true,
-                    email: true,
-                    image: true,
-                  },
-                },
-                resolvedBy: {
-                  select: {
-                    id: true,
-                    name: true,
-                    email: true,
-                    image: true,
-                  },
-                },
-                note: true,
                 sortOrder: true,
               },
               orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
@@ -3896,21 +3993,7 @@ router.get(
                 id: true,
                 checklistItemId: true,
                 status: true,
-                completedAt: true,
-                checklistItem: {
-                  select: {
-                    id: true,
-                    label: true,
-                    description: true,
-                    isRequired: true,
-                    sortOrder: true,
-                  },
-                },
               },
-              orderBy: [
-                { checklistItem: { sortOrder: "asc" } },
-                { createdAt: "asc" },
-              ],
             },
           },
         })
@@ -3978,76 +4061,58 @@ router.get(
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
 
-      const paidCents = item.payments.reduce(
-        (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
-        0,
-      )
-      const latestPaidAt = item.payments[0]?.paidAt ?? null
-      const scheduledPaymentsRecordedCount = item.payments.filter(
-        (payment: { note: string | null }) =>
-          payment.note?.trim().toLowerCase() !== "initial payment",
+      const [paymentAggregate, scheduledPaymentsRecordedCount] = await Promise.all([
+        prismaWithServices.contactServicePayment.aggregate({
+          where: { tenantId, contactServiceId },
+          _sum: { amountCents: true },
+          _max: { paidAt: true },
+          _count: { _all: true },
+        }),
+        prismaWithServices.contactServicePayment.count({
+          where: {
+            tenantId,
+            contactServiceId,
+            OR: [
+              { note: null },
+              { NOT: { note: { equals: "initial payment", mode: "insensitive" } } },
+            ],
+          },
+        }),
+      ])
+      const paidCents = paymentAggregate._sum.amountCents ?? 0
+      const followUpState = resolveVersionedFollowUpState(item)
+      const nextFollowUp = serializeEffectiveNextFollowUp(followUpState.effectiveNextFollowUp)
+      const followUpCompletedCount = item.followUpSteps.filter((step: any) =>
+        ["COMPLETED", "SKIPPED"].includes(step.status),
       ).length
+      const checklistSummary = item.checklistItems.reduce(
+        (summary: { received: number; missing: number; informed: number }, entry: any) => {
+          if (entry.status === "RECEIVED") summary.received += 1
+          if (entry.status === "MISSING") summary.missing += 1
+          if (entry.status === "INFORMED") summary.informed += 1
+          return summary
+        },
+        { received: 0, missing: 0, informed: 0 },
+      )
 
       return res.json({
         ok: true,
         contactService: {
-          id: item.id,
-          contactId: item.contactId,
-          status: item.status,
-          startedAt: item.startedAt,
-          purchasedAt: item.purchasedAt,
-          completedAt: item.completedAt,
-          canceledAt: item.canceledAt,
-          totalPriceCents: item.totalPriceCents,
-          paidCents,
-          remainingCents: Math.max(0, item.totalPriceCents - paidCents),
-          currency: item.currency,
-          allowPartialPayments: item.allowPartialPayments,
-          notes: item.notes,
-          followUpCoordinatorUserId: item.followUpCoordinatorUserId,
-          followUpCoordinator: item.followUpCoordinator,
-          assignedProfessional: item.assignedProfessional,
-          contactName: [item.contact?.firstName, item.contact?.middleName, item.contact?.lastName]
-            .filter(Boolean)
-            .join(" "),
-          service: {
-            id: item.service.id,
-            name: item.service.name,
-            description: item.service.description,
-            basePriceCents: item.service.basePriceCents,
-            isTaxExempt: item.service.isTaxExempt,
-            minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
-            installmentCount: item.service.installmentCount,
-            installmentFrequency: item.service.installmentFrequency,
-            professionals: item.service.professionals,
+          ...serializeContactServiceWorkspaceBase(item, paidCents),
+          nextFollowUp,
+          followUpSummary: {
+            totalCount: item.followUpSteps.length,
+            completedCount: followUpCompletedCount,
           },
-          tenantBilling: {
-            taxEnabled: item.service.tenant.taxEnabled,
-            taxLabel: item.service.tenant.taxLabel,
-            defaultTaxRatePercent:
-              item.service.tenant.defaultTaxRateBps !== null &&
-              item.service.tenant.defaultTaxRateBps !== undefined
-                ? item.service.tenant.defaultTaxRateBps / 100
-                : null,
+          checklistSummary: {
+            totalCount: item.checklistItems.length,
+            receivedCount: checklistSummary.received,
+            missingCount: checklistSummary.missing,
+            informedCount: checklistSummary.informed,
           },
-          followUpTemplate: item.followUpTemplate,
-          ...serializeVersionedFollowUpMetadata(
-            item,
-            getSafeTimezone(item.service.tenant.timezone),
-          ),
-          checklistItems: item.checklistItems.map((checklistItem: any) => ({
-            id: checklistItem.id,
-            checklistItemId: checklistItem.checklistItemId,
-            status: checklistItem.status,
-            completedAt: checklistItem.completedAt,
-            label: checklistItem.checklistItem?.label ?? "",
-            description: checklistItem.checklistItem?.description ?? null,
-            isRequired: Boolean(checklistItem.checklistItem?.isRequired),
-            sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
-          })),
           paymentSummary: {
-            latestPaidAt,
-            totalPaymentsCount: item.payments.length,
+            latestPaidAt: paymentAggregate._max.paidAt ?? null,
+            totalPaymentsCount: paymentAggregate._count._all,
             scheduledPaymentsRecordedCount,
           },
         },
@@ -4194,6 +4259,196 @@ router.patch(
       })
 
       return res.json({ ok: true, ...updated })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.get(
+  "/:tenantId/contact-services/:contactServiceId/transaction",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const item = await prismaWithServices.contactService.findFirst({
+        where: { id: contactServiceId, tenantId },
+        select: {
+          ...contactServiceWorkspaceBaseSelect,
+          payments: {
+            select: {
+              id: true,
+              amountCents: true,
+              paidAt: true,
+              paymentMethod: true,
+              note: true,
+              recordedBy: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+            orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
+          },
+        },
+      })
+
+      if (!item) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const paidCents = item.payments.reduce(
+        (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
+        0,
+      )
+
+      return res.json({
+        ok: true,
+        contactService: {
+          ...serializeContactServiceWorkspaceBase(item, paidCents),
+          payments: item.payments,
+          followUpSteps: [],
+          checklistItems: [],
+          noteActivityItems: [],
+          executionLogs: [],
+          checklistActivityLogs: [],
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.get(
+  "/:tenantId/contact-services/:contactServiceId/follow-up",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const authed = req as AuthedRequest
+      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+
+      const membership = await requireActiveMembership(authed, res, tenantId)
+      if (!membership) return
+
+      const fetchItem = async () =>
+        prismaWithServices.contactService.findFirst({
+          where: { id: contactServiceId, tenantId },
+          select: {
+            ...contactServiceWorkspaceBaseSelect,
+            followUpTemplateVersion: {
+              select: { id: true, versionNumber: true, definition: true },
+            },
+            followUpRun: {
+              select: {
+                id: true,
+                status: true,
+                resumeAt: true,
+                waitingNodeId: true,
+                leaseToken: true,
+                failureNodeId: true,
+                failureCode: true,
+                failureMessage: true,
+                failedAt: true,
+              },
+            },
+            followUpSteps: {
+              select: {
+                id: true,
+                templateNodeId: true,
+                title: true,
+                notesTemplate: true,
+                status: true,
+                availableAt: true,
+                dueAt: true,
+                completedAt: true,
+                resolutionSource: true,
+                resolutionReason: true,
+                assignedToUserId: true,
+                resolvedByUserId: true,
+                resolvedAt: true,
+                assignedTo: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+                resolvedBy: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
+                note: true,
+                sortOrder: true,
+              },
+              orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            },
+          },
+        })
+
+      let item = await fetchItem()
+      if (!item) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const syncResult = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const activatedId = await syncContactServiceActiveStep({
+          prismaTx,
+          tenantId,
+          contactServiceId: item.id,
+        })
+        const reconciled = await reconcileContactServiceCompletionFromFollowUps(
+          prismaTx,
+          tenantId,
+          item.id,
+          authed.user.id,
+        )
+        return {
+          activatedId,
+          statusReconciled: reconciled?.status !== item.status,
+        }
+      })
+
+      if (syncResult.activatedId || syncResult.statusReconciled) {
+        item = await fetchItem()
+      }
+      if (!item) {
+        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
+      }
+
+      const paymentAggregate = await prismaWithServices.contactServicePayment.aggregate({
+        where: { tenantId, contactServiceId },
+        _sum: { amountCents: true },
+      })
+      const paidCents = paymentAggregate._sum.amountCents ?? 0
+
+      return res.json({
+        ok: true,
+        contactService: {
+          ...serializeContactServiceWorkspaceBase(item, paidCents),
+          ...serializeVersionedFollowUpMetadata(
+            item,
+            getSafeTimezone(item.service.tenant.timezone),
+          ),
+          payments: [],
+          checklistItems: [],
+          noteActivityItems: [],
+          executionLogs: [],
+          checklistActivityLogs: [],
+        },
+      })
     } catch (error) {
       return next(error)
     }
@@ -4638,7 +4893,7 @@ router.get(
 
       const enrollment = await prismaWithServices.contactService.findFirst({
         where: { id: contactServiceId, tenantId },
-        select: { id: true },
+        select: contactServiceWorkspaceBaseSelect,
       })
       if (!enrollment) {
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
@@ -4664,9 +4919,13 @@ router.get(
       const serviceWhere = { tenantId, contactServiceId, ...searchWhere }
       const contactWhere = { tenantId, contactServiceId, ...searchWhere }
 
-      const [serviceTotal, contactTotal] = await Promise.all([
+      const [serviceTotal, contactTotal, paymentAggregate] = await Promise.all([
         prismaWithServices.contactServiceNote.count({ where: serviceWhere }),
         prismaWithServices.contactNote.count({ where: contactWhere }),
+        prismaWithServices.contactServicePayment.aggregate({
+          where: { tenantId, contactServiceId },
+          _sum: { amountCents: true },
+        }),
       ])
       const page = getContactServiceNotesPage(
         query.page,
@@ -4748,6 +5007,14 @@ router.get(
 
       return res.json({
         ok: true,
+        contactService: {
+          ...serializeContactServiceWorkspaceBase(
+            enrollment,
+            paymentAggregate._sum.amountCents ?? 0,
+          ),
+          followUpSteps: [],
+          checklistItems: [],
+        },
         items,
         pagination: {
           page: page.page,
