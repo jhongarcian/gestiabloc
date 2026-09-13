@@ -9721,7 +9721,7 @@ components:
                     $ref: "#/components/schemas/ContactServiceChecklistActivityItem"
     ContactServiceOverviewResponse:
       type: object
-      description: Lightweight enrollment header and aggregate summaries. It does not include payment rows, follow-up step records, checklist item details, notes, or activity history.
+      description: Enrollment header, aggregate payment information, and read-only workflow and checklist previews. It does not include payment rows, note bodies, execution logs, or activity history.
       properties:
         ok:
           type: boolean
@@ -9748,6 +9748,22 @@ components:
                       type: integer
                     completedCount:
                       type: integer
+                    runStatus:
+                      type: string
+                      nullable: true
+                      enum: [RUNNING, WAITING, AWAITING_STEP, COMPLETED, FAILED, NEEDS_REVIEW, CANCELED]
+                    failureMessage:
+                      type: string
+                      nullable: true
+                    failedAt:
+                      type: string
+                      format: date-time
+                      nullable: true
+                    items:
+                      type: array
+                      description: Complete read-only workflow progression in configured order.
+                      items:
+                        $ref: "#/components/schemas/ContactServiceOverviewFollowUpStepPreview"
                 checklistSummary:
                   type: object
                   properties:
@@ -9759,6 +9775,74 @@ components:
                       type: integer
                     informedCount:
                       type: integer
+                    items:
+                      type: array
+                      description: Complete read-only checklist in configured order.
+                      items:
+                        $ref: "#/components/schemas/ContactServiceOverviewChecklistPreview"
+    ContactServiceOverviewFollowUpStepPreview:
+      type: object
+      description: Read-only workflow step fields rendered by the enrollment Overview.
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, ACTIVE, COMPLETED, SKIPPED, POSTPONED]
+        availableAt:
+          type: string
+          format: date-time
+          nullable: true
+        dueAt:
+          type: string
+          format: date-time
+          nullable: true
+        effectiveDueAt:
+          type: string
+          format: date-time
+          nullable: true
+        effectiveDueSource:
+          type: string
+          nullable: true
+          enum: [USER_SCHEDULED_WAIT, STEP_DUE, STEP_AVAILABLE]
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        assignedToUserId:
+          type: string
+          nullable: true
+        assignedTo:
+          allOf:
+            - $ref: "#/components/schemas/ContactServiceFollowUpUser"
+          nullable: true
+        sortOrder:
+          type: integer
+    ContactServiceOverviewChecklistPreview:
+      type: object
+      description: Read-only checklist fields rendered by the enrollment Overview.
+      properties:
+        id:
+          type: string
+        checklistItemId:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+          nullable: true
+        isRequired:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/ContactServiceChecklistStatus"
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        sortOrder:
+          type: integer
     ContactServicePaymentSummary:
       type: object
       properties:

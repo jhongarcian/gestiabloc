@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } f
 import { isAxiosError } from "axios"
 import {
   ArrowLeft,
+  ArrowRight,
   CircleDollarSign,
   CalendarDays,
   Check,
@@ -71,6 +72,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { LabeledProgress } from "@/components/ui/labeled-progress"
 import { Progress } from "@/components/ui/progress"
 import {
   Select,
@@ -384,12 +386,17 @@ type ContactServiceOverview = Omit<
   followUpSummary?: {
     totalCount: number
     completedCount: number
+    runStatus: NonNullable<ContactServiceDetails["followUpRun"]>["status"] | null
+    failureMessage: string | null
+    failedAt: string | null
+    items: ContactServiceDetails["followUpSteps"]
   }
   checklistSummary?: {
     totalCount: number
     receivedCount: number
     missingCount: number
     informedCount: number
+    items: ContactServiceDetails["checklistItems"]
   }
   paymentSummary?: {
     latestPaidAt: string | null
@@ -757,7 +764,9 @@ const getStepTimeMeta = (
   if (step.status === "COMPLETED") {
     return {
       label: "Completed",
-      helper: step.completedAt ? `Completed ${new Date(step.completedAt).toLocaleString()}` : "Marked as completed",
+      helper: step.completedAt
+        ? `Completed ${formatDateTimeForDisplay(step.completedAt, timezone)}`
+        : "Marked as completed",
       badgeClassName: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
     }
   }
@@ -791,6 +800,14 @@ const getStepTimeMeta = (
       label: "Scheduled",
       helper: `Scheduled for ${formatDateTimeForDisplay(effectiveDueAt, timezone)}`,
       badgeClassName: "bg-blue-100 text-blue-800 hover:bg-blue-100",
+    }
+  }
+
+  if (step.effectiveDueSource === "STEP_AVAILABLE") {
+    return {
+      label: "Available",
+      helper: `Available ${formatDateTimeForDisplay(effectiveDueAt, timezone)}`,
+      badgeClassName: "bg-sky-100 text-sky-800 hover:bg-sky-100",
     }
   }
 
@@ -839,6 +856,64 @@ const getFollowUpStepStatusBadgeClass = (status: FollowUpStepStatus | null | und
       return "bg-violet-100 text-violet-800 hover:bg-violet-100"
     default:
       return "bg-slate-100 text-slate-700 hover:bg-slate-100"
+  }
+}
+
+const getOverviewTimelineMarkerClass = (status: FollowUpStepStatus | null | undefined) => {
+  switch (status ?? "PENDING") {
+    case "ACTIVE":
+      return "border-blue-800 bg-blue-700 text-white shadow-[0_0_0_2px_rgb(191_219_254),0_4px_10px_-4px_rgba(30,64,175,0.8)]"
+    case "POSTPONED":
+      return "border-amber-500 bg-amber-50 text-amber-800 shadow-[0_0_0_2px_rgb(253_230_138)]"
+    case "COMPLETED":
+      return "border-emerald-700 bg-emerald-600 text-white shadow-[0_0_0_2px_rgb(167_243_208)]"
+    case "SKIPPED":
+      return "border-slate-400 bg-slate-100 text-slate-600 shadow-[0_0_0_1px_rgb(203_213_225)]"
+    default:
+      return "border-slate-400 bg-white text-slate-600 shadow-[0_0_0_1px_rgb(203_213_225)]"
+  }
+}
+
+const getOverviewTimelineBadgeClass = (status: FollowUpStepStatus | null | undefined) => {
+  switch (status ?? "PENDING") {
+    case "ACTIVE":
+      return "border-blue-200 bg-blue-50 text-blue-800"
+    case "POSTPONED":
+      return "border-amber-200 bg-amber-50 text-amber-800"
+    case "COMPLETED":
+      return "border-emerald-200 bg-emerald-50 text-emerald-800"
+    case "SKIPPED":
+      return "border-slate-200 bg-slate-100 text-slate-600"
+    default:
+      return "border-slate-200 bg-white text-slate-600"
+  }
+}
+
+const getOverviewTimelineCardClass = (status: FollowUpStepStatus | null | undefined) => {
+  switch (status ?? "PENDING") {
+    case "ACTIVE":
+      return "border-blue-200 bg-blue-50/80 shadow-[0_8px_24px_-18px_rgba(30,64,175,0.7)]"
+    case "POSTPONED":
+      return "border-amber-200 bg-amber-50/70"
+    case "COMPLETED":
+      return "border-emerald-200/80 bg-emerald-50/40"
+    default:
+      return "border-slate-200 bg-slate-50/70"
+  }
+}
+
+const getOverviewTimelineConnectorClass = (
+  status: FollowUpStepStatus | null | undefined,
+) => {
+  switch (status ?? "PENDING") {
+    case "COMPLETED":
+      return "bg-emerald-300"
+    case "ACTIVE":
+      return "bg-blue-300"
+    case "POSTPONED":
+      return "bg-amber-300"
+    default:
+      return "bg-slate-200"
   }
 }
 
@@ -1049,48 +1124,56 @@ const normalizeContactServiceDetails = (details: ContactServiceDetails): Contact
 
 const normalizeContactServiceOverview = (
   details: ContactServiceOverviewPayload,
-): ContactServiceOverview => ({
-  ...details,
-  service: { ...details.service, professionals: details.service.professionals ?? [] },
-  followUpSteps: details.followUpSteps ?? [],
-  checklistItems: (details.checklistItems ?? []).map((checklistItem) => ({
+): ContactServiceOverview => {
+  const followUpSteps = details.followUpSummary?.items ?? details.followUpSteps ?? []
+  const checklistItems = (
+    details.checklistSummary?.items ?? details.checklistItems ?? []
+  ).map((checklistItem) => ({
     ...checklistItem,
     status: checklistItem.status ?? (checklistItem.completedAt ? "RECEIVED" : "NOT_RECEIVED"),
-  })),
-  tenantBilling: {
-    ...DEFAULT_TENANT_BILLING,
-    ...(details.tenantBilling ?? {}),
-  },
-  followUpSummary: {
-    totalCount: details.followUpSummary?.totalCount ?? details.followUpSteps?.length ?? 0,
-    completedCount:
-      details.followUpSummary?.completedCount ??
-      details.followUpSteps?.filter((step) =>
-        step.status === "COMPLETED" || step.status === "SKIPPED"
-      ).length ??
-      0,
-  },
-  checklistSummary: {
-    totalCount: details.checklistSummary?.totalCount ?? details.checklistItems?.length ?? 0,
-    receivedCount:
-      details.checklistSummary?.receivedCount ??
-      details.checklistItems?.filter((entry) => entry.status === "RECEIVED").length ??
-      0,
-    missingCount:
-      details.checklistSummary?.missingCount ??
-      details.checklistItems?.filter((entry) => entry.status === "MISSING").length ??
-      0,
-    informedCount:
-      details.checklistSummary?.informedCount ??
-      details.checklistItems?.filter((entry) => entry.status === "INFORMED").length ??
-      0,
-  },
-  paymentSummary: {
-    latestPaidAt: details.paymentSummary?.latestPaidAt ?? null,
-    totalPaymentsCount: details.paymentSummary?.totalPaymentsCount ?? 0,
-    scheduledPaymentsRecordedCount: details.paymentSummary?.scheduledPaymentsRecordedCount ?? 0,
-  },
-})
+  }))
+
+  return {
+    ...details,
+    service: { ...details.service, professionals: details.service.professionals ?? [] },
+    followUpSteps,
+    checklistItems,
+    tenantBilling: {
+      ...DEFAULT_TENANT_BILLING,
+      ...(details.tenantBilling ?? {}),
+    },
+    followUpSummary: {
+      totalCount: details.followUpSummary?.totalCount ?? followUpSteps.length,
+      completedCount:
+        details.followUpSummary?.completedCount ??
+        followUpSteps.filter(
+          (step) => step.status === "COMPLETED" || step.status === "SKIPPED",
+        ).length,
+      runStatus: details.followUpSummary?.runStatus ?? null,
+      failureMessage: details.followUpSummary?.failureMessage ?? null,
+      failedAt: details.followUpSummary?.failedAt ?? null,
+      items: followUpSteps,
+    },
+    checklistSummary: {
+      totalCount: details.checklistSummary?.totalCount ?? checklistItems.length,
+      receivedCount:
+        details.checklistSummary?.receivedCount ??
+        checklistItems.filter((entry) => entry.status === "RECEIVED").length,
+      missingCount:
+        details.checklistSummary?.missingCount ??
+        checklistItems.filter((entry) => entry.status === "MISSING").length,
+      informedCount:
+        details.checklistSummary?.informedCount ??
+        checklistItems.filter((entry) => entry.status === "INFORMED").length,
+      items: checklistItems,
+    },
+    paymentSummary: {
+      latestPaidAt: details.paymentSummary?.latestPaidAt ?? null,
+      totalPaymentsCount: details.paymentSummary?.totalPaymentsCount ?? 0,
+      scheduledPaymentsRecordedCount: details.paymentSummary?.scheduledPaymentsRecordedCount ?? 0,
+    },
+  }
+}
 
 export function ContactServiceDetailsPanel({
   tenantId,
@@ -1116,6 +1199,7 @@ export function ContactServiceDetailsPanel({
   const [item, setItem] = useState<ContactServiceDetails | null>(null)
   const [detailScope, setDetailScope] = useState<ContactServiceDetailScope | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isOverviewLoadError, setIsOverviewLoadError] = useState(false)
   const [isDetailLoading, setIsDetailLoading] = useState(false)
   const [isDetailLoadError, setIsDetailLoadError] = useState(false)
   const [isLoadingAssignees, setIsLoadingAssignees] = useState(false)
@@ -1242,6 +1326,7 @@ export function ContactServiceDetailsPanel({
 
   const loadOverview = useCallback(async (showInitialLoading = true) => {
     if (showInitialLoading) setIsLoading(true)
+    setIsOverviewLoadError(false)
     try {
       const { data } = await api.get<ContactServiceOverviewResponse>(
         `/api/services/${encodedTenantId}/contact-services/${encodedContactServiceId}/overview`,
@@ -1249,6 +1334,7 @@ export function ContactServiceDetailsPanel({
       setOverview(normalizeContactServiceOverview(data.contactService))
     } catch {
       setOverview(null)
+      setIsOverviewLoadError(true)
       toast.error("Could not load service enrollment.")
     } finally {
       if (showInitialLoading) setIsLoading(false)
@@ -1349,6 +1435,7 @@ export function ContactServiceDetailsPanel({
     detailRequestIdRef.current += 1
     fullDetailLoadPromiseRef.current = null
     setOverview(null)
+    setIsOverviewLoadError(false)
     setItem(null)
     setDetailScope(null)
     setIsDetailLoadError(false)
@@ -1994,16 +2081,34 @@ export function ContactServiceDetailsPanel({
             }
           : current,
       )
-      setOverview((current) =>
-        current
-          ? {
-              ...current,
-              checklistItems: current.checklistItems.map((entry) =>
-                entry.id === checklistItem.id ? data.checklistItem : entry,
-              ),
-            }
-          : current,
-      )
+      setOverview((current) => {
+        if (!current) return current
+
+        const updatedChecklistItems = current.checklistItems.map((entry) =>
+          entry.id === checklistItem.id ? data.checklistItem : entry,
+        )
+        const updatedChecklistCounts = updatedChecklistItems.reduce(
+          (counts, entry) => {
+            if (entry.status === "RECEIVED") counts.received += 1
+            if (entry.status === "MISSING") counts.missing += 1
+            if (entry.status === "INFORMED") counts.informed += 1
+            return counts
+          },
+          { received: 0, missing: 0, informed: 0 },
+        )
+
+        return {
+          ...current,
+          checklistItems: updatedChecklistItems,
+          checklistSummary: {
+            totalCount: updatedChecklistItems.length,
+            receivedCount: updatedChecklistCounts.received,
+            missingCount: updatedChecklistCounts.missing,
+            informedCount: updatedChecklistCounts.informed,
+            items: updatedChecklistItems,
+          },
+        }
+      })
     } catch {
       toast.error("Could not update checklist item.")
     } finally {
@@ -2112,14 +2217,10 @@ export function ContactServiceDetailsPanel({
   const overviewFollowUpCompletionPercentage = overviewFollowUpTotalCount
     ? Math.round((overviewFollowUpCompletedCount / overviewFollowUpTotalCount) * 100)
     : 0
-  const overviewChecklistTotalCount =
-    overview?.checklistSummary?.totalCount ?? checklistItems.length
-  const overviewChecklistReceivedCount =
-    overview?.checklistSummary?.receivedCount ?? checklistCompletedCount
-  const overviewChecklistMissingCount =
-    overview?.checklistSummary?.missingCount ?? checklistMissingCount
-  const overviewChecklistInformedCount =
-    overview?.checklistSummary?.informedCount ?? checklistInformedCount
+  const overviewChecklistTotalCount = checklistItems.length
+  const overviewChecklistReceivedCount = checklistCompletedCount
+  const overviewChecklistMissingCount = checklistMissingCount
+  const overviewChecklistInformedCount = checklistInformedCount
   const overviewChecklistCompletionPercentage = overviewChecklistTotalCount
     ? Math.round((overviewChecklistReceivedCount / overviewChecklistTotalCount) * 100)
     : 0
@@ -2175,6 +2276,9 @@ export function ContactServiceDetailsPanel({
     if (serviceData.remainingCents > 0) return "Partial payment"
     return "Paid in full"
   }, [serviceData])
+  const paymentCollectionPercentage = serviceData?.totalPriceCents
+    ? Math.min(100, Math.round((serviceData.paidCents / serviceData.totalPriceCents) * 100))
+    : 0
   const completedScheduledPaymentsCount = useMemo(() => {
     if (item) {
       return payments.filter((payment) => payment.note?.trim().toLowerCase() !== "initial payment").length
@@ -2910,6 +3014,51 @@ export function ContactServiceDetailsPanel({
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     )
   }, [item, payments])
+  if (!serviceData && activeView === "overview" && isLoading) {
+    return (
+      <section
+        role="status"
+        aria-busy="true"
+        aria-label="Loading enrollment overview"
+        className="grid min-w-0 animate-pulse gap-4 xl:grid-cols-12 xl:items-start"
+      >
+        <span className="sr-only">Loading enrollment overview...</span>
+        <div className="order-1 min-h-80 rounded-[26px] border border-slate-200 bg-white p-5 xl:col-span-7">
+          <div className="h-4 w-28 rounded-full bg-slate-200" />
+          <div className="mt-3 h-6 w-48 rounded-full bg-slate-200" />
+          <div className="mt-7 grid gap-3 sm:grid-cols-3">
+            {[0, 1, 2].map((placeholder) => (
+              <div key={placeholder} className="h-28 rounded-[20px] bg-slate-100" />
+            ))}
+          </div>
+          <div className="mt-5 h-32 rounded-[20px] bg-slate-100" />
+        </div>
+        <div className="order-2 min-h-[30rem] rounded-[26px] border border-slate-200 bg-white p-5 xl:col-span-5 xl:col-start-8 xl:row-span-2 xl:row-start-1">
+          <div className="h-4 w-32 rounded-full bg-slate-200" />
+          <div className="mt-3 h-6 w-44 rounded-full bg-slate-200" />
+          <div className="mt-7 space-y-5">
+            {[0, 1, 2, 3].map((placeholder) => (
+              <div key={placeholder} className="grid grid-cols-[32px_minmax(0,1fr)] gap-3">
+                <div className="size-8 rounded-full bg-slate-200" />
+                <div className="h-20 rounded-2xl bg-slate-100" />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="order-3 min-h-72 rounded-[26px] border border-slate-200 bg-white p-5 xl:col-span-7 xl:col-start-1">
+          <div className="h-4 w-28 rounded-full bg-slate-200" />
+          <div className="mt-3 h-6 w-52 rounded-full bg-slate-200" />
+          <div className="mt-7 h-28 rounded-[20px] bg-slate-100" />
+          <div className="mt-4 space-y-3">
+            {[0, 1, 2].map((placeholder) => (
+              <div key={placeholder} className="h-14 rounded-xl bg-slate-100" />
+            ))}
+          </div>
+        </div>
+      </section>
+    )
+  }
+
   if (
     !serviceData &&
     (isLoading || isDetailLoading || (activeView === "notes" && isServiceNotesLoading))
@@ -2917,6 +3066,28 @@ export function ContactServiceDetailsPanel({
     return (
       <section className="rounded-[26px] border border-slate-200 bg-white p-5 text-sm text-slate-500">
         Loading service enrollment...
+      </section>
+    )
+  }
+
+  if (!serviceData && activeView === "overview" && isOverviewLoadError) {
+    return (
+      <section
+        role="alert"
+        className="rounded-[26px] border border-rose-200 bg-rose-50/70 p-6 text-center"
+      >
+        <p className="text-sm font-semibold text-rose-900">Overview unavailable</p>
+        <p className="mt-1 text-sm text-rose-700">
+          We could not load this enrollment overview. Try again to reload its information.
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "mt-4")}
+          onClick={() => void loadOverview()}
+        >
+          Retry
+        </Button>
       </section>
     )
   }
@@ -3514,79 +3685,424 @@ export function ContactServiceDetailsPanel({
           className="min-h-0 min-w-0 flex-1 scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] bg-background px-4 py-5 md:px-5 md:py-6"
         >
         {activeView === "overview" ? (
-          <section
-            className="rounded-[26px] border border-slate-200 bg-slate-50 p-5"
-            aria-labelledby="service-overview-title"
-          >
+          <section aria-labelledby="service-overview-title">
             <h2 id="service-overview-title" className="sr-only">Service overview</h2>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <Link
-                href={getServiceEnrollmentFollowUpHref({
-                  tenantSlug,
-                  contactServiceId,
-                  returnTo,
-                })}
-                className="group min-w-0 rounded-[22px] outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                aria-label="View service follow-ups"
+            <div className="grid min-w-0 gap-4 xl:grid-cols-12 xl:items-start">
+              <section
+                aria-labelledby="overview-payment-title"
+                className="order-1 min-w-0 rounded-[26px] border border-slate-200 bg-white p-5 shadow-sm xl:col-span-7"
               >
-                <div className="h-full min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur transition group-hover:-translate-y-0.5 group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-md">
-                  <p className="text-[11px] font-semibold uppercase text-slate-400">Follow-up</p>
-                  <p className="mt-2 truncate text-xl font-semibold text-slate-950">
-                    {overviewFollowUpTotalCount
-                      ? `${overviewFollowUpCompletedCount} of ${overviewFollowUpTotalCount} steps`
-                      : "No steps enrolled"}
-                  </p>
-                  <p className="mt-1 truncate text-xs text-slate-500">
-                    {overviewFollowUpTotalCount ? `${overviewFollowUpCompletionPercentage}% complete` : "Workflow not configured"}
-                    {serviceData.nextFollowUp?.at
-                      ? ` · Next due ${formatDateTimeForDisplay(serviceData.nextFollowUp.at, serviceData.timezone)}`
-                      : ""}
-                  </p>
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <span className="inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-800 ring-1 ring-blue-100">
+                      <CreditCard className="size-4" aria-hidden="true" />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-blue-700">Payment overview</p>
+                      <h3 id="overview-payment-title" className="mt-1 text-lg font-semibold text-slate-950">
+                        Transaction position
+                      </h3>
+                      <p className="mt-1 text-sm text-slate-600">
+                        A read-only snapshot of the sale and its collected balance.
+                      </p>
+                    </div>
+                  </div>
+                  <Link
+                    href={getServiceEnrollmentHref({
+                      tenantSlug,
+                      contactServiceId,
+                      view: "transaction",
+                      returnTo,
+                    })}
+                    className="inline-flex h-8 shrink-0 items-center gap-1.5 self-start rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+                  >
+                    Open transaction
+                    <ArrowRight className="size-3.5" aria-hidden="true" />
+                  </Link>
                 </div>
-              </Link>
 
-              <Link
-                href={getServiceEnrollmentHref({
-                  tenantSlug,
-                  contactServiceId,
-                  view: "transaction",
-                  returnTo,
-                })}
-                className="group min-w-0 rounded-[22px] outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                aria-label="View service transaction"
-              >
-                <div className="h-full min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur transition group-hover:-translate-y-0.5 group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-md">
-                  <p className="text-[11px] font-semibold uppercase text-slate-400">Financial position</p>
-                  <p className="mt-2 truncate text-xl font-semibold text-slate-950">
-                    {currencyFormatter(serviceData.remainingCents, serviceData.currency)} balance
-                  </p>
-                  <p className="mt-1 truncate text-xs text-slate-500">
-                    Total {currencyFormatter(serviceData.totalPriceCents, serviceData.currency)} · Paid{" "}
-                    {currencyFormatter(serviceData.paidCents, serviceData.currency)}
-                  </p>
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Total</p>
+                    <p className="mt-2 truncate text-xl font-semibold tabular-nums tracking-tight text-slate-950">
+                      {currencyFormatter(serviceData.totalPriceCents, serviceData.currency)}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">Original transaction value</p>
+                  </div>
+                  <div className="rounded-[20px] border border-emerald-200/80 bg-emerald-50/70 px-4 py-3.5">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">Collected</p>
+                    <p className="mt-2 truncate text-xl font-semibold tabular-nums tracking-tight text-emerald-900">
+                      {currencyFormatter(serviceData.paidCents, serviceData.currency)}
+                    </p>
+                    <p className="mt-1 text-xs text-emerald-700">Applied across all payments</p>
+                  </div>
+                  <div className={cn(
+                    "rounded-[20px] border px-4 py-3.5",
+                    serviceData.remainingCents > 0
+                      ? "border-amber-200/80 bg-amber-50/70"
+                      : "border-slate-200 bg-slate-50/80",
+                  )}>
+                    <p className={cn(
+                      "text-[11px] font-semibold uppercase tracking-[0.16em]",
+                      serviceData.remainingCents > 0 ? "text-amber-700" : "text-slate-500",
+                    )}>Outstanding</p>
+                    <p className={cn(
+                      "mt-2 truncate text-xl font-semibold tabular-nums tracking-tight",
+                      serviceData.remainingCents > 0 ? "text-amber-950" : "text-slate-950",
+                    )}>
+                      {currencyFormatter(serviceData.remainingCents, serviceData.currency)}
+                    </p>
+                    <p className={cn(
+                      "mt-1 text-xs",
+                      serviceData.remainingCents > 0 ? "text-amber-700" : "text-slate-500",
+                    )}>
+                      {serviceData.remainingCents > 0 ? "Still to be collected" : "Transaction paid in full"}
+                    </p>
+                  </div>
                 </div>
-              </Link>
 
-              <button
-                type="button"
-                className="group min-w-0 rounded-[22px] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:col-span-2 xl:col-span-1"
-                onClick={openChecklistSheet}
-                aria-label="Open service checklist"
-              >
-                <div className="h-full min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur transition group-hover:-translate-y-0.5 group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-md">
-                  <p className="text-[11px] font-semibold uppercase text-slate-400">Checklist readiness</p>
-                  <p className="mt-2 truncate text-xl font-semibold text-slate-950">
-                    {overviewChecklistTotalCount
-                      ? `${overviewChecklistReceivedCount} of ${overviewChecklistTotalCount} received`
-                      : "No requirements"}
-                  </p>
-                  <p className="mt-1 truncate text-xs text-slate-500">
-                    {overviewChecklistTotalCount
-                      ? `${overviewChecklistCompletionPercentage}% received · ${overviewChecklistMissingCount} missing · ${overviewChecklistInformedCount} informed`
-                      : "No checklist items are configured"}
-                  </p>
+                <div className="mt-5 rounded-[20px] border border-slate-200 bg-slate-50/70 p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-950">Collection progress</p>
+                      <p className="mt-0.5 text-xs text-slate-500">{paymentCollectionState}</p>
+                    </div>
+                  </div>
+                  <LabeledProgress
+                    value={paymentCollectionPercentage}
+                    ariaLabel="Payment collection progress"
+                    ariaValueText={`${paymentCollectionPercentage}% complete, ${currencyFormatter(serviceData.paidCents, serviceData.currency)} collected of ${currencyFormatter(serviceData.totalPriceCents, serviceData.currency)}`}
+                    summaryLabel={`${currencyFormatter(serviceData.paidCents, serviceData.currency)} collected`}
+                    size="compact"
+                    className="mt-3"
+                  />
+                  <dl className="mt-4 grid gap-3 border-t border-slate-200 pt-4 text-sm sm:grid-cols-2">
+                    <div>
+                      <dt className="text-xs text-slate-500">Last payment</dt>
+                      <dd className="mt-1 font-medium text-slate-800">
+                        {overview?.paymentSummary?.latestPaidAt
+                          ? formatDateTimeForDisplay(
+                              overview.paymentSummary.latestPaidAt,
+                              serviceData.timezone,
+                            )
+                          : "No payment recorded"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-slate-500">Payment schedule</dt>
+                      <dd className="mt-1 font-medium text-slate-800">
+                        {serviceData.service.installmentCount && serviceData.service.installmentFrequency
+                          ? `${serviceData.service.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[serviceData.service.installmentFrequency].toLowerCase()} installments`
+                          : "Full payment"}
+                      </dd>
+                      {nextScheduledPaymentSummary ? (
+                        <p className="mt-1 text-xs text-slate-500">{nextScheduledPaymentSummary}</p>
+                      ) : null}
+                    </div>
+                  </dl>
+                  {overview?.paymentSummary?.totalPaymentsCount === 0 ? (
+                    <p className="mt-4 rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2.5 text-xs text-blue-800">
+                      No payments have been recorded against this transaction yet.
+                    </p>
+                  ) : null}
                 </div>
-              </button>
+              </section>
+
+              <aside className="order-2 min-w-0 xl:col-span-5 xl:col-start-8 xl:row-span-2 xl:row-start-1">
+                <section
+                  aria-labelledby="overview-follow-up-title"
+                  className="rounded-[26px] border border-slate-200 bg-white shadow-sm xl:sticky xl:top-[calc(var(--tenant-shell-header-height)+1rem)]"
+                >
+                  <div className="rounded-t-[25px] border-b border-blue-100 bg-[linear-gradient(145deg,#f8fbff_0%,#eef6ff_58%,#fffaf0_100%)] p-5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-blue-700">Follow-up timeline</p>
+                        <h3 id="overview-follow-up-title" className="mt-1 text-lg font-semibold text-slate-950">
+                          Workflow progression
+                        </h3>
+                        <p className="mt-1 text-sm text-slate-600">
+                          Every enrolled step, shown in its configured order.
+                        </p>
+                      </div>
+                      <Link
+                        href={getServiceEnrollmentFollowUpHref({
+                          tenantSlug,
+                          contactServiceId,
+                          returnTo,
+                        })}
+                        className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-white/80 bg-white/80 text-slate-700 shadow-sm transition hover:bg-white hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+                        aria-label="Open follow-up workspace"
+                        title="Open follow-up workspace"
+                      >
+                        <ArrowRight className="size-4" aria-hidden="true" />
+                      </Link>
+                    </div>
+
+                    {overviewFollowUpTotalCount ? (
+                      <div className="mt-4">
+                        <LabeledProgress
+                          value={overviewFollowUpCompletionPercentage}
+                          ariaLabel="Follow-up workflow progress"
+                          ariaValueText={`${overviewFollowUpCompletionPercentage}% complete, ${overviewFollowUpCompletedCount} of ${overviewFollowUpTotalCount} follow-up steps resolved`}
+                          summaryLabel={`${overviewFollowUpCompletedCount} of ${overviewFollowUpTotalCount} steps`}
+                          size="compact"
+                        />
+                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                          <span className="rounded-full border border-white/80 bg-white/75 px-2.5 py-1 font-medium shadow-sm">
+                            {overviewFollowUpTotalCount} total {overviewFollowUpTotalCount === 1 ? "step" : "steps"}
+                          </span>
+                          <span className="rounded-full border border-white/80 bg-white/75 px-2.5 py-1 shadow-sm">
+                            Coordinator: {getFollowUpAssigneeLabel(followUpCoordinator)}
+                          </span>
+                          {serviceData.nextFollowUp?.at ? (
+                            <span className="rounded-full border border-white/80 bg-white/75 px-2.5 py-1 shadow-sm">
+                              Next: {formatDateTimeForDisplay(serviceData.nextFollowUp.at, serviceData.timezone)}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {overview?.followUpSummary?.runStatus === "FAILED" ||
+                  overview?.followUpSummary?.runStatus === "NEEDS_REVIEW" ? (
+                    <div role="status" className="mx-5 mt-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-900">
+                      <p className="text-sm font-semibold">
+                        {overview.followUpSummary.runStatus === "FAILED"
+                          ? "Workflow paused"
+                          : "Workflow needs review"}
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-rose-700">
+                        {overview.followUpSummary.failureMessage ??
+                          "Review the dedicated follow-up workspace before continuing this workflow."}
+                      </p>
+                    </div>
+                  ) : null}
+
+                  {followUpSteps.length ? (
+                    <ol aria-label="Follow-up workflow steps" className="p-5">
+                      {followUpSteps.map((step, index) => {
+                        const status = step.status ?? "PENDING"
+                        const timeMeta = getStepTimeMeta(step, serviceData.timezone)
+                        const assigneeLabel = getFollowUpAssigneeLabel(step.assignedTo)
+
+                        return (
+                          <li
+                            key={step.id}
+                            aria-current={status === "ACTIVE" ? "step" : undefined}
+                            className="relative grid grid-cols-[44px_minmax(0,1fr)] gap-2 pb-5 last:pb-0"
+                          >
+                            {index < followUpSteps.length - 1 ? (
+                              <span
+                                aria-hidden="true"
+                                className={cn(
+                                  "absolute bottom-0 left-[21px] top-9 z-0 w-0.5 rounded-full",
+                                  getOverviewTimelineConnectorClass(status),
+                                )}
+                              />
+                            ) : null}
+                            <div className="relative z-10 flex w-11 justify-center self-start pt-0.5">
+                              <span
+                                aria-hidden="true"
+                                className={cn(
+                                  "inline-flex size-9 items-center justify-center rounded-full border-2 text-xs font-semibold tabular-nums ring-[5px] ring-white",
+                                  getOverviewTimelineMarkerClass(status),
+                                )}
+                              >
+                                {status === "COMPLETED" ? (
+                                  <Check className="size-4" />
+                                ) : status === "ACTIVE" ? (
+                                  <Play className="size-4 fill-current" />
+                                ) : status === "POSTPONED" ? (
+                                  <Clock3 className="size-4" />
+                                ) : status === "SKIPPED" ? (
+                                  <X className="size-4" />
+                                ) : (
+                                  index + 1
+                                )}
+                              </span>
+                            </div>
+                            <div
+                              className={cn(
+                                "min-w-0 rounded-2xl border px-3.5 py-3",
+                                getOverviewTimelineCardClass(status),
+                              )}
+                            >
+                              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                                Step {index + 1}
+                              </p>
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <p className="min-w-0 flex-1 text-sm font-semibold leading-5 text-slate-950">
+                                  {step.title}
+                                </p>
+                                <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                                  {status === "ACTIVE" ? (
+                                    <span className="text-[10px] font-semibold uppercase tracking-wide text-blue-700">
+                                      Current
+                                    </span>
+                                  ) : null}
+                                  <Badge
+                                    variant="outline"
+                                    className={cn(
+                                      "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                                      getOverviewTimelineBadgeClass(status),
+                                    )}
+                                  >
+                                    {formatFollowUpStepStatus(status)}
+                                  </Badge>
+                                </div>
+                              </div>
+                              <p className="mt-2 text-xs leading-5 text-slate-600">{timeMeta.helper}</p>
+                              <div className="mt-2 flex min-w-0 items-center gap-2 border-t border-slate-200 pt-2">
+                                <Avatar aria-hidden="true" className="size-5 shrink-0">
+                                  <AvatarImage src={step.assignedTo?.image ?? undefined} alt="" />
+                                  <AvatarFallback className="bg-white text-[9px] font-semibold text-slate-600 ring-1 ring-slate-200">
+                                    {step.assignedTo ? getInitials(assigneeLabel) : "—"}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <span className="truncate text-xs text-slate-500">
+                                  Assigned to <span className="font-medium text-slate-700">{assigneeLabel}</span>
+                                </span>
+                              </div>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ol>
+                  ) : (
+                    <div className="flex min-h-52 flex-col items-center justify-center px-6 py-10 text-center">
+                      <span className="inline-flex size-10 items-center justify-center rounded-full bg-slate-100 text-slate-500 ring-1 ring-slate-200">
+                        <Clock3 className="size-4" aria-hidden="true" />
+                      </span>
+                      <p className="mt-3 text-sm font-semibold text-slate-900">No follow-up workflow</p>
+                      <p className="mt-1 max-w-xs text-sm leading-6 text-slate-500">
+                        This enrollment does not have any follow-up steps configured.
+                      </p>
+                    </div>
+                  )}
+                </section>
+              </aside>
+
+              <section
+                aria-labelledby="overview-checklist-title"
+                className="order-3 min-w-0 rounded-[26px] border border-slate-200 bg-white p-5 shadow-sm xl:col-span-7 xl:col-start-1"
+              >
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <span className="inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-slate-700 ring-1 ring-slate-200">
+                      <ListTodo className="size-4" aria-hidden="true" />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-blue-700">Service checklist</p>
+                      <h3 id="overview-checklist-title" className="mt-1 text-lg font-semibold text-slate-950">
+                        Requirements readiness
+                      </h3>
+                      <p className="mt-1 text-sm text-slate-600">
+                        Every enrolled requirement and its current status.
+                      </p>
+                    </div>
+                  </div>
+                  {overviewChecklistTotalCount ? (
+                    <span className="inline-flex h-8 shrink-0 items-center rounded-full border border-slate-200 bg-slate-50 px-3 text-xs font-semibold tabular-nums text-slate-700">
+                      {overviewChecklistReceivedCount} of {overviewChecklistTotalCount} received
+                    </span>
+                  ) : null}
+                </div>
+
+                {sortedChecklistItems.length ? (
+                  <>
+                    <div className="mt-5 rounded-[20px] border border-slate-200 bg-slate-50/70 p-4">
+                      <p className="text-sm font-semibold text-slate-950">Checklist progress</p>
+                      <LabeledProgress
+                        value={overviewChecklistCompletionPercentage}
+                        ariaLabel="Checklist completion"
+                        ariaValueText={`${overviewChecklistCompletionPercentage}% complete, ${overviewChecklistReceivedCount} of ${overviewChecklistTotalCount} items received`}
+                        summaryLabel={`${overviewChecklistReceivedCount} of ${overviewChecklistTotalCount} items`}
+                        className="mt-3"
+                      />
+                      <dl className="mt-4 grid grid-cols-3 gap-2 text-center">
+                        <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-2 py-2.5">
+                          <dt className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">Received</dt>
+                          <dd className="mt-1 text-lg font-semibold tabular-nums text-emerald-900">{overviewChecklistReceivedCount}</dd>
+                        </div>
+                        <div className="rounded-xl border border-amber-100 bg-amber-50 px-2 py-2.5">
+                          <dt className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">Missing</dt>
+                          <dd className="mt-1 text-lg font-semibold tabular-nums text-amber-900">{overviewChecklistMissingCount}</dd>
+                        </div>
+                        <div className="rounded-xl border border-blue-100 bg-blue-50 px-2 py-2.5">
+                          <dt className="text-[10px] font-semibold uppercase tracking-wide text-blue-700">Informed</dt>
+                          <dd className="mt-1 text-lg font-semibold tabular-nums text-blue-900">{overviewChecklistInformedCount}</dd>
+                        </div>
+                      </dl>
+                    </div>
+
+                    <ul aria-label="Service checklist items" className="mt-4 divide-y divide-slate-200 border-y border-slate-200">
+                      {sortedChecklistItems.map((checklistItem) => {
+                        const statusOption = CHECKLIST_STATUS_BY_VALUE[checklistItem.status]
+                        return (
+                          <li
+                            key={checklistItem.id}
+                            className="flex min-w-0 items-start gap-3 py-3.5 [content-visibility:auto] [contain-intrinsic-size:0_72px]"
+                          >
+                            <span className={cn(
+                              "mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-full border",
+                              checklistItem.status === "RECEIVED"
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : checklistItem.status === "MISSING"
+                                  ? "border-amber-200 bg-amber-50 text-amber-700"
+                                  : checklistItem.status === "INFORMED"
+                                    ? "border-blue-200 bg-blue-50 text-blue-700"
+                                    : "border-slate-200 bg-slate-100 text-slate-500",
+                            )} aria-hidden="true">
+                              {checklistItem.status === "RECEIVED" ? (
+                                <Check className="size-3.5" />
+                              ) : checklistItem.status === "MISSING" ? (
+                                <X className="size-3.5" />
+                              ) : checklistItem.status === "INFORMED" ? (
+                                <NotebookPen className="size-3.5" />
+                              ) : (
+                                <Clock3 className="size-3.5" />
+                              )}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-sm font-semibold text-slate-900">{checklistItem.label}</p>
+                                {checklistItem.isRequired ? (
+                                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 ring-1 ring-slate-200">
+                                    Required
+                                  </span>
+                                ) : null}
+                              </div>
+                              {checklistItem.description ? (
+                                <p className="mt-1 text-xs leading-5 text-slate-500">{checklistItem.description}</p>
+                              ) : null}
+                            </div>
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                                statusOption.badgeClassName,
+                              )}
+                            >
+                              {statusOption.label}
+                            </Badge>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </>
+                ) : (
+                  <div className="mt-5 flex min-h-48 flex-col items-center justify-center rounded-[20px] border border-dashed border-slate-300 bg-slate-50 px-5 text-center">
+                    <span className="inline-flex size-10 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm ring-1 ring-slate-200">
+                      <ListTodo className="size-4" aria-hidden="true" />
+                    </span>
+                    <p className="mt-3 text-sm font-semibold text-slate-900">No checklist requirements</p>
+                    <p className="mt-1 max-w-xs text-sm leading-6 text-slate-500">
+                      This service does not have any checklist items configured.
+                    </p>
+                  </div>
+                )}
+              </section>
             </div>
           </section>
         ) : null}
@@ -3630,21 +4146,13 @@ export function ContactServiceDetailsPanel({
               </div>
               {followUpSteps.length ? (
                 <div className="mb-4 border-y border-slate-200 py-3">
-                  <div className="mb-2 flex items-end justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-950">
-                        {followUpCompletionPercentage}% complete
-                      </p>
-                      <p className="mt-0.5 text-xs text-slate-500">Workflow progress</p>
-                    </div>
-                    <p className="text-xs font-medium text-slate-600 tabular-nums">
-                      {followUpCompletedCount} of {followUpSteps.length} steps
-                    </p>
-                  </div>
-                  <Progress
+                  <p className="mb-2 text-xs font-medium text-slate-600">Workflow progress</p>
+                  <LabeledProgress
                     value={followUpCompletionPercentage}
-                    aria-label={`${followUpCompletionPercentage}% of follow-up steps completed`}
-                    className="h-1.5 bg-slate-200 [&_[data-slot=progress-indicator]]:bg-emerald-600"
+                    ariaLabel="Follow-up workflow progress"
+                    ariaValueText={`${followUpCompletionPercentage}% complete, ${followUpCompletedCount} of ${followUpSteps.length} steps resolved`}
+                    summaryLabel={`${followUpCompletedCount} of ${followUpSteps.length} steps`}
+                    size="compact"
                   />
                 </div>
               ) : null}
@@ -5168,26 +5676,12 @@ export function ContactServiceDetailsPanel({
                       Only received items count toward completion.
                     </p>
                   </div>
-                  <div className="relative">
-                    <Progress
-                      value={checklistCompletionPercentage}
-                      aria-label="Checklist completion"
-                      aria-valuetext={`${checklistCompletionPercentage}% complete, ${checklistCompletedCount} of ${checklistItems.length} items`}
-                      className="h-7 border border-emerald-100 bg-emerald-100/60 [&_[data-slot=progress-indicator]]:bg-[linear-gradient(90deg,#047857_0%,#10b981_100%)]"
-                    />
-                    <span
-                      aria-hidden="true"
-                      className="absolute inset-y-1 left-1 flex items-center rounded-full bg-emerald-950 px-2 text-[10px] font-semibold text-white shadow-sm tabular-nums"
-                    >
-                      {checklistCompletionPercentage}%
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      className="absolute inset-y-1 right-1 flex items-center rounded-full bg-white/90 px-2 text-[11px] font-semibold text-emerald-950 shadow-sm ring-1 ring-emerald-950/5 tabular-nums"
-                    >
-                      {checklistCompletedCount} of {checklistItems.length} items
-                    </span>
-                  </div>
+                  <LabeledProgress
+                    value={checklistCompletionPercentage}
+                    ariaLabel="Checklist completion"
+                    ariaValueText={`${checklistCompletionPercentage}% complete, ${checklistCompletedCount} of ${checklistItems.length} items`}
+                    summaryLabel={`${checklistCompletedCount} of ${checklistItems.length} items`}
+                  />
                 </section>
 
                 {sortedChecklistItems.length ? (

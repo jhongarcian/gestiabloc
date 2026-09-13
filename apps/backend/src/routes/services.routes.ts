@@ -3981,9 +3981,20 @@ router.get(
             followUpSteps: {
               select: {
                 id: true,
+                title: true,
                 status: true,
                 availableAt: true,
                 dueAt: true,
+                completedAt: true,
+                assignedToUserId: true,
+                assignedTo: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
+                },
                 sortOrder: true,
               },
               orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
@@ -3993,7 +4004,20 @@ router.get(
                 id: true,
                 checklistItemId: true,
                 status: true,
+                completedAt: true,
+                checklistItem: {
+                  select: {
+                    label: true,
+                    description: true,
+                    isRequired: true,
+                    sortOrder: true,
+                  },
+                },
               },
+              orderBy: [
+                { checklistItem: { sortOrder: "asc" } },
+                { createdAt: "asc" },
+              ],
             },
           },
         })
@@ -4085,6 +4109,32 @@ router.get(
       const followUpCompletedCount = item.followUpSteps.filter((step: any) =>
         ["COMPLETED", "SKIPPED"].includes(step.status),
       ).length
+      const followUpItems = item.followUpSteps.map((step: any) => {
+        const projectedDue =
+          followUpState.effectiveNextFollowUp?.stepId === step.id
+            ? followUpState.effectiveNextFollowUp
+            : null
+
+        return {
+          id: step.id,
+          title: step.title,
+          status: step.status,
+          availableAt: step.availableAt,
+          dueAt: step.dueAt,
+          effectiveDueAt: projectedDue?.at ?? step.dueAt ?? step.availableAt ?? null,
+          effectiveDueSource: projectedDue
+            ? projectedDue.source
+            : step.dueAt
+              ? "STEP_DUE"
+              : step.availableAt
+                ? "STEP_AVAILABLE"
+                : null,
+          completedAt: step.completedAt,
+          assignedToUserId: step.assignedToUserId,
+          assignedTo: step.assignedTo,
+          sortOrder: step.sortOrder,
+        }
+      })
       const checklistSummary = item.checklistItems.reduce(
         (summary: { received: number; missing: number; informed: number }, entry: any) => {
           if (entry.status === "RECEIVED") summary.received += 1
@@ -4103,12 +4153,26 @@ router.get(
           followUpSummary: {
             totalCount: item.followUpSteps.length,
             completedCount: followUpCompletedCount,
+            runStatus: item.followUpRun?.status ?? null,
+            failureMessage: item.followUpRun?.failureMessage ?? null,
+            failedAt: item.followUpRun?.failedAt ?? null,
+            items: followUpItems,
           },
           checklistSummary: {
             totalCount: item.checklistItems.length,
             receivedCount: checklistSummary.received,
             missingCount: checklistSummary.missing,
             informedCount: checklistSummary.informed,
+            items: item.checklistItems.map((checklistItem: any) => ({
+              id: checklistItem.id,
+              checklistItemId: checklistItem.checklistItemId,
+              status: checklistItem.status,
+              completedAt: checklistItem.completedAt,
+              label: checklistItem.checklistItem?.label ?? "",
+              description: checklistItem.checklistItem?.description ?? null,
+              isRequired: Boolean(checklistItem.checklistItem?.isRequired),
+              sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
+            })),
           },
           paymentSummary: {
             latestPaidAt: paymentAggregate._max.paidAt ?? null,
