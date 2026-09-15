@@ -4171,7 +4171,7 @@ paths:
           description: Matches contact name, phone, email, or service name.
           schema:
             type: string
-            maxLength: 200
+            maxLength: 120
         - in: query
           name: serviceId
           schema:

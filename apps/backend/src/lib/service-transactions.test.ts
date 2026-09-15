@@ -2,9 +2,11 @@ import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
 import {
+  SERVICE_TRANSACTION_SEARCH_MAX_LENGTH,
   getServiceTransactionContactName,
   getServiceTransactionFinancials,
   getServiceTransactionPaymentState,
+  sanitizeServiceTransactionSearch,
 } from "./service-transactions.js"
 
 describe("service transaction presentation", () => {
@@ -45,5 +47,22 @@ describe("service transaction presentation", () => {
       remainingCents: 0,
       paymentState: "PAID",
     })
+  })
+
+  test("sanitizes transaction search values without removing useful punctuation", () => {
+    assert.equal(
+      sanitizeServiceTransactionSearch("  Ada\u0000\n  Lovelace\u200B  "),
+      "Ada Lovelace",
+    )
+    assert.equal(sanitizeServiceTransactionSearch("ＡＣＭＥ"), "ACME")
+    assert.equal(
+      sanitizeServiceTransactionSearch("O'Brien +1 (312) ada@example.com"),
+      "O'Brien +1 (312) ada@example.com",
+    )
+    assert.equal(
+      sanitizeServiceTransactionSearch("a".repeat(SERVICE_TRANSACTION_SEARCH_MAX_LENGTH + 20))
+        .length,
+      SERVICE_TRANSACTION_SEARCH_MAX_LENGTH,
+    )
   })
 })

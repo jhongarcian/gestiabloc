@@ -59,6 +59,12 @@ import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { getServiceEnrollmentHref } from "@/lib/routes"
 import { cn } from "@/lib/utils"
 import { PurchaseTransactionDialog } from "../../_components/services-registry-panel"
+import {
+  TRANSACTION_SEARCH_DEBOUNCE_MS,
+  TRANSACTION_SEARCH_MAX_LENGTH,
+  sanitizeTransactionSearchInput,
+  sanitizeTransactionSearchQuery,
+} from "../_lib/transaction-search"
 
 type TransactionStatus = "IN_PROGRESS" | "PENDING_PAYMENT" | "COMPLETED" | "CANCELED"
 type RangePreset = "ALL_TIME" | "THIS_MONTH" | "LAST_MONTH" | "LAST_3_MONTHS" | "CUSTOM"
@@ -226,9 +232,11 @@ export function TransactionsRegister({
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const [query, setQuery] = useState(() => searchParams.get("search") ?? "")
+  const [query, setQuery] = useState(() =>
+    sanitizeTransactionSearchInput(searchParams.get("search") ?? ""),
+  )
   const [debouncedQuery, setDebouncedQuery] = useState(() =>
-    (searchParams.get("search") ?? "").trim(),
+    sanitizeTransactionSearchQuery(searchParams.get("search") ?? ""),
   )
   const [rangePreset, setRangePreset] = useState<RangePreset>(() =>
     sanitizeRangePreset(searchParams.get("rangePreset")),
@@ -259,13 +267,16 @@ export function TransactionsRegister({
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   useEffect(() => {
+    const sanitizedQuery = sanitizeTransactionSearchQuery(query)
+    if (sanitizedQuery === debouncedQuery) return
+
     const timeout = window.setTimeout(() => {
-      setDebouncedQuery(query.trim())
+      setDebouncedQuery(sanitizedQuery)
       setPage(1)
-    }, 300)
+    }, TRANSACTION_SEARCH_DEBOUNCE_MS)
 
     return () => window.clearTimeout(timeout)
-  }, [query])
+  }, [debouncedQuery, query])
 
   useEffect(() => {
     const nextParams = new URLSearchParams()
@@ -301,7 +312,7 @@ export function TransactionsRegister({
     status,
   ])
 
-  const loadTransactions = useCallback(async () => {
+  const loadTransactions = useCallback(async (signal?: AbortSignal) => {
     if (rangePreset === "CUSTOM" && (!customFrom || !customTo)) {
       setData(null)
       setErrorMessage("Select both a start date and an end date for the custom range.")
@@ -323,6 +334,7 @@ export function TransactionsRegister({
       const { data: response } = await api.get<TransactionsResponse>(
         `/api/services/${encodeURIComponent(tenantId)}/transactions`,
         {
+          signal,
           params: {
             page,
             pageSize,
@@ -343,6 +355,8 @@ export function TransactionsRegister({
 
       setData(response)
     } catch (error) {
+      if (signal?.aborted) return
+
       setData(null)
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
@@ -355,7 +369,7 @@ export function TransactionsRegister({
         setErrorMessage("Could not load transactions.")
       }
     } finally {
-      setIsLoading(false)
+      if (!signal?.aborted) setIsLoading(false)
     }
   }, [
     customFrom,
@@ -370,7 +384,10 @@ export function TransactionsRegister({
   ])
 
   useEffect(() => {
-    void loadTransactions()
+    const controller = new AbortController()
+    void loadTransactions(controller.signal)
+
+    return () => controller.abort()
   }, [loadTransactions])
 
   useEffect(() => {
@@ -560,9 +577,9 @@ export function TransactionsRegister({
             type="search"
             value={query}
             onChange={(event) => {
-              setQuery(event.target.value)
-              setPage(1)
+              setQuery(sanitizeTransactionSearchInput(event.target.value))
             }}
+            maxLength={TRANSACTION_SEARCH_MAX_LENGTH}
             placeholder="Search contacts, phone, email, or service"
             aria-label="Search transactions"
             className="h-11 rounded-xl border-white/80 bg-white/85 px-4 shadow-sm backdrop-blur placeholder:text-slate-400 focus-visible:border-blue-300 focus-visible:ring-blue-100"
