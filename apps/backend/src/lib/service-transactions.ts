@@ -1,5 +1,18 @@
 export type ServiceTransactionPaymentState = "UNPAID" | "PARTIAL" | "PAID"
 
+export const SERVICE_TRANSACTION_SEARCH_MAX_LENGTH = 120
+
+const INVISIBLE_OR_CONTROL_CHARACTERS = /[\p{Cc}\p{Cf}]/gu
+
+export function sanitizeServiceTransactionSearch(value: string) {
+  return value
+    .normalize("NFKC")
+    .replace(INVISIBLE_OR_CONTROL_CHARACTERS, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, SERVICE_TRANSACTION_SEARCH_MAX_LENGTH)
+}
+
 export function getServiceTransactionFinancials(
   totalCents: number,
   payments: Array<{ amountCents: number }>,

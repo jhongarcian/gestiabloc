@@ -752,10 +752,12 @@ export function PurchaseTransactionDialog({
   tenantId,
   tenantSlug,
   returnTo,
+  triggerClassName,
 }: {
   tenantId: string
   tenantSlug: string
   returnTo?: string
+  triggerClassName?: string
 }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
@@ -1176,7 +1178,10 @@ export function PurchaseTransactionDialog({
       <DialogTrigger asChild>
         <Button
           type="button"
-          className="bg-blue-950 text-white hover:bg-blue-950/90"
+          className={cn(
+            "bg-blue-950 text-white hover:bg-blue-950/90",
+            triggerClassName,
+          )}
         >
           Create transaction
         </Button>

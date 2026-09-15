@@ -57,8 +57,10 @@ import {
 import { canChangeServiceFollowUpStepAssignee } from "../lib/service-followup-step-permissions.js"
 import { getFollowUpListDateRanges } from "../lib/service-followup-list-date-range.js"
 import {
+  SERVICE_TRANSACTION_SEARCH_MAX_LENGTH,
   getServiceTransactionContactName,
   getServiceTransactionFinancials,
+  sanitizeServiceTransactionSearch,
 } from "../lib/service-transactions.js"
 import {
   ServiceEnrollmentsListQuerySchema,
@@ -503,7 +505,11 @@ const ServiceTransactionsListQuerySchema = z
         message: "pageSize must be 10 or 25",
       })
       .default(10),
-    search: z.string().trim().max(200).optional(),
+    search: z.preprocess(
+      (value) =>
+        typeof value === "string" ? sanitizeServiceTransactionSearch(value) : value,
+      z.string().max(SERVICE_TRANSACTION_SEARCH_MAX_LENGTH).optional(),
+    ),
     serviceId: z.string().trim().min(1).optional(),
     status: ContactServiceStatusSchema.optional(),
     rangePreset: ServiceTransactionsRangePresetSchema.default("ALL_TIME"),
@@ -2222,7 +2228,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
     const timezone = getSafeTimezone(tenant?.timezone)
     const range = getServiceTransactionsRange(query, timezone)
     const skip = (query.page - 1) * query.pageSize
-    const searchableValue = query.search?.trim()
+    const searchableValue = query.search
     const andClauses: Array<Record<string, unknown>> = []
 
     if (range) {
