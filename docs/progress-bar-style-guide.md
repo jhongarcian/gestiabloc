@@ -2,7 +2,7 @@
 
 This guide defines the shared progress-bar treatment for Gestiabloc operational interfaces. Use it when a user needs to understand determinate completion at a glance, such as checklist readiness, onboarding progress, or another count-based workflow.
 
-The design direction is **visible operational completion**: a pale emerald track, a soft mint-to-emerald gradient, persistent percentage and count labels, and a smooth transition when progress changes.
+The design direction is **visible operational completion**: a pale emerald track, a darker emerald completion fill, persistent percentage and count labels, and a smooth transition when progress changes.
 
 Reference implementation:
 
@@ -38,7 +38,7 @@ Props:
 The standard labeled progress bar contains three layers:
 
 1. A 28px rounded emerald track.
-2. A soft mint-to-emerald completion gradient.
+2. A darker emerald completion fill that clearly distinguishes completed progress from the remaining track.
 3. Two foreground pills: percentage on the left and an optional count on the right.
 
 The shared implementation uses:
@@ -47,14 +47,14 @@ The shared implementation uses:
 <Progress
   value={value}
   className="h-7 border border-emerald-100/80 bg-emerald-50/80
-    [&_[data-slot=progress-indicator]]:bg-[linear-gradient(90deg,#a7f3d0_0%,#6ee7b7_100%)]"
+    [&_[data-slot=progress-indicator]]:bg-emerald-600"
 />
 ```
 
 Visual rules:
 
 - Keep the track at `h-7`; this variant is intentionally more prominent than compact summary bars.
-- Use the emerald gradient only for positive completion, not errors or destructive states.
+- Use the darker emerald fill only for positive completion, not errors or destructive states.
 - Keep the percentage pill medium emerald with white text.
 - Keep the count pill white with muted dark emerald text.
 - Use `tabular-nums` for both pills so changing values remain visually stable.
@@ -101,7 +101,7 @@ Motion rules:
 
 ## Compact labeled progress bars
 
-Use `size="compact"` for secondary operational progress such as payment collection and follow-up completion. It keeps the same emerald gradient and two-label structure at a smaller 20px height.
+Use `size="compact"` for secondary operational progress such as payment collection and follow-up completion. It keeps the same emerald completion fill and two-label structure at a smaller 20px height.
 
 ```tsx
 <LabeledProgress

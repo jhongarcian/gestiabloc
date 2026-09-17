@@ -28,7 +28,7 @@ function LabeledProgress({
         aria-label={ariaLabel}
         aria-valuetext={ariaValueText}
         className={cn(
-          "border border-emerald-100/80 bg-emerald-50/80 [&_[data-slot=progress-indicator]]:bg-[linear-gradient(90deg,#a7f3d0_0%,#6ee7b7_100%)] [&_[data-slot=progress-indicator]]:transition-transform [&_[data-slot=progress-indicator]]:duration-700 [&_[data-slot=progress-indicator]]:ease-out motion-reduce:[&_[data-slot=progress-indicator]]:transition-none",
+          "border border-emerald-100/80 bg-emerald-50/80 [&_[data-slot=progress-indicator]]:bg-emerald-600 [&_[data-slot=progress-indicator]]:transition-transform [&_[data-slot=progress-indicator]]:duration-700 [&_[data-slot=progress-indicator]]:ease-out motion-reduce:[&_[data-slot=progress-indicator]]:transition-none",
           isCompact ? "h-5" : "h-7",
         )}
       />
