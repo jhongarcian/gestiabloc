@@ -1447,17 +1447,18 @@ export function EnrollmentsRegister({
           </Table>
         </div>
 
-        <footer className="flex flex-col gap-4 border-t border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+        <footer className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50/40 px-3 py-3 md:flex-row md:items-center md:justify-between md:bg-white md:px-4 md:py-4">
+          <div className="flex w-full items-center justify-between gap-3 md:w-auto md:flex-wrap md:justify-start md:gap-x-5 md:gap-y-3">
             {isLoading ? (
               <Skeleton className="h-4 w-40" />
             ) : (
-              <p className="text-sm text-slate-500" aria-live="polite">
+              <p className="min-w-0 truncate text-xs text-slate-500 sm:text-sm" aria-live="polite">
                 {errorMessage ? "Enrollments could not be loaded" : summaryLabel}
               </p>
             )}
-            <div className="flex items-center gap-2 text-sm text-slate-600">
-              <span>Rows per page</span>
+            <div className="flex shrink-0 items-center gap-2 text-xs text-slate-600 sm:text-sm">
+              <span className="sm:hidden">Per page</span>
+              <span className="hidden sm:inline">Rows per page</span>
               <Select
                 value={String(pageSize)}
                 onValueChange={(value) => {
@@ -1468,7 +1469,11 @@ export function EnrollmentsRegister({
                   }
                 }}
               >
-                <SelectTrigger size="sm" aria-label="Rows per page" className="w-20 rounded-lg">
+                <SelectTrigger
+                  size="sm"
+                  aria-label="Rows per page"
+                  className="w-16 rounded-lg bg-white sm:w-20"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1485,22 +1490,27 @@ export function EnrollmentsRegister({
           </div>
 
           <nav
-            className="flex w-full items-center justify-between gap-2 self-stretch sm:w-auto sm:justify-start sm:self-auto"
+            className="grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm md:flex md:w-auto md:justify-start md:self-auto md:rounded-none md:border-0 md:bg-transparent md:p-0 md:shadow-none"
             aria-label="Enrollment list pagination"
           >
             <Button
               type="button"
               variant="outline"
-              size="icon-sm"
+              size="sm"
               aria-label="Previous page"
               disabled={!canGoPrevious || isLoading}
+              className="h-10 min-w-0 rounded-xl px-3 text-xs text-slate-700 shadow-none md:size-8 md:rounded-md md:px-0"
               onClick={() => setPage((current) => Math.max(1, current - 1))}
             >
               <ChevronLeft aria-hidden="true" />
+              <span className="md:sr-only">Previous</span>
             </Button>
 
-            <span className="px-2 text-xs font-medium tabular-nums text-slate-600 sm:hidden">
-              Page {page} of {totalPages}
+            <span
+              className="min-w-20 rounded-xl bg-slate-50 px-2 py-2 text-center text-xs tabular-nums text-slate-500 md:hidden"
+              aria-live="polite"
+            >
+              <span className="font-semibold text-slate-900">{page}</span> of {totalPages}
             </span>
 
             {visiblePages.map((pageNumber) => (
@@ -1515,7 +1525,7 @@ export function EnrollmentsRegister({
                 aria-current={pageNumber === page ? "page" : undefined}
                 disabled={isLoading || pageNumber === page}
                 className={cn(
-                  "hidden sm:inline-flex",
+                  "hidden md:inline-flex",
                   pageNumber === page &&
                     "bg-blue-950 text-white hover:bg-blue-900 disabled:opacity-100",
                 )}
@@ -1528,11 +1538,13 @@ export function EnrollmentsRegister({
             <Button
               type="button"
               variant="outline"
-              size="icon-sm"
+              size="sm"
               aria-label="Next page"
               disabled={!canGoNext || isLoading}
+              className="h-10 min-w-0 rounded-xl px-3 text-xs text-slate-700 shadow-none md:size-8 md:rounded-md md:px-0"
               onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
             >
+              <span className="md:sr-only">Next</span>
               <ChevronRight aria-hidden="true" />
             </Button>
           </nav>

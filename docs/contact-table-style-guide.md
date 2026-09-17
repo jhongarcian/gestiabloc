@@ -15,6 +15,8 @@ Use the same pattern when another page needs contacts-style pagination, loading 
 
 Phone-sized screens are an intentional exception for wide operational registers. When a row has enough fields that horizontal scrolling hides its meaning, render a separate mobile card below `md` and retain the table at `md` and above.
 
+Use `docs/mobile-card-table-style-guide.md` for the complete small-screen card, state, interaction, and pagination pattern.
+
 ## Page Structure
 
 Use this outer shape:
@@ -104,7 +106,7 @@ Card rules:
 - Show a subtle directional chevron as a non-interactive affordance; do not add a nested View button.
 - Use three structure-matching skeleton cards during mobile loading. Do not render blank placeholder cards.
 - Keep error, filtered-empty, and unfiltered-empty states inside the mobile list area.
-- Below `sm`, reduce pagination to Previous, `Page X of Y`, and Next. Restore numbered pages from `sm` upward.
+- Below `md`, use the compact card-view pager documented in `docs/mobile-card-table-style-guide.md`. Restore numbered pages with the desktop table at `md` and above.
 
 ## Header Row
 
