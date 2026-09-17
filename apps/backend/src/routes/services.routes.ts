@@ -2469,6 +2469,16 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
       LEFT JOIN "User" coordinator
         ON coordinator."id" = cs."followUpCoordinatorUserId"
     `
+    const orderByClause =
+      query.sort === "LAST_ACTIVITY_ASC"
+        ? Prisma.sql`"lastActivityAt" ASC, cs."id" ASC`
+        : query.sort === "STARTED_DESC"
+          ? Prisma.sql`cs."startedAt" DESC NULLS LAST, cs."createdAt" DESC, cs."id" DESC`
+          : query.sort === "CONTACT_ASC"
+            ? Prisma.sql`NULLIF(LOWER(BTRIM(CONCAT_WS(' ', c."firstName", c."middleName", c."lastName"))), '') ASC NULLS LAST, cs."id" ASC`
+            : query.sort === "SERVICE_ASC"
+              ? Prisma.sql`LOWER(s."name") ASC, cs."id" ASC`
+              : Prisma.sql`"lastActivityAt" DESC, cs."id" DESC`
 
     type EnrollmentCountRow = { total: bigint }
     type EnrollmentPageRow = {
@@ -2544,7 +2554,7 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
           ) AS "lastActivityAt"
         ${joins}
         WHERE ${whereClause}
-        ORDER BY "lastActivityAt" DESC, cs."id" DESC
+        ORDER BY ${orderByClause}
         LIMIT ${query.pageSize}
         OFFSET ${skip}
       `),

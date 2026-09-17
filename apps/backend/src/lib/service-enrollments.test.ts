@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
 import {
+  SERVICE_ENROLLMENT_SORTS,
   ServiceEnrollmentsListQuerySchema,
   getLatestServiceEnrollmentActivityAt,
   getServiceEnrollmentContactName,
@@ -12,12 +13,14 @@ describe("service enrollment register queries", () => {
     assert.deepEqual(ServiceEnrollmentsListQuerySchema.parse({}), {
       page: 1,
       pageSize: 10,
+      sort: "LAST_ACTIVITY_DESC",
     })
 
     assert.deepEqual(
       ServiceEnrollmentsListQuerySchema.parse({
         page: "2",
         pageSize: "25",
+        sort: "CONTACT_ASC",
         statuses: "COMPLETED, IN_PROGRESS,COMPLETED",
         withoutTemplate: "false",
         unassigned: "true",
@@ -25,6 +28,7 @@ describe("service enrollment register queries", () => {
       {
         page: 2,
         pageSize: 25,
+        sort: "CONTACT_ASC",
         statuses: ["COMPLETED", "IN_PROGRESS"],
         withoutTemplate: false,
         unassigned: true,
@@ -51,6 +55,16 @@ describe("service enrollment register queries", () => {
       }).success,
       false,
     )
+    assert.equal(
+      ServiceEnrollmentsListQuerySchema.safeParse({ sort: "UNKNOWN" }).success,
+      false,
+    )
+  })
+
+  test("accepts every supported deterministic sort", () => {
+    for (const sort of SERVICE_ENROLLMENT_SORTS) {
+      assert.equal(ServiceEnrollmentsListQuerySchema.parse({ sort }).sort, sort)
+    }
   })
 
   test("selects the newest persisted activity and formats contact names", () => {

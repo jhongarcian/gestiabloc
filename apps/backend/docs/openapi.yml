@@ -4226,7 +4226,7 @@ paths:
     get:
       tags: [Services]
       summary: List service enrollments
-      description: Returns a tenant-scoped operational register ordered by the newest persisted enrollment activity, then enrollment ID. The activity timestamp considers enrollment changes, payments, service and contact notes, checklist changes, follow-up steps and runs, execution logs, and linked tasks.
+      description: Returns a tenant-scoped operational register with deterministic activity, start-date, contact-name, or service-name sorting. The activity timestamp considers enrollment changes, payments, service and contact notes, checklist changes, follow-up steps and runs, execution logs, and linked tasks.
       security:
         - cookieAuth: []
       parameters:
@@ -4249,6 +4249,13 @@ paths:
           schema:
             type: string
             maxLength: 200
+        - in: query
+          name: sort
+          description: Sort order for the complete filtered enrollment register.
+          schema:
+            type: string
+            enum: [LAST_ACTIVITY_DESC, LAST_ACTIVITY_ASC, STARTED_DESC, CONTACT_ASC, SERVICE_ASC]
+            default: LAST_ACTIVITY_DESC
         - in: query
           name: statuses
           description: Comma-separated enrollment statuses. Omit to include every status.

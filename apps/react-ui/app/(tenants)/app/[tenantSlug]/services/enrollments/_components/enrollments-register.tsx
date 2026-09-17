@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Filter,
   RefreshCw,
+  Search,
 } from "lucide-react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { startTransition, useCallback, useEffect, useMemo, useState } from "react"
@@ -60,6 +61,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { api } from "@/lib/api"
 import { formatDateTimeForDisplay } from "@/lib/date-time"
 import { getServiceEnrollmentHref } from "@/lib/routes"
@@ -70,6 +72,13 @@ type EnrollmentStatus =
   | "PENDING_PAYMENT"
   | "COMPLETED"
   | "CANCELED"
+
+type EnrollmentSort =
+  | "LAST_ACTIVITY_DESC"
+  | "LAST_ACTIVITY_ASC"
+  | "STARTED_DESC"
+  | "CONTACT_ASC"
+  | "SERVICE_ASC"
 
 type EnrollmentItem = {
   id: string
@@ -133,6 +142,15 @@ const ALL_TEMPLATES = "ALL_TEMPLATES"
 const NO_TEMPLATE = "NO_TEMPLATE"
 const ALL_COORDINATORS = "ALL_COORDINATORS"
 const UNASSIGNED = "UNASSIGNED"
+const DEFAULT_SORT: EnrollmentSort = "LAST_ACTIVITY_DESC"
+
+const SORT_OPTIONS: Array<{ value: EnrollmentSort; label: string }> = [
+  { value: "LAST_ACTIVITY_DESC", label: "Recent activity" },
+  { value: "LAST_ACTIVITY_ASC", label: "Oldest activity" },
+  { value: "STARTED_DESC", label: "Recently started" },
+  { value: "CONTACT_ASC", label: "Contact A–Z" },
+  { value: "SERVICE_ASC", label: "Service A–Z" },
+]
 
 const STATUS_OPTIONS: Array<{ value: EnrollmentStatus; label: string }> = [
   { value: "IN_PROGRESS", label: "In progress" },
@@ -165,6 +183,12 @@ function parseStatusFilters(value: string | null) {
       .map((item) => item.trim())
       .some((item) => item === status && STATUS_VALUES.has(status)),
   )
+}
+
+function parseSort(value: string | null): EnrollmentSort {
+  return SORT_OPTIONS.some((option) => option.value === value)
+    ? (value as EnrollmentSort)
+    : DEFAULT_SORT
 }
 
 function getInitials(value: string) {
@@ -359,6 +383,9 @@ export function EnrollmentsRegister({
   const [debouncedQuery, setDebouncedQuery] = useState(() =>
     (searchParams.get("search") ?? "").trim(),
   )
+  const [sort, setSort] = useState<EnrollmentSort>(() =>
+    parseSort(searchParams.get("sort")),
+  )
   const [statusFilters, setStatusFilters] = useState<EnrollmentStatus[]>(() =>
     parseStatusFilters(searchParams.get("statuses")),
   )
@@ -380,6 +407,7 @@ export function EnrollmentsRegister({
     parsePositiveInt(searchParams.get("pageSize"), 10) === 25 ? 25 : 10,
   )
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false)
+  const [isSortSheetOpen, setIsSortSheetOpen] = useState(false)
   const [draftStatusFilters, setDraftStatusFilters] = useState(statusFilters)
   const [draftServiceFilter, setDraftServiceFilter] = useState(serviceFilter)
   const [draftTemplateFilter, setDraftTemplateFilter] = useState(templateFilter)
@@ -407,6 +435,7 @@ export function EnrollmentsRegister({
     const nextParams = new URLSearchParams()
 
     if (debouncedQuery) nextParams.set("search", debouncedQuery)
+    if (sort !== DEFAULT_SORT) nextParams.set("sort", sort)
     if (statusFilters.length) nextParams.set("statuses", statusFilters.join(","))
     if (serviceFilter !== ALL_SERVICES) nextParams.set("serviceId", serviceFilter)
     if (templateFilter === NO_TEMPLATE) {
@@ -429,6 +458,7 @@ export function EnrollmentsRegister({
     page,
     pageSize,
     serviceFilter,
+    sort,
     statusFilters,
     templateFilter,
   ])
@@ -455,6 +485,7 @@ export function EnrollmentsRegister({
             page,
             pageSize,
             search: debouncedQuery || undefined,
+            sort,
             statuses: statusFilters.length ? statusFilters.join(",") : undefined,
             serviceId: serviceFilter === ALL_SERVICES ? undefined : serviceFilter,
             followUpTemplateId:
@@ -496,6 +527,7 @@ export function EnrollmentsRegister({
     page,
     pageSize,
     serviceFilter,
+    sort,
     statusFilters,
     templateFilter,
     tenantId,
@@ -555,7 +587,12 @@ export function EnrollmentsRegister({
     (serviceFilter !== ALL_SERVICES ? 1 : 0) +
     (templateFilter !== ALL_TEMPLATES ? 1 : 0) +
     (coordinatorFilter !== ALL_COORDINATORS ? 1 : 0)
-  const hasActiveQueryOrFilters = Boolean(query.trim()) || activeFilterCount > 0
+  const hasActiveSearchOrFilters = Boolean(debouncedQuery) || activeFilterCount > 0
+  const hasDraftFilters =
+    draftStatusFilters.length > 0 ||
+    draftServiceFilter !== ALL_SERVICES ||
+    draftTemplateFilter !== ALL_TEMPLATES ||
+    draftCoordinatorFilter !== ALL_COORDINATORS
   const placeholderRowCount =
     enrollments.length === 0 ? pageSize - 1 : Math.max(0, pageSize - enrollments.length)
   const visiblePageCount = Math.min(5, totalPages)
@@ -570,6 +607,8 @@ export function EnrollmentsRegister({
   const summaryLabel = total
     ? `Showing ${startIndex + 1}-${startIndex + enrollments.length} of ${total} enrollments`
     : "No enrollments found"
+  const selectedSortLabel =
+    SORT_OPTIONS.find((option) => option.value === sort)?.label ?? "Recent activity"
 
   const openEnrollment = useCallback(
     (contactServiceId: string) => {
@@ -584,49 +623,55 @@ export function EnrollmentsRegister({
     [currentReturnTo, router, tenantSlug],
   )
 
-  const clearAllFilters = () => {
-    setQuery("")
-    setDebouncedQuery("")
-    setStatusFilters([])
-    setServiceFilter(ALL_SERVICES)
-    setTemplateFilter(ALL_TEMPLATES)
-    setCoordinatorFilter(ALL_COORDINATORS)
-    setDraftStatusFilters([])
-    setDraftServiceFilter(ALL_SERVICES)
-    setDraftTemplateFilter(ALL_TEMPLATES)
-    setDraftCoordinatorFilter(ALL_COORDINATORS)
-    setPage(1)
-  }
-
   return (
     <div className="flex h-full min-h-0 flex-col gap-5">
-      <header className="shrink-0 rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
-        <div className="flex min-w-0 flex-col gap-2">
+      <header className="shrink-0 rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-4 sm:p-5">
+        <div className="flex min-w-0 flex-col gap-1">
           <p className="text-xs font-semibold text-blue-700">Service operations</p>
-          <div className="flex flex-col gap-1">
-            <h1 className="text-2xl font-semibold text-slate-950">Enrollments</h1>
-            <p className="text-sm text-slate-600">
-              Track service ownership, workflow status, and recent activity across your contacts.
-            </p>
-          </div>
+          <h1 className="text-xl font-semibold text-slate-950 sm:text-2xl">Enrollments</h1>
         </div>
 
-        <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(280px,1fr)_auto_auto]">
+        <form
+          role="search"
+          className="relative mt-3 w-full sm:mt-4"
+          onSubmit={(event) => {
+            event.preventDefault()
+            setDebouncedQuery(query.trim())
+            setPage(1)
+          }}
+        >
           <Input
             type="search"
-            placeholder="Search contacts, services, templates, or coordinators"
+            placeholder="Search enrollments"
             value={query}
             onChange={(event) => {
               setQuery(event.target.value)
-              setPage(1)
             }}
-            aria-label="Search enrollments"
-            className="h-11 rounded-xl border-white/80 bg-white/85 px-4 shadow-sm backdrop-blur placeholder:text-slate-400 focus-visible:border-blue-300 focus-visible:ring-blue-100"
+            aria-label="Search enrollments by contact, service, template, or coordinator"
+            className="h-11 w-full rounded-xl border-white/80 bg-white/85 pr-14 pl-4 text-sm shadow-sm backdrop-blur placeholder:text-slate-400 focus-visible:border-blue-300 focus-visible:ring-blue-100"
           />
+          <Button
+            type="submit"
+            size="icon-lg"
+            aria-label="Search enrollments"
+            className="absolute inset-y-0 right-0 h-11 w-12 rounded-l-none rounded-r-xl bg-blue-950 text-white shadow-none hover:bg-blue-900"
+          >
+            <Search aria-hidden="true" />
+          </Button>
+        </form>
+
+        <div className="mt-3 flex min-w-0 items-center justify-between gap-3">
           <Button
             type="button"
             variant="outline"
-            className="h-11 cursor-pointer rounded-xl border-white/80 bg-white/85 px-4 text-blue-950 shadow-sm backdrop-blur hover:bg-white hover:text-blue-950"
+            aria-label={
+              activeFilterCount > 0
+                ? `Open filters, ${activeFilterCount} active`
+                : "Open filters"
+            }
+            aria-expanded={isFilterSheetOpen}
+            aria-controls="enrollment-filter-sheet"
+            className="h-9 rounded-full border-white/80 bg-white/85 px-3 text-xs font-semibold text-blue-950 shadow-sm backdrop-blur hover:bg-white hover:text-blue-950 sm:h-10 sm:text-sm"
             onClick={() => {
               setDraftStatusFilters(statusFilters)
               setDraftServiceFilter(serviceFilter)
@@ -638,25 +683,89 @@ export function EnrollmentsRegister({
             <Filter data-icon="inline-start" aria-hidden="true" />
             Filters
             {activeFilterCount > 0 ? (
-              <Badge className="min-w-5 bg-blue-950 px-1.5 text-white">
+              <Badge className="h-5 min-w-5 rounded-full bg-blue-950 px-1.5 text-[10px] text-white">
                 {activeFilterCount}
               </Badge>
             ) : null}
           </Button>
+
           <Button
             type="button"
             variant="outline"
-            disabled={!hasActiveQueryOrFilters}
-            className="h-11 cursor-pointer rounded-xl border-white/80 bg-white/70 px-4 text-slate-700 shadow-sm backdrop-blur hover:bg-white hover:text-slate-950"
-            onClick={clearAllFilters}
+            aria-label={`Sort enrollments, currently ${selectedSortLabel}`}
+            aria-expanded={isSortSheetOpen}
+            aria-controls="enrollment-sort-sheet"
+            className="h-9 min-w-0 max-w-[58vw] rounded-full border-white/80 bg-white/70 px-3 text-xs font-semibold text-slate-800 shadow-sm backdrop-blur hover:bg-white hover:text-slate-950 sm:h-10 sm:max-w-none sm:text-sm"
+            onClick={() => setIsSortSheetOpen(true)}
           >
-            Clear filters
+            <span className="shrink-0 text-slate-500">Sort by</span>
+            <span className="truncate">{selectedSortLabel}</span>
+            <ChevronDown data-icon="inline-end" aria-hidden="true" />
           </Button>
         </div>
       </header>
 
+      <Sheet open={isSortSheetOpen} onOpenChange={setIsSortSheetOpen}>
+        <SheetContent
+          id="enrollment-sort-sheet"
+          side="bottom"
+          className="mx-auto max-h-[min(32rem,72dvh)] w-full gap-0 overflow-hidden rounded-t-[26px] border-x border-t border-slate-200 bg-white p-0 sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[min(32rem,calc(100%-2rem))] sm:-translate-x-1/2 sm:rounded-[26px] sm:border [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-slate-100 [&>button]:opacity-100"
+        >
+          <div
+            aria-hidden="true"
+            className="mx-auto mt-3 h-1 w-10 shrink-0 rounded-full bg-slate-200 sm:hidden"
+          />
+          <SheetHeader className="border-b border-slate-100 px-5 pt-4 pb-3 text-left sm:px-6 sm:pt-5">
+            <SheetTitle className="pr-10 text-lg font-semibold text-slate-950">
+              Sort enrollments
+            </SheetTitle>
+          </SheetHeader>
+
+          <div className="min-h-0 overflow-y-auto overscroll-contain p-4 sm:px-5 sm:pb-5">
+            <ToggleGroup
+              type="single"
+              value={sort}
+              orientation="vertical"
+              spacing={2}
+              aria-label="Choose enrollment order"
+              className="grid w-full gap-2"
+              onValueChange={(value) => {
+                if (!value) return
+                setSort(parseSort(value))
+                setPage(1)
+                setIsSortSheetOpen(false)
+              }}
+            >
+              {SORT_OPTIONS.map((option) => {
+                const isSelected = option.value === sort
+
+                return (
+                  <ToggleGroupItem
+                    key={option.value}
+                    value={option.value}
+                    variant="outline"
+                    aria-label={`Sort by ${option.label}`}
+                    className="h-12 w-full justify-between rounded-xl border-slate-200 bg-white px-4 text-left text-sm font-medium text-slate-700 shadow-none hover:bg-slate-50 hover:text-slate-950 data-[state=on]:border-blue-200 data-[state=on]:bg-blue-50 data-[state=on]:text-blue-950"
+                  >
+                    <span>{option.label}</span>
+                    <Check
+                      aria-hidden="true"
+                      className={cn(
+                        "text-blue-800 transition-opacity",
+                        isSelected ? "opacity-100" : "opacity-0",
+                      )}
+                    />
+                  </ToggleGroupItem>
+                )
+              })}
+            </ToggleGroup>
+          </div>
+        </SheetContent>
+      </Sheet>
+
       <Sheet open={isFilterSheetOpen} onOpenChange={setIsFilterSheetOpen}>
         <SheetContent
+          id="enrollment-filter-sheet"
           side="right"
           className="flex h-full w-full flex-col gap-0 overflow-hidden border-l border-slate-200 bg-white p-0 sm:max-w-lg [&>button]:right-5 [&>button]:top-5 [&>button]:cursor-pointer [&>button]:rounded-full [&>button]:bg-white/80 [&>button]:opacity-100 [&>button]:shadow-sm [&>button]:backdrop-blur"
         >
@@ -800,6 +909,7 @@ export function EnrollmentsRegister({
             <Button
               type="button"
               variant="outline"
+              disabled={!hasDraftFilters}
               className={COMPACT_SECONDARY_BUTTON_CLASS}
               onClick={() => {
                 setDraftStatusFilters([])
@@ -808,7 +918,7 @@ export function EnrollmentsRegister({
                 setDraftCoordinatorFilter(ALL_COORDINATORS)
               }}
             >
-              Clear
+              Clear filters
             </Button>
             <Button
               type="button"
@@ -1036,7 +1146,7 @@ export function EnrollmentsRegister({
               ) : (
                 <TableRow className="h-14 hover:bg-transparent">
                   <TableCell colSpan={7} className="px-4 py-0 text-center text-slate-500">
-                    {hasActiveQueryOrFilters
+                    {hasActiveSearchOrFilters
                       ? "No enrollments match the current search and filters."
                       : "No service enrollments have been created yet."}
                   </TableCell>
