@@ -16,6 +16,15 @@ import { startTransition, useCallback, useEffect, useMemo, useState } from "reac
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Command,
@@ -205,6 +214,200 @@ function getStatusClassName(status: EnrollmentStatus) {
   if (status === "PENDING_PAYMENT") return "border-amber-200 bg-amber-50 text-amber-700"
   if (status === "CANCELED") return "border-slate-200 bg-slate-100 text-slate-500"
   return "border-blue-200 bg-blue-50 text-blue-700"
+}
+
+function EnrollmentMobileCard({
+  enrollment,
+  tenantTimezone,
+  onOpen,
+}: {
+  enrollment: EnrollmentItem
+  tenantTimezone?: string | null
+  onOpen: (contactServiceId: string) => void
+}) {
+  const isCanceled = enrollment.status === "CANCELED"
+  const startedLabel = enrollment.startedAt
+    ? formatDateTimeForDisplay(enrollment.startedAt, tenantTimezone)
+    : "—"
+  const lastActivityLabel = formatDateTimeForDisplay(
+    enrollment.lastActivityAt,
+    tenantTimezone,
+  )
+
+  const openCard = () => onOpen(enrollment.id)
+
+  return (
+    <Card
+      role="link"
+      tabIndex={0}
+      aria-label={`Open ${enrollment.contact.displayName} ${enrollment.service.name} enrollment`}
+      className={cn(
+        "group cursor-pointer gap-0 rounded-[22px] border-slate-200 bg-white py-0 shadow-sm outline-none transition-[border-color,box-shadow,background-color,transform] hover:border-blue-200 hover:shadow-md focus-visible:border-blue-300 focus-visible:ring-2 focus-visible:ring-blue-500/40 active:scale-[0.995] motion-reduce:transform-none motion-reduce:transition-none",
+        isCanceled && "bg-slate-50/80",
+      )}
+      onClick={openCard}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault()
+          openCard()
+        }
+      }}
+    >
+      <CardHeader className="gap-1.5 px-4 pt-4 pb-3 has-data-[slot=card-action]:grid-cols-[minmax(0,1fr)_auto]">
+        <CardTitle
+          className={cn(
+            "truncate pr-2 text-base text-slate-950",
+            isCanceled && "text-slate-500",
+          )}
+          title={enrollment.contact.displayName}
+        >
+          {enrollment.contact.displayName}
+        </CardTitle>
+        <CardDescription className="flex min-w-0 items-center gap-2 text-sm">
+          <span className="shrink-0 text-xs font-medium text-slate-500">
+            Service
+          </span>
+          <span
+            className={cn(
+              "truncate font-medium text-slate-700",
+              isCanceled && "text-slate-500",
+            )}
+            title={enrollment.service.name}
+          >
+            {enrollment.service.name}
+          </span>
+        </CardDescription>
+        <CardAction className="flex items-center gap-1.5">
+          <Badge
+            variant="outline"
+            className={getStatusClassName(enrollment.status)}
+          >
+            {getStatusLabel(enrollment.status)}
+          </Badge>
+          <ChevronRight
+            aria-hidden="true"
+            className="size-4 shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5"
+          />
+        </CardAction>
+      </CardHeader>
+
+      <CardContent className="grid min-w-0 grid-cols-2 items-start gap-4 px-4 pb-4">
+        <div className="flex min-w-0 flex-col gap-1">
+          <p className="text-xs font-medium text-slate-500">
+            Template
+          </p>
+          <p
+            className={cn(
+              "break-words text-sm font-medium text-slate-700",
+              !enrollment.template && "italic font-normal text-slate-500",
+              isCanceled && "text-slate-500",
+            )}
+          >
+            {enrollment.template?.name ?? "Manual flow"}
+          </p>
+        </div>
+
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <p className="text-xs font-medium text-slate-500">
+            Assigned to
+          </p>
+          {enrollment.coordinator ? (
+            <div className="flex min-w-0 items-center gap-2.5">
+              <Avatar size="sm">
+                {enrollment.coordinator.image ? (
+                  <AvatarImage
+                    src={enrollment.coordinator.image}
+                    alt={`${enrollment.coordinator.name} profile photo`}
+                    className="object-cover"
+                  />
+                ) : null}
+                <AvatarFallback>
+                  {getInitials(enrollment.coordinator.name)}
+                </AvatarFallback>
+              </Avatar>
+              <span
+                className={cn(
+                  "truncate text-sm font-medium text-slate-700",
+                  isCanceled && "text-slate-500",
+                )}
+                title={enrollment.coordinator.name}
+              >
+                {enrollment.coordinator.name}
+              </span>
+            </div>
+          ) : (
+            <span className="text-sm text-slate-500">Unassigned</span>
+          )}
+        </div>
+      </CardContent>
+
+      <Separator />
+      <CardFooter className="grid grid-cols-2 gap-3 bg-slate-50/60 px-4 py-3">
+        <div className="flex min-w-0 flex-col gap-1">
+          <p className="text-xs font-medium text-slate-500">
+            Started
+          </p>
+          <p
+            className={cn(
+              "break-words text-xs leading-5 text-slate-700",
+              isCanceled && "text-slate-500",
+            )}
+          >
+            {startedLabel}
+          </p>
+        </div>
+        <div className="flex min-w-0 flex-col gap-1">
+          <p className="text-xs font-medium text-slate-500">
+            Last activity
+          </p>
+          <p
+            className={cn(
+              "break-words text-xs leading-5 text-slate-700",
+              isCanceled && "text-slate-500",
+            )}
+          >
+            {lastActivityLabel}
+          </p>
+        </div>
+      </CardFooter>
+    </Card>
+  )
+}
+
+function EnrollmentMobileCardSkeleton() {
+  return (
+    <Card aria-hidden="true" className="gap-0 rounded-[22px] py-0 shadow-sm">
+      <CardHeader className="gap-2 px-4 pt-4 pb-3 has-data-[slot=card-action]:grid-cols-[minmax(0,1fr)_auto]">
+        <CardTitle><Skeleton className="h-5 w-3/5" /></CardTitle>
+        <CardDescription><Skeleton className="h-4 w-4/5" /></CardDescription>
+        <CardAction><Skeleton className="h-5 w-24 rounded-full" /></CardAction>
+      </CardHeader>
+      <CardContent className="grid grid-cols-2 gap-4 px-4 pb-4">
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="h-4 w-3/4" />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-3 w-20" />
+          <div className="flex items-center gap-2.5">
+            <Skeleton className="size-8 rounded-full" />
+            <Skeleton className="h-4 w-20" />
+          </div>
+        </div>
+      </CardContent>
+      <Separator />
+      <CardFooter className="grid grid-cols-2 gap-3 bg-slate-50/60 px-4 py-3">
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-3 w-12" />
+          <Skeleton className="h-4 w-24" />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-3 w-20" />
+          <Skeleton className="h-4 w-24" />
+        </div>
+      </CardFooter>
+    </Card>
+  )
 }
 
 function CoordinatorFilterPicker({
@@ -977,7 +1180,54 @@ export function EnrollmentsRegister({
         aria-label="Service enrollments"
         aria-busy={isLoading}
       >
-        <div className="min-h-0 flex-1 overflow-auto px-4 pt-4">
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-3 md:hidden">
+          {isLoading ? (
+            <div className="flex flex-col gap-3" role="status">
+              <span className="sr-only">Loading enrollments</span>
+              {Array.from({ length: 3 }, (_, index) => (
+                <EnrollmentMobileCardSkeleton key={`mobile-skeleton-${index}`} />
+              ))}
+            </div>
+          ) : errorMessage ? (
+            <div
+              className="flex flex-col items-start gap-3 rounded-[20px] border border-rose-200 bg-rose-50/60 p-4 text-sm text-rose-700"
+              role="alert"
+            >
+              <p>{errorMessage}</p>
+              <Button
+                type="button"
+                variant="outline"
+                className={COMPACT_SECONDARY_BUTTON_CLASS}
+                onClick={() => void loadEnrollments()}
+              >
+                <RefreshCw data-icon="inline-start" aria-hidden="true" />
+                Try again
+              </Button>
+            </div>
+          ) : enrollments.length ? (
+            <div className="flex flex-col gap-3" role="list">
+              {enrollments.map((enrollment) => (
+                <div key={`mobile-${enrollment.id}`} role="listitem">
+                  <EnrollmentMobileCard
+                    enrollment={enrollment}
+                    tenantTimezone={tenantTimezone}
+                    onOpen={openEnrollment}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50/70 px-5 py-10 text-center">
+              <p className="text-sm leading-6 text-slate-500">
+                {hasActiveSearchOrFilters
+                  ? "No enrollments match the current search and filters."
+                  : "No service enrollments have been created yet."}
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="hidden min-h-0 flex-1 overflow-auto px-4 pt-4 md:block">
           <Table
             className="min-w-[1240px] table-fixed border-separate border-spacing-0"
             aria-label="Enrollments"
@@ -1235,7 +1485,7 @@ export function EnrollmentsRegister({
           </div>
 
           <nav
-            className="flex items-center gap-2 self-end sm:self-auto"
+            className="flex w-full items-center justify-between gap-2 self-stretch sm:w-auto sm:justify-start sm:self-auto"
             aria-label="Enrollment list pagination"
           >
             <Button
@@ -1249,6 +1499,10 @@ export function EnrollmentsRegister({
               <ChevronLeft aria-hidden="true" />
             </Button>
 
+            <span className="px-2 text-xs font-medium tabular-nums text-slate-600 sm:hidden">
+              Page {page} of {totalPages}
+            </span>
+
             {visiblePages.map((pageNumber) => (
               <Button
                 key={pageNumber}
@@ -1260,11 +1514,11 @@ export function EnrollmentsRegister({
                 }
                 aria-current={pageNumber === page ? "page" : undefined}
                 disabled={isLoading || pageNumber === page}
-                className={
-                  pageNumber === page
-                    ? "bg-blue-950 text-white hover:bg-blue-900 disabled:opacity-100"
-                    : undefined
-                }
+                className={cn(
+                  "hidden sm:inline-flex",
+                  pageNumber === page &&
+                    "bg-blue-950 text-white hover:bg-blue-900 disabled:opacity-100",
+                )}
                 onClick={() => setPage(pageNumber)}
               >
                 {pageNumber}

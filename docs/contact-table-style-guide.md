@@ -2,15 +2,18 @@
 
 This guide documents the tenant contacts table pattern. Use it as the baseline table style for the follow-up page and other dense list views.
 
-Reference implementation:
+Reference implementations:
 
-`apps/react-ui/app/(tenants)/app/[tenantSlug]/contacts/_components/contacts-table.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/contacts/_components/contacts-table.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/enrollments/_components/enrollments-register.tsx`
 
 ## Design Direction
 
-The contact table is a dense operational list. It should feel clean, stable, and easy to scan without turning each row into a card.
+The contact table is a dense operational list. On tablet and desktop widths, it should feel clean, stable, and easy to scan without turning each row into a card.
 
 Use the same pattern when another page needs contacts-style pagination, loading rows, horizontal scrolling, and row navigation.
+
+Phone-sized screens are an intentional exception for wide operational registers. When a row has enough fields that horizontal scrolling hides its meaning, render a separate mobile card below `md` and retain the table at `md` and above.
 
 ## Page Structure
 
@@ -63,7 +66,45 @@ The table section owns the scrolling. Horizontal scrolling belongs to the table 
 </section>
 ```
 
-For wider tables, increase `min-w` enough to keep cells on one row. Do not stack cell details into two visual rows just to avoid horizontal scrolling.
+For wider desktop tables, increase `min-w` enough to keep cells on one row. Do not stack cell details into two visual rows inside the desktop table just to avoid horizontal scrolling. If the register qualifies for the phone-card exception, keep the table intact and render a separate card layout below `md`.
+
+## Phone Card Exception
+
+Use mobile cards only when the user would otherwise need to scroll horizontally to understand one record. The Services Enrollments register is the reference.
+
+Responsive structure:
+
+```tsx
+<div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-3 md:hidden">
+  {/* Mobile cards, loading, error, or empty state */}
+</div>
+
+<div className="hidden min-h-0 flex-1 overflow-auto px-4 pt-4 md:block">
+  {/* Existing contacts-style table */}
+</div>
+```
+
+Enrollment card hierarchy:
+
+1. Contact name and status badge.
+2. Service name.
+3. Template and assigned coordinator share a two-column details row.
+4. Started and Last activity dates in a labeled footer.
+
+Card rules:
+
+- Use the shared shadcn `Card`, `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`, `CardAction`, and `CardFooter` composition.
+- Keep the card width fluid with no `min-width`; use `min-w-0`, `truncate`, and wrapping values to prevent horizontal overflow.
+- Make the complete card keyboard-accessible when it opens the same detail route as the desktop row.
+- Preserve the desktop row’s status colors, missing-value labels, canceled treatment, date timezone, and `returnTo` behavior.
+- Use explicit labels for Template, Assigned to, Started, and Last activity so the card remains understandable without table headers.
+- Use natural-case labels with normal letter spacing. Do not use uppercase transforms or tracking utilities on mobile-card labels.
+- Place Template and Assigned to in equal columns so both halves of the card are used and the content area remains compact.
+- Use the shared `Separator` before the date footer instead of adding a custom border element.
+- Show a subtle directional chevron as a non-interactive affordance; do not add a nested View button.
+- Use three structure-matching skeleton cards during mobile loading. Do not render blank placeholder cards.
+- Keep error, filtered-empty, and unfiltered-empty states inside the mobile list area.
+- Below `sm`, reduce pagination to Previous, `Page X of Y`, and Next. Restore numbered pages from `sm` upward.
 
 ## Header Row
 
