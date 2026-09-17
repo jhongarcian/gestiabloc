@@ -33,6 +33,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { LabeledProgress } from "@/components/ui/labeled-progress"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Sheet,
@@ -395,27 +396,14 @@ function ProgressCell({
   const boundedPercentage = Math.max(0, Math.min(100, completionPercentage))
 
   return (
-    <div className="flex min-w-48 items-center gap-2">
-      <span className="w-10 text-sm font-semibold tabular-nums text-slate-900">
-        {boundedPercentage}%
-      </span>
-      <div
-        className="h-2 min-w-20 flex-1 rounded-full bg-slate-100"
-        role="progressbar"
-        aria-label="Follow-up progress"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={boundedPercentage}
-      >
-        <div
-          className="h-2 rounded-full bg-blue-950 transition-[width]"
-          style={{ width: `${boundedPercentage}%` }}
-        />
-      </div>
-      <span className="w-10 text-right text-xs tabular-nums text-slate-500">
-        {completedCount}/{totalCount}
-      </span>
-    </div>
+    <LabeledProgress
+      value={boundedPercentage}
+      ariaLabel="Follow-up progress"
+      ariaValueText={`${boundedPercentage}% complete, ${completedCount} of ${totalCount} follow-up steps resolved`}
+      summaryLabel={`${completedCount}/${totalCount}`}
+      size="compact"
+      className="w-full"
+    />
   )
 }
 
@@ -942,16 +930,13 @@ export function FollowUpsTable({
 
         <div className="min-h-0 flex-1 overflow-auto px-4 pt-4">
           <Table
-            className="min-w-[1600px] table-fixed border-separate border-spacing-0"
+            className="min-w-[1280px] table-fixed border-separate border-spacing-0"
             aria-label="Follow-ups"
           >
             <TableHeader className="drop-shadow-sm [&_tr]:border-0">
               <TableRow className="h-14 border-0 hover:bg-transparent">
-                <TableHead className="w-[12%] rounded-l-xl border-y border-l bg-slate-50 px-4 text-xs text-slate-600">
-                  Name
-                </TableHead>
-                <TableHead className="w-[9%] border-y bg-slate-50 px-4 text-xs text-slate-600">
-                  Number
+                <TableHead className="w-[18%] rounded-l-xl border-y border-l bg-slate-50 px-4 text-xs text-slate-600">
+                  Contact
                 </TableHead>
                 <TableHead className="w-[11%] border-y bg-slate-50 px-4 text-xs text-slate-600">
                   Service
@@ -962,16 +947,16 @@ export function FollowUpsTable({
                 <TableHead className="w-[15%] border-y bg-slate-50 px-4 text-xs text-slate-600">
                   Current Step
                 </TableHead>
-                <TableHead className="w-[11%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                <TableHead className="w-[10%] border-y bg-slate-50 px-4 text-xs text-slate-600">
                   Assigned
                 </TableHead>
                 <TableHead className="w-[8%] border-y bg-slate-50 px-4 text-xs text-slate-600">
                   Status
                 </TableHead>
-                <TableHead className="w-[9%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                <TableHead className="w-[10%] border-y bg-slate-50 px-4 text-xs text-slate-600">
                   Due Date
                 </TableHead>
-                <TableHead className="w-[12%] rounded-r-xl border-y border-r bg-slate-50 px-4 text-xs text-slate-600">
+                <TableHead className="w-[15%] rounded-r-xl border-y border-r bg-slate-50 px-4 text-xs text-slate-600">
                   Progress
                 </TableHead>
               </TableRow>
@@ -981,7 +966,7 @@ export function FollowUpsTable({
                 aria-hidden="true"
                 className="h-2 border-0 hover:bg-transparent"
               >
-                <TableCell colSpan={9} className="p-0" />
+                <TableCell colSpan={8} className="p-0" />
               </TableRow>
               {isLoading ? (
                 Array.from({ length: pageSize }, (_, index) => (
@@ -990,10 +975,10 @@ export function FollowUpsTable({
                     className="h-14 hover:bg-transparent"
                   >
                     <TableCell className="px-4 py-0">
-                      <Skeleton className="h-4 w-4/5" />
-                    </TableCell>
-                    <TableCell className="px-4 py-0">
-                      <Skeleton className="h-4 w-28" />
+                      <div className="flex flex-col gap-1.5">
+                        <Skeleton className="h-4 w-4/5" />
+                        <Skeleton className="h-3 w-3/5" />
+                      </div>
                     </TableCell>
                     <TableCell className="px-4 py-0">
                       <Skeleton className="h-4 w-4/5" />
@@ -1017,18 +1002,14 @@ export function FollowUpsTable({
                       <Skeleton className="h-4 w-32" />
                     </TableCell>
                     <TableCell className="px-4 py-0">
-                      <div className="flex items-center gap-2">
-                        <Skeleton className="h-4 w-10" />
-                        <Skeleton className="h-2 flex-1 rounded-full" />
-                        <Skeleton className="h-4 w-8" />
-                      </div>
+                      <Skeleton className="h-5 w-full rounded-full" />
                     </TableCell>
                   </TableRow>
                 ))
               ) : errorMessage ? (
                 <TableRow className="h-14 hover:bg-transparent">
                   <TableCell
-                    colSpan={9}
+                    colSpan={8}
                     className="px-4 py-0 text-center text-sm text-rose-600"
                   >
                     {errorMessage}
@@ -1061,13 +1042,11 @@ export function FollowUpsTable({
                         <p className="truncate font-medium text-slate-900">
                           {item.contactName || "Unnamed contact"}
                         </p>
-                      </TableCell>
-                      <TableCell className="px-4 py-0">
-                        <span className="text-sm text-slate-600">
+                        <p className="mt-0.5 truncate text-xs text-slate-500">
                           {item.phoneNumber
                             ? formatPhoneNumber(item.phoneNumber)
                             : "No number"}
-                        </span>
+                        </p>
                       </TableCell>
                       <TableCell className="px-4 py-0">
                         <p className="truncate font-medium text-slate-900">
@@ -1130,7 +1109,7 @@ export function FollowUpsTable({
               ) : (
                 <TableRow className="h-14 hover:bg-transparent">
                   <TableCell
-                    colSpan={9}
+                    colSpan={8}
                     className="px-4 py-0 text-center text-sm text-slate-500"
                   >
                     No service follow-ups match these filters.
@@ -1144,7 +1123,7 @@ export function FollowUpsTable({
                       aria-hidden="true"
                       className="h-14 hover:bg-transparent"
                     >
-                      <TableCell colSpan={9} className="px-4 py-0" />
+                      <TableCell colSpan={8} className="px-4 py-0" />
                     </TableRow>
                   ))
                 : null}

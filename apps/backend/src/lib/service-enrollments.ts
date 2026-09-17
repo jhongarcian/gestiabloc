@@ -11,6 +11,16 @@ export const ContactServiceEnrollmentStatusSchema = z.enum(
   CONTACT_SERVICE_ENROLLMENT_STATUSES,
 )
 
+export const SERVICE_ENROLLMENT_SORTS = [
+  "LAST_ACTIVITY_DESC",
+  "LAST_ACTIVITY_ASC",
+  "STARTED_DESC",
+  "CONTACT_ASC",
+  "SERVICE_ASC",
+] as const
+
+export const ServiceEnrollmentSortSchema = z.enum(SERVICE_ENROLLMENT_SORTS)
+
 const OptionalBooleanQuerySchema = z.preprocess(
   (value) => {
     if (typeof value !== "string") return value
@@ -52,6 +62,7 @@ export const ServiceEnrollmentsListQuerySchema = z
       })
       .default(10),
     search: z.string().trim().max(200).optional(),
+    sort: ServiceEnrollmentSortSchema.default("LAST_ACTIVITY_DESC"),
     statuses: EnrollmentStatusesQuerySchema,
     serviceId: z.string().trim().min(1).optional(),
     followUpTemplateId: z.string().trim().min(1).optional(),
