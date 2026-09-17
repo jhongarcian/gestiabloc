@@ -626,82 +626,105 @@ export function EnrollmentsRegister({
   return (
     <div className="flex h-full min-h-0 flex-col gap-5">
       <header className="shrink-0 rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-4 sm:p-5">
-        <div className="flex min-w-0 flex-col gap-1">
-          <p className="text-xs font-semibold text-blue-700">Service operations</p>
-          <h1 className="text-xl font-semibold text-slate-950 sm:text-2xl">Enrollments</h1>
-        </div>
-
-        <form
-          role="search"
-          className="relative mt-3 w-full sm:mt-4"
-          onSubmit={(event) => {
-            event.preventDefault()
-            setDebouncedQuery(query.trim())
-            setPage(1)
-          }}
-        >
-          <Input
-            type="search"
-            placeholder="Search enrollments"
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value)
-            }}
-            aria-label="Search enrollments by contact, service, template, or coordinator"
-            className="h-11 w-full rounded-xl border-white/80 bg-white/85 pr-14 pl-4 text-sm shadow-sm backdrop-blur placeholder:text-slate-400 focus-visible:border-blue-300 focus-visible:ring-blue-100"
-          />
-          <Button
-            type="submit"
-            size="icon-lg"
-            aria-label="Search enrollments"
-            className="absolute inset-y-0 right-0 h-11 w-12 rounded-l-none rounded-r-xl bg-blue-950 text-white shadow-none hover:bg-blue-900"
-          >
-            <Search aria-hidden="true" />
-          </Button>
-        </form>
-
-        <div className="mt-3 flex min-w-0 items-center justify-between gap-3">
-          <Button
-            type="button"
-            variant="outline"
-            aria-label={
-              activeFilterCount > 0
-                ? `Open filters, ${activeFilterCount} active`
-                : "Open filters"
-            }
-            aria-expanded={isFilterSheetOpen}
-            aria-controls="enrollment-filter-sheet"
-            className="h-9 rounded-full border-white/80 bg-white/85 px-3 text-xs font-semibold text-blue-950 shadow-sm backdrop-blur hover:bg-white hover:text-blue-950 sm:h-10 sm:text-sm"
-            onClick={() => {
-              setDraftStatusFilters(statusFilters)
-              setDraftServiceFilter(serviceFilter)
-              setDraftTemplateFilter(templateFilter)
-              setDraftCoordinatorFilter(coordinatorFilter)
-              setIsFilterSheetOpen(true)
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <form
+            role="search"
+            className="relative w-full lg:min-w-0 lg:flex-1"
+            onSubmit={(event) => {
+              event.preventDefault()
+              setDebouncedQuery(query.trim())
+              setPage(1)
             }}
           >
-            <Filter data-icon="inline-start" aria-hidden="true" />
-            Filters
-            {activeFilterCount > 0 ? (
-              <Badge className="h-5 min-w-5 rounded-full bg-blue-950 px-1.5 text-[10px] text-white">
-                {activeFilterCount}
-              </Badge>
-            ) : null}
-          </Button>
+            <Input
+              type="search"
+              placeholder="Search enrollments"
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value)
+              }}
+              aria-label="Search enrollments by contact, service, template, or coordinator"
+              className="h-11 w-full rounded-xl border-white/80 bg-white/85 pr-14 pl-4 text-sm shadow-sm backdrop-blur placeholder:text-slate-400 focus-visible:border-blue-300 focus-visible:ring-blue-100"
+            />
+            <Button
+              type="submit"
+              size="icon-lg"
+              aria-label="Search enrollments"
+              className="absolute inset-y-0 right-0 h-11 w-12 rounded-l-none rounded-r-xl bg-blue-950 text-white shadow-none hover:bg-blue-900"
+            >
+              <Search aria-hidden="true" />
+            </Button>
+          </form>
 
-          <Button
-            type="button"
-            variant="outline"
-            aria-label={`Sort enrollments, currently ${selectedSortLabel}`}
-            aria-expanded={isSortSheetOpen}
-            aria-controls="enrollment-sort-sheet"
-            className="h-9 min-w-0 max-w-[58vw] rounded-full border-white/80 bg-white/70 px-3 text-xs font-semibold text-slate-800 shadow-sm backdrop-blur hover:bg-white hover:text-slate-950 sm:h-10 sm:max-w-none sm:text-sm"
-            onClick={() => setIsSortSheetOpen(true)}
-          >
-            <span className="shrink-0 text-slate-500">Sort by</span>
-            <span className="truncate">{selectedSortLabel}</span>
-            <ChevronDown data-icon="inline-end" aria-hidden="true" />
-          </Button>
+          <div className="flex min-w-0 items-center justify-between gap-3 lg:shrink-0">
+            <Button
+              type="button"
+              variant="outline"
+              aria-label={
+                activeFilterCount > 0
+                  ? `Open filters, ${activeFilterCount} active`
+                  : "Open filters"
+              }
+              aria-expanded={isFilterSheetOpen}
+              aria-controls="enrollment-filter-sheet"
+              className="h-11 rounded-full border-white/80 bg-white/85 px-3 text-xs font-semibold text-blue-950 shadow-sm backdrop-blur hover:bg-white hover:text-blue-950 sm:text-sm"
+              onClick={() => {
+                setDraftStatusFilters(statusFilters)
+                setDraftServiceFilter(serviceFilter)
+                setDraftTemplateFilter(templateFilter)
+                setDraftCoordinatorFilter(coordinatorFilter)
+                setIsFilterSheetOpen(true)
+              }}
+            >
+              <Filter data-icon="inline-start" aria-hidden="true" />
+              Filters
+              {activeFilterCount > 0 ? (
+                <Badge className="h-5 min-w-5 rounded-full bg-blue-950 px-1.5 text-[10px] text-white">
+                  {activeFilterCount}
+                </Badge>
+              ) : null}
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              aria-label={`Sort enrollments, currently ${selectedSortLabel}`}
+              aria-expanded={isSortSheetOpen}
+              aria-controls="enrollment-sort-sheet"
+              className="h-11 min-w-0 max-w-[58vw] rounded-full border-white/80 bg-white/70 px-3 text-xs font-semibold text-slate-800 shadow-sm backdrop-blur hover:bg-white hover:text-slate-950 sm:max-w-none sm:text-sm lg:hidden"
+              onClick={() => setIsSortSheetOpen(true)}
+            >
+              <span className="shrink-0 text-slate-500">Sort by</span>
+              <span className="truncate">{selectedSortLabel}</span>
+              <ChevronDown data-icon="inline-end" aria-hidden="true" />
+            </Button>
+
+            <Select
+              value={sort}
+              onValueChange={(value) => {
+                setSort(parseSort(value))
+                setPage(1)
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                aria-label={`Sort enrollments, currently ${selectedSortLabel}`}
+                className="hidden min-w-48 rounded-full border-white/80 bg-white/70 px-3 text-sm font-semibold text-slate-800 shadow-sm backdrop-blur hover:bg-white data-[size=sm]:h-11 lg:flex"
+              >
+                <span className="text-slate-500">Sort by</span>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectGroup>
+                  {SORT_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </header>
 
@@ -909,13 +932,19 @@ export function EnrollmentsRegister({
             <Button
               type="button"
               variant="outline"
-              disabled={!hasDraftFilters}
+              disabled={activeFilterCount === 0 && !hasDraftFilters}
               className={COMPACT_SECONDARY_BUTTON_CLASS}
               onClick={() => {
+                setStatusFilters([])
+                setServiceFilter(ALL_SERVICES)
+                setTemplateFilter(ALL_TEMPLATES)
+                setCoordinatorFilter(ALL_COORDINATORS)
                 setDraftStatusFilters([])
                 setDraftServiceFilter(ALL_SERVICES)
                 setDraftTemplateFilter(ALL_TEMPLATES)
                 setDraftCoordinatorFilter(ALL_COORDINATORS)
+                setPage(1)
+                setIsFilterSheetOpen(false)
               }}
             >
               Clear filters
