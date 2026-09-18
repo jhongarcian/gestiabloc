@@ -2,9 +2,11 @@
 
 This guide defines how a wide operational table becomes an easy-to-read card list on small screens. It is a responsive presentation of the same records, not a separate feature or reduced data set.
 
-Reference implementation:
+Reference implementations:
 
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/enrollments/_components/enrollments-register.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/transactions/_components/transactions-register.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/followups/_components/followups-table.tsx`
 
 Related guidance:
 

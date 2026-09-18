@@ -54,6 +54,11 @@ import {
 import { canChangeServiceFollowUpStepAssignee } from "../lib/service-followup-step-permissions.js"
 import { getFollowUpListDateRanges } from "../lib/service-followup-list-date-range.js"
 import {
+  SERVICE_FOLLOW_UP_SEARCH_MAX_LENGTH,
+  ServiceFollowUpSortSchema,
+  sanitizeServiceFollowUpSearch,
+} from "../lib/service-followup-register.js"
+import {
   SERVICE_TRANSACTION_SEARCH_MAX_LENGTH,
   ServiceTransactionAmountCentsSchema,
   ServiceTransactionDateOnlySchema,
@@ -543,7 +548,7 @@ const ServiceTransactionsListQuerySchema = z
   })
 
 const FollowUpsListQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1_000_000).default(1),
   pageSize: z.coerce
     .number()
     .int()
@@ -551,15 +556,20 @@ const FollowUpsListQuerySchema = z.object({
       message: "pageSize must be 10 or 25",
     })
     .default(10),
-  search: z.string().trim().max(200).optional(),
+  search: z.preprocess(
+    (value) =>
+      typeof value === "string" ? sanitizeServiceFollowUpSearch(value) : value,
+    z.string().max(SERVICE_FOLLOW_UP_SEARCH_MAX_LENGTH).optional(),
+  ),
+  sort: ServiceFollowUpSortSchema.default("UPDATED_DESC"),
   status: z
     .enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED", "POSTPONED"])
     .optional(),
   dueDatePreset: z
     .enum(["OVERDUE", "TODAY", "NEXT_7_DAYS", "NO_DUE_DATE"])
     .optional(),
-  followUpTemplateId: z.string().trim().min(1).optional(),
-  assignedToUserId: z.string().trim().min(1).optional(),
+  followUpTemplateId: ServiceTransactionIdSchema.optional(),
+  assignedToUserId: ServiceTransactionIdSchema.optional(),
 })
 
 const CreateContactServiceSchema = z
@@ -2700,6 +2710,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
       page,
       pageSize,
       search,
+      sort,
       status,
       dueDatePreset,
       followUpTemplateId,
@@ -2834,7 +2845,19 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
       prismaWithServices.contactService.count({ where }),
       prismaWithServices.contactService.findMany({
         where,
-        orderBy: [{ updatedAt: "desc" }],
+        orderBy:
+          sort === "STARTED_DESC"
+            ? [{ startedAt: { sort: "desc", nulls: "last" } }, { id: "desc" }]
+            : sort === "CONTACT_ASC"
+              ? [
+                  { contact: { firstName: "asc" } },
+                  { contact: { middleName: "asc" } },
+                  { contact: { lastName: "asc" } },
+                  { id: "asc" },
+                ]
+              : sort === "SERVICE_ASC"
+                ? [{ service: { name: "asc" } }, { id: "asc" }]
+                : [{ updatedAt: "desc" }, { id: "desc" }],
         skip,
         take: pageSize,
         select: {

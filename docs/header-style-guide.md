@@ -1,6 +1,6 @@
 # Gestiabloc Page Header Style Guide
 
-This guide defines the shared page-header pattern for contact views, operational registers, and other workflow screens in Gestiabloc. It is based on the current Contact Tasks, Contact Services, and Services Enrollments headers.
+This guide defines the shared page-header pattern for contact views, operational registers, and other workflow screens in Gestiabloc. It is based on the current Contact Tasks, Contact Services, Services Enrollments, Transactions, and Follow-ups headers.
 
 The design direction is **calm operational hierarchy**: a soft gradient shell, concise context when it is needed, restrained controls, and optional statistics only when they improve the first scan of the page. Search-heavy registers may use a control-first header without visible helper copy.
 
@@ -10,6 +10,7 @@ Reference implementations:
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/contacts/[contactId]/_components/contact-services-panel.tsx`
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/enrollments/_components/enrollments-register.tsx`
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/transactions/_components/transactions-register.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/followups/_components/followups-table.tsx`
 - `specs/ui/summary-cards.md`
 
 ## Header contract
@@ -30,7 +31,7 @@ Choose the variant that matches the page’s primary job:
 | Statistics grid | Three or four related metrics materially improve the page scan | Contact Services |
 | Operational register controls | Search, filtering, and ordering are the user’s primary entry points | Services Enrollments |
 
-Do not combine the operational register-controls variant with header statistics. Keep register metrics in the content area so the search and filter hierarchy remains clear. Do not use a compact statistic and a statistics grid for the same metric.
+Prefer the operational register-controls variant without header statistics. An established register may retain a single four-card, high-signal summary when those metrics materially affect triage, as Transactions and Follow-ups do. Keep the summary and controls inside one gradient shell, place controls directly below the summary, and keep the page heading visually hidden. Do not use a compact statistic and a statistics grid for the same metric.
 
 ## Shared shell
 
@@ -121,6 +122,8 @@ Do not render an empty statistic container as a placeholder. Remove the statisti
 ## Operational register-controls variant
 
 Use this variant when the page is a searchable operational register and the page location is already clear from the sidebar and breadcrumbs. The header begins with the search control instead of repeating a visible eyebrow, title, and helper sentence.
+
+When an established register retains four high-signal summary cards, render that grid before the controls inside the same shell. Keep the visible text hierarchy control-first: use an `sr-only` page heading, compact the stat descriptions on small screens, and preserve the same responsive control rows documented below.
 
 Keep one semantic page heading. If the surrounding route does not already render an `h1`, add a visually hidden heading inside the header:
 
