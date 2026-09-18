@@ -108,6 +108,16 @@ import {
 } from "@/lib/routes"
 import { uploadPrivateFileToSignedUrl } from "@/lib/supabase-storage"
 import {
+  TRANSACTION_MONEY_INPUT_MAX_LENGTH,
+  TRANSACTION_PAYMENT_NOTE_MAX_LENGTH,
+  parseTransactionMoneyToCents,
+  sanitizePaymentEntryMode,
+  sanitizeTransactionMoneyInput,
+  sanitizeTransactionMultilineInput,
+  sanitizeTransactionPaymentMethod,
+  sanitizeTransactionPaymentNote,
+} from "@/lib/transaction-inputs"
+import {
   dateTimeDraftToUtcIso,
   formatDateTimeForDisplay,
   formatUtcIsoToDateTimeDraft,
@@ -570,14 +580,6 @@ const DEFAULT_TENANT_BILLING = {
   taxLabel: null,
   defaultTaxRatePercent: null,
 } satisfies NonNullable<ContactServiceDetails["tenantBilling"]>
-
-const parseUsdToCents = (value: string) => {
-  const normalized = value.replace(/\$/g, "").replace(/,/g, "").trim()
-  if (!normalized) return null
-  const parsed = Number.parseFloat(normalized)
-  if (!Number.isFinite(parsed) || parsed < 0) return null
-  return Math.round(parsed * 100)
-}
 
 const toSentence = (value: string) => value.toLowerCase().replace(/_/g, " ")
 
@@ -1644,7 +1646,9 @@ export function ContactServiceDetailsPanel({
     }
 
     const amountCents =
-      paymentEntryMode === "FULL" ? item.remainingCents : parseUsdToCents(paymentAmountUsd)
+      paymentEntryMode === "FULL"
+        ? item.remainingCents
+        : parseTransactionMoneyToCents(paymentAmountUsd)
     if (amountCents === null || amountCents <= 0) {
       setPaymentAmountError("Enter an amount greater than zero.")
       return
@@ -1655,14 +1659,27 @@ export function ContactServiceDetailsPanel({
       )
       return
     }
+    if (
+      amountCents < item.remainingCents &&
+      item.service.minimumPartialPaymentCents !== null &&
+      amountCents < item.service.minimumPartialPaymentCents
+    ) {
+      setPaymentAmountError(
+        `Enter at least ${currencyFormatter(item.service.minimumPartialPaymentCents, item.currency)} or pay the remaining balance in full.`,
+      )
+      return
+    }
+
+    const sanitizedPaymentMethod = sanitizeTransactionPaymentMethod(paymentMethod)
+    const sanitizedPaymentNote = sanitizeTransactionPaymentNote(paymentNote)
 
     setPaymentAmountError(null)
     setIsPaymentSaving(true)
     try {
       await api.post(`/api/services/${encodedTenantId}/contact-services/${item.id}/payments`, {
         amountCents,
-        ...(paymentMethod ? { paymentMethod } : {}),
-        ...(paymentNote.trim() ? { note: paymentNote.trim() } : {}),
+        ...(sanitizedPaymentMethod ? { paymentMethod: sanitizedPaymentMethod } : {}),
+        ...(sanitizedPaymentNote ? { note: sanitizedPaymentNote } : {}),
       })
       toast.success("Payment recorded.")
       setIsPaymentOpen(false)
@@ -1725,16 +1742,54 @@ export function ContactServiceDetailsPanel({
   const openEditPayment = (payment: ContactServiceDetails["payments"][number]) => {
     setSelectedPaymentId(payment.id)
     setEditPaymentAmountUsd(centsToUsdInput(payment.amountCents))
-    setEditPaymentMethod(payment.paymentMethod ?? "")
-    setEditPaymentNote(payment.note ?? "")
+    setEditPaymentMethod(sanitizeTransactionPaymentMethod(payment.paymentMethod))
+    setEditPaymentNote(
+      sanitizeTransactionMultilineInput(
+        payment.note ?? "",
+        TRANSACTION_PAYMENT_NOTE_MAX_LENGTH,
+      ),
+    )
     setIsPaymentEditOpen(true)
   }
 
   const onUpdatePayment = async () => {
     if (!item || !selectedPaymentId) return
-    const amountCents = parseUsdToCents(editPaymentAmountUsd)
+    const amountCents = parseTransactionMoneyToCents(editPaymentAmountUsd)
     if (amountCents === null || amountCents <= 0) {
-      toast.error("Enter a valid payment amount in USD.")
+      toast.error(`Enter a valid payment amount in ${item.currency}.`)
+      return
+    }
+
+    const selectedPayment = item.payments.find(
+      (payment) => payment.id === selectedPaymentId,
+    )
+    if (!selectedPayment) {
+      toast.error("This payment is no longer available. Refresh and try again.")
+      return
+    }
+
+    const maximumPaymentCents =
+      item.totalPriceCents - (item.paidCents - selectedPayment.amountCents)
+    if (amountCents > maximumPaymentCents) {
+      toast.error(
+        `Enter an amount no greater than ${currencyFormatter(maximumPaymentCents, item.currency)}.`,
+      )
+      return
+    }
+
+    if (amountCents < maximumPaymentCents && !item.allowPartialPayments) {
+      toast.error("This service does not allow partial payments.")
+      return
+    }
+
+    if (
+      amountCents < maximumPaymentCents &&
+      item.service.minimumPartialPaymentCents !== null &&
+      amountCents < item.service.minimumPartialPaymentCents
+    ) {
+      toast.error(
+        `Enter at least ${currencyFormatter(item.service.minimumPartialPaymentCents, item.currency)} or pay the remaining balance in full.`,
+      )
       return
     }
 
@@ -1744,8 +1799,8 @@ export function ContactServiceDetailsPanel({
         `/api/services/${encodedTenantId}/contact-services/${item.id}/payments/${selectedPaymentId}`,
         {
           amountCents,
-          paymentMethod: editPaymentMethod || null,
-          note: editPaymentNote.trim() || null,
+          paymentMethod: sanitizeTransactionPaymentMethod(editPaymentMethod) || null,
+          note: sanitizeTransactionPaymentNote(editPaymentNote) || null,
         },
       )
       toast.success("Payment updated.")
@@ -6020,7 +6075,7 @@ export function ContactServiceDetailsPanel({
                       value={paymentEntryMode}
                       disabled={isPaymentSaving}
                       onValueChange={(value) => {
-                        const nextMode = value as "FULL" | "PARTIAL"
+                        const nextMode = sanitizePaymentEntryMode(value)
                         setPaymentEntryMode(nextMode)
                         setPaymentAmountError(null)
                         if (nextMode === "FULL") {
@@ -6064,7 +6119,7 @@ export function ContactServiceDetailsPanel({
                       className="gap-2"
                     >
                       <FieldLabel htmlFor="service-payment-amount" className="text-slate-800">
-                        Payment amount (USD){" "}
+                        Payment amount ({item.currency}){" "}
                         <span className="text-rose-600" aria-hidden="true">*</span>
                       </FieldLabel>
                       <Input
@@ -6075,9 +6130,12 @@ export function ContactServiceDetailsPanel({
                             : paymentAmountUsd
                         }
                         onChange={(event) => {
-                          setPaymentAmountUsd(event.target.value)
+                          setPaymentAmountUsd(
+                            sanitizeTransactionMoneyInput(event.target.value),
+                          )
                           setPaymentAmountError(null)
                         }}
+                        maxLength={TRANSACTION_MONEY_INPUT_MAX_LENGTH}
                         inputMode="decimal"
                         placeholder="0.00"
                         readOnly={paymentEntryMode === "FULL"}
@@ -6121,7 +6179,13 @@ export function ContactServiceDetailsPanel({
                       <Select
                         value={paymentMethod || "__none__"}
                         disabled={isPaymentSaving}
-                        onValueChange={(value) => setPaymentMethod(value === "__none__" ? "" : value)}
+                        onValueChange={(value) =>
+                          setPaymentMethod(
+                            value === "__none__"
+                              ? ""
+                              : sanitizeTransactionPaymentMethod(value),
+                          )
+                        }
                       >
                         <SelectTrigger
                           id="service-payment-method"
@@ -6150,7 +6214,15 @@ export function ContactServiceDetailsPanel({
                     <Textarea
                       id="service-payment-note"
                       value={paymentNote}
-                      onChange={(event) => setPaymentNote(event.target.value)}
+                      onChange={(event) =>
+                        setPaymentNote(
+                          sanitizeTransactionMultilineInput(
+                            event.target.value,
+                            TRANSACTION_PAYMENT_NOTE_MAX_LENGTH,
+                          ),
+                        )
+                      }
+                      maxLength={TRANSACTION_PAYMENT_NOTE_MAX_LENGTH}
                       rows={4}
                       placeholder="Add payment context"
                       disabled={isPaymentSaving}
@@ -6206,10 +6278,15 @@ export function ContactServiceDetailsPanel({
           </DialogHeader>
           <div className="grid gap-4 py-1">
             <div className="grid gap-2">
-              <Label>Payment Amount (USD)</Label>
+              <Label>Payment Amount ({item.currency})</Label>
               <Input
                 value={editPaymentAmountUsd}
-                onChange={(event) => setEditPaymentAmountUsd(event.target.value)}
+                onChange={(event) =>
+                  setEditPaymentAmountUsd(
+                    sanitizeTransactionMoneyInput(event.target.value),
+                  )
+                }
+                maxLength={TRANSACTION_MONEY_INPUT_MAX_LENGTH}
                 inputMode="decimal"
                 placeholder="0.00"
               />
@@ -6218,7 +6295,13 @@ export function ContactServiceDetailsPanel({
               <Label>Payment Method</Label>
               <Select
                 value={editPaymentMethod || "__none__"}
-                onValueChange={(value) => setEditPaymentMethod(value === "__none__" ? "" : value)}
+                onValueChange={(value) =>
+                  setEditPaymentMethod(
+                    value === "__none__"
+                      ? ""
+                      : sanitizeTransactionPaymentMethod(value),
+                  )
+                }
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select payment method" />
@@ -6237,7 +6320,15 @@ export function ContactServiceDetailsPanel({
               <Label>Note</Label>
               <Textarea
                 value={editPaymentNote}
-                onChange={(event) => setEditPaymentNote(event.target.value)}
+                onChange={(event) =>
+                  setEditPaymentNote(
+                    sanitizeTransactionMultilineInput(
+                      event.target.value,
+                      TRANSACTION_PAYMENT_NOTE_MAX_LENGTH,
+                    ),
+                  )
+                }
+                maxLength={TRANSACTION_PAYMENT_NOTE_MAX_LENGTH}
                 rows={4}
                 placeholder="Optional payment note"
               />

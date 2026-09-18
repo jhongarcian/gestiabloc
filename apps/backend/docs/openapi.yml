@@ -4173,6 +4173,12 @@ paths:
             type: string
             maxLength: 120
         - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [PURCHASED_DESC, PURCHASED_ASC, CONTACT_ASC, SERVICE_ASC, TOTAL_DESC]
+            default: PURCHASED_DESC
+        - in: query
           name: serviceId
           schema:
             type: string

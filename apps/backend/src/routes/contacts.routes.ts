@@ -19,6 +19,10 @@ import { enforceSameOrigin } from "../lib/security.js"
 import { normalizeTagSearchTerm, parseCsvIds } from "../lib/tag-utils.js"
 import { serializeNotification } from "../lib/task-notifications.js"
 import { ensureDefaultContactStatuses } from "../lib/tenant-defaults.js"
+import {
+  SERVICE_TRANSACTION_SEARCH_MAX_LENGTH,
+  sanitizeServiceTransactionSearch,
+} from "../lib/service-transactions.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
@@ -72,7 +76,11 @@ const ContactsListQuerySchema = z.object({
 })
 
 const ContactSearchQuerySchema = z.object({
-  q: z.string().trim().max(120).optional().default(""),
+  q: z.preprocess(
+    (value) =>
+      typeof value === "string" ? sanitizeServiceTransactionSearch(value) : value,
+    z.string().max(SERVICE_TRANSACTION_SEARCH_MAX_LENGTH).optional().default(""),
+  ),
   excludeContactId: z.string().trim().min(1).optional(),
 })
 

@@ -78,6 +78,18 @@ import {
   getServiceFollowUpsHref,
   getServiceTransactionsHref,
 } from "@/lib/routes"
+import {
+  TRANSACTION_CONTACT_SEARCH_MAX_LENGTH,
+  TRANSACTION_MONEY_INPUT_MAX_LENGTH,
+  TRANSACTION_NOTES_MAX_LENGTH,
+  parseTransactionMoneyToCents,
+  sanitizeTransactionContactSearch,
+  sanitizeTransactionMoneyInput,
+  sanitizeTransactionMultilineInput,
+  sanitizeTransactionNotes,
+  sanitizeTransactionPaymentMode,
+  sanitizeTransactionSingleLineInput,
+} from "@/lib/transaction-inputs"
 import { cn } from "@/lib/utils"
 
 type ServiceProfessional = {
@@ -311,16 +323,6 @@ function formatCurrency(valueCents: number, currency: string) {
 
 function centsToUsdInput(valueCents: number) {
   return ((valueCents || 0) / 100).toFixed(2)
-}
-
-function parseUsdToCents(value: string) {
-  const normalized = value.replace(/\$/g, "").replace(/,/g, "").trim()
-  if (!normalized) return null
-
-  const parsed = Number.parseFloat(normalized)
-  if (!Number.isFinite(parsed) || parsed < 0) return null
-
-  return Math.round(parsed * 100)
 }
 
 function getServiceTotalWithTaxCents({
@@ -832,7 +834,7 @@ export function PurchaseTransactionDialog({
 
     try {
       const { data } = await api.get<ServiceOptionsResponse>(
-        `/api/account-settings/${tenantId}/services/options`,
+        `/api/account-settings/${encodeURIComponent(tenantId)}/services/options`,
       )
       setServiceOptions(data.items ?? [])
     } catch {
@@ -848,7 +850,7 @@ export function PurchaseTransactionDialog({
 
     try {
       const { data } = await api.get<TenantAssigneesResponse>(
-        `/api/tasks/${tenantId}/assignees`,
+        `/api/tasks/${encodeURIComponent(tenantId)}/assignees`,
       )
       setFollowUpAssigneeOptions(data.items ?? [])
     } catch {
@@ -868,7 +870,7 @@ export function PurchaseTransactionDialog({
 
       try {
         const { data } = await api.get<FollowUpTemplatesResponse>(
-          `/api/account-settings/${tenantId}/services/${nextServiceId}/follow-up-templates`,
+          `/api/account-settings/${encodeURIComponent(tenantId)}/services/${encodeURIComponent(nextServiceId)}/follow-up-templates`,
         )
 
         setTemplateOptions(
@@ -894,7 +896,7 @@ export function PurchaseTransactionDialog({
 
       try {
         const { data } = await api.get<ServiceDetailsResponse>(
-          `/api/account-settings/${tenantId}/services/${nextServiceId}`,
+          `/api/account-settings/${encodeURIComponent(tenantId)}/services/${encodeURIComponent(nextServiceId)}`,
         )
         setServiceDetails(data.service)
         setPaymentMode((current) => {
@@ -929,7 +931,9 @@ export function PurchaseTransactionDialog({
     if (!open) return
 
     const timeout = window.setTimeout(() => {
-      setDebouncedContactSearchQuery(contactSearchQuery.trim())
+      setDebouncedContactSearchQuery(
+        sanitizeTransactionContactSearch(contactSearchQuery),
+      )
     }, 350)
 
     return () => {
@@ -981,7 +985,7 @@ export function PurchaseTransactionDialog({
 
       try {
         const { data } = await api.get<ContactSearchResponse>(
-          `/api/contacts/${tenantId}/search`,
+          `/api/contacts/${encodeURIComponent(tenantId)}/search`,
           {
             params: {
               q: debouncedContactSearchQuery,
@@ -1098,11 +1102,11 @@ export function PurchaseTransactionDialog({
         ? totalPriceCents
         : paymentMode === "LATER"
           ? 0
-          : parseUsdToCents(initialPaymentUsd)
+          : parseTransactionMoneyToCents(initialPaymentUsd)
 
     if (paymentMode === "PARTIAL") {
       if (initialPaymentCents === null || initialPaymentCents <= 0) {
-        toast.error("Enter a valid partial payment amount in USD.")
+        toast.error("Enter a valid partial payment amount.")
         return
       }
 
@@ -1123,11 +1127,43 @@ export function PurchaseTransactionDialog({
       }
     }
 
+    if (!serviceOptions.some((service) => service.id === serviceId)) {
+      toast.error("Select a valid service.")
+      return
+    }
+
+    if (templateId && !templateOptions.some((template) => template.id === templateId)) {
+      toast.error("Select a valid follow-up template.")
+      return
+    }
+
+    if (
+      assignedProfessionalId &&
+      !serviceDetails?.professionals.some(
+        (professional) => professional.id === assignedProfessionalId,
+      )
+    ) {
+      toast.error("Select a valid professional.")
+      return
+    }
+
+    if (
+      followUpAssignedToUserId &&
+      !followUpAssigneeOptions.some(
+        (assignee) => assignee.value === followUpAssignedToUserId,
+      )
+    ) {
+      toast.error("Select a valid follow-up owner.")
+      return
+    }
+
+    const sanitizedNotes = sanitizeTransactionNotes(notes)
+
     setIsSaving(true)
 
     try {
       const { data } = await api.post<CreateContactServiceResponse>(
-        `/api/services/${tenantId}/contact-services`,
+        `/api/services/${encodeURIComponent(tenantId)}/contact-services`,
         {
           contactId: selectedContact.id,
           serviceId,
@@ -1135,7 +1171,7 @@ export function PurchaseTransactionDialog({
           ...(followUpAssignedToUserId ? { followUpAssignedToUserId } : {}),
           ...(assignedProfessionalId ? { assignedProfessionalId } : {}),
           ...(initialPaymentCents !== null ? { initialPaymentCents } : {}),
-          ...(notes.trim() ? { notes: notes.trim() } : {}),
+          ...(sanitizedNotes ? { notes: sanitizedNotes } : {}),
         },
       )
 
@@ -1298,8 +1334,11 @@ export function PurchaseTransactionDialog({
                       id="service-transaction-contact-search"
                       value={contactSearchQuery}
                       onChange={(event) =>
-                        setContactSearchQuery(event.target.value)
+                        setContactSearchQuery(
+                          sanitizeTransactionSingleLineInput(event.target.value),
+                        )
                       }
+                      maxLength={TRANSACTION_CONTACT_SEARCH_MAX_LENGTH}
                       placeholder="Search contacts by name, email, or phone"
                     />
                     <div className="rounded-xl border border-slate-200 bg-white">
@@ -1368,7 +1407,11 @@ export function PurchaseTransactionDialog({
                   <Select
                     value={serviceId}
                     onValueChange={(value) => {
-                      setServiceId(value)
+                      setServiceId(
+                        serviceOptions.some((service) => service.id === value)
+                          ? value
+                          : "",
+                      )
                       setTemplateId("")
                     }}
                     disabled={isLoadingServiceOptions}
@@ -1408,7 +1451,15 @@ export function PurchaseTransactionDialog({
                   </Label>
                   <AssignedProfessionalPicker
                     value={assignedProfessionalId}
-                    onValueChange={setAssignedProfessionalId}
+                    onValueChange={(value) =>
+                      setAssignedProfessionalId(
+                        serviceDetails?.professionals.some(
+                          (professional) => professional.id === value,
+                        )
+                          ? value
+                          : "",
+                      )
+                    }
                     professionals={serviceDetails?.professionals ?? []}
                     disabled={!serviceDetails}
                   />
@@ -1456,9 +1507,15 @@ export function PurchaseTransactionDialog({
                   </Label>
                   <Select
                     value={templateId || "default"}
-                    onValueChange={(value) =>
-                      setTemplateId(value === "default" ? "" : value)
-                    }
+                    onValueChange={(value) => {
+                      setTemplateId(
+                        value === "default"
+                          ? ""
+                          : templateOptions.some((template) => template.id === value)
+                            ? value
+                            : "",
+                      )
+                    }}
                     disabled={!serviceId}
                   >
                     <SelectTrigger id="service-transaction-template">
@@ -1508,7 +1565,15 @@ export function PurchaseTransactionDialog({
                   <FollowUpAssigneePicker
                     assignees={followUpAssigneeOptions}
                     value={followUpAssignedToUserId}
-                    onValueChange={setFollowUpAssignedToUserId}
+                    onValueChange={(value) =>
+                      setFollowUpAssignedToUserId(
+                        followUpAssigneeOptions.some(
+                          (assignee) => assignee.value === value,
+                        )
+                          ? value
+                          : "",
+                      )
+                    }
                     disabled={!serviceId || isLoadingAssignees}
                   />
                   {!serviceId ? (
@@ -1626,7 +1691,7 @@ export function PurchaseTransactionDialog({
                   <Select
                     value={paymentMode}
                     onValueChange={(value) =>
-                      setPaymentMode(value as "FULL" | "PARTIAL" | "LATER")
+                      setPaymentMode(sanitizeTransactionPaymentMode(value))
                     }
                     disabled={!serviceDetails}
                   >
@@ -1705,8 +1770,8 @@ export function PurchaseTransactionDialog({
                 <div className="grid gap-2">
                   <Label htmlFor="service-transaction-payment-now">
                     {paymentMode === "PARTIAL"
-                      ? "Partial Payment Amount"
-                      : "Payment Now"}
+                      ? `Partial Payment Amount (${serviceDetails?.currency ?? "USD"})`
+                      : `Payment Now (${serviceDetails?.currency ?? "USD"})`}
                   </Label>
                   <Input
                     id="service-transaction-payment-now"
@@ -1720,8 +1785,11 @@ export function PurchaseTransactionDialog({
                             : ""
                     }
                     onChange={(event) =>
-                      setInitialPaymentUsd(event.target.value)
+                      setInitialPaymentUsd(
+                        sanitizeTransactionMoneyInput(event.target.value),
+                      )
                     }
+                    maxLength={TRANSACTION_MONEY_INPUT_MAX_LENGTH}
                     readOnly={paymentMode !== "PARTIAL"}
                     inputMode="decimal"
                     placeholder="0.00"
@@ -1748,7 +1816,15 @@ export function PurchaseTransactionDialog({
                   <Textarea
                     id="service-transaction-notes"
                     value={notes}
-                    onChange={(event) => setNotes(event.target.value)}
+                    onChange={(event) =>
+                      setNotes(
+                        sanitizeTransactionMultilineInput(
+                          event.target.value,
+                          TRANSACTION_NOTES_MAX_LENGTH,
+                        ),
+                      )
+                    }
+                    maxLength={TRANSACTION_NOTES_MAX_LENGTH}
                     rows={3}
                     placeholder="Add context for this service purchase"
                   />

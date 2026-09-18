@@ -813,6 +813,18 @@ export function EnrollmentsRegister({
   const selectedSortLabel =
     SORT_OPTIONS.find((option) => option.value === sort)?.label ?? "Recent activity"
 
+  const clearFilters = () => {
+    setStatusFilters([])
+    setServiceFilter(ALL_SERVICES)
+    setTemplateFilter(ALL_TEMPLATES)
+    setCoordinatorFilter(ALL_COORDINATORS)
+    setDraftStatusFilters([])
+    setDraftServiceFilter(ALL_SERVICES)
+    setDraftTemplateFilter(ALL_TEMPLATES)
+    setDraftCoordinatorFilter(ALL_COORDINATORS)
+    setPage(1)
+  }
+
   const openEnrollment = useCallback(
     (contactServiceId: string) => {
       router.push(
@@ -927,6 +939,16 @@ export function EnrollmentsRegister({
                 </SelectGroup>
               </SelectContent>
             </Select>
+
+            <Button
+              type="button"
+              variant="outline"
+              disabled={activeFilterCount === 0}
+              className="hidden h-11 shrink-0 cursor-pointer rounded-full border-white/80 bg-white/70 px-3 text-sm font-semibold text-slate-700 shadow-sm backdrop-blur hover:bg-white hover:text-slate-950 md:inline-flex"
+              onClick={clearFilters}
+            >
+              Clear filters
+            </Button>
           </div>
         </div>
       </header>
@@ -1138,15 +1160,7 @@ export function EnrollmentsRegister({
               disabled={activeFilterCount === 0 && !hasDraftFilters}
               className={COMPACT_SECONDARY_BUTTON_CLASS}
               onClick={() => {
-                setStatusFilters([])
-                setServiceFilter(ALL_SERVICES)
-                setTemplateFilter(ALL_TEMPLATES)
-                setCoordinatorFilter(ALL_COORDINATORS)
-                setDraftStatusFilters([])
-                setDraftServiceFilter(ALL_SERVICES)
-                setDraftTemplateFilter(ALL_TEMPLATES)
-                setDraftCoordinatorFilter(ALL_COORDINATORS)
-                setPage(1)
+                clearFilters()
                 setIsFilterSheetOpen(false)
               }}
             >

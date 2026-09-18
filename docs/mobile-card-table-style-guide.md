@@ -20,6 +20,7 @@ Use a card list when a table has enough columns that a user would need horizonta
 - Do not place a wide table inside a horizontally scrolling phone viewport.
 - Do not fetch a second data set for cards. Cards and the desktop table render the same page of results.
 - Keep sorting, filtering, page size, pagination, and row destinations identical across both views.
+- Below `md`, keep the register toolbar to Filters and Sort. Put `Clear filters` in the filter drawer; restore the inline clear action at `md` and above.
 
 ```tsx
 <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-3 md:hidden">
@@ -136,3 +137,4 @@ Before shipping a card-table view, verify:
 - Skeleton, error, empty, filtered-empty, canceled, and missing-value states remain understandable.
 - Previous and Next stay balanced when localized labels become longer.
 - The pager changes from labeled mobile controls to numbered desktop controls at `md`.
+- The small-screen toolbar does not include an inline Clear filters button; the filter drawer provides that action and closes after clearing.

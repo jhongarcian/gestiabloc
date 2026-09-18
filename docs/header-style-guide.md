@@ -9,6 +9,7 @@ Reference implementations:
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/contacts/[contactId]/tasks/page.tsx`
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/contacts/[contactId]/_components/contact-services-panel.tsx`
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/enrollments/_components/enrollments-register.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/transactions/_components/transactions-register.tsx`
 - `specs/ui/summary-cards.md`
 
 ## Header contract
@@ -197,6 +198,16 @@ The layout is stacked below `lg` and becomes one aligned row at `lg` and above:
           <SelectGroup>{/* Sort options */}</SelectGroup>
         </SelectContent>
       </Select>
+
+      <Button
+        type="button"
+        variant="outline"
+        disabled={!hasAppliedFilters}
+        className="hidden h-11 rounded-full border-white/80 bg-white/70 px-3 text-sm font-semibold text-slate-700 shadow-sm backdrop-blur hover:bg-white hover:text-slate-950 md:inline-flex"
+        onClick={clearFilters}
+      >
+        Clear filters
+      </Button>
     </div>
   </div>
 </header>
@@ -213,6 +224,7 @@ All visible controls in the register header use the same actual height. Do not r
 | Filters button | 44px | Use `h-11` on every breakpoint |
 | Mobile and tablet Sort button | 44px | Use `h-11` and hide it with `lg:hidden` |
 | Desktop Sort select | 44px | Use `data-[size=sm]:h-11`; a plain `h-11` does not override the Select trigger’s internal data-size rule reliably |
+| Inline Clear filters button | 44px | Hide below `md`; use `hidden md:inline-flex` |
 
 These 44px controls are a header-specific navigation and query pattern. Buttons in sheet and dialog footers remain the compact 32px `h-8` actions defined in `docs/button-style-guide.md`.
 
@@ -229,6 +241,8 @@ These 44px controls are a header-specific navigation and query pattern. Buttons 
 
 - Open filters in the page’s standard filter sheet.
 - Show the active-filter count inside a compact badge when one or more filters are applied.
+- Below `md`, do not render `Clear filters` in the register toolbar. Keep the narrow action row to Filters and Sort, and place `Clear filters` in the filter-sheet footer.
+- At `md` and above, show the inline `Clear filters` action alongside the other register controls.
 - Treat `Clear filters` as a confirmed immediate action: clear the applied and draft filter values, reset to page 1, and close the sheet.
 - Do not require the user to press `Apply filters` after choosing `Clear filters`.
 - Clearing sheet filters does not clear the search query or change the selected sort order.
@@ -442,10 +456,11 @@ Responsive rules:
 
 Operational register-control rules:
 
-- Below `lg`, keep search full width on the first row and place Filters plus Sort on the second row.
-- At `lg` and above, place search, Filters, and Sort in one row.
+- Below `md`, keep search full width on the first row and place only Filters plus Sort in the two-column action row. The sheet footer owns `Clear filters` at this width.
+- From `md` through `lg`, keep search on the first row and place Filters, Sort, and the inline Clear filters action on the second row.
+- At `lg` and above, place search, Filters, Sort, and Clear filters in one row.
 - Let search consume remaining width; do not give Filters or Sort flexible width on desktop.
-- Keep all three control types at 44px high before and after the breakpoint.
+- Keep every visible register control at 44px high before and after the breakpoint.
 - Change only the sort interaction at `lg`: bottom-sheet trigger below it, inline Select at and above it.
 - Preserve control colors, borders, radii, typography, and focus treatment across breakpoints.
 
