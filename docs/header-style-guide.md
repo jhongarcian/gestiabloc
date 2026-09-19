@@ -1,6 +1,6 @@
 # Gestiabloc Page Header Style Guide
 
-This guide defines the shared page-header pattern for contact views, operational registers, and other workflow screens in Gestiabloc. It is based on the current Contact Tasks, Contact Services, and Services Enrollments headers.
+This guide defines the shared page-header pattern for contact views, operational registers, and other workflow screens in Gestiabloc. It is based on the current Contact Tasks, Contact Services, Services Enrollments, Transactions, and Follow-ups headers.
 
 The design direction is **calm operational hierarchy**: a soft gradient shell, concise context when it is needed, restrained controls, and optional statistics only when they improve the first scan of the page. Search-heavy registers may use a control-first header without visible helper copy.
 
@@ -9,6 +9,8 @@ Reference implementations:
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/contacts/[contactId]/tasks/page.tsx`
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/contacts/[contactId]/_components/contact-services-panel.tsx`
 - `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/enrollments/_components/enrollments-register.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/services/transactions/_components/transactions-register.tsx`
+- `apps/react-ui/app/(tenants)/app/[tenantSlug]/followups/_components/followups-table.tsx`
 - `specs/ui/summary-cards.md`
 
 ## Header contract
@@ -29,7 +31,7 @@ Choose the variant that matches the page’s primary job:
 | Statistics grid | Three or four related metrics materially improve the page scan | Contact Services |
 | Operational register controls | Search, filtering, and ordering are the user’s primary entry points | Services Enrollments |
 
-Do not combine the operational register-controls variant with header statistics. Keep register metrics in the content area so the search and filter hierarchy remains clear. Do not use a compact statistic and a statistics grid for the same metric.
+Prefer the operational register-controls variant without header statistics. An established register may retain a single four-card, high-signal summary when those metrics materially affect triage, as Transactions and Follow-ups do. Keep the summary and controls inside one gradient shell, place controls directly below the summary, and keep the page heading visually hidden. Do not use a compact statistic and a statistics grid for the same metric.
 
 ## Shared shell
 
@@ -121,6 +123,8 @@ Do not render an empty statistic container as a placeholder. Remove the statisti
 
 Use this variant when the page is a searchable operational register and the page location is already clear from the sidebar and breadcrumbs. The header begins with the search control instead of repeating a visible eyebrow, title, and helper sentence.
 
+When an established register retains four high-signal summary cards, render that grid before the controls inside the same shell. Keep the visible text hierarchy control-first: use an `sr-only` page heading, compact the stat descriptions on small screens, and preserve the same responsive control rows documented below.
+
 Keep one semantic page heading. If the surrounding route does not already render an `h1`, add a visually hidden heading inside the header:
 
 ```tsx
@@ -197,6 +201,16 @@ The layout is stacked below `lg` and becomes one aligned row at `lg` and above:
           <SelectGroup>{/* Sort options */}</SelectGroup>
         </SelectContent>
       </Select>
+
+      <Button
+        type="button"
+        variant="outline"
+        disabled={!hasAppliedFilters}
+        className="hidden h-11 rounded-full border-white/80 bg-white/70 px-3 text-sm font-semibold text-slate-700 shadow-sm backdrop-blur hover:bg-white hover:text-slate-950 md:inline-flex"
+        onClick={clearFilters}
+      >
+        Clear filters
+      </Button>
     </div>
   </div>
 </header>
@@ -213,6 +227,8 @@ All visible controls in the register header use the same actual height. Do not r
 | Filters button | 44px | Use `h-11` on every breakpoint |
 | Mobile and tablet Sort button | 44px | Use `h-11` and hide it with `lg:hidden` |
 | Desktop Sort select | 44px | Use `data-[size=sm]:h-11`; a plain `h-11` does not override the Select trigger’s internal data-size rule reliably |
+| Inline Clear filters button | 44px | Hide below `md`; use `hidden md:inline-flex` |
+| Primary create action | 44px | Use `h-11`; share the mobile action grid and return to intrinsic width in the desktop row |
 
 These 44px controls are a header-specific navigation and query pattern. Buttons in sheet and dialog footers remain the compact 32px `h-8` actions defined in `docs/button-style-guide.md`.
 
@@ -229,6 +245,8 @@ These 44px controls are a header-specific navigation and query pattern. Buttons 
 
 - Open filters in the page’s standard filter sheet.
 - Show the active-filter count inside a compact badge when one or more filters are applied.
+- Below `md`, do not render `Clear filters` in the register toolbar. Keep the narrow action row to Filters and Sort, and place `Clear filters` in the filter-sheet footer.
+- At `md` and above, show the inline `Clear filters` action alongside the other register controls.
 - Treat `Clear filters` as a confirmed immediate action: clear the applied and draft filter values, reset to page 1, and close the sheet.
 - Do not require the user to press `Apply filters` after choosing `Clear filters`.
 - Clearing sheet filters does not clear the search query or change the selected sort order.
@@ -442,10 +460,12 @@ Responsive rules:
 
 Operational register-control rules:
 
-- Below `lg`, keep search full width on the first row and place Filters plus Sort on the second row.
-- At `lg` and above, place search, Filters, and Sort in one row.
+- Below `md`, keep search full width on the first row. When the register has a primary create action, place Filters, Sort, and Create in an equal three-column action row. The sheet footer owns `Clear filters` at this width.
+- Use concise labels such as `Sort` and `Add` on the narrowest screens; restore the descriptive labels at `sm` without changing the controls' height or order.
+- From `md` through `lg`, keep search on the first row and place Filters, Sort, Clear filters, and the primary create action in an equal four-column action row.
+- At `lg` and above, place search, Filters, Sort, Clear filters, and the primary create action in one row, with the primary action last.
 - Let search consume remaining width; do not give Filters or Sort flexible width on desktop.
-- Keep all three control types at 44px high before and after the breakpoint.
+- Keep every visible register control at 44px high before and after the breakpoint.
 - Change only the sort interaction at `lg`: bottom-sheet trigger below it, inline Select at and above it.
 - Preserve control colors, borders, radii, typography, and focus treatment across breakpoints.
 

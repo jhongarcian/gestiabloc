@@ -54,6 +54,12 @@ Controls should use:
 - Clear button: `h-11 rounded-xl border-white/80 bg-white/70 px-4 text-slate-700 shadow-sm backdrop-blur`
 - Active filter count: blue badge with `bg-blue-950 text-white`
 
+Responsive placement:
+
+- Below `md`, show only Filters and Sort in the toolbar and place `Clear filters` in the filter drawer footer.
+- At `md` and above, restore the inline `Clear filters` button.
+- Clearing from the drawer immediately clears applied and draft filters, resets pagination, and closes the drawer without clearing search or sort.
+
 ## Table Shell
 
 The table section owns the scrolling. Horizontal scrolling belongs to the table content area, not the page.
@@ -72,7 +78,7 @@ For wider desktop tables, increase `min-w` enough to keep cells on one row. Do n
 
 ## Phone Card Exception
 
-Use mobile cards only when the user would otherwise need to scroll horizontally to understand one record. The Services Enrollments register is the reference.
+Use mobile cards only when the user would otherwise need to scroll horizontally to understand one record. Contacts and Services Enrollments are the reference implementations.
 
 Responsive structure:
 

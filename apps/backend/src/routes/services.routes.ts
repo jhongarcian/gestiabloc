@@ -16,10 +16,7 @@ import {
   type ContactServiceNoteSort,
 } from "../lib/contact-service-notes.js"
 import { canManageContactServices } from "../lib/contact-service-permissions.js"
-import {
-  assignedServiceProfessionalIdSchema,
-  resolveServiceProfessionalChange,
-} from "../lib/contact-service-professional.js"
+import { resolveServiceProfessionalChange } from "../lib/contact-service-professional.js"
 import {
   buildContactServiceChecklistActivityData,
   CONTACT_SERVICE_CHECKLIST_STATUSES,
@@ -57,9 +54,22 @@ import {
 import { canChangeServiceFollowUpStepAssignee } from "../lib/service-followup-step-permissions.js"
 import { getFollowUpListDateRanges } from "../lib/service-followup-list-date-range.js"
 import {
+  SERVICE_FOLLOW_UP_SEARCH_MAX_LENGTH,
+  ServiceFollowUpSortSchema,
+  sanitizeServiceFollowUpSearch,
+} from "../lib/service-followup-register.js"
+import {
   SERVICE_TRANSACTION_SEARCH_MAX_LENGTH,
+  ServiceTransactionAmountCentsSchema,
+  ServiceTransactionDateOnlySchema,
+  ServiceTransactionIdSchema,
+  ServiceTransactionNotesSchema,
+  ServiceTransactionPaymentNoteSchema,
+  ServiceTransactionPositiveAmountCentsSchema,
+  ServiceTransactionSortSchema,
   getServiceTransactionContactName,
   getServiceTransactionFinancials,
+  getServiceTransactionPaymentValidationError,
   sanitizeServiceTransactionSearch,
 } from "../lib/service-transactions.js"
 import {
@@ -466,7 +476,7 @@ const OptionalDateOnlySchema = z.preprocess(
     const trimmed = value.trim()
     return trimmed.length ? trimmed : undefined
   },
-  z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  ServiceTransactionDateOnlySchema.optional(),
 )
 
 const ServicesCatalogSummaryQuerySchema = z
@@ -497,7 +507,7 @@ const ServicesCatalogSummaryQuerySchema = z
 
 const ServiceTransactionsListQuerySchema = z
   .object({
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(1_000_000).default(1),
     pageSize: z.coerce
       .number()
       .int()
@@ -510,7 +520,8 @@ const ServiceTransactionsListQuerySchema = z
         typeof value === "string" ? sanitizeServiceTransactionSearch(value) : value,
       z.string().max(SERVICE_TRANSACTION_SEARCH_MAX_LENGTH).optional(),
     ),
-    serviceId: z.string().trim().min(1).optional(),
+    sort: ServiceTransactionSortSchema.default("PURCHASED_DESC"),
+    serviceId: ServiceTransactionIdSchema.optional(),
     status: ContactServiceStatusSchema.optional(),
     rangePreset: ServiceTransactionsRangePresetSchema.default("ALL_TIME"),
     from: OptionalDateOnlySchema,
@@ -537,7 +548,7 @@ const ServiceTransactionsListQuerySchema = z
   })
 
 const FollowUpsListQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1_000_000).default(1),
   pageSize: z.coerce
     .number()
     .int()
@@ -545,60 +556,73 @@ const FollowUpsListQuerySchema = z.object({
       message: "pageSize must be 10 or 25",
     })
     .default(10),
-  search: z.string().trim().max(200).optional(),
+  search: z.preprocess(
+    (value) =>
+      typeof value === "string" ? sanitizeServiceFollowUpSearch(value) : value,
+    z.string().max(SERVICE_FOLLOW_UP_SEARCH_MAX_LENGTH).optional(),
+  ),
+  sort: ServiceFollowUpSortSchema.default("UPDATED_DESC"),
   status: z
     .enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED", "POSTPONED"])
     .optional(),
   dueDatePreset: z
     .enum(["OVERDUE", "TODAY", "NEXT_7_DAYS", "NO_DUE_DATE"])
     .optional(),
-  followUpTemplateId: z.string().trim().min(1).optional(),
-  assignedToUserId: z.string().trim().min(1).optional(),
+  followUpTemplateId: ServiceTransactionIdSchema.optional(),
+  assignedToUserId: ServiceTransactionIdSchema.optional(),
 })
 
-const CreateContactServiceSchema = z.object({
-  contactId: z.string().trim().min(1),
-  serviceId: z.string().trim().min(1),
-  followUpTemplateId: z.string().trim().min(1).optional(),
-  followUpAssignedToUserId: z.string().trim().min(1).optional(),
-  assignedProfessionalId: z.string().trim().min(1).optional(),
-  purchasedAt: z.string().datetime().nullable().optional(),
-  startedAt: z.string().datetime().nullable().optional(),
-  totalPriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
-  notes: z.string().trim().max(4000).nullable().optional(),
-  initialPaymentCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
-})
+const CreateContactServiceSchema = z
+  .object({
+    contactId: ServiceTransactionIdSchema,
+    serviceId: ServiceTransactionIdSchema,
+    followUpTemplateId: ServiceTransactionIdSchema.optional(),
+    followUpAssignedToUserId: ServiceTransactionIdSchema.optional(),
+    assignedProfessionalId: ServiceTransactionIdSchema.optional(),
+    purchasedAt: z.string().datetime().nullable().optional(),
+    startedAt: z.string().datetime().nullable().optional(),
+    notes: ServiceTransactionNotesSchema,
+    initialPaymentCents: ServiceTransactionAmountCentsSchema.optional(),
+  })
+  .strict()
 
-const CreateContactServicePaymentSchema = z.object({
-  amountCents: z.coerce.number().int().min(1).max(1_000_000_000),
-  paidAt: z.string().datetime().optional(),
-  paymentMethod: z
-    .enum(["CASH", "CARD", "CHECK", "TRANSFER", "ACH"])
-    .nullable()
-    .optional(),
-  note: z.string().trim().max(1000).nullable().optional(),
-})
+const ServiceTransactionPaymentMethodSchema = z.enum([
+  "CASH",
+  "CARD",
+  "CHECK",
+  "TRANSFER",
+  "ACH",
+])
 
-const UpdateContactServicePaymentSchema = z.object({
-  amountCents: z.coerce.number().int().min(1).max(1_000_000_000).optional(),
-  paidAt: z.string().datetime().optional(),
-  paymentMethod: z
-    .enum(["CASH", "CARD", "CHECK", "TRANSFER", "ACH"])
-    .nullable()
-    .optional(),
-  note: z.string().trim().max(1000).nullable().optional(),
-})
+const CreateContactServicePaymentSchema = z
+  .object({
+    amountCents: ServiceTransactionPositiveAmountCentsSchema,
+    paidAt: z.string().datetime().optional(),
+    paymentMethod: ServiceTransactionPaymentMethodSchema.nullable().optional(),
+    note: ServiceTransactionPaymentNoteSchema,
+  })
+  .strict()
 
-const UpdateContactServiceSchema = z.object({
-  status: ContactServiceStatusSchema.optional(),
-  startedAt: z.string().datetime().nullable().optional(),
-  purchasedAt: z.string().datetime().nullable().optional(),
-  completedAt: z.string().datetime().nullable().optional(),
-  canceledAt: z.string().datetime().nullable().optional(),
-  totalPriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
-  notes: z.string().trim().max(4000).nullable().optional(),
-  assignedProfessionalId: assignedServiceProfessionalIdSchema,
-})
+const UpdateContactServicePaymentSchema = z
+  .object({
+    amountCents: ServiceTransactionPositiveAmountCentsSchema.optional(),
+    paidAt: z.string().datetime().optional(),
+    paymentMethod: ServiceTransactionPaymentMethodSchema.nullable().optional(),
+    note: ServiceTransactionPaymentNoteSchema,
+  })
+  .strict()
+
+const UpdateContactServiceSchema = z
+  .object({
+    status: ContactServiceStatusSchema.optional(),
+    startedAt: z.string().datetime().nullable().optional(),
+    purchasedAt: z.string().datetime().nullable().optional(),
+    completedAt: z.string().datetime().nullable().optional(),
+    canceledAt: z.string().datetime().nullable().optional(),
+    notes: ServiceTransactionNotesSchema,
+    assignedProfessionalId: ServiceTransactionIdSchema.nullable().optional(),
+  })
+  .strict()
 
 const UpdateFollowUpCoordinatorSchema = z.object({
   assignedToUserId: z.string().trim().min(1).nullable(),
@@ -2275,16 +2299,35 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
     const financialWhere = {
       AND: [where, { status: { not: "CANCELED" as const } }],
     }
+    const transactionOrderBy: Prisma.ContactServiceOrderByWithRelationInput[] =
+      query.sort === "PURCHASED_ASC"
+        ? [
+            { purchasedAt: { sort: "asc", nulls: "last" } },
+            { createdAt: "asc" },
+            { id: "asc" },
+          ]
+        : query.sort === "CONTACT_ASC"
+          ? [
+              { contact: { firstName: "asc" } },
+              { contact: { middleName: "asc" } },
+              { contact: { lastName: "asc" } },
+              { id: "asc" },
+            ]
+          : query.sort === "SERVICE_ASC"
+            ? [{ service: { name: "asc" } }, { id: "asc" }]
+            : query.sort === "TOTAL_DESC"
+              ? [{ totalPriceCents: "desc" }, { id: "desc" }]
+              : [
+                  { purchasedAt: { sort: "desc", nulls: "last" } },
+                  { createdAt: "desc" },
+                  { id: "desc" },
+                ]
 
     const [total, transactions, currencies] = await prisma.$transaction([
       prismaWithServices.contactService.count({ where }),
       prismaWithServices.contactService.findMany({
         where,
-        orderBy: [
-          { purchasedAt: { sort: "desc", nulls: "last" } },
-          { createdAt: "desc" },
-          { id: "desc" },
-        ],
+        orderBy: transactionOrderBy,
         skip,
         take: query.pageSize,
         select: {
@@ -2667,6 +2710,7 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
       page,
       pageSize,
       search,
+      sort,
       status,
       dueDatePreset,
       followUpTemplateId,
@@ -2801,7 +2845,19 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
       prismaWithServices.contactService.count({ where }),
       prismaWithServices.contactService.findMany({
         where,
-        orderBy: [{ updatedAt: "desc" }],
+        orderBy:
+          sort === "STARTED_DESC"
+            ? [{ startedAt: { sort: "desc", nulls: "last" } }, { id: "desc" }]
+            : sort === "CONTACT_ASC"
+              ? [
+                  { contact: { firstName: "asc" } },
+                  { contact: { middleName: "asc" } },
+                  { contact: { lastName: "asc" } },
+                  { id: "asc" },
+                ]
+              : sort === "SERVICE_ASC"
+                ? [{ service: { name: "asc" } }, { id: "asc" }]
+                : [{ updatedAt: "desc" }, { id: "desc" }],
         skip,
         take: pageSize,
         select: {
@@ -3736,18 +3792,21 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
     })
     const initialPaymentCents = payload.initialPaymentCents ?? 0
 
-    if (initialPaymentCents < 0 || initialPaymentCents > totalPriceCents) {
-      return res.status(400).json({ error: "INVALID_INITIAL_PAYMENT" })
+    const initialPaymentError = getServiceTransactionPaymentValidationError({
+      totalPriceCents,
+      alreadyPaidCents: 0,
+      paymentAmountCents: initialPaymentCents,
+      allowPartialPayments: service.allowPartialPayments,
+      minimumPartialPaymentCents: service.minimumPartialPaymentCents,
+    })
+    if (initialPaymentError) {
+      return res.status(400).json({
+        error:
+          initialPaymentError === "PAYMENT_EXCEEDS_SERVICE_TOTAL"
+            ? "INVALID_INITIAL_PAYMENT"
+            : initialPaymentError,
+      })
     }
-
-    if (initialPaymentCents > 0 && initialPaymentCents < totalPriceCents && !service.allowPartialPayments) {
-      return res.status(400).json({ error: "SERVICE_DOES_NOT_ALLOW_PARTIAL_PAYMENTS" })
-    }
-    const sanitizedServiceNotes =
-      payload.notes && payload.notes.trim().length
-        ? sanitizeMultilineText(payload.notes)
-        : null
-
     const created = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any
 
@@ -3766,7 +3825,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           totalPriceCents,
           currency: service.currency,
           allowPartialPayments: service.allowPartialPayments,
-          notes: sanitizedServiceNotes,
+          notes: payload.notes ?? null,
         },
         select: {
           id: true,
@@ -5411,6 +5470,12 @@ router.post(
         select: {
           id: true,
           totalPriceCents: true,
+          allowPartialPayments: true,
+          service: {
+            select: {
+              minimumPartialPaymentCents: true,
+            },
+          },
         },
       })
 
@@ -5432,8 +5497,16 @@ router.post(
         0,
       )
 
-      if (currentPaidCents + payload.amountCents > contactService.totalPriceCents) {
-        return res.status(400).json({ error: "PAYMENT_EXCEEDS_SERVICE_TOTAL" })
+      const paymentError = getServiceTransactionPaymentValidationError({
+        totalPriceCents: contactService.totalPriceCents,
+        alreadyPaidCents: currentPaidCents,
+        paymentAmountCents: payload.amountCents,
+        allowPartialPayments: contactService.allowPartialPayments,
+        minimumPartialPaymentCents:
+          contactService.service.minimumPartialPaymentCents,
+      })
+      if (paymentError) {
+        return res.status(400).json({ error: paymentError })
       }
 
       const payment = await prismaWithServices.contactServicePayment.create({
@@ -5442,14 +5515,8 @@ router.post(
           contactServiceId,
           amountCents: payload.amountCents,
           paidAt: payload.paidAt ? new Date(payload.paidAt) : new Date(),
-          paymentMethod:
-            payload.paymentMethod && payload.paymentMethod.trim().length
-              ? sanitizeSingleLineText(payload.paymentMethod)
-              : null,
-          note:
-            payload.note && payload.note.trim().length
-              ? sanitizeMultilineText(payload.note)
-              : null,
+          paymentMethod: payload.paymentMethod ?? null,
+          note: payload.note ?? null,
           recordedById: authed.user.id,
         },
         select: {
@@ -5529,6 +5596,12 @@ router.patch(
         },
         select: {
           totalPriceCents: true,
+          allowPartialPayments: true,
+          service: {
+            select: {
+              minimumPartialPaymentCents: true,
+            },
+          },
         },
       })
 
@@ -5553,8 +5626,16 @@ router.patch(
       )
       const nextAmountCents = payload.amountCents ?? existing.amountCents
 
-      if (otherPaidCents + nextAmountCents > contactService.totalPriceCents) {
-        return res.status(400).json({ error: "PAYMENT_EXCEEDS_SERVICE_TOTAL" })
+      const paymentError = getServiceTransactionPaymentValidationError({
+        totalPriceCents: contactService.totalPriceCents,
+        alreadyPaidCents: otherPaidCents,
+        paymentAmountCents: nextAmountCents,
+        allowPartialPayments: contactService.allowPartialPayments,
+        minimumPartialPaymentCents:
+          contactService.service.minimumPartialPaymentCents,
+      })
+      if (paymentError) {
+        return res.status(400).json({ error: paymentError })
       }
 
       const payment = await prismaWithServices.contactServicePayment.update({
@@ -5563,20 +5644,10 @@ router.patch(
           ...(payload.amountCents !== undefined ? { amountCents: payload.amountCents } : {}),
           ...(payload.paidAt !== undefined ? { paidAt: new Date(payload.paidAt) } : {}),
           ...(payload.paymentMethod !== undefined
-            ? {
-                paymentMethod:
-                  payload.paymentMethod && payload.paymentMethod.trim().length
-                    ? sanitizeSingleLineText(payload.paymentMethod)
-                    : null,
-              }
+            ? { paymentMethod: payload.paymentMethod }
             : {}),
           ...(payload.note !== undefined
-            ? {
-                note:
-                  payload.note && payload.note.trim().length
-                    ? sanitizeMultilineText(payload.note)
-                    : null,
-              }
+            ? { note: payload.note }
             : {}),
         },
         select: {
@@ -5812,12 +5883,7 @@ router.patch(
             ? { purchasedAt: payload.purchasedAt ? new Date(payload.purchasedAt) : null }
             : {}),
           ...(payload.notes !== undefined
-            ? {
-                notes:
-                  payload.notes && payload.notes.trim().length
-                    ? sanitizeMultilineText(payload.notes)
-                    : null,
-              }
+            ? { notes: payload.notes }
             : {}),
           ...(payload.assignedProfessionalId !== undefined
             ? { assignedProfessionalId: payload.assignedProfessionalId }

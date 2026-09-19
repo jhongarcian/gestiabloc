@@ -134,6 +134,58 @@ const formatSegment = (segment: string) => {
   return segment.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase())
 }
 
+const COMPACT_LOCATION_LABELS: Readonly<Record<string, string>> = {
+  account: "Account",
+  "account-settings": "Account Settings",
+  "ai-qualification": "AI Qualification",
+  appointments: "Appointments",
+  automations: "Automations",
+  billing: "Billing",
+  calendar: "Calendar",
+  contacts: "Contacts",
+  "custom-fields": "Custom Fields",
+  enrollments: "Enrollments",
+  "follow-up": "Follow-up",
+  "follow-ups": "Follow-ups",
+  followups: "Follow-ups",
+  help: "Help",
+  notes: "Notes",
+  opportunities: "Opportunities",
+  overview: "Overview",
+  payments: "Payments",
+  professionals: "Professionals",
+  profile: "Profile",
+  relationships: "Relationships",
+  services: "Services",
+  "status-config": "Status Configuration",
+  subscription: "Subscription",
+  tags: "Tags",
+  tasks: "Tasks",
+  "tenant-info": "Tenant Information",
+  transaction: "Transaction",
+  transactions: "Transactions",
+  upgrade: "Upgrade",
+  users: "Users",
+}
+
+const getCompactLocationLabel = (segments: string[]) => {
+  if (segments.length === 0) return "Dashboard"
+
+  const isEnrollmentOverview =
+    segments[0] === "services" &&
+    segments[1] === "enrollments" &&
+    (!segments[3] || segments[3] === "overview")
+
+  if (isEnrollmentOverview) return "Enrollments"
+
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const label = COMPACT_LOCATION_LABELS[segments[index]]
+    if (label) return label
+  }
+
+  return formatSegment(segments[0])
+}
+
 const formatRole = (role?: string | null) =>
   role ? formatSegment(role.toLowerCase()) : null
 
@@ -318,6 +370,10 @@ export function TenantShell({
     [segments],
   )
   const isCompactSearchActive = !isFlowBuilderRoute && isCompactSearchOpen
+  const compactLocationLabel = useMemo(
+    () => getCompactLocationLabel(segments),
+    [segments],
+  )
 
   const crumbs = useMemo(() => {
     const items = [
@@ -919,6 +975,17 @@ export function TenantShell({
           >
             {!isFlowBuilderRoute ? (
               <SidebarTrigger className="size-10 shrink-0 cursor-pointer rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700 lg:hidden" />
+            ) : null}
+
+            {!isFlowBuilderRoute && !isCompactSearchActive ? (
+              <div className="min-w-0 flex-1 lg:hidden">
+                <span
+                  className="block truncate text-sm font-semibold tracking-[-0.01em] text-slate-800 sm:text-base"
+                  title={compactLocationLabel}
+                >
+                  {compactLocationLabel}
+                </span>
+              </div>
             ) : null}
 
             <div className="hidden min-w-0 flex-1 overflow-hidden lg:block">
