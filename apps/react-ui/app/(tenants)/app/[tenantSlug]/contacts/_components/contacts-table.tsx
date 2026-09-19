@@ -891,16 +891,7 @@ export function ContactsTable({
       <header className="shrink-0 rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-4 sm:p-5">
         <h1 className="sr-only">Contacts</h1>
 
-        <div className="flex justify-end">
-          <CreateContactDialog
-            tenantId={tenantId}
-            statusOptions={statusOptions}
-            onCreated={loadContacts}
-            triggerClassName={COMPACT_PRIMARY_BUTTON_CLASS}
-          />
-        </div>
-
-        <div className="mt-3 flex flex-col gap-3 lg:flex-row lg:items-center">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <form
             role="search"
             className="relative w-full lg:min-w-0 lg:flex-1"
@@ -931,7 +922,7 @@ export function ContactsTable({
             </Button>
           </form>
 
-          <div className="grid w-full grid-cols-2 gap-2 md:grid-cols-3 lg:flex lg:w-auto lg:shrink-0">
+          <div className="grid w-full grid-cols-3 gap-2 md:grid-cols-4 lg:flex lg:w-auto lg:shrink-0">
             <Button
               type="button"
               variant="outline"
@@ -969,7 +960,10 @@ export function ContactsTable({
               className="h-11 min-w-0 cursor-pointer rounded-full border-white/80 bg-white/70 px-2.5 text-xs font-semibold text-slate-800 shadow-sm backdrop-blur hover:bg-white hover:text-slate-950 sm:px-3 sm:text-sm lg:hidden"
               onClick={() => setIsSortSheetOpen(true)}
             >
-              <span className="truncate">{selectedSortLabel}</span>
+              <span className="sm:hidden">Sort</span>
+              <span className="hidden truncate sm:inline">
+                {selectedSortLabel}
+              </span>
               <ChevronDown data-icon="inline-end" aria-hidden="true" />
             </Button>
 
@@ -1008,6 +1002,13 @@ export function ContactsTable({
             >
               Clear filters
             </Button>
+
+            <CreateContactDialog
+              tenantId={tenantId}
+              statusOptions={statusOptions}
+              onCreated={loadContacts}
+              triggerClassName="h-11 min-w-0 w-full rounded-full px-2 text-xs font-semibold shadow-sm ring-1 ring-black/5 sm:px-3 sm:text-sm lg:w-auto lg:px-4"
+            />
           </div>
         </div>
       </header>

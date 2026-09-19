@@ -228,6 +228,7 @@ All visible controls in the register header use the same actual height. Do not r
 | Mobile and tablet Sort button | 44px | Use `h-11` and hide it with `lg:hidden` |
 | Desktop Sort select | 44px | Use `data-[size=sm]:h-11`; a plain `h-11` does not override the Select trigger’s internal data-size rule reliably |
 | Inline Clear filters button | 44px | Hide below `md`; use `hidden md:inline-flex` |
+| Primary create action | 44px | Use `h-11`; share the mobile action grid and return to intrinsic width in the desktop row |
 
 These 44px controls are a header-specific navigation and query pattern. Buttons in sheet and dialog footers remain the compact 32px `h-8` actions defined in `docs/button-style-guide.md`.
 
@@ -459,9 +460,10 @@ Responsive rules:
 
 Operational register-control rules:
 
-- Below `md`, keep search full width on the first row and place only Filters plus Sort in the two-column action row. The sheet footer owns `Clear filters` at this width.
-- From `md` through `lg`, keep search on the first row and place Filters, Sort, and the inline Clear filters action on the second row.
-- At `lg` and above, place search, Filters, Sort, and Clear filters in one row.
+- Below `md`, keep search full width on the first row. When the register has a primary create action, place Filters, Sort, and Create in an equal three-column action row. The sheet footer owns `Clear filters` at this width.
+- Use concise labels such as `Sort` and `Add` on the narrowest screens; restore the descriptive labels at `sm` without changing the controls' height or order.
+- From `md` through `lg`, keep search on the first row and place Filters, Sort, Clear filters, and the primary create action in an equal four-column action row.
+- At `lg` and above, place search, Filters, Sort, Clear filters, and the primary create action in one row, with the primary action last.
 - Let search consume remaining width; do not give Filters or Sort flexible width on desktop.
 - Keep every visible register control at 44px high before and after the breakpoint.
 - Change only the sort interaction at `lg`: bottom-sheet trigger below it, inline Select at and above it.

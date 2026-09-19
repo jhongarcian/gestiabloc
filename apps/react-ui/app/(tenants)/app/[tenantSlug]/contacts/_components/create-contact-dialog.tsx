@@ -206,7 +206,8 @@ export function CreateContactDialog({
           )}
         >
           <Plus data-icon="inline-start" />
-          Add contact
+          <span className="sm:hidden">Add</span>
+          <span className="hidden sm:inline">Add contact</span>
         </Button>
       </DialogTrigger>
       <DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 bg-white p-0 shadow-2xl sm:max-w-3xl [&>button]:cursor-pointer">
