@@ -78,7 +78,7 @@ For wider desktop tables, increase `min-w` enough to keep cells on one row. Do n
 
 ## Phone Card Exception
 
-Use mobile cards only when the user would otherwise need to scroll horizontally to understand one record. The Services Enrollments register is the reference.
+Use mobile cards only when the user would otherwise need to scroll horizontally to understand one record. Contacts and Services Enrollments are the reference implementations.
 
 Responsive structure:
 

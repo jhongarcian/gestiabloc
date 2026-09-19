@@ -73,6 +73,15 @@ const ContactsListQuerySchema = z.object({
   statusConfigIds: z.string().trim().max(2000).optional().default(""),
   tagIds: z.string().trim().max(2000).optional().default(""),
   assignedToUserId: z.string().trim().max(120).optional().default(""),
+  sort: z
+    .enum([
+      "NAME_ASC",
+      "NAME_DESC",
+      "CREATED_DESC",
+      "CREATED_ASC",
+      "UPDATED_DESC",
+    ])
+    .default("NAME_ASC"),
 })
 
 const ContactSearchQuerySchema = z.object({
@@ -1296,8 +1305,15 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
     const { tenantId } = TenantPathSchema.parse(req.params)
-    const { page, pageSize, search, statusConfigIds, tagIds, assignedToUserId } =
-      ContactsListQuerySchema.parse(req.query)
+    const {
+      page,
+      pageSize,
+      search,
+      statusConfigIds,
+      tagIds,
+      assignedToUserId,
+      sort,
+    } = ContactsListQuerySchema.parse(req.query)
 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
@@ -1307,6 +1323,33 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
     const selectedTagIds = parseCsvIds(tagIds)
     const assignedToUserIdFilter =
       assignedToUserId === "ALL" ? "" : assignedToUserId
+    const orderBy =
+      sort === "NAME_DESC"
+        ? [
+            { lastName: "desc" as const },
+            { firstName: "desc" as const },
+            { id: "desc" as const },
+          ]
+        : sort === "CREATED_DESC"
+          ? [
+              { createdAt: "desc" as const },
+              { id: "desc" as const },
+            ]
+          : sort === "CREATED_ASC"
+            ? [
+                { createdAt: "asc" as const },
+                { id: "asc" as const },
+              ]
+            : sort === "UPDATED_DESC"
+              ? [
+                  { updatedAt: "desc" as const },
+                  { id: "desc" as const },
+                ]
+              : [
+                  { lastName: "asc" as const },
+                  { firstName: "asc" as const },
+                  { id: "asc" as const },
+                ]
 
     const where = {
       tenantId,
@@ -1361,7 +1404,7 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
       prisma.contact.count({ where }),
       prisma.contact.findMany({
         where,
-        orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+        orderBy,
         skip,
         take: pageSize,
         select: {

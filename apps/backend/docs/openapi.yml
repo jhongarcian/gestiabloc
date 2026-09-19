@@ -551,7 +551,7 @@ paths:
     get:
       tags: [Contacts]
       summary: List contacts for a tenant
-      description: Returns paginated contacts with optional debounced text search and status filtering.
+      description: Returns paginated contacts with optional debounced text search, filtering, and deterministic ordering.
       security:
         - cookieAuth: []
       parameters:
@@ -588,6 +588,19 @@ paths:
           schema:
             type: string
           description: Comma-separated tenant tag ids. Matches contacts that have at least one selected tag.
+        - in: query
+          name: assignedToUserId
+          required: false
+          schema:
+            type: string
+          description: Membership user id, or __UNASSIGNED__ for contacts without an owner.
+        - in: query
+          name: sort
+          required: false
+          schema:
+            type: string
+            enum: [NAME_ASC, NAME_DESC, CREATED_DESC, CREATED_ASC, UPDATED_DESC]
+            default: NAME_ASC
       responses:
         "200":
           description: Contacts returned

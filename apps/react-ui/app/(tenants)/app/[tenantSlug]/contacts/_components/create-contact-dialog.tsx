@@ -40,6 +40,7 @@ type CreateContactDialogProps = {
   tenantId: string
   statusOptions: ContactStatusOption[]
   onCreated: () => Promise<void> | void
+  triggerClassName?: string
 }
 
 type FieldErrors = Partial<
@@ -55,6 +56,7 @@ export function CreateContactDialog({
   tenantId,
   statusOptions,
   onCreated,
+  triggerClassName,
 }: CreateContactDialogProps) {
   const [open, setOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -198,7 +200,10 @@ export function CreateContactDialog({
       <DialogTrigger asChild>
         <Button
           type="button"
-          className="cursor-pointer rounded-xl bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+          className={cn(
+            "cursor-pointer rounded-xl bg-blue-950 text-white shadow-sm hover:bg-blue-900",
+            triggerClassName,
+          )}
         >
           <Plus data-icon="inline-start" />
           Add contact
