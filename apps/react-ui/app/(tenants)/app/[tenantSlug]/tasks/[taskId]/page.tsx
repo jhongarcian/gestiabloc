@@ -91,12 +91,37 @@ function formatContactDate(value: string | null | undefined) {
   }).format(date)
 }
 
+function getSafeTasksReturnTo(
+  value: string | string[] | undefined,
+  tenantSlug: string,
+) {
+  const fallback = `/app/${encodeURIComponent(tenantSlug)}/tasks`
+  const candidate = Array.isArray(value) ? value[0] : value
+  if (!candidate) return fallback
+
+  try {
+    const parsed = new URL(candidate, "https://gestiabloc.local")
+    if (parsed.origin !== "https://gestiabloc.local") return fallback
+    if (parsed.pathname !== fallback) return fallback
+    return `${parsed.pathname}${parsed.search}`
+  } catch {
+    return fallback
+  }
+}
+
 export default async function TaskDetailsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ tenantSlug: string; taskId: string }>
+  searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
   const { tenantSlug, taskId } = await params
+  const resolvedSearchParams = await searchParams
+  const tasksReturnTo = getSafeTasksReturnTo(
+    resolvedSearchParams.returnTo,
+    tenantSlug,
+  )
   const { cookie, membership, user, tenantTimezone } =
     await getTenantMembershipContext(tenantSlug)
 
@@ -185,7 +210,7 @@ export default async function TaskDetailsPage({
           <div className="flex min-w-0 flex-1 flex-col gap-3">
             <div className="flex min-w-0 items-center gap-2">
               <Link
-                href={`/app/${tenantSlug}/tasks`}
+                href={tasksReturnTo}
                 aria-label="Back to tasks"
                 title="Back to tasks"
                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white/85 text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
@@ -245,6 +270,7 @@ export default async function TaskDetailsPage({
                 tenantSlug={tenantSlug}
                 taskId={task.id}
                 taskName={task.name}
+                returnTo={tasksReturnTo}
               />
             ) : null}
           </div>

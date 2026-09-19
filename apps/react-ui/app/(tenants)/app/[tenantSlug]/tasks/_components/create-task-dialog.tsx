@@ -1,7 +1,7 @@
 "use client"
 
 import { isAxiosError } from "axios"
-import { Check, ChevronDown, Loader2 } from "lucide-react"
+import { Check, ChevronDown, Loader2, Plus } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
@@ -168,7 +168,7 @@ export function CreateTaskDialog({
   initialContact = null,
   lockContact = false,
   hideContact = false,
-  triggerLabel = "Create Task",
+  triggerLabel = "Create task",
   trigger,
   triggerTooltip,
 }: CreateTaskDialogProps) {
@@ -1038,6 +1038,7 @@ export function CreateTaskDialog({
       type="button"
       className="bg-blue-950 text-white hover:bg-blue-900"
     >
+      <Plus data-icon="inline-start" aria-hidden="true" />
       {triggerLabel}
     </Button>
   )

@@ -71,25 +71,11 @@ const summaryItems: SummaryItem[] = [
 
 export function TaskPageHeader({ summary, action }: TaskPageHeaderProps) {
   return (
-    <header className="shrink-0 rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div className="flex min-w-0 flex-col gap-2">
-          <p className="text-xs font-semibold text-blue-700">Task management</p>
-          <div className="flex flex-col gap-1">
-            <h1 className="text-2xl font-semibold text-slate-950">Tasks</h1>
-            <p className="text-sm text-slate-600">
-              Review priorities, deadlines, and ownership across your team&apos;s work.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center md:self-center">
-          {action}
-        </div>
-      </div>
+    <header className="shrink-0 rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-4 sm:p-5">
+      <h1 className="sr-only">Tasks</h1>
 
       <section
-        className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+        className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4"
         aria-label="Task summary"
       >
         {summaryItems.map((item) => {
@@ -98,24 +84,24 @@ export function TaskPageHeader({ summary, action }: TaskPageHeaderProps) {
           return (
             <Card
               key={item.valueKey}
-              className="min-w-0 gap-0 rounded-[22px] border-white/80 bg-white/70 py-0 shadow-sm backdrop-blur"
+              className="min-w-0 gap-0 rounded-[20px] border-white/80 bg-white/70 py-0 shadow-sm backdrop-blur sm:rounded-[22px]"
             >
-              <CardHeader className="gap-0 px-4 pt-4 pb-0">
-                <CardTitle className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+              <CardHeader className="gap-0 px-3 pt-3 pb-0 sm:px-4 sm:pt-4">
+                <CardTitle className="flex items-center gap-2 text-xs font-medium text-slate-500">
                   <Icon className="size-4 text-slate-400" aria-hidden="true" />
                   {item.label}
                 </CardTitle>
               </CardHeader>
-              <CardContent className="px-4 pt-2 pb-4">
+              <CardContent className="px-3 pt-2 pb-3 sm:px-4 sm:pb-4">
                 <p
                   className={cn(
-                    "truncate text-xl font-semibold tabular-nums tracking-tight",
+                    "truncate text-xl font-semibold tabular-nums",
                     item.valueClassName,
                   )}
                 >
                   {summary[item.valueKey]}
                 </p>
-                <CardDescription className="mt-1 text-xs">
+                <CardDescription className="mt-1 hidden text-xs sm:block">
                   {item.description}
                 </CardDescription>
               </CardContent>
@@ -123,6 +109,8 @@ export function TaskPageHeader({ summary, action }: TaskPageHeaderProps) {
           )
         })}
       </section>
+
+      <div className="mt-4">{action}</div>
     </header>
   )
 }

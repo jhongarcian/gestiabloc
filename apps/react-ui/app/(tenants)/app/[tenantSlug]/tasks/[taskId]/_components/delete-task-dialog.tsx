@@ -29,6 +29,7 @@ type DeleteTaskDialogProps = {
   tenantSlug: string
   taskId: string
   taskName: string
+  returnTo?: string
 }
 
 export function DeleteTaskDialog({
@@ -36,6 +37,7 @@ export function DeleteTaskDialog({
   tenantSlug,
   taskId,
   taskName,
+  returnTo,
 }: DeleteTaskDialogProps) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
@@ -48,12 +50,12 @@ export function DeleteTaskDialog({
       await api.delete(`/api/tasks/${tenantId}/${taskId}`)
       toast.success("Task deleted.")
       setOpen(false)
-      router.push(`/app/${tenantSlug}/tasks`)
+      router.push(returnTo ?? `/app/${tenantSlug}/tasks`)
       router.refresh()
     } catch (error) {
       if (isAxiosError(error) && error.response?.data?.error === "TASK_NOT_FOUND") {
         toast.error("This task no longer exists.")
-        router.push(`/app/${tenantSlug}/tasks`)
+        router.push(returnTo ?? `/app/${tenantSlug}/tasks`)
         return
       }
 

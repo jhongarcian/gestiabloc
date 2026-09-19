@@ -3770,6 +3770,13 @@ paths:
           name: contactId
           schema:
             type: string
+        - in: query
+          name: sort
+          description: Order tasks by due date, creation time, or latest update.
+          schema:
+            type: string
+            enum: [DUE_ASC, DUE_DESC, CREATED_DESC, CREATED_ASC, UPDATED_DESC]
+            default: DUE_ASC
       responses:
         "200":
           description: Tasks returned
