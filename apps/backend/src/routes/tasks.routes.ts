@@ -59,7 +59,32 @@ const TasksListQuerySchema = z.object({
   priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(),
   assignedToUserId: z.string().trim().max(80).optional(),
   contactId: z.string().trim().min(1).optional(),
+  sort: z
+    .enum([
+      "DUE_ASC",
+      "DUE_DESC",
+      "CREATED_DESC",
+      "CREATED_ASC",
+      "UPDATED_DESC",
+    ])
+    .default("DUE_ASC"),
 })
+
+const TASK_LIST_ORDER_BY = {
+  DUE_ASC: [
+    { dueDate: { sort: "asc", nulls: "last" } },
+    { createdAt: "desc" },
+    { id: "asc" },
+  ],
+  DUE_DESC: [
+    { dueDate: { sort: "desc", nulls: "last" } },
+    { createdAt: "desc" },
+    { id: "asc" },
+  ],
+  CREATED_DESC: [{ createdAt: "desc" }, { id: "desc" }],
+  CREATED_ASC: [{ createdAt: "asc" }, { id: "asc" }],
+  UPDATED_DESC: [{ updatedAt: "desc" }, { id: "desc" }],
+} as const
 
 const CreateTaskReminderSchema = z.object({
   remindAt: z.string().datetime(),
@@ -534,6 +559,7 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
       priority,
       assignedToUserId,
       contactId,
+      sort,
     } = TasksListQuerySchema.parse(req.query)
 
     const membership = await requireActiveMembership(authed, res, tenantId)
@@ -542,6 +568,7 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
     const skip = (page - 1) * pageSize
     const assignedToUserIdFilter =
       assignedToUserId === "ALL" ? "" : assignedToUserId
+    const normalizedSearch = sanitizeSingleLineText(search).slice(0, 120)
 
     const where = {
       tenantId,
@@ -560,16 +587,24 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
               },
             }
         : {}),
-      ...(search
+      ...(normalizedSearch
         ? {
             OR: [
-              { name: { contains: search, mode: "insensitive" as const } },
               {
-                description: { contains: search, mode: "insensitive" as const },
+                name: {
+                  contains: normalizedSearch,
+                  mode: "insensitive" as const,
+                },
+              },
+              {
+                description: {
+                  contains: normalizedSearch,
+                  mode: "insensitive" as const,
+                },
               },
               {
                 linkedEntityName: {
-                  contains: search,
+                  contains: normalizedSearch,
                   mode: "insensitive" as const,
                 },
               },
@@ -578,19 +613,19 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
                   OR: [
                     {
                       firstName: {
-                        contains: search,
+                        contains: normalizedSearch,
                         mode: "insensitive" as const,
                       },
                     },
                     {
                       middleName: {
-                        contains: search,
+                        contains: normalizedSearch,
                         mode: "insensitive" as const,
                       },
                     },
                     {
                       lastName: {
-                        contains: search,
+                        contains: normalizedSearch,
                         mode: "insensitive" as const,
                       },
                     },
@@ -600,7 +635,10 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
               {
                 assignedToMembership: {
                   user: {
-                    name: { contains: search, mode: "insensitive" as const },
+                    name: {
+                      contains: normalizedSearch,
+                      mode: "insensitive" as const,
+                    },
                   },
                 },
               },
@@ -613,7 +651,7 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
       prismaWithTasks.task.count({ where }),
       prismaWithTasks.task.findMany({
         where,
-        orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
+        orderBy: TASK_LIST_ORDER_BY[sort],
         skip,
         take: pageSize,
         select: {
