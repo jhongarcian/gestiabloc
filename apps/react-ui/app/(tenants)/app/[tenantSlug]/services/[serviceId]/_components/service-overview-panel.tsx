@@ -6,13 +6,13 @@ import { useRouter } from "next/navigation"
 import { isAxiosError } from "axios"
 import {
   ArrowLeft,
+  ArrowRight,
   CalendarDays,
   Check,
   ChevronDown,
   ClipboardList,
   CreditCard,
   Route,
-  ShieldCheck,
   UserRound,
   Users,
   Wallet,
@@ -30,7 +30,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
-import { Card, CardContent } from "@/components/ui/card"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import {
   Command,
   CommandEmpty,
@@ -57,7 +64,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
   TableBody,
@@ -68,7 +74,13 @@ import {
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
-import { getServiceEnrollmentHref } from "@/lib/routes"
+import {
+  appendSearchParams,
+  getServiceEnrollmentHref,
+  getServiceEnrollmentsHref,
+  getServiceFollowUpsHref,
+  getServiceTransactionsHref,
+} from "@/lib/routes"
 import { cn } from "@/lib/utils"
 
 type ServiceProfessional = {
@@ -1639,9 +1651,6 @@ export function ServiceOverviewPanel({
   initialSummary = null,
 }: ServiceOverviewPanelProps) {
   const [isTransactionDialogOpen, setIsTransactionDialogOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<
-    "overview" | "checklist" | "follow-up-templates" | "professionals"
-  >("overview")
   const [rangePreset, setRangePreset] = useState<DateRangePreset>("THIS_MONTH")
   const defaultCustomRange = getDefaultCustomDateRange()
   const [customFrom, setCustomFrom] = useState(defaultCustomRange.from)
@@ -1677,6 +1686,12 @@ export function ServiceOverviewPanel({
     [customFrom, customTo],
   )
   const summaryRangeLabel = summary ? formatSummaryRangeLabel(summary.range) : ""
+  const transactionsHref = appendSearchParams(getServiceTransactionsHref(tenantSlug), {
+    serviceId: service.id,
+  })
+  const enrollmentsHref = appendSearchParams(getServiceEnrollmentsHref(tenantSlug), {
+    serviceId: service.id,
+  })
 
   const paymentSummary = service.allowPartialPayments
     ? service.installmentCount && service.installmentFrequency
@@ -1781,21 +1796,21 @@ export function ServiceOverviewPanel({
   }, [service.name])
 
   return (
-    <div className="space-y-6">
-      <section className="overflow-hidden rounded-[28px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)]">
-        <div className="space-y-5 p-5 lg:p-7">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="space-y-4">
+    <div className="space-y-5 sm:space-y-6">
+      <header className="overflow-hidden rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_52%,#fff7ed_100%)] shadow-sm">
+        <div className="space-y-5 p-4 sm:p-5 lg:p-6">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0 space-y-4">
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   asChild
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="border-white/70 bg-white/80 text-slate-700 hover:bg-white"
+                  className="h-9 rounded-full border-white/80 bg-white/80 px-3 text-slate-700 shadow-sm hover:bg-white"
                 >
                   <Link href={`/app/${tenantSlug}/services`}>
-                    <ArrowLeft className="h-4 w-4" />
+                    <ArrowLeft data-icon="inline-start" />
                     Back to services
                   </Link>
                 </Button>
@@ -1812,89 +1827,88 @@ export function ServiceOverviewPanel({
                 </Badge>
               </div>
 
-              <div className="space-y-2">
-                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
-                  Service Overview
+              <div className="space-y-1.5">
+                <p className="text-sm font-medium text-blue-800">
+                  Service overview
                 </p>
-                <h1 className="max-w-3xl text-3xl font-semibold tracking-tight text-slate-950">
+                <h1 className="max-w-3xl text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">
                   {service.name}
                 </h1>
                 <p className="max-w-3xl text-sm leading-6 text-slate-600">
-                  {service.description?.trim() || "Review the service details, checklist, follow-up setup, and payment rules before you create a transaction."}
+                  {service.description?.trim() || "Review pricing, delivery requirements, and recent service performance."}
                 </p>
               </div>
             </div>
 
             <Button
               type="button"
-              className="bg-blue-950 text-white hover:bg-blue-900 lg:self-start"
+              className="h-11 w-full rounded-xl bg-blue-950 px-5 text-white shadow-sm hover:bg-blue-900 sm:w-auto lg:self-start"
               onClick={() => setIsTransactionDialogOpen(true)}
             >
+              <CreditCard data-icon="inline-start" />
               Create transaction
             </Button>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                Base Price
-              </p>
-              <p className="mt-2 text-3xl font-semibold text-slate-950">
-                {formatCurrency(service.basePriceCents, service.currency)}
-              </p>
-              <p className="mt-1 text-sm text-slate-500">{paymentSummary}</p>
-            </div>
-            <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                Total With Tax
-              </p>
-              <p className="mt-2 text-3xl font-semibold text-slate-950">
-                {formatCurrency(totalWithTaxCents, service.currency)}
-              </p>
-              <p className="mt-1 text-sm text-slate-500">
+            <Card className="gap-3 rounded-2xl border-white/80 bg-white/80 py-4 shadow-sm backdrop-blur">
+              <CardHeader className="gap-1 px-4">
+                <CardDescription>Base price</CardDescription>
+                <CardTitle className="text-xl text-slate-950 sm:text-2xl">
+                  {formatCurrency(service.basePriceCents, service.currency)}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 text-sm text-slate-500">{paymentSummary}</CardContent>
+            </Card>
+            <Card className="gap-3 rounded-2xl border-white/80 bg-white/80 py-4 shadow-sm backdrop-blur">
+              <CardHeader className="gap-1 px-4">
+                <CardDescription>Estimated total</CardDescription>
+                <CardTitle className="text-xl text-slate-950 sm:text-2xl">
+                  {formatCurrency(totalWithTaxCents, service.currency)}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 text-sm text-slate-500">
                 {taxApplies
-                  ? `${service.tenantBilling.taxLabel || "Tax"} ${(service.tenantBilling.defaultTaxRatePercent ?? 0).toFixed(2).replace(/\.00$/, "")}% applies`
+                  ? `${service.tenantBilling.taxLabel || "Tax"} ${(service.tenantBilling.defaultTaxRatePercent ?? 0).toFixed(2).replace(/\.00$/, "")}% included`
                   : service.isTaxExempt
-                    ? "This service is tax exempt"
-                    : "No tax applies"}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                Checklist
-              </p>
-              <p className="mt-2 text-3xl font-semibold text-slate-950">
-                {service.checklistItems.length}
-              </p>
-              <p className="mt-1 text-sm text-slate-500">
+                    ? "Tax exempt"
+                    : "No tax applied"}
+              </CardContent>
+            </Card>
+            <Card className="gap-3 rounded-2xl border-white/80 bg-white/80 py-4 shadow-sm backdrop-blur">
+              <CardHeader className="gap-1 px-4">
+                <CardDescription>Checklist</CardDescription>
+                <CardTitle className="text-xl text-slate-950 sm:text-2xl">
+                  {service.checklistItems.length}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 text-sm text-slate-500">
                 {requiredChecklistCount} required · {optionalChecklistCount} optional
-              </p>
-            </div>
-            <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm backdrop-blur">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                Professionals
-              </p>
-              <p className="mt-2 text-3xl font-semibold text-slate-950">
-                {service.professionals.length}
-              </p>
-              <p className="mt-1 text-sm text-slate-500">
+              </CardContent>
+            </Card>
+            <Card className="gap-3 rounded-2xl border-white/80 bg-white/80 py-4 shadow-sm backdrop-blur">
+              <CardHeader className="gap-1 px-4">
+                <CardDescription>Professionals</CardDescription>
+                <CardTitle className="text-xl text-slate-950 sm:text-2xl">
+                  {service.professionals.length}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 text-sm text-slate-500">
                 {internalProfessionalsCount} internal · {service.professionals.length - internalProfessionalsCount} external
-              </p>
-            </div>
+              </CardContent>
+            </Card>
           </div>
         </div>
-      </section>
+      </header>
 
-      <section className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="rounded-[26px] border border-slate-200 bg-slate-50/60 p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
             <div className="space-y-1">
               <h2 className="text-xl font-semibold tracking-tight text-slate-950">
                 Service performance
               </h2>
-              <p className="text-sm text-slate-600">
-                Review booked sales, open follow-up workload, and remaining balance for this service.
-              </p>
+              <p className="text-sm text-slate-600">Sales and workload for the selected period.</p>
             </div>
 
             <div className="flex flex-col gap-2 xl:items-end">
@@ -1910,7 +1924,7 @@ export function ServiceOverviewPanel({
                           id="service-summary-calendar"
                           type="button"
                           variant="outline"
-                          className="min-w-[260px] justify-start border-white/80 bg-white/80 text-left font-normal text-blue-950 shadow-sm hover:bg-white"
+                          className="h-10 min-w-[260px] justify-start border-slate-200 bg-white text-left font-normal text-blue-950 shadow-sm hover:bg-white"
                         >
                           <CalendarDays className="mr-2 h-4 w-4 shrink-0 text-blue-700" />
                           <span className="truncate">{formatCalendarRangeLabel(customDateRange)}</span>
@@ -1963,7 +1977,7 @@ export function ServiceOverviewPanel({
                   >
                     <SelectTrigger
                       id="service-summary-range"
-                      className="w-full min-w-[180px] border-white/80 bg-white/80 text-blue-950 shadow-sm sm:w-[180px]"
+                      className="h-10 w-full min-w-[180px] border-slate-200 bg-white text-blue-950 shadow-sm sm:w-[180px]"
                     >
                       <SelectValue />
                     </SelectTrigger>
@@ -1987,143 +2001,87 @@ export function ServiceOverviewPanel({
           ) : null}
 
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
-              <div className="flex items-center gap-2 text-slate-400">
-                <Wallet className="h-4 w-4 text-emerald-600" />
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Gross Sales</p>
-              </div>
-              {isSummaryLoading && !summary ? (
-                <div className="mt-3 space-y-2">
-                  <Skeleton className="h-8 w-28 rounded-lg" />
-                  <Skeleton className="h-4 w-40 rounded-md" />
-                </div>
-              ) : (
-                <>
-                  <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
-                    {formatCurrency(summary?.grossSalesCents ?? 0, service.currency)}
-                  </p>
-                  <p className="mt-2 text-sm text-slate-500">
-                    {summary ? summaryRangeLabel : "Sales booked in the selected range."}
-                  </p>
-                </>
-              )}
-            </article>
+            <Link href={transactionsHref} className="group rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2">
+              <Card className="h-full gap-3 rounded-2xl border-slate-200 bg-white py-4 transition group-hover:-translate-y-0.5 group-hover:border-blue-200 group-hover:shadow-md">
+                <CardHeader className="gap-1 px-4">
+                  <CardDescription>Gross sales</CardDescription>
+                  <CardAction className="rounded-lg bg-emerald-50 p-2 text-emerald-700"><Wallet className="h-4 w-4" /></CardAction>
+                  <CardTitle className="truncate text-2xl text-slate-950">
+                    {isSummaryLoading && !summary ? <Skeleton className="h-7 w-28" /> : formatCurrency(summary?.grossSalesCents ?? 0, service.currency)}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="flex items-center justify-between gap-2 px-4 text-sm text-slate-500">
+                  <span>{summary ? summaryRangeLabel : "Selected period"}</span>
+                  <ArrowRight className="h-4 w-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+                </CardContent>
+              </Card>
+            </Link>
 
-            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
-              <div className="flex items-center gap-2 text-slate-400">
-                <CalendarDays className="h-4 w-4 text-blue-600" />
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Services Sold</p>
-              </div>
-              {isSummaryLoading && !summary ? (
-                <div className="mt-3 space-y-2">
-                  <Skeleton className="h-8 w-16 rounded-lg" />
-                  <Skeleton className="h-4 w-44 rounded-md" />
-                </div>
-              ) : (
-                <>
-                  <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
-                    {summary?.servicesSold ?? 0}
-                  </p>
-                  <p className="mt-2 text-sm text-slate-500">
-                    Transactions created in the selected range.
-                  </p>
-                </>
-              )}
-            </article>
+            <Link href={transactionsHref} className="group rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2">
+              <Card className="h-full gap-3 rounded-2xl border-slate-200 bg-white py-4 transition group-hover:-translate-y-0.5 group-hover:border-blue-200 group-hover:shadow-md">
+                <CardHeader className="gap-1 px-4">
+                  <CardDescription>Services sold</CardDescription>
+                  <CardAction className="rounded-lg bg-blue-50 p-2 text-blue-700"><CalendarDays className="h-4 w-4" /></CardAction>
+                  <CardTitle className="text-2xl text-slate-950">
+                    {isSummaryLoading && !summary ? <Skeleton className="h-7 w-14" /> : (summary?.servicesSold ?? 0)}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="flex items-center justify-between gap-2 px-4 text-sm text-slate-500">
+                  <span>Transactions</span>
+                  <ArrowRight className="h-4 w-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+                </CardContent>
+              </Card>
+            </Link>
 
-            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
-              <div className="flex items-center gap-2 text-slate-400">
-                <Route className="h-4 w-4 text-amber-600" />
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Active Follow-Ups</p>
-              </div>
-              {isSummaryLoading && !summary ? (
-                <div className="mt-3 flex flex-col items-start gap-2">
-                  <Skeleton className="h-8 w-16 rounded-lg" />
-                  <Skeleton className="h-6 w-12 rounded-full" />
-                </div>
-              ) : (
-                <div className="mt-3 flex flex-col items-start gap-2">
-                  <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
-                    {summary?.activeFollowUpServices ?? 0}
-                  </p>
-                  <Badge
-                    variant="secondary"
-                    className="border border-amber-200 bg-amber-50 text-amber-700"
-                  >
-                    Live
-                  </Badge>
-                </div>
-              )}
-            </article>
+            <Link href={getServiceFollowUpsHref(tenantSlug)} className="group rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2">
+              <Card className="h-full gap-3 rounded-2xl border-slate-200 bg-white py-4 transition group-hover:-translate-y-0.5 group-hover:border-blue-200 group-hover:shadow-md">
+                <CardHeader className="gap-1 px-4">
+                  <CardDescription>Active follow-ups</CardDescription>
+                  <CardAction className="rounded-lg bg-amber-50 p-2 text-amber-700"><Route className="h-4 w-4" /></CardAction>
+                  <CardTitle className="text-2xl text-slate-950">
+                    {isSummaryLoading && !summary ? <Skeleton className="h-7 w-14" /> : (summary?.activeFollowUpServices ?? 0)}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="flex items-center justify-between gap-2 px-4 text-sm text-slate-500">
+                  <span>Open workflows</span>
+                  <ArrowRight className="h-4 w-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+                </CardContent>
+              </Card>
+            </Link>
 
-            <article className="min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur">
-              <div className="flex items-center gap-2 text-slate-400">
-                <Wallet className="h-4 w-4 text-violet-600" />
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Remaining Balance</p>
-              </div>
-              {isSummaryLoading && !summary ? (
-                <div className="mt-3 flex flex-col items-start gap-2">
-                  <Skeleton className="h-8 w-28 rounded-lg" />
-                  <Skeleton className="h-6 w-12 rounded-full" />
-                </div>
-              ) : (
-                <div className="mt-3 flex flex-col items-start gap-2">
-                  <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
-                    {formatCurrency(summary?.remainingBalanceCents ?? 0, service.currency)}
-                  </p>
-                  <Badge
-                    variant="secondary"
-                    className="border border-violet-200 bg-violet-50 text-violet-700"
-                  >
-                    Live
-                  </Badge>
-                </div>
-              )}
-            </article>
+            <Link href={transactionsHref} className="group rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2">
+              <Card className="h-full gap-3 rounded-2xl border-slate-200 bg-white py-4 transition group-hover:-translate-y-0.5 group-hover:border-blue-200 group-hover:shadow-md">
+                <CardHeader className="gap-1 px-4">
+                  <CardDescription>Outstanding balance</CardDescription>
+                  <CardAction className="rounded-lg bg-violet-50 p-2 text-violet-700"><Wallet className="h-4 w-4" /></CardAction>
+                  <CardTitle className="truncate text-2xl text-slate-950">
+                    {isSummaryLoading && !summary ? <Skeleton className="h-7 w-28" /> : formatCurrency(summary?.remainingBalanceCents ?? 0, service.currency)}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="flex items-center justify-between gap-2 px-4 text-sm text-slate-500">
+                  <span>Open amount</span>
+                  <ArrowRight className="h-4 w-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+                </CardContent>
+              </Card>
+            </Link>
           </div>
         </div>
       </section>
 
-      <section className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-sm">
-        <Tabs
-          value={activeTab}
-          onValueChange={(value) =>
-            setActiveTab(
-              value as "overview" | "checklist" | "follow-up-templates" | "professionals",
-            )
-          }
-          className="space-y-5"
-        >
-          <div className="overflow-x-auto">
-            <TabsList className="inline-flex h-auto min-w-max items-center gap-2 rounded-none bg-transparent p-0">
-              <TabsTrigger
-                value="overview"
-                className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
-              >
-                Overview
-              </TabsTrigger>
-              <TabsTrigger
-                value="checklist"
-                className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
-              >
-                Checklist
-              </TabsTrigger>
-              <TabsTrigger
-                value="follow-up-templates"
-                className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
-              >
-                Follow-Up Templates
-              </TabsTrigger>
-              <TabsTrigger
-                value="professionals"
-                className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
-              >
-                Professionals
-              </TabsTrigger>
-            </TabsList>
+      <section className="space-y-5 rounded-[26px] border border-slate-200 bg-slate-50/60 p-4 shadow-sm sm:p-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold tracking-tight text-slate-950">Service setup</h2>
+              <p className="mt-1 text-sm text-slate-600">Pricing and delivery details used for new enrollments.</p>
+            </div>
+            <Button asChild variant="outline" className="h-10 w-full rounded-xl border-slate-200 bg-white sm:w-auto">
+              <Link href={enrollmentsHref}>
+                View enrollments
+                <ArrowRight data-icon="inline-end" />
+              </Link>
+            </Button>
           </div>
 
-          <TabsContent value="overview" className="mt-0 space-y-5">
             <section className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
               <article className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="space-y-1">
@@ -2164,19 +2122,19 @@ export function ServiceOverviewPanel({
                   <p className="text-sm font-medium text-slate-900">Payment summary</p>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     <div>
-                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Base price</p>
+                      <p className="text-xs font-medium text-slate-500">Base price</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
                         {formatCurrency(service.basePriceCents, service.currency)}
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Payment mode</p>
+                      <p className="text-xs font-medium text-slate-500">Payment mode</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
                         {service.allowPartialPayments ? "Partial payments allowed" : "Full payment only"}
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Minimum deposit</p>
+                      <p className="text-xs font-medium text-slate-500">Minimum deposit</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
                         {service.minimumPartialPaymentCents !== null
                           ? formatCurrency(service.minimumPartialPaymentCents, service.currency)
@@ -2184,7 +2142,7 @@ export function ServiceOverviewPanel({
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Installments</p>
+                      <p className="text-xs font-medium text-slate-500">Installments</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
                         {service.installmentCount && service.installmentFrequency
                           ? `${service.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[service.installmentFrequency].toLowerCase()}`
@@ -2198,7 +2156,7 @@ export function ServiceOverviewPanel({
                   <p className="text-sm font-medium text-slate-900">Tax</p>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     <div>
-                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Tax status</p>
+                      <p className="text-xs font-medium text-slate-500">Tax status</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
                         {service.tenantBilling.taxEnabled
                           ? service.isTaxExempt
@@ -2208,7 +2166,7 @@ export function ServiceOverviewPanel({
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Rate</p>
+                      <p className="text-xs font-medium text-slate-500">Rate</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
                         {taxApplies
                           ? `${service.tenantBilling.taxLabel || "Tax"} ${(service.tenantBilling.defaultTaxRatePercent ?? 0).toFixed(2).replace(/\.00$/, "")}%`
@@ -2216,13 +2174,13 @@ export function ServiceOverviewPanel({
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Estimated tax</p>
+                      <p className="text-xs font-medium text-slate-500">Estimated tax</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
                         {formatCurrency(estimatedTaxCents, service.currency)}
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Estimated total</p>
+                      <p className="text-xs font-medium text-slate-500">Estimated total</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
                         {formatCurrency(totalWithTaxCents, service.currency)}
                       </p>
@@ -2232,12 +2190,10 @@ export function ServiceOverviewPanel({
               </div>
               </article>
             </section>
-          </TabsContent>
 
-          <TabsContent value="checklist" className="mt-0">
             <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-5 py-4">
-              <div className="flex items-center justify-between gap-3">
+            <div className="border-b border-slate-200 px-4 py-4 sm:px-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="space-y-1">
                   <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
                     <ClipboardList className="h-5 w-5 text-blue-700" />
@@ -2258,7 +2214,7 @@ export function ServiceOverviewPanel({
               </div>
             </div>
 
-            <div className="p-5">
+            <div className="p-4 sm:p-5">
               {service.checklistItems.length ? (
                 <div className="space-y-3">
                   {service.checklistItems.map((item, index) => (
@@ -2304,16 +2260,14 @@ export function ServiceOverviewPanel({
               )}
             </div>
             </section>
-          </TabsContent>
 
-          <TabsContent value="follow-up-templates" className="mt-0">
             <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-5 py-4">
-              <div className="flex items-center justify-between gap-3">
+            <div className="border-b border-slate-200 px-4 py-4 sm:px-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="space-y-1">
                   <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
                     <Route className="h-5 w-5 text-blue-700" />
-                    Follow-Up Templates
+                    Follow-up templates
                   </h2>
                   <p className="text-sm text-slate-500">
                     Published templates available for this service.
@@ -2330,10 +2284,35 @@ export function ServiceOverviewPanel({
               </div>
             </div>
 
-            <div className="p-5">
+            <div className="p-4 sm:p-5">
               {service.followUpTemplates.length ? (
-                <div className="overflow-auto rounded-2xl border border-slate-200">
-                  <Table className="[&_td]:py-3 [&_th]:h-10">
+                <>
+                  <div className="space-y-3 md:hidden">
+                    {service.followUpTemplates.map((template, index) => (
+                      <article key={template.id} className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
+                        <div className="flex items-start gap-3">
+                          <span className="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
+                            {index + 1}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="font-medium text-slate-950">{template.name}</p>
+                            <div className="mt-3 grid grid-cols-2 gap-3 border-t border-slate-200 pt-3">
+                              <div>
+                                <p className="text-xs font-medium text-slate-500">Steps</p>
+                                <p className="mt-1 text-sm font-semibold text-slate-900">{template.flowNodeCount}</p>
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium text-slate-500">Connections</p>
+                                <p className="mt-1 text-sm font-semibold text-slate-900">{template.flowEdgeCount}</p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                  <div className="hidden overflow-auto rounded-2xl border border-slate-200 md:block">
+                    <Table className="[&_td]:py-3 [&_th]:h-10">
                     <TableHeader className="bg-slate-50/80">
                       <TableRow>
                         <TableHead className="min-w-14 text-xs">#</TableHead>
@@ -2369,8 +2348,9 @@ export function ServiceOverviewPanel({
                         </TableRow>
                       ))}
                     </TableBody>
-                  </Table>
-                </div>
+                    </Table>
+                  </div>
+                </>
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
                   <p className="text-base font-medium text-slate-900">No follow-up templates available</p>
@@ -2381,12 +2361,10 @@ export function ServiceOverviewPanel({
               )}
             </div>
             </section>
-          </TabsContent>
 
-          <TabsContent value="professionals" className="mt-0">
             <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-5 py-4">
-              <div className="flex items-center justify-between gap-3">
+            <div className="border-b border-slate-200 px-4 py-4 sm:px-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="space-y-1">
                   <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
                     <Users className="h-5 w-5 text-blue-700" />
@@ -2402,10 +2380,41 @@ export function ServiceOverviewPanel({
               </div>
             </div>
 
-            <div className="p-5">
+            <div className="p-4 sm:p-5">
               {service.professionals.length ? (
-                <div className="overflow-auto rounded-2xl border border-slate-200">
-                  <Table className="[&_td]:py-3 [&_th]:h-10">
+                <>
+                  <div className="space-y-3 md:hidden">
+                    {service.professionals.map((professional) => {
+                      const professionalLabel = getProfessionalLabel(professional)
+                      const professionalTone = PROFESSIONAL_TONE_STYLES[getProfessionalTone(professional)]
+
+                      return (
+                        <article key={professional.id} className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
+                          <div className="flex min-w-0 items-start gap-3">
+                            <Avatar className="h-10 w-10 shrink-0 border border-white shadow-sm">
+                              {professional.user?.image ? (
+                                <AvatarImage src={professional.user.image} alt={professionalLabel} className="object-cover" />
+                              ) : null}
+                              <AvatarFallback className={cn("text-xs font-semibold", professionalTone.fallbackClassName)}>
+                                {getInitials(professionalLabel)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="truncate font-medium text-slate-950">{professionalLabel}</p>
+                                <Badge variant="secondary" className={cn("border", professionalTone.surfaceClassName)}>
+                                  {professional.kind === "INTERNAL_USER" ? "Internal" : "External"}
+                                </Badge>
+                              </div>
+                              <p className="mt-1 break-words text-sm text-slate-500">{getProfessionalMeta(professional)}</p>
+                            </div>
+                          </div>
+                        </article>
+                      )
+                    })}
+                  </div>
+                  <div className="hidden overflow-auto rounded-2xl border border-slate-200 md:block">
+                    <Table className="[&_td]:py-3 [&_th]:h-10">
                     <TableHeader className="bg-slate-50/80">
                       <TableRow>
                         <TableHead className="min-w-14 text-xs">#</TableHead>
@@ -2450,8 +2459,9 @@ export function ServiceOverviewPanel({
                         </TableRow>
                       ))}
                     </TableBody>
-                  </Table>
-                </div>
+                    </Table>
+                  </div>
+                </>
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
                   <p className="text-base font-medium text-slate-900">No professionals listed yet</p>
@@ -2462,30 +2472,8 @@ export function ServiceOverviewPanel({
               )}
             </div>
             </section>
-          </TabsContent>
-        </Tabs>
       </section>
 
-      <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-1">
-            <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
-              <ShieldCheck className="h-5 w-5 text-blue-700" />
-              Ready to create a transaction?
-            </h2>
-            <p className="text-sm text-slate-500">
-              Start the same transaction flow used in services, with this service already selected.
-            </p>
-          </div>
-          <Button
-            type="button"
-            className="bg-blue-950 text-white hover:bg-blue-900"
-            onClick={() => setIsTransactionDialogOpen(true)}
-          >
-            Create transaction
-          </Button>
-        </div>
-      </section>
       {isTransactionDialogOpen ? (
         <CreateTransactionDialog
           tenantId={tenantId}

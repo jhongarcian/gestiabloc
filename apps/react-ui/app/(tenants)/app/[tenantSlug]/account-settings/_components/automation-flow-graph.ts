@@ -3,15 +3,16 @@ import type { Edge, Node } from "@xyflow/react"
 import type { AutomationAction, AutomationCatalog, AutomationCondition, AutomationTriggerType } from "./automation-types"
 
 export type AutomationFlowNodeData = {
-  kind: "trigger" | "conditions" | "action" | "add" | "stop" | "complete"
+  kind: "trigger" | "action" | "add" | "complete"
   label: string
   subtitle?: string
+  configured?: boolean
   index?: number
   insertionIndex?: number
 }
 
 export type AutomationFlowDraft = {
-  triggerType: AutomationTriggerType
+  triggerType: AutomationTriggerType | null
   pipelineId: string
   sourceStageId: string
   targetStageId: string
@@ -28,7 +29,9 @@ export function buildAutomationFlowGraph(
   const target = pipeline?.stages.find((item) => item.id === draft.targetStageId)
   const source = pipeline?.stages.find((item) => item.id === draft.sourceStageId)
   const triggerSubtitle =
-    draft.triggerType === "OPPORTUNITY_CREATED"
+    draft.triggerType === null
+      ? "Click to choose what starts this automation"
+      : draft.triggerType === "OPPORTUNITY_CREATED"
       ? `Created in ${pipeline?.name ?? "Select a pipeline"}`
       : `${source?.name ?? "Any stage"} → ${target?.name ?? "Select a stage"}`
   const nodes: Array<Node<AutomationFlowNodeData>> = [
@@ -39,48 +42,19 @@ export function buildAutomationFlowGraph(
       data: {
         kind: "trigger",
         label:
-          draft.triggerType === "OPPORTUNITY_CREATED"
+          draft.triggerType === null
+            ? "Select a trigger"
+            : draft.triggerType === "OPPORTUNITY_CREATED"
             ? "Opportunity created"
             : "Stage changed",
         subtitle: triggerSubtitle,
+        configured: draft.triggerType !== null,
       },
     },
   ]
   const edges: Edge[] = []
   let previousId = "trigger"
   let y = 180
-
-  if (draft.conditions.length > 0) {
-    nodes.push({
-      id: "conditions",
-      type: "automationNode",
-      position: { x: 180, y },
-      data: {
-        kind: "conditions",
-        label: "All conditions",
-        subtitle: `${draft.conditions.length} required check${draft.conditions.length === 1 ? "" : "s"}`,
-      },
-    })
-    nodes.push({
-      id: "stop",
-      type: "automationNode",
-      position: { x: 520, y: y + 150 },
-      data: { kind: "stop", label: "No match", subtitle: "Stop without actions" },
-    })
-    edges.push(
-      { id: "trigger-conditions", source: "trigger", target: "conditions", type: "smoothstep" },
-      {
-        id: "conditions-stop",
-        source: "conditions",
-        sourceHandle: "unmatched",
-        target: "stop",
-        type: "smoothstep",
-        label: "No",
-      },
-    )
-    previousId = "conditions"
-    y += 170
-  }
 
   for (let index = 0; index <= draft.actions.length; index += 1) {
     const addId = `add-${index}`
@@ -93,7 +67,6 @@ export function buildAutomationFlowGraph(
     edges.push({
       id: `${previousId}-${addId}`,
       source: previousId,
-      ...(previousId === "conditions" ? { sourceHandle: "matched", label: "Yes" } : {}),
       target: addId,
       type: "smoothstep",
     })

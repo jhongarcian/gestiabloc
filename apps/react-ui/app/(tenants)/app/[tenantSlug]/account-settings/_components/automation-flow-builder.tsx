@@ -2,7 +2,7 @@
 
 import "@xyflow/react/dist/style.css"
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -24,10 +24,10 @@ import {
   ArrowLeft,
   ArrowUp,
   CheckCircle2,
-  CircleStop,
   GitBranch,
   ListChecks,
   Loader2,
+  MousePointerClick,
   Plus,
   Save,
   Settings2,
@@ -42,11 +42,28 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Separator } from "@/components/ui/separator"
 import { api } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
 import type {
   AutomationAction,
@@ -71,7 +88,7 @@ type AutomationFlowBuilderProps = {
 type Draft = {
   name: string
   isEnabled: boolean
-  triggerType: AutomationTriggerType
+  triggerType: AutomationTriggerType | null
   pipelineId: string
   sourceStageId: string
   targetStageId: string
@@ -80,12 +97,12 @@ type Draft = {
 }
 
 type CanvasNode = Node<CanvasNodeData>
-type SelectedPanel = { kind: "setup" | "conditions" } | { kind: "action"; index: number }
+type SelectedPanel = { kind: "trigger" } | { kind: "action"; index: number }
 
 const EMPTY_DRAFT: Draft = {
   name: "",
   isEnabled: false,
-  triggerType: "OPPORTUNITY_CREATED",
+  triggerType: null,
   pipelineId: "",
   sourceStageId: "",
   targetStageId: "",
@@ -147,33 +164,34 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
   }
 
   const icon =
-    data.kind === "trigger" ? (
+    data.kind === "trigger" && !data.configured ? (
+      <MousePointerClick className="size-5" />
+    ) : data.kind === "trigger" ? (
       <Zap className="h-5 w-5" />
-    ) : data.kind === "conditions" ? (
-      <GitBranch className="h-5 w-5" />
     ) : data.kind === "action" ? (
       <Settings2 className="h-5 w-5" />
-    ) : data.kind === "complete" ? (
-      <CheckCircle2 className="h-5 w-5" />
     ) : (
-      <CircleStop className="h-5 w-5" />
+      <CheckCircle2 className="h-5 w-5" />
     )
   const tone =
     data.kind === "trigger"
-      ? "border-cyan-300 bg-slate-950 text-white"
-      : data.kind === "conditions"
-        ? "border-amber-300 bg-amber-50 text-amber-950"
-        : data.kind === "complete"
-          ? "border-emerald-300 bg-emerald-50 text-emerald-950"
-          : data.kind === "stop"
-            ? "border-slate-300 bg-slate-100 text-slate-600"
-            : "border-blue-200 bg-white text-slate-950"
+      ? data.configured
+        ? "border-primary bg-primary text-primary-foreground"
+        : "cursor-pointer border-dashed border-primary/40 bg-card text-card-foreground hover:border-primary hover:bg-accent/40"
+      : data.kind === "complete"
+        ? "border-border bg-muted text-foreground"
+        : "border-border bg-card text-card-foreground"
 
   return (
-    <div className={`w-64 rounded-2xl border-2 px-4 py-3 shadow-sm ${tone}`}>
+    <div className={cn("w-64 rounded-2xl border-2 px-4 py-3 shadow-sm transition-colors", tone)}>
       <Handle type="target" position={Position.Top} className="opacity-0" />
       <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/80 text-slate-700 shadow-sm">
+        <div className={cn(
+          "flex size-9 shrink-0 items-center justify-center rounded-xl shadow-sm",
+          data.kind === "trigger" && data.configured
+            ? "bg-primary-foreground/90 text-primary"
+            : "bg-background text-foreground",
+        )}>
           {icon}
         </div>
         <div className="min-w-0">
@@ -181,12 +199,7 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
           {data.subtitle ? <p className="mt-0.5 truncate text-xs opacity-70">{data.subtitle}</p> : null}
         </div>
       </div>
-      {data.kind === "conditions" ? (
-        <>
-          <Handle id="matched" type="source" position={Position.Bottom} className="opacity-0" />
-          <Handle id="unmatched" type="source" position={Position.Right} className="opacity-0" />
-        </>
-      ) : data.kind === "stop" || data.kind === "complete" ? null : (
+      {data.kind === "complete" ? null : (
         <Handle type="source" position={Position.Bottom} className="opacity-0" />
       )}
     </div>
@@ -268,7 +281,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId }: Au
   const router = useRouter()
   const [catalog, setCatalog] = useState<AutomationCatalog | null>(null)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
-  const [selected, setSelected] = useState<SelectedPanel>({ kind: "setup" })
+  const [selected, setSelected] = useState<SelectedPanel | null>(null)
   const [activeTab, setActiveTab] = useState<"builder" | "logs">("builder")
   const [logs, setLogs] = useState<AutomationExecution[]>([])
   const [loading, setLoading] = useState(true)
@@ -302,8 +315,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId }: Au
             actions: record.actions,
           })
         } else {
-          const pipeline = nextCatalog.pipelines[0]
-          setDraft({ ...EMPTY_DRAFT, pipelineId: pipeline?.id ?? "", targetStageId: pipeline?.stages[0]?.id ?? "" })
+          setDraft({ ...EMPTY_DRAFT })
         }
       } catch {
         toast.error("Could not load the automation builder.")
@@ -342,15 +354,6 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId }: Au
   )
   const pipeline = catalog?.pipelines.find((item) => item.id === draft.pipelineId)
 
-  const updateCondition = (index: number, patch: Partial<AutomationCondition>) => {
-    setDraft((current) => ({
-      ...current,
-      conditions: current.conditions.map((condition, conditionIndex) =>
-        conditionIndex === index ? { ...condition, ...patch } : condition,
-      ),
-    }))
-  }
-
   const updateAction = (index: number, action: AutomationAction) => {
     setDraft((current) => ({
       ...current,
@@ -383,6 +386,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId }: Au
 
   const save = async () => {
     if (!draft.name.trim()) return toast.error("Enter an automation name.")
+    if (!draft.triggerType) return toast.error("Select a trigger.")
     if (!draft.pipelineId) return toast.error("Select a pipeline.")
     if (draft.triggerType === "OPPORTUNITY_STAGE_CHANGED" && !draft.targetStageId) return toast.error("Select a destination stage.")
     if (draft.actions.length === 0) return toast.error("Add at least one action.")
@@ -477,8 +481,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId }: Au
                 nodesConnectable={false}
                 elementsSelectable
                 onNodeClick={(_, node) => {
-                  if (node.data.kind === "trigger") return setSelected({ kind: "setup" })
-                  if (node.data.kind === "conditions") return setSelected({ kind: "conditions" })
+                  if (node.data.kind === "trigger") return setSelected({ kind: "trigger" })
                   if (node.data.kind === "action" && node.data.index !== undefined) return setSelected({ kind: "action", index: node.data.index })
                   if (node.data.kind === "add" && node.data.insertionIndex !== undefined) insertAction(node.data.insertionIndex)
                 }}
@@ -489,42 +492,46 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId }: Au
             </ReactFlowProvider>
           </div>
 
-          <aside className="flex h-full min-h-0 w-full max-w-md shrink-0 flex-col overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm">
-            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Configuration</p>
-                <h2 className="text-sm font-semibold text-slate-950">{selected.kind === "action" ? `Action ${selected.index + 1}` : selected.kind === "conditions" ? "All conditions" : "Trigger setup"}</h2>
+          {selected ? (
+            <aside className="flex h-full min-h-0 w-full max-w-md shrink-0 flex-col overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Configuration</p>
+                  <h2 className="text-sm font-semibold text-slate-950">
+                    {selected.kind === "action" ? `Action ${selected.index + 1}` : "Trigger setup"}
+                  </h2>
+                </div>
+                <Button type="button" size="icon" variant="ghost" onClick={() => setSelected(null)} aria-label="Close configuration">
+                  <X data-icon="inline-start" />
+                </Button>
               </div>
-              {selected.kind !== "setup" ? <Button type="button" size="icon" variant="ghost" onClick={() => setSelected({ kind: "setup" })}><X className="h-4 w-4" /></Button> : null}
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-4">
-              {selected.kind === "action" ? (
-                <ActionEditor
-                  action={draft.actions[selected.index]!}
-                  index={selected.index}
-                  total={draft.actions.length}
-                  catalog={catalog}
-                  onChange={(action) => updateAction(selected.index, action)}
-                  onMove={(direction) => moveAction(selected.index, direction)}
-                  onDelete={() => {
-                    setDraft((current) => ({ ...current, actions: current.actions.filter((_, index) => index !== selected.index) }))
-                    setSelected({ kind: "setup" })
-                  }}
-                />
-              ) : selected.kind === "conditions" ? (
-                <ConditionsEditor draft={draft} catalog={catalog} onChange={(conditions) => setDraft((current) => ({ ...current, conditions }))} updateCondition={updateCondition} />
-              ) : (
-                <SetupEditor draft={draft} pipeline={pipeline} catalog={catalog} onChange={setDraft} />
-              )}
-            </div>
-          </aside>
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                {selected.kind === "action" ? (
+                  <ActionEditor
+                    action={draft.actions[selected.index]!}
+                    index={selected.index}
+                    total={draft.actions.length}
+                    catalog={catalog}
+                    onChange={(action) => updateAction(selected.index, action)}
+                    onMove={(direction) => moveAction(selected.index, direction)}
+                    onDelete={() => {
+                      setDraft((current) => ({ ...current, actions: current.actions.filter((_, index) => index !== selected.index) }))
+                      setSelected(null)
+                    }}
+                  />
+                ) : (
+                  <TriggerEditor draft={draft} pipeline={pipeline} catalog={catalog} onChange={setDraft} />
+                )}
+              </div>
+            </aside>
+          ) : null}
         </section>
       )}
     </div>
   )
 }
 
-function SetupEditor({
+function TriggerEditor({
   draft,
   pipeline,
   catalog,
@@ -545,161 +552,204 @@ function SetupEditor({
   }
 
   return (
-    <div className="space-y-6">
-      <section className="space-y-3">
+    <div className="flex flex-col gap-6">
+      <section className="flex flex-col gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-700">Step 1</p>
-          <h3 className="mt-1 text-sm font-semibold text-slate-950">Choose a trigger</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500">Select the opportunity event that starts this automation.</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Start event</p>
+          <h3 className="mt-1 text-sm font-semibold text-foreground">Select a trigger</h3>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Choose the event that sends a contact into this automation.
+          </p>
         </div>
-        <div className="grid gap-2">
-          <TriggerChoice
-            active={draft.triggerType === "OPPORTUNITY_CREATED"}
-            icon={<Zap className="h-4 w-4" />}
-            title="Opportunity created"
-            description="Runs when an opportunity is added to the selected pipeline."
-            onClick={() =>
-              onChange({
-                ...draft,
-                triggerType: "OPPORTUNITY_CREATED",
-                sourceStageId: "",
-                targetStageId: "",
-              })
-            }
-          />
-          <TriggerChoice
-            active={draft.triggerType === "OPPORTUNITY_STAGE_CHANGED"}
-            icon={<GitBranch className="h-4 w-4" />}
-            title="Opportunity stage changed"
-            description="Runs when an opportunity moves into a destination stage."
-            onClick={() =>
-              onChange({
-                ...draft,
-                triggerType: "OPPORTUNITY_STAGE_CHANGED",
-                sourceStageId: "",
-                targetStageId: pipeline?.stages[0]?.id ?? "",
-              })
-            }
-          />
-        </div>
-      </section>
-
-      <section className="space-y-4 border-t border-slate-200 pt-5">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-700">Step 2</p>
-          <h3 className="mt-1 text-sm font-semibold text-slate-950">Choose the pipeline</h3>
-        </div>
-        <div className="space-y-2">
-          <Label>Pipeline</Label>
-          <Select
-            value={draft.pipelineId}
-            onValueChange={(pipelineId) => {
-              const nextPipeline = catalog.pipelines.find((item) => item.id === pipelineId)
-              onChange({
-                ...draft,
-                pipelineId,
-                sourceStageId: "",
-                targetStageId:
-                  draft.triggerType === "OPPORTUNITY_STAGE_CHANGED"
-                    ? nextPipeline?.stages[0]?.id ?? ""
-                    : "",
-              })
-            }}
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          spacing={2}
+          value={draft.triggerType ?? ""}
+          onValueChange={(value) => {
+            const triggerType = (value || null) as AutomationTriggerType | null
+            onChange({
+              ...draft,
+              triggerType,
+              pipelineId: triggerType ? draft.pipelineId : "",
+              sourceStageId: "",
+              targetStageId: "",
+              conditions: triggerType ? draft.conditions : [],
+            })
+          }}
+          className="grid w-full grid-cols-1"
+          aria-label="Automation trigger"
+        >
+          <ToggleGroupItem
+            value="OPPORTUNITY_CREATED"
+            className="h-auto min-h-20 w-full justify-start px-3 py-3 text-left whitespace-normal"
           >
-            <SelectTrigger><SelectValue placeholder="Select pipeline" /></SelectTrigger>
-            <SelectContent>
-              {catalog.pipelines.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        {draft.triggerType === "OPPORTUNITY_STAGE_CHANGED" ? (
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <Label>From stage</Label>
-              <Select value={draft.sourceStageId || "ANY"} onValueChange={(value) => onChange({ ...draft, sourceStageId: value === "ANY" ? "" : value })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ANY">Any stage</SelectItem>
-                  {pipeline?.stages.map((stage) => <SelectItem key={stage.id} value={stage.id}>{stage.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>To stage</Label>
-              <Select value={draft.targetStageId} onValueChange={(targetStageId) => onChange({ ...draft, targetStageId })}>
-                <SelectTrigger><SelectValue placeholder="Select destination" /></SelectTrigger>
-                <SelectContent>
-                  {pipeline?.stages.filter((stage) => stage.id !== draft.sourceStageId).map((stage) => <SelectItem key={stage.id} value={stage.id}>{stage.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        ) : null}
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
+              <Zap />
+            </span>
+            <span className="flex min-w-0 flex-col items-start gap-1">
+              <span className="font-semibold">Opportunity created</span>
+              <span className="text-xs font-normal leading-5 text-muted-foreground">
+                Starts when an opportunity is added to a pipeline.
+              </span>
+            </span>
+          </ToggleGroupItem>
+          <ToggleGroupItem
+            value="OPPORTUNITY_STAGE_CHANGED"
+            className="h-auto min-h-20 w-full justify-start px-3 py-3 text-left whitespace-normal"
+          >
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
+              <GitBranch />
+            </span>
+            <span className="flex min-w-0 flex-col items-start gap-1">
+              <span className="font-semibold">Opportunity stage changed</span>
+              <span className="text-xs font-normal leading-5 text-muted-foreground">
+                Starts when an opportunity moves to a selected stage.
+              </span>
+            </span>
+          </ToggleGroupItem>
+        </ToggleGroup>
       </section>
 
-      <section className="space-y-4 border-t border-slate-200 pt-5">
+      {draft.triggerType ? (
+        <>
+          <Separator />
+          <section className="flex flex-col gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Trigger details</p>
+              <h3 className="mt-1 text-sm font-semibold text-foreground">Choose the pipeline</h3>
+            </div>
+            <FieldGroup className="gap-4">
+              <Field>
+                <FieldLabel htmlFor="automation-pipeline">Pipeline</FieldLabel>
+                <Select
+                  value={draft.pipelineId}
+                  onValueChange={(pipelineId) =>
+                    onChange({
+                      ...draft,
+                      pipelineId,
+                      sourceStageId: "",
+                      targetStageId: "",
+                    })
+                  }
+                >
+                  <SelectTrigger id="automation-pipeline" className="w-full">
+                    <SelectValue placeholder="Select pipeline" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {catalog.pipelines.map((item) => (
+                        <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+              {draft.triggerType === "OPPORTUNITY_STAGE_CHANGED" ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field>
+                    <FieldLabel htmlFor="automation-source-stage">From stage</FieldLabel>
+                    <Select
+                      value={draft.sourceStageId || "ANY"}
+                      disabled={!draft.pipelineId}
+                      onValueChange={(value) => onChange({ ...draft, sourceStageId: value === "ANY" ? "" : value, targetStageId: "" })}
+                    >
+                      <SelectTrigger id="automation-source-stage" className="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="ANY">Any stage</SelectItem>
+                          {pipeline?.stages.map((stage) => (
+                            <SelectItem key={stage.id} value={stage.id}>{stage.name}</SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="automation-target-stage">To stage</FieldLabel>
+                    <Select
+                      value={draft.targetStageId}
+                      disabled={!draft.pipelineId}
+                      onValueChange={(targetStageId) => onChange({ ...draft, targetStageId })}
+                    >
+                      <SelectTrigger id="automation-target-stage" className="w-full"><SelectValue placeholder="Select stage" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {pipeline?.stages
+                            .filter((stage) => stage.id !== draft.sourceStageId)
+                            .map((stage) => (
+                              <SelectItem key={stage.id} value={stage.id}>{stage.name}</SelectItem>
+                            ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+              ) : null}
+            </FieldGroup>
+          </section>
+
+          <Separator />
+          <section className="flex flex-col gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Contact eligibility</p>
+              <h3 className="mt-1 text-sm font-semibold text-foreground">Add filters</h3>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Optional. The contact must match every filter to continue. Filters stay out of the flow graph.
+              </p>
+            </div>
+            <ConditionsEditor
+              compact
+              draft={draft}
+              catalog={catalog}
+              onChange={setConditions}
+              updateCondition={updateCondition}
+            />
+          </section>
+        </>
+      ) : null}
+
+      <Separator />
+      <section className="flex flex-col gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-700">Step 3</p>
-          <h3 className="mt-1 text-sm font-semibold text-slate-950">Add filters</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500">Optional. All filters must match the same contact snapshot.</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Automation details</p>
+          <h3 className="mt-1 text-sm font-semibold text-foreground">Name and status</h3>
         </div>
-        <ConditionsEditor
-          compact
-          draft={draft}
-          catalog={catalog}
-          onChange={setConditions}
-          updateCondition={updateCondition}
-        />
-      </section>
-
-      <section className="space-y-4 border-t border-slate-200 pt-5">
-        <div className="space-y-2">
-          <Label htmlFor="automation-name">Automation name</Label>
-          <Input id="automation-name" value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} placeholder="Qualify new opportunity" />
-        </div>
-        <label className="flex items-start gap-3 rounded-xl border border-slate-200 p-3">
-          <Checkbox checked={draft.isEnabled} onCheckedChange={(checked) => onChange({ ...draft, isEnabled: checked === true })} />
-          <span>
-            <span className="block text-sm font-medium text-slate-900">Enable automation</span>
-            <span className="mt-1 block text-xs leading-5 text-slate-500">Enabled flows run immediately when the trigger matches.</span>
-          </span>
-        </label>
-        <Button type="button" variant="outline" className="w-full" onClick={() => { const type: AutomationAction["type"] = catalog.statuses.length ? "SET_CONTACT_STATUS" : "CLEAR_CONTACT_STATUS"; onChange({ ...draft, actions: [...draft.actions, actionDefaults(type, catalog)] }) }}><Plus className="h-4 w-4" /> Add action</Button>
+        <FieldGroup className="gap-4">
+          <Field>
+            <FieldLabel htmlFor="automation-name">Automation name</FieldLabel>
+            <Input
+              id="automation-name"
+              value={draft.name}
+              onChange={(event) => onChange({ ...draft, name: event.target.value })}
+              placeholder="Qualify new opportunity"
+            />
+          </Field>
+          <Field orientation="horizontal" className="rounded-xl border border-border p-3">
+            <Checkbox
+              id="automation-enabled"
+              checked={draft.isEnabled}
+              onCheckedChange={(checked) => onChange({ ...draft, isEnabled: checked === true })}
+            />
+            <FieldContent>
+              <FieldLabel htmlFor="automation-enabled">Enable automation</FieldLabel>
+              <FieldDescription>Enabled flows run immediately when the trigger and filters match.</FieldDescription>
+            </FieldContent>
+          </Field>
+        </FieldGroup>
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full"
+          onClick={() => {
+            const type: AutomationAction["type"] = catalog.statuses.length ? "SET_CONTACT_STATUS" : "CLEAR_CONTACT_STATUS"
+            onChange({ ...draft, actions: [...draft.actions, actionDefaults(type, catalog)] })
+          }}
+        >
+          <Plus data-icon="inline-start" /> Add action
+        </Button>
       </section>
     </div>
-  )
-}
-
-function TriggerChoice({
-  active,
-  icon,
-  title,
-  description,
-  onClick,
-}: {
-  active: boolean
-  icon: ReactNode
-  title: string
-  description: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left transition ${
-        active
-          ? "border-cyan-400 bg-cyan-50 ring-1 ring-cyan-200"
-          : "border-slate-200 bg-white hover:border-cyan-200 hover:bg-slate-50"
-      }`}
-    >
-      <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${active ? "bg-cyan-600 text-white" : "bg-slate-100 text-slate-600"}`}>{icon}</span>
-      <span>
-        <span className="block text-sm font-semibold text-slate-900">{title}</span>
-        <span className="mt-1 block text-xs leading-5 text-slate-500">{description}</span>
-      </span>
-    </button>
   )
 }
 

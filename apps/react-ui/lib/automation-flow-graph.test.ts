@@ -34,7 +34,27 @@ describe("buildAutomationFlowGraph", () => {
     )
   })
 
-  test("adds matched and no-match branches when conditions exist", () => {
+  test("shows an unconfigured start node until a trigger is selected", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: null,
+        pipelineId: "",
+        sourceStageId: "",
+        targetStageId: "",
+        conditions: [],
+        actions: [],
+      },
+      null,
+      labels,
+    )
+
+    const trigger = graph.nodes.find((node) => node.id === "trigger")
+    assert.equal(trigger?.data.label, "Select a trigger")
+    assert.equal(trigger?.data.configured, false)
+    assert.match(trigger?.data.subtitle ?? "", /Click to choose/)
+  })
+
+  test("keeps contact filters out of the flow graph", () => {
     const graph = buildAutomationFlowGraph(
       {
         triggerType: "OPPORTUNITY_STAGE_CHANGED",
@@ -49,12 +69,8 @@ describe("buildAutomationFlowGraph", () => {
       null,
       labels,
     )
-    assert.ok(graph.nodes.some((node) => node.id === "conditions"))
-    assert.ok(graph.nodes.some((node) => node.id === "stop"))
-    assert.ok(
-      graph.edges.some(
-        (edge) => edge.source === "conditions" && edge.sourceHandle === "unmatched",
-      ),
-    )
+    assert.equal(graph.nodes.some((node) => node.id === "conditions"), false)
+    assert.equal(graph.nodes.some((node) => node.id === "stop"), false)
+    assert.ok(graph.edges.some((edge) => edge.source === "trigger" && edge.target === "add-0"))
   })
 })
