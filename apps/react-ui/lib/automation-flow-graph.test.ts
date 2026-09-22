@@ -20,7 +20,6 @@ describe("buildAutomationFlowGraph", () => {
       {
         triggerType: "OPPORTUNITY_CREATED",
         pipelineId: "pipeline-1",
-        sourceStageId: "",
         targetStageId: "",
         conditions: [],
         actions: [{ type: "CLEAR_CONTACT_STATUS" }],
@@ -39,7 +38,6 @@ describe("buildAutomationFlowGraph", () => {
       {
         triggerType: null,
         pipelineId: "",
-        sourceStageId: "",
         targetStageId: "",
         conditions: [],
         actions: [],
@@ -59,7 +57,6 @@ describe("buildAutomationFlowGraph", () => {
       {
         triggerType: "OPPORTUNITY_STAGE_CHANGED",
         pipelineId: "pipeline-1",
-        sourceStageId: "stage-1",
         targetStageId: "stage-2",
         conditions: [
           { source: "OPPORTUNITY_VALUE", operator: "GREATER_THAN", compareValue: 10_000 },
@@ -72,5 +69,8 @@ describe("buildAutomationFlowGraph", () => {
     assert.equal(graph.nodes.some((node) => node.id === "conditions"), false)
     assert.equal(graph.nodes.some((node) => node.id === "stop"), false)
     assert.ok(graph.edges.some((edge) => edge.source === "trigger" && edge.target === "add-0"))
+    const trigger = graph.nodes.find((node) => node.id === "trigger")
+    assert.equal(trigger?.data.label, "Opportunity enters stage")
+    assert.match(trigger?.data.subtitle ?? "", /^Enters /)
   })
 })

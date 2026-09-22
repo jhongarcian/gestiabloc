@@ -4,6 +4,7 @@ import { describe, test } from "node:test"
 import {
   AutomationUpsertSchema,
   evaluateAutomationOperator,
+  executeOpportunityAutomations,
   getAutomationOperatorsForFieldType,
 } from "./opportunity-automations.js"
 
@@ -60,7 +61,6 @@ describe("AutomationUpsertSchema", () => {
         trigger: {
           type: "OPPORTUNITY_STAGE_CHANGED",
           pipelineId: "pipeline-1",
-          sourceStageId: "stage-1",
           targetStageId: "stage-2",
         },
       }).success,
@@ -91,7 +91,7 @@ describe("AutomationUpsertSchema", () => {
     assert.equal(result.success, true)
   })
 
-  test("rejects an empty action list and identical transition stages", () => {
+  test("rejects an empty action list", () => {
     const noActions = AutomationUpsertSchema.safeParse({
       name: "Invalid",
       isEnabled: false,
@@ -100,19 +100,39 @@ describe("AutomationUpsertSchema", () => {
       actions: [],
     })
     assert.equal(noActions.success, false)
+  })
+})
 
-    const sameStage = AutomationUpsertSchema.safeParse({
-      name: "Invalid transition",
-      isEnabled: false,
-      trigger: {
-        type: "OPPORTUNITY_STAGE_CHANGED",
-        pipelineId: "pipeline-1",
-        sourceStageId: "stage-1",
-        targetStageId: "stage-1",
+describe("executeOpportunityAutomations", () => {
+  test("matches a stage trigger by the stage entered, regardless of the source stage", async () => {
+    let where: Record<string, unknown> | undefined
+    const prismaTx = {
+      automation: {
+        findMany: async (args: { where: Record<string, unknown> }) => {
+          where = args.where
+          return []
+        },
       },
-      conditions: [],
-      actions: [{ type: "CLEAR_CONTACT_ASSIGNEE" }],
+    }
+
+    await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_STAGE_CHANGED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-1",
+      valueCents: 0,
+      sourceStageId: "stage-1",
+      targetStageId: "stage-2",
     })
-    assert.equal(sameStage.success, false)
+
+    assert.deepEqual(where, {
+      tenantId: "tenant-1",
+      isEnabled: true,
+      pipelineId: "pipeline-1",
+      triggerType: "OPPORTUNITY_STAGE_CHANGED",
+      targetStageId: "stage-2",
+    })
   })
 })

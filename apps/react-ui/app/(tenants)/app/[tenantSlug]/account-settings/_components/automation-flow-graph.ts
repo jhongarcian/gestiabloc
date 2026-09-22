@@ -14,7 +14,6 @@ export type AutomationFlowNodeData = {
 export type AutomationFlowDraft = {
   triggerType: AutomationTriggerType | null
   pipelineId: string
-  sourceStageId: string
   targetStageId: string
   conditions: AutomationCondition[]
   actions: AutomationAction[]
@@ -27,13 +26,12 @@ export function buildAutomationFlowGraph(
 ) {
   const pipeline = catalog?.pipelines.find((item) => item.id === draft.pipelineId)
   const target = pipeline?.stages.find((item) => item.id === draft.targetStageId)
-  const source = pipeline?.stages.find((item) => item.id === draft.sourceStageId)
   const triggerSubtitle =
     draft.triggerType === null
       ? "Click to choose what starts this automation"
       : draft.triggerType === "OPPORTUNITY_CREATED"
-      ? `Created in ${pipeline?.name ?? "Select a pipeline"}`
-      : `${source?.name ?? "Any stage"} → ${target?.name ?? "Select a stage"}`
+        ? `Created in ${pipeline?.name ?? "Select a pipeline"}`
+        : `Enters ${target?.name ?? "Select a stage"} in ${pipeline?.name ?? "Select a pipeline"}`
   const nodes: Array<Node<AutomationFlowNodeData>> = [
     {
       id: "trigger",
@@ -45,8 +43,8 @@ export function buildAutomationFlowGraph(
           draft.triggerType === null
             ? "Select a trigger"
             : draft.triggerType === "OPPORTUNITY_CREATED"
-            ? "Opportunity created"
-            : "Stage changed",
+              ? "Opportunity created"
+              : "Opportunity enters stage",
         subtitle: triggerSubtitle,
         configured: draft.triggerType !== null,
       },

@@ -74,7 +74,7 @@ export function AutomationsPanel({ tenantId, tenantSlug }: AutomationsPanelProps
         mutationPayload(record, !record.isEnabled),
       )
       setItems((current) => current.map((item) => (item.id === record.id ? data.automation : item)))
-      toast.success(data.automation.isEnabled ? "Automation enabled." : "Automation paused.")
+      toast.success(data.automation.isEnabled ? "Automation published." : "Automation moved to draft.")
     } catch {
       toast.error("Could not change the automation status. Check its configuration and try again.")
     } finally {
@@ -164,7 +164,7 @@ export function AutomationsPanel({ tenantId, tenantSlug }: AutomationsPanelProps
             const triggerDescription =
               record.trigger.type === "OPPORTUNITY_CREATED"
                 ? `Opportunity created in ${pipelineName(record.trigger.pipelineId)}`
-                : `${stageName(record.trigger.pipelineId, record.trigger.sourceStageId)} → ${stageName(record.trigger.pipelineId, record.trigger.targetStageId)}`
+                : `Opportunity enters ${stageName(record.trigger.pipelineId, record.trigger.targetStageId)} in ${pipelineName(record.trigger.pipelineId)}`
             return (
               <article
                 key={record.id}
@@ -177,7 +177,7 @@ export function AutomationsPanel({ tenantId, tenantSlug }: AutomationsPanelProps
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="truncate font-semibold text-slate-950">{record.name}</h3>
                     <Badge className={record.isEnabled ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}>
-                      {record.isEnabled ? "Active" : "Draft"}
+                      {record.isEnabled ? "Published" : "Draft"}
                     </Badge>
                     {record.lastExecution ? (
                       <Badge variant="outline" className={record.lastExecution.status === "SUCCEEDED" ? "border-emerald-200 text-emerald-700" : "border-rose-200 text-rose-700"}>
@@ -198,7 +198,7 @@ export function AutomationsPanel({ tenantId, tenantSlug }: AutomationsPanelProps
                     <ArrowDown className="h-4 w-4" />
                   </Button>
                   <Button type="button" variant="outline" disabled={busyId === record.id} onClick={() => void toggleAutomation(record)}>
-                    {record.isEnabled ? "Pause" : "Enable"}
+                    {record.isEnabled ? "Move to draft" : "Publish"}
                   </Button>
                   <Button asChild variant="outline">
                     <Link href={`/app/${tenantSlug}/account-settings/automations/${record.id}`}>

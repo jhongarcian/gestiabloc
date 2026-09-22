@@ -107,7 +107,6 @@ export const AutomationUpsertSchema = z
       z.object({
         type: z.literal("OPPORTUNITY_STAGE_CHANGED"),
         pipelineId: idSchema,
-        sourceStageId: idSchema.nullable().optional(),
         targetStageId: idSchema,
       }),
     ]),
@@ -115,18 +114,6 @@ export const AutomationUpsertSchema = z
     actions: z.array(AutomationActionInputSchema).min(1).max(20),
   })
   .strict()
-  .superRefine((value, context) => {
-    if (
-      value.trigger.type === "OPPORTUNITY_STAGE_CHANGED" &&
-      value.trigger.sourceStageId === value.trigger.targetStageId
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["trigger", "sourceStageId"],
-        message: "Source and destination stages must be different.",
-      })
-    }
-  })
 
 export type AutomationInput = z.infer<typeof AutomationUpsertSchema>
 export type AutomationOperator = (typeof AUTOMATION_OPERATORS)[number]
@@ -406,10 +393,7 @@ export async function validateAutomationConfiguration(
   const stageIds = new Set(pipeline.stages.map((stage: { id: string }) => stage.id))
   if (input.trigger.type === "OPPORTUNITY_STAGE_CHANGED") {
     if (!stageIds.has(input.trigger.targetStageId)) {
-      throw new AutomationConfigurationError("PIPELINE_STAGE_NOT_FOUND", "The destination stage does not belong to the selected pipeline.")
-    }
-    if (input.trigger.sourceStageId && !stageIds.has(input.trigger.sourceStageId)) {
-      throw new AutomationConfigurationError("PIPELINE_STAGE_NOT_FOUND", "The source stage does not belong to the selected pipeline.")
+      throw new AutomationConfigurationError("PIPELINE_STAGE_NOT_FOUND", "The selected stage does not belong to the selected pipeline.")
     }
   }
 
@@ -558,10 +542,7 @@ export async function validateAutomationConfiguration(
     isEnabled: input.isEnabled,
     triggerType: input.trigger.type,
     pipelineId: input.trigger.pipelineId,
-    sourceStageId:
-      input.trigger.type === "OPPORTUNITY_STAGE_CHANGED"
-        ? input.trigger.sourceStageId ?? null
-        : null,
+    sourceStageId: null,
     targetStageId:
       input.trigger.type === "OPPORTUNITY_STAGE_CHANGED"
         ? input.trigger.targetStageId
@@ -644,7 +625,6 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
       ...(event.triggerType === "OPPORTUNITY_STAGE_CHANGED"
         ? {
             targetStageId: event.targetStageId,
-            OR: [{ sourceStageId: null }, { sourceStageId: event.sourceStageId }],
           }
         : {}),
     },

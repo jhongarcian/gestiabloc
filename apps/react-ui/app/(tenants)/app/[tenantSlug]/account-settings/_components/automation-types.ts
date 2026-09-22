@@ -61,7 +61,6 @@ export type AutomationRecord = {
     | {
         type: "OPPORTUNITY_STAGE_CHANGED"
         pipelineId: string
-        sourceStageId: string | null
         targetStageId: string
       }
   conditions: AutomationCondition[]
@@ -115,4 +114,17 @@ export type AutomationExecution = {
   actionCount: number
   errorMessage: string | null
   createdAt: string
+}
+
+export type AutomationContact = {
+  contact: {
+    id: string
+    name: string
+    email: string | null
+    phoneNumber: string | null
+  }
+  firstEnteredAt: string
+  lastExecutedAt: string
+  executionCount: number
+  lastStatus: "SUCCEEDED" | "FAILED"
 }
