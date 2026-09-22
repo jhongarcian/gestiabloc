@@ -55,6 +55,7 @@ import {
   ChartNoAxesCombined,
   ClipboardList,
   ReceiptText,
+  Workflow,
 } from "lucide-react"
 
 type SidebarItem = {
@@ -73,6 +74,7 @@ const MENU_ITEMS: SidebarItem[] = [
   { key: "calendar", label: "Calendar", path: "/calendar", icon: Calendar },
   { key: "opportunities", label: "Opportunities", path: "/opportunities", icon: Target },
   { key: "tasks", label: "Tasks", path: "/tasks", icon: ListChecks },
+  { key: "automation-processes", label: "Automation runs", path: "/automation-processes", icon: Workflow },
 ]
 
 const SERVICE_ITEMS: SidebarItem[] = [

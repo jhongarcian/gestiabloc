@@ -83,6 +83,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { cn } from "@/lib/utils"
+import { AddContactsToAutomationDialog } from "./add-contacts-to-automation-dialog"
 import { ContactDetailsLoadingSkeleton } from "./contact-details-loading-skeleton"
 import { CreateContactDialog } from "./create-contact-dialog"
 
@@ -421,9 +422,11 @@ const formatDate = (value: string | null) => {
 
 function ContactMobileCard({
   contact,
+  selected,
   onOpen,
 }: {
   contact: ContactItem
+  selected: boolean
   onOpen: (contactId: string) => void
 }) {
   const followUpServices = contact.activeFollowUpServices ?? []
@@ -434,7 +437,10 @@ function ContactMobileCard({
       role="link"
       tabIndex={0}
       aria-label={`Open ${contact.fullName} details`}
-      className="group cursor-pointer gap-0 rounded-[22px] border-slate-200 bg-white py-0 shadow-sm outline-none transition-[border-color,box-shadow,transform] hover:border-blue-200 hover:shadow-md focus-visible:border-blue-300 focus-visible:ring-2 focus-visible:ring-blue-500/40 active:scale-[0.995] motion-reduce:transform-none motion-reduce:transition-none"
+      className={cn(
+        "group min-w-0 flex-1 cursor-pointer gap-0 rounded-[22px] border-slate-200 bg-white py-0 shadow-sm outline-none transition-[border-color,box-shadow,transform] hover:border-blue-200 hover:shadow-md focus-visible:border-blue-300 focus-visible:ring-2 focus-visible:ring-blue-500/40 active:scale-[0.995] motion-reduce:transform-none motion-reduce:transition-none",
+        selected && "border-blue-300 bg-blue-50/30 ring-2 ring-blue-500/15",
+      )}
       onClick={openCard}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -544,7 +550,10 @@ function ContactMobileCard({
 
 function ContactMobileCardSkeleton() {
   return (
-    <Card aria-hidden="true" className="gap-0 rounded-[22px] py-0 shadow-sm">
+    <Card
+      aria-hidden="true"
+      className="min-w-0 flex-1 gap-0 rounded-[22px] py-0 shadow-sm"
+    >
       <CardHeader className="gap-2 px-4 pt-4 pb-3 has-data-[slot=card-action]:grid-cols-[minmax(0,1fr)_auto]">
         <CardTitle><Skeleton className="h-5 w-3/5" /></CardTitle>
         <CardDescription><Skeleton className="h-4 w-2/5" /></CardDescription>
@@ -628,6 +637,9 @@ export function ContactsTable({
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [data, setData] = useState<ContactsListResponse | null>(null)
+  const [selectedContacts, setSelectedContacts] = useState<Map<string, string>>(
+    () => new Map(),
+  )
   const [openingContactId, setOpeningContactId] = useState<string | null>(null)
   const openingContactIdRef = useRef<string | null>(null)
   const [isContactNavigationPending, startContactNavigation] = useTransition()
@@ -831,6 +843,18 @@ export function ContactsTable({
   }, [loadContacts])
 
   const contacts = data?.items ?? []
+  const selectedContactItems = Array.from(
+    selectedContacts,
+    ([id, name]) => ({ id, name }),
+  )
+  const selectedContactCount = selectedContacts.size
+  const visibleSelectedCount = contacts.filter((contact) =>
+    selectedContacts.has(contact.id),
+  ).length
+  const allVisibleContactsSelected =
+    contacts.length > 0 && visibleSelectedCount === contacts.length
+  const someVisibleContactsSelected =
+    visibleSelectedCount > 0 && !allVisibleContactsSelected
   const total = data?.pagination.total ?? 0
   const totalPages = data?.pagination.totalPages ?? 1
   const startIndex = (page - 1) * pageSize
@@ -867,6 +891,31 @@ export function ContactsTable({
   }, [contacts.length, startIndex, total])
   const selectedSortLabel =
     SORT_OPTIONS.find((option) => option.value === sort)?.label ?? "Last name A–Z"
+
+  const updateContactSelection = useCallback(
+    (contact: ContactItem, checked: boolean) => {
+      setSelectedContacts((current) => {
+        const next = new Map(current)
+        if (checked) next.set(contact.id, contact.fullName)
+        else next.delete(contact.id)
+        return next
+      })
+    },
+    [],
+  )
+
+  const toggleVisibleContactSelection = () => {
+    setSelectedContacts((current) => {
+      const next = new Map(current)
+
+      for (const contact of contacts) {
+        if (allVisibleContactsSelected) next.delete(contact.id)
+        else next.set(contact.id, contact.fullName)
+      }
+
+      return next
+    })
+  }
 
   const clearFilters = () => {
     setStatusFilters([])
@@ -1011,6 +1060,55 @@ export function ContactsTable({
             />
           </div>
         </div>
+
+        {selectedContactCount > 0 ? (
+          <div
+            className="mt-3 flex flex-col gap-3 rounded-2xl border border-blue-200/80 bg-white/85 p-3 shadow-sm backdrop-blur sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-blue-950 text-xs font-semibold text-white">
+                {selectedContactCount}
+              </span>
+              <p
+                className="truncate text-sm font-semibold text-slate-800"
+                aria-live="polite"
+              >
+                {selectedContactCount === 1 ? "Contact selected" : "Contacts selected"}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={contacts.length === 0}
+                className="h-9 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-none"
+                onClick={toggleVisibleContactSelection}
+              >
+                {allVisibleContactsSelected
+                  ? "Unselect this page"
+                  : "Select this page"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-9 shrink-0 cursor-pointer rounded-full px-3 text-xs font-semibold text-slate-600"
+                onClick={() => setSelectedContacts(new Map())}
+              >
+                Clear
+              </Button>
+              <AddContactsToAutomationDialog
+                tenantId={tenantId}
+                tenantSlug={tenantSlug}
+                contacts={selectedContactItems}
+                onQueued={() => setSelectedContacts(new Map())}
+                onCompleted={loadContacts}
+              />
+            </div>
+          </div>
+        ) : null}
       </header>
 
       <Sheet open={isSortSheetOpen} onOpenChange={setIsSortSheetOpen}>
@@ -1290,7 +1388,13 @@ export function ContactsTable({
             <div className="flex flex-col gap-3" role="status">
               <span className="sr-only">Loading contacts</span>
               {Array.from({ length: 3 }, (_, index) => (
-                <ContactMobileCardSkeleton key={`mobile-contact-skeleton-${index}`} />
+                <div
+                  key={`mobile-contact-skeleton-${index}`}
+                  className="flex min-w-0 items-start gap-2"
+                >
+                  <Skeleton className="mt-5 size-5 shrink-0 rounded" />
+                  <ContactMobileCardSkeleton />
+                </div>
               ))}
             </div>
           ) : errorMessage ? (
@@ -1311,11 +1415,35 @@ export function ContactsTable({
             </div>
           ) : contacts.length ? (
             <div className="flex flex-col gap-3" role="list">
-              {contacts.map((contact) => (
-                <div key={`mobile-${contact.id}`} role="listitem">
-                  <ContactMobileCard contact={contact} onOpen={openContact} />
-                </div>
-              ))}
+              {contacts.map((contact) => {
+                const isSelected = selectedContacts.has(contact.id)
+                const checkboxId = `mobile-contact-selection-${contact.id}`
+
+                return (
+                  <div
+                    key={`mobile-${contact.id}`}
+                    role="listitem"
+                    className="flex min-w-0 items-start gap-2"
+                  >
+                    <div className="flex shrink-0 pt-5">
+                      <Checkbox
+                        id={checkboxId}
+                        checked={isSelected}
+                        aria-label={`Select ${contact.fullName}`}
+                        className="size-5 cursor-pointer border-slate-300 bg-white"
+                        onCheckedChange={(checked) =>
+                          updateContactSelection(contact, checked === true)
+                        }
+                      />
+                    </div>
+                    <ContactMobileCard
+                      contact={contact}
+                      selected={isSelected}
+                      onOpen={openContact}
+                    />
+                  </div>
+                )
+              })}
             </div>
           ) : (
             <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50/70 px-5 py-10 text-center">
@@ -1335,7 +1463,22 @@ export function ContactsTable({
           >
             <TableHeader className="drop-shadow-sm [&_tr]:border-0">
               <TableRow className="h-14 border-0 hover:bg-transparent">
-                <TableHead className="w-[16%] rounded-l-xl border-y border-l bg-slate-50 px-4 text-xs text-slate-600">
+                <TableHead className="w-12 rounded-l-xl border-y border-l bg-slate-50 px-4">
+                  <Checkbox
+                    checked={
+                      allVisibleContactsSelected
+                        ? true
+                        : someVisibleContactsSelected
+                          ? "indeterminate"
+                          : false
+                    }
+                    disabled={isLoading || contacts.length === 0}
+                    aria-label="Select all contacts on this page"
+                    className="cursor-pointer border-slate-300 bg-white"
+                    onCheckedChange={toggleVisibleContactSelection}
+                  />
+                </TableHead>
+                <TableHead className="w-[16%] border-y bg-slate-50 px-4 text-xs text-slate-600">
                   Full name
                 </TableHead>
                 <TableHead className="w-[12%] border-y bg-slate-50 px-4 text-xs text-slate-600">
@@ -1363,7 +1506,7 @@ export function ContactsTable({
                 aria-hidden="true"
                 className="h-2 border-0 hover:bg-transparent"
               >
-                <TableCell colSpan={7} className="p-0" />
+                <TableCell colSpan={8} className="p-0" />
               </TableRow>
 
               {isLoading ? (
@@ -1372,6 +1515,9 @@ export function ContactsTable({
                     key={`contact-skeleton-${index}`}
                     className="h-14 hover:bg-transparent"
                   >
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="size-4 rounded" />
+                    </TableCell>
                     <TableCell className="px-4 py-0">
                       <Skeleton className="h-4 w-4/5" />
                     </TableCell>
@@ -1401,7 +1547,7 @@ export function ContactsTable({
               ) : errorMessage ? (
                 <TableRow className="h-14 hover:bg-transparent">
                   <TableCell
-                    colSpan={7}
+                    colSpan={8}
                     className="px-4 py-0 text-center text-rose-600"
                   >
                     {errorMessage}
@@ -1409,13 +1555,19 @@ export function ContactsTable({
                 </TableRow>
               ) : contacts.length ? (
                 contacts.map((contact) => {
+                  const isSelected = selectedContacts.has(contact.id)
+
                   return (
                     <TableRow
                       key={contact.id}
                       tabIndex={0}
                       role="link"
                       aria-label={`Open ${contact.fullName} details`}
-                      className="h-14 cursor-pointer outline-none hover:bg-blue-50/50 focus-visible:bg-blue-50/50 focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-inset"
+                      data-selected={isSelected ? "true" : undefined}
+                      className={cn(
+                        "h-14 cursor-pointer outline-none hover:bg-blue-50/50 focus-visible:bg-blue-50/50 focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-inset",
+                        isSelected && "bg-blue-50/70 hover:bg-blue-50/80",
+                      )}
                       onClick={() => {
                         openContact(contact.id)
                       }}
@@ -1426,6 +1578,20 @@ export function ContactsTable({
                         }
                       }}
                     >
+                      <TableCell
+                        className="px-4 py-0"
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        <Checkbox
+                          checked={isSelected}
+                          aria-label={`Select ${contact.fullName}`}
+                          className="cursor-pointer border-slate-300 bg-white"
+                          onCheckedChange={(checked) =>
+                            updateContactSelection(contact, checked === true)
+                          }
+                        />
+                      </TableCell>
                       <TableCell className="px-4 py-0">
                         <span
                           className="block truncate font-medium text-slate-950"
@@ -1502,7 +1668,7 @@ export function ContactsTable({
               ) : (
                 <TableRow className="h-14 hover:bg-transparent">
                   <TableCell
-                    colSpan={7}
+                    colSpan={8}
                     className="px-4 py-0 text-center text-slate-500"
                   >
                     {hasActiveQueryOrFilters
@@ -1519,7 +1685,7 @@ export function ContactsTable({
                       aria-hidden="true"
                       className="h-14 hover:bg-transparent"
                     >
-                      <TableCell colSpan={7} className="px-4 py-0" />
+                      <TableCell colSpan={8} className="px-4 py-0" />
                     </TableRow>
                   ))
                 : null}

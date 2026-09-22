@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
-import { ArrowDown, ArrowUp, GitBranch, Plus, Settings2, Trash2, Zap } from "lucide-react"
+import { ArrowDown, ArrowUp, GitBranch, History, Plus, Settings2, Trash2, Zap } from "lucide-react"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
@@ -134,11 +134,18 @@ export function AutomationsPanel({ tenantId, tenantSlug }: AutomationsPanelProps
               </p>
             </div>
           </div>
-          <Button asChild className="bg-cyan-300 text-slate-950 hover:bg-cyan-200">
-            <Link href={`/app/${tenantSlug}/account-settings/automations/new`}>
-              <Plus className="h-4 w-4" /> New automation
-            </Link>
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild variant="outline" className="border-white/20 bg-white/10 text-white hover:bg-white/20 hover:text-white">
+              <Link href={`/app/${tenantSlug}/automation-processes`}>
+                <History className="h-4 w-4" /> Process history
+              </Link>
+            </Button>
+            <Button asChild className="bg-cyan-300 text-slate-950 hover:bg-cyan-200">
+              <Link href={`/app/${tenantSlug}/account-settings/automations/new`}>
+                <Plus className="h-4 w-4" /> New automation
+              </Link>
+            </Button>
+          </div>
         </div>
       </section>
 

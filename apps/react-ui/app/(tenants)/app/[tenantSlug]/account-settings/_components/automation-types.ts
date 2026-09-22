@@ -109,6 +109,8 @@ export type AutomationExecution = {
   id: string
   automationId: string | null
   automationName: string
+  processId: string | null
+  processName: string | null
   triggerType: AutomationTriggerType
   status: "SUCCEEDED" | "FAILED"
   actionCount: number

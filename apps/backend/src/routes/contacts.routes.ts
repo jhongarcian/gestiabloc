@@ -1513,6 +1513,43 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
   }
 })
 
+router.get("/:tenantId/automations", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const automations = await prismaWithContacts.automation.findMany({
+      where: { tenantId, isEnabled: true },
+      orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        _count: { select: { actions: true } },
+      },
+    })
+
+    return res.json({
+      ok: true,
+      items: automations.map(
+        (automation: {
+          id: string
+          name: string
+          _count: { actions: number }
+        }) => ({
+          id: automation.id,
+          name: automation.name,
+          actionCount: automation._count.actions,
+        }),
+      ),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest

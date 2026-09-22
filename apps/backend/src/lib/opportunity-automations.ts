@@ -195,11 +195,13 @@ export class AutomationExecutionError extends Error {
   automationId: string
   automationName: string
   actionIndex: number
+  contactId: string | null
 
   constructor(params: {
     automationId: string
     automationName: string
     actionIndex: number
+    contactId?: string | null
     message: string
   }) {
     super(params.message)
@@ -207,6 +209,7 @@ export class AutomationExecutionError extends Error {
     this.automationId = params.automationId
     this.automationName = params.automationName
     this.actionIndex = params.actionIndex
+    this.contactId = params.contactId ?? null
   }
 }
 
@@ -615,6 +618,185 @@ function automationMatchesSnapshot(
   })
 }
 
+export type AutomationRuntimeCatalog = {
+  fieldMap: Map<string, CustomFieldRecord>
+  activeStatusIds: Set<string>
+  activeUserIds: Set<string>
+  tagIds: Set<string>
+}
+
+export async function getAutomationRuntimeCatalog(
+  prismaTx: any,
+  tenantId: string,
+): Promise<AutomationRuntimeCatalog> {
+  const [fields, statuses, memberships, tags] = await Promise.all([
+    prismaTx.contactCustomField.findMany({
+      where: { tenantId, isActive: true, isEncrypted: false, isSensitive: false },
+      select: {
+        id: true,
+        label: true,
+        fieldType: true,
+        isRequired: true,
+        isActive: true,
+        isEncrypted: true,
+        isSensitive: true,
+        options: true,
+      },
+    }),
+    prismaTx.contactStatusConfig.findMany({
+      where: { tenantId, isActive: true },
+      select: { id: true },
+    }),
+    prismaTx.membership.findMany({
+      where: { tenantId, status: "ACTIVE" },
+      select: { userId: true },
+    }),
+    prismaTx.tenantTag.findMany({
+      where: { tenantId },
+      select: { id: true },
+    }),
+  ])
+
+  return {
+    fieldMap: new Map<string, CustomFieldRecord>(
+      fields.map((field: CustomFieldRecord) => [field.id, field]),
+    ),
+    activeStatusIds: new Set(statuses.map((item: any) => item.id)),
+    activeUserIds: new Set(memberships.map((item: any) => item.userId)),
+    tagIds: new Set(tags.map((item: any) => item.id)),
+  }
+}
+
+export async function applyAutomationActions(
+  prismaTx: any,
+  params: {
+    automation: any
+    tenantId: string
+    contactId: string
+    catalog: AutomationRuntimeCatalog
+  },
+) {
+  const { automation, tenantId, contactId, catalog } = params
+
+  for (let index = 0; index < automation.actions.length; index += 1) {
+    const action = automation.actions[index]
+    try {
+      if (action.type === "SET_CONTACT_CUSTOM_FIELD") {
+        const field = action.customFieldId
+          ? catalog.fieldMap.get(action.customFieldId)
+          : null
+        if (!field) throw new Error("The configured custom field is unavailable.")
+        const normalized = normalizeCustomFieldValue(
+          { ...field, options: fieldOptions(field) },
+          action.value,
+        )
+        if (!normalized.ok || normalized.value === null) {
+          throw new Error(
+            normalized.ok ? `${field.label} requires a value.` : normalized.message,
+          )
+        }
+        await prismaTx.contactCustomFieldValue.upsert({
+          where: {
+            tenantId_contactId_fieldId: {
+              tenantId,
+              contactId,
+              fieldId: field.id,
+            },
+          },
+          create: {
+            tenantId,
+            contactId,
+            fieldId: field.id,
+            value: normalized.value,
+          },
+          update: {
+            value: normalized.value,
+            valueCiphertext: null,
+            valueIv: null,
+            valueAuthTag: null,
+            valueKeyVersion: null,
+          },
+        })
+      } else if (action.type === "CLEAR_CONTACT_CUSTOM_FIELD") {
+        const field = action.customFieldId
+          ? catalog.fieldMap.get(action.customFieldId)
+          : null
+        if (!field || field.isRequired) {
+          throw new Error("The configured custom field cannot be cleared.")
+        }
+        await prismaTx.contactCustomFieldValue.deleteMany({
+          where: { tenantId, contactId, fieldId: field.id },
+        })
+      } else if (action.type === "SET_CONTACT_STATUS") {
+        if (
+          !action.statusConfigId ||
+          !catalog.activeStatusIds.has(action.statusConfigId)
+        ) {
+          throw new Error("The configured contact status is unavailable.")
+        }
+        await prismaTx.contact.update({
+          where: { id: contactId },
+          data: { statusConfigId: action.statusConfigId },
+        })
+      } else if (action.type === "CLEAR_CONTACT_STATUS") {
+        await prismaTx.contact.update({
+          where: { id: contactId },
+          data: { statusConfigId: null },
+        })
+      } else if (action.type === "SET_CONTACT_ASSIGNEE") {
+        if (
+          !action.assignedUserId ||
+          !catalog.activeUserIds.has(action.assignedUserId)
+        ) {
+          throw new Error("The configured assignee is unavailable.")
+        }
+        await prismaTx.contact.update({
+          where: { id: contactId },
+          data: { assignedToUserId: action.assignedUserId },
+        })
+      } else if (action.type === "CLEAR_CONTACT_ASSIGNEE") {
+        await prismaTx.contact.update({
+          where: { id: contactId },
+          data: { assignedToUserId: null },
+        })
+      } else if (action.type === "ADD_CONTACT_TAG") {
+        if (!action.tagId || !catalog.tagIds.has(action.tagId)) {
+          throw new Error("The configured tag is unavailable.")
+        }
+        await prismaTx.contactTag.upsert({
+          where: {
+            tenantId_contactId_tagId: {
+              tenantId,
+              contactId,
+              tagId: action.tagId,
+            },
+          },
+          create: { tenantId, contactId, tagId: action.tagId },
+          update: {},
+        })
+      } else if (action.type === "REMOVE_CONTACT_TAG") {
+        if (!action.tagId || !catalog.tagIds.has(action.tagId)) {
+          throw new Error("The configured tag is unavailable.")
+        }
+        await prismaTx.contactTag.deleteMany({
+          where: { tenantId, contactId, tagId: action.tagId },
+        })
+      }
+    } catch (error) {
+      throw new AutomationExecutionError({
+        automationId: automation.id,
+        automationName: automation.name,
+        actionIndex: index,
+        contactId,
+        message:
+          error instanceof Error
+            ? error.message
+            : "The automation action could not be completed.",
+      })
+    }
+  }
+}
+
 export async function executeOpportunityAutomations(prismaTx: any, event: AutomationEvent) {
   const automations = await prismaTx.automation.findMany({
     where: {
@@ -636,7 +818,7 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
   })
   if (automations.length === 0) return { matchedCount: 0, executedCount: 0 }
 
-  const [contact, fields, statuses, memberships, tags] = await Promise.all([
+  const [contact, catalog] = await Promise.all([
     prismaTx.contact.findFirst({
       where: { tenantId: event.tenantId, id: event.contactId },
       select: {
@@ -647,75 +829,21 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
         customFieldValues: { select: { fieldId: true, value: true } },
       },
     }),
-    prismaTx.contactCustomField.findMany({
-      where: { tenantId: event.tenantId, isActive: true, isEncrypted: false, isSensitive: false },
-      select: { id: true, label: true, fieldType: true, isRequired: true, isActive: true, isEncrypted: true, isSensitive: true, options: true },
-    }),
-    prismaTx.contactStatusConfig.findMany({ where: { tenantId: event.tenantId, isActive: true }, select: { id: true } }),
-    prismaTx.membership.findMany({ where: { tenantId: event.tenantId, status: "ACTIVE" }, select: { userId: true } }),
-    prismaTx.tenantTag.findMany({ where: { tenantId: event.tenantId }, select: { id: true } }),
+    getAutomationRuntimeCatalog(prismaTx, event.tenantId),
   ])
   if (!contact) throw new Error("Contact not found while executing automation.")
 
-  const fieldMap = new Map<string, CustomFieldRecord>(fields.map((field: CustomFieldRecord) => [field.id, field]))
-  const activeStatusIds = new Set(statuses.map((item: any) => item.id))
-  const activeUserIds = new Set(memberships.map((item: any) => item.userId))
-  const tagIds = new Set(tags.map((item: any) => item.id))
   const matched = automations.filter((automation: any) =>
-    automationMatchesSnapshot(automation, event, contact, fieldMap),
+    automationMatchesSnapshot(automation, event, contact, catalog.fieldMap),
   )
 
   for (const automation of matched) {
-    for (let index = 0; index < automation.actions.length; index += 1) {
-      const action = automation.actions[index]
-      try {
-        if (action.type === "SET_CONTACT_CUSTOM_FIELD") {
-          const field = action.customFieldId ? fieldMap.get(action.customFieldId) : null
-          if (!field) throw new Error("The configured custom field is unavailable.")
-          const normalized = normalizeCustomFieldValue(
-            { ...field, options: fieldOptions(field) },
-            action.value,
-          )
-          if (!normalized.ok || normalized.value === null) throw new Error(normalized.ok ? `${field.label} requires a value.` : normalized.message)
-          await prismaTx.contactCustomFieldValue.upsert({
-            where: { tenantId_contactId_fieldId: { tenantId: event.tenantId, contactId: event.contactId, fieldId: field.id } },
-            create: { tenantId: event.tenantId, contactId: event.contactId, fieldId: field.id, value: normalized.value },
-            update: { value: normalized.value, valueCiphertext: null, valueIv: null, valueAuthTag: null, valueKeyVersion: null },
-          })
-        } else if (action.type === "CLEAR_CONTACT_CUSTOM_FIELD") {
-          const field = action.customFieldId ? fieldMap.get(action.customFieldId) : null
-          if (!field || field.isRequired) throw new Error("The configured custom field cannot be cleared.")
-          await prismaTx.contactCustomFieldValue.deleteMany({ where: { tenantId: event.tenantId, contactId: event.contactId, fieldId: field.id } })
-        } else if (action.type === "SET_CONTACT_STATUS") {
-          if (!action.statusConfigId || !activeStatusIds.has(action.statusConfigId)) throw new Error("The configured contact status is unavailable.")
-          await prismaTx.contact.update({ where: { id: event.contactId }, data: { statusConfigId: action.statusConfigId } })
-        } else if (action.type === "CLEAR_CONTACT_STATUS") {
-          await prismaTx.contact.update({ where: { id: event.contactId }, data: { statusConfigId: null } })
-        } else if (action.type === "SET_CONTACT_ASSIGNEE") {
-          if (!action.assignedUserId || !activeUserIds.has(action.assignedUserId)) throw new Error("The configured assignee is unavailable.")
-          await prismaTx.contact.update({ where: { id: event.contactId }, data: { assignedToUserId: action.assignedUserId } })
-        } else if (action.type === "CLEAR_CONTACT_ASSIGNEE") {
-          await prismaTx.contact.update({ where: { id: event.contactId }, data: { assignedToUserId: null } })
-        } else if (action.type === "ADD_CONTACT_TAG") {
-          if (!action.tagId || !tagIds.has(action.tagId)) throw new Error("The configured tag is unavailable.")
-          await prismaTx.contactTag.upsert({
-            where: { tenantId_contactId_tagId: { tenantId: event.tenantId, contactId: event.contactId, tagId: action.tagId } },
-            create: { tenantId: event.tenantId, contactId: event.contactId, tagId: action.tagId },
-            update: {},
-          })
-        } else if (action.type === "REMOVE_CONTACT_TAG") {
-          if (!action.tagId || !tagIds.has(action.tagId)) throw new Error("The configured tag is unavailable.")
-          await prismaTx.contactTag.deleteMany({ where: { tenantId: event.tenantId, contactId: event.contactId, tagId: action.tagId } })
-        }
-      } catch (error) {
-        throw new AutomationExecutionError({
-          automationId: automation.id,
-          automationName: automation.name,
-          actionIndex: index,
-          message: error instanceof Error ? error.message : "The automation action could not be completed.",
-        })
-      }
-    }
+    await applyAutomationActions(prismaTx, {
+      automation,
+      tenantId: event.tenantId,
+      contactId: event.contactId,
+      catalog,
+    })
 
     await prismaTx.automationExecution.create({
       data: {
