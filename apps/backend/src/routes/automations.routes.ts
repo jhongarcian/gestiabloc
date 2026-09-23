@@ -316,16 +316,35 @@ router.get("/:tenantId/automations/:automationId/contacts", ...readMiddlewares, 
     const enrolledContacts = Prisma.sql`
       FROM (
         SELECT
-          enrollment."contactId" AS "contactId",
-          MIN(enrollment."createdAt") AS "firstEnteredAt"
-        FROM "AutomationProcessContact" enrollment
-        INNER JOIN "AutomationProcess" process
-          ON process."id" = enrollment."processId"
-          AND process."tenantId" = ${tenantId}
-          AND process."automationId" = ${automationId}
-        WHERE enrollment."tenantId" = ${tenantId}
-          AND enrollment."status" = 'SUCCEEDED'::"AutomationProcessContactStatus"
-        GROUP BY enrollment."contactId"
+          entered_contact."contactId" AS "contactId",
+          MIN(entered_contact."firstEnteredAt") AS "firstEnteredAt"
+        FROM (
+          SELECT
+            enrollment."contactId" AS "contactId",
+            MIN(enrollment."createdAt") AS "firstEnteredAt"
+          FROM "AutomationProcessContact" enrollment
+          INNER JOIN "AutomationProcess" process
+            ON process."id" = enrollment."processId"
+            AND process."tenantId" = ${tenantId}
+            AND process."automationId" = ${automationId}
+          WHERE enrollment."tenantId" = ${tenantId}
+            AND enrollment."status" = 'SUCCEEDED'::"AutomationProcessContactStatus"
+          GROUP BY enrollment."contactId"
+
+          UNION ALL
+
+          SELECT
+            node_execution."contactId" AS "contactId",
+            MIN(node_execution."occurredAt") AS "firstEnteredAt"
+          FROM "AutomationNodeExecution" node_execution
+          WHERE node_execution."tenantId" = ${tenantId}
+            AND node_execution."automationId" = ${automationId}
+            AND node_execution."contactId" IS NOT NULL
+            AND node_execution."nodeKind" = 'TRIGGER'::"AutomationNodeKind"
+            AND node_execution."status" = 'EXECUTED'::"AutomationNodeExecutionStatus"
+          GROUP BY node_execution."contactId"
+        ) entered_contact
+        GROUP BY entered_contact."contactId"
       ) enrolled_contact
       INNER JOIN "Contact" contact
         ON contact."id" = enrolled_contact."contactId"
