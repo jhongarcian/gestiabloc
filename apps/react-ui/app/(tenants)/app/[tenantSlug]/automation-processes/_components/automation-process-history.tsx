@@ -106,7 +106,7 @@ export function AutomationProcessHistory({
             </div>
             <h1 className="text-2xl font-semibold">Automation processes</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
-              Track current work and review every contact automation process run in this account.
+              Track contact enrollment processes for automations in this account.
             </p>
           </div>
           <div className="rounded-2xl border border-white/15 bg-white/10 px-4 py-3 backdrop-blur">
@@ -129,7 +129,7 @@ export function AutomationProcessHistory({
           </div>
           <h2 className="mt-5 text-lg font-semibold text-slate-950">No processes yet</h2>
           <p className="mt-2 max-w-md text-sm leading-6 text-slate-600">
-            Select contacts from the contact list and add them to an automation. The run will appear here.
+            Select contacts from the contact list and add them to an automation. The enrollment will appear here.
           </p>
           <Button asChild className="mt-5 rounded-full bg-blue-950 hover:bg-blue-900">
             <Link href={`/app/${tenantSlug}/contacts`}>Open contacts</Link>
@@ -161,7 +161,7 @@ export function AutomationProcessHistory({
                     <TableCell><ProcessStatusBadge status={process.status} /></TableCell>
                     <TableCell><ProcessProgress process={process} /></TableCell>
                     <TableCell>
-                      <span className="font-semibold text-emerald-700">{process.succeededContacts.toLocaleString()}</span>
+                      <span className="font-semibold text-emerald-700">{process.succeededContacts.toLocaleString()} enrolled</span>
                       <span className="mx-1.5 text-slate-300">/</span>
                       <span className={process.failedContacts ? "font-semibold text-rose-700" : "text-slate-500"}>{process.failedContacts.toLocaleString()} errors</span>
                     </TableCell>
@@ -185,7 +185,7 @@ export function AutomationProcessHistory({
                 </div>
                 <div className="mt-4"><ProcessProgress process={process} /></div>
                 <div className="mt-4 flex items-center justify-between text-xs text-slate-500">
-                  <span>{process.succeededContacts.toLocaleString()} completed · {process.failedContacts.toLocaleString()} errors</span>
+                  <span>{process.succeededContacts.toLocaleString()} enrolled · {process.failedContacts.toLocaleString()} errors</span>
                   <span>{formatDate(process.createdAt)}</span>
                 </div>
               </Link>

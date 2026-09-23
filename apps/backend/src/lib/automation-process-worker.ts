@@ -1,4 +1,4 @@
-import { AutomationActionInputSchema, applyAutomationActions, getAutomationRuntimeCatalog } from "./opportunity-automations.js"
+import { enrollAutomationProcessContact } from "./automation-process-enrollment.js"
 import { prisma } from "./prisma.js"
 
 const MAX_BATCHES_PER_RUN = 4
@@ -8,20 +8,6 @@ const STALE_PREPARATION_MS = 60 * 60 * 1000
 
 let workerRunning = false
 let workerRequested = false
-
-function errorDetails(error: unknown) {
-  if (error instanceof Error) {
-    const code = "code" in error && typeof error.code === "string"
-      ? error.code
-      : "AUTOMATION_EXECUTION_FAILED"
-    return { code, message: error.message.slice(0, 500) }
-  }
-
-  return {
-    code: "AUTOMATION_EXECUTION_FAILED",
-    message: "The automation action could not be completed.",
-  }
-}
 
 async function recoverInterruptedWork() {
   const now = Date.now()
@@ -125,82 +111,6 @@ async function refreshProcessTotals(processId: string) {
   })
 }
 
-async function processContact(batch: any, item: any, actions: any[], catalog: any) {
-  const process = batch.process
-
-  try {
-    await prisma.$transaction(async (transaction) => {
-      const contact = await transaction.contact.findFirst({
-        where: { tenantId: process.tenantId, id: item.contactId },
-        select: { id: true },
-      })
-      if (!contact) throw new Error("This contact is no longer available.")
-
-      await applyAutomationActions(transaction, {
-        automation: {
-          id: process.automationId ?? process.id,
-          name: process.automationName,
-          actions,
-        },
-        tenantId: process.tenantId,
-        contactId: item.contactId,
-        catalog,
-      })
-
-      await transaction.automationExecution.create({
-        data: {
-          tenantId: process.tenantId,
-          automationId: process.automationId,
-          automationName: process.automationName,
-          triggerType: process.triggerType,
-          status: "SUCCEEDED",
-          contactId: item.contactId,
-          actorUserId: process.requestedByUserId,
-          processId: process.id,
-          processName: process.processName,
-          actionCount: actions.length,
-        },
-      })
-
-      await transaction.automationProcessContact.update({
-        where: { id: item.id },
-        data: { status: "SUCCEEDED", startedAt: new Date(), completedAt: new Date() },
-      })
-    })
-  } catch (error) {
-    const details = errorDetails(error)
-
-    await prisma.$transaction([
-      prisma.automationProcessContact.update({
-        where: { id: item.id },
-        data: {
-          status: "FAILED",
-          errorCode: details.code,
-          errorMessage: details.message,
-          startedAt: new Date(),
-          completedAt: new Date(),
-        },
-      }),
-      prisma.automationExecution.create({
-        data: {
-          tenantId: process.tenantId,
-          automationId: process.automationId,
-          automationName: process.automationName,
-          triggerType: process.triggerType,
-          status: "FAILED",
-          contactId: item.contactId,
-          actorUserId: process.requestedByUserId,
-          processId: process.id,
-          processName: process.processName,
-          actionCount: actions.length,
-          errorCode: details.code,
-          errorMessage: details.message,
-        },
-      }),
-    ])
-  }
-}
-
 async function completeBatch(batch: any) {
   const [succeededContacts, failedContacts] = await Promise.all([
     prisma.automationProcessContact.count({ where: { batchId: batch.id, status: "SUCCEEDED" } }),
@@ -221,7 +131,9 @@ async function completeBatch(batch: any) {
 }
 
 async function failOrRetryBatch(batch: any, error: unknown) {
-  const details = errorDetails(error)
+  const details = error instanceof Error
+    ? { message: error.message.slice(0, 500) }
+    : { message: "The automation enrollment batch could not be completed." }
 
   if (batch.attemptCount < MAX_BATCH_ATTEMPTS) {
     await prisma.automationProcessBatch.update({
@@ -255,16 +167,13 @@ async function failOrRetryBatch(batch: any, error: unknown) {
 }
 
 async function runClaimedBatch(batch: any) {
-  const actions = AutomationActionInputSchema.array().min(1).max(20).parse(batch.process.actionSnapshot)
-
   await prisma.automationProcess.updateMany({
     where: { id: batch.processId, status: "QUEUED" },
     data: { status: "RUNNING", startedAt: new Date() },
   })
 
-  const catalog = await getAutomationRuntimeCatalog(prisma, batch.tenantId)
   for (const item of batch.contacts) {
-    await processContact(batch, item, actions, catalog)
+    await enrollAutomationProcessContact(prisma, batch, item)
   }
 
   await completeBatch(batch)

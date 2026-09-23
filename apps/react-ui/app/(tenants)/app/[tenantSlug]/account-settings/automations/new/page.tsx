@@ -17,5 +17,5 @@ export default async function NewAutomationPage({ params }: { params: Promise<{ 
   }
   const membership = me?.memberships?.find((item) => item.tenant?.slug === tenantSlug)
   if (!membership?.tenant?.id) redirect(`/app/${tenantSlug}`)
-  return <AutomationFlowBuilder tenantId={membership.tenant.id} tenantSlug={tenantSlug} />
+  return <AutomationFlowBuilder tenantId={membership.tenant.id} tenantSlug={tenantSlug} timezone={membership.tenant.timezone} />
 }

@@ -1,5 +1,13 @@
+import { randomUUID } from "node:crypto"
+
 import { z } from "zod"
 
+import {
+  getAutomationActionLabel,
+  getAutomationTriggerLabel,
+  getContactDisplayName,
+  type AutomationNodeLogData,
+} from "./automation-node-executions.js"
 import { normalizeCustomFieldValue } from "./contact-custom-field-values.js"
 
 export const AUTOMATION_TRIGGER_TYPES = [
@@ -194,6 +202,7 @@ export class AutomationExecutionError extends Error {
   automationName: string
   actionIndex: number
   contactId: string | null
+  nodeExecutions: AutomationNodeLogData[]
 
   constructor(params: {
     automationId: string
@@ -208,6 +217,7 @@ export class AutomationExecutionError extends Error {
     this.automationName = params.automationName
     this.actionIndex = params.actionIndex
     this.contactId = params.contactId ?? null
+    this.nodeExecutions = []
   }
 }
 
@@ -565,7 +575,39 @@ type AutomationEvent = {
   targetStageId: string | null
 }
 
-function automationMatchesSnapshot(
+function displayValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "empty"
+  if (Array.isArray(value)) return value.length > 0 ? value.map(String).join(", ") : "empty"
+  if (typeof value === "boolean") return value ? "Yes" : "No"
+  if (typeof value === "object") return JSON.stringify(value)
+  return String(value)
+}
+
+function operatorExpectation(operator: AutomationOperator, expected: unknown, found: unknown) {
+  const expectedLabel = displayValue(expected)
+  const foundLabel = displayValue(found)
+  if (operator === "EQUALS") return `expected ${expectedLabel}, found ${foundLabel}`
+  if (operator === "NOT_EQUALS") return `expected anything except ${expectedLabel}, found ${foundLabel}`
+  if (operator === "IS_EMPTY") return `expected empty, found ${foundLabel}`
+  if (operator === "IS_NOT_EMPTY") return "expected a value, found empty"
+  const descriptions: Partial<Record<AutomationOperator, string>> = {
+    CONTAINS: "to contain",
+    NOT_CONTAINS: "not to contain",
+    GREATER_THAN: "to be greater than",
+    GREATER_THAN_OR_EQUAL: "to be at least",
+    LESS_THAN: "to be less than",
+    LESS_THAN_OR_EQUAL: "to be at most",
+    BETWEEN: "to be between",
+    INCLUDES_ANY: "to include any of",
+    INCLUDES_ALL: "to include all of",
+    EXCLUDES_ALL: "to exclude all of",
+    IS_TRUE: "to be Yes",
+    IS_FALSE: "to be No",
+  }
+  return `expected ${descriptions[operator] ?? operator.toLocaleLowerCase()} ${expectedLabel}, found ${foundLabel}`
+}
+
+function evaluateAutomationConditions(
   automation: any,
   event: AutomationEvent,
   contact: {
@@ -574,46 +616,78 @@ function automationMatchesSnapshot(
     tags: Array<{ tagId: string }>
     customFieldValues: Array<{ fieldId: string; value: unknown }>
   },
-  fieldMap: Map<string, CustomFieldRecord>,
+  catalog: AutomationRuntimeCatalog,
 ) {
   const values = new Map(contact.customFieldValues.map((item) => [item.fieldId, item.value]))
   const contactTagIds = contact.tags.map((item) => item.tagId)
-  return automation.conditions.every((condition: any) => {
+  const failures: string[] = []
+
+  for (const condition of automation.conditions) {
+    let matches = false
+    let label = "Automation filter"
+    let currentValue: unknown = null
+    let expectedValue: unknown = condition.compareValue
+
     if (condition.source === "OPPORTUNITY_VALUE") {
-      return evaluateAutomationOperator(condition.operator, event.valueCents, condition.compareValue, "number")
-    }
-    if (condition.source === "CONTACT_STATUS") {
-      return evaluateAutomationOperator(
+      label = "Opportunity value"
+      currentValue = event.valueCents
+      matches = evaluateAutomationOperator(condition.operator, currentValue, condition.compareValue, "number")
+    } else if (condition.source === "CONTACT_STATUS") {
+      label = "Contact status"
+      currentValue = contact.statusConfigId
+        ? catalog.statusMap.get(contact.statusConfigId) ?? contact.statusConfigId
+        : null
+      expectedValue = condition.statusConfigId
+        ? catalog.statusMap.get(condition.statusConfigId) ?? condition.statusConfigId
+        : null
+      matches = evaluateAutomationOperator(
         condition.operator,
         contact.statusConfigId,
         condition.statusConfigId,
         "string",
       )
-    }
-    if (condition.source === "CONTACT_ASSIGNEE") {
-      return evaluateAutomationOperator(
+    } else if (condition.source === "CONTACT_ASSIGNEE") {
+      label = "Assigned to"
+      currentValue = contact.assignedToUserId
+        ? catalog.userMap.get(contact.assignedToUserId) ?? contact.assignedToUserId
+        : null
+      expectedValue = condition.assignedUserId
+        ? catalog.userMap.get(condition.assignedUserId) ?? condition.assignedUserId
+        : null
+      matches = evaluateAutomationOperator(
         condition.operator,
         contact.assignedToUserId,
         condition.assignedUserId,
         "string",
       )
+    } else if (condition.source === "CONTACT_TAGS") {
+      label = "Contact tag"
+      currentValue = contactTagIds.map((tagId) => catalog.tagMap.get(tagId) ?? tagId)
+      expectedValue = condition.tagId
+        ? catalog.tagMap.get(condition.tagId) ?? condition.tagId
+        : null
+      if (condition.operator === "IS_EMPTY") matches = contactTagIds.length === 0
+      else if (condition.operator === "IS_NOT_EMPTY") matches = contactTagIds.length > 0
+      else if (condition.operator === "EQUALS") matches = contactTagIds.includes(condition.tagId)
+      else if (condition.operator === "NOT_EQUALS") matches = !contactTagIds.includes(condition.tagId)
+    } else {
+      const field = condition.customFieldId ? catalog.fieldMap.get(condition.customFieldId) : null
+      label = field?.label ?? "Custom field"
+      currentValue = field ? values.get(field.id) ?? null : null
+      matches = Boolean(field) && evaluateAutomationOperator(
+        condition.operator,
+        currentValue,
+        condition.compareValue,
+        valueTypeForCustomField(field!.fieldType),
+      )
     }
-    if (condition.source === "CONTACT_TAGS") {
-      if (condition.operator === "IS_EMPTY") return contactTagIds.length === 0
-      if (condition.operator === "IS_NOT_EMPTY") return contactTagIds.length > 0
-      if (condition.operator === "EQUALS") return contactTagIds.includes(condition.tagId)
-      if (condition.operator === "NOT_EQUALS") return !contactTagIds.includes(condition.tagId)
-      return false
+
+    if (!matches) {
+      failures.push(`${label}: ${operatorExpectation(condition.operator, expectedValue, currentValue)}.`)
     }
-    const field = condition.customFieldId ? fieldMap.get(condition.customFieldId) : null
-    if (!field) return false
-    return evaluateAutomationOperator(
-      condition.operator,
-      values.get(field.id) ?? null,
-      condition.compareValue,
-      valueTypeForCustomField(field.fieldType),
-    )
-  })
+  }
+
+  return { matches: failures.length === 0, failures }
 }
 
 export type AutomationRuntimeCatalog = {
@@ -621,13 +695,18 @@ export type AutomationRuntimeCatalog = {
   activeStatusIds: Set<string>
   activeUserIds: Set<string>
   tagIds: Set<string>
+  statusMap: Map<string, string>
+  userMap: Map<string, string>
+  tagMap: Map<string, string>
+  pipelineMap: Map<string, string>
+  stageMap: Map<string, string>
 }
 
 export async function getAutomationRuntimeCatalog(
   prismaTx: any,
   tenantId: string,
 ): Promise<AutomationRuntimeCatalog> {
-  const [fields, statuses, memberships, tags] = await Promise.all([
+  const [fields, statuses, memberships, tags, pipelines] = await Promise.all([
     prismaTx.contactCustomField.findMany({
       where: { tenantId, isActive: true, isEncrypted: false, isSensitive: false },
       select: {
@@ -643,15 +722,19 @@ export async function getAutomationRuntimeCatalog(
     }),
     prismaTx.contactStatusConfig.findMany({
       where: { tenantId, isActive: true },
-      select: { id: true },
+      select: { id: true, name: true },
     }),
     prismaTx.membership.findMany({
       where: { tenantId, status: "ACTIVE" },
-      select: { userId: true },
+      select: { userId: true, user: { select: { name: true, email: true } } },
     }),
     prismaTx.tenantTag.findMany({
       where: { tenantId },
-      select: { id: true },
+      select: { id: true, name: true },
+    }),
+    prismaTx.opportunityPipeline.findMany({
+      where: { tenantId },
+      select: { id: true, name: true, stages: { select: { id: true, name: true } } },
     }),
   ])
 
@@ -662,6 +745,16 @@ export async function getAutomationRuntimeCatalog(
     activeStatusIds: new Set(statuses.map((item: any) => item.id)),
     activeUserIds: new Set(memberships.map((item: any) => item.userId)),
     tagIds: new Set(tags.map((item: any) => item.id)),
+    statusMap: new Map(statuses.map((item: any) => [item.id, item.name])),
+    userMap: new Map(memberships.map((item: any) => [
+      item.userId,
+      item.user?.name?.trim() || item.user?.email || item.userId,
+    ])),
+    tagMap: new Map(tags.map((item: any) => [item.id, item.name])),
+    pipelineMap: new Map(pipelines.map((item: any) => [item.id, item.name])),
+    stageMap: new Map(pipelines.flatMap((pipeline: any) =>
+      pipeline.stages.map((stage: any) => [stage.id, stage.name] as const),
+    )),
   }
 }
 
@@ -790,18 +883,59 @@ export async function applyAutomationActions(
   }
 }
 
+function evaluateAutomationTrigger(
+  automation: any,
+  event: AutomationEvent,
+  catalog: AutomationRuntimeCatalog,
+) {
+  if (automation.triggerType !== event.triggerType) {
+    return {
+      matches: false,
+      details: `Skipped because this automation listens for ${getAutomationTriggerLabel(automation.triggerType)}, not ${getAutomationTriggerLabel(event.triggerType)}.`,
+    }
+  }
+  if (automation.pipelineId !== event.pipelineId) {
+    const expected = catalog.pipelineMap.get(automation.pipelineId) ?? automation.pipelineId
+    const found = catalog.pipelineMap.get(event.pipelineId) ?? event.pipelineId
+    return {
+      matches: false,
+      details: `Pipeline: expected ${expected}, found ${found}.`,
+    }
+  }
+  if (
+    automation.triggerType === "OPPORTUNITY_STAGE_CHANGED" &&
+    automation.targetStageId !== event.targetStageId
+  ) {
+    const expected = automation.targetStageId
+      ? catalog.stageMap.get(automation.targetStageId) ?? automation.targetStageId
+      : "empty"
+    const found = event.targetStageId
+      ? catalog.stageMap.get(event.targetStageId) ?? event.targetStageId
+      : "empty"
+    return {
+      matches: false,
+      details: `Stage: expected ${expected}, found ${found}.`,
+    }
+  }
+  return { matches: true, details: "The opportunity event matched this trigger." }
+}
+
 export async function executeOpportunityAutomations(prismaTx: any, event: AutomationEvent) {
   const automations = await prismaTx.automation.findMany({
     where: {
       tenantId: event.tenantId,
       isEnabled: true,
-      pipelineId: event.pipelineId,
-      triggerType: event.triggerType,
-      ...(event.triggerType === "OPPORTUNITY_STAGE_CHANGED"
-        ? {
-            targetStageId: event.targetStageId,
-          }
-        : {}),
+      processes: {
+        some: {
+          contacts: {
+            some: {
+              tenantId: event.tenantId,
+              contactId: event.contactId,
+              status: "SUCCEEDED",
+            },
+          },
+        },
+      },
     },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {
@@ -816,6 +950,9 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
       where: { tenantId: event.tenantId, id: event.contactId },
       select: {
         id: true,
+        firstName: true,
+        middleName: true,
+        lastName: true,
         statusConfigId: true,
         assignedToUserId: true,
         tags: { select: { tagId: true } },
@@ -826,23 +963,141 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
   ])
   if (!contact) throw new Error("Contact not found while executing automation.")
 
-  const matched = automations.filter((automation: any) =>
-    automationMatchesSnapshot(automation, event, contact, catalog.fieldMap),
-  )
-
-  for (const automation of matched) {
-    await applyAutomationActions(prismaTx, {
-      automation,
+  const contactName = getContactDisplayName(contact)
+  const plans = automations.map((automation: any) => {
+    const attemptId = randomUUID()
+    const occurredAt = new Date()
+    const base = {
       tenantId: event.tenantId,
+      automationId: automation.id,
+      automationName: automation.name,
       contactId: event.contactId,
-      catalog,
-    })
+      contactName,
+      actorUserId: event.actorUserId,
+      processId: null,
+      opportunityId: event.opportunityId,
+      attemptId,
+      eventSource: event.triggerType,
+      occurredAt,
+    } satisfies Omit<AutomationNodeLogData, "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
+    const trigger = evaluateAutomationTrigger(automation, event, catalog)
+    const logs: AutomationNodeLogData[] = [{
+      ...base,
+      nodeKind: "TRIGGER",
+      nodeOrder: 0,
+      nodeKey: automation.triggerType,
+      nodeLabel: getAutomationTriggerLabel(automation.triggerType),
+      status: trigger.matches ? "EXECUTED" : "SKIPPED",
+      reasonCode: trigger.matches ? null : "TRIGGER_NOT_MATCHED",
+      details: trigger.details,
+    }]
+
+    if (!trigger.matches) {
+      logs.push(...automation.actions.map((action: any, index: number) => ({
+        ...base,
+        nodeKind: "ACTION" as const,
+        nodeOrder: index + 1,
+        nodeKey: action.type,
+        nodeLabel: getAutomationActionLabel(action.type),
+        status: "SKIPPED" as const,
+        reasonCode: "TRIGGER_NOT_MET",
+        details: `Skipped because the automation trigger did not match. ${trigger.details}`,
+      })))
+      return { automation, logs, shouldRun: false }
+    }
+
+    const conditionResult = evaluateAutomationConditions(automation, event, contact, catalog)
+    if (!conditionResult.matches) {
+      const details = conditionResult.failures.join(" ")
+      logs.push(...automation.actions.map((action: any, index: number) => ({
+        ...base,
+        nodeKind: "ACTION" as const,
+        nodeOrder: index + 1,
+        nodeKey: action.type,
+        nodeLabel: getAutomationActionLabel(action.type),
+        status: "SKIPPED" as const,
+        reasonCode: "FILTERS_NOT_MET",
+        details,
+      })))
+      return { automation, logs, shouldRun: false }
+    }
+
+    return { automation, logs, shouldRun: true }
+  })
+
+  for (let planIndex = 0; planIndex < plans.length; planIndex += 1) {
+    const plan = plans[planIndex]
+    if (!plan.shouldRun) continue
+
+    try {
+      await applyAutomationActions(prismaTx, {
+        automation: plan.automation,
+        tenantId: event.tenantId,
+        contactId: event.contactId,
+        catalog,
+      })
+    } catch (error) {
+      if (error instanceof AutomationExecutionError) {
+        for (let index = 0; index < plans.length; index += 1) {
+          const tracePlan = plans[index]
+          if (!tracePlan.shouldRun) continue
+          const actionLogs = tracePlan.automation.actions.map((action: any, actionIndex: number) => {
+            const base = tracePlan.logs[0]
+            const wasRolledBack = index < planIndex || (index === planIndex && actionIndex < error.actionIndex)
+            const isFailure = index === planIndex && actionIndex === error.actionIndex
+            return {
+              tenantId: base.tenantId,
+              automationId: base.automationId,
+              automationName: base.automationName,
+              contactId: base.contactId,
+              contactName: base.contactName,
+              actorUserId: base.actorUserId,
+              processId: base.processId,
+              opportunityId: base.opportunityId,
+              attemptId: base.attemptId,
+              eventSource: base.eventSource,
+              occurredAt: base.occurredAt,
+              nodeKind: "ACTION" as const,
+              nodeOrder: actionIndex + 1,
+              nodeKey: action.type,
+              nodeLabel: getAutomationActionLabel(action.type),
+              status: wasRolledBack || isFailure ? "FAILED" as const : "SKIPPED" as const,
+              reasonCode: wasRolledBack
+                ? "TRANSACTION_ROLLED_BACK"
+                : isFailure
+                  ? error.code
+                  : "PREVIOUS_ACTION_FAILED",
+              details: wasRolledBack
+                ? "This action ran, but its changes were rolled back because a later action failed."
+                : isFailure
+                  ? error.message.slice(0, 500)
+                  : "Skipped because an earlier action failed.",
+            }
+          })
+          tracePlan.logs = tracePlan.logs.filter((log: AutomationNodeLogData) => log.nodeKind === "TRIGGER")
+          tracePlan.logs.push(...actionLogs)
+        }
+        error.nodeExecutions = plans.flatMap((item: { logs: AutomationNodeLogData[] }) => item.logs)
+      }
+      throw error
+    }
+
+    plan.logs.push(...plan.automation.actions.map((action: any, index: number) => ({
+      ...plan.logs[0],
+      nodeKind: "ACTION" as const,
+      nodeOrder: index + 1,
+      nodeKey: action.type,
+      nodeLabel: getAutomationActionLabel(action.type),
+      status: "EXECUTED" as const,
+      reasonCode: null,
+      details: "Action completed successfully.",
+    })))
 
     await prismaTx.automationExecution.create({
       data: {
         tenantId: event.tenantId,
-        automationId: automation.id,
-        automationName: automation.name,
+        automationId: plan.automation.id,
+        automationName: plan.automation.name,
         triggerType: event.triggerType,
         status: "SUCCEEDED",
         opportunityId: event.opportunityId,
@@ -850,30 +1105,46 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
         sourceStageId: event.sourceStageId,
         targetStageId: event.targetStageId,
         actorUserId: event.actorUserId,
-        actionCount: automation.actions.length,
+        actionCount: plan.automation.actions.length,
       },
     })
   }
 
-  return { matchedCount: matched.length, executedCount: matched.length }
+  const nodeExecutions = plans.flatMap((plan: { logs: AutomationNodeLogData[] }) => plan.logs)
+  if (nodeExecutions.length > 0) {
+    await prismaTx.automationNodeExecution.createMany({ data: nodeExecutions })
+  }
+
+  const matchedCount = plans.filter((plan: { shouldRun: boolean }) => plan.shouldRun).length
+  return { matchedCount, executedCount: matchedCount }
 }
 
 export async function recordAutomationFailure(prismaClient: any, event: AutomationEvent, error: AutomationExecutionError) {
-  await prismaClient.automationExecution.create({
-    data: {
-      tenantId: event.tenantId,
-      automationId: error.automationId,
-      automationName: error.automationName,
-      triggerType: event.triggerType,
-      status: "FAILED",
-      opportunityId: event.triggerType === "OPPORTUNITY_CREATED" ? null : event.opportunityId,
-      contactId: event.contactId,
-      sourceStageId: event.sourceStageId,
-      targetStageId: event.targetStageId,
-      actorUserId: event.actorUserId,
-      actionCount: error.actionIndex,
-      errorCode: error.code,
-      errorMessage: error.message.slice(0, 500),
-    },
+  await prismaClient.$transaction(async (transaction: any) => {
+    await transaction.automationExecution.create({
+      data: {
+        tenantId: event.tenantId,
+        automationId: error.automationId,
+        automationName: error.automationName,
+        triggerType: event.triggerType,
+        status: "FAILED",
+        opportunityId: event.triggerType === "OPPORTUNITY_CREATED" ? null : event.opportunityId,
+        contactId: event.contactId,
+        sourceStageId: event.sourceStageId,
+        targetStageId: event.targetStageId,
+        actorUserId: event.actorUserId,
+        actionCount: error.actionIndex,
+        errorCode: error.code,
+        errorMessage: error.message.slice(0, 500),
+      },
+    })
+    if (error.nodeExecutions.length > 0) {
+      await transaction.automationNodeExecution.createMany({
+        data: error.nodeExecutions.map((item) => ({
+          ...item,
+          opportunityId: event.triggerType === "OPPORTUNITY_CREATED" ? null : item.opportunityId,
+        })),
+      })
+    }
   })
 }

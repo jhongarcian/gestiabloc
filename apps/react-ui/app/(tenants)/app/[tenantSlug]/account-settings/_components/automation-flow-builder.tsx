@@ -2,7 +2,7 @@
 
 import "@xyflow/react/dist/style.css"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -63,11 +63,11 @@ import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 import { AutomationContactsTab } from "./automation-contacts-tab"
+import { AutomationExecutionLogsTab } from "./automation-execution-logs-tab"
 import type {
   AutomationAction,
   AutomationCatalog,
   AutomationCondition,
-  AutomationExecution,
   AutomationOperator,
   AutomationRecord,
   AutomationTriggerType,
@@ -81,6 +81,7 @@ type AutomationFlowBuilderProps = {
   tenantId: string
   tenantSlug: string
   automationId?: string
+  timezone?: string | null
 }
 
 type Draft = {
@@ -387,7 +388,7 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
   }
 }
 
-export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId }: AutomationFlowBuilderProps) {
+export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, timezone }: AutomationFlowBuilderProps) {
   const router = useRouter()
   const [catalog, setCatalog] = useState<AutomationCatalog | null>(null)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
@@ -398,10 +399,8 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId }: Au
   const [triggerEditorDraft, setTriggerEditorDraft] = useState<Draft | null>(null)
   const [panelOriginalDraft, setPanelOriginalDraft] = useState<Draft | null>(null)
   const [activeTab, setActiveTab] = useState<"builder" | "contacts" | "logs">("builder")
-  const [logs, setLogs] = useState<AutomationExecution[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [logsLoading, setLogsLoading] = useState(false)
   const [statusSaving, setStatusSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
@@ -447,26 +446,6 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId }: Au
       cancelled = true
     }
   }, [automationId, tenantId])
-
-  const loadLogs = useCallback(async () => {
-    if (!automationId) return
-    setLogsLoading(true)
-    try {
-      const { data } = await api.get<{ items: AutomationExecution[] }>(
-        `/api/account-settings/${tenantId}/automation-executions`,
-        { params: { automationId, pageSize: 50 } },
-      )
-      setLogs(data.items)
-    } catch {
-      toast.error("Could not load execution logs.")
-    } finally {
-      setLogsLoading(false)
-    }
-  }, [automationId, tenantId])
-
-  useEffect(() => {
-    if (activeTab === "logs") void loadLogs()
-  }, [activeTab, loadLogs])
 
   const graph = useMemo(
     () => buildAutomationFlowGraph(draft, catalog, ACTION_LABELS),
@@ -931,9 +910,14 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId }: Au
           tenantSlug={tenantSlug}
           automationId={automationId}
         />
-      ) : (
-        <ExecutionLogs logs={logs} loading={logsLoading} />
-      )}
+      ) : automationId ? (
+        <AutomationExecutionLogsTab
+          tenantId={tenantId}
+          tenantSlug={tenantSlug}
+          automationId={automationId}
+          timezone={timezone}
+        />
+      ) : null}
     </div>
   )
 }
@@ -1510,8 +1494,4 @@ function ActionValueInput({ action, field, onChange }: { action: AutomationActio
   if (field.fieldType === "TEXTAREA") return <div className="space-y-2"><Label>Value</Label><Textarea value={String(action.value ?? "")} onChange={(event) => onChange(event.target.value)} /></div>
   const type = field.fieldType === "DATE" ? "date" : field.fieldType === "NUMBER" || field.fieldType === "CURRENCY" ? "number" : "text"
   return <div className="space-y-2"><Label>Value</Label><Input type={type} value={String(action.value ?? "")} onChange={(event) => onChange(type === "number" ? Number(event.target.value) : event.target.value)} /></div>
-}
-
-function ExecutionLogs({ logs, loading }: { logs: AutomationExecution[]; loading: boolean }) {
-  return <section className="min-h-0 flex-1 overflow-y-auto rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">{loading ? <div className="flex h-40 items-center justify-center text-slate-500"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading executions…</div> : logs.length === 0 ? <div className="flex h-56 flex-col items-center justify-center text-center"><ListChecks className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-medium text-slate-700">No executions yet</p><p className="mt-1 text-xs text-slate-500">Matched runs will appear here after this automation is enabled.</p></div> : <div className="space-y-2">{logs.map((log) => <article key={log.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3"><div><div className="flex items-center gap-2"><Badge className={log.status === "SUCCEEDED" ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}>{log.status}</Badge><span className="text-sm font-medium text-slate-900">{log.processName ?? log.automationName}</span></div><p className="mt-1 text-xs text-slate-500">{log.processName ? `${log.automationName} · MANUAL PROCESS` : log.triggerType.replaceAll("_", " ")} · {log.actionCount} action{log.actionCount === 1 ? "" : "s"}</p>{log.errorMessage ? <p className="mt-1 text-xs text-rose-700">{log.errorMessage}</p> : null}</div><time className="text-xs text-slate-500">{new Date(log.createdAt).toLocaleString()}</time></article>)}</div>}</section>
 }

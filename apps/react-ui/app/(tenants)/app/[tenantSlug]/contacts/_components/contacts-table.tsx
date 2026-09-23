@@ -950,31 +950,14 @@ export function ContactsTable({
     setIsSelectingAllContacts(true)
 
     try {
-      const nextSelection = new Map<string, string>()
-      let selectionPage = 1
-      let totalPages = 1
-
-      do {
-        const { data: response } = await api.get<{
-          ok: boolean
-          items: Array<{ id: string; name: string }>
-          pagination: {
-            page: number
-            pageSize: number
-            total: number
-            totalPages: number
-          }
-        }>(`/api/contacts/${encodeURIComponent(tenantId)}/selection`, {
-          params: { page: selectionPage, pageSize: 1000 },
-        })
-
-        for (const contact of response.items) {
-          nextSelection.set(contact.id, contact.name)
-        }
-
-        totalPages = response.pagination.totalPages
-        selectionPage += 1
-      } while (selectionPage <= totalPages)
+      const { data: response } = await api.get<{
+        ok: boolean
+        items: Array<{ id: string; name: string }>
+        total: number
+      }>(`/api/contacts/${encodeURIComponent(tenantId)}/selection`)
+      const nextSelection = new Map(
+        response.items.map((contact) => [contact.id, contact.name]),
+      )
 
       setSelectedContacts(nextSelection)
       setAllTenantContactsSelected(nextSelection.size > 0)
@@ -1139,7 +1122,7 @@ export function ContactsTable({
 
         <div className="mt-2 flex min-h-10 items-center gap-2  px-2.5 pt-1.5 ">
           <div
-            className="flex min-w-0 items-center gap-2 text-xs font-semibold text-slate-700"
+            className="flex min-w-0 items-center gap-2 text-xs font-semibold text-slate-700 border rounded-full bg-slate-100 px-2.5 py-1"
             aria-live="polite"
           >
             <span className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-blue-950 px-1.5 text-[11px] text-white">
@@ -1149,30 +1132,32 @@ export function ContactsTable({
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              disabled={isSelectingAllContacts || allTenantContactsSelected}
-              className="rounded-full"
-              onClick={() => void selectAllTenantContacts()}
-            >
-              {isSelectingAllContacts ? (
-                <Loader2
-                  data-icon="inline-start"
-                  className="animate-spin"
-                  aria-hidden="true"
-                />
-              ) : null}
-              <span className="sm:hidden">
-                {allTenantContactsSelected ? "All selected" : "Select all"}
-              </span>
-              <span className="hidden sm:inline">
-                {allTenantContactsSelected
-                  ? "All contacts selected"
-                  : "Select all contacts"}
-              </span>
-            </Button>
+            {selectedContactCount > 0 ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                disabled={isSelectingAllContacts || allTenantContactsSelected}
+                className="rounded-full"
+                onClick={() => void selectAllTenantContacts()}
+              >
+                {isSelectingAllContacts ? (
+                  <Loader2
+                    data-icon="inline-start"
+                    className="animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : null}
+                <span className="sm:hidden">
+                  {allTenantContactsSelected ? "All selected" : "Select all"}
+                </span>
+                <span className="hidden sm:inline">
+                  {allTenantContactsSelected
+                    ? "All contacts selected"
+                    : "Select all contacts"}
+                </span>
+              </Button>
+            ) : null}
             <AddContactsToAutomationDialog
               tenantId={tenantId}
               tenantSlug={tenantSlug}

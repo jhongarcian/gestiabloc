@@ -695,12 +695,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
-        - in: query
-          name: page
-          schema: { type: integer, minimum: 1, default: 1 }
-        - in: query
-          name: pageSize
-          schema: { type: integer, minimum: 1, maximum: 1000, default: 1000 }
       responses:
         "200":
           description: Contact selection records returned
@@ -711,7 +705,7 @@ paths:
   /api/automation-processes/{tenantId}:
     get:
       tags: [Automation Processes]
-      summary: List current and past automation processes for the tenant
+      summary: List current and past automation enrollment processes for the tenant
       security:
         - cookieAuth: []
       parameters:
@@ -731,7 +725,7 @@ paths:
                 $ref: "#/components/schemas/AutomationProcessListResponse"
     post:
       tags: [Automation Processes]
-      summary: Create an automation process before uploading contact batches
+      summary: Create an automation enrollment process before uploading contact batches
       security:
         - cookieAuth: []
       parameters:
@@ -766,11 +760,11 @@ paths:
               $ref: "#/components/schemas/UploadAutomationProcessBatchRequest"
       responses:
         "201":
-          description: Batch stored for background processing
+          description: Batch stored for background enrollment
   /api/automation-processes/{tenantId}/{processId}/start:
     post:
       tags: [Automation Processes]
-      summary: Queue a fully uploaded process
+      summary: Queue a fully uploaded enrollment process
       security:
         - cookieAuth: []
       parameters:
@@ -798,7 +792,7 @@ paths:
   /api/automation-processes/{tenantId}/{processId}:
     get:
       tags: [Automation Processes]
-      summary: Get live process progress, batches, and contact errors
+      summary: Get live enrollment progress, batches, and contact errors
       security:
         - cookieAuth: []
       parameters:
@@ -5749,6 +5743,43 @@ paths:
       responses:
         "200":
           description: Execution history
+  /api/account-settings/{tenantId}/automations/{automationId}/execution-logs:
+    get:
+      tags: [Automations]
+      summary: List paginated node-level execution logs for an automation
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AutomationIdPathParam"
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            enum: [10, 25, 50]
+            default: 10
+        - in: query
+          name: search
+          description: Case-insensitive contact name search
+          schema:
+            type: string
+            maxLength: 120
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [EXECUTED, SKIPPED, FAILED]
+      responses:
+        "200":
+          description: Node-level execution logs and pagination metadata
+        "404":
+          description: Automation not found in this tenant
   /api/onboarding/{tenantId}:
     get:
       tags: [Onboarding]
@@ -7026,7 +7057,7 @@ components:
             $ref: "#/components/schemas/ContactAutomationOption"
     ContactSelectionResponse:
       type: object
-      required: [ok, items, pagination]
+      required: [ok, items, total]
       properties:
         ok:
           type: boolean
@@ -7039,14 +7070,8 @@ components:
             properties:
               id: { type: string }
               name: { type: string }
-        pagination:
-          type: object
-          required: [page, pageSize, total, totalPages]
-          properties:
-            page: { type: integer }
-            pageSize: { type: integer }
-            total: { type: integer }
-            totalPages: { type: integer }
+        total:
+          type: integer
     CreateAutomationProcessRequest:
       type: object
       additionalProperties: false

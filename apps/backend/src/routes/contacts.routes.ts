@@ -96,11 +96,6 @@ const ContactSearchQuerySchema = z.object({
   excludeContactId: z.string().trim().min(1).optional(),
 })
 
-const ContactSelectionQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(1000).default(1000),
-})
-
 const ContactTagSearchQuerySchema = z.object({
   q: z.string().trim().max(120).optional().default(""),
   page: z.coerce.number().int().min(1).default(1),
@@ -1564,27 +1559,20 @@ router.get("/:tenantId/selection", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
     const { tenantId } = TenantPathSchema.parse(req.params)
-    const { page, pageSize } = ContactSelectionQuerySchema.parse(req.query)
 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    const where = { tenantId }
-    const [total, contacts] = await prisma.$transaction([
-      prisma.contact.count({ where }),
-      prisma.contact.findMany({
-        where,
-        orderBy: [{ id: "asc" }],
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-        select: {
-          id: true,
-          firstName: true,
-          middleName: true,
-          lastName: true,
-        },
-      }),
-    ])
+    const contacts = await prisma.contact.findMany({
+      where: { tenantId },
+      orderBy: [{ id: "asc" }],
+      select: {
+        id: true,
+        firstName: true,
+        middleName: true,
+        lastName: true,
+      },
+    })
 
     return res.json({
       ok: true,
@@ -1594,12 +1582,7 @@ router.get("/:tenantId/selection", requireAuth, async (req, res, next) => {
           .filter(Boolean)
           .join(" "),
       })),
-      pagination: {
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-      },
+      total: contacts.length,
     })
   } catch (error) {
     return next(error)

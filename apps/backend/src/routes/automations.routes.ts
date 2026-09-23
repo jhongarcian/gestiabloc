@@ -32,6 +32,15 @@ const AutomationContactsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(10),
 })
+const AutomationExecutionLogsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().refine(
+    (value) => value === 10 || value === 25 || value === 50,
+    { message: "pageSize must be 10, 25, or 50" },
+  ).default(10),
+  search: z.string().trim().max(120).default(""),
+  status: z.enum(["EXECUTED", "SKIPPED", "FAILED"]).optional(),
+})
 const ReorderSchema = z.object({
   automationIds: z.array(z.string().trim().min(1)).min(1).max(200),
 })
@@ -204,6 +213,86 @@ router.get("/:tenantId/automation-executions", ...readMiddlewares, async (req, r
   }
 })
 
+router.get("/:tenantId/automations/:automationId/execution-logs", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId, automationId } = AutomationPathSchema.parse(req.params)
+    const query = AutomationExecutionLogsQuerySchema.parse(req.query)
+    const automation = await prismaWithAutomations.automation.findUnique({
+      where: { tenantId_id: { tenantId, id: automationId } },
+      select: { id: true },
+    })
+    if (!automation) return res.status(404).json({ error: "AUTOMATION_NOT_FOUND" })
+
+    const where = {
+      tenantId,
+      automationId,
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.search
+        ? { contactName: { contains: query.search, mode: "insensitive" } }
+        : {}),
+    }
+    const [total, records] = await Promise.all([
+      prismaWithAutomations.automationNodeExecution.count({ where }),
+      prismaWithAutomations.automationNodeExecution.findMany({
+        where,
+        orderBy: [
+          { occurredAt: "desc" },
+          { attemptId: "desc" },
+          { nodeOrder: "asc" },
+          { id: "asc" },
+        ],
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+        select: {
+          id: true,
+          attemptId: true,
+          eventSource: true,
+          contactId: true,
+          contactName: true,
+          contact: { select: { id: true } },
+          nodeKind: true,
+          nodeOrder: true,
+          nodeKey: true,
+          nodeLabel: true,
+          status: true,
+          details: true,
+          occurredAt: true,
+        },
+      }),
+    ])
+
+    return res.json({
+      ok: true,
+      items: records.map((record: any) => ({
+        id: record.id,
+        attemptId: record.attemptId,
+        eventSource: record.eventSource,
+        contact: {
+          id: record.contact?.id ?? null,
+          name: record.contactName,
+        },
+        node: {
+          kind: record.nodeKind,
+          key: record.nodeKey,
+          label: record.nodeLabel,
+          index: record.nodeKind === "ACTION" ? record.nodeOrder : null,
+        },
+        status: record.status,
+        details: record.details,
+        occurredAt: record.occurredAt,
+      })),
+      pagination: {
+        page: query.page,
+        pageSize: query.pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.get("/:tenantId/automations/:automationId/contacts", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId, automationId } = AutomationPathSchema.parse(req.params)
@@ -222,12 +311,27 @@ router.get("/:tenantId/automations/:automationId/contacts", ...readMiddlewares, 
           OR COALESCE(contact."phone", '') ILIKE ${searchPattern}
         )`
       : Prisma.sql``
-    const executionContacts = Prisma.sql`
+    const enrolledContacts = Prisma.sql`
       FROM (
+        SELECT
+          enrollment."contactId" AS "contactId",
+          MIN(enrollment."createdAt") AS "firstEnteredAt"
+        FROM "AutomationProcessContact" enrollment
+        INNER JOIN "AutomationProcess" process
+          ON process."id" = enrollment."processId"
+          AND process."tenantId" = ${tenantId}
+          AND process."automationId" = ${automationId}
+        WHERE enrollment."tenantId" = ${tenantId}
+          AND enrollment."status" = 'SUCCEEDED'::"AutomationProcessContactStatus"
+        GROUP BY enrollment."contactId"
+      ) enrolled_contact
+      INNER JOIN "Contact" contact
+        ON contact."id" = enrolled_contact."contactId"
+        AND contact."tenantId" = ${tenantId}
+      LEFT JOIN (
         SELECT
           execution."contactId" AS "contactId",
           COUNT(*)::int AS "executionCount",
-          MIN(execution."createdAt") AS "firstEnteredAt",
           MAX(execution."createdAt") AS "lastExecutedAt",
           (ARRAY_AGG(execution."status"::text ORDER BY execution."createdAt" DESC))[1] AS "lastStatus"
         FROM "AutomationExecution" execution
@@ -236,9 +340,7 @@ router.get("/:tenantId/automations/:automationId/contacts", ...readMiddlewares, 
           AND execution."contactId" IS NOT NULL
         GROUP BY execution."contactId"
       ) execution_contact
-      INNER JOIN "Contact" contact
-        ON contact."id" = execution_contact."contactId"
-        AND contact."tenantId" = ${tenantId}
+        ON execution_contact."contactId" = enrolled_contact."contactId"
       WHERE TRUE
       ${searchClause}
     `
@@ -250,31 +352,31 @@ router.get("/:tenantId/automations/:automationId/contacts", ...readMiddlewares, 
       lastName: string
       email: string | null
       phone: string | null
-      executionCount: number
+      executionCount: number | null
       firstEnteredAt: Date
-      lastExecutedAt: Date
-      lastStatus: "SUCCEEDED" | "FAILED"
+      lastExecutedAt: Date | null
+      lastStatus: "SUCCEEDED" | "FAILED" | null
     }
     const skip = (query.page - 1) * query.pageSize
     const [countRows, rows] = await prisma.$transaction([
       prisma.$queryRaw<AutomationContactCountRow[]>(Prisma.sql`
         SELECT COUNT(*)::bigint AS total
-        ${executionContacts}
+        ${enrolledContacts}
       `),
       prisma.$queryRaw<AutomationContactRow[]>(Prisma.sql`
         SELECT
-          execution_contact."contactId" AS "contactId",
+          enrolled_contact."contactId" AS "contactId",
           contact."firstName" AS "firstName",
           contact."middleName" AS "middleName",
           contact."lastName" AS "lastName",
           contact."email" AS email,
           contact."phone" AS phone,
-          execution_contact."executionCount" AS "executionCount",
-          execution_contact."firstEnteredAt" AS "firstEnteredAt",
+          COALESCE(execution_contact."executionCount", 0)::int AS "executionCount",
+          enrolled_contact."firstEnteredAt" AS "firstEnteredAt",
           execution_contact."lastExecutedAt" AS "lastExecutedAt",
           execution_contact."lastStatus" AS "lastStatus"
-        ${executionContacts}
-        ORDER BY execution_contact."lastExecutedAt" DESC, execution_contact."contactId" ASC
+        ${enrolledContacts}
+        ORDER BY enrolled_contact."firstEnteredAt" DESC, enrolled_contact."contactId" ASC
         LIMIT ${query.pageSize}
         OFFSET ${skip}
       `),
@@ -293,7 +395,7 @@ router.get("/:tenantId/automations/:automationId/contacts", ...readMiddlewares, 
         },
         firstEnteredAt: row.firstEnteredAt,
         lastExecutedAt: row.lastExecutedAt,
-        executionCount: row.executionCount,
+        executionCount: row.executionCount ?? 0,
         lastStatus: row.lastStatus,
       })),
       search: query.search,

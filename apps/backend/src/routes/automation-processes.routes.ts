@@ -122,13 +122,6 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
     if (!automation) {
       return res.status(404).json({ error: "AUTOMATION_NOT_FOUND" })
     }
-    if (automation.actions.length === 0) {
-      return res.status(409).json({
-        error: "AUTOMATION_HAS_NO_ACTIONS",
-        message: "This automation does not have any actions to run.",
-      })
-    }
-
     const process = await prismaWithProcesses.automationProcess.create({
       data: {
         tenantId,

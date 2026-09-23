@@ -117,6 +117,27 @@ export type AutomationExecution = {
   createdAt: string
 }
 
+export type AutomationNodeExecutionStatus = "EXECUTED" | "SKIPPED" | "FAILED"
+
+export type AutomationNodeExecution = {
+  id: string
+  attemptId: string
+  eventSource: "MANUAL_ENROLLMENT" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED"
+  contact: {
+    id: string | null
+    name: string
+  }
+  node: {
+    kind: "TRIGGER" | "ACTION"
+    key: string
+    label: string
+    index: number | null
+  }
+  status: AutomationNodeExecutionStatus
+  details: string | null
+  occurredAt: string
+}
+
 export type AutomationContact = {
   contact: {
     id: string
@@ -125,7 +146,7 @@ export type AutomationContact = {
     phoneNumber: string | null
   }
   firstEnteredAt: string
-  lastExecutedAt: string
+  lastExecutedAt: string | null
   executionCount: number
-  lastStatus: "SUCCEEDED" | "FAILED"
+  lastStatus: "SUCCEEDED" | "FAILED" | null
 }

@@ -161,7 +161,7 @@ export function AutomationProcessDetails({
 
           <div className="mt-7">
             <div className="mb-2 flex items-center justify-between text-sm text-blue-100">
-              <span>{process.processedContacts.toLocaleString()} of {process.expectedContacts.toLocaleString()} contacts processed</span>
+              <span>{process.processedContacts.toLocaleString()} of {process.expectedContacts.toLocaleString()} contacts enrolled</span>
               <span className="font-semibold text-white">{percent}%</span>
             </div>
             <Progress value={percent} className="h-3 bg-white/15 [&_[data-slot=progress-indicator]]:bg-cyan-300" aria-label={`${percent}% complete`} />
@@ -171,7 +171,7 @@ export function AutomationProcessDetails({
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Card className="gap-0 border-slate-200 py-0"><CardContent className="flex items-center gap-4 p-5"><div className="flex size-11 items-center justify-center rounded-xl bg-blue-50 text-blue-700"><Users aria-hidden="true" /></div><div><p className="text-2xl font-semibold text-slate-950">{process.expectedContacts.toLocaleString()}</p><p className="text-xs text-slate-500">Total contacts</p></div></CardContent></Card>
-        <Card className="gap-0 border-slate-200 py-0"><CardContent className="flex items-center gap-4 p-5"><div className="flex size-11 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700"><CircleCheck aria-hidden="true" /></div><div><p className="text-2xl font-semibold text-slate-950">{process.succeededContacts.toLocaleString()}</p><p className="text-xs text-slate-500">Completed</p></div></CardContent></Card>
+        <Card className="gap-0 border-slate-200 py-0"><CardContent className="flex items-center gap-4 p-5"><div className="flex size-11 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700"><CircleCheck aria-hidden="true" /></div><div><p className="text-2xl font-semibold text-slate-950">{process.succeededContacts.toLocaleString()}</p><p className="text-xs text-slate-500">Enrolled</p></div></CardContent></Card>
         <Card className="gap-0 border-slate-200 py-0"><CardContent className="flex items-center gap-4 p-5"><div className="flex size-11 items-center justify-center rounded-xl bg-rose-50 text-rose-700"><CircleX aria-hidden="true" /></div><div><p className="text-2xl font-semibold text-slate-950">{process.failedContacts.toLocaleString()}</p><p className="text-xs text-slate-500">Errors</p></div></CardContent></Card>
       </div>
 
@@ -182,12 +182,12 @@ export function AutomationProcessDetails({
       <Card className="gap-0 overflow-hidden border-slate-200 py-0">
         <CardHeader className="border-b border-slate-200 px-5 py-5">
           <CardTitle className="text-base">Batches</CardTitle>
-          <p className="text-sm text-slate-500">Contacts are processed in groups of up to 100.</p>
+          <p className="text-sm text-slate-500">Contacts are enrolled in groups of up to 100.</p>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader className="bg-slate-50">
-              <TableRow><TableHead className="px-5">Batch</TableHead><TableHead>Status</TableHead><TableHead>Contacts</TableHead><TableHead>Completed</TableHead><TableHead>Errors</TableHead><TableHead className="px-5 text-right">Finished</TableHead></TableRow>
+              <TableRow><TableHead className="px-5">Batch</TableHead><TableHead>Status</TableHead><TableHead>Contacts</TableHead><TableHead>Enrolled</TableHead><TableHead>Errors</TableHead><TableHead className="px-5 text-right">Finished</TableHead></TableRow>
             </TableHeader>
             <TableBody>
               {process.batches.map((batch) => (
@@ -212,7 +212,7 @@ export function AutomationProcessDetails({
         <Card className="gap-0 overflow-hidden border-slate-200 py-0">
           <CardHeader className="border-b border-slate-200 px-5 py-5">
             <CardTitle className="text-base">Contacts with errors</CardTitle>
-            <p className="text-sm text-slate-500">Review contacts that could not complete all automation actions.</p>
+            <p className="text-sm text-slate-500">Review contacts that could not be enrolled.</p>
           </CardHeader>
           <CardContent className="p-0">
             <Table>
@@ -221,7 +221,7 @@ export function AutomationProcessDetails({
                 {failedContacts.map((contact) => (
                   <TableRow key={contact.id}>
                     <TableCell className="px-5"><Link href={`/app/${tenantSlug}/contacts/${contact.contactId}`} className="font-semibold text-blue-800 hover:underline">{contact.contactName}</Link></TableCell>
-                    <TableCell className="max-w-xl whitespace-normal text-sm text-slate-600">{contact.errorMessage ?? "The automation action could not be completed."}</TableCell>
+                    <TableCell className="max-w-xl whitespace-normal text-sm text-slate-600">{contact.errorMessage ?? "The contact could not be enrolled."}</TableCell>
                     <TableCell className="px-5 text-right text-xs text-slate-500">{formatDate(contact.completedAt)}</TableCell>
                   </TableRow>
                 ))}

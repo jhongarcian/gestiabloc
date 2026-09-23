@@ -64,6 +64,10 @@ type AddContactsToAutomationDialogProps = {
 }
 
 const CONTACTS_PER_BATCH = 100
+const COMPACT_PRIMARY_BUTTON_CLASS =
+  "h-8 shrink-0 cursor-pointer rounded-full bg-blue-950 px-3 py-1 text-xs font-semibold text-white shadow-sm ring-1 ring-black/5 transition hover:bg-blue-900 hover:text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+const COMPACT_SECONDARY_BUTTON_CLASS =
+  "h-8 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
 
 function chunksOfOneHundred(contactIds: string[]) {
   const batches: string[][] = []
@@ -246,7 +250,7 @@ export function AddContactsToAutomationDialog({
       )
       setProcess(startResponse.data.process)
       setPhase("progress")
-      toast.success(`${contactIds.length.toLocaleString()} contacts queued for automation.`)
+      toast.success(`${contactIds.length.toLocaleString()} contacts queued for enrollment.`)
       await onQueued?.()
     } catch (error) {
       if (createdProcessId) {
@@ -261,7 +265,7 @@ export function AddContactsToAutomationDialog({
       const message =
         typeof backendMessage === "string"
           ? backendMessage
-          : "Could not queue the automation process. Please try again."
+          : "Could not enroll the selected contacts. Please try again."
       setSubmitError(message)
       setPhase("configure")
       setProcess(null)
@@ -340,12 +344,12 @@ export function AddContactsToAutomationDialog({
               {phase === "configure"
                 ? "Add to automation"
                 : phase === "uploading"
-                  ? "Preparing the process"
+                  ? "Preparing enrollment"
                   : process?.processName ?? "Automation progress"}
             </DialogTitle>
             <DialogDescription className="mt-2 max-w-md leading-6 text-slate-600">
               {phase === "configure"
-                ? "Choose an automation and name this process so it is easy to recognize later."
+                ? "Choose an automation and name this enrollment."
                 : phase === "uploading"
                   ? "Contacts are being safely prepared in batches of 100. Keep this window open for this step."
                   : "You can close this window at any time. The work will continue in the background."}
@@ -386,15 +390,15 @@ export function AddContactsToAutomationDialog({
                 ) : (
                   <FieldDescription>
                     {selectedAutomation
-                      ? `${selectedAutomation.actionCount} actions will run for every contact, 100 contacts at a time.`
-                      : "The automation actions will be applied to every selected contact."}
+                      ? "Actions wait until the automation trigger and filters match."
+                      : "Enrolling contacts does not run actions immediately."}
                   </FieldDescription>
                 )}
                 <FieldError>{loadError}</FieldError>
               </Field>
 
               <Field data-invalid={Boolean(submitError)}>
-                <FieldLabel htmlFor="contact-automation-process-name">Process name</FieldLabel>
+                <FieldLabel htmlFor="contact-automation-process-name">Enrollment name</FieldLabel>
                 <Input
                   id="contact-automation-process-name"
                   value={processName}
@@ -409,18 +413,18 @@ export function AddContactsToAutomationDialog({
                     if (submitError) setSubmitError(null)
                   }}
                 />
-                <FieldDescription>This name identifies this run in the process history.</FieldDescription>
+                <FieldDescription>This name identifies the enrollment in process history.</FieldDescription>
                 <FieldError>{submitError}</FieldError>
               </Field>
             </FieldGroup>
 
             <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:px-7">
-              <Button type="button" variant="outline" disabled={isSubmitting} className="cursor-pointer rounded-full" onClick={() => setOpen(false)}>
+              <Button type="button" variant="outline" disabled={isSubmitting} className={COMPACT_SECONDARY_BUTTON_CLASS} onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={!canSubmit} className="cursor-pointer rounded-full bg-blue-950 hover:bg-blue-900">
+              <Button type="submit" variant="ghost" disabled={!canSubmit} className={COMPACT_PRIMARY_BUTTON_CLASS}>
                 <Workflow data-icon="inline-start" aria-hidden="true" />
-                Start process
+                Enroll contacts
               </Button>
             </DialogFooter>
           </form>
@@ -435,7 +439,7 @@ export function AddContactsToAutomationDialog({
                   <p className="mt-1 text-xs text-slate-500">
                     {phase === "uploading"
                       ? `${process?.totalContacts.toLocaleString() ?? 0} of ${process?.expectedContacts.toLocaleString() ?? contacts.length.toLocaleString()} prepared`
-                      : `${process?.processedContacts.toLocaleString() ?? 0} of ${process?.expectedContacts.toLocaleString() ?? 0} processed`}
+                      : `${process?.processedContacts.toLocaleString() ?? 0} of ${process?.expectedContacts.toLocaleString() ?? 0} enrolled`}
                   </p>
                 </div>
                 {phase === "uploading" || !process ? (
@@ -449,7 +453,7 @@ export function AddContactsToAutomationDialog({
               <div className="mt-4 grid grid-cols-3 gap-2 text-center">
                 <div className="rounded-xl bg-white px-2 py-3">
                   <p className="text-lg font-semibold text-slate-950">{process?.succeededContacts.toLocaleString() ?? 0}</p>
-                  <p className="text-[11px] text-slate-500">Completed</p>
+                  <p className="text-[11px] text-slate-500">Enrolled</p>
                 </div>
                 <div className="rounded-xl bg-white px-2 py-3">
                   <p className="text-lg font-semibold text-slate-950">{process?.failedContacts.toLocaleString() ?? 0}</p>
@@ -466,18 +470,18 @@ export function AddContactsToAutomationDialog({
               <div className="mt-4 flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900">
                 <CheckCircle2 className="mt-0.5 size-5 shrink-0" aria-hidden="true" />
                 <div>
-                  <p className="text-sm font-semibold">The process has finished.</p>
-                  <p className="mt-1 text-xs leading-5 text-emerald-800">Open the details to review completed contacts and any errors.</p>
+                  <p className="text-sm font-semibold">Enrollment finished.</p>
+                  <p className="mt-1 text-xs leading-5 text-emerald-800">Actions will run only after the configured trigger and filters match.</p>
                 </div>
               </div>
             ) : null}
 
             <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button variant="outline" className="cursor-pointer rounded-full" onClick={() => setOpen(false)} disabled={phase === "uploading"}>
+              <Button variant="outline" className={COMPACT_SECONDARY_BUTTON_CLASS} onClick={() => setOpen(false)} disabled={phase === "uploading"}>
                 Close
               </Button>
               {process ? (
-                <Button asChild className="cursor-pointer rounded-full bg-blue-950 hover:bg-blue-900">
+                <Button asChild variant="outline" className={COMPACT_SECONDARY_BUTTON_CLASS}>
                   <Link href={`/app/${tenantSlug}/automation-processes/${process.id}`}>
                     View process <ArrowRight data-icon="inline-end" aria-hidden="true" />
                   </Link>

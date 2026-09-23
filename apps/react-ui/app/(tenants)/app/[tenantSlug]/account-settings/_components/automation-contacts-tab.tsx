@@ -230,10 +230,16 @@ export function AutomationContactsTab({
                           "rounded-full px-2.5 py-1 text-xs font-semibold",
                           item.lastStatus === "SUCCEEDED"
                             ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                            : "border-rose-200 bg-rose-50 text-rose-700",
+                            : item.lastStatus === "FAILED"
+                              ? "border-rose-200 bg-rose-50 text-rose-700"
+                              : "border-slate-200 bg-slate-50 text-slate-600",
                         )}
                       >
-                        {item.lastStatus === "SUCCEEDED" ? "Successful" : "Failed"}
+                        {item.lastStatus === "SUCCEEDED"
+                          ? "Successful"
+                          : item.lastStatus === "FAILED"
+                            ? "Failed"
+                            : "Waiting for trigger"}
                       </Badge>
                     </TableCell>
                   </TableRow>

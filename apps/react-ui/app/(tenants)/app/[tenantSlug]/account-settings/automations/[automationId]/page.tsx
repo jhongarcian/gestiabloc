@@ -26,6 +26,7 @@ export default async function EditAutomationPage({
       tenantId={membership.tenant.id}
       tenantSlug={tenantSlug}
       automationId={automationId}
+      timezone={membership.tenant.timezone}
     />
   )
 }
