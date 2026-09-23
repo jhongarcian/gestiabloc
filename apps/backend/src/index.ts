@@ -35,6 +35,7 @@ import { resolve } from "path"
 import { parse as parseYaml } from "yaml"
 import { getAllowedWebOrigins } from "./lib/security"
 import { runAutomationProcessQueue } from "./lib/automation-process-worker"
+import { resumeDueAutomationRuns } from "./lib/opportunity-automations"
 
 const env = {
   port: Number(process.env.PORT ?? 4000),
@@ -266,6 +267,18 @@ const start = async () => {
   }, 15_000)
 
   followUpInterval.unref?.()
+
+  void resumeDueAutomationRuns().catch((error) => {
+    console.error("Failed to process due automation runs on startup:", error)
+  })
+
+  const automationRunInterval = setInterval(() => {
+    void resumeDueAutomationRuns().catch((error) => {
+      console.error("Failed to process due automation runs:", error)
+    })
+  }, 15_000)
+
+  automationRunInterval.unref?.()
 
   void runAutomationProcessQueue().catch((error) => {
     console.error("Failed to process queued automation work on startup:", error)

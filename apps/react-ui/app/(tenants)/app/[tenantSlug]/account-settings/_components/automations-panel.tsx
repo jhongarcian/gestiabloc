@@ -187,7 +187,14 @@ export function AutomationsPanel({ tenantId, tenantSlug }: AutomationsPanelProps
                       {record.isEnabled ? "Published" : "Draft"}
                     </Badge>
                     {record.lastExecution ? (
-                      <Badge variant="outline" className={record.lastExecution.status === "SUCCEEDED" ? "border-emerald-200 text-emerald-700" : "border-rose-200 text-rose-700"}>
+                      <Badge
+                        variant="outline"
+                        className={record.lastExecution.status === "SUCCEEDED"
+                          ? "border-emerald-200 text-emerald-700"
+                          : record.lastExecution.status === "EXITED"
+                            ? "border-amber-200 text-amber-700"
+                            : "border-rose-200 text-rose-700"}
+                      >
                         Last run {record.lastExecution.status.toLowerCase()}
                       </Badge>
                     ) : null}

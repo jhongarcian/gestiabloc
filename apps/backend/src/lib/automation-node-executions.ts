@@ -1,10 +1,11 @@
-export type AutomationNodeLogStatus = "EXECUTED" | "SKIPPED" | "FAILED"
+export type AutomationNodeLogStatus = "EXECUTED" | "SKIPPED" | "FAILED" | "WAITING"
 export type AutomationNodeEventSource =
   | "MANUAL_ENROLLMENT"
   | "OPPORTUNITY_CREATED"
   | "OPPORTUNITY_STAGE_CHANGED"
 
 export type AutomationNodeLogData = {
+  id?: string
   tenantId: string
   automationId: string | null
   automationName: string
@@ -33,6 +34,7 @@ const ACTION_LABELS: Record<string, string> = {
   CLEAR_CONTACT_ASSIGNEE: "Clear contact assignee",
   ADD_CONTACT_TAG: "Add contact tag",
   REMOVE_CONTACT_TAG: "Remove contact tag",
+  WAIT: "Wait",
 }
 
 export function getAutomationActionLabel(actionType: string) {

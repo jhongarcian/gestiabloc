@@ -33,8 +33,27 @@ export type AutomationCondition = {
   compareValue?: unknown
 }
 
+export type AutomationWaitUnit = "SECONDS" | "MINUTES" | "HOURS" | "DAYS"
+
+export type AutomationWaitConfig =
+  | {
+      mode: "DURATION"
+      amount: number
+      unit: AutomationWaitUnit
+    }
+  | {
+      mode: "FIXED_DATE"
+      dateTime: string
+      timing: "ON" | "BEFORE" | "AFTER"
+      offsetAmount?: number
+      offsetUnit?: AutomationWaitUnit
+      pastBehavior: "CONTINUE" | "EXIT" | "GO_TO_STEP"
+      targetNodeKey?: string
+    }
+
 export type AutomationAction = {
   id?: string
+  nodeKey?: string
   type:
     | "SET_CONTACT_CUSTOM_FIELD"
     | "CLEAR_CONTACT_CUSTOM_FIELD"
@@ -43,11 +62,13 @@ export type AutomationAction = {
     | "CLEAR_CONTACT_ASSIGNEE"
     | "ADD_CONTACT_TAG"
     | "REMOVE_CONTACT_TAG"
+    | "WAIT"
   customFieldId?: string | null
   statusConfigId?: string | null
   assignedUserId?: string | null
   tagId?: string | null
   value?: unknown
+  waitConfig?: AutomationWaitConfig | null
 }
 
 export type AutomationRecord = {
@@ -66,7 +87,7 @@ export type AutomationRecord = {
   actions: AutomationAction[]
   lastExecution: {
     id: string
-    status: "SUCCEEDED" | "FAILED"
+    status: "SUCCEEDED" | "FAILED" | "EXITED"
     createdAt: string
     errorMessage: string | null
   } | null
@@ -111,13 +132,13 @@ export type AutomationExecution = {
   processId: string | null
   processName: string | null
   triggerType: AutomationTriggerType
-  status: "SUCCEEDED" | "FAILED"
+  status: "SUCCEEDED" | "FAILED" | "EXITED"
   actionCount: number
   errorMessage: string | null
   createdAt: string
 }
 
-export type AutomationNodeExecutionStatus = "EXECUTED" | "SKIPPED" | "FAILED"
+export type AutomationNodeExecutionStatus = "EXECUTED" | "SKIPPED" | "FAILED" | "WAITING"
 
 export type AutomationNodeExecution = {
   id: string
@@ -148,5 +169,5 @@ export type AutomationContact = {
   firstEnteredAt: string
   lastExecutedAt: string | null
   executionCount: number
-  lastStatus: "SUCCEEDED" | "FAILED" | null
+  lastStatus: "SUCCEEDED" | "FAILED" | "EXITED" | null
 }

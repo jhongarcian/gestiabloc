@@ -108,12 +108,14 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
         actions: {
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
+            nodeKey: true,
             type: true,
             customFieldId: true,
             statusConfigId: true,
             assignedUserId: true,
             tagId: true,
             value: true,
+            waitConfig: true,
           },
         },
       },

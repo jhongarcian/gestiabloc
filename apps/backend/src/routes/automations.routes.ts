@@ -25,7 +25,7 @@ const ExecutionQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
   automationId: z.string().trim().min(1).optional(),
-  status: z.enum(["SUCCEEDED", "FAILED"]).optional(),
+  status: z.enum(["SUCCEEDED", "FAILED", "EXITED"]).optional(),
 })
 const AutomationContactsQuerySchema = z.object({
   search: z.string().trim().max(120).default(""),
@@ -39,7 +39,7 @@ const AutomationExecutionLogsQuerySchema = z.object({
     { message: "pageSize must be 10, 25, or 50" },
   ).default(10),
   search: z.string().trim().max(120).default(""),
-  status: z.enum(["EXECUTED", "SKIPPED", "FAILED"]).optional(),
+  status: z.enum(["EXECUTED", "SKIPPED", "FAILED", "WAITING"]).optional(),
 })
 const ReorderSchema = z.object({
   automationIds: z.array(z.string().trim().min(1)).min(1).max(200),
@@ -91,12 +91,14 @@ function serializeAutomation(record: any) {
     })),
     actions: record.actions.map((action: any) => ({
       id: action.id,
+      nodeKey: action.nodeKey,
       type: action.type,
       customFieldId: action.customFieldId,
       statusConfigId: action.statusConfigId,
       assignedUserId: action.assignedUserId,
       tagId: action.tagId,
       value: action.value,
+      waitConfig: action.waitConfig,
     })),
     lastExecution: record.executions?.[0]
       ? {
@@ -355,7 +357,7 @@ router.get("/:tenantId/automations/:automationId/contacts", ...readMiddlewares, 
       executionCount: number | null
       firstEnteredAt: Date
       lastExecutedAt: Date | null
-      lastStatus: "SUCCEEDED" | "FAILED" | null
+      lastStatus: "SUCCEEDED" | "FAILED" | "EXITED" | null
     }
     const skip = (query.page - 1) * query.pageSize
     const [countRows, rows] = await prisma.$transaction([

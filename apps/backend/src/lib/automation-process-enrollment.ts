@@ -69,7 +69,7 @@ export async function enrollAutomationProcessContact(
             ...base,
             nodeKind: "ACTION" as const,
             nodeOrder: index + 1,
-            nodeKey: action.type,
+            nodeKey: action.nodeKey ?? action.type,
             nodeLabel: getAutomationActionLabel(action.type),
             status: "SKIPPED" as const,
             reasonCode: "TRIGGER_NOT_MET",

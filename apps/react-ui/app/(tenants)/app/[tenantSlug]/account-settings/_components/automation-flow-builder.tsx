@@ -41,6 +41,7 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { DateTimeInput } from "@/components/ui/date-time-input"
 import {
   Field,
   FieldGroup,
@@ -60,6 +61,11 @@ import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
+import {
+  dateTimeDraftToUtcIso,
+  formatUtcIsoToDateTimeDraft,
+  type DateTimeDraft,
+} from "@/lib/date-time"
 import { cn } from "@/lib/utils"
 
 import { AutomationContactsTab } from "./automation-contacts-tab"
@@ -71,6 +77,8 @@ import type {
   AutomationOperator,
   AutomationRecord,
   AutomationTriggerType,
+  AutomationWaitConfig,
+  AutomationWaitUnit,
 } from "./automation-types"
 import {
   buildAutomationFlowGraph,
@@ -131,12 +139,14 @@ function draftSnapshot(draft: Draft) {
       compareValue: condition.compareValue,
     })),
     actions: draft.actions.map((action) => ({
+      nodeKey: action.nodeKey,
       type: action.type,
       customFieldId: action.customFieldId,
       statusConfigId: action.statusConfigId,
       assignedUserId: action.assignedUserId,
       tagId: action.tagId,
       value: action.value,
+      waitConfig: action.waitConfig,
     })),
   })
 }
@@ -188,6 +198,14 @@ const ACTION_LABELS: Record<AutomationAction["type"], string> = {
   CLEAR_CONTACT_ASSIGNEE: "Clear contact assignee",
   ADD_CONTACT_TAG: "Add contact tag",
   REMOVE_CONTACT_TAG: "Remove contact tag",
+  WAIT: "Wait",
+}
+
+const WAIT_UNIT_LABELS: Record<AutomationWaitUnit, string> = {
+  SECONDS: "Seconds",
+  MINUTES: "Minutes",
+  HOURS: "Hours",
+  DAYS: "Days",
 }
 
 const COMPACT_PRIMARY_BUTTON_CLASS =
@@ -258,16 +276,22 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
 
 const NODE_TYPES: NodeTypes = { automationNode: AutomationFlowNode }
 
-function actionDefaults(type: AutomationAction["type"], catalog: AutomationCatalog): AutomationAction {
-  if (type === "SET_CONTACT_CUSTOM_FIELD") return { type, customFieldId: catalog.customFields[0]?.id ?? "", value: "" }
-  if (type === "CLEAR_CONTACT_CUSTOM_FIELD") return { type, customFieldId: catalog.customFields.find((field) => !field.isRequired)?.id ?? "" }
-  if (type === "SET_CONTACT_STATUS") return { type, statusConfigId: catalog.statuses[0]?.id ?? "" }
-  if (type === "SET_CONTACT_ASSIGNEE") return { type, assignedUserId: catalog.users[0]?.id ?? "" }
-  if (type === "ADD_CONTACT_TAG" || type === "REMOVE_CONTACT_TAG") return { type, tagId: catalog.tags[0]?.id ?? "" }
-  return { type }
+function actionDefaults(
+  type: AutomationAction["type"],
+  catalog: AutomationCatalog,
+  existingNodeKey?: string,
+): AutomationAction {
+  const nodeKey = existingNodeKey ?? crypto.randomUUID()
+  if (type === "SET_CONTACT_CUSTOM_FIELD") return { nodeKey, type, customFieldId: catalog.customFields[0]?.id ?? "", value: "" }
+  if (type === "CLEAR_CONTACT_CUSTOM_FIELD") return { nodeKey, type, customFieldId: catalog.customFields.find((field) => !field.isRequired)?.id ?? "" }
+  if (type === "SET_CONTACT_STATUS") return { nodeKey, type, statusConfigId: catalog.statuses[0]?.id ?? "" }
+  if (type === "SET_CONTACT_ASSIGNEE") return { nodeKey, type, assignedUserId: catalog.users[0]?.id ?? "" }
+  if (type === "ADD_CONTACT_TAG" || type === "REMOVE_CONTACT_TAG") return { nodeKey, type, tagId: catalog.tags[0]?.id ?? "" }
+  if (type === "WAIT") return { nodeKey, type, waitConfig: { mode: "DURATION", amount: 1, unit: "HOURS" } }
+  return { nodeKey, type }
 }
 
-function isActionReady(action: AutomationAction | null) {
+function isActionReady(action: AutomationAction | null, targetActions: AutomationAction[] = []) {
   if (!action) return false
   if (action.type === "SET_CONTACT_CUSTOM_FIELD") {
     const hasValue = Array.isArray(action.value)
@@ -280,6 +304,16 @@ function isActionReady(action: AutomationAction | null) {
   if (action.type === "SET_CONTACT_ASSIGNEE") return Boolean(action.assignedUserId)
   if (action.type === "ADD_CONTACT_TAG" || action.type === "REMOVE_CONTACT_TAG") {
     return Boolean(action.tagId)
+  }
+  if (action.type === "WAIT") {
+    const config = action.waitConfig
+    if (!config) return false
+    if (config.mode === "DURATION") return Number.isInteger(config.amount) && config.amount > 0
+    if (Number.isNaN(new Date(config.dateTime).getTime())) return false
+    if (config.timing !== "ON" && (!Number.isInteger(config.offsetAmount) || (config.offsetAmount ?? 0) <= 0 || !config.offsetUnit)) return false
+    if (config.pastBehavior === "GO_TO_STEP") {
+      return Boolean(config.targetNodeKey && targetActions.some((candidate) => candidate.nodeKey === config.targetNodeKey))
+    }
   }
   return true
 }
@@ -350,6 +384,15 @@ function draftValidationMessage(draft: Draft) {
   if (!draft.pipelineId) return "Select a pipeline."
   if (draft.triggerType === "OPPORTUNITY_STAGE_CHANGED" && !draft.targetStageId) return "Select a stage."
   if (draft.actions.length === 0) return "Add at least one action."
+  const nodeKeys = draft.actions.map((action) => action.nodeKey).filter(Boolean)
+  if (nodeKeys.length !== draft.actions.length || new Set(nodeKeys).size !== nodeKeys.length) {
+    return "Every action needs a unique step identifier."
+  }
+  for (let index = 0; index < draft.actions.length; index += 1) {
+    if (!isActionReady(draft.actions[index] ?? null, draft.actions.slice(index + 1))) {
+      return `Finish configuring action ${index + 1}.`
+    }
+  }
   return null
 }
 
@@ -378,12 +421,14 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
       compareValue: condition.compareValue,
     })),
     actions: draft.actions.map((action) => ({
+      nodeKey: action.nodeKey,
       type: action.type,
       customFieldId: action.customFieldId,
       statusConfigId: action.statusConfigId,
       assignedUserId: action.assignedUserId,
       tagId: action.tagId,
       value: action.value,
+      waitConfig: action.waitConfig,
     })),
   }
 }
@@ -448,8 +493,8 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
   }, [automationId, tenantId])
 
   const graph = useMemo(
-    () => buildAutomationFlowGraph(draft, catalog, ACTION_LABELS),
-    [catalog, draft],
+    () => buildAutomationFlowGraph(draft, catalog, ACTION_LABELS, timezone),
+    [catalog, draft, timezone],
   )
   const triggerPipeline = catalog?.pipelines.find(
     (item) => item.id === triggerEditorDraft?.pipelineId,
@@ -809,6 +854,9 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     action={editingAction}
                     catalog={catalog}
                     onChange={setEditingAction}
+                    targetActions={draft.actions.slice(selected.index + 1)}
+                    actionIndex={selected.index}
+                    timezone={timezone}
                     management={{
                       index: selected.index,
                       total: draft.actions.length,
@@ -824,6 +872,9 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     action={pendingAction}
                     catalog={catalog}
                     onChange={setPendingAction}
+                    targetActions={draft.actions.slice(selected.insertionIndex)}
+                    actionIndex={selected.insertionIndex}
+                    timezone={timezone}
                   />
                 ) : selected.kind === "trigger" && triggerEditorDraft ? (
                   <TriggerEditor
@@ -845,7 +896,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       type="button"
                       variant="ghost"
                       className={COMPACT_PRIMARY_BUTTON_CLASS}
-                      disabled={!isActionReady(editingAction) || !actionPanelHasChanges}
+                      disabled={!isActionReady(editingAction, draft.actions.slice(selected.index + 1)) || !actionPanelHasChanges}
                       onClick={() => {
                         if (!editingAction) return
                         updateAction(selected.index, structuredClone(editingAction))
@@ -889,7 +940,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       type="button"
                       variant="ghost"
                       className={COMPACT_PRIMARY_BUTTON_CLASS}
-                      disabled={!isActionReady(pendingAction)}
+                      disabled={!isActionReady(pendingAction, draft.actions.slice(selected.insertionIndex))}
                       onClick={() => {
                         if (!pendingAction) return
                         insertAction(selected.insertionIndex, pendingAction)
@@ -1305,10 +1356,16 @@ function NewActionEditor({
   action,
   catalog,
   onChange,
+  targetActions,
+  actionIndex,
+  timezone,
 }: {
   action: AutomationAction | null
   catalog: AutomationCatalog
   onChange: (action: AutomationAction | null) => void
+  targetActions: AutomationAction[]
+  actionIndex: number
+  timezone?: string | null
 }) {
   if (action) {
     return (
@@ -1332,6 +1389,9 @@ function NewActionEditor({
           catalog={catalog}
           onChange={onChange}
           showTypePicker={false}
+          targetActions={targetActions}
+          actionIndex={actionIndex}
+          timezone={timezone}
         />
       </div>
     )
@@ -1363,11 +1423,17 @@ function ActionEditor({
   onChange,
   management,
   showTypePicker = true,
+  targetActions = [],
+  actionIndex = 0,
+  timezone,
 }: {
   action: AutomationAction
   catalog: AutomationCatalog
   onChange: (action: AutomationAction) => void
   showTypePicker?: boolean
+  targetActions?: AutomationAction[]
+  actionIndex?: number
+  timezone?: string | null
   management?: {
     index: number
     total: number
@@ -1385,7 +1451,7 @@ function ActionEditor({
             <FieldLabel htmlFor="action-type">Action type</FieldLabel>
             <Select
               value={action.type}
-              onValueChange={(type: AutomationAction["type"]) => onChange(actionDefaults(type, catalog))}
+              onValueChange={(type: AutomationAction["type"]) => onChange(actionDefaults(type, catalog, action.nodeKey))}
             >
               <SelectTrigger id="action-type" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -1465,6 +1531,16 @@ function ActionEditor({
             </Select>
           </Field>
         ) : null}
+
+        {action.type === "WAIT" && action.waitConfig ? (
+          <WaitActionEditor
+            config={action.waitConfig}
+            targetActions={targetActions}
+            actionIndex={actionIndex}
+            timezone={timezone}
+            onChange={(waitConfig) => onChange({ ...action, waitConfig })}
+          />
+        ) : null}
       </FieldGroup>
 
       {management ? (
@@ -1483,6 +1559,170 @@ function ActionEditor({
           </div>
         </>
       ) : null}
+    </div>
+  )
+}
+
+function WaitActionEditor({
+  config,
+  targetActions,
+  actionIndex,
+  timezone,
+  onChange,
+}: {
+  config: AutomationWaitConfig
+  targetActions: AutomationAction[]
+  actionIndex: number
+  timezone?: string | null
+  onChange: (config: AutomationWaitConfig) => void
+}) {
+  const [dateTimeDraft, setDateTimeDraft] = useState<DateTimeDraft>(() =>
+    config.mode === "FIXED_DATE"
+      ? formatUtcIsoToDateTimeDraft(config.dateTime, timezone)
+      : { date: "", time: "" },
+  )
+
+  const changeMode = (mode: AutomationWaitConfig["mode"]) => {
+    if (mode === "DURATION") {
+      onChange({ mode: "DURATION", amount: 1, unit: "HOURS" })
+      return
+    }
+    const nextHour = new Date(Date.now() + 3_600_000)
+    nextHour.setSeconds(0, 0)
+    const dateTime = nextHour.toISOString()
+    setDateTimeDraft(formatUtcIsoToDateTimeDraft(dateTime, timezone))
+    onChange({ mode: "FIXED_DATE", dateTime, timing: "ON", pastBehavior: "CONTINUE" })
+  }
+
+  const updateFixedDate = (nextDraft: DateTimeDraft) => {
+    if (config.mode !== "FIXED_DATE") return
+    setDateTimeDraft(nextDraft)
+    onChange({
+      ...config,
+      dateTime: dateTimeDraftToUtcIso(nextDraft, timezone) ?? "",
+    })
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Field>
+        <FieldLabel htmlFor="wait-mode">Wait type</FieldLabel>
+        <Select value={config.mode} onValueChange={(value) => changeMode(value as AutomationWaitConfig["mode"])}>
+          <SelectTrigger id="wait-mode" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="DURATION">A set amount of time</SelectItem>
+              <SelectItem value="FIXED_DATE">A specific date and time</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </Field>
+
+      {config.mode === "DURATION" ? (
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-2">
+          <Field>
+            <FieldLabel htmlFor="wait-amount">Amount</FieldLabel>
+            <Input
+              id="wait-amount"
+              type="number"
+              min={1}
+              step={1}
+              value={config.amount}
+              onChange={(event) => onChange({ ...config, amount: Number(event.target.value) })}
+              className="h-8 rounded-full"
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="wait-unit">Unit</FieldLabel>
+            <Select value={config.unit} onValueChange={(unit) => onChange({ ...config, unit: unit as AutomationWaitUnit })}>
+              <SelectTrigger id="wait-unit" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+              <SelectContent><SelectGroup>{Object.entries(WAIT_UNIT_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectGroup></SelectContent>
+            </Select>
+          </Field>
+        </div>
+      ) : (
+        <>
+          <Field>
+            <FieldLabel>Date and time</FieldLabel>
+            <DateTimeInput value={dateTimeDraft} onValueChange={updateFixedDate} timezone={timezone} layout="joined" />
+            <p className="text-xs text-slate-500">{timezone?.trim() || "America/Chicago"}</p>
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="wait-timing">When should the contact proceed?</FieldLabel>
+            <Select
+              value={config.timing}
+              onValueChange={(value) => {
+                const timing = value as "ON" | "BEFORE" | "AFTER"
+                onChange(timing === "ON"
+                  ? { ...config, timing, offsetAmount: undefined, offsetUnit: undefined }
+                  : { ...config, timing, offsetAmount: config.offsetAmount ?? 1, offsetUnit: config.offsetUnit ?? "HOURS" })
+              }}
+            >
+              <SelectTrigger id="wait-timing" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+              <SelectContent><SelectGroup><SelectItem value="ON">On the specific date</SelectItem><SelectItem value="BEFORE">Before</SelectItem><SelectItem value="AFTER">After</SelectItem></SelectGroup></SelectContent>
+            </Select>
+          </Field>
+
+          {config.timing !== "ON" ? (
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-2">
+              <Field>
+                <FieldLabel htmlFor="wait-offset-amount">Offset</FieldLabel>
+                <Input
+                  id="wait-offset-amount"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={config.offsetAmount ?? 1}
+                  onChange={(event) => onChange({ ...config, offsetAmount: Number(event.target.value) })}
+                  className="h-8 rounded-full"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="wait-offset-unit">Unit</FieldLabel>
+                <Select value={config.offsetUnit ?? "HOURS"} onValueChange={(unit) => onChange({ ...config, offsetUnit: unit as AutomationWaitUnit })}>
+                  <SelectTrigger id="wait-offset-unit" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectGroup>{Object.entries(WAIT_UNIT_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectGroup></SelectContent>
+                </Select>
+              </Field>
+            </div>
+          ) : null}
+
+          <Field>
+            <FieldLabel htmlFor="wait-past-behavior">If this date has already passed</FieldLabel>
+            <Select
+              value={config.pastBehavior}
+              onValueChange={(value) => {
+                const pastBehavior = value as "CONTINUE" | "EXIT" | "GO_TO_STEP"
+                onChange({
+                  ...config,
+                  pastBehavior,
+                  targetNodeKey: pastBehavior === "GO_TO_STEP" ? targetActions[0]?.nodeKey : undefined,
+                })
+              }}
+            >
+              <SelectTrigger id="wait-past-behavior" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="CONTINUE">Continue with the next action</SelectItem>
+                  <SelectItem value="EXIT">Exit this automation run</SelectItem>
+                  <SelectItem value="GO_TO_STEP" disabled={targetActions.length === 0}>Go to a specific step</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
+
+          {config.pastBehavior === "GO_TO_STEP" ? (
+            <Field>
+              <FieldLabel htmlFor="wait-target-step">Step</FieldLabel>
+              <Select value={config.targetNodeKey ?? ""} onValueChange={(targetNodeKey) => onChange({ ...config, targetNodeKey })}>
+                <SelectTrigger id="wait-target-step" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select a later action" /></SelectTrigger>
+                <SelectContent><SelectGroup>{targetActions.map((target, index) => <SelectItem key={target.nodeKey} value={target.nodeKey ?? `missing-${index}`}>Action {actionIndex + index + 2}: {ACTION_LABELS[target.type]}</SelectItem>)}</SelectGroup></SelectContent>
+              </Select>
+            </Field>
+          ) : null}
+        </>
+      )}
     </div>
   )
 }

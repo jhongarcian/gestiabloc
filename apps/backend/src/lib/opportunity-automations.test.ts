@@ -8,6 +8,8 @@ import {
   executeOpportunityAutomations,
   getAutomationOperatorsForFieldType,
   recordAutomationFailure,
+  resumeDueAutomationRuns,
+  validateAutomationConfiguration,
 } from "./opportunity-automations.js"
 
 describe("evaluateAutomationOperator", () => {
@@ -114,6 +116,67 @@ describe("AutomationUpsertSchema", () => {
     })
 
     assert.equal(result.success, false)
+  })
+
+  test("validates duration and fixed-date wait shapes", () => {
+    const base = {
+      name: "Wait for follow-up",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+    }
+    assert.equal(AutomationUpsertSchema.safeParse({
+      ...base,
+      actions: [{ type: "WAIT", waitConfig: { mode: "DURATION", amount: 30, unit: "MINUTES" } }],
+    }).success, true)
+    assert.equal(AutomationUpsertSchema.safeParse({
+      ...base,
+      actions: [{
+        type: "WAIT",
+        waitConfig: {
+          mode: "FIXED_DATE",
+          dateTime: "2026-10-01T15:00:00.000Z",
+          timing: "BEFORE",
+          pastBehavior: "CONTINUE",
+        },
+      }],
+    }).success, false)
+  })
+
+  test("rejects a wait go-to destination that is not later in the flow", async () => {
+    const waitNodeKey = "00000000-0000-4000-8000-000000000001"
+    const earlierNodeKey = "00000000-0000-4000-8000-000000000002"
+    const input = AutomationUpsertSchema.parse({
+      name: "Invalid jump",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [
+        { type: "SET_CONTACT_STATUS", nodeKey: earlierNodeKey, statusConfigId: "active" },
+        {
+          type: "WAIT",
+          nodeKey: waitNodeKey,
+          waitConfig: {
+            mode: "FIXED_DATE",
+            dateTime: "2026-01-01T00:00:00.000Z",
+            timing: "ON",
+            pastBehavior: "GO_TO_STEP",
+            targetNodeKey: earlierNodeKey,
+          },
+        },
+      ],
+    })
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", input),
+      /only go to an action that appears later/,
+    )
   })
 })
 
@@ -227,6 +290,10 @@ describe("executeOpportunityAutomations", () => {
           executions += 1
         },
       },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async () => undefined,
+      },
       automationNodeExecution: {
         createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => {
           nodeLogs = data
@@ -313,6 +380,10 @@ describe("executeOpportunityAutomations", () => {
           executions += 1
         },
       },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async () => undefined,
+      },
       automationNodeExecution: {
         createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => {
           nodeLogs = data
@@ -337,6 +408,250 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(contactUpdates, 1)
     assert.equal(executions, 1)
     assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "EXECUTED", "EXECUTED"])
+  })
+
+  test("pauses at a future wait without running later actions", async () => {
+    let runUpdate: Record<string, unknown> | null = null
+    let nodeLogs: Array<Record<string, unknown>> = []
+    let contactUpdates = 0
+    let executionCount = 0
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Delayed status",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000001",
+              type: "WAIT",
+              waitConfig: { mode: "DURATION", amount: 30, unit: "MINUTES" },
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000002",
+              type: "SET_CONTACT_STATUS",
+              statusConfigId: "inactive",
+            },
+          ],
+        }],
+      },
+      contact: {
+        findFirst: async () => ({
+          id: "contact-1",
+          firstName: "Taylor",
+          middleName: null,
+          lastName: "Reed",
+          statusConfigId: "active",
+          assignedToUserId: null,
+          tags: [],
+          customFieldValues: [],
+        }),
+        update: async () => { contactUpdates += 1 },
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [
+        { id: "active", name: "Active" },
+        { id: "inactive", name: "Inactive" },
+      ] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async ({ data }: { data: Record<string, unknown> }) => { runUpdate = data },
+      },
+      automationExecution: { create: async () => { executionCount += 1 } },
+      automationNodeExecution: {
+        createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { nodeLogs = data },
+      },
+    }
+
+    const result = await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.deepEqual(result, { matchedCount: 1, executedCount: 1 })
+    assert.equal(contactUpdates, 0)
+    assert.equal(executionCount, 0)
+    assert.ok(runUpdate)
+    assert.equal((runUpdate as Record<string, unknown>).status, "WAITING")
+    assert.equal((runUpdate as Record<string, unknown>).cursorIndex, 1)
+    assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "WAITING"])
+  })
+
+  test("applies the exit rule when a fixed wait time has passed", async () => {
+    let runUpdate: Record<string, unknown> | null = null
+    let summaryStatus: string | null = null
+    let nodeLogs: Array<Record<string, unknown>> = []
+    let contactUpdates = 0
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Expired campaign",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000001",
+              type: "WAIT",
+              waitConfig: {
+                mode: "FIXED_DATE",
+                dateTime: "2020-01-01T00:00:00.000Z",
+                timing: "ON",
+                pastBehavior: "EXIT",
+              },
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000002",
+              type: "SET_CONTACT_STATUS",
+              statusConfigId: "inactive",
+            },
+          ],
+        }],
+      },
+      contact: {
+        findFirst: async () => ({
+          id: "contact-1",
+          firstName: "Taylor",
+          middleName: null,
+          lastName: "Reed",
+          statusConfigId: "active",
+          assignedToUserId: null,
+          tags: [],
+          customFieldValues: [],
+        }),
+        update: async () => { contactUpdates += 1 },
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "inactive", name: "Inactive" }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async ({ data }: { data: Record<string, unknown> }) => { runUpdate = data },
+      },
+      automationExecution: {
+        create: async ({ data }: { data: { status: string } }) => { summaryStatus = data.status },
+      },
+      automationNodeExecution: {
+        createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { nodeLogs = data },
+      },
+    }
+
+    await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.equal(contactUpdates, 0)
+    assert.equal(summaryStatus, "EXITED")
+    assert.ok(runUpdate)
+    assert.equal((runUpdate as Record<string, unknown>).status, "EXITED")
+    assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "EXECUTED", "SKIPPED"])
+  })
+
+  test("jumps only to a configured later step when a fixed wait time has passed", async () => {
+    let contactUpdates = 0
+    let tagRemovals = 0
+    let nodeLogs: Array<Record<string, unknown>> = []
+    const targetNodeKey = "00000000-0000-4000-8000-000000000003"
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Expired route",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000001",
+              type: "WAIT",
+              waitConfig: {
+                mode: "FIXED_DATE",
+                dateTime: "2020-01-01T00:00:00.000Z",
+                timing: "ON",
+                pastBehavior: "GO_TO_STEP",
+                targetNodeKey,
+              },
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000002",
+              type: "REMOVE_CONTACT_TAG",
+              tagId: "lead-tag",
+            },
+            { nodeKey: targetNodeKey, type: "SET_CONTACT_STATUS", statusConfigId: "inactive" },
+          ],
+        }],
+      },
+      contact: {
+        findFirst: async () => ({
+          id: "contact-1",
+          firstName: "Taylor",
+          middleName: null,
+          lastName: "Reed",
+          statusConfigId: "active",
+          assignedToUserId: null,
+          tags: [{ tagId: "lead-tag" }],
+          customFieldValues: [],
+        }),
+        update: async () => { contactUpdates += 1 },
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "inactive", name: "Inactive" }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "lead-tag", name: "Lead" }] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      contactTag: { deleteMany: async () => { tagRemovals += 1 } },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async () => undefined,
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { nodeLogs = data },
+      },
+    }
+
+    await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.equal(tagRemovals, 0)
+    assert.equal(contactUpdates, 1)
+    assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "EXECUTED", "SKIPPED", "EXECUTED"])
+    assert.equal(nodeLogs[2]?.reasonCode, "WAIT_JUMPED")
   })
 
   test("logs every node as skipped for an unrelated opportunity event", async () => {
@@ -449,6 +764,10 @@ describe("executeOpportunityAutomations", () => {
         upsert: async () => undefined,
       },
       automationExecution: { create: async () => undefined },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async () => undefined,
+      },
       automationNodeExecution: { createMany: async () => undefined },
     }
     const event = {
@@ -484,6 +803,7 @@ describe("executeOpportunityAutomations", () => {
     let summaryCount = 0
     const failureClient = {
       $transaction: async (callback: (transaction: unknown) => Promise<void>) => callback({
+        automationRun: { create: async () => undefined },
         automationExecution: {
           create: async () => {
             summaryCount += 1
@@ -501,5 +821,87 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(summaryCount, 1)
     assert.equal(persistedLogs.length, 4)
     assert.ok(persistedLogs.every((log) => log.opportunityId === null))
+  })
+})
+
+describe("resumeDueAutomationRuns", () => {
+  test("claims a due run and resumes its pinned snapshot after the automation was deleted", async () => {
+    let leaseToken = ""
+    let contactUpdates = 0
+    let waitingLogUpdates = 0
+    let runStatus: string | null = null
+    let summaryCount = 0
+    const actions = [
+      {
+        nodeKey: "00000000-0000-4000-8000-000000000001",
+        type: "WAIT",
+        waitConfig: { mode: "DURATION", amount: 1, unit: "SECONDS" },
+      },
+      {
+        nodeKey: "00000000-0000-4000-8000-000000000002",
+        type: "SET_CONTACT_STATUS",
+        statusConfigId: "inactive",
+      },
+    ]
+    const transaction = {
+      automationRun: {
+        findFirst: async () => ({
+          id: "run-1",
+          tenantId: "tenant-1",
+          automationId: null,
+          automationName: "Deleted automation",
+          contactId: "contact-1",
+          contactName: "Taylor Reed",
+          actorUserId: "user-1",
+          opportunityId: "opportunity-1",
+          attemptId: "attempt-1",
+          eventSource: "OPPORTUNITY_CREATED",
+          triggerType: "OPPORTUNITY_CREATED",
+          sourceStageId: null,
+          targetStageId: "stage-new",
+          actionSnapshot: actions,
+          cursorIndex: 1,
+          status: "RUNNING",
+          resumeAt: new Date(Date.now() - 1_000),
+          waitingNodeKey: actions[0]!.nodeKey,
+          waitingNodeExecutionId: "wait-log-1",
+          leaseToken,
+        }),
+        update: async ({ data }: { data: { status: string } }) => { runStatus = data.status },
+      },
+      contact: {
+        findFirst: async () => ({ id: "contact-1" }),
+        update: async () => { contactUpdates += 1 },
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "inactive", name: "Inactive" }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [] },
+      tenant: { findUnique: async () => ({ timezone: "America/Chicago" }) },
+      automationNodeExecution: {
+        updateMany: async () => { waitingLogUpdates += 1 },
+        createMany: async () => undefined,
+      },
+      automationExecution: { create: async () => { summaryCount += 1 } },
+    }
+    const prismaClient = {
+      automationRun: {
+        findMany: async () => [{ id: "run-1" }],
+        updateMany: async ({ data }: { data: { leaseToken: string } }) => {
+          leaseToken = data.leaseToken
+          return { count: 1 }
+        },
+      },
+      $transaction: async (callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction),
+    }
+
+    const results = await resumeDueAutomationRuns(prismaClient)
+
+    assert.deepEqual(results, [{ status: "SUCCEEDED" }])
+    assert.equal(contactUpdates, 1)
+    assert.equal(waitingLogUpdates, 1)
+    assert.equal(runStatus, "SUCCEEDED")
+    assert.equal(summaryCount, 1)
   })
 })

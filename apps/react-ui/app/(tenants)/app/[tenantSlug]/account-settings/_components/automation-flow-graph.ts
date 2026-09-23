@@ -1,5 +1,7 @@
 import type { Edge, Node } from "@xyflow/react"
 
+import { formatDateTimeForDisplay } from "@/lib/date-time"
+
 import type { AutomationAction, AutomationCatalog, AutomationCondition, AutomationTriggerType } from "./automation-types"
 
 export type AutomationFlowNodeData = {
@@ -19,10 +21,22 @@ export type AutomationFlowDraft = {
   actions: AutomationAction[]
 }
 
+const FLOW_CENTER_X = 308
+const CARD_WIDTH = 256
+const ADD_NODE_WIDTH = 40
+const CARD_X = FLOW_CENTER_X - CARD_WIDTH / 2
+const ADD_NODE_X = FLOW_CENTER_X - ADD_NODE_WIDTH / 2
+
+function waitUnitLabel(amount: number, unit: string) {
+  const label = unit.toLocaleLowerCase()
+  return amount === 1 ? label.replace(/s$/, "") : label
+}
+
 export function buildAutomationFlowGraph(
   draft: AutomationFlowDraft,
   catalog: AutomationCatalog | null,
   actionLabels: Record<AutomationAction["type"], string>,
+  timezone?: string | null,
 ) {
   const pipeline = catalog?.pipelines.find((item) => item.id === draft.pipelineId)
   const target = pipeline?.stages.find((item) => item.id === draft.targetStageId)
@@ -36,7 +50,7 @@ export function buildAutomationFlowGraph(
     {
       id: "trigger",
       type: "automationNode",
-      position: { x: 180, y: 30 },
+      position: { x: CARD_X, y: 30 },
       data: {
         kind: "trigger",
         label:
@@ -59,28 +73,36 @@ export function buildAutomationFlowGraph(
     nodes.push({
       id: addId,
       type: "automationNode",
-      position: { x: 292, y },
+      position: { x: ADD_NODE_X, y },
       data: { kind: "add", label: "Add action", insertionIndex: index },
     })
     edges.push({
       id: `${previousId}-${addId}`,
       source: previousId,
       target: addId,
-      type: "smoothstep",
+      type: "straight",
     })
     previousId = addId
     y += 85
     const action = draft.actions[index]
     if (!action) continue
-    const actionId = `action-${index}`
+    const actionId = `action-${action.nodeKey ?? index}`
+    const waitConfig = action.type === "WAIT" ? action.waitConfig : null
+    const waitSubtitle = waitConfig?.mode === "DURATION"
+      ? `Wait ${waitConfig.amount} ${waitUnitLabel(waitConfig.amount, waitConfig.unit)}`
+      : waitConfig?.mode === "FIXED_DATE"
+        ? waitConfig.timing === "ON"
+          ? `Until ${formatDateTimeForDisplay(waitConfig.dateTime, timezone)}`
+          : `${waitConfig.offsetAmount} ${waitUnitLabel(waitConfig.offsetAmount ?? 0, waitConfig.offsetUnit ?? "MINUTES")} ${waitConfig.timing.toLocaleLowerCase()} ${formatDateTimeForDisplay(waitConfig.dateTime, timezone)}`
+        : null
     nodes.push({
       id: actionId,
       type: "automationNode",
-      position: { x: 180, y },
+      position: { x: CARD_X, y },
       data: {
         kind: "action",
         label: actionLabels[action.type],
-        subtitle: `Action ${index + 1}`,
+        subtitle: waitSubtitle ?? `Action ${index + 1}`,
         index,
       },
     })
@@ -88,7 +110,7 @@ export function buildAutomationFlowGraph(
       id: `${previousId}-${actionId}`,
       source: previousId,
       target: actionId,
-      type: "smoothstep",
+      type: "straight",
     })
     previousId = actionId
     y += 145
@@ -97,14 +119,14 @@ export function buildAutomationFlowGraph(
   nodes.push({
     id: "complete",
     type: "automationNode",
-    position: { x: 180, y },
-    data: { kind: "complete", label: "Complete", subtitle: "Changes committed atomically" },
+    position: { x: CARD_X, y },
+    data: { kind: "complete", label: "Complete", subtitle: "All actions completed" },
   })
   edges.push({
     id: `${previousId}-complete`,
     source: previousId,
     target: "complete",
-    type: "smoothstep",
+    type: "straight",
   })
   return { nodes, edges }
 }

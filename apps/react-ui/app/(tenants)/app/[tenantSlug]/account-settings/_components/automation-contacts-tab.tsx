@@ -230,6 +230,8 @@ export function AutomationContactsTab({
                           "rounded-full px-2.5 py-1 text-xs font-semibold",
                           item.lastStatus === "SUCCEEDED"
                             ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                            : item.lastStatus === "EXITED"
+                              ? "border-amber-200 bg-amber-50 text-amber-700"
                             : item.lastStatus === "FAILED"
                               ? "border-rose-200 bg-rose-50 text-rose-700"
                               : "border-slate-200 bg-slate-50 text-slate-600",
@@ -237,6 +239,8 @@ export function AutomationContactsTab({
                       >
                         {item.lastStatus === "SUCCEEDED"
                           ? "Successful"
+                          : item.lastStatus === "EXITED"
+                            ? "Exited"
                           : item.lastStatus === "FAILED"
                             ? "Failed"
                             : "Waiting for trigger"}

@@ -11,6 +11,7 @@ const labels = {
   CLEAR_CONTACT_ASSIGNEE: "Clear contact assignee",
   ADD_CONTACT_TAG: "Add contact tag",
   REMOVE_CONTACT_TAG: "Remove contact tag",
+  WAIT: "Wait",
 } as const
 
 describe("buildAutomationFlowGraph", () => {
@@ -30,6 +31,12 @@ describe("buildAutomationFlowGraph", () => {
       graph.nodes.map((node) => node.id),
       ["trigger", "add-0", "action-0", "add-1", "complete"],
     )
+    assert.ok(graph.edges.every((edge) => edge.type === "straight"))
+
+    const centerXs = graph.nodes.map((node) =>
+      node.position.x + (node.data.kind === "add" ? 40 : 256) / 2,
+    )
+    assert.equal(new Set(centerXs).size, 1)
   })
 
   test("shows an unconfigured start node until a trigger is selected", () => {
@@ -71,5 +78,30 @@ describe("buildAutomationFlowGraph", () => {
     const trigger = graph.nodes.find((node) => node.id === "trigger")
     assert.equal(trigger?.data.label, "Opportunity enters stage")
     assert.match(trigger?.data.subtitle ?? "", /^Enters /)
+  })
+
+  test("summarizes wait actions without adding extra graph nodes", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "WAIT",
+          waitConfig: { mode: "DURATION", amount: 2, unit: "HOURS" },
+        }],
+      },
+      null,
+      labels,
+      "America/Chicago",
+    )
+
+    const waitNode = graph.nodes.find((node) => node.id.includes("00000000"))
+    assert.equal(waitNode?.data.label, "Wait")
+    assert.equal(waitNode?.data.subtitle, "Wait 2 hours")
+    assert.equal(graph.nodes.filter((node) => node.data.kind === "action").length, 1)
+    assert.equal(graph.nodes.at(-1)?.data.subtitle, "All actions completed")
   })
 })
