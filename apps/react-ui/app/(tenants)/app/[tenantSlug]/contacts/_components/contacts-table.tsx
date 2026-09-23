@@ -121,9 +121,9 @@ type ContactItem = {
     name: string
   }>
   status: string
-  statusConfigId: string | null
-  statusBgColor: string | null
-  statusTextColor: string | null
+  statusConfigId: string
+  statusBgColor: string
+  statusTextColor: string
 }
 
 type ContactsListResponse = {

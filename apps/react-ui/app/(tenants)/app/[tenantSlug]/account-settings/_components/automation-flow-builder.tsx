@@ -183,7 +183,6 @@ const ACTION_LABELS: Record<AutomationAction["type"], string> = {
   SET_CONTACT_CUSTOM_FIELD: "Set custom field",
   CLEAR_CONTACT_CUSTOM_FIELD: "Clear custom field",
   SET_CONTACT_STATUS: "Set contact status",
-  CLEAR_CONTACT_STATUS: "Clear contact status",
   SET_CONTACT_ASSIGNEE: "Assign contact",
   CLEAR_CONTACT_ASSIGNEE: "Clear contact assignee",
   ADD_CONTACT_TAG: "Add contact tag",

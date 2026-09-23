@@ -46,7 +46,7 @@ describe("AutomationUpsertSchema", () => {
       name: "Qualified opportunity",
       isEnabled: false,
       conditions: [],
-      actions: [{ type: "CLEAR_CONTACT_STATUS" }],
+      actions: [{ type: "SET_CONTACT_STATUS", statusConfigId: "status-active" }],
     }
     assert.equal(
       AutomationUpsertSchema.safeParse({
@@ -85,7 +85,7 @@ describe("AutomationUpsertSchema", () => {
           tagId: "tag-1",
         },
       ],
-      actions: [{ type: "CLEAR_CONTACT_STATUS" }],
+      actions: [{ type: "CLEAR_CONTACT_ASSIGNEE" }],
     })
 
     assert.equal(result.success, true)
@@ -100,6 +100,18 @@ describe("AutomationUpsertSchema", () => {
       actions: [],
     })
     assert.equal(noActions.success, false)
+  })
+
+  test("rejects the removed clear-contact-status action", () => {
+    const result = AutomationUpsertSchema.safeParse({
+      name: "Invalid clear status action",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{ type: "CLEAR_CONTACT_STATUS" }],
+    })
+
+    assert.equal(result.success, false)
   })
 })
 

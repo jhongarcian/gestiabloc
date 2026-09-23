@@ -69,12 +69,18 @@ export function CreateContactDialog({
   const [dateOfBirthInput, setDateOfBirthInput] = useState("")
   const [phone, setPhone] = useState("")
   const [email, setEmail] = useState("")
-  const [statusConfigId, setStatusConfigId] = useState<string | undefined>(undefined)
 
   const selectableStatuses = useMemo(
     () => statusOptions.filter((option) => option.value !== ALL_STATUS_VALUE),
     [statusOptions],
   )
+  const defaultStatusConfigId = useMemo(
+    () =>
+      selectableStatuses.find((option) => option.label.toLowerCase() === "active")
+        ?.value ?? selectableStatuses[0]?.value ?? "",
+    [selectableStatuses],
+  )
+  const [statusConfigId, setStatusConfigId] = useState(defaultStatusConfigId)
 
   const resetForm = () => {
     setFirstName("")
@@ -84,7 +90,7 @@ export function CreateContactDialog({
     setDateOfBirthInput("")
     setPhone("")
     setEmail("")
-    setStatusConfigId(undefined)
+    setStatusConfigId(defaultStatusConfigId)
     setFieldErrors({})
   }
 
@@ -138,7 +144,7 @@ export function CreateContactDialog({
         dateOfBirth: dateOfBirthIso,
         phone: phone.trim() || null,
         email: email.trim() || null,
-        statusConfigId: statusConfigId ?? null,
+        statusConfigId: statusConfigId || undefined,
       })
 
       toast.success("Contact created.")
@@ -436,20 +442,15 @@ export function CreateContactDialog({
                     </FieldLabel>
                     <ContactStatusSelect
                       id="create-contact-status"
-                      value={statusConfigId ?? "__default__"}
+                      value={statusConfigId}
                       onValueChange={(value) => {
-                        setStatusConfigId(value === "__default__" ? undefined : value)
+                        setStatusConfigId(value)
                         clearFieldError("status")
                       }}
                       options={selectableStatuses}
-                      noneValue="__default__"
-                      noneLabel="Default (Active)"
                       disabled={isSubmitting}
                       ariaInvalid={Boolean(fieldErrors.status)}
                     />
-                    <FieldDescription className="text-xs">
-                      Uses the tenant&apos;s default active status when unchanged.
-                    </FieldDescription>
                     <FieldError>{fieldErrors.status}</FieldError>
                   </Field>
                 </FieldGroup>

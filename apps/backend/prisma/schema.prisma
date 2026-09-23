@@ -310,7 +310,6 @@ enum AutomationActionType {
   SET_CONTACT_CUSTOM_FIELD
   CLEAR_CONTACT_CUSTOM_FIELD
   SET_CONTACT_STATUS
-  CLEAR_CONTACT_STATUS
   SET_CONTACT_ASSIGNEE
   CLEAR_CONTACT_ASSIGNEE
   ADD_CONTACT_TAG
@@ -1811,7 +1810,7 @@ model Contact {
   mailingPostalCode   String?
   mailingCountry      String?
 
-  statusConfigId   String?
+  statusConfigId   String
   assignedToUserId String?
   ssnLast4         String?
   ssnCiphertext    String?
@@ -1840,8 +1839,8 @@ model Contact {
   leadSource      String?
   leadOtherSource String?
 
-  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  statusConfig ContactStatusConfig? @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
+  tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  statusConfig ContactStatusConfig @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
 
   assignedToMembership         Membership?                   @relation("ContactAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
   servicingAgentMembership     Membership?                   @relation("ContactServicingAgentMembership", fields: [tenantId, servicingAgentUserId], references: [tenantId, userId])

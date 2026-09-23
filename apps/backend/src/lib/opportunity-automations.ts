@@ -30,7 +30,6 @@ export const AUTOMATION_ACTION_TYPES = [
   "SET_CONTACT_CUSTOM_FIELD",
   "CLEAR_CONTACT_CUSTOM_FIELD",
   "SET_CONTACT_STATUS",
-  "CLEAR_CONTACT_STATUS",
   "SET_CONTACT_ASSIGNEE",
   "CLEAR_CONTACT_ASSIGNEE",
   "ADD_CONTACT_TAG",
@@ -88,7 +87,6 @@ export const AutomationActionInputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("CLEAR_CONTACT_CUSTOM_FIELD"), customFieldId: idSchema }),
   z.object({ type: z.literal("SET_CONTACT_STATUS"), statusConfigId: idSchema }),
-  z.object({ type: z.literal("CLEAR_CONTACT_STATUS") }),
   z.object({ type: z.literal("SET_CONTACT_ASSIGNEE"), assignedUserId: idSchema }),
   z.object({ type: z.literal("CLEAR_CONTACT_ASSIGNEE") }),
   z.object({ type: z.literal("ADD_CONTACT_TAG"), tagId: idSchema }),
@@ -737,11 +735,6 @@ export async function applyAutomationActions(
         await prismaTx.contact.update({
           where: { id: contactId },
           data: { statusConfigId: action.statusConfigId },
-        })
-      } else if (action.type === "CLEAR_CONTACT_STATUS") {
-        await prismaTx.contact.update({
-          where: { id: contactId },
-          data: { statusConfigId: null },
         })
       } else if (action.type === "SET_CONTACT_ASSIGNEE") {
         if (

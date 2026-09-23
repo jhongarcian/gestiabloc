@@ -24,8 +24,6 @@ type ContactStatusSelectProps = {
   options: ContactStatusOption[]
   disabled?: boolean
   ariaInvalid?: boolean
-  noneValue?: string
-  noneLabel?: string
   placeholder?: string
   triggerClassName?: string
 }
@@ -42,8 +40,6 @@ export function ContactStatusSelect({
   options,
   disabled = false,
   ariaInvalid = false,
-  noneValue = "__none__",
-  noneLabel = "No status",
   placeholder = "Select a status",
   triggerClassName,
 }: ContactStatusSelectProps) {
@@ -72,11 +68,6 @@ export function ContactStatusSelect({
 
       <SelectContent className="rounded-2xl border-slate-200 p-1.5 shadow-lg">
         <SelectGroup>
-          <SelectItem value={noneValue} className="rounded-xl py-2.5">
-            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
-              {noneLabel}
-            </span>
-          </SelectItem>
           {options.map((option) => (
             <SelectItem
               key={option.value}

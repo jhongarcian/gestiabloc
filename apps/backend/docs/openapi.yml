@@ -7144,13 +7144,10 @@ components:
           type: string
         statusConfigId:
           type: string
-          nullable: true
         statusBgColor:
           type: string
-          nullable: true
         statusTextColor:
           type: string
-          nullable: true
     ContactDetailsResponse:
       type: object
       properties:
@@ -7209,13 +7206,10 @@ components:
               type: string
             statusConfigId:
               type: string
-              nullable: true
             statusBgColor:
               type: string
-              nullable: true
             statusTextColor:
               type: string
-              nullable: true
             tags:
               type: array
               items:
@@ -7314,7 +7308,6 @@ components:
           nullable: true
         statusConfigId:
           type: string
-          nullable: true
     CreateContactResponse:
       type: object
       properties:
@@ -7349,19 +7342,16 @@ components:
               type: string
             statusConfigId:
               type: string
-              nullable: true
             statusBgColor:
               type: string
-              nullable: true
             statusTextColor:
               type: string
-              nullable: true
             createdAt:
               type: string
               format: date-time
     UpdateContactRequest:
       type: object
-      required: [firstName, lastName]
+      required: [firstName, lastName, statusConfigId]
       properties:
         firstName:
           type: string
@@ -7409,7 +7399,6 @@ components:
           nullable: true
         statusConfigId:
           type: string
-          nullable: true
         assignedToUserId:
           type: string
           nullable: true
