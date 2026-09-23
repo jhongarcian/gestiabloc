@@ -33,22 +33,42 @@ export type AutomationCondition = {
   compareValue?: unknown
 }
 
+export type AutomationWaitUnit = "SECONDS" | "MINUTES" | "HOURS" | "DAYS"
+
+export type AutomationWaitConfig =
+  | {
+      mode: "DURATION"
+      amount: number
+      unit: AutomationWaitUnit
+    }
+  | {
+      mode: "FIXED_DATE"
+      dateTime: string
+      timing: "ON" | "BEFORE" | "AFTER"
+      offsetAmount?: number
+      offsetUnit?: AutomationWaitUnit
+      pastBehavior: "CONTINUE" | "EXIT" | "GO_TO_STEP"
+      targetNodeKey?: string
+    }
+
 export type AutomationAction = {
   id?: string
+  nodeKey?: string
   type:
     | "SET_CONTACT_CUSTOM_FIELD"
     | "CLEAR_CONTACT_CUSTOM_FIELD"
     | "SET_CONTACT_STATUS"
-    | "CLEAR_CONTACT_STATUS"
     | "SET_CONTACT_ASSIGNEE"
     | "CLEAR_CONTACT_ASSIGNEE"
     | "ADD_CONTACT_TAG"
     | "REMOVE_CONTACT_TAG"
+    | "WAIT"
   customFieldId?: string | null
   statusConfigId?: string | null
   assignedUserId?: string | null
   tagId?: string | null
   value?: unknown
+  waitConfig?: AutomationWaitConfig | null
 }
 
 export type AutomationRecord = {
@@ -61,14 +81,13 @@ export type AutomationRecord = {
     | {
         type: "OPPORTUNITY_STAGE_CHANGED"
         pipelineId: string
-        sourceStageId: string | null
         targetStageId: string
       }
   conditions: AutomationCondition[]
   actions: AutomationAction[]
   lastExecution: {
     id: string
-    status: "SUCCEEDED" | "FAILED"
+    status: "SUCCEEDED" | "FAILED" | "EXITED"
     createdAt: string
     errorMessage: string | null
   } | null
@@ -110,9 +129,45 @@ export type AutomationExecution = {
   id: string
   automationId: string | null
   automationName: string
+  processId: string | null
+  processName: string | null
   triggerType: AutomationTriggerType
-  status: "SUCCEEDED" | "FAILED"
+  status: "SUCCEEDED" | "FAILED" | "EXITED"
   actionCount: number
   errorMessage: string | null
   createdAt: string
+}
+
+export type AutomationNodeExecutionStatus = "EXECUTED" | "SKIPPED" | "FAILED" | "WAITING"
+
+export type AutomationNodeExecution = {
+  id: string
+  attemptId: string
+  eventSource: "MANUAL_ENROLLMENT" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED"
+  contact: {
+    id: string | null
+    name: string
+  }
+  node: {
+    kind: "TRIGGER" | "ACTION"
+    key: string
+    label: string
+    index: number | null
+  }
+  status: AutomationNodeExecutionStatus
+  details: string | null
+  occurredAt: string
+}
+
+export type AutomationContact = {
+  contact: {
+    id: string
+    name: string
+    email: string | null
+    phoneNumber: string | null
+  }
+  firstEnteredAt: string
+  lastExecutedAt: string | null
+  executionCount: number
+  lastStatus: "SUCCEEDED" | "FAILED" | "EXITED" | null
 }

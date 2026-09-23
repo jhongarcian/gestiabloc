@@ -310,14 +310,63 @@ enum AutomationActionType {
   SET_CONTACT_CUSTOM_FIELD
   CLEAR_CONTACT_CUSTOM_FIELD
   SET_CONTACT_STATUS
-  CLEAR_CONTACT_STATUS
   SET_CONTACT_ASSIGNEE
   CLEAR_CONTACT_ASSIGNEE
   ADD_CONTACT_TAG
   REMOVE_CONTACT_TAG
+  WAIT
 }
 
 enum AutomationExecutionStatus {
+  SUCCEEDED
+  FAILED
+  EXITED
+}
+
+enum AutomationNodeKind {
+  TRIGGER
+  ACTION
+}
+
+enum AutomationNodeExecutionStatus {
+  EXECUTED
+  SKIPPED
+  FAILED
+  WAITING
+}
+
+enum AutomationRunStatus {
+  RUNNING
+  WAITING
+  SUCCEEDED
+  FAILED
+  EXITED
+}
+
+enum AutomationNodeEventSource {
+  MANUAL_ENROLLMENT
+  OPPORTUNITY_CREATED
+  OPPORTUNITY_STAGE_CHANGED
+}
+
+enum AutomationProcessStatus {
+  PREPARING
+  QUEUED
+  RUNNING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+}
+
+enum AutomationProcessBatchStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+}
+
+enum AutomationProcessContactStatus {
+  PENDING
   SUCCEEDED
   FAILED
 }
@@ -362,6 +411,9 @@ model User {
   loginChallenges                   LoginChallenge[]
   emailVerifications                EmailVerification[]
   passwordResetTokens               PasswordResetToken[]
+  requestedAutomationProcesses      AutomationProcess[]               @relation("AutomationProcessRequestedBy")
+  automationNodeExecutions          AutomationNodeExecution[]         @relation("AutomationNodeExecutionActor")
+  automationRuns                    AutomationRun[]                   @relation("AutomationRunActor")
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -551,6 +603,9 @@ model Tenant {
   calendarStaffGroups               CalendarStaffGroup[]
   calendarStaffGroupMemberships     CalendarStaffGroupMember[]
   automations                       Automation[]
+  automationProcesses               AutomationProcess[]
+  automationNodeExecutions          AutomationNodeExecution[]
+  automationRuns                    AutomationRun[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1311,10 +1366,13 @@ model Automation {
   targetStageId String?
   sortOrder     Int                   @default(0)
 
-  tenant     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  conditions AutomationCondition[]
-  actions    AutomationAction[]
-  executions AutomationExecution[]
+  tenant         Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conditions     AutomationCondition[]
+  actions        AutomationAction[]
+  executions     AutomationExecution[]
+  processes      AutomationProcess[]
+  nodeExecutions AutomationNodeExecution[]
+  runs           AutomationRun[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1357,12 +1415,14 @@ model AutomationAction {
   id             String               @id @default(uuid())
   tenantId       String
   automationId   String
+  nodeKey        String
   type           AutomationActionType
   customFieldId  String?
   statusConfigId String?
   assignedUserId String?
   tagId          String?
   value          Json?
+  waitConfig     Json?
   sortOrder      Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
@@ -1371,6 +1431,7 @@ model AutomationAction {
   updatedAt DateTime @updatedAt
 
   @@unique([tenantId, id])
+  @@unique([tenantId, automationId, nodeKey])
   @@index([tenantId, automationId, sortOrder])
   @@index([tenantId, customFieldId])
   @@index([tenantId, statusConfigId])
@@ -1390,11 +1451,14 @@ model AutomationExecution {
   sourceStageId  String?
   targetStageId  String?
   actorUserId    String?
+  processId      String?
+  processName    String?
   actionCount    Int                       @default(0)
   errorCode      String?
   errorMessage   String?
 
-  automation Automation? @relation(fields: [automationId], references: [id], onDelete: SetNull)
+  automation Automation?        @relation(fields: [automationId], references: [id], onDelete: SetNull)
+  process    AutomationProcess? @relation(fields: [processId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
 
@@ -1403,6 +1467,179 @@ model AutomationExecution {
   @@index([tenantId, automationId, createdAt])
   @@index([tenantId, status, createdAt])
   @@index([tenantId, opportunityId, createdAt])
+  @@index([tenantId, processId, createdAt])
+}
+
+model AutomationNodeExecution {
+  id             String                        @id @default(uuid())
+  tenantId       String
+  automationId   String?
+  automationName String
+  contactId      String?
+  contactName    String
+  actorUserId    String?
+  processId      String?
+  opportunityId  String?
+  attemptId      String
+  eventSource    AutomationNodeEventSource
+  nodeKind       AutomationNodeKind
+  nodeOrder      Int
+  nodeKey        String
+  nodeLabel      String
+  status         AutomationNodeExecutionStatus
+  reasonCode     String?
+  details        String?
+  occurredAt     DateTime                      @default(now())
+
+  tenant     Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  automation Automation?        @relation(fields: [automationId], references: [id], onDelete: SetNull)
+  contact    Contact?           @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  actor      User?              @relation("AutomationNodeExecutionActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  process    AutomationProcess? @relation(fields: [processId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@index([tenantId, automationId, occurredAt])
+  @@index([tenantId, contactId, occurredAt])
+  @@index([tenantId, status, occurredAt])
+  @@index([attemptId, nodeOrder])
+  @@index([tenantId, processId, occurredAt])
+}
+
+model AutomationRun {
+  id                     String                    @id @default(uuid())
+  tenantId               String
+  automationId           String?
+  automationName         String
+  contactId              String?
+  contactName            String
+  actorUserId            String?
+  opportunityId          String?
+  attemptId              String
+  eventSource            AutomationNodeEventSource
+  triggerType            AutomationTriggerType
+  sourceStageId          String?
+  targetStageId          String?
+  actionSnapshot         Json
+  cursorIndex            Int                       @default(0)
+  status                 AutomationRunStatus       @default(RUNNING)
+  resumeAt               DateTime?
+  waitingNodeKey         String?
+  waitingNodeExecutionId String?
+  leaseToken             String?
+  leaseExpiresAt         DateTime?
+  failureNodeKey         String?
+  failureCode            String?
+  failureMessage         String?
+  failedAt               DateTime?
+  completedAt            DateTime?
+  exitedAt               DateTime?
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  automation Automation? @relation(fields: [automationId], references: [id], onDelete: SetNull)
+  contact    Contact?    @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  actor      User?       @relation("AutomationRunActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, attemptId])
+  @@index([tenantId, automationId, createdAt])
+  @@index([tenantId, contactId, createdAt])
+  @@index([status, resumeAt, leaseExpiresAt])
+}
+
+model AutomationProcess {
+  id                String                  @id @default(uuid())
+  tenantId          String
+  automationId      String?
+  automationName    String
+  triggerType       AutomationTriggerType
+  actionSnapshot    Json
+  processName       String
+  status            AutomationProcessStatus @default(PREPARING)
+  requestedByUserId String?
+  requestedByName   String
+  expectedContacts  Int
+  totalContacts     Int                     @default(0)
+  processedContacts Int                     @default(0)
+  succeededContacts Int                     @default(0)
+  failedContacts    Int                     @default(0)
+  totalBatches      Int                     @default(0)
+  completedBatches  Int                     @default(0)
+  startedAt         DateTime?
+  completedAt       DateTime?
+  lastError         String?
+
+  tenant         Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  automation     Automation?                @relation(fields: [automationId], references: [id], onDelete: SetNull)
+  requestedBy    User?                      @relation("AutomationProcessRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+  batches        AutomationProcessBatch[]
+  contacts       AutomationProcessContact[]
+  executions     AutomationExecution[]
+  nodeExecutions AutomationNodeExecution[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, automationId, createdAt])
+  @@index([tenantId, requestedByUserId, createdAt])
+}
+
+model AutomationProcessBatch {
+  id                String                       @id @default(uuid())
+  tenantId          String
+  processId         String
+  batchNumber       Int
+  status            AutomationProcessBatchStatus @default(PENDING)
+  contactCount      Int
+  succeededContacts Int                          @default(0)
+  failedContacts    Int                          @default(0)
+  attemptCount      Int                          @default(0)
+  lockedAt          DateTime?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  errorMessage      String?
+
+  process  AutomationProcess          @relation(fields: [processId], references: [id], onDelete: Cascade)
+  contacts AutomationProcessContact[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([processId, batchNumber])
+  @@index([tenantId, status, createdAt])
+  @@index([processId, status, batchNumber])
+}
+
+model AutomationProcessContact {
+  id           String                         @id @default(uuid())
+  tenantId     String
+  processId    String
+  batchId      String
+  contactId    String
+  contactName  String
+  status       AutomationProcessContactStatus @default(PENDING)
+  errorCode    String?
+  errorMessage String?
+  startedAt    DateTime?
+  completedAt  DateTime?
+
+  process AutomationProcess      @relation(fields: [processId], references: [id], onDelete: Cascade)
+  batch   AutomationProcessBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([processId, contactId])
+  @@index([batchId, status])
+  @@index([processId, status, createdAt])
+  @@index([tenantId, contactId])
 }
 
 model Task {
@@ -1692,7 +1929,7 @@ model Contact {
   mailingPostalCode   String?
   mailingCountry      String?
 
-  statusConfigId   String?
+  statusConfigId   String
   assignedToUserId String?
   ssnLast4         String?
   ssnCiphertext    String?
@@ -1721,8 +1958,8 @@ model Contact {
   leadSource      String?
   leadOtherSource String?
 
-  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  statusConfig ContactStatusConfig? @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
+  tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  statusConfig ContactStatusConfig @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
 
   assignedToMembership         Membership?                   @relation("ContactAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
   servicingAgentMembership     Membership?                   @relation("ContactServicingAgentMembership", fields: [tenantId, servicingAgentUserId], references: [tenantId, userId])
@@ -1737,6 +1974,8 @@ model Contact {
   serviceProcesses             ContactService[]
   opportunities                ContactOpportunity[]
   serviceFollowUpExecutionLogs ServiceFollowUpExecutionLog[]
+  automationNodeExecutions     AutomationNodeExecution[]
+  automationRuns               AutomationRun[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

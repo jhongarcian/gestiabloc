@@ -30,7 +30,7 @@ type ContactHeaderStatusProps = {
   contactId: string
   initialStatus: {
     label: string
-    value: string | null
+    value: string
     bgColor: string | null
     textColor: string | null
   }
@@ -52,7 +52,7 @@ export function ContactHeaderStatus({
     setStatus(initialStatus)
   }, [initialStatus])
 
-  const selectedValue = status.value ?? "__unassigned__"
+  const selectedValue = status.value
   const selectedStatusStyle =
     status.bgColor && status.textColor
       ? {
@@ -64,19 +64,19 @@ export function ContactHeaderStatus({
           color: "#334155",
         }
 
-  const updateStatus = async (nextStatus: StatusOption | null) => {
+  const updateStatus = async (nextStatus: StatusOption) => {
     setIsSaving(true)
 
     try {
       await api.patch(`/api/contacts/${tenantId}/${contactId}/status`, {
-        statusConfigId: nextStatus?.value ?? null,
+        statusConfigId: nextStatus.value,
       })
 
       setStatus({
-        label: nextStatus?.label ?? "Unassigned",
-        value: nextStatus?.value ?? null,
-        bgColor: nextStatus?.bgColor ?? null,
-        textColor: nextStatus?.textColor ?? null,
+        label: nextStatus.label,
+        value: nextStatus.value,
+        bgColor: nextStatus.bgColor,
+        textColor: nextStatus.textColor,
       })
       setOpen(false)
       toast.success("Status updated.")

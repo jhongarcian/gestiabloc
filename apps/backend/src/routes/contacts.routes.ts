@@ -18,7 +18,10 @@ import { deletePrivateObject } from "../lib/private-storage.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { normalizeTagSearchTerm, parseCsvIds } from "../lib/tag-utils.js"
 import { serializeNotification } from "../lib/task-notifications.js"
-import { ensureDefaultContactStatuses } from "../lib/tenant-defaults.js"
+import {
+  ensureContactsHaveDefaultStatus,
+  ensureDefaultContactStatuses,
+} from "../lib/tenant-defaults.js"
 import {
   SERVICE_TRANSACTION_SEARCH_MAX_LENGTH,
   sanitizeServiceTransactionSearch,
@@ -274,7 +277,7 @@ const UpdateContactSchema = z.object({
   state: optionalStringField(120),
   postalCode: optionalStringField(40),
   country: optionalStringField(120),
-  statusConfigId: optionalStringField(80),
+  statusConfigId: z.string().trim().min(1).max(80),
   assignedToUserId: optionalStringField(80),
   customFieldValues: z
     .array(
@@ -292,7 +295,7 @@ const UpdateContactAssigneeSchema = z.object({
 })
 
 const UpdateContactStatusSchema = z.object({
-  statusConfigId: optionalStringField(80),
+  statusConfigId: z.string().trim().min(1).max(80),
 })
 
 const NOTIFICATION_SELECT = {
@@ -1318,6 +1321,8 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
+    await ensureContactsHaveDefaultStatus(prismaWithContacts, tenantId)
+
     const skip = (page - 1) * pageSize
     const selectedStatusConfigIds = parseCsvIds(statusConfigIds)
     const selectedTagIds = parseCsvIds(tagIds)
@@ -1495,10 +1500,10 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
               }
             : null,
           activeFollowUpServices,
-          status: contact.statusConfig?.name ?? "Unassigned",
-          statusConfigId: contact.statusConfig?.id ?? null,
-          statusBgColor: contact.statusConfig?.bgColor ?? null,
-          statusTextColor: contact.statusConfig?.textColor ?? null,
+          status: contact.statusConfig.name,
+          statusConfigId: contact.statusConfig.id,
+          statusBgColor: contact.statusConfig.bgColor,
+          statusTextColor: contact.statusConfig.textColor,
         }
       }),
       pagination: {
@@ -1513,6 +1518,77 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
   }
 })
 
+router.get("/:tenantId/automations", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const automations = await prismaWithContacts.automation.findMany({
+      where: { tenantId, isEnabled: true },
+      orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        _count: { select: { actions: true } },
+      },
+    })
+
+    return res.json({
+      ok: true,
+      items: automations.map(
+        (automation: {
+          id: string
+          name: string
+          _count: { actions: number }
+        }) => ({
+          id: automation.id,
+          name: automation.name,
+          actionCount: automation._count.actions,
+        }),
+      ),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/selection", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    const contacts = await prisma.contact.findMany({
+      where: { tenantId },
+      orderBy: [{ id: "asc" }],
+      select: {
+        id: true,
+        firstName: true,
+        middleName: true,
+        lastName: true,
+      },
+    })
+
+    return res.json({
+      ok: true,
+      items: contacts.map((contact) => ({
+        id: contact.id,
+        name: [contact.firstName, contact.middleName, contact.lastName]
+          .filter(Boolean)
+          .join(" "),
+      })),
+      total: contacts.length,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
@@ -1520,6 +1596,8 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
+
+    await ensureContactsHaveDefaultStatus(prismaWithContacts, tenantId)
 
     const [contact, tags, customFields, customFieldValues, relationships] =
       await Promise.all([
@@ -1805,10 +1883,10 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
               image: contact.assignedToMembership.user.image ?? null,
             }
           : null,
-        status: contact.statusConfig?.name ?? "Unassigned",
-        statusConfigId: contact.statusConfig?.id ?? null,
-        statusBgColor: contact.statusConfig?.bgColor ?? null,
-        statusTextColor: contact.statusConfig?.textColor ?? null,
+        status: contact.statusConfig.name,
+        statusConfigId: contact.statusConfig.id,
+        statusBgColor: contact.statusConfig.bgColor,
+        statusTextColor: contact.statusConfig.textColor,
         tags: tags.map((item: any) => ({
           id: item.tag.id,
           name: item.tag.name,
@@ -3236,20 +3314,21 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
 
     await ensureDefaultContactStatuses(prismaWithContacts, tenantId)
 
-    let resolvedStatusConfigId = payload.statusConfigId ?? null
-    if (resolvedStatusConfigId) {
+    let resolvedStatusConfigId: string
+    if (payload.statusConfigId) {
       const selectedStatus =
         await prismaWithContacts.contactStatusConfig.findUnique({
-          where: { id: resolvedStatusConfigId },
-          select: { id: true, tenantId: true },
+          where: { id: payload.statusConfigId },
+          select: { id: true, tenantId: true, isActive: true },
         })
 
-      if (!selectedStatus || selectedStatus.tenantId !== tenantId) {
+      if (!selectedStatus || selectedStatus.tenantId !== tenantId || !selectedStatus.isActive) {
         return res.status(400).json({ error: "INVALID_STATUS_CONFIG" })
       }
+      resolvedStatusConfigId = selectedStatus.id
     } else {
       const defaultStatus =
-        await prismaWithContacts.contactStatusConfig.findFirst({
+        await prismaWithContacts.contactStatusConfig.findFirstOrThrow({
           where: {
             tenantId,
             isActive: true,
@@ -3258,7 +3337,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
           orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
           select: { id: true },
         })
-      resolvedStatusConfigId = defaultStatus?.id ?? null
+      resolvedStatusConfigId = defaultStatus.id
     }
 
     const created = await prisma.contact.create({
@@ -3305,10 +3384,10 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
         dateOfBirth: created.dateOfBirth,
         phoneNumber: created.phone ?? null,
         email: created.email ?? null,
-        status: created.statusConfig?.name ?? "Unassigned",
-        statusConfigId: created.statusConfig?.id ?? null,
-        statusBgColor: created.statusConfig?.bgColor ?? null,
-        statusTextColor: created.statusConfig?.textColor ?? null,
+        status: created.statusConfig.name,
+        statusConfigId: created.statusConfig.id,
+        statusBgColor: created.statusConfig.bgColor,
+        statusTextColor: created.statusConfig.textColor,
         createdAt: created.createdAt,
       },
     })
@@ -3595,20 +3674,18 @@ router.patch("/:tenantId/:contactId/status", requireAuth, async (req, res, next)
       return res.status(404).json({ error: "CONTACT_NOT_FOUND" })
     }
 
-    const resolvedStatusConfigId = payload.statusConfigId ?? null
-    if (resolvedStatusConfigId) {
-      const selectedStatus = await prismaWithContacts.contactStatusConfig.findUnique({
-        where: { id: resolvedStatusConfigId },
-        select: {
-          id: true,
-          tenantId: true,
-          isActive: true,
-        },
-      })
+    const resolvedStatusConfigId = payload.statusConfigId
+    const selectedStatus = await prismaWithContacts.contactStatusConfig.findUnique({
+      where: { id: resolvedStatusConfigId },
+      select: {
+        id: true,
+        tenantId: true,
+        isActive: true,
+      },
+    })
 
-      if (!selectedStatus || selectedStatus.tenantId !== tenantId || !selectedStatus.isActive) {
-        return res.status(400).json({ error: "INVALID_STATUS_CONFIG" })
-      }
+    if (!selectedStatus || selectedStatus.tenantId !== tenantId || !selectedStatus.isActive) {
+      return res.status(400).json({ error: "INVALID_STATUS_CONFIG" })
     }
 
     const updatedContact = await prisma.contact.update({
@@ -3633,10 +3710,10 @@ router.patch("/:tenantId/:contactId/status", requireAuth, async (req, res, next)
       ok: true,
       contact: {
         id: updatedContact.id,
-        status: updatedContact.statusConfig?.name ?? "Unassigned",
-        statusConfigId: updatedContact.statusConfig?.id ?? null,
-        statusBgColor: updatedContact.statusConfig?.bgColor ?? null,
-        statusTextColor: updatedContact.statusConfig?.textColor ?? null,
+        status: updatedContact.statusConfig.name,
+        statusConfigId: updatedContact.statusConfig.id,
+        statusBgColor: updatedContact.statusConfig.bgColor,
+        statusTextColor: updatedContact.statusConfig.textColor,
       },
     })
   } catch (error) {
@@ -3802,17 +3879,15 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
       })
     }
 
-    let resolvedStatusConfigId = payload.statusConfigId ?? null
-    if (resolvedStatusConfigId) {
-      const selectedStatus =
-        await prismaWithContacts.contactStatusConfig.findUnique({
-          where: { id: resolvedStatusConfigId },
-          select: { id: true, tenantId: true },
-        })
+    const resolvedStatusConfigId = payload.statusConfigId
+    const selectedStatus =
+      await prismaWithContacts.contactStatusConfig.findUnique({
+        where: { id: resolvedStatusConfigId },
+        select: { id: true, tenantId: true, isActive: true },
+      })
 
-      if (!selectedStatus || selectedStatus.tenantId !== tenantId) {
-        return res.status(400).json({ error: "INVALID_STATUS_CONFIG" })
-      }
+    if (!selectedStatus || selectedStatus.tenantId !== tenantId || !selectedStatus.isActive) {
+      return res.status(400).json({ error: "INVALID_STATUS_CONFIG" })
     }
 
     const assigneeUpdate = buildContactAssigneeUpdate(payload.assignedToUserId)
@@ -4073,10 +4148,10 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
               image: updated.updatedContact.assignedToMembership.user.image ?? null,
             }
           : null,
-        status: updated.updatedContact.statusConfig?.name ?? "Unassigned",
-        statusConfigId: updated.updatedContact.statusConfig?.id ?? null,
-        statusBgColor: updated.updatedContact.statusConfig?.bgColor ?? null,
-        statusTextColor: updated.updatedContact.statusConfig?.textColor ?? null,
+        status: updated.updatedContact.statusConfig.name,
+        statusConfigId: updated.updatedContact.statusConfig.id,
+        statusBgColor: updated.updatedContact.statusConfig.bgColor,
+        statusTextColor: updated.updatedContact.statusConfig.textColor,
         tags: tags.map((item: any) => ({
           id: item.tag.id,
           name: item.tag.name,

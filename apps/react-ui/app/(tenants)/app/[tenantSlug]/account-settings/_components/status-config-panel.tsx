@@ -100,12 +100,14 @@ function SortableStatusRow({
   status,
   disabled,
   isBusy,
+  toggleDisabled,
   onToggle,
   onDelete,
 }: {
   status: ContactStatus
   disabled: boolean
   isBusy: boolean
+  toggleDisabled: boolean
   onToggle: (id: string, isActive: boolean) => Promise<void>
   onDelete: (id: string) => Promise<void>
 }) {
@@ -178,11 +180,11 @@ function SortableStatusRow({
             type="button"
             variant="default"
             size="sm"
-            disabled={isBusy}
+            disabled={isBusy || toggleDisabled}
             className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90"
             onClick={() => void onToggle(status.id, status.isActive)}
           >
-            {status.isActive ? "Set Inactive" : "Set Active"}
+            {toggleDisabled ? "Always Available" : status.isActive ? "Set Inactive" : "Set Active"}
           </Button>
           <Button
             type="button"
@@ -263,7 +265,7 @@ export function ContactStatusConfigPanel({
     configKey === "contacts" ? "Contact Statuses" : "Task Statuses"
   const protectedStatusesLabel =
     configKey === "contacts"
-      ? "Active, Inactive, and Pending cannot be deleted."
+      ? "Active, Inactive, and Pending are always available and cannot be deleted."
       : "To Do, In Progress, and Completed cannot be deleted."
 
   const createStatus = async () => {
@@ -486,6 +488,7 @@ export function ContactStatusConfigPanel({
                         status={status}
                         disabled={isBusy}
                         isBusy={isBusy}
+                        toggleDisabled={configKey === "contacts" && status.isSystemDefault}
                         onToggle={toggleStatusActive}
                         onDelete={deleteStatus}
                       />

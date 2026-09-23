@@ -140,6 +140,7 @@ const COMPACT_LOCATION_LABELS: Readonly<Record<string, string>> = {
   "ai-qualification": "AI Qualification",
   appointments: "Appointments",
   automations: "Automations",
+  "automation-processes": "Automation Processes",
   billing: "Billing",
   calendar: "Calendar",
   contacts: "Contacts",

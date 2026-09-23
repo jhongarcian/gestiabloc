@@ -65,7 +65,7 @@ type ContactOverviewFormProps = {
       postalCode: string | null
       country: string | null
     }
-    statusConfigId: string | null
+    statusConfigId: string
     tags: Array<{
       id: string
       name: string
@@ -496,7 +496,7 @@ export function ContactOverviewForm({
   )
   const [country, setCountry] = useState(initialContact.address.country ?? "")
   const [statusConfigId, setStatusConfigId] = useState(
-    initialContact.statusConfigId ?? "__unassigned__",
+    initialContact.statusConfigId,
   )
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, unknown>>(
     () =>
@@ -530,7 +530,7 @@ export function ContactOverviewForm({
       state: initialContact.address.state ?? "",
       postalCode: initialContact.address.postalCode ?? "",
       country: initialContact.address.country ?? "",
-      statusConfigId: initialContact.statusConfigId ?? "__unassigned__",
+      statusConfigId: initialContact.statusConfigId,
     }
 
     const currentBaseState = {
@@ -659,8 +659,7 @@ export function ContactOverviewForm({
         state: state.trim() || null,
         postalCode: postalCode.trim() || null,
         country: country.trim() || null,
-        statusConfigId:
-          statusConfigId === "__unassigned__" ? null : statusConfigId,
+        statusConfigId,
         customFieldValues: editableCustomFields.map((field) => ({
           fieldId: field.id,
           value: normalizeCustomFieldSubmissionValue(
@@ -868,7 +867,6 @@ export function ContactOverviewForm({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__unassigned__">Unassigned</SelectItem>
                     {statusOptions.map((status) => (
                       <SelectItem key={status.value} value={status.value}>
                         {status.label}

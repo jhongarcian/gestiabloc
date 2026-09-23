@@ -1,7 +1,12 @@
 import assert from "node:assert/strict"
-import test from "node:test"
+import test, { describe } from "node:test"
 
-import { ensureTenantOperationalDefaults } from "./tenant-defaults.js"
+import {
+  CONTACT_DEFAULT_STATUSES,
+  ensureContactsHaveDefaultStatus,
+  ensureDefaultContactStatuses,
+  ensureTenantOperationalDefaults,
+} from "./tenant-defaults.js"
 
 test("tenant operational defaults are idempotent", async () => {
   const contacts: Array<{ tenantId: string; name: string }> = []
@@ -101,4 +106,73 @@ test("tenant operational defaults are idempotent", async () => {
     stages.map((item) => item.name),
     ["New", "Contacted", "Qualified", "Proposal"],
   )
+})
+
+describe("ensureDefaultContactStatuses", () => {
+  test("keeps Active, Inactive, and Pending available as system defaults", async () => {
+    const calls: Array<{ method: string; args: unknown }> = []
+    const client = {
+      contactStatusConfig: {
+        updateMany: async (args: unknown) => {
+          calls.push({ method: "updateMany", args })
+        },
+        createMany: async (args: unknown) => {
+          calls.push({ method: "createMany", args })
+        },
+      },
+    }
+
+    await ensureDefaultContactStatuses(client as never, "tenant-1")
+
+    assert.deepEqual(calls, [
+      {
+        method: "updateMany",
+        args: {
+          where: {
+            tenantId: "tenant-1",
+            name: { in: ["Active", "Inactive", "Pending"] },
+          },
+          data: { isActive: true, isSystemDefault: true },
+        },
+      },
+      {
+        method: "createMany",
+        args: {
+          data: CONTACT_DEFAULT_STATUSES.map((item) => ({
+            tenantId: "tenant-1",
+            ...item,
+            isActive: true,
+            isSystemDefault: true,
+          })),
+          skipDuplicates: true,
+        },
+      },
+    ])
+  })
+})
+
+test("legacy contacts without a status are assigned Active before reads", async () => {
+  const rawQueryValues: unknown[][] = []
+  const rawUpdateValues: unknown[][] = []
+  const client = {
+    contactStatusConfig: {
+      updateMany: async () => ({ count: 0 }),
+      createMany: async () => ({ count: 0 }),
+      findFirstOrThrow: async () => ({ id: "status-active" }),
+    },
+    $queryRaw: async (_query: TemplateStringsArray, ...values: unknown[]) => {
+      rawQueryValues.push(values)
+      return [{ id: "contact-without-status" }]
+    },
+    $executeRaw: async (_query: TemplateStringsArray, ...values: unknown[]) => {
+      rawUpdateValues.push(values)
+      return 2
+    },
+  }
+
+  const statusId = await ensureContactsHaveDefaultStatus(client as never, "tenant-1")
+
+  assert.equal(statusId, "status-active")
+  assert.deepEqual(rawQueryValues, [["tenant-1"]])
+  assert.deepEqual(rawUpdateValues, [["status-active", "tenant-1"]])
 })

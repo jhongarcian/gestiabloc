@@ -1,6 +1,8 @@
 import { Router } from "express"
 import { z } from "zod"
 
+import { Prisma } from "../generated/prisma/index.js"
+
 import {
   AutomationConfigurationError,
   AutomationUpsertSchema,
@@ -23,7 +25,21 @@ const ExecutionQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
   automationId: z.string().trim().min(1).optional(),
-  status: z.enum(["SUCCEEDED", "FAILED"]).optional(),
+  status: z.enum(["SUCCEEDED", "FAILED", "EXITED"]).optional(),
+})
+const AutomationContactsQuerySchema = z.object({
+  search: z.string().trim().max(120).default(""),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(10),
+})
+const AutomationExecutionLogsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().refine(
+    (value) => value === 10 || value === 25 || value === 50,
+    { message: "pageSize must be 10, 25, or 50" },
+  ).default(10),
+  search: z.string().trim().max(120).default(""),
+  status: z.enum(["EXECUTED", "SKIPPED", "FAILED", "WAITING"]).optional(),
 })
 const ReorderSchema = z.object({
   automationIds: z.array(z.string().trim().min(1)).min(1).max(200),
@@ -61,7 +77,6 @@ function serializeAutomation(record: any) {
         : {
             type: record.triggerType,
             pipelineId: record.pipelineId,
-            sourceStageId: record.sourceStageId,
             targetStageId: record.targetStageId,
           },
     conditions: record.conditions.map((condition: any) => ({
@@ -76,12 +91,14 @@ function serializeAutomation(record: any) {
     })),
     actions: record.actions.map((action: any) => ({
       id: action.id,
+      nodeKey: action.nodeKey,
       type: action.type,
       customFieldId: action.customFieldId,
       statusConfigId: action.statusConfigId,
       assignedUserId: action.assignedUserId,
       tagId: action.tagId,
       value: action.value,
+      waitConfig: action.waitConfig,
     })),
     lastExecution: record.executions?.[0]
       ? {
@@ -192,6 +209,202 @@ router.get("/:tenantId/automation-executions", ...readMiddlewares, async (req, r
       ok: true,
       items,
       pagination: { page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/automations/:automationId/execution-logs", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId, automationId } = AutomationPathSchema.parse(req.params)
+    const query = AutomationExecutionLogsQuerySchema.parse(req.query)
+    const automation = await prismaWithAutomations.automation.findUnique({
+      where: { tenantId_id: { tenantId, id: automationId } },
+      select: { id: true },
+    })
+    if (!automation) return res.status(404).json({ error: "AUTOMATION_NOT_FOUND" })
+
+    const where = {
+      tenantId,
+      automationId,
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.search
+        ? { contactName: { contains: query.search, mode: "insensitive" } }
+        : {}),
+    }
+    const [total, records] = await Promise.all([
+      prismaWithAutomations.automationNodeExecution.count({ where }),
+      prismaWithAutomations.automationNodeExecution.findMany({
+        where,
+        orderBy: [
+          { occurredAt: "desc" },
+          { attemptId: "desc" },
+          { nodeOrder: "asc" },
+          { id: "asc" },
+        ],
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+        select: {
+          id: true,
+          attemptId: true,
+          eventSource: true,
+          contactId: true,
+          contactName: true,
+          contact: { select: { id: true } },
+          nodeKind: true,
+          nodeOrder: true,
+          nodeKey: true,
+          nodeLabel: true,
+          status: true,
+          details: true,
+          occurredAt: true,
+        },
+      }),
+    ])
+
+    return res.json({
+      ok: true,
+      items: records.map((record: any) => ({
+        id: record.id,
+        attemptId: record.attemptId,
+        eventSource: record.eventSource,
+        contact: {
+          id: record.contact?.id ?? null,
+          name: record.contactName,
+        },
+        node: {
+          kind: record.nodeKind,
+          key: record.nodeKey,
+          label: record.nodeLabel,
+          index: record.nodeKind === "ACTION" ? record.nodeOrder : null,
+        },
+        status: record.status,
+        details: record.details,
+        occurredAt: record.occurredAt,
+      })),
+      pagination: {
+        page: query.page,
+        pageSize: query.pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/automations/:automationId/contacts", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId, automationId } = AutomationPathSchema.parse(req.params)
+    const query = AutomationContactsQuerySchema.parse(req.query)
+    const automation = await prismaWithAutomations.automation.findUnique({
+      where: { tenantId_id: { tenantId, id: automationId } },
+      select: { id: true },
+    })
+    if (!automation) return res.status(404).json({ error: "AUTOMATION_NOT_FOUND" })
+
+    const searchPattern = `%${query.search}%`
+    const searchClause = query.search
+      ? Prisma.sql`AND (
+          CONCAT_WS(' ', contact."firstName", contact."middleName", contact."lastName") ILIKE ${searchPattern}
+          OR COALESCE(contact."email", '') ILIKE ${searchPattern}
+          OR COALESCE(contact."phone", '') ILIKE ${searchPattern}
+        )`
+      : Prisma.sql``
+    const enrolledContacts = Prisma.sql`
+      FROM (
+        SELECT
+          enrollment."contactId" AS "contactId",
+          MIN(enrollment."createdAt") AS "firstEnteredAt"
+        FROM "AutomationProcessContact" enrollment
+        INNER JOIN "AutomationProcess" process
+          ON process."id" = enrollment."processId"
+          AND process."tenantId" = ${tenantId}
+          AND process."automationId" = ${automationId}
+        WHERE enrollment."tenantId" = ${tenantId}
+          AND enrollment."status" = 'SUCCEEDED'::"AutomationProcessContactStatus"
+        GROUP BY enrollment."contactId"
+      ) enrolled_contact
+      INNER JOIN "Contact" contact
+        ON contact."id" = enrolled_contact."contactId"
+        AND contact."tenantId" = ${tenantId}
+      LEFT JOIN (
+        SELECT
+          execution."contactId" AS "contactId",
+          COUNT(*)::int AS "executionCount",
+          MAX(execution."createdAt") AS "lastExecutedAt",
+          (ARRAY_AGG(execution."status"::text ORDER BY execution."createdAt" DESC))[1] AS "lastStatus"
+        FROM "AutomationExecution" execution
+        WHERE execution."tenantId" = ${tenantId}
+          AND execution."automationId" = ${automationId}
+          AND execution."contactId" IS NOT NULL
+        GROUP BY execution."contactId"
+      ) execution_contact
+        ON execution_contact."contactId" = enrolled_contact."contactId"
+      WHERE TRUE
+      ${searchClause}
+    `
+    type AutomationContactCountRow = { total: bigint }
+    type AutomationContactRow = {
+      contactId: string
+      firstName: string
+      middleName: string | null
+      lastName: string
+      email: string | null
+      phone: string | null
+      executionCount: number | null
+      firstEnteredAt: Date
+      lastExecutedAt: Date | null
+      lastStatus: "SUCCEEDED" | "FAILED" | "EXITED" | null
+    }
+    const skip = (query.page - 1) * query.pageSize
+    const [countRows, rows] = await prisma.$transaction([
+      prisma.$queryRaw<AutomationContactCountRow[]>(Prisma.sql`
+        SELECT COUNT(*)::bigint AS total
+        ${enrolledContacts}
+      `),
+      prisma.$queryRaw<AutomationContactRow[]>(Prisma.sql`
+        SELECT
+          enrolled_contact."contactId" AS "contactId",
+          contact."firstName" AS "firstName",
+          contact."middleName" AS "middleName",
+          contact."lastName" AS "lastName",
+          contact."email" AS email,
+          contact."phone" AS phone,
+          COALESCE(execution_contact."executionCount", 0)::int AS "executionCount",
+          enrolled_contact."firstEnteredAt" AS "firstEnteredAt",
+          execution_contact."lastExecutedAt" AS "lastExecutedAt",
+          execution_contact."lastStatus" AS "lastStatus"
+        ${enrolledContacts}
+        ORDER BY enrolled_contact."firstEnteredAt" DESC, enrolled_contact."contactId" ASC
+        LIMIT ${query.pageSize}
+        OFFSET ${skip}
+      `),
+    ])
+    const totalCount = Number(countRows[0]?.total ?? 0)
+    const totalPages = Math.max(1, Math.ceil(totalCount / query.pageSize))
+
+    return res.json({
+      ok: true,
+      items: rows.map((row) => ({
+        contact: {
+          id: row.contactId,
+          name: [row.firstName, row.middleName, row.lastName].filter(Boolean).join(" "),
+          email: row.email,
+          phoneNumber: row.phone,
+        },
+        firstEnteredAt: row.firstEnteredAt,
+        lastExecutedAt: row.lastExecutedAt,
+        executionCount: row.executionCount ?? 0,
+        lastStatus: row.lastStatus,
+      })),
+      search: query.search,
+      page: query.page,
+      pageSize: query.pageSize,
+      totalCount,
+      totalPages,
     })
   } catch (error) {
     return next(error)

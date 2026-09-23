@@ -4,10 +4,13 @@ import { format } from "date-fns"
 import Link from "next/link"
 import { isAxiosError } from "axios"
 import {
+  ArrowRight,
   CalendarDays,
   Check,
   ChevronDown,
+  CreditCard,
   Route,
+  Search,
   UserRound,
   Wallet,
 } from "lucide-react"
@@ -31,7 +34,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
-import { Card, CardContent } from "@/components/ui/card"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import {
   Command,
   CommandEmpty,
@@ -1219,6 +1229,7 @@ export function PurchaseTransactionDialog({
             triggerClassName,
           )}
         >
+          <CreditCard data-icon="inline-start" />
           Create transaction
         </Button>
       </DialogTrigger>
@@ -1883,9 +1894,11 @@ export function ServicesRegistryPanel({
     searchParams.get("rangePreset"),
   )
   const initialCustomRange = getDefaultCustomDateRange()
-  const [query, setQuery] = useState(() => searchParams.get("search") ?? "")
+  const [query, setQuery] = useState(() =>
+    sanitizeTransactionSingleLineInput(searchParams.get("search") ?? ""),
+  )
   const [debouncedQuery, setDebouncedQuery] = useState(() =>
-    (searchParams.get("search") ?? "").trim(),
+    sanitizeTransactionContactSearch(searchParams.get("search") ?? ""),
   )
   const [page, setPage] = useState(() =>
     parsePositiveInt(searchParams.get("page"), 1),
@@ -1929,7 +1942,7 @@ export function ServicesRegistryPanel({
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      setDebouncedQuery(query.trim())
+      setDebouncedQuery(sanitizeTransactionContactSearch(query))
       setPage(1)
     }, 350)
 
@@ -2095,32 +2108,33 @@ export function ServicesRegistryPanel({
   }, [customFrom, customTo, rangePreset, transactionsHref])
 
   const summaryLabel = useMemo(() => {
-    if (!total) return "No active services found"
+    if (!total) {
+      return debouncedQuery
+        ? "No services match your search"
+        : "No active services found"
+    }
     const start = startIndex + 1
     const end = start + services.length - 1
     return `Showing ${start}-${end} of ${total} services`
-  }, [services.length, startIndex, total])
+  }, [debouncedQuery, services.length, startIndex, total])
 
   return (
-    <div className="flex h-full w-full min-h-0 flex-col gap-4">
-      <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-            <div className="space-y-2">
-              <div className="space-y-1">
-                <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
-                  Service overview
-                </h1>
-                <p className="text-sm text-slate-600">
-                  Track booked sales, open follow-up workload, and remaining
-                  balance in one place.
-                </p>
-              </div>
+    <div className="flex h-full min-h-0 w-full flex-col gap-5 sm:gap-6">
+      <header className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_52%,#fff7ed_100%)] p-4 shadow-sm sm:p-5 lg:p-6">
+        <div className="flex flex-col gap-5">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <h1 className="text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">
+                Services
+              </h1>
+              <p className="max-w-2xl text-sm leading-6 text-slate-600">
+                Review sales performance and manage the services available to
+                your contacts.
+              </p>
             </div>
 
-            <div className="flex flex-col gap-2 xl:items-end">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                {rangePreset === "CUSTOM" ? (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end xl:justify-end">
+              {rangePreset === "CUSTOM" ? (
                   <div className="grid gap-1">
                     <Label
                       htmlFor="services-summary-calendar"
@@ -2134,9 +2148,9 @@ export function ServicesRegistryPanel({
                           id="services-summary-calendar"
                           type="button"
                           variant="outline"
-                          className="min-w-[260px] justify-start border-white/80 bg-white/80 text-left font-normal text-blue-950 shadow-sm hover:bg-white"
+                          className="h-10 w-full justify-start rounded-xl border-white/80 bg-white/90 text-left font-normal text-blue-950 shadow-sm hover:bg-white sm:min-w-[260px]"
                         >
-                          <CalendarDays className="mr-2 h-4 w-4 shrink-0 text-blue-700" />
+                          <CalendarDays data-icon="inline-start" />
                           <span className="truncate">
                             {formatCalendarRangeLabel(customDateRange)}
                           </span>
@@ -2173,9 +2187,9 @@ export function ServicesRegistryPanel({
                       </PopoverContent>
                     </Popover>
                   </div>
-                ) : null}
+              ) : null}
 
-                <div className="grid gap-1">
+              <div className="grid gap-1">
                   <Label
                     htmlFor="services-summary-range"
                     className="text-xs text-slate-500"
@@ -2200,7 +2214,7 @@ export function ServicesRegistryPanel({
                   >
                     <SelectTrigger
                       id="services-summary-range"
-                      className="w-full min-w-[180px] border-white/80 bg-white/80 text-blue-950 shadow-sm sm:w-[180px]"
+                      className="h-10 w-full rounded-xl border-white/80 bg-white/90 text-blue-950 shadow-sm sm:w-[180px]"
                     >
                       <SelectValue />
                     </SelectTrigger>
@@ -2212,8 +2226,13 @@ export function ServicesRegistryPanel({
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
               </div>
+              <PurchaseTransactionDialog
+                tenantId={tenantId}
+                tenantSlug={tenantSlug}
+                returnTo={`/app/${encodeURIComponent(tenantSlug)}/services`}
+                triggerClassName="h-10 w-full rounded-xl px-4 shadow-sm sm:w-auto"
+              />
             </div>
           </div>
 
@@ -2224,187 +2243,206 @@ export function ServicesRegistryPanel({
           ) : null}
 
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <Link
-              href={transactionsForRangeHref}
-              aria-label="View transactions for the selected sales range"
-              className="min-w-0 rounded-[24px] outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-blue-500/40 motion-reduce:transition-none"
-            >
-              <article className="h-full min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur transition-shadow hover:shadow-md">
-                <div className="flex items-center gap-2 text-slate-400">
-                  <Wallet className="h-4 w-4 text-emerald-600" />
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                    Gross Sales
-                  </p>
-                </div>
-                {isSummaryLoading && !summary ? (
-                  <div className="mt-3 space-y-2">
-                    <Skeleton className="h-8 w-28 rounded-lg" />
-                    <Skeleton className="h-4 w-40 rounded-md" />
-                  </div>
-                ) : (
-                  <>
-                    <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
-                      {formatCurrency(summary?.grossSalesCents ?? 0, "USD")}
-                    </p>
-                    <p className="mt-2 text-sm text-slate-500">
-                      {summary
-                        ? summaryRangeLabel
-                        : "Sales booked in the selected range."}
-                    </p>
-                  </>
-                )}
-              </article>
+            <Link href={transactionsForRangeHref} aria-label="View transactions for the selected sales range" className="group rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2">
+              <Card className="h-full gap-3 rounded-2xl border-white/80 bg-white/85 py-4 transition group-hover:-translate-y-0.5 group-hover:border-blue-200 group-hover:shadow-md">
+                <CardHeader className="gap-1 px-4">
+                  <CardDescription>Gross sales</CardDescription>
+                  <CardAction className="rounded-lg bg-emerald-50 p-2 text-emerald-700"><Wallet className="size-4" /></CardAction>
+                  <CardTitle className="truncate text-2xl text-slate-950">
+                    {isSummaryLoading && !summary ? <Skeleton className="h-7 w-28" /> : formatCurrency(summary?.grossSalesCents ?? 0, "USD")}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="flex items-center justify-between gap-2 px-4 text-sm text-slate-500">
+                  <span>{summary ? summaryRangeLabel : "Selected period"}</span>
+                  <ArrowRight className="size-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+                </CardContent>
+              </Card>
             </Link>
 
-            <Link
-              href={transactionsForRangeHref}
-              aria-label="View sold service transactions for the selected range"
-              className="min-w-0 rounded-[24px] outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-blue-500/40 motion-reduce:transition-none"
-            >
-              <article className="h-full min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur transition-shadow hover:shadow-md">
-                <div className="flex items-center gap-2 text-slate-400">
-                  <CalendarDays className="h-4 w-4 text-blue-600" />
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                    Services Sold
-                  </p>
-                </div>
-                {isSummaryLoading && !summary ? (
-                  <div className="mt-3 space-y-2">
-                    <Skeleton className="h-8 w-16 rounded-lg" />
-                    <Skeleton className="h-4 w-44 rounded-md" />
-                  </div>
-                ) : (
-                  <>
-                    <p className="mt-3 truncate text-2xl font-semibold tracking-tight text-slate-950">
-                      {summary?.servicesSold ?? 0}
-                    </p>
-                    <p className="mt-2 text-sm text-slate-500">
-                      {summary
-                        ? summaryRangeLabel
-                        : "Transactions created in the selected range."}
-                    </p>
-                  </>
-                )}
-              </article>
+            <Link href={transactionsForRangeHref} aria-label="View sold service transactions for the selected range" className="group rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2">
+              <Card className="h-full gap-3 rounded-2xl border-white/80 bg-white/85 py-4 transition group-hover:-translate-y-0.5 group-hover:border-blue-200 group-hover:shadow-md">
+                <CardHeader className="gap-1 px-4">
+                  <CardDescription>Services sold</CardDescription>
+                  <CardAction className="rounded-lg bg-blue-50 p-2 text-blue-700"><CalendarDays className="size-4" /></CardAction>
+                  <CardTitle className="text-2xl text-slate-950">
+                    {isSummaryLoading && !summary ? <Skeleton className="h-7 w-14" /> : (summary?.servicesSold ?? 0)}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="flex items-center justify-between gap-2 px-4 text-sm text-slate-500">
+                  <span>{summary ? summaryRangeLabel : "Selected period"}</span>
+                  <ArrowRight className="size-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+                </CardContent>
+              </Card>
             </Link>
 
-            <Link
-              href={getServiceFollowUpsHref(tenantSlug)}
-              aria-label="View active service follow-ups"
-              className="min-w-0 rounded-[24px] outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-blue-500/40 motion-reduce:transition-none"
-            >
-              <article className="h-full min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur transition-shadow hover:shadow-md">
-                <div className="flex items-center gap-2 text-slate-400">
-                  <Route className="h-4 w-4 text-amber-600" />
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                    Active Follow-Ups
-                  </p>
-                </div>
-                {isSummaryLoading && !summary ? (
-                  <div className="mt-3 flex flex-col items-start gap-2">
-                    <Skeleton className="h-8 w-16 rounded-lg" />
-                    <Skeleton className="h-6 w-12 rounded-full" />
-                  </div>
-                ) : (
-                  <div className="mt-3 flex flex-col items-start gap-2">
-                    <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
-                      {summary?.activeFollowUpServices ?? 0}
-                    </p>
-                    <Badge
-                      variant="secondary"
-                      className="border border-amber-200 bg-amber-50 text-amber-700"
-                    >
-                      Live
-                    </Badge>
-                  </div>
-                )}
-              </article>
+            <Link href={getServiceFollowUpsHref(tenantSlug)} aria-label="View active service follow-ups" className="group rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2">
+              <Card className="h-full gap-3 rounded-2xl border-white/80 bg-white/85 py-4 transition group-hover:-translate-y-0.5 group-hover:border-blue-200 group-hover:shadow-md">
+                <CardHeader className="gap-1 px-4">
+                  <CardDescription>Active follow-ups</CardDescription>
+                  <CardAction className="rounded-lg bg-amber-50 p-2 text-amber-700"><Route className="size-4" /></CardAction>
+                  <CardTitle className="text-2xl text-slate-950">
+                    {isSummaryLoading && !summary ? <Skeleton className="h-7 w-14" /> : (summary?.activeFollowUpServices ?? 0)}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="flex items-center justify-between gap-2 px-4 text-sm text-slate-500">
+                  <span>Open workflows</span>
+                  <ArrowRight className="size-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+                </CardContent>
+              </Card>
             </Link>
 
-            <Link
-              href={transactionsHref}
-              aria-label="View transaction balances"
-              className="min-w-0 rounded-[24px] outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-blue-500/40 motion-reduce:transition-none"
-            >
-              <article className="h-full min-w-0 rounded-[24px] border border-white/80 bg-white/70 p-6 shadow-sm backdrop-blur transition-shadow hover:shadow-md">
-                <div className="flex items-center gap-2 text-slate-400">
-                  <Wallet className="h-4 w-4 text-violet-600" />
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
-                    Remaining Balance
-                  </p>
-                </div>
-                {isSummaryLoading && !summary ? (
-                  <div className="mt-3 flex flex-col items-start gap-2">
-                    <Skeleton className="h-8 w-28 rounded-lg" />
-                    <Skeleton className="h-6 w-12 rounded-full" />
-                  </div>
-                ) : (
-                  <div className="mt-3 flex flex-col items-start gap-2">
-                    <p className="truncate text-2xl font-semibold tracking-tight text-slate-950">
-                      {formatCurrency(summary?.remainingBalanceCents ?? 0, "USD")}
-                    </p>
-                    <Badge
-                      variant="secondary"
-                      className="border border-violet-200 bg-violet-50 text-violet-700"
-                    >
-                      Live
-                    </Badge>
-                  </div>
-                )}
-              </article>
+            <Link href={transactionsHref} aria-label="View transaction balances" className="group rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2">
+              <Card className="h-full gap-3 rounded-2xl border-white/80 bg-white/85 py-4 transition group-hover:-translate-y-0.5 group-hover:border-blue-200 group-hover:shadow-md">
+                <CardHeader className="gap-1 px-4">
+                  <CardDescription>Outstanding balance</CardDescription>
+                  <CardAction className="rounded-lg bg-violet-50 p-2 text-violet-700"><Wallet className="size-4" /></CardAction>
+                  <CardTitle className="truncate text-2xl text-slate-950">
+                    {isSummaryLoading && !summary ? <Skeleton className="h-7 w-28" /> : formatCurrency(summary?.remainingBalanceCents ?? 0, "USD")}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="flex items-center justify-between gap-2 px-4 text-sm text-slate-500">
+                  <span>Open amount</span>
+                  <ArrowRight className="size-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+                </CardContent>
+              </Card>
             </Link>
           </div>
         </div>
-      </div>
+      </header>
 
-      <div className="flex min-h-[680px] w-full flex-1 flex-col rounded-lg bg-white">
-        <div className="flex flex-col gap-2 border-b border-slate-100 px-4 py-4 md:px-5">
-          <div>
-            <h2 className="font-semibold text-slate-950">Service catalog</h2>
+      <section className="flex min-h-[680px] w-full flex-1 flex-col overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-4 border-b border-slate-200 px-4 py-4 sm:px-5">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-xl font-semibold tracking-tight text-slate-950">Service catalog</h2>
             <p className="text-sm text-slate-500">{summaryLabel}</p>
           </div>
-          <div className="grid gap-2 md:grid-cols-[minmax(320px,1fr)_auto_auto]">
-            <Input
-              placeholder="Search by service name"
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value)
-                setPage(1)
-              }}
-            />
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+            <div className="relative">
+              <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-slate-400" />
+              <Input
+                aria-label="Search services"
+                className="h-11 rounded-xl border-slate-200 bg-slate-50/60 pr-4 pl-10 shadow-none focus-visible:bg-white"
+                placeholder="Search services"
+                value={query}
+                maxLength={TRANSACTION_CONTACT_SEARCH_MAX_LENGTH}
+                onChange={(event) => {
+                  setQuery(sanitizeTransactionSingleLineInput(event.target.value))
+                  setPage(1)
+                }}
+              />
+            </div>
             <Button
               type="button"
               variant="outline"
-              className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+              className="h-11 rounded-xl border-slate-200 px-4 text-blue-950"
+              disabled={!query && !debouncedQuery}
               onClick={() => {
                 setQuery("")
                 setDebouncedQuery("")
                 setPage(1)
               }}
             >
-              Clear Search
+              Clear search
             </Button>
-            <PurchaseTransactionDialog
-              tenantId={tenantId}
-              tenantSlug={tenantSlug}
-              returnTo={`/app/${encodeURIComponent(tenantSlug)}/services`}
-            />
           </div>
         </div>
 
-        <div className="min-h-[520px] flex-1 overflow-auto">
+        <div className="min-h-[520px] flex-1">
+          <div className="flex flex-col gap-3 p-4 md:hidden">
+            {isLoading ? (
+              Array.from({ length: 3 }, (_, index) => (
+                <Card key={index} className="gap-4 rounded-2xl py-4">
+                  <CardHeader className="gap-2 px-4">
+                    <Skeleton className="h-5 w-2/3" />
+                    <Skeleton className="h-4 w-full" />
+                  </CardHeader>
+                  <CardContent className="grid grid-cols-2 gap-3 px-4">
+                    <Skeleton className="h-12 rounded-xl" />
+                    <Skeleton className="h-12 rounded-xl" />
+                  </CardContent>
+                </Card>
+              ))
+            ) : errorMessage ? (
+              <Card className="gap-3 rounded-2xl border-rose-200 bg-rose-50/60 py-5">
+                <CardHeader className="gap-1 px-5">
+                  <CardTitle className="text-base text-rose-900">Could not load services</CardTitle>
+                  <CardDescription className="text-rose-700">{errorMessage}</CardDescription>
+                </CardHeader>
+                <CardContent className="px-5">
+                  <Button type="button" variant="outline" className="h-10 rounded-xl bg-white" onClick={() => void loadServices()}>
+                    Try again
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : services.length ? (
+              services.map((service) => {
+                const checklistCount = service.checklistItems.length
+                const publishedTemplateCount = service.followUpTemplates.filter((template) => template.isPublished).length
+                const serviceHref = `/app/${tenantSlug}/services/${service.id}`
+
+                return (
+                  <Link key={service.id} href={serviceHref} className="group rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2">
+                    <Card className="gap-4 rounded-2xl border-slate-200 py-4 transition group-hover:border-blue-200 group-hover:shadow-md">
+                      <CardHeader className="gap-1 px-4 pr-12">
+                        <CardTitle className="truncate text-base text-slate-950">{service.name}</CardTitle>
+                        <CardDescription className="line-clamp-2 leading-5">
+                          {service.description?.trim() || "No description added."}
+                        </CardDescription>
+                        <CardAction className="rounded-lg bg-slate-50 p-2 text-slate-500 transition group-hover:bg-blue-50 group-hover:text-blue-700">
+                          <ArrowRight className="size-4" />
+                        </CardAction>
+                      </CardHeader>
+                      <CardContent className="grid grid-cols-2 gap-x-4 gap-y-3 px-4 text-sm">
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-slate-500">Price</p>
+                          <p className="mt-1 truncate font-semibold text-slate-950">{formatCurrency(service.basePriceCents, service.currency)}</p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-slate-500">Payment</p>
+                          <p className="mt-1 truncate font-medium text-slate-800">
+                            {service.allowPartialPayments ? "Partial allowed" : "Full only"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-medium text-slate-500">Checklist</p>
+                          <p className="mt-1 font-medium text-slate-800">{checklistCount} item{checklistCount === 1 ? "" : "s"}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-medium text-slate-500">Follow-up</p>
+                          <p className="mt-1 font-medium text-slate-800">{publishedTemplateCount} template{publishedTemplateCount === 1 ? "" : "s"}</p>
+                        </div>
+                        <div className="col-span-2 flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                          <span className="text-xs font-medium text-slate-500">Professionals</span>
+                          <StackedAvatarGroup items={service.professionals.map(toProfessionalAvatarItem)} emptyLabel="No professionals assigned." />
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </Link>
+                )
+              })
+            ) : (
+              <Card className="gap-2 rounded-2xl border-dashed py-8 text-center">
+                <CardHeader className="gap-1 px-5">
+                  <CardTitle className="text-base">No services found</CardTitle>
+                  <CardDescription>{debouncedQuery ? "Try a different search." : "No active services are available yet."}</CardDescription>
+                </CardHeader>
+              </Card>
+            )}
+          </div>
+
+          <div className="hidden h-full overflow-auto md:block">
           <Table className="min-w-[1080px] w-full table-fixed [&_td]:px-3 [&_td]:py-3 [&_td:first-child]:pl-4 [&_td:last-child]:pr-4 [&_th]:px-3 [&_th]:h-8 [&_th:first-child]:pl-4 [&_th:last-child]:pr-4 md:[&_td:first-child]:pl-5 md:[&_td:last-child]:pr-5 md:[&_th:first-child]:pl-5 md:[&_th:last-child]:pr-5">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-[24%] text-xs">Name</TableHead>
                 <TableHead className="w-[12%] text-xs">Cost</TableHead>
                 <TableHead className="w-[16%] text-xs">
-                  Min Partial Payment
+                  Minimum payment
                 </TableHead>
-                <TableHead className="w-[12%] text-xs">Checklists</TableHead>
+                <TableHead className="w-[12%] text-xs">Checklist</TableHead>
                 <TableHead className="w-[22%] text-xs">Professionals</TableHead>
                 <TableHead className="w-[14%] text-xs">
-                  Follow-Up Templates
+                  Follow-up templates
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -2444,9 +2482,12 @@ export function ServicesRegistryPanel({
                       <TableCell className="align-middle font-medium text-slate-900">
                         <Link
                           href={serviceHref}
-                          className="block truncate text-slate-900 hover:text-slate-900"
+                          className="block min-w-0 text-slate-900 hover:text-slate-900"
                         >
-                          {service.name}
+                          <span className="block truncate font-medium">{service.name}</span>
+                          <span className="mt-0.5 block truncate text-xs font-normal text-slate-500">
+                            {service.description?.trim() || "No description added"}
+                          </span>
                         </Link>
                       </TableCell>
                       <TableCell className="align-middle text-slate-700">
@@ -2477,15 +2518,9 @@ export function ServicesRegistryPanel({
                       </TableCell>
                       <TableCell className="align-middle">
                         <Link href={serviceHref} className="block">
-                          <span
-                            className={
-                              checklistCount > 0
-                                ? "inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-emerald-700"
-                                : "inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-slate-700"
-                            }
-                          >
-                            {checklistCount > 0 ? "Yes" : "No"}
-                          </span>
+                          <Badge variant="secondary" className="rounded-full">
+                            {checklistCount} item{checklistCount === 1 ? "" : "s"}
+                          </Badge>
                         </Link>
                       </TableCell>
                       <TableCell className="align-middle">
@@ -2524,9 +2559,10 @@ export function ServicesRegistryPanel({
               )}
             </TableBody>
           </Table>
+          </div>
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-slate-100 px-4 py-4 md:flex-row md:items-center md:justify-between md:px-5">
+        <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50/60 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
           <div className="flex items-center gap-2 text-sm text-slate-600">
             <span>Rows per page</span>
             <Select
@@ -2552,25 +2588,25 @@ export function ServicesRegistryPanel({
             </Select>
           </div>
 
-          <div className="flex items-center gap-2 self-end md:self-auto">
+          <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center gap-2 sm:flex sm:w-auto">
             <Button
               type="button"
               variant="outline"
               size="sm"
-              className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+              className="h-10 rounded-xl border-slate-200 bg-white text-blue-950 hover:bg-blue-50 hover:text-blue-950 sm:h-8"
               disabled={!canGoPrevious || isLoading}
               onClick={() => setPage((prev) => Math.max(1, prev - 1))}
             >
               Previous
             </Button>
-            <span className="px-1 text-sm text-slate-600">
+            <span className="px-1 text-center text-sm text-slate-600">
               Page {page} of {totalPages}
             </span>
             <Button
               type="button"
               variant="outline"
               size="sm"
-              className="border-blue-200 text-blue-950 hover:bg-blue-50 hover:text-blue-950"
+              className="h-10 rounded-xl border-slate-200 bg-white text-blue-950 hover:bg-blue-50 hover:text-blue-950 sm:h-8"
               disabled={!canGoNext || isLoading}
               onClick={() => setPage((prev) => prev + 1)}
             >
@@ -2578,7 +2614,7 @@ export function ServicesRegistryPanel({
             </Button>
           </div>
         </div>
-      </div>
+      </section>
     </div>
   )
 }

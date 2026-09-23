@@ -58,9 +58,8 @@ export async function ensureDefaultContactStatuses(
     where: {
       tenantId,
       name: { in: CONTACT_DEFAULT_STATUSES.map((item) => item.name) },
-      isSystemDefault: false,
     },
-    data: { isSystemDefault: true },
+    data: { isActive: true, isSystemDefault: true },
   })
 
   await client.contactStatusConfig.createMany({
@@ -72,6 +71,46 @@ export async function ensureDefaultContactStatuses(
     })),
     skipDuplicates: true,
   })
+}
+
+export async function ensureContactsHaveDefaultStatus(
+  client: TenantDefaultsClient,
+  tenantId: string,
+) {
+  const contactsWithoutStatus = await client.$queryRaw<Array<{ id: string }>>`
+    SELECT "id"
+    FROM "Contact"
+    WHERE "tenantId" = ${tenantId}
+      AND "statusConfigId" IS NULL
+    LIMIT 1
+  `
+
+  if (contactsWithoutStatus.length === 0) return null
+
+  await ensureDefaultContactStatuses(client, tenantId)
+
+  const activeStatus = await client.contactStatusConfig.findFirstOrThrow({
+    where: {
+      tenantId,
+      name: "Active",
+      isActive: true,
+    },
+    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+    select: { id: true },
+  })
+
+  // The generated client reflects the new non-null constraint, while this
+  // compatibility repair also supports databases awaiting migration.
+  await client.$executeRaw`
+    UPDATE "Contact"
+    SET
+      "statusConfigId" = ${activeStatus.id},
+      "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "tenantId" = ${tenantId}
+      AND "statusConfigId" IS NULL
+  `
+
+  return activeStatus.id
 }
 
 export async function ensureDefaultTaskStatuses(

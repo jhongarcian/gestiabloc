@@ -3371,6 +3371,16 @@ router.patch(
           .json({ error: "DEFAULT_STATUS_NAME_CANNOT_BE_CHANGED" });
       }
 
+      if (
+        configKey === "contacts" &&
+        existing.isSystemDefault &&
+        payload.isActive === false
+      ) {
+        return res
+          .status(409)
+          .json({ error: "DEFAULT_CONTACT_STATUS_CANNOT_BE_DEACTIVATED" });
+      }
+
       if (configKey === "contacts" && payload.isActive === false) {
         const referencedAutomation = await findEnabledAutomationReference(
           prismaWithContacts,

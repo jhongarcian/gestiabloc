@@ -32,9 +32,9 @@ export type ContactDetailsResponse = {
       image: string | null
     } | null
     status: string
-    statusConfigId: string | null
-    statusBgColor: string | null
-    statusTextColor: string | null
+    statusConfigId: string
+    statusBgColor: string
+    statusTextColor: string
     tags: Array<{
       id: string
       name: string
