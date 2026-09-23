@@ -1274,17 +1274,6 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
     where: {
       tenantId: event.tenantId,
       isEnabled: true,
-      processes: {
-        some: {
-          contacts: {
-            some: {
-              tenantId: event.tenantId,
-              contactId: event.contactId,
-              status: "SUCCEEDED",
-            },
-          },
-        },
-      },
     },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {

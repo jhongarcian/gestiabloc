@@ -207,21 +207,10 @@ describe("executeOpportunityAutomations", () => {
     assert.deepEqual(where, {
       tenantId: "tenant-1",
       isEnabled: true,
-      processes: {
-        some: {
-          contacts: {
-            some: {
-              tenantId: "tenant-1",
-              contactId: "contact-1",
-              status: "SUCCEEDED",
-            },
-          },
-        },
-      },
     })
   })
 
-  test("does not run actions when the enrolled contact does not match the assignee filter", async () => {
+  test("does not run actions when a contact does not match the assignee filter", async () => {
     let contactUpdates = 0
     let tagRemovals = 0
     let executions = 0
@@ -322,7 +311,7 @@ describe("executeOpportunityAutomations", () => {
     assert.match(String(nodeLogs[1]?.details), /Contact status: expected Inactive, found Active\./)
   })
 
-  test("runs actions after an opportunity event when the enrolled contact matches the assignee filter", async () => {
+  test("runs a published automation without requiring prior contact enrollment", async () => {
     let contactUpdates = 0
     let tagRemovals = 0
     let executions = 0
