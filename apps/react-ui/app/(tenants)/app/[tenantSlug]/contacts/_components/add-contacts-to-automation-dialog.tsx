@@ -57,6 +57,7 @@ type AddContactsToAutomationDialogProps = {
   tenantSlug: string
   contacts: SelectedContact[]
   iconOnly?: boolean
+  disabled?: boolean
   triggerClassName?: string
   onQueued?: () => void | Promise<void>
   onCompleted?: () => void | Promise<void>
@@ -77,6 +78,7 @@ export function AddContactsToAutomationDialog({
   tenantSlug,
   contacts,
   iconOnly = false,
+  disabled = false,
   triggerClassName,
   onQueued,
   onCompleted,
@@ -273,6 +275,7 @@ export function AddContactsToAutomationDialog({
     <Button
       type="button"
       size="icon"
+      disabled={disabled}
       aria-label="Add contact to automation"
       className={cn(
         "h-8 w-8 cursor-pointer rounded-full border border-white/70 bg-blue-950 text-white shadow-sm backdrop-blur transition hover:bg-blue-900",
@@ -285,6 +288,7 @@ export function AddContactsToAutomationDialog({
     <Button
       type="button"
       size="sm"
+      disabled={disabled}
       className={cn(
         "h-9 cursor-pointer rounded-full bg-blue-950 px-3 text-xs font-semibold text-white shadow-sm hover:bg-blue-900",
         triggerClassName,

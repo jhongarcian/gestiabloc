@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Filter,
+  Loader2,
   RefreshCw,
   Search,
 } from "lucide-react"
@@ -20,6 +21,7 @@ import {
   useState,
   useTransition,
 } from "react"
+import { toast } from "sonner"
 
 import { StackedAvatarGroup } from "@/components/stacked-avatar-group"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -52,7 +54,11 @@ import {
   FieldSet,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -253,7 +259,8 @@ function AssigneeFilterPicker({
   const hasUserFilter = value !== ALL_ASSIGNEE_FILTER && !isUnassigned
   const triggerLabel = isUnassigned
     ? "Not assigned"
-    : selectedAssignee?.label ?? (hasUserFilter ? "Selected assignee" : "All assignees")
+    : (selectedAssignee?.label ??
+      (hasUserFilter ? "Selected assignee" : "All assignees"))
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -269,7 +276,9 @@ function AssigneeFilterPicker({
             <Avatar
               size="sm"
               className={
-                selectedAssignee || hasUserFilter ? "ring-2 ring-blue-50" : undefined
+                selectedAssignee || hasUserFilter
+                  ? "ring-2 ring-blue-50"
+                  : undefined
               }
             >
               {selectedAssignee?.image ? (
@@ -297,7 +306,10 @@ function AssigneeFilterPicker({
               {triggerLabel}
             </span>
           </span>
-          <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
+          <ChevronDown
+            data-icon="inline-end"
+            className="ml-auto text-slate-400"
+          />
         </Button>
       </PopoverTrigger>
 
@@ -555,9 +567,15 @@ function ContactMobileCardSkeleton() {
       className="min-w-0 flex-1 gap-0 rounded-[22px] py-0 shadow-sm"
     >
       <CardHeader className="gap-2 px-4 pt-4 pb-3 has-data-[slot=card-action]:grid-cols-[minmax(0,1fr)_auto]">
-        <CardTitle><Skeleton className="h-5 w-3/5" /></CardTitle>
-        <CardDescription><Skeleton className="h-4 w-2/5" /></CardDescription>
-        <CardAction><Skeleton className="h-5 w-20 rounded-full" /></CardAction>
+        <CardTitle>
+          <Skeleton className="h-5 w-3/5" />
+        </CardTitle>
+        <CardDescription>
+          <Skeleton className="h-4 w-2/5" />
+        </CardDescription>
+        <CardAction>
+          <Skeleton className="h-5 w-20 rounded-full" />
+        </CardAction>
       </CardHeader>
       <CardContent className="grid grid-cols-2 gap-4 px-4 pb-4">
         <div className="flex flex-col gap-2">
@@ -610,8 +628,8 @@ export function ContactsTable({
   const [tagFilters, setTagFilters] = useState<string[]>(() =>
     parseCsvParam(searchParams.get("tagIds")),
   )
-  const [assigneeFilter, setAssigneeFilter] = useState(
-    () => normalizeAssigneeFilter(searchParams.get("assignedToUserId")),
+  const [assigneeFilter, setAssigneeFilter] = useState(() =>
+    normalizeAssigneeFilter(searchParams.get("assignedToUserId")),
   )
   const [sort, setSort] = useState<ContactSort>(() =>
     parseSort(searchParams.get("sort")),
@@ -622,8 +640,8 @@ export function ContactsTable({
   const [isSortSheetOpen, setIsSortSheetOpen] = useState(false)
   const [draftStatusFilters, setDraftStatusFilters] = useState<string[]>([])
   const [draftTagFilters, setDraftTagFilters] = useState<string[]>([])
-  const [draftAssigneeFilter, setDraftAssigneeFilter] = useState(
-    () => normalizeAssigneeFilter(searchParams.get("assignedToUserId")),
+  const [draftAssigneeFilter, setDraftAssigneeFilter] = useState(() =>
+    normalizeAssigneeFilter(searchParams.get("assignedToUserId")),
   )
   const [page, setPage] = useState(() =>
     parsePositiveInt(searchParams.get("page"), 1),
@@ -640,6 +658,9 @@ export function ContactsTable({
   const [selectedContacts, setSelectedContacts] = useState<Map<string, string>>(
     () => new Map(),
   )
+  const [isSelectingAllContacts, setIsSelectingAllContacts] = useState(false)
+  const [allTenantContactsSelected, setAllTenantContactsSelected] =
+    useState(false)
   const [openingContactId, setOpeningContactId] = useState<string | null>(null)
   const openingContactIdRef = useRef<string | null>(null)
   const [isContactNavigationPending, startContactNavigation] = useTransition()
@@ -843,10 +864,10 @@ export function ContactsTable({
   }, [loadContacts])
 
   const contacts = data?.items ?? []
-  const selectedContactItems = Array.from(
-    selectedContacts,
-    ([id, name]) => ({ id, name }),
-  )
+  const selectedContactItems = Array.from(selectedContacts, ([id, name]) => ({
+    id,
+    name,
+  }))
   const selectedContactCount = selectedContacts.size
   const visibleSelectedCount = contacts.filter((contact) =>
     selectedContacts.has(contact.id),
@@ -864,7 +885,8 @@ export function ContactsTable({
     statusFilters.length +
     tagFilters.length +
     (assigneeFilter !== ALL_ASSIGNEE_FILTER ? 1 : 0)
-  const hasActiveQueryOrFilters = Boolean(debouncedQuery) || activeFilterCount > 0
+  const hasActiveQueryOrFilters =
+    Boolean(debouncedQuery) || activeFilterCount > 0
   const hasDraftFilters =
     draftStatusFilters.length > 0 ||
     draftTagFilters.length > 0 ||
@@ -890,10 +912,12 @@ export function ContactsTable({
     return `Showing ${start}-${end} of ${total} contacts`
   }, [contacts.length, startIndex, total])
   const selectedSortLabel =
-    SORT_OPTIONS.find((option) => option.value === sort)?.label ?? "Last name A–Z"
+    SORT_OPTIONS.find((option) => option.value === sort)?.label ??
+    "Last name A–Z"
 
   const updateContactSelection = useCallback(
     (contact: ContactItem, checked: boolean) => {
+      setAllTenantContactsSelected(false)
       setSelectedContacts((current) => {
         const next = new Map(current)
         if (checked) next.set(contact.id, contact.fullName)
@@ -904,18 +928,70 @@ export function ContactsTable({
     [],
   )
 
-  const toggleVisibleContactSelection = () => {
+  const toggleHeaderContactSelection = () => {
+    if (selectedContactCount > 0) {
+      setSelectedContacts(new Map())
+      setAllTenantContactsSelected(false)
+      return
+    }
+
     setSelectedContacts((current) => {
       const next = new Map(current)
 
       for (const contact of contacts) {
-        if (allVisibleContactsSelected) next.delete(contact.id)
-        else next.set(contact.id, contact.fullName)
+        next.set(contact.id, contact.fullName)
       }
 
       return next
     })
   }
+
+  const selectAllTenantContacts = useCallback(async () => {
+    setIsSelectingAllContacts(true)
+
+    try {
+      const nextSelection = new Map<string, string>()
+      let selectionPage = 1
+      let totalPages = 1
+
+      do {
+        const { data: response } = await api.get<{
+          ok: boolean
+          items: Array<{ id: string; name: string }>
+          pagination: {
+            page: number
+            pageSize: number
+            total: number
+            totalPages: number
+          }
+        }>(`/api/contacts/${encodeURIComponent(tenantId)}/selection`, {
+          params: { page: selectionPage, pageSize: 1000 },
+        })
+
+        for (const contact of response.items) {
+          nextSelection.set(contact.id, contact.name)
+        }
+
+        totalPages = response.pagination.totalPages
+        selectionPage += 1
+      } while (selectionPage <= totalPages)
+
+      setSelectedContacts(nextSelection)
+      setAllTenantContactsSelected(nextSelection.size > 0)
+
+      if (nextSelection.size > 0) {
+        toast.success(
+          `${nextSelection.size.toLocaleString()} contacts selected.`,
+        )
+      } else {
+        toast.info("There are no contacts to select.")
+      }
+    } catch {
+      toast.error("Could not select all contacts. Please try again.")
+    } finally {
+      setIsSelectingAllContacts(false)
+    }
+  }, [tenantId])
 
   const clearFilters = () => {
     setStatusFilters([])
@@ -1061,54 +1137,57 @@ export function ContactsTable({
           </div>
         </div>
 
-        {selectedContactCount > 0 ? (
+        <div className="mt-2 flex min-h-10 items-center gap-2  px-2.5 pt-1.5 ">
           <div
-            className="mt-3 flex flex-col gap-3 rounded-2xl border border-blue-200/80 bg-white/85 p-3 shadow-sm backdrop-blur sm:flex-row sm:items-center sm:justify-between"
+            className="flex min-w-0 items-center gap-2 text-xs font-semibold text-slate-700"
+            aria-live="polite"
           >
-            <div className="flex min-w-0 items-center gap-2.5">
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-blue-950 text-xs font-semibold text-white">
-                {selectedContactCount}
-              </span>
-              <p
-                className="truncate text-sm font-semibold text-slate-800"
-                aria-live="polite"
-              >
-                {selectedContactCount === 1 ? "Contact selected" : "Contacts selected"}
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={contacts.length === 0}
-                className="h-9 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-none"
-                onClick={toggleVisibleContactSelection}
-              >
-                {allVisibleContactsSelected
-                  ? "Unselect this page"
-                  : "Select this page"}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-9 shrink-0 cursor-pointer rounded-full px-3 text-xs font-semibold text-slate-600"
-                onClick={() => setSelectedContacts(new Map())}
-              >
-                Clear
-              </Button>
-              <AddContactsToAutomationDialog
-                tenantId={tenantId}
-                tenantSlug={tenantSlug}
-                contacts={selectedContactItems}
-                onQueued={() => setSelectedContacts(new Map())}
-                onCompleted={loadContacts}
-              />
-            </div>
+            <span className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-blue-950 px-1.5 text-[11px] text-white">
+              {selectedContactCount.toLocaleString()}
+            </span>
+            <span className="truncate">selected</span>
           </div>
-        ) : null}
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              disabled={isSelectingAllContacts || allTenantContactsSelected}
+              className="rounded-full"
+              onClick={() => void selectAllTenantContacts()}
+            >
+              {isSelectingAllContacts ? (
+                <Loader2
+                  data-icon="inline-start"
+                  className="animate-spin"
+                  aria-hidden="true"
+                />
+              ) : null}
+              <span className="sm:hidden">
+                {allTenantContactsSelected ? "All selected" : "Select all"}
+              </span>
+              <span className="hidden sm:inline">
+                {allTenantContactsSelected
+                  ? "All contacts selected"
+                  : "Select all contacts"}
+              </span>
+            </Button>
+            <AddContactsToAutomationDialog
+              tenantId={tenantId}
+              tenantSlug={tenantSlug}
+              contacts={selectedContactItems}
+              iconOnly
+              disabled={selectedContactCount === 0 || isSelectingAllContacts}
+              triggerClassName="size-7 border-blue-950 bg-blue-950 shadow-none"
+              onQueued={() => {
+                setSelectedContacts(new Map())
+                setAllTenantContactsSelected(false)
+              }}
+              onCompleted={loadContacts}
+            />
+          </div>
+        </div>
       </header>
 
       <Sheet open={isSortSheetOpen} onOpenChange={setIsSortSheetOpen}>
@@ -1342,7 +1421,8 @@ export function ContactsTable({
                   onValueChange={setDraftAssigneeFilter}
                 />
                 <FieldDescription className="text-xs">
-                  Show contacts owned by a specific user or contacts without an owner.
+                  Show contacts owned by a specific user or contacts without an
+                  owner.
                 </FieldDescription>
               </Field>
             </div>
@@ -1468,14 +1548,23 @@ export function ContactsTable({
                     checked={
                       allVisibleContactsSelected
                         ? true
-                        : someVisibleContactsSelected
+                        : selectedContactCount > 0 ||
+                            someVisibleContactsSelected
                           ? "indeterminate"
                           : false
                     }
-                    disabled={isLoading || contacts.length === 0}
-                    aria-label="Select all contacts on this page"
+                    disabled={
+                      isLoading ||
+                      isSelectingAllContacts ||
+                      contacts.length === 0
+                    }
+                    aria-label={
+                      selectedContactCount > 0
+                        ? "Clear all selected contacts"
+                        : "Select all contacts on this page"
+                    }
                     className="cursor-pointer border-slate-300 bg-white"
-                    onCheckedChange={toggleVisibleContactSelection}
+                    onCheckedChange={toggleHeaderContactSelection}
                   />
                 </TableHead>
                 <TableHead className="w-[16%] border-y bg-slate-50 px-4 text-xs text-slate-600">
@@ -1759,7 +1848,8 @@ export function ContactsTable({
               className="min-w-20 rounded-xl bg-slate-50 px-2 py-2 text-center text-xs tabular-nums text-slate-500 md:hidden"
               aria-live="polite"
             >
-              <span className="font-semibold text-slate-900">{page}</span> of {totalPages}
+              <span className="font-semibold text-slate-900">{page}</span> of{" "}
+              {totalPages}
             </span>
 
             {visiblePages.map((pageNumber) => (
@@ -1793,7 +1883,9 @@ export function ContactsTable({
               aria-label="Next page"
               disabled={!canGoNext || isLoading}
               className="h-10 min-w-0 rounded-xl px-3 text-xs text-slate-700 shadow-none md:size-8 md:rounded-md md:px-0"
-              onClick={() => setPage((previous) => Math.min(totalPages, previous + 1))}
+              onClick={() =>
+                setPage((previous) => Math.min(totalPages, previous + 1))
+              }
             >
               <span className="md:sr-only">Next</span>
               <ChevronRight aria-hidden="true" />
