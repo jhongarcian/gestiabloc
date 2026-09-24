@@ -97,6 +97,8 @@ export function buildAutomationFlowGraph(
         : null
     const actionSubtitle = action.type === "ADD_CONTACT_NOTE"
       ? `Note: ${action.noteTitle?.trim() || "Add a title"}`
+      : action.type === "CREATE_TASK"
+        ? `Task: ${action.taskConfig?.nameTemplate.trim() || "Add a task name"}`
       : waitSubtitle ?? `Action ${index + 1}`
     nodes.push({
       id: actionId,

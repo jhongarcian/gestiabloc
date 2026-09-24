@@ -12,6 +12,7 @@ const labels = {
   ADD_CONTACT_TAG: "Add contact tag",
   REMOVE_CONTACT_TAG: "Remove contact tag",
   ADD_CONTACT_NOTE: "Add contact note",
+  CREATE_TASK: "Create task",
   WAIT: "Wait",
 } as const
 
@@ -127,5 +128,31 @@ describe("buildAutomationFlowGraph", () => {
     const noteNode = graph.nodes.find((node) => node.id.includes("00000000"))
     assert.equal(noteNode?.data.label, "Add contact note")
     assert.equal(noteNode?.data.subtitle, "Note: Opportunity created")
+  })
+
+  test("summarizes a create-task action by its name template", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "CREATE_TASK",
+          taskConfig: {
+            nameTemplate: "Call {contact.name}",
+            statusConfigId: "todo",
+            assignee: { mode: "CONTACT_ASSIGNEE" },
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const taskNode = graph.nodes.find((node) => node.id.includes("00000000"))
+    assert.equal(taskNode?.data.label, "Create task")
+    assert.equal(taskNode?.data.subtitle, "Task: Call {contact.name}")
   })
 })

@@ -41,6 +41,10 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  ContactDateValueInput,
+  type ContactDateValue,
+} from "@/components/contact-date-value-input"
 import { ContactTemplateInput } from "@/components/contact-template-input"
 import { DateTimeInput } from "@/components/ui/date-time-input"
 import {
@@ -78,6 +82,8 @@ import type {
   AutomationCondition,
   AutomationOperator,
   AutomationRecord,
+  AutomationTaskConfig,
+  AutomationTaskDateTime,
   AutomationTriggerType,
   AutomationWaitConfig,
   AutomationWaitUnit,
@@ -151,6 +157,7 @@ function draftSnapshot(draft: Draft) {
       waitConfig: action.waitConfig,
       noteTitle: action.noteTitle,
       noteBody: action.noteBody,
+      taskConfig: action.taskConfig,
     })),
   })
 }
@@ -203,6 +210,7 @@ const ACTION_LABELS: Record<AutomationAction["type"], string> = {
   ADD_CONTACT_TAG: "Add contact tag",
   REMOVE_CONTACT_TAG: "Remove contact tag",
   ADD_CONTACT_NOTE: "Add contact note",
+  CREATE_TASK: "Create task",
   WAIT: "Wait",
 }
 
@@ -293,6 +301,22 @@ function actionDefaults(
   if (type === "SET_CONTACT_ASSIGNEE") return { nodeKey, type, assignedUserId: catalog.users[0]?.id ?? "" }
   if (type === "ADD_CONTACT_TAG" || type === "REMOVE_CONTACT_TAG") return { nodeKey, type, tagId: catalog.tags[0]?.id ?? "" }
   if (type === "ADD_CONTACT_NOTE") return { nodeKey, type, noteTitle: "", noteBody: "" }
+  if (type === "CREATE_TASK") {
+    const defaultStatus = catalog.taskStatuses.find((status) => status.name === "To Do") ?? catalog.taskStatuses[0]
+    return {
+      nodeKey,
+      type,
+      taskConfig: {
+        nameTemplate: "",
+        descriptionTemplate: "",
+        statusConfigId: defaultStatus?.id ?? "",
+        assignee: { mode: "CONTACT_ASSIGNEE" },
+        linkedService: null,
+        dueAt: null,
+        reminder: null,
+      },
+    }
+  }
   if (type === "WAIT") return { nodeKey, type, waitConfig: { mode: "DURATION", amount: 1, unit: "HOURS" } }
   return { nodeKey, type }
 }
@@ -310,6 +334,41 @@ function noteTemplateError(
     .trim().length > 0
   if (!hasText) return "This field is required."
   return validateContactTemplate(value, catalog)
+}
+
+function optionalTemplateError(
+  value: string | null | undefined,
+  maxLength: number,
+  catalog: AutomationCatalog,
+) {
+  if (!value) return null
+  if (value.length > maxLength) return `Use ${maxLength.toLocaleString()} characters or fewer.`
+  return validateContactTemplate(value, catalog)
+}
+
+function isTaskDateTimeReady(value: AutomationTaskDateTime, catalog: AutomationCatalog) {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value.time)) return false
+  const source = value.source
+  if (source.type === "SPECIFIC_DATE") {
+    return /^\d{4}-\d{2}-\d{2}$/.test(source.date) && Boolean(source.timezone)
+  }
+  if (source.type === "RELATIVE_DATE") {
+    return Number.isInteger(source.amount) &&
+      source.amount > 0 &&
+      source.amount <= 10_000 &&
+      ["DAYS", "WEEKS", "MONTHS"].includes(source.unit)
+  }
+  if (source.type === "CONTACT_FIELD") {
+    return catalog.templateFields.contact.some(
+      (field) => field.key === source.key && field.fieldType === "DATE",
+    )
+  }
+  if (source.type === "CUSTOM_FIELD") {
+    return catalog.customFields.some(
+      (field) => field.key === source.key && field.fieldType === "DATE",
+    )
+  }
+  return true
 }
 
 function isActionReady(
@@ -333,6 +392,28 @@ function isActionReady(
   if (action.type === "ADD_CONTACT_NOTE") {
     return !noteTemplateError(action.noteTitle, 160, catalog) &&
       !noteTemplateError(action.noteBody, 5_000, catalog)
+  }
+  if (action.type === "CREATE_TASK") {
+    const config = action.taskConfig
+    if (!config) return false
+    if (noteTemplateError(config.nameTemplate, 160, catalog)) return false
+    if (optionalTemplateError(config.descriptionTemplate, 4_000, catalog)) return false
+    if (!catalog.taskStatuses.some((status) => status.id === config.statusConfigId)) return false
+    if (config.assignee.mode === "SPECIFIC_USER") {
+      const userId = config.assignee.userId
+      if (!catalog.users.some((user) => user.id === userId)) return false
+    }
+    if (
+      config.linkedService &&
+      !catalog.services.some((service) => service.id === config.linkedService?.id)
+    ) return false
+    if (config.dueAt && !isTaskDateTimeReady(config.dueAt, catalog)) return false
+    if (config.reminder) {
+      if (!config.dueAt || config.assignee.mode === "UNASSIGNED") return false
+      if (!isTaskDateTimeReady(config.reminder.at, catalog)) return false
+      if (optionalTemplateError(config.reminder.messageTemplate, 500, catalog)) return false
+    }
+    return true
   }
   if (action.type === "WAIT") {
     const config = action.waitConfig
@@ -460,6 +541,7 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
       waitConfig: action.waitConfig,
       noteTitle: action.noteTitle,
       noteBody: action.noteBody,
+      taskConfig: action.taskConfig,
     })),
   }
 }
@@ -725,8 +807,8 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
   const mutationBusy = saving || statusSaving || deleting
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 bg-slate-50 p-3 md:p-4">
-      <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+    <div className="flex h-[calc(100dvh-var(--tenant-shell-header-height))] max-h-[calc(100dvh-var(--tenant-shell-header-height))] min-h-0 flex-col gap-3 overflow-hidden bg-slate-50 p-3 md:p-4">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
         <div className="flex min-w-0 items-center gap-3">
           <Button asChild size="icon" variant="ghost"><Link href={`/app/${tenantSlug}/account-settings/automations`} aria-label="Back to automations"><ArrowLeft className="h-4 w-4" /></Link></Button>
           <div className="min-w-0">
@@ -803,7 +885,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
         </div>
       </header>
 
-      <div className="flex flex-wrap items-center gap-2 px-1">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 px-1">
         <Tabs
           value={activeTab}
           onValueChange={(value) => setActiveTab(value as "builder" | "contacts" | "logs")}
@@ -831,7 +913,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
       </div>
 
       {activeTab === "builder" ? (
-        <section className="flex min-h-0 flex-1 gap-3">
+        <section className="flex min-h-0 flex-1 gap-3 overflow-hidden">
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm">
             <ReactFlowProvider>
               <ReactFlow<CanvasNode, Edge>
@@ -864,8 +946,8 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
           </div>
 
           {selected ? (
-            <aside className="flex h-full min-h-0 w-full max-w-md shrink-0 flex-col overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm">
-              <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2.5">
+            <aside className="flex h-full max-h-full min-h-0 w-full max-w-md shrink-0 flex-col overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm">
+              <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-3 py-2.5">
                 <div>
                   <p className="text-xs font-medium text-slate-500">Configuration</p>
                   <h2 className="text-sm font-semibold text-slate-950">
@@ -880,7 +962,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                   <X data-icon="inline-start" />
                 </Button>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+              <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain p-3 [scrollbar-gutter:stable]">
                 {selected.kind === "action" && editingAction ? (
                   <ActionEditor
                     action={editingAction}
@@ -920,7 +1002,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
               {selected.kind === "action" ? (
                 <>
                   <Separator />
-                  <div className="flex items-center justify-end gap-2 p-3">
+                  <div className="flex shrink-0 items-center justify-end gap-2 p-3">
                     <Button type="button" variant="outline" className={COMPACT_SECONDARY_BUTTON_CLASS} onClick={cancelPanelChanges}>
                       Cancel
                     </Button>
@@ -942,7 +1024,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
               ) : selected.kind === "trigger" ? (
                 <>
                   <Separator />
-                  <div className="flex items-center justify-end gap-2 p-3">
+                  <div className="flex shrink-0 items-center justify-end gap-2 p-3">
                     <Button type="button" variant="outline" className={COMPACT_SECONDARY_BUTTON_CLASS} onClick={cancelPanelChanges}>
                       Cancel
                     </Button>
@@ -964,7 +1046,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
               ) : selected.kind === "new-action" ? (
                 <>
                   <Separator />
-                  <div className="flex items-center justify-end gap-2 p-3">
+                  <div className="flex shrink-0 items-center justify-end gap-2 p-3">
                     <Button type="button" variant="outline" className={COMPACT_SECONDARY_BUTTON_CLASS} onClick={cancelPanelChanges}>
                       Cancel
                     </Button>
@@ -1598,6 +1680,15 @@ function ActionEditor({
           </>
         ) : null}
 
+        {action.type === "CREATE_TASK" && action.taskConfig ? (
+          <TaskActionEditor
+            config={action.taskConfig}
+            catalog={catalog}
+            timezone={timezone}
+            onChange={(taskConfig) => onChange({ ...action, taskConfig })}
+          />
+        ) : null}
+
         {action.type === "WAIT" && action.waitConfig ? (
           <WaitActionEditor
             config={action.waitConfig}
@@ -1623,6 +1714,268 @@ function ActionEditor({
               <Trash2 data-icon="inline-start" /> Delete
             </Button>
           </div>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+function TaskDateTimeEditor({
+  idPrefix,
+  label,
+  value,
+  catalog,
+  timezone,
+  onChange,
+}: {
+  idPrefix: string
+  label: string
+  value: AutomationTaskDateTime
+  catalog: AutomationCatalog
+  timezone?: string | null
+  onChange: (value: AutomationTaskDateTime) => void
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+      <p className="text-xs font-semibold text-slate-700">{label}</p>
+      <ContactDateValueInput
+        idPrefix={idPrefix}
+        value={value.source as ContactDateValue}
+        onChange={(source) => onChange({ ...value, source })}
+        catalog={catalog}
+        timezone={timezone}
+        allowRelative
+      />
+      <Field className="gap-1.5">
+        <FieldLabel htmlFor={`${idPrefix}-time`} className="text-xs">Time</FieldLabel>
+        <Input
+          id={`${idPrefix}-time`}
+          type="time"
+          value={value.time}
+          onChange={(event) => onChange({ ...value, time: event.target.value })}
+          className="h-8 rounded-full"
+        />
+      </Field>
+    </div>
+  )
+}
+
+function TaskActionEditor({
+  config,
+  catalog,
+  timezone,
+  onChange,
+}: {
+  config: AutomationTaskConfig
+  catalog: AutomationCatalog
+  timezone?: string | null
+  onChange: (config: AutomationTaskConfig) => void
+}) {
+  const nameError = noteTemplateError(config.nameTemplate, 160, catalog)
+  const descriptionError = optionalTemplateError(config.descriptionTemplate, 4_000, catalog)
+  const reminderMessageError = optionalTemplateError(
+    config.reminder?.messageTemplate,
+    500,
+    catalog,
+  )
+  const defaultDateTime = (): AutomationTaskDateTime => ({
+    source: { type: "CURRENT_DATE" },
+    time: "17:00",
+  })
+
+  return (
+    <div className="flex flex-col gap-4">
+      <ContactTemplateInput
+        id="action-task-name"
+        label="Task name"
+        value={config.nameTemplate}
+        maxLength={160}
+        catalog={catalog}
+        timezone={timezone}
+        error={nameError}
+        onChange={(nameTemplate) => onChange({ ...config, nameTemplate })}
+        placeholder="Follow up with {contact.name}"
+      />
+      <ContactTemplateInput
+        id="action-task-description"
+        label="Description"
+        value={config.descriptionTemplate ?? ""}
+        maxLength={4_000}
+        catalog={catalog}
+        timezone={timezone}
+        error={descriptionError}
+        onChange={(descriptionTemplate) => onChange({ ...config, descriptionTemplate })}
+        multiline
+        placeholder="Add task details"
+      />
+
+      <Field className="gap-2">
+        <FieldLabel htmlFor="action-task-status">Status</FieldLabel>
+        <Select
+          value={config.statusConfigId}
+          onValueChange={(statusConfigId) => onChange({ ...config, statusConfigId })}
+        >
+          <SelectTrigger id="action-task-status" className={COMPACT_SELECT_TRIGGER_CLASS}>
+            <SelectValue placeholder="Select status" />
+          </SelectTrigger>
+          <SelectContent>
+            {catalog.taskStatuses.map((status) => (
+              <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+
+      <Field className="gap-2">
+        <FieldLabel htmlFor="action-task-assignee-mode">Assignee</FieldLabel>
+        <Select
+          value={config.assignee.mode}
+          onValueChange={(mode: AutomationTaskConfig["assignee"]["mode"]) => {
+            if (mode === "SPECIFIC_USER") {
+              onChange({
+                ...config,
+                assignee: { mode, userId: catalog.users[0]?.id ?? "" },
+              })
+            } else {
+              onChange({
+                ...config,
+                assignee: { mode },
+                reminder: mode === "UNASSIGNED" ? null : config.reminder,
+              })
+            }
+          }}
+        >
+          <SelectTrigger id="action-task-assignee-mode" className={COMPACT_SELECT_TRIGGER_CLASS}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="CONTACT_ASSIGNEE">Contact assignee</SelectItem>
+            <SelectItem value="SPECIFIC_USER">Specific teammate</SelectItem>
+            <SelectItem value="UNASSIGNED">Unassigned</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+
+      {config.assignee.mode === "SPECIFIC_USER" ? (
+        <Field className="gap-2">
+          <FieldLabel htmlFor="action-task-assignee">Teammate</FieldLabel>
+          <Select
+            value={config.assignee.userId}
+            onValueChange={(userId) => onChange({
+              ...config,
+              assignee: { mode: "SPECIFIC_USER", userId },
+            })}
+          >
+            <SelectTrigger id="action-task-assignee" className={COMPACT_SELECT_TRIGGER_CLASS}>
+              <SelectValue placeholder="Select teammate" />
+            </SelectTrigger>
+            <SelectContent>
+              {catalog.users.map((user) => (
+                <SelectItem key={user.id} value={user.id}>{user.name} · {user.email}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
+
+      <Field className="gap-2">
+        <FieldLabel htmlFor="action-task-service">Linked service</FieldLabel>
+        <Select
+          value={config.linkedService?.id ?? "__none__"}
+          onValueChange={(serviceId) => {
+            const service = catalog.services.find((item) => item.id === serviceId)
+            onChange({
+              ...config,
+              linkedService: service
+                ? { id: service.id, nameSnapshot: service.name }
+                : null,
+            })
+          }}
+        >
+          <SelectTrigger id="action-task-service" className={COMPACT_SELECT_TRIGGER_CLASS}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">No linked service</SelectItem>
+            {catalog.services.map((service) => (
+              <SelectItem key={service.id} value={service.id}>{service.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+
+      <Separator />
+
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id="action-task-due-enabled"
+          checked={Boolean(config.dueAt)}
+          onCheckedChange={(checked) => onChange({
+            ...config,
+            dueAt: checked ? config.dueAt ?? defaultDateTime() : null,
+            reminder: checked ? config.reminder : null,
+          })}
+        />
+        <Label htmlFor="action-task-due-enabled" className="text-sm font-medium">Set due date</Label>
+      </div>
+      {config.dueAt ? (
+        <TaskDateTimeEditor
+          idPrefix="action-task-due"
+          label="Due date and time"
+          value={config.dueAt}
+          catalog={catalog}
+          timezone={timezone}
+          onChange={(dueAt) => onChange({ ...config, dueAt })}
+        />
+      ) : null}
+
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id="action-task-reminder-enabled"
+          checked={Boolean(config.reminder)}
+          disabled={!config.dueAt || config.assignee.mode === "UNASSIGNED"}
+          onCheckedChange={(checked) => onChange({
+            ...config,
+            reminder: checked
+              ? {
+                  at: config.dueAt ?? defaultDateTime(),
+                  messageTemplate: "",
+                }
+              : null,
+          })}
+        />
+        <Label htmlFor="action-task-reminder-enabled" className="text-sm font-medium">Set reminder</Label>
+      </div>
+      {config.reminder ? (
+        <>
+          <TaskDateTimeEditor
+            idPrefix="action-task-reminder"
+            label="Reminder date and time"
+            value={config.reminder.at}
+            catalog={catalog}
+            timezone={timezone}
+            onChange={(at) => onChange({
+              ...config,
+              reminder: config.reminder ? { ...config.reminder, at } : null,
+            })}
+          />
+          <ContactTemplateInput
+            id="action-task-reminder-message"
+            label="Reminder message"
+            value={config.reminder.messageTemplate ?? ""}
+            maxLength={500}
+            catalog={catalog}
+            timezone={timezone}
+            error={reminderMessageError}
+            onChange={(messageTemplate) => onChange({
+              ...config,
+              reminder: config.reminder
+                ? { ...config.reminder, messageTemplate }
+                : null,
+            })}
+            multiline
+            placeholder="Optional reminder message"
+          />
         </>
       ) : null}
     </div>

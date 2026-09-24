@@ -337,7 +337,7 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 0, executedCount: 0 })
+    assert.deepEqual(result, { matchedCount: 0, executedCount: 0, notificationIds: [] })
     assert.equal(tagRemovals, 0)
     assert.equal(contactUpdates, 0)
     assert.equal(executions, 0)
@@ -427,7 +427,7 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 1, executedCount: 1 })
+    assert.deepEqual(result, { matchedCount: 1, executedCount: 1, notificationIds: [] })
     assert.equal(tagRemovals, 1)
     assert.equal(contactUpdates, 1)
     assert.equal(executions, 1)
@@ -538,6 +538,149 @@ describe("executeOpportunityAutomations", () => {
     })
     assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "EXECUTED"])
     assert.equal(nodeLogs[1]?.details, "Added contact note “Opportunity for Taylor Reed”.")
+  })
+
+  test("creates a contact-linked task with live templates, reminder, and notification", async () => {
+    const created: {
+      task?: Record<string, unknown>
+      activity?: Record<string, unknown>
+      reminder?: Record<string, unknown>
+      notification?: Record<string, unknown>
+    } = {}
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Appointment follow-up",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [{
+            nodeKey: "00000000-0000-4000-8000-000000000001",
+            type: "CREATE_TASK",
+            taskConfig: {
+              nameTemplate: "Call {contact.name}",
+              descriptionTemplate: "Email: {contact.email}",
+              statusConfigId: "todo",
+              assignee: { mode: "CONTACT_ASSIGNEE" },
+              linkedService: { id: "service-1", nameSnapshot: "Annual review" },
+              dueAt: {
+                source: {
+                  type: "SPECIFIC_DATE",
+                  date: "2099-09-24",
+                  timezone: "America/Chicago",
+                },
+                time: "17:00",
+              },
+              reminder: {
+                at: {
+                  source: {
+                    type: "SPECIFIC_DATE",
+                    date: "2099-09-24",
+                    timezone: "America/Chicago",
+                  },
+                  time: "16:00",
+                },
+                messageTemplate: "Reminder for {contact.first_name}",
+              },
+            },
+          }],
+        }],
+      },
+      contact: {
+        findFirst: async (args: { select?: Record<string, unknown> }) => {
+          if (args.select?.email) {
+            return {
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              email: "taylor@example.com",
+              statusConfig: { name: "Active" },
+              assignedToMembership: { user: { name: "John", email: "john@example.com" } },
+              customFieldValues: [],
+            }
+          }
+          if (args.select?.assignedToUserId && !args.select?.firstName) {
+            return { assignedToUserId: "user-john" }
+          }
+          return {
+            id: "contact-1",
+            firstName: "Taylor",
+            middleName: null,
+            lastName: "Reed",
+            statusConfigId: "active",
+            assignedToUserId: "user-john",
+            tags: [],
+            customFieldValues: [],
+          }
+        },
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      taskStatusConfig: { findMany: async () => [{ id: "todo", name: "To Do" }] },
+      membership: {
+        findMany: async () => [{
+          userId: "user-john",
+          user: { name: "John", email: "john@example.com" },
+        }],
+        findUnique: async () => ({ id: "membership-john", status: "ACTIVE" }),
+      },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      tenant: { findUnique: async () => ({ timezone: "America/Chicago" }) },
+      task: {
+        create: async ({ data }: { data: Record<string, unknown> }) => {
+          created.task = data
+          return { id: "task-1" }
+        },
+      },
+      taskActivity: {
+        create: async ({ data }: { data: Record<string, unknown> }) => { created.activity = data },
+      },
+      taskReminder: {
+        create: async ({ data }: { data: Record<string, unknown> }) => { created.reminder = data },
+      },
+      notification: {
+        create: async ({ data }: { data: Record<string, unknown> }) => {
+          created.notification = data
+          return { id: "notification-1" }
+        },
+      },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async () => undefined,
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: { createMany: async () => undefined },
+    }
+
+    const result = await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.deepEqual(result, {
+      matchedCount: 1,
+      executedCount: 1,
+      notificationIds: ["notification-1"],
+    })
+    assert.equal(created.task?.name, "Call Taylor Reed")
+    assert.equal(created.task?.description, "Email: taylor@example.com")
+    assert.equal(created.task?.assignedToUserId, "user-john")
+    assert.equal(created.task?.automationName, "Appointment follow-up")
+    assert.equal(created.task?.linkedEntityName, "Annual review")
+    assert.equal(created.activity?.details, "Created by Automation · Appointment follow-up.")
+    assert.equal(created.reminder?.createdById, null)
+    assert.equal(created.reminder?.message, "Reminder for Taylor")
+    assert.equal(created.notification?.type, "TASK_ASSIGNED")
   })
 
   test("renders values changed by an earlier action in the same segment", async () => {
@@ -752,7 +895,7 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 1, executedCount: 1 })
+    assert.deepEqual(result, { matchedCount: 1, executedCount: 1, notificationIds: [] })
     assert.equal(contactUpdates, 0)
     assert.equal(contactNotes, 1)
     assert.equal(executionCount, 0)
@@ -988,7 +1131,7 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 0, executedCount: 0 })
+    assert.deepEqual(result, { matchedCount: 0, executedCount: 0, notificationIds: [] })
     assert.deepEqual(nodeLogs.map((log) => log.status), ["SKIPPED", "SKIPPED"])
     assert.match(String(nodeLogs[0]?.details), /listens for Opportunity enters stage/)
   })

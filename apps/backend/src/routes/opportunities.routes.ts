@@ -8,6 +8,7 @@ import {
   recordAutomationFailure,
 } from "../lib/opportunity-automations.js"
 import { enforceSameOrigin } from "../lib/security.js"
+import { emitStoredTaskNotifications } from "../lib/task-notifications.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
@@ -1092,11 +1093,16 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
       throw new Error("Opportunity creation did not return a record.")
     }
 
+    await emitStoredTaskNotifications(createdResult.automation.notificationIds).catch((error) => {
+      console.error("Could not emit automation task notification", error)
+    })
+    const { notificationIds: _notificationIds, ...automationResult } = createdResult.automation
+
     return res.status(201).json({
       ok: true,
       opportunity: serializeOpportunityCard(createdResult.opportunity),
       stage: firstStage,
-      automation: createdResult.automation,
+      automation: automationResult,
     })
   } catch (error) {
     return next(error)
@@ -1188,7 +1194,11 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
               where: { tenantId_id: { tenantId, id: opportunityId } },
               select: opportunityCardSelect,
             })
-            return { current, concurrent: true, automation: { matchedCount: 0, executedCount: 0 } }
+            return {
+              current,
+              concurrent: true,
+              automation: { matchedCount: 0, executedCount: 0, notificationIds: [] as string[] },
+            }
           }
           const automation = await executeOpportunityAutomations(prismaTx, event)
           const current = await prismaTx.contactOpportunity.findUnique({
@@ -1218,11 +1228,16 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
         return res.status(409).json({ error: "OPPORTUNITY_STAGE_CHANGED_CONCURRENTLY" })
       }
 
+      await emitStoredTaskNotifications(moveResult.automation.notificationIds ?? []).catch((error) => {
+        console.error("Could not emit automation task notification", error)
+      })
+      const { notificationIds: _notificationIds, ...automationResult } = moveResult.automation
+
       return res.json({
         ok: true,
         opportunity: serializeOpportunityCard(moveResult.current),
         stage: targetStage,
-        automation: moveResult.automation,
+        automation: automationResult,
       })
     }
 

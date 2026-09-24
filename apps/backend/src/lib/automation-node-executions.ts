@@ -35,6 +35,7 @@ const ACTION_LABELS: Record<string, string> = {
   ADD_CONTACT_TAG: "Add contact tag",
   REMOVE_CONTACT_TAG: "Remove contact tag",
   ADD_CONTACT_NOTE: "Add contact note",
+  CREATE_TASK: "Create task",
   WAIT: "Wait",
 }
 

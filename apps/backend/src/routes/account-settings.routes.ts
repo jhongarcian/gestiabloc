@@ -3380,11 +3380,14 @@ router.patch(
           .json({ error: "DEFAULT_CONTACT_STATUS_CANNOT_BE_DEACTIVATED" });
       }
 
-      if (configKey === "contacts" && payload.isActive === false) {
+      if (payload.isActive === false) {
         const referencedAutomation = await findEnabledAutomationReference(
           prismaWithContacts,
           tenantId,
-          { kind: "status", id: recordId },
+          {
+            kind: configKey === "contacts" ? "status" : "taskStatus",
+            id: recordId,
+          },
         );
         if (referencedAutomation) {
           return res.status(409).json({
@@ -3453,11 +3456,14 @@ router.delete(
         return res.status(409).json({ error: "CANNOT_DELETE_DEFAULT_STATUS" });
       }
 
-      if (configKey === "contacts") {
+      {
         const referencedAutomation = await findEnabledAutomationReference(
           prismaWithContacts,
           tenantId,
-          { kind: "status", id: recordId },
+          {
+            kind: configKey === "contacts" ? "status" : "taskStatus",
+            id: recordId,
+          },
         );
         if (referencedAutomation) {
           return res.status(409).json({

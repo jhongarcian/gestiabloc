@@ -53,6 +53,14 @@ describe("contact template UI helpers", () => {
       "{date.current|date:medium}",
     )
     assert.equal(
+      buildDateTemplateToken({ kind: "RELATIVE", amount: 2, unit: "WEEKS", format: "long" }),
+      "{date.relative.2.weeks|date:long}",
+    )
+    assert.equal(
+      buildDateTemplateToken({ kind: "RELATIVE", amount: 0, unit: "DAYS" }),
+      "",
+    )
+    assert.equal(
       buildDateTemplateToken({ kind: "SPECIFIC", date: "2026-09-23", format: "iso" }),
       "{date.specific.2026-09-23|date:iso}",
     )
@@ -79,7 +87,7 @@ describe("contact template UI helpers", () => {
       null,
     )
     assert.equal(
-      validateContactTemplate("Today {date.current|date:weekday}; fixed {date.specific.2026-09-23|date:long}.", catalog),
+      validateContactTemplate("Today {date.current|date:weekday}; later {date.relative.2.weeks|date:medium}; fixed {date.specific.2026-09-23|date:long}.", catalog),
       null,
     )
     assert.match(
@@ -96,6 +104,14 @@ describe("contact template UI helpers", () => {
     )
     assert.match(
       validateContactTemplate("{date.current|phone:national}", catalog) ?? "",
+      /not a valid template value/,
+    )
+    assert.match(
+      validateContactTemplate("{date.relative.0.days|date:medium}", catalog) ?? "",
+      /not a valid template value/,
+    )
+    assert.match(
+      validateContactTemplate("{date.relative.2.years|date:medium}", catalog) ?? "",
       /not a valid template value/,
     )
   })
