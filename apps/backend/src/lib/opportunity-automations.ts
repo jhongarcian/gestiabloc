@@ -10,6 +10,12 @@ import {
   type AutomationNodeLogData,
 } from "./automation-node-executions.js"
 import { normalizeCustomFieldValue } from "./contact-custom-field-values.js"
+import {
+  parseContactTemplate,
+  renderContactNoteTemplates,
+  validateContactTemplate,
+} from "./contact-templates.js"
+import { NoteBodyInputSchema, NoteTitleInputSchema } from "./note-inputs.js"
 
 export const AUTOMATION_TRIGGER_TYPES = [
   "OPPORTUNITY_CREATED",
@@ -43,6 +49,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "CLEAR_CONTACT_ASSIGNEE",
   "ADD_CONTACT_TAG",
   "REMOVE_CONTACT_TAG",
+  "ADD_CONTACT_NOTE",
   "WAIT",
 ] as const
 
@@ -89,6 +96,18 @@ export type AutomationWaitConfig = z.infer<typeof AutomationWaitConfigSchema>
 const idSchema = z.string().trim().min(1).max(100)
 const actionNodeKeySchema = z.string().uuid().optional()
 const operatorSchema = z.enum(AUTOMATION_OPERATORS)
+
+const AutomationNoteTitleSchema = NoteTitleInputSchema.superRefine((value, context) => {
+  for (const issue of parseContactTemplate(value).issues) {
+    context.addIssue({ code: "custom", message: issue.message })
+  }
+})
+
+const AutomationNoteBodySchema = NoteBodyInputSchema.superRefine((value, context) => {
+  for (const issue of parseContactTemplate(value).issues) {
+    context.addIssue({ code: "custom", message: issue.message })
+  }
+})
 
 const opportunityValueConditionSchema = z.object({
   source: z.literal("OPPORTUNITY_VALUE"),
@@ -143,6 +162,12 @@ export const AutomationActionInputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("CLEAR_CONTACT_ASSIGNEE"), nodeKey: actionNodeKeySchema }),
   z.object({ type: z.literal("ADD_CONTACT_TAG"), nodeKey: actionNodeKeySchema, tagId: idSchema }),
   z.object({ type: z.literal("REMOVE_CONTACT_TAG"), nodeKey: actionNodeKeySchema, tagId: idSchema }),
+  z.object({
+    type: z.literal("ADD_CONTACT_NOTE"),
+    nodeKey: actionNodeKeySchema,
+    noteTitle: AutomationNoteTitleSchema,
+    noteBody: AutomationNoteBodySchema,
+  }),
   z.object({ type: z.literal("WAIT"), nodeKey: actionNodeKeySchema, waitConfig: AutomationWaitConfigSchema }),
 ])
 
@@ -186,6 +211,7 @@ type ValueType = "string" | "number" | "date" | "boolean" | "stringArray"
 
 type CustomFieldRecord = {
   id: string
+  key: string
   label: string
   fieldType: CustomFieldType
   isRequired: boolean
@@ -243,7 +269,7 @@ export class AutomationConfigurationError extends Error {
 export class AutomationExecutionError extends Error {
   status = 409
   code = "AUTOMATION_EXECUTION_FAILED"
-  automationId: string
+  automationId: string | null
   automationName: string
   actionIndex: number
   contactId: string | null
@@ -254,7 +280,7 @@ export class AutomationExecutionError extends Error {
   contactName: string | null
 
   constructor(params: {
-    automationId: string
+    automationId: string | null
     automationName: string
     actionIndex: number
     contactId?: string | null
@@ -433,6 +459,7 @@ export async function validateAutomationConfiguration(
       where: { tenantId },
       select: {
         id: true,
+        key: true,
         label: true,
         fieldType: true,
         isRequired: true,
@@ -592,6 +619,19 @@ export async function validateAutomationConfiguration(
         }
       }
       return { ...base, waitConfig }
+    }
+    if (action.type === "ADD_CONTACT_NOTE") {
+      const titleValidation = validateContactTemplate(action.noteTitle, fields)
+      const bodyValidation = validateContactTemplate(action.noteBody, fields)
+      const issue = titleValidation.issues[0] ?? bodyValidation.issues[0]
+      if (issue) {
+        throw new AutomationConfigurationError("INVALID_NOTE_TEMPLATE", issue.message)
+      }
+      return {
+        ...base,
+        noteTitle: action.noteTitle,
+        noteBody: action.noteBody,
+      }
     }
     if (action.type === "SET_CONTACT_CUSTOM_FIELD" || action.type === "CLEAR_CONTACT_CUSTOM_FIELD") {
       const field = fieldMap.get(action.customFieldId)
@@ -790,6 +830,7 @@ export async function getAutomationRuntimeCatalog(
       where: { tenantId, isActive: true, isEncrypted: false, isSensitive: false },
       select: {
         id: true,
+        key: true,
         label: true,
         fieldType: true,
         isRequired: true,
@@ -856,6 +897,8 @@ function automationActionSnapshot(action: any): RuntimeAutomationAction {
     tagId: action.tagId,
     value: action.value,
     waitConfig: action.waitConfig,
+    noteTitle: action.noteTitle,
+    noteBody: action.noteBody,
   })
   if (!parsed.nodeKey) throw new Error("Automation action is missing its stable node key.")
   return { ...parsed, nodeKey: parsed.nodeKey }
@@ -874,7 +917,7 @@ async function applyAutomationAction(
   params: {
     action: RuntimeAutomationAction
     actionIndex: number
-    automationId: string
+    automationId: string | null
     automationName: string
     tenantId: string
     contactId: string
@@ -930,6 +973,33 @@ async function applyAutomationAction(
     } else if (action.type === "REMOVE_CONTACT_TAG") {
       if (!catalog.tagIds.has(action.tagId)) throw new Error("The configured tag is unavailable.")
       await prismaTx.contactTag.deleteMany({ where: { tenantId, contactId, tagId: action.tagId } })
+    } else if (action.type === "ADD_CONTACT_NOTE") {
+      const rendered = await renderContactNoteTemplates(prismaTx, {
+        tenantId,
+        contactId,
+        titleTemplate: action.noteTitle,
+        bodyTemplate: action.noteBody,
+      })
+      const title = NoteTitleInputSchema.safeParse(rendered.title)
+      if (!title.success) {
+        throw new Error("The rendered contact note title must contain 1 to 160 characters.")
+      }
+      const body = NoteBodyInputSchema.safeParse(rendered.body)
+      if (!body.success) {
+        throw new Error("The rendered contact note body must contain 1 to 5,000 characters.")
+      }
+      await prismaTx.contactNote.create({
+        data: {
+          tenantId,
+          contactId,
+          automationId,
+          automationName,
+          title: title.data,
+          body: body.data,
+          createdById: null,
+        },
+      })
+      return `Added contact note “${title.data}”.`
     }
   } catch (error) {
     throw new AutomationExecutionError({
@@ -1167,7 +1237,7 @@ async function executeAutomationSegmentTx(
         const targetIndex = actions.findIndex((candidate) => candidate.nodeKey === targetNodeKey)
         if (targetIndex <= index) {
           throw new AutomationExecutionError({
-            automationId: run.automationId ?? "",
+            automationId: run.automationId,
             automationName: run.automationName,
             actionIndex: index,
             contactId: run.contactId,
@@ -1183,16 +1253,16 @@ async function executeAutomationSegmentTx(
     }
 
     try {
-      await applyAutomationAction(prismaTx, {
+      const successDetails = await applyAutomationAction(prismaTx, {
         action,
         actionIndex: index,
-        automationId: run.automationId ?? "",
+        automationId: run.automationId,
         automationName: run.automationName,
         tenantId: run.tenantId,
         contactId: run.contactId,
         catalog,
       })
-      logs.push(actionLog(base, action, index, "EXECUTED", null, "Action completed successfully."))
+      logs.push(actionLog(base, action, index, "EXECUTED", null, successDetails ?? "Action completed successfully."))
     } catch (error) {
       if (error instanceof AutomationExecutionError) {
         error.nodeExecutions = failureLogsForSegment(base, actions, startIndex, index, logs, error.message)
@@ -1532,7 +1602,7 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
   const error = cause instanceof AutomationExecutionError
     ? cause
     : new AutomationExecutionError({
-        automationId: run.automationId ?? "",
+        automationId: run.automationId,
         automationName: run.automationName,
         actionIndex: Math.min(run.cursorIndex, Math.max(0, actions.length - 1)),
         contactId: run.contactId,

@@ -116,6 +116,8 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
             tagId: true,
             value: true,
             waitConfig: true,
+            noteTitle: true,
+            noteBody: true,
           },
         },
       },

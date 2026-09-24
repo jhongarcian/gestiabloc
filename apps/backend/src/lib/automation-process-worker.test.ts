@@ -20,6 +20,9 @@ describe("enrollAutomationProcessContact", () => {
       contactTag: {
         deleteMany: forbiddenSideEffect,
       },
+      contactNote: {
+        create: forbiddenSideEffect,
+      },
       automationExecution: {
         create: forbiddenSideEffect,
       },
@@ -57,6 +60,7 @@ describe("enrollAutomationProcessContact", () => {
           triggerType: "OPPORTUNITY_CREATED",
           actionSnapshot: [
             { type: "REMOVE_CONTACT_TAG", tagId: "tag-1" },
+            { type: "ADD_CONTACT_NOTE", noteTitle: "Welcome", noteBody: "Welcome to the process." },
             { type: "SET_CONTACT_STATUS", statusConfigId: "status-1" },
           ],
           requestedByUserId: "user-1",
@@ -74,10 +78,11 @@ describe("enrollAutomationProcessContact", () => {
       "SUCCEEDED",
     )
     const rows = nodeLogWrites[0]?.data as Array<Record<string, unknown>>
-    assert.equal(rows.length, 3)
+    assert.equal(rows.length, 4)
     assert.deepEqual(rows.map((row) => [row.nodeKind, row.nodeLabel, row.status]), [
       ["TRIGGER", "Opportunity created", "SKIPPED"],
       ["ACTION", "Remove contact tag", "SKIPPED"],
+      ["ACTION", "Add contact note", "SKIPPED"],
       ["ACTION", "Set contact status", "SKIPPED"],
     ])
     assert.equal(rows[0]?.contactName, "Avery Stone")

@@ -16,20 +16,23 @@ type ContactNotesResponse = {
     createdAt: string
     updatedAt: string
     author: {
-      id: string
+      type: "USER" | "AUTOMATION" | "FORMER_USER"
+      id: string | null
       name: string
-      email: string
+      email: string | null
     }
     permissions: {
       canEdit: boolean
       canDelete: boolean
     }
     source: {
-      type: "CONTACT" | "SERVICE"
+      type: "CONTACT" | "SERVICE" | "AUTOMATION"
       contactServiceId?: string
       serviceName?: string
       followUpTemplateName?: string
       followUpStepTitle?: string
+      automationId?: string
+      automationName?: string
     }
     attachments: Array<{
       id: string

@@ -11,6 +11,7 @@ const labels = {
   CLEAR_CONTACT_ASSIGNEE: "Clear contact assignee",
   ADD_CONTACT_TAG: "Add contact tag",
   REMOVE_CONTACT_TAG: "Remove contact tag",
+  ADD_CONTACT_NOTE: "Add contact note",
   WAIT: "Wait",
 } as const
 
@@ -103,5 +104,28 @@ describe("buildAutomationFlowGraph", () => {
     assert.equal(waitNode?.data.subtitle, "Wait 2 hours")
     assert.equal(graph.nodes.filter((node) => node.data.kind === "action").length, 1)
     assert.equal(graph.nodes.at(-1)?.data.subtitle, "All actions completed")
+  })
+
+  test("summarizes an add-note action by its title", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "ADD_CONTACT_NOTE",
+          noteTitle: "Opportunity created",
+          noteBody: "Review the opportunity.",
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const noteNode = graph.nodes.find((node) => node.id.includes("00000000"))
+    assert.equal(noteNode?.data.label, "Add contact note")
+    assert.equal(noteNode?.data.subtitle, "Note: Opportunity created")
   })
 })

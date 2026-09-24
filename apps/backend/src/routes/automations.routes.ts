@@ -9,6 +9,11 @@ import {
   getAutomationOperatorsForFieldType,
   validateAutomationConfiguration,
 } from "../lib/opportunity-automations.js"
+import {
+  CONTACT_TEMPLATE_DATE_FORMATS,
+  CONTACT_TEMPLATE_PHONE_FORMATS,
+  CONTACT_TEMPLATE_REGULAR_FIELDS,
+} from "../lib/contact-templates.js"
 import { prisma } from "../lib/prisma.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { requireAuth } from "../middleware/requireAuth.js"
@@ -99,6 +104,8 @@ function serializeAutomation(record: any) {
       tagId: action.tagId,
       value: action.value,
       waitConfig: action.waitConfig,
+      noteTitle: action.noteTitle,
+      noteBody: action.noteBody,
     })),
     lastExecution: record.executions?.[0]
       ? {
@@ -141,6 +148,7 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
         orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
         select: {
           id: true,
+          key: true,
           label: true,
           fieldType: true,
           isRequired: true,
@@ -173,6 +181,11 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
           options: Array.isArray(field.options) ? field.options : [],
           operators: getAutomationOperatorsForFieldType(field.fieldType),
         })),
+        templateFields: {
+          contact: CONTACT_TEMPLATE_REGULAR_FIELDS,
+          dateFormats: CONTACT_TEMPLATE_DATE_FORMATS,
+          phoneFormats: CONTACT_TEMPLATE_PHONE_FORMATS,
+        },
         statuses,
         tags,
         users: memberships.map((item: any) => ({

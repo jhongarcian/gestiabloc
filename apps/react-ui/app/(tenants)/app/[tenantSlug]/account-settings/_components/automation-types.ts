@@ -35,6 +35,30 @@ export type AutomationCondition = {
 
 export type AutomationWaitUnit = "SECONDS" | "MINUTES" | "HOURS" | "DAYS"
 
+export type ContactTemplateFieldType =
+  | "TEXT"
+  | "NUMBER"
+  | "PHONE"
+  | "CURRENCY"
+  | "DATE"
+  | "SELECT"
+  | "MULTI_SELECT"
+  | "RADIO"
+  | "TEXTAREA"
+  | "CHECKBOX"
+
+export type ContactTemplateField = {
+  key: string
+  label: string
+  fieldType: ContactTemplateFieldType
+}
+
+export type ContactTemplateFormatOption = {
+  value: string
+  label: string
+  preview: string
+}
+
 export type AutomationWaitConfig =
   | {
       mode: "DURATION"
@@ -62,6 +86,7 @@ export type AutomationAction = {
     | "CLEAR_CONTACT_ASSIGNEE"
     | "ADD_CONTACT_TAG"
     | "REMOVE_CONTACT_TAG"
+    | "ADD_CONTACT_NOTE"
     | "WAIT"
   customFieldId?: string | null
   statusConfigId?: string | null
@@ -69,6 +94,8 @@ export type AutomationAction = {
   tagId?: string | null
   value?: unknown
   waitConfig?: AutomationWaitConfig | null
+  noteTitle?: string | null
+  noteBody?: string | null
 }
 
 export type AutomationRecord = {
@@ -104,22 +131,18 @@ export type AutomationCatalog = {
   }>
   customFields: Array<{
     id: string
+    key: string
     label: string
-    fieldType:
-      | "TEXT"
-      | "NUMBER"
-      | "PHONE"
-      | "CURRENCY"
-      | "DATE"
-      | "SELECT"
-      | "MULTI_SELECT"
-      | "RADIO"
-      | "TEXTAREA"
-      | "CHECKBOX"
+    fieldType: ContactTemplateFieldType
     isRequired: boolean
     options: string[]
     operators: AutomationOperator[]
   }>
+  templateFields: {
+    contact: ContactTemplateField[]
+    dateFormats: ContactTemplateFormatOption[]
+    phoneFormats: ContactTemplateFormatOption[]
+  }
   statuses: Array<{ id: string; name: string; bgColor: string; textColor: string }>
   tags: Array<{ id: string; name: string; bgColor: string; textColor: string }>
   users: Array<{ id: string; name: string; email: string }>

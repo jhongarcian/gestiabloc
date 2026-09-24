@@ -314,6 +314,7 @@ enum AutomationActionType {
   CLEAR_CONTACT_ASSIGNEE
   ADD_CONTACT_TAG
   REMOVE_CONTACT_TAG
+  ADD_CONTACT_NOTE
   WAIT
 }
 
@@ -1373,6 +1374,7 @@ model Automation {
   processes      AutomationProcess[]
   nodeExecutions AutomationNodeExecution[]
   runs           AutomationRun[]
+  contactNotes   ContactNote[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1423,6 +1425,8 @@ model AutomationAction {
   tagId          String?
   value          Json?
   waitConfig     Json?
+  noteTitle      String?
+  noteBody       String?
   sortOrder      Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
@@ -2039,7 +2043,9 @@ model ContactNote {
   contactServiceFollowUpStepId String?
   title                        String
   body                         String
-  createdById                  String
+  createdById                  String?
+  automationId                 String?
+  automationName               String?
 
   tenant                     Tenant                          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact                    Contact                         @relation(fields: [contactId], references: [id], onDelete: Cascade)
@@ -2047,7 +2053,8 @@ model ContactNote {
   followUpTemplate           ServiceFollowUpTemplate?        @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
   followUpTemplateVersion    ServiceFollowUpTemplateVersion? @relation(fields: [followUpTemplateVersionId], references: [id], onDelete: SetNull)
   contactServiceFollowUpStep ContactServiceFollowUpStep?     @relation(fields: [contactServiceFollowUpStepId], references: [id], onDelete: SetNull)
-  createdBy                  User                            @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdBy                  User?                           @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  automation                 Automation?                     @relation(fields: [automationId], references: [id], onDelete: SetNull)
   attachments                ContactNoteAttachment[]
 
   createdAt DateTime @default(now())
@@ -2060,6 +2067,7 @@ model ContactNote {
   @@index([tenantId, followUpTemplateVersionId, createdAt])
   @@index([tenantId, contactServiceFollowUpStepId, createdAt])
   @@index([tenantId, createdById])
+  @@index([tenantId, automationId, createdAt])
 }
 
 model ContactNoteAttachment {

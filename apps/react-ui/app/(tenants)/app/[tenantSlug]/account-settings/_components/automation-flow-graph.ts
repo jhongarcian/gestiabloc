@@ -95,6 +95,9 @@ export function buildAutomationFlowGraph(
           ? `Until ${formatDateTimeForDisplay(waitConfig.dateTime, timezone)}`
           : `${waitConfig.offsetAmount} ${waitUnitLabel(waitConfig.offsetAmount ?? 0, waitConfig.offsetUnit ?? "MINUTES")} ${waitConfig.timing.toLocaleLowerCase()} ${formatDateTimeForDisplay(waitConfig.dateTime, timezone)}`
         : null
+    const actionSubtitle = action.type === "ADD_CONTACT_NOTE"
+      ? `Note: ${action.noteTitle?.trim() || "Add a title"}`
+      : waitSubtitle ?? `Action ${index + 1}`
     nodes.push({
       id: actionId,
       type: "automationNode",
@@ -102,7 +105,7 @@ export function buildAutomationFlowGraph(
       data: {
         kind: "action",
         label: actionLabels[action.type],
-        subtitle: waitSubtitle ?? `Action ${index + 1}`,
+        subtitle: actionSubtitle,
         index,
       },
     })
