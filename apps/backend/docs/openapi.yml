@@ -6143,13 +6143,15 @@ components:
           description: >-
             Contact-note title template. Supports regular fields such as {contact.name},
             custom fields such as {contact.custom_field.bank}, and compatible date,
-            phone, or USD currency format modifiers.
+            phone, or USD currency format modifiers. Dynamic tenant-local dates use
+            {date.current|date:medium}; fixed date-only values use tokens such as
+            {date.specific.2026-09-23|date:medium}.
         noteBody:
           type: string
           maxLength: 5000
           description: >-
             Contact-note body template using the same contact-field token grammar as noteTitle.
-            Values are resolved from the contact when the action executes.
+            Contact values and current-date values are resolved when the action executes.
         waitConfig:
           oneOf:
             - type: object

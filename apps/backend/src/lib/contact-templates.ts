@@ -85,7 +85,7 @@ type ContactTemplateFormat =
 
 export type ContactTemplateToken = {
   raw: string
-  source: "CONTACT" | "CUSTOM_FIELD"
+  source: "CONTACT" | "CUSTOM_FIELD" | "DATE"
   key: string
   format?: ContactTemplateFormat
   start: number
@@ -110,7 +110,14 @@ const REGULAR_FIELD_MAP = new Map<string, ContactTemplateFieldDefinition>(
 const DATE_FORMATS = new Set<string>(CONTACT_TEMPLATE_DATE_FORMATS.map((item) => item.value))
 const PHONE_FORMATS = new Set<string>(CONTACT_TEMPLATE_PHONE_FORMATS.map((item) => item.value))
 const BRACED_EXPRESSION = /\{([^{}]*)\}/g
-const CONTACT_TOKEN_START = /\{contact\./g
+const TEMPLATE_TOKEN_START = /\{(?:contact|date)\./g
+const DEFAULT_TIMEZONE = "America/Chicago"
+
+export function isValidTemplateDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const date = new Date(`${value}T12:00:00.000Z`)
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+}
 
 function parseFormat(value: string): ContactTemplateFormat | null {
   const separatorIndex = value.indexOf(":")
@@ -133,6 +140,32 @@ function parseToken(raw: string, expression: string, start: number, end: number)
   const path = pieces[0] ?? ""
   const format = pieces[1] ? parseFormat(pieces[1]) : undefined
   if (pieces[1] && !format) return null
+
+  if (path === "date.current") {
+    if (format && format.kind !== "date") return null
+    return {
+      raw,
+      source: "DATE" as const,
+      key: "current",
+      ...(format ? { format } : {}),
+      start,
+      end,
+    }
+  }
+
+  const specificDateMatch = path.match(/^date\.specific\.(\d{4}-\d{2}-\d{2})$/)
+  if (specificDateMatch) {
+    const date = specificDateMatch[1]!
+    if (!isValidTemplateDate(date) || (format && format.kind !== "date")) return null
+    return {
+      raw,
+      source: "DATE" as const,
+      key: date,
+      ...(format ? { format } : {}),
+      start,
+      end,
+    }
+  }
 
   const customMatch = path.match(/^contact\.custom_field\.([a-z0-9_]+)$/)
   if (customMatch) {
@@ -161,18 +194,18 @@ function parseToken(raw: string, expression: string, start: number, end: number)
 export function parseContactTemplate(template: string) {
   const tokens: ContactTemplateToken[] = []
   const issues: ContactTemplateIssue[] = []
-  const contactExpressionRanges: Array<{ start: number; end: number }> = []
+  const templateExpressionRanges: Array<{ start: number; end: number }> = []
 
   for (const match of template.matchAll(BRACED_EXPRESSION)) {
     const expression = match[1] ?? ""
-    if (!expression.startsWith("contact.")) continue
+    if (!expression.startsWith("contact.") && !expression.startsWith("date.")) continue
     const start = match.index
     const end = start + match[0].length
-    contactExpressionRanges.push({ start, end })
+    templateExpressionRanges.push({ start, end })
     if (template[start - 1] === "{" || template[end] === "}") {
       issues.push({
         code: "DOUBLE_BRACES_NOT_SUPPORTED",
-        message: "Contact fields use one pair of braces, for example {contact.name}.",
+        message: "Template values use one pair of braces, for example {contact.name}.",
         token: match[0],
       })
       continue
@@ -180,8 +213,8 @@ export function parseContactTemplate(template: string) {
     const token = parseToken(match[0], expression, start, end)
     if (!token) {
       issues.push({
-        code: "INVALID_CONTACT_TOKEN",
-        message: `The contact field token ${match[0]} is not valid.`,
+        code: "INVALID_TEMPLATE_TOKEN",
+        message: `The template token ${match[0]} is not valid.`,
         token: match[0],
       })
       continue
@@ -189,13 +222,13 @@ export function parseContactTemplate(template: string) {
     tokens.push(token)
   }
 
-  for (const match of template.matchAll(CONTACT_TOKEN_START)) {
+  for (const match of template.matchAll(TEMPLATE_TOKEN_START)) {
     const start = match.index
-    const isContained = contactExpressionRanges.some((range) => start >= range.start && start < range.end)
+    const isContained = templateExpressionRanges.some((range) => start >= range.start && start < range.end)
     if (!isContained) {
       issues.push({
-        code: "UNCLOSED_CONTACT_TOKEN",
-        message: "A contact field token is missing its closing brace.",
+        code: "UNCLOSED_TEMPLATE_TOKEN",
+        message: "A template token is missing its closing brace.",
       })
     }
   }
@@ -219,6 +252,7 @@ export function validateContactTemplate(
   const customFieldMap = new Map(customFields.map((field) => [field.key, field]))
 
   for (const token of parsed.tokens) {
+    if (token.source === "DATE") continue
     const field = token.source === "CONTACT"
       ? REGULAR_FIELD_MAP.get(token.key)
       : customFieldMap.get(token.key)
@@ -264,17 +298,28 @@ export function contactTemplateCustomFieldKeys(template: string) {
   )]
 }
 
-function formatDate(value: unknown, format: ContactTemplateDateFormat) {
+function formatDate(
+  value: unknown,
+  format: ContactTemplateDateFormat,
+  timezone = "UTC",
+) {
   const date = value instanceof Date ? value : new Date(String(value))
   if (Number.isNaN(date.getTime())) return ""
   if (format === "iso") {
-    const year = String(date.getUTCFullYear()).padStart(4, "0")
-    const month = String(date.getUTCMonth() + 1).padStart(2, "0")
-    const day = String(date.getUTCDate()).padStart(2, "0")
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date)
+    const getPart = (type: string) => parts.find((part) => part.type === type)?.value ?? ""
+    const year = getPart("year")
+    const month = getPart("month")
+    const day = getPart("day")
     return `${year}-${month}-${day}`
   }
   return new Intl.DateTimeFormat("en-US", {
-    timeZone: "UTC",
+    timeZone: timezone,
     ...(format === "short"
       ? { month: "2-digit", day: "2-digit", year: "numeric" }
       : format === "medium"
@@ -404,6 +449,7 @@ function renderContactTemplate(
   template: string,
   contact: Record<string, unknown>,
   customFields: Map<string, { value: unknown; fieldType: ContactTemplateFieldType }>,
+  execution: { occurredAt: Date; timezone: string },
 ) {
   const parsed = parseContactTemplate(template)
   if (parsed.issues.length > 0) throw new Error(parsed.issues[0]!.message)
@@ -418,9 +464,14 @@ function renderContactTemplate(
       result += field
         ? formatTemplateValue(regularContactValue(contact, token.key), field.fieldType, token.format)
         : ""
-    } else {
+    } else if (token.source === "CUSTOM_FIELD") {
       const field = customFields.get(token.key)
       result += field ? formatTemplateValue(field.value, field.fieldType, token.format) : ""
+    } else {
+      const dateFormat = token.format?.kind === "date" ? token.format.value : "medium"
+      result += token.key === "current"
+        ? formatDate(execution.occurredAt, dateFormat, execution.timezone)
+        : formatDate(`${token.key}T12:00:00.000Z`, dateFormat)
     }
     cursor = token.end
   }
@@ -429,7 +480,14 @@ function renderContactTemplate(
 
 export async function renderContactNoteTemplates(
   prismaTx: any,
-  params: { tenantId: string; contactId: string; titleTemplate: string; bodyTemplate: string },
+  params: {
+    tenantId: string
+    contactId: string
+    titleTemplate: string
+    bodyTemplate: string
+    timezone?: string | null
+    occurredAt?: Date
+  },
 ) {
   const contact = await prismaTx.contact.findFirst({
     where: { tenantId: params.tenantId, id: params.contactId },
@@ -497,8 +555,12 @@ export async function renderContactNoteTemplates(
     customFields.set(item.field.key, { value: item.value, fieldType: item.field.fieldType })
   }
   const contactRecord = contact as Record<string, unknown>
+  const execution = {
+    occurredAt: params.occurredAt ?? new Date(),
+    timezone: params.timezone?.trim() || DEFAULT_TIMEZONE,
+  }
   return {
-    title: renderContactTemplate(params.titleTemplate, contactRecord, customFields),
-    body: renderContactTemplate(params.bodyTemplate, contactRecord, customFields),
+    title: renderContactTemplate(params.titleTemplate, contactRecord, customFields, execution),
+    body: renderContactTemplate(params.bodyTemplate, contactRecord, customFields, execution),
   }
 }

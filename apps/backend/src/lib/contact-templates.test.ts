@@ -38,13 +38,15 @@ const customFields = [
 describe("contact templates", () => {
   test("parses regular and custom fields while leaving ordinary braces alone", () => {
     const parsed = parseContactTemplate(
-      "Hello {contact.name}; {ordinary text}; balance {contact.custom_field.balance|currency:USD}.",
+      "Hello {contact.name}; {ordinary text}; balance {contact.custom_field.balance|currency:USD}; {date.current|date:medium}; {date.specific.2026-09-23|date:iso}.",
     )
 
     assert.equal(parsed.issues.length, 0)
     assert.deepEqual(parsed.tokens.map((token) => [token.source, token.key]), [
       ["CONTACT", "name"],
       ["CUSTOM_FIELD", "balance"],
+      ["DATE", "current"],
+      ["DATE", "2026-09-23"],
     ])
     assert.deepEqual(
       contactTemplateCustomFieldKeys("{contact.custom_field.balance} {contact.custom_field.balance}"),
@@ -53,7 +55,8 @@ describe("contact templates", () => {
   })
 
   test("rejects malformed, unknown, incompatible, and protected fields", () => {
-    assert.equal(parseContactTemplate("Hello {contact.name").issues[0]?.code, "UNCLOSED_CONTACT_TOKEN")
+    assert.equal(parseContactTemplate("Hello {contact.name").issues[0]?.code, "UNCLOSED_TEMPLATE_TOKEN")
+    assert.equal(parseContactTemplate("Today {date.current").issues[0]?.code, "UNCLOSED_TEMPLATE_TOKEN")
     assert.equal(parseContactTemplate("Hello {{contact.name}}").issues[0]?.code, "DOUBLE_BRACES_NOT_SUPPORTED")
     assert.equal(
       validateContactTemplate("{contact.unknown}", customFields).issues[0]?.code,
@@ -66,6 +69,14 @@ describe("contact templates", () => {
     assert.equal(
       validateContactTemplate("{contact.custom_field.secret}", customFields).issues[0]?.code,
       "CONTACT_TEMPLATE_FIELD_NOT_ALLOWED",
+    )
+    assert.equal(
+      parseContactTemplate("{date.specific.2026-02-30|date:medium}").issues[0]?.code,
+      "INVALID_TEMPLATE_TOKEN",
+    )
+    assert.equal(
+      parseContactTemplate("{date.current|phone:national}").issues[0]?.code,
+      "INVALID_TEMPLATE_TOKEN",
     )
   })
 
@@ -220,7 +231,10 @@ describe("contact templates", () => {
         "Typed {contact.custom_field.score}; {contact.custom_field.nickname}; {contact.custom_field.tier}.",
         "Custom phone {contact.custom_field.mobile|phone:national}; notes {contact.custom_field.history}.",
         "Missing [{contact.custom_field.missing}]; protected [{contact.custom_field.secret}].",
+        "Execution date {date.current|date:iso}; fixed date {date.specific.2026-09-23|date:weekday}.",
       ].join("\n"),
+      timezone: "America/Chicago",
+      occurredAt: new Date("2026-09-24T04:30:00.000Z"),
     })
 
     assert.equal(rendered.title, "Appointment for Taylor A. Reed")
@@ -235,5 +249,17 @@ describe("contact templates", () => {
     assert.match(rendered.body, /Typed 42\.5; Tay; Gold\./)
     assert.match(rendered.body, /Custom phone \(541\) 313-4664; notes Line 1\nLine 2\./)
     assert.match(rendered.body, /Missing \[\]; protected \[\]\./)
+    assert.match(rendered.body, /Execution date 2026-09-23; fixed date Wednesday, September 23, 2026\./)
+
+    const renderedInTokyo = await renderContactNoteTemplates(prismaTx, {
+      tenantId: "tenant-1",
+      contactId: "contact-1",
+      titleTemplate: "{date.current|date:iso}",
+      bodyTemplate: "{date.specific.2026-09-23|date:long}",
+      timezone: "Asia/Tokyo",
+      occurredAt: new Date("2026-09-24T04:30:00.000Z"),
+    })
+    assert.equal(renderedInTokyo.title, "2026-09-24")
+    assert.equal(renderedInTokyo.body, "September 23, 2026")
   })
 })

@@ -1578,6 +1578,7 @@ function ActionEditor({
               value={action.noteTitle ?? ""}
               maxLength={160}
               catalog={catalog}
+              timezone={timezone}
               error={noteTitleError}
               onChange={(noteTitle) => onChange({ ...action, noteTitle })}
               placeholder="Note title"
@@ -1588,6 +1589,7 @@ function ActionEditor({
               value={action.noteBody ?? ""}
               maxLength={5000}
               catalog={catalog}
+              timezone={timezone}
               error={noteBodyError}
               onChange={(noteBody) => onChange({ ...action, noteBody })}
               multiline

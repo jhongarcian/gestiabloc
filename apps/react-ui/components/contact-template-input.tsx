@@ -23,8 +23,11 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { DateInput, parseDateInput } from "@/components/ui/date-input"
 import {
+  buildDateTemplateToken,
   buildContactTemplateToken,
+  partitionContactTemplateFields,
   type ContactTemplateCatalog,
   type ContactTemplateFieldType,
 } from "@/lib/contact-template"
@@ -45,6 +48,13 @@ type TemplateField = {
   fieldType: ContactTemplateFieldType
 }
 
+type TemplateSource = "CONTACT" | "CUSTOM_FIELD" | "DATE"
+type DateValueKind = "CURRENT" | "FIELD" | "SPECIFIC"
+type DateTemplateField = TemplateField & {
+  source: "CONTACT" | "CUSTOM_FIELD"
+  sourceLabel: string
+}
+
 type ContactTemplateInputProps = {
   id: string
   label: string
@@ -55,6 +65,7 @@ type ContactTemplateInputProps = {
   multiline?: boolean
   placeholder?: string
   error?: string | null
+  timezone?: string | null
 }
 
 export function ContactTemplateInput({
@@ -67,37 +78,71 @@ export function ContactTemplateInput({
   multiline = false,
   placeholder,
   error,
+  timezone,
 }: ContactTemplateInputProps) {
   const [open, setOpen] = useState(false)
-  const [source, setSource] = useState<"CONTACT" | "CUSTOM_FIELD">("CONTACT")
+  const [source, setSource] = useState<TemplateSource>("CONTACT")
   const [selectedKey, setSelectedKey] = useState("")
+  const [dateValueKind, setDateValueKind] = useState<DateValueKind>("CURRENT")
+  const [selectedDateFieldId, setSelectedDateFieldId] = useState("")
+  const [specificDateInput, setSpecificDateInput] = useState("")
   const [format, setFormat] = useState("")
   const [selection, setSelection] = useState({ start: value.length, end: value.length })
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
 
-  const contactFields = catalog.templateFields.contact
-  const customFields = catalog.customFields
-  const fields = source === "CONTACT" ? contactFields : customFields
+  const { contactFields, customFields, dateFields } = useMemo(
+    () => partitionContactTemplateFields(catalog),
+    [catalog],
+  )
+  const fields = useMemo(
+    () => source === "CONTACT" ? contactFields : source === "CUSTOM_FIELD" ? customFields : [],
+    [contactFields, customFields, source],
+  )
   const selectedField = useMemo(
     () => fields.find((field) => field.key === selectedKey) ?? fields[0] ?? null,
     [fields, selectedKey],
   ) as TemplateField | null
-  const formatOptions = selectedField?.fieldType === "DATE"
+  const selectedDateField = useMemo(
+    () => dateFields.find((field) => `${field.source}:${field.key}` === selectedDateFieldId) ?? dateFields[0] ?? null,
+    [dateFields, selectedDateFieldId],
+  ) as DateTemplateField | null
+  const formatOptions = source === "DATE"
     ? catalog.templateFields.dateFormats
     : selectedField?.fieldType === "PHONE"
       ? catalog.templateFields.phoneFormats
       : []
   const selectedFormat = formatOptions.some((option) => option.value === format)
     ? format
-    : formatOptions[0]?.value ?? ""
-  const token = selectedField
-    ? buildContactTemplateToken({
-        source,
-        key: selectedField.key,
-        fieldType: selectedField.fieldType,
-        format: selectedFormat,
-      })
+    : source === "DATE"
+      ? formatOptions.find((option) => option.value === "medium")?.value ?? formatOptions[0]?.value ?? ""
+      : formatOptions[0]?.value ?? ""
+  const parsedSpecificDate = parseDateInput(specificDateInput)
+  const specificDate = parsedSpecificDate && parsedSpecificDate !== null
+    ? `${String(parsedSpecificDate.getFullYear()).padStart(4, "0")}-${String(parsedSpecificDate.getMonth() + 1).padStart(2, "0")}-${String(parsedSpecificDate.getDate()).padStart(2, "0")}`
     : ""
+  const token = source === "DATE"
+    ? dateValueKind === "FIELD"
+      ? selectedDateField
+        ? buildContactTemplateToken({
+            source: selectedDateField.source,
+            key: selectedDateField.key,
+            fieldType: "DATE",
+            format: selectedFormat,
+          })
+        : ""
+      : buildDateTemplateToken({
+          kind: dateValueKind,
+          format: selectedFormat,
+          date: specificDate,
+        })
+    : selectedField
+      ? buildContactTemplateToken({
+          source,
+          key: selectedField.key,
+          fieldType: selectedField.fieldType,
+          format: selectedFormat,
+        })
+      : ""
   const selectedLength = Math.max(0, selection.end - selection.start)
   const insertionLength = value.length - selectedLength + token.length
   const canInsert = Boolean(token) && insertionLength <= maxLength
@@ -111,8 +156,8 @@ export function ContactTemplateInput({
     })
   }
 
-  const selectSource = (nextSource: "CONTACT" | "CUSTOM_FIELD") => {
-    const nextFields = nextSource === "CONTACT" ? contactFields : customFields
+  const selectSource = (nextSource: TemplateSource) => {
+    const nextFields = nextSource === "CONTACT" ? contactFields : nextSource === "CUSTOM_FIELD" ? customFields : []
     setSource(nextSource)
     setSelectedKey(nextFields[0]?.key ?? "")
     setFormat("")
@@ -154,43 +199,115 @@ export function ContactTemplateInput({
       <PopoverContent align="end" className="w-80 space-y-3 rounded-2xl p-3">
         <Field className="gap-1.5">
           <FieldLabel className="text-xs">Source</FieldLabel>
-          <Select value={source} onValueChange={(next) => selectSource(next as typeof source)}>
+          <Select value={source} onValueChange={(next) => selectSource(next as TemplateSource)}>
             <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="CONTACT">Contact field</SelectItem>
               <SelectItem value="CUSTOM_FIELD" disabled={customFields.length === 0}>Custom field</SelectItem>
+              <SelectItem value="DATE">Date</SelectItem>
             </SelectContent>
           </Select>
         </Field>
 
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-          <Command>
-            <CommandInput placeholder="Search fields" />
-            <CommandList className="max-h-44">
-              <CommandEmpty>No fields found.</CommandEmpty>
-              <CommandGroup>
-                {fields.map((field) => (
-                  <CommandItem
-                    key={`${source}-${field.key}`}
-                    value={`${field.label} ${field.key}`}
-                    onSelect={() => selectField(field)}
-                  >
-                    <Check
-                      className={cn(
-                        "size-4",
-                        selectedField?.key === field.key ? "opacity-100" : "opacity-0",
-                      )}
-                      aria-hidden="true"
-                    />
-                    <span className="min-w-0 flex-1 truncate">{field.label}</span>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            </CommandList>
-          </Command>
-        </div>
+        {source === "DATE" ? (
+          <>
+            <Field className="gap-1.5">
+              <FieldLabel className="text-xs">Date type</FieldLabel>
+              <Select value={dateValueKind} onValueChange={(next) => setDateValueKind(next as DateValueKind)}>
+                <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="CURRENT">Current date</SelectItem>
+                  <SelectItem value="FIELD" disabled={dateFields.length === 0}>Date field</SelectItem>
+                  <SelectItem value="SPECIFIC">Specific date</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+
+            {dateValueKind === "FIELD" ? (
+              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                <Command>
+                  <CommandInput placeholder="Search date fields" />
+                  <CommandList className="max-h-44">
+                    <CommandEmpty>No date fields found.</CommandEmpty>
+                    <CommandGroup>
+                      {dateFields.map((field) => {
+                        const fieldId = `${field.source}:${field.key}`
+                        return (
+                          <CommandItem
+                            key={fieldId}
+                            value={`${field.label} ${field.sourceLabel} ${field.key}`}
+                            onSelect={() => setSelectedDateFieldId(fieldId)}
+                          >
+                            <Check
+                              className={cn(
+                                "size-4",
+                                `${selectedDateField?.source}:${selectedDateField?.key}` === fieldId
+                                  ? "opacity-100"
+                                  : "opacity-0",
+                              )}
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1 truncate">{field.label}</span>
+                            <span className="text-[11px] text-slate-400">{field.sourceLabel}</span>
+                          </CommandItem>
+                        )
+                      })}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </div>
+            ) : null}
+
+            {dateValueKind === "SPECIFIC" ? (
+              <Field className="gap-1.5">
+                <FieldLabel className="text-xs">Specific date</FieldLabel>
+                <DateInput
+                  value={specificDateInput}
+                  onValueChange={setSpecificDateInput}
+                  onDateChange={() => undefined}
+                  disabledDate={() => false}
+                  ariaInvalid={specificDateInput.length > 0 && !specificDate}
+                  className="[&_input]:h-8 [&_input]:rounded-full [&_button]:h-8 [&_button]:rounded-full"
+                />
+              </Field>
+            ) : null}
+
+            {dateValueKind === "CURRENT" ? (
+              <p className="text-xs text-slate-500">Uses {timezone?.trim() || "America/Chicago"} when this step runs.</p>
+            ) : null}
+          </>
+        ) : (
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+            <Command>
+              <CommandInput placeholder="Search fields" />
+              <CommandList className="max-h-44">
+                <CommandEmpty>No fields found.</CommandEmpty>
+                <CommandGroup>
+                  {fields.map((field) => (
+                    <CommandItem
+                      key={`${source}-${field.key}`}
+                      value={`${field.label} ${field.key}`}
+                      onSelect={() => selectField(field)}
+                    >
+                      <Check
+                        className={cn(
+                          "size-4",
+                          selectedField?.key === field.key ? "opacity-100" : "opacity-0",
+                        )}
+                        aria-hidden="true"
+                      />
+                      <span className="min-w-0 flex-1 truncate">{field.label}</span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </div>
+        )}
 
         {formatOptions.length > 0 ? (
           <Field className="gap-1.5">

@@ -1119,7 +1119,7 @@ describe("resumeDueAutomationRuns", () => {
         nodeKey: "00000000-0000-4000-8000-000000000002",
         type: "ADD_CONTACT_NOTE",
         noteTitle: "Pinned note for {contact.name}",
-        noteBody: "Current email: {contact.email}.",
+        noteBody: "Current email: {contact.email}. Resumed date: {date.current|date:iso}.",
       },
       {
         nodeKey: "00000000-0000-4000-8000-000000000003",
@@ -1199,7 +1199,10 @@ describe("resumeDueAutomationRuns", () => {
     assert.equal((createdNote as Record<string, unknown>).automationId, null)
     assert.equal((createdNote as Record<string, unknown>).automationName, "Deleted automation")
     assert.equal((createdNote as Record<string, unknown>).title, "Pinned note for Taylor Reed")
-    assert.equal((createdNote as Record<string, unknown>).body, "Current email: current@example.com.")
+    assert.match(
+      String((createdNote as Record<string, unknown>).body),
+      /^Current email: current@example\.com\. Resumed date: \d{4}-\d{2}-\d{2}\.$/,
+    )
     assert.equal(waitingLogUpdates, 1)
     assert.equal(runStatus, "SUCCEEDED")
     assert.equal(summaryCount, 1)
