@@ -922,9 +922,10 @@ async function applyAutomationAction(
     tenantId: string
     contactId: string
     catalog: AutomationRuntimeCatalog
+    occurredAt: Date
   },
 ) {
-  const { action, actionIndex, automationId, automationName, tenantId, contactId, catalog } = params
+  const { action, actionIndex, automationId, automationName, tenantId, contactId, catalog, occurredAt } = params
   try {
     if (action.type === "SET_CONTACT_CUSTOM_FIELD") {
       const field = catalog.fieldMap.get(action.customFieldId)
@@ -979,6 +980,8 @@ async function applyAutomationAction(
         contactId,
         titleTemplate: action.noteTitle,
         bodyTemplate: action.noteBody,
+        timezone: catalog.timezone,
+        occurredAt,
       })
       const title = NoteTitleInputSchema.safeParse(rendered.title)
       if (!title.success) {
@@ -1017,6 +1020,7 @@ export async function applyAutomationActions(
   params: { automation: any; tenantId: string; contactId: string; catalog: AutomationRuntimeCatalog },
 ) {
   const actions = params.automation.actions.map(automationActionSnapshot)
+  const occurredAt = new Date()
   for (let index = 0; index < actions.length; index += 1) {
     if (actions[index]!.type === "WAIT") continue
     await applyAutomationAction(prismaTx, {
@@ -1027,6 +1031,7 @@ export async function applyAutomationActions(
       tenantId: params.tenantId,
       contactId: params.contactId,
       catalog: params.catalog,
+      occurredAt,
     })
   }
 }
@@ -1138,11 +1143,12 @@ async function executeAutomationSegmentTx(
     actions: RuntimeAutomationAction[]
     catalog: AutomationRuntimeCatalog
     startIndex: number
+    occurredAt?: Date
   },
 ) {
   const { run, actions, catalog, startIndex } = params
   if (!run.contactId) throw new Error("The contact for this automation run is no longer available.")
-  const now = new Date()
+  const now = params.occurredAt ?? new Date()
   const base = {
     tenantId: run.tenantId,
     automationId: run.automationId,
@@ -1261,6 +1267,7 @@ async function executeAutomationSegmentTx(
         tenantId: run.tenantId,
         contactId: run.contactId,
         catalog,
+        occurredAt: now,
       })
       logs.push(actionLog(base, action, index, "EXECUTED", null, successDetails ?? "Action completed successfully."))
     } catch (error) {
@@ -1708,6 +1715,7 @@ async function resumeAutomationRun(prismaClient: any, runId: string, leaseToken:
         actions,
         catalog,
         startIndex: run.cursorIndex,
+        occurredAt: resumedAt,
       })
       if (result.logs.length > 0) {
         await transaction.automationNodeExecution.createMany({ data: result.logs })
