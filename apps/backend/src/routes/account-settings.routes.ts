@@ -928,7 +928,7 @@ function validateCustomFieldOptions(
   };
 }
 
-async function buildUniqueCustomFieldKey(tenantId: string, label: string, excludeId?: string) {
+async function buildUniqueCustomFieldKey(tenantId: string, label: string) {
   const baseKey = slugifyCustomFieldKey(label);
 
   const existing = await prismaWithContacts.contactCustomField.findMany({
@@ -937,7 +937,6 @@ async function buildUniqueCustomFieldKey(tenantId: string, label: string, exclud
       key: {
         startsWith: baseKey,
       },
-      ...(excludeId ? { NOT: { id: excludeId } } : {}),
     },
     select: {
       key: true,
@@ -5786,6 +5785,7 @@ router.patch(
       }
 
       if (
+        (payload.label !== undefined && payload.label.trim() !== existing.label) ||
         (payload.isActive === false && existing.isActive) ||
         (payload.isEncrypted === true && !existing.isEncrypted) ||
         (payload.isSensitive === true && !existing.isSensitive) ||
@@ -5819,16 +5819,9 @@ router.patch(
         });
       }
 
-      const nextLabel = payload.label?.trim() ?? existing.label;
-      const nextKey =
-        nextLabel !== existing.label
-          ? await buildUniqueCustomFieldKey(tenantId, nextLabel, recordId)
-          : undefined;
-
       const updated = await prismaWithContacts.contactCustomField.update({
         where: { id: recordId },
         data: {
-          key: nextKey,
           label: payload.label?.trim(),
           description: payload.description,
           fieldType: payload.fieldType,

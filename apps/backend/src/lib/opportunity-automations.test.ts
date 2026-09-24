@@ -118,6 +118,35 @@ describe("AutomationUpsertSchema", () => {
     assert.equal(result.success, false)
   })
 
+  test("validates and sanitizes add-contact-note actions", () => {
+    const result = AutomationUpsertSchema.safeParse({
+      name: "Add a note",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{
+        type: "ADD_CONTACT_NOTE",
+        noteTitle: " <strong>New opportunity</strong> ",
+        noteBody: " First line\r\n<script>ignored</script> Second line ",
+      }],
+    })
+
+    assert.equal(result.success, true)
+    if (!result.success) return
+    assert.equal(result.data.actions[0]?.type, "ADD_CONTACT_NOTE")
+    if (result.data.actions[0]?.type !== "ADD_CONTACT_NOTE") return
+    assert.equal(result.data.actions[0].noteTitle, "New opportunity")
+    assert.equal(result.data.actions[0].noteBody, "First line\nignored Second line")
+
+    assert.equal(AutomationUpsertSchema.safeParse({
+      name: "Invalid note",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{ type: "ADD_CONTACT_NOTE", noteTitle: "<span></span>", noteBody: "Body" }],
+    }).success, false)
+  })
+
   test("validates duration and fixed-date wait shapes", () => {
     const base = {
       name: "Wait for follow-up",
@@ -239,6 +268,7 @@ describe("executeOpportunityAutomations", () => {
             actions: [
               { type: "REMOVE_CONTACT_TAG", tagId: "lead-tag" },
               { type: "SET_CONTACT_STATUS", statusConfigId: "inactive" },
+              { type: "ADD_CONTACT_NOTE", noteTitle: "Should not run", noteBody: "Filters did not match." },
             ],
           },
         ],
@@ -274,6 +304,11 @@ describe("executeOpportunityAutomations", () => {
           tagRemovals += 1
         },
       },
+      contactNote: {
+        create: async () => {
+          throw new Error("The note action must not run when filters do not match.")
+        },
+      },
       automationExecution: {
         create: async () => {
           executions += 1
@@ -306,7 +341,7 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(tagRemovals, 0)
     assert.equal(contactUpdates, 0)
     assert.equal(executions, 0)
-    assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "SKIPPED", "SKIPPED"])
+    assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "SKIPPED", "SKIPPED", "SKIPPED"])
     assert.match(String(nodeLogs[1]?.details), /Assigned to: expected John, found Mary\./)
     assert.match(String(nodeLogs[1]?.details), /Contact status: expected Inactive, found Active\./)
   })
@@ -399,10 +434,250 @@ describe("executeOpportunityAutomations", () => {
     assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "EXECUTED", "EXECUTED"])
   })
 
+  test("creates an automation-authored contact note and logs its title", async () => {
+    const createdNotes: Array<Record<string, unknown>> = []
+    let nodeLogs: Array<Record<string, unknown>> = []
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "New opportunity notes",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [{
+            nodeKey: "00000000-0000-4000-8000-000000000001",
+            type: "ADD_CONTACT_NOTE",
+            noteTitle: "Opportunity for {contact.name}",
+            noteBody: "Current balance: {contact.custom_field.balance|currency:USD}.",
+          }],
+        }],
+      },
+      contact: {
+        findFirst: async (args: { select?: Record<string, unknown> }) => args.select?.email
+          ? {
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              email: "taylor@example.com",
+              statusConfig: { name: "Active" },
+              customFieldValues: [{
+                value: 2500,
+                field: {
+                  key: "balance",
+                  fieldType: "CURRENCY",
+                  isActive: true,
+                  isEncrypted: false,
+                  isSensitive: false,
+                },
+              }],
+            }
+          : {
+              id: "contact-1",
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              statusConfigId: "active",
+              assignedToUserId: null,
+              tags: [],
+              customFieldValues: [{ fieldId: "field-balance", value: 2500 }],
+            },
+      },
+      contactCustomField: { findMany: async () => [{
+        id: "field-balance",
+        key: "balance",
+        label: "Balance",
+        fieldType: "CURRENCY",
+        isRequired: false,
+        isActive: true,
+        isEncrypted: false,
+        isSensitive: false,
+        options: null,
+      }] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      contactNote: {
+        create: async ({ data }: { data: Record<string, unknown> }) => { createdNotes.push(data) },
+      },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async () => undefined,
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { nodeLogs = data },
+      },
+    }
+
+    const event = {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED" as const,
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    }
+    await executeOpportunityAutomations(prismaTx, event)
+    await executeOpportunityAutomations(prismaTx, { ...event, opportunityId: "opportunity-2" })
+
+    assert.equal(createdNotes.length, 2)
+    assert.deepEqual(createdNotes[0], {
+      tenantId: "tenant-1",
+      contactId: "contact-1",
+      automationId: "automation-1",
+      automationName: "New opportunity notes",
+      title: "Opportunity for Taylor Reed",
+      body: "Current balance: $2,500.00.",
+      createdById: null,
+    })
+    assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "EXECUTED"])
+    assert.equal(nodeLogs[1]?.details, "Added contact note “Opportunity for Taylor Reed”.")
+  })
+
+  test("renders values changed by an earlier action in the same segment", async () => {
+    let currentBalance = 100
+    let currentStatus = "active"
+    let currentAssignee: string | null = null
+    let createdNote: Record<string, unknown> | null = null
+    const field = {
+      id: "field-balance",
+      key: "balance",
+      label: "Balance",
+      fieldType: "CURRENCY",
+      isRequired: false,
+      isActive: true,
+      isEncrypted: false,
+      isSensitive: false,
+      options: null,
+    }
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Update and note",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000001",
+              type: "SET_CONTACT_CUSTOM_FIELD",
+              customFieldId: field.id,
+              value: 325,
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000002",
+              type: "SET_CONTACT_STATUS",
+              statusConfigId: "inactive",
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000003",
+              type: "SET_CONTACT_ASSIGNEE",
+              assignedUserId: "user-john",
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000004",
+              type: "ADD_CONTACT_NOTE",
+              noteTitle: "Balance updated",
+              noteBody: "Balance is now {contact.custom_field.balance|currency:USD}; status {contact.status}; assigned to {contact.assigned_to}.",
+            },
+          ],
+        }],
+      },
+      contact: {
+        findFirst: async (args: { select?: Record<string, unknown> }) => args.select?.email
+          ? {
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              statusConfig: { name: currentStatus === "inactive" ? "Inactive" : "Active" },
+              assignedToMembership: currentAssignee
+                ? { user: { name: "John", email: "john@example.com" } }
+                : null,
+              customFieldValues: [{
+                value: currentBalance,
+                field: {
+                  key: field.key,
+                  fieldType: field.fieldType,
+                  isActive: true,
+                  isEncrypted: false,
+                  isSensitive: false,
+                },
+              }],
+            }
+          : {
+              id: "contact-1",
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              statusConfigId: "active",
+              assignedToUserId: null,
+              tags: [],
+              customFieldValues: [{ fieldId: field.id, value: currentBalance }],
+            },
+        update: async ({ data }: { data: { statusConfigId?: string; assignedToUserId?: string } }) => {
+          if (data.statusConfigId) currentStatus = data.statusConfigId
+          if (data.assignedToUserId) currentAssignee = data.assignedToUserId
+        },
+      },
+      contactCustomField: { findMany: async () => [field] },
+      contactCustomFieldValue: {
+        upsert: async ({ update }: { update: { value: number } }) => { currentBalance = update.value },
+      },
+      contactStatusConfig: { findMany: async () => [
+        { id: "active", name: "Active" },
+        { id: "inactive", name: "Inactive" },
+      ] },
+      membership: { findMany: async () => [{
+        userId: "user-john",
+        user: { name: "John", email: "john@example.com" },
+      }] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      contactNote: {
+        create: async ({ data }: { data: Record<string, unknown> }) => { createdNote = data },
+      },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async () => undefined,
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: { createMany: async () => undefined },
+    }
+
+    await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.equal(currentBalance, 325)
+    assert.equal(currentStatus, "inactive")
+    assert.equal(currentAssignee, "user-john")
+    assert.equal(
+      (createdNote as Record<string, unknown> | null)?.body,
+      "Balance is now $325.00; status Inactive; assigned to John.",
+    )
+  })
+
   test("pauses at a future wait without running later actions", async () => {
     let runUpdate: Record<string, unknown> | null = null
     let nodeLogs: Array<Record<string, unknown>> = []
     let contactUpdates = 0
+    let contactNotes = 0
     let executionCount = 0
     const prismaTx = {
       automation: {
@@ -416,11 +691,17 @@ describe("executeOpportunityAutomations", () => {
           actions: [
             {
               nodeKey: "00000000-0000-4000-8000-000000000001",
+              type: "ADD_CONTACT_NOTE",
+              noteTitle: "Before wait",
+              noteBody: "This note is committed before the automation pauses.",
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000002",
               type: "WAIT",
               waitConfig: { mode: "DURATION", amount: 30, unit: "MINUTES" },
             },
             {
-              nodeKey: "00000000-0000-4000-8000-000000000002",
+              nodeKey: "00000000-0000-4000-8000-000000000003",
               type: "SET_CONTACT_STATUS",
               statusConfigId: "inactive",
             },
@@ -440,6 +721,7 @@ describe("executeOpportunityAutomations", () => {
         }),
         update: async () => { contactUpdates += 1 },
       },
+      contactNote: { create: async () => { contactNotes += 1 } },
       contactCustomField: { findMany: async () => [] },
       contactStatusConfig: { findMany: async () => [
         { id: "active", name: "Active" },
@@ -472,11 +754,12 @@ describe("executeOpportunityAutomations", () => {
 
     assert.deepEqual(result, { matchedCount: 1, executedCount: 1 })
     assert.equal(contactUpdates, 0)
+    assert.equal(contactNotes, 1)
     assert.equal(executionCount, 0)
     assert.ok(runUpdate)
     assert.equal((runUpdate as Record<string, unknown>).status, "WAITING")
-    assert.equal((runUpdate as Record<string, unknown>).cursorIndex, 1)
-    assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "WAITING"])
+    assert.equal((runUpdate as Record<string, unknown>).cursorIndex, 2)
+    assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "EXECUTED", "WAITING"])
   })
 
   test("applies the exit rule when a fixed wait time has passed", async () => {
@@ -721,7 +1004,11 @@ describe("executeOpportunityAutomations", () => {
           targetStageId: null,
           conditions: [],
           actions: [
-            { type: "REMOVE_CONTACT_TAG", tagId: "lead-tag" },
+            {
+              type: "ADD_CONTACT_NOTE",
+              noteTitle: "Rolled-back note",
+              noteBody: "This note should be rolled back with its segment.",
+            },
             { type: "SET_CONTACT_STATUS", statusConfigId: "removed-status" },
             { type: "ADD_CONTACT_TAG", tagId: "customer-tag" },
           ],
@@ -752,6 +1039,7 @@ describe("executeOpportunityAutomations", () => {
         deleteMany: async () => undefined,
         upsert: async () => undefined,
       },
+      contactNote: { create: async () => undefined },
       automationExecution: { create: async () => undefined },
       automationRun: {
         create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
@@ -820,6 +1108,7 @@ describe("resumeDueAutomationRuns", () => {
     let waitingLogUpdates = 0
     let runStatus: string | null = null
     let summaryCount = 0
+    let createdNote: Record<string, unknown> | null = null
     const actions = [
       {
         nodeKey: "00000000-0000-4000-8000-000000000001",
@@ -828,6 +1117,12 @@ describe("resumeDueAutomationRuns", () => {
       },
       {
         nodeKey: "00000000-0000-4000-8000-000000000002",
+        type: "ADD_CONTACT_NOTE",
+        noteTitle: "Pinned note for {contact.name}",
+        noteBody: "Current email: {contact.email}.",
+      },
+      {
+        nodeKey: "00000000-0000-4000-8000-000000000003",
         type: "SET_CONTACT_STATUS",
         statusConfigId: "inactive",
       },
@@ -859,8 +1154,19 @@ describe("resumeDueAutomationRuns", () => {
         update: async ({ data }: { data: { status: string } }) => { runStatus = data.status },
       },
       contact: {
-        findFirst: async () => ({ id: "contact-1" }),
+        findFirst: async (args: { select?: Record<string, unknown> }) => args.select?.email
+          ? {
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              email: "current@example.com",
+              customFieldValues: [],
+            }
+          : { id: "contact-1" },
         update: async () => { contactUpdates += 1 },
+      },
+      contactNote: {
+        create: async ({ data }: { data: Record<string, unknown> }) => { createdNote = data },
       },
       contactCustomField: { findMany: async () => [] },
       contactStatusConfig: { findMany: async () => [{ id: "inactive", name: "Inactive" }] },
@@ -889,6 +1195,11 @@ describe("resumeDueAutomationRuns", () => {
 
     assert.deepEqual(results, [{ status: "SUCCEEDED" }])
     assert.equal(contactUpdates, 1)
+    assert.ok(createdNote)
+    assert.equal((createdNote as Record<string, unknown>).automationId, null)
+    assert.equal((createdNote as Record<string, unknown>).automationName, "Deleted automation")
+    assert.equal((createdNote as Record<string, unknown>).title, "Pinned note for Taylor Reed")
+    assert.equal((createdNote as Record<string, unknown>).body, "Current email: current@example.com.")
     assert.equal(waitingLogUpdates, 1)
     assert.equal(runStatus, "SUCCEEDED")
     assert.equal(summaryCount, 1)

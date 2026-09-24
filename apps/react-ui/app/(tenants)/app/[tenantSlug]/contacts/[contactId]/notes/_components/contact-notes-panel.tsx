@@ -14,6 +14,7 @@ import {
   Trash2,
   Upload,
   UserRound,
+  Zap,
   X,
 } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -67,20 +68,23 @@ type ContactNote = {
   createdAt: string
   updatedAt: string
   author: {
-    id: string
+    type: "USER" | "AUTOMATION" | "FORMER_USER"
+    id: string | null
     name: string
-    email: string
+    email: string | null
   }
   permissions: {
     canEdit: boolean
     canDelete: boolean
   }
   source: {
-    type: "CONTACT" | "SERVICE"
+    type: "CONTACT" | "SERVICE" | "AUTOMATION"
     contactServiceId?: string
     serviceName?: string
     followUpTemplateName?: string
     followUpStepTitle?: string
+    automationId?: string
+    automationName?: string
   }
   attachments: NoteAttachment[]
 }
@@ -621,7 +625,11 @@ export function ContactNotesPanel({
                           <div className="min-w-0 space-y-1">
                             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
                               <span className="inline-flex items-center gap-1.5">
-                                <UserRound className="h-3 w-3" />
+                                {note.author.type === "AUTOMATION" ? (
+                                  <Zap className="h-3 w-3" />
+                                ) : (
+                                  <UserRound className="h-3 w-3" />
+                                )}
                                 <span className="font-medium text-slate-700">
                                   {note.author.name}
                                 </span>
@@ -681,6 +689,10 @@ export function ContactNotesPanel({
                                     </span>
                                   ) : null}
                                 </>
+                              ) : note.source.type === "AUTOMATION" ? (
+                                <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-1 font-medium text-blue-800">
+                                  automation note
+                                </span>
                               ) : (
                                 <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 font-medium text-slate-700">
                                   contact note

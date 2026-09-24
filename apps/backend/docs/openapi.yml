@@ -5605,7 +5605,9 @@ paths:
         - $ref: "#/components/parameters/TenantIdPathParam"
       responses:
         "200":
-          description: Pipelines, stages, statuses, members, tags, and eligible custom fields
+          description: >-
+            Pipelines, stages, statuses, members, tags, eligible custom fields with immutable keys,
+            and the safe regular contact fields and formatting options supported by note templates.
           content:
             application/json:
               schema:
@@ -6124,6 +6126,7 @@ components:
             - CLEAR_CONTACT_ASSIGNEE
             - ADD_CONTACT_TAG
             - REMOVE_CONTACT_TAG
+            - ADD_CONTACT_NOTE
             - WAIT
         customFieldId:
           type: string
@@ -6134,6 +6137,19 @@ components:
         tagId:
           type: string
         value: {}
+        noteTitle:
+          type: string
+          maxLength: 160
+          description: >-
+            Contact-note title template. Supports regular fields such as {contact.name},
+            custom fields such as {contact.custom_field.bank}, and compatible date,
+            phone, or USD currency format modifiers.
+        noteBody:
+          type: string
+          maxLength: 5000
+          description: >-
+            Contact-note body template using the same contact-field token grammar as noteTitle.
+            Values are resolved from the contact when the action executes.
         waitConfig:
           oneOf:
             - type: object
@@ -7780,13 +7796,36 @@ components:
     ContactNoteAuthor:
       type: object
       properties:
+        type:
+          type: string
+          enum: [USER, AUTOMATION, FORMER_USER]
         id:
           type: string
+          nullable: true
         name:
           type: string
         email:
           type: string
           format: email
+          nullable: true
+    ContactNoteSource:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [CONTACT, SERVICE, AUTOMATION]
+        contactServiceId:
+          type: string
+        serviceName:
+          type: string
+        followUpTemplateName:
+          type: string
+        followUpStepTitle:
+          type: string
+        automationId:
+          type: string
+        automationName:
+          type: string
     ContactNotePermissions:
       type: object
       properties:
@@ -7813,6 +7852,8 @@ components:
           $ref: "#/components/schemas/ContactNoteAuthor"
         permissions:
           $ref: "#/components/schemas/ContactNotePermissions"
+        source:
+          $ref: "#/components/schemas/ContactNoteSource"
         attachments:
           type: array
           items:

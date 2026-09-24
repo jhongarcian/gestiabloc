@@ -41,6 +41,7 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { ContactTemplateInput } from "@/components/contact-template-input"
 import { DateTimeInput } from "@/components/ui/date-time-input"
 import {
   Field,
@@ -61,6 +62,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
+import { validateContactTemplate } from "@/lib/contact-template"
 import {
   dateTimeDraftToUtcIso,
   formatUtcIsoToDateTimeDraft,
@@ -147,6 +149,8 @@ function draftSnapshot(draft: Draft) {
       tagId: action.tagId,
       value: action.value,
       waitConfig: action.waitConfig,
+      noteTitle: action.noteTitle,
+      noteBody: action.noteBody,
     })),
   })
 }
@@ -198,6 +202,7 @@ const ACTION_LABELS: Record<AutomationAction["type"], string> = {
   CLEAR_CONTACT_ASSIGNEE: "Clear contact assignee",
   ADD_CONTACT_TAG: "Add contact tag",
   REMOVE_CONTACT_TAG: "Remove contact tag",
+  ADD_CONTACT_NOTE: "Add contact note",
   WAIT: "Wait",
 }
 
@@ -287,11 +292,31 @@ function actionDefaults(
   if (type === "SET_CONTACT_STATUS") return { nodeKey, type, statusConfigId: catalog.statuses[0]?.id ?? "" }
   if (type === "SET_CONTACT_ASSIGNEE") return { nodeKey, type, assignedUserId: catalog.users[0]?.id ?? "" }
   if (type === "ADD_CONTACT_TAG" || type === "REMOVE_CONTACT_TAG") return { nodeKey, type, tagId: catalog.tags[0]?.id ?? "" }
+  if (type === "ADD_CONTACT_NOTE") return { nodeKey, type, noteTitle: "", noteBody: "" }
   if (type === "WAIT") return { nodeKey, type, waitConfig: { mode: "DURATION", amount: 1, unit: "HOURS" } }
   return { nodeKey, type }
 }
 
-function isActionReady(action: AutomationAction | null, targetActions: AutomationAction[] = []) {
+function noteTemplateError(
+  value: string | null | undefined,
+  maxLength: number,
+  catalog: AutomationCatalog,
+) {
+  if (!value) return "This field is required."
+  if (value.length > maxLength) return `Use ${maxLength.toLocaleString()} characters or fewer.`
+  const hasText = value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim().length > 0
+  if (!hasText) return "This field is required."
+  return validateContactTemplate(value, catalog)
+}
+
+function isActionReady(
+  action: AutomationAction | null,
+  catalog: AutomationCatalog,
+  targetActions: AutomationAction[] = [],
+) {
   if (!action) return false
   if (action.type === "SET_CONTACT_CUSTOM_FIELD") {
     const hasValue = Array.isArray(action.value)
@@ -304,6 +329,10 @@ function isActionReady(action: AutomationAction | null, targetActions: Automatio
   if (action.type === "SET_CONTACT_ASSIGNEE") return Boolean(action.assignedUserId)
   if (action.type === "ADD_CONTACT_TAG" || action.type === "REMOVE_CONTACT_TAG") {
     return Boolean(action.tagId)
+  }
+  if (action.type === "ADD_CONTACT_NOTE") {
+    return !noteTemplateError(action.noteTitle, 160, catalog) &&
+      !noteTemplateError(action.noteBody, 5_000, catalog)
   }
   if (action.type === "WAIT") {
     const config = action.waitConfig
@@ -378,7 +407,7 @@ function apiError(error: unknown) {
   return typeof message === "string" ? message : "Could not save the automation."
 }
 
-function draftValidationMessage(draft: Draft) {
+function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   if (!draft.name.trim()) return "Enter an automation name."
   if (!draft.triggerType) return "Select a trigger."
   if (!draft.pipelineId) return "Select a pipeline."
@@ -389,7 +418,7 @@ function draftValidationMessage(draft: Draft) {
     return "Every action needs a unique step identifier."
   }
   for (let index = 0; index < draft.actions.length; index += 1) {
-    if (!isActionReady(draft.actions[index] ?? null, draft.actions.slice(index + 1))) {
+    if (!isActionReady(draft.actions[index] ?? null, catalog, draft.actions.slice(index + 1))) {
       return `Finish configuring action ${index + 1}.`
     }
   }
@@ -429,6 +458,8 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
       tagId: action.tagId,
       value: action.value,
       waitConfig: action.waitConfig,
+      noteTitle: action.noteTitle,
+      noteBody: action.noteBody,
     })),
   }
 }
@@ -591,7 +622,8 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
       return
     }
     if (!hasUnsavedChanges) return
-    const validationMessage = draftValidationMessage(draft)
+    if (!catalog) return toast.error("The automation catalog is still loading.")
+    const validationMessage = draftValidationMessage(draft, catalog)
     if (validationMessage) return toast.error(validationMessage)
 
     const sourceSnapshot = draftSnapshot(draft)
@@ -896,7 +928,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       type="button"
                       variant="ghost"
                       className={COMPACT_PRIMARY_BUTTON_CLASS}
-                      disabled={!isActionReady(editingAction, draft.actions.slice(selected.index + 1)) || !actionPanelHasChanges}
+                      disabled={!isActionReady(editingAction, catalog, draft.actions.slice(selected.index + 1)) || !actionPanelHasChanges}
                       onClick={() => {
                         if (!editingAction) return
                         updateAction(selected.index, structuredClone(editingAction))
@@ -940,7 +972,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       type="button"
                       variant="ghost"
                       className={COMPACT_PRIMARY_BUTTON_CLASS}
-                      disabled={!isActionReady(pendingAction, draft.actions.slice(selected.insertionIndex))}
+                      disabled={!isActionReady(pendingAction, catalog, draft.actions.slice(selected.insertionIndex))}
                       onClick={() => {
                         if (!pendingAction) return
                         insertAction(selected.insertionIndex, pendingAction)
@@ -1442,6 +1474,12 @@ function ActionEditor({
   }
 }) {
   const field = catalog.customFields.find((item) => item.id === action.customFieldId)
+  const noteTitleError = action.type === "ADD_CONTACT_NOTE"
+    ? noteTemplateError(action.noteTitle, 160, catalog)
+    : null
+  const noteBodyError = action.type === "ADD_CONTACT_NOTE"
+    ? noteTemplateError(action.noteBody, 5_000, catalog)
+    : null
 
   return (
     <div className="flex flex-col gap-4">
@@ -1530,6 +1568,32 @@ function ActionEditor({
               </SelectContent>
             </Select>
           </Field>
+        ) : null}
+
+        {action.type === "ADD_CONTACT_NOTE" ? (
+          <>
+            <ContactTemplateInput
+              id="action-note-title"
+              label="Title"
+              value={action.noteTitle ?? ""}
+              maxLength={160}
+              catalog={catalog}
+              error={noteTitleError}
+              onChange={(noteTitle) => onChange({ ...action, noteTitle })}
+              placeholder="Note title"
+            />
+            <ContactTemplateInput
+              id="action-note-body"
+              label="Note"
+              value={action.noteBody ?? ""}
+              maxLength={5000}
+              catalog={catalog}
+              error={noteBodyError}
+              onChange={(noteBody) => onChange({ ...action, noteBody })}
+              multiline
+              placeholder="Write the note"
+            />
+          </>
         ) : null}
 
         {action.type === "WAIT" && action.waitConfig ? (

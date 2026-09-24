@@ -395,10 +395,13 @@ function canManageContactTags(membership: {
 
 function canManageContactNote(
   membership: { role: string },
-  createdById: string,
+  createdById: string | null,
   userId: string,
+  automationName?: string | null,
 ) {
-  return membership.role === "TENANT_ADMIN" || createdById === userId
+  if (membership.role === "TENANT_ADMIN") return true
+  if (automationName) return false
+  return createdById === userId
 }
 
 function fileNameFromKey(key: string) {
@@ -484,10 +487,12 @@ function serializeContactNote(
     id: string
     title: string
     body: string
-    createdById: string
+    createdById: string | null
+    automationId: string | null
+    automationName: string | null
     createdAt: Date
     updatedAt: Date
-    createdBy: { id: string; name: string | null; email: string }
+    createdBy: { id: string; name: string | null; email: string } | null
     contactService?: {
       id: string
       service: {
@@ -514,13 +519,19 @@ function serializeContactNote(
   },
   membership: { role: string },
   userId: string,
-  source?: {
-    type: "CONTACT" | "SERVICE"
-    contactServiceId?: string
-    serviceName?: string
-    followUpTemplateName?: string
-    followUpStepTitle?: string
-  },
+  source?:
+    | {
+        type: "CONTACT" | "SERVICE"
+        contactServiceId?: string
+        serviceName?: string
+        followUpTemplateName?: string
+        followUpStepTitle?: string
+      }
+    | {
+        type: "AUTOMATION"
+        automationId?: string
+        automationName: string
+      },
 ) {
   return {
     id: note.id,
@@ -528,14 +539,29 @@ function serializeContactNote(
     body: note.body,
     createdAt: note.createdAt,
     updatedAt: note.updatedAt,
-    author: {
-      id: note.createdBy.id,
-      name: note.createdBy.name ?? note.createdBy.email,
-      email: note.createdBy.email,
-    },
+    author: note.automationName
+      ? {
+          type: "AUTOMATION" as const,
+          id: null,
+          name: `Automation · ${note.automationName}`,
+          email: null,
+        }
+      : note.createdBy
+        ? {
+            type: "USER" as const,
+            id: note.createdBy.id,
+            name: note.createdBy.name ?? note.createdBy.email,
+            email: note.createdBy.email,
+          }
+        : {
+            type: "FORMER_USER" as const,
+            id: null,
+            name: "Former user",
+            email: null,
+          },
     permissions: {
-      canEdit: canManageContactNote(membership, note.createdById, userId),
-      canDelete: canManageContactNote(membership, note.createdById, userId),
+      canEdit: canManageContactNote(membership, note.createdById, userId, note.automationName),
+      canDelete: canManageContactNote(membership, note.createdById, userId, note.automationName),
     },
     source: source ?? {
       type: "CONTACT" as const,
@@ -552,6 +578,8 @@ function serializeContactNote(
 }
 
 function buildContactNoteSource(note: {
+  automationId?: string | null
+  automationName?: string | null
   contactService?: {
     id: string
     service: {
@@ -567,6 +595,14 @@ function buildContactNoteSource(note: {
     title: string
   } | null
 }) {
+  if (note.automationName) {
+    return {
+      type: "AUTOMATION" as const,
+      automationId: note.automationId ?? undefined,
+      automationName: note.automationName,
+    }
+  }
+
   if (!note.contactService && !note.followUpTemplate && !note.contactServiceFollowUpStep) {
     return undefined
   }
@@ -2511,6 +2547,9 @@ router.get(
                     name: { contains: q, mode: "insensitive" as const },
                   },
                 },
+                {
+                  automationName: { contains: q, mode: "insensitive" as const },
+                },
               ],
             }
           : {}),
@@ -2554,6 +2593,8 @@ router.get(
             title: true,
             body: true,
             createdById: true,
+            automationId: true,
+            automationName: true,
             createdAt: true,
             updatedAt: true,
             createdBy: {
@@ -2671,6 +2712,7 @@ router.get(
           createdAt: note.createdAt,
           updatedAt: note.updatedAt,
           author: {
+            type: "USER" as const,
             id: note.createdBy.id,
             name: note.createdBy.name ?? note.createdBy.email,
             email: note.createdBy.email,
@@ -2846,6 +2888,8 @@ router.post(
             title: true,
             body: true,
             createdById: true,
+            automationId: true,
+            automationName: true,
             createdAt: true,
             updatedAt: true,
             createdBy: {
@@ -2934,6 +2978,7 @@ router.patch(
           select: {
             id: true,
             createdById: true,
+            automationName: true,
             attachments: {
               select: {
                 id: true,
@@ -2954,6 +2999,7 @@ router.patch(
           membership,
           existingNote.createdById,
           authed.user.id,
+          existingNote.automationName,
         )
       ) {
         return res.status(403).json({ error: "FORBIDDEN" })
@@ -3017,6 +3063,8 @@ router.patch(
             title: true,
             body: true,
             createdById: true,
+            automationId: true,
+            automationName: true,
             createdAt: true,
             updatedAt: true,
             createdBy: {
@@ -3103,6 +3151,7 @@ router.delete(
         select: {
           id: true,
           createdById: true,
+          automationName: true,
           attachments: {
             select: {
               fileId: true,
@@ -3120,6 +3169,7 @@ router.delete(
           membership,
           existingNote.createdById,
           authed.user.id,
+          existingNote.automationName,
         )
       ) {
         return res.status(403).json({ error: "FORBIDDEN" })

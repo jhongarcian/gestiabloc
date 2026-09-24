@@ -22,10 +22,31 @@ export async function findEnabledAutomationReference(
       ],
     }
   } else if (reference.kind === "customField") {
+    const field = await prismaClient.contactCustomField.findFirst({
+      where: { tenantId, id: reference.id },
+      select: { key: true },
+    })
+    const tokenStart = field?.key ? `{contact.custom_field.${field.key}` : null
+    const noteTemplateReference = tokenStart
+      ? {
+          actions: {
+            some: {
+              type: "ADD_CONTACT_NOTE",
+              OR: [
+                { noteTitle: { contains: `${tokenStart}}` } },
+                { noteTitle: { contains: `${tokenStart}|` } },
+                { noteBody: { contains: `${tokenStart}}` } },
+                { noteBody: { contains: `${tokenStart}|` } },
+              ],
+            },
+          },
+        }
+      : null
     referenceWhere = {
       OR: [
         { conditions: { some: { customFieldId: reference.id } } },
         { actions: { some: { customFieldId: reference.id } } },
+        ...(noteTemplateReference ? [noteTemplateReference] : []),
       ],
     }
   } else if (reference.kind === "status") {
