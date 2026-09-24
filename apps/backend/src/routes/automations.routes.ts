@@ -16,6 +16,7 @@ import {
 } from "../lib/contact-templates.js"
 import { prisma } from "../lib/prisma.js"
 import { enforceSameOrigin } from "../lib/security.js"
+import { ensureDefaultTaskStatuses } from "../lib/tenant-defaults.js"
 import { requireAuth } from "../middleware/requireAuth.js"
 import { requireTenantAdmin } from "../middleware/requireTenantAdmin.js"
 
@@ -106,6 +107,7 @@ function serializeAutomation(record: any) {
       waitConfig: action.waitConfig,
       noteTitle: action.noteTitle,
       noteBody: action.noteBody,
+      taskConfig: action.taskConfig,
     })),
     lastExecution: record.executions?.[0]
       ? {
@@ -129,7 +131,8 @@ function handleConfigurationError(error: unknown, res: any) {
 router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params)
-    const [pipelines, customFields, statuses, tags, memberships] = await Promise.all([
+    await ensureDefaultTaskStatuses(prismaWithAutomations, tenantId)
+    const [pipelines, customFields, statuses, taskStatuses, tags, memberships, services] = await Promise.all([
       prismaWithAutomations.opportunityPipeline.findMany({
         where: { tenantId },
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -160,6 +163,11 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
         select: { id: true, name: true, bgColor: true, textColor: true },
       }),
+      prismaWithAutomations.taskStatusConfig.findMany({
+        where: { tenantId, isActive: true },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: { id: true, name: true, bgColor: true, textColor: true, isSystemDefault: true },
+      }),
       prismaWithAutomations.tenantTag.findMany({
         where: { tenantId },
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -169,6 +177,11 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
         where: { tenantId, status: "ACTIVE" },
         orderBy: { user: { name: "asc" } },
         select: { userId: true, user: { select: { name: true, email: true } } },
+      }),
+      prismaWithAutomations.service.findMany({
+        where: { tenantId, isActive: true },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: { id: true, name: true },
       }),
     ])
 
@@ -187,7 +200,9 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
           phoneFormats: CONTACT_TEMPLATE_PHONE_FORMATS,
         },
         statuses,
+        taskStatuses,
         tags,
+        services,
         users: memberships.map((item: any) => ({
           id: item.userId,
           name: item.user.name,

@@ -13,9 +13,20 @@ import { normalizeCustomFieldValue } from "./contact-custom-field-values.js"
 import {
   parseContactTemplate,
   renderContactNoteTemplates,
+  renderContactTemplates,
+  CONTACT_TEMPLATE_REGULAR_FIELDS,
   validateContactTemplate,
 } from "./contact-templates.js"
+import {
+  AutomationTaskConfigSchema,
+  resolveAutomationTaskDateTime,
+  sanitizeTaskMultiline,
+  sanitizeTaskSingleLine,
+  type AutomationTaskConfig,
+} from "./automation-task.js"
 import { NoteBodyInputSchema, NoteTitleInputSchema } from "./note-inputs.js"
+import { emitNotificationCreated, type RealtimeNotificationPayload } from "./realtime.js"
+import { getTaskPriorityFromDueDate, isCompletedStatusName } from "./task-priority-values.js"
 
 export const AUTOMATION_TRIGGER_TYPES = [
   "OPPORTUNITY_CREATED",
@@ -50,6 +61,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "ADD_CONTACT_TAG",
   "REMOVE_CONTACT_TAG",
   "ADD_CONTACT_NOTE",
+  "CREATE_TASK",
   "WAIT",
 ] as const
 
@@ -167,6 +179,11 @@ export const AutomationActionInputSchema = z.discriminatedUnion("type", [
     nodeKey: actionNodeKeySchema,
     noteTitle: AutomationNoteTitleSchema,
     noteBody: AutomationNoteBodySchema,
+  }),
+  z.object({
+    type: z.literal("CREATE_TASK"),
+    nodeKey: actionNodeKeySchema,
+    taskConfig: AutomationTaskConfigSchema,
   }),
   z.object({ type: z.literal("WAIT"), nodeKey: actionNodeKeySchema, waitConfig: AutomationWaitConfigSchema }),
 ])
@@ -450,7 +467,7 @@ export async function validateAutomationConfiguration(
   tenantId: string,
   input: AutomationInput,
 ) {
-  const [pipeline, fields, statuses, memberships, tags] = await Promise.all([
+  const [pipeline, fields, statuses, taskStatuses, memberships, tags, services] = await Promise.all([
     prismaClient.opportunityPipeline.findUnique({
       where: { tenantId_id: { tenantId, id: input.trigger.pipelineId } },
       select: { id: true, stages: { select: { id: true } } },
@@ -473,11 +490,23 @@ export async function validateAutomationConfiguration(
       where: { tenantId },
       select: { id: true, isActive: true },
     }),
+    prismaClient.taskStatusConfig?.findMany
+      ? prismaClient.taskStatusConfig.findMany({
+          where: { tenantId },
+          select: { id: true, name: true, isActive: true },
+        })
+      : Promise.resolve([]),
     prismaClient.membership.findMany({
       where: { tenantId },
       select: { userId: true, status: true },
     }),
     prismaClient.tenantTag.findMany({ where: { tenantId }, select: { id: true } }),
+    prismaClient.service?.findMany
+      ? prismaClient.service.findMany({
+          where: { tenantId, isActive: true },
+          select: { id: true, name: true },
+        })
+      : Promise.resolve([]),
   ])
 
   if (!pipeline) throw new AutomationConfigurationError("PIPELINE_NOT_FOUND", "The selected pipeline no longer exists.")
@@ -489,9 +518,12 @@ export async function validateAutomationConfiguration(
   }
 
   const fieldMap = new Map<string, CustomFieldRecord>(fields.map((field: CustomFieldRecord) => [field.id, field]))
+  const fieldKeyMap = new Map<string, CustomFieldRecord>(fields.map((field: CustomFieldRecord) => [field.key, field]))
   const activeStatusIds = new Set(statuses.filter((item: any) => item.isActive).map((item: any) => item.id))
+  const activeTaskStatusIds = new Set(taskStatuses.filter((item: any) => item.isActive).map((item: any) => item.id))
   const activeUserIds = new Set(memberships.filter((item: any) => item.status === "ACTIVE").map((item: any) => item.userId))
   const tagIds = new Set(tags.map((item: any) => item.id))
+  const serviceMap = new Map<string, string>(services.map((item: any) => [item.id, item.name]))
 
   const conditions = input.conditions.map((condition, index) => {
     if (condition.source === "OPPORTUNITY_VALUE") {
@@ -631,6 +663,72 @@ export async function validateAutomationConfiguration(
         ...base,
         noteTitle: action.noteTitle,
         noteBody: action.noteBody,
+      }
+    }
+    if (action.type === "CREATE_TASK") {
+      const config = action.taskConfig
+      const templates = [
+        config.nameTemplate,
+        config.descriptionTemplate ?? "",
+        config.reminder?.messageTemplate ?? "",
+      ]
+      for (const template of templates) {
+        const issue = validateContactTemplate(template, fields).issues[0]
+        if (issue) {
+          throw new AutomationConfigurationError("INVALID_TASK_TEMPLATE", issue.message)
+        }
+      }
+      if (!activeTaskStatusIds.has(config.statusConfigId)) {
+        throw new AutomationConfigurationError("INVALID_TASK_STATUS", "Select an active task status.")
+      }
+      if (
+        config.assignee.mode === "SPECIFIC_USER" &&
+        !activeUserIds.has(config.assignee.userId)
+      ) {
+        throw new AutomationConfigurationError("INVALID_TASK_ASSIGNEE", "Select an active task assignee.")
+      }
+      for (const [label, dateTime] of [
+        ["Due date", config.dueAt],
+        ["Reminder date", config.reminder?.at],
+      ] as const) {
+        if (!dateTime) continue
+        const source = dateTime.source
+        if (source.type === "CONTACT_FIELD") {
+          const regularField = CONTACT_TEMPLATE_REGULAR_FIELDS.find((field) => field.key === source.key)
+          if (!regularField || regularField.fieldType !== "DATE") {
+            throw new AutomationConfigurationError("INVALID_TASK_DATE_FIELD", `${label} must use a date field.`)
+          }
+        } else if (source.type === "CUSTOM_FIELD") {
+          const field = fieldKeyMap.get(source.key)
+          if (!field || field.fieldType !== "DATE" || !field.isActive || field.isEncrypted || field.isSensitive) {
+            throw new AutomationConfigurationError("INVALID_TASK_DATE_FIELD", `${label} must use an active, non-sensitive date field.`)
+          }
+        } else if (source.type === "SPECIFIC_DATE") {
+          try {
+            new Intl.DateTimeFormat("en-US", { timeZone: source.timezone }).format(new Date())
+          } catch {
+            throw new AutomationConfigurationError("INVALID_TASK_TIMEZONE", `${label} uses an invalid timezone.`)
+          }
+        }
+      }
+      if (config.linkedService && !serviceMap.has(config.linkedService.id)) {
+        throw new AutomationConfigurationError(
+          "INVALID_TASK_SERVICE",
+          "Select an active linked service.",
+        )
+      }
+      const linkedService = config.linkedService
+        ? {
+            id: config.linkedService.id,
+            nameSnapshot: serviceMap.get(config.linkedService.id)!,
+          }
+        : null
+      return {
+        ...base,
+        taskConfig: {
+          ...config,
+          linkedService,
+        },
       }
     }
     if (action.type === "SET_CONTACT_CUSTOM_FIELD" || action.type === "CLEAR_CONTACT_CUSTOM_FIELD") {
@@ -810,7 +908,10 @@ function evaluateAutomationConditions(
 
 export type AutomationRuntimeCatalog = {
   fieldMap: Map<string, CustomFieldRecord>
+  fieldKeyMap: Map<string, CustomFieldRecord>
   activeStatusIds: Set<string>
+  activeTaskStatusIds: Set<string>
+  taskStatusMap: Map<string, string>
   activeUserIds: Set<string>
   tagIds: Set<string>
   statusMap: Map<string, string>
@@ -825,7 +926,7 @@ export async function getAutomationRuntimeCatalog(
   prismaTx: any,
   tenantId: string,
 ): Promise<AutomationRuntimeCatalog> {
-  const [fields, statuses, memberships, tags, pipelines, tenant] = await Promise.all([
+  const [fields, statuses, taskStatuses, memberships, tags, pipelines, tenant] = await Promise.all([
     prismaTx.contactCustomField.findMany({
       where: { tenantId, isActive: true, isEncrypted: false, isSensitive: false },
       select: {
@@ -844,6 +945,12 @@ export async function getAutomationRuntimeCatalog(
       where: { tenantId, isActive: true },
       select: { id: true, name: true },
     }),
+    prismaTx.taskStatusConfig?.findMany
+      ? prismaTx.taskStatusConfig.findMany({
+          where: { tenantId, isActive: true },
+          select: { id: true, name: true },
+        })
+      : Promise.resolve([]),
     prismaTx.membership.findMany({
       where: { tenantId, status: "ACTIVE" },
       select: { userId: true, user: { select: { name: true, email: true } } },
@@ -868,7 +975,12 @@ export async function getAutomationRuntimeCatalog(
     fieldMap: new Map<string, CustomFieldRecord>(
       fields.map((field: CustomFieldRecord) => [field.id, field]),
     ),
+    fieldKeyMap: new Map<string, CustomFieldRecord>(
+      fields.map((field: CustomFieldRecord) => [field.key, field]),
+    ),
     activeStatusIds: new Set(statuses.map((item: any) => item.id)),
+    activeTaskStatusIds: new Set(taskStatuses.map((item: any) => item.id)),
+    taskStatusMap: new Map(taskStatuses.map((item: any) => [item.id, item.name])),
     activeUserIds: new Set(memberships.map((item: any) => item.userId)),
     tagIds: new Set(tags.map((item: any) => item.id)),
     statusMap: new Map(statuses.map((item: any) => [item.id, item.name])),
@@ -899,6 +1011,7 @@ function automationActionSnapshot(action: any): RuntimeAutomationAction {
     waitConfig: action.waitConfig,
     noteTitle: action.noteTitle,
     noteBody: action.noteBody,
+    taskConfig: action.taskConfig,
   })
   if (!parsed.nodeKey) throw new Error("Automation action is missing its stable node key.")
   return { ...parsed, nodeKey: parsed.nodeKey }
@@ -1003,6 +1116,172 @@ async function applyAutomationAction(
         },
       })
       return `Added contact note “${title.data}”.`
+    } else if (action.type === "CREATE_TASK") {
+      const config: AutomationTaskConfig = action.taskConfig
+      if (!catalog.activeTaskStatusIds.has(config.statusConfigId)) {
+        throw new Error("The configured task status is unavailable.")
+      }
+
+      const rendered = await renderContactTemplates(prismaTx, {
+        tenantId,
+        contactId,
+        templates: {
+          name: config.nameTemplate,
+          description: config.descriptionTemplate ?? "",
+          reminderMessage: config.reminder?.messageTemplate ?? "",
+        },
+        timezone: catalog.timezone,
+        occurredAt,
+      })
+      const name = sanitizeTaskSingleLine(rendered.name ?? "")
+      if (!name || name.length > 160) {
+        throw new Error("The rendered task name must contain 1 to 160 characters.")
+      }
+      const description = sanitizeTaskMultiline(rendered.description ?? "") || null
+      if (description && description.length > 4_000) {
+        throw new Error("The rendered task description must contain 4,000 characters or fewer.")
+      }
+      const reminderMessage = sanitizeTaskMultiline(rendered.reminderMessage ?? "") || null
+      if (reminderMessage && reminderMessage.length > 500) {
+        throw new Error("The rendered reminder message must contain 500 characters or fewer.")
+      }
+
+      let assignedToUserId: string | null = null
+      if (config.assignee.mode === "SPECIFIC_USER") {
+        if (!catalog.activeUserIds.has(config.assignee.userId)) {
+          throw new Error("The configured task assignee is unavailable.")
+        }
+        assignedToUserId = config.assignee.userId
+      } else if (config.assignee.mode === "CONTACT_ASSIGNEE") {
+        const contact = await prismaTx.contact.findFirst({
+          where: { tenantId, id: contactId },
+          select: { assignedToUserId: true },
+        })
+        assignedToUserId = contact?.assignedToUserId && catalog.activeUserIds.has(contact.assignedToUserId)
+          ? contact.assignedToUserId
+          : null
+      }
+      if (config.reminder && !assignedToUserId) {
+        throw new Error("The task reminder requires an active assignee.")
+      }
+
+      const dueDate = config.dueAt
+        ? await resolveAutomationTaskDateTime(prismaTx, {
+            tenantId,
+            contactId,
+            config: config.dueAt,
+            tenantTimezone: catalog.timezone,
+            occurredAt,
+            label: "The task due date",
+          })
+        : null
+      if (dueDate && dueDate.getTime() < occurredAt.getTime()) {
+        throw new Error("The task due date cannot be before the task start time.")
+      }
+      const reminderAt = config.reminder
+        ? await resolveAutomationTaskDateTime(prismaTx, {
+            tenantId,
+            contactId,
+            config: config.reminder.at,
+            tenantTimezone: catalog.timezone,
+            occurredAt,
+            label: "The task reminder date",
+          })
+        : null
+      if (
+        reminderAt &&
+        (!dueDate || reminderAt.getTime() < occurredAt.getTime() || reminderAt.getTime() > dueDate.getTime())
+      ) {
+        throw new Error("The task reminder must be between the task start and due times.")
+      }
+
+      const statusName = catalog.taskStatusMap.get(config.statusConfigId) ?? ""
+      const task = await prismaTx.task.create({
+        data: {
+          tenantId,
+          contactId,
+          automationId,
+          automationName,
+          statusConfigId: config.statusConfigId,
+          assignedToUserId,
+          priority: getTaskPriorityFromDueDate(
+            dueDate,
+            catalog.timezone,
+            isCompletedStatusName(statusName),
+          ),
+          name,
+          description,
+          dueDate,
+          startedAt: occurredAt,
+          linkedEntityName: config.linkedService?.nameSnapshot ?? null,
+          linkedEntityType: config.linkedService ? "SERVICE" : null,
+        },
+        select: { id: true },
+      })
+      await prismaTx.taskActivity.create({
+        data: {
+          tenantId,
+          taskId: task.id,
+          actorUserId: null,
+          type: "CREATED",
+          title: "Task created",
+          details: `Created by Automation · ${automationName}.`,
+        },
+      })
+
+      if (reminderAt && assignedToUserId) {
+        const membership = await prismaTx.membership.findUnique({
+          where: { userId_tenantId: { userId: assignedToUserId, tenantId } },
+          select: { id: true, status: true },
+        })
+        if (!membership || membership.status !== "ACTIVE") {
+          throw new Error("The task reminder recipient is no longer active.")
+        }
+        await prismaTx.taskReminder.create({
+          data: {
+            tenantId,
+            taskId: task.id,
+            recipientUserId: assignedToUserId,
+            membershipId: membership.id,
+            createdById: null,
+            remindAt: reminderAt,
+            message: reminderMessage,
+          },
+        })
+      }
+
+      const notificationIds: string[] = []
+      if (assignedToUserId) {
+        const notification = await prismaTx.notification.create({
+          data: {
+            tenantId,
+            userId: assignedToUserId,
+            contactId,
+            taskId: task.id,
+            eventKey: `task-assigned:${task.id}:${assignedToUserId}`,
+            type: "TASK_ASSIGNED",
+            title: `Task assigned: ${name}`,
+            body: `Automation · ${automationName} assigned this task to you.`,
+          },
+          select: { id: true },
+        })
+        notificationIds.push(notification.id)
+      }
+
+      const assignee = assignedToUserId
+        ? catalog.userMap.get(assignedToUserId) ?? "an active teammate"
+        : "Unassigned"
+      const dueLabel = dueDate
+        ? new Intl.DateTimeFormat("en-US", {
+            timeZone: catalog.timezone,
+            dateStyle: "medium",
+            timeStyle: "short",
+          }).format(dueDate)
+        : null
+      return {
+        details: `Created task “${name}” · ${assignee}${dueLabel ? ` · Due ${dueLabel}` : ""}.`,
+        notificationIds,
+      }
     }
   } catch (error) {
     throw new AutomationExecutionError({
@@ -1163,6 +1442,7 @@ async function executeAutomationSegmentTx(
     occurredAt: now,
   } satisfies Omit<AutomationNodeLogData, "id" | "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
   const logs: AutomationNodeLogData[] = []
+  const notificationIds: string[] = []
 
   for (let index = startIndex; index < actions.length; index += 1) {
     const action = actions[index]!
@@ -1191,7 +1471,7 @@ async function executeAutomationSegmentTx(
             leaseExpiresAt: null,
           },
         })
-        return { logs, status: "WAITING" as const }
+        return { logs, notificationIds, status: "WAITING" as const }
       }
 
       logs.push(actionLog(
@@ -1235,7 +1515,7 @@ async function executeAutomationSegmentTx(
             actionCount: index + 1,
           },
         })
-        return { logs, status: "EXITED" as const }
+        return { logs, notificationIds, status: "EXITED" as const }
       }
 
       if (action.waitConfig.mode === "FIXED_DATE" && action.waitConfig.pastBehavior === "GO_TO_STEP") {
@@ -1269,7 +1549,13 @@ async function executeAutomationSegmentTx(
         catalog,
         occurredAt: now,
       })
-      logs.push(actionLog(base, action, index, "EXECUTED", null, successDetails ?? "Action completed successfully."))
+      const details = typeof successDetails === "string"
+        ? successDetails
+        : successDetails?.details
+      if (typeof successDetails === "object" && successDetails?.notificationIds) {
+        notificationIds.push(...successDetails.notificationIds)
+      }
+      logs.push(actionLog(base, action, index, "EXECUTED", null, details ?? "Action completed successfully."))
     } catch (error) {
       if (error instanceof AutomationExecutionError) {
         error.nodeExecutions = failureLogsForSegment(base, actions, startIndex, index, logs, error.message)
@@ -1306,7 +1592,7 @@ async function executeAutomationSegmentTx(
       actionCount: actions.length,
     },
   })
-  return { logs, status: "SUCCEEDED" as const }
+  return { logs, notificationIds, status: "SUCCEEDED" as const }
 }
 
 function evaluateAutomationTrigger(
@@ -1358,7 +1644,9 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
       actions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
     },
   })
-  if (automations.length === 0) return { matchedCount: 0, executedCount: 0 }
+  if (automations.length === 0) {
+    return { matchedCount: 0, executedCount: 0, notificationIds: [] as string[] }
+  }
 
   const [contact, catalog] = await Promise.all([
     prismaTx.contact.findFirst({
@@ -1447,6 +1735,7 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
     return { automation, actions, logs, shouldRun: true }
   })
 
+  const notificationIds: string[] = []
   for (let planIndex = 0; planIndex < plans.length; planIndex += 1) {
     const plan = plans[planIndex]
     if (!plan.shouldRun) continue
@@ -1479,6 +1768,7 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
         startIndex: 0,
       })
       plan.logs.push(...result.logs)
+      notificationIds.push(...result.notificationIds)
     } catch (error) {
       if (error instanceof AutomationExecutionError) {
         for (let index = 0; index < plans.length; index += 1) {
@@ -1530,7 +1820,7 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
   }
 
   const matchedCount = plans.filter((plan: { shouldRun: boolean }) => plan.shouldRun).length
-  return { matchedCount, executedCount: matchedCount }
+  return { matchedCount, executedCount: matchedCount, notificationIds }
 }
 
 export async function recordAutomationFailure(prismaClient: any, event: AutomationEvent, error: AutomationExecutionError) {
@@ -1685,11 +1975,11 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
 
 async function resumeAutomationRun(prismaClient: any, runId: string, leaseToken: string) {
   try {
-    return await prismaClient.$transaction(async (transaction: any) => {
+    const result = await prismaClient.$transaction(async (transaction: any) => {
       const run = await transaction.automationRun.findFirst({
         where: { id: runId, status: "RUNNING", leaseToken },
       })
-      if (!run) return { status: "NOT_CLAIMED" as const }
+      if (!run) return { status: "NOT_CLAIMED" as const, notificationIds: [] as string[] }
       const actions = parseActionSnapshot(run.actionSnapshot)
       const contact = run.contactId
         ? await transaction.contact.findFirst({ where: { tenantId: run.tenantId, id: run.contactId }, select: { id: true } })
@@ -1720,11 +2010,55 @@ async function resumeAutomationRun(prismaClient: any, runId: string, leaseToken:
       if (result.logs.length > 0) {
         await transaction.automationNodeExecution.createMany({ data: result.logs })
       }
-      return { status: result.status }
+      return { status: result.status, notificationIds: result.notificationIds }
     })
+    await emitAutomationTaskNotifications(prismaClient, result.notificationIds).catch((error) => {
+      console.error("Could not emit automation task notification", error)
+    })
+    return { status: result.status }
   } catch (error) {
     await recordAutomationRunFailure(prismaClient, runId, leaseToken, error)
     return { status: "FAILED" as const }
+  }
+}
+
+async function emitAutomationTaskNotifications(prismaClient: any, notificationIds: string[]) {
+  if (notificationIds.length === 0) return
+  const notifications = await prismaClient.notification.findMany({
+    where: { id: { in: notificationIds } },
+    select: {
+      id: true,
+      tenantId: true,
+      userId: true,
+      contactId: true,
+      type: true,
+      title: true,
+      body: true,
+      readAt: true,
+      createdAt: true,
+      taskId: true,
+      taskReminderId: true,
+    },
+  })
+
+  for (const notification of notifications) {
+    const serialized: RealtimeNotificationPayload = {
+      id: notification.id,
+      tenantId: notification.tenantId,
+      userId: notification.userId,
+      contactId: notification.contactId ?? null,
+      type: notification.type,
+      title: notification.title,
+      body: notification.body ?? null,
+      readAt: notification.readAt?.toISOString?.() ?? null,
+      createdAt:
+        typeof notification.createdAt === "string"
+          ? notification.createdAt
+          : notification.createdAt.toISOString(),
+      taskId: notification.taskId ?? null,
+      taskReminderId: notification.taskReminderId ?? null,
+    }
+    emitNotificationCreated(serialized.userId, serialized)
   }
 }
 

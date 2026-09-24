@@ -1179,6 +1179,8 @@ router.get("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
         startedAt: true,
         linkedEntityName: true,
         linkedEntityType: true,
+        automationId: true,
+        automationName: true,
         contact: {
           select: {
             id: true,
@@ -1294,13 +1296,23 @@ router.get("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
           : null,
         linkedEntityName: task.linkedEntityName ?? null,
         linkedEntityType: task.linkedEntityType ?? null,
+        source: task.automationName
+          ? {
+              type: "AUTOMATION",
+              automationId: task.automationId ?? null,
+              automationName: task.automationName,
+            }
+          : { type: "USER" },
         reminders: task.reminders.map((reminder: any) => ({
           id: reminder.id,
           remindAt: reminder.remindAt,
           message: reminder.message ?? null,
           notifiedAt: reminder.notifiedAt ?? null,
           recipient: reminder.recipient,
-          createdBy: reminder.createdBy,
+          createdBy: reminder.createdBy ?? {
+            id: task.automationId ?? `automation:${task.id}`,
+            name: `Automation · ${task.automationName ?? "Deleted automation"}`,
+          },
         })),
         activities: task.activities.map((activity: any) => ({
           id: activity.id,
@@ -1314,7 +1326,13 @@ router.get("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
                 name: activity.actor.name,
                 email: activity.actor.email,
               }
-            : null,
+            : task.automationName && activity.type === "CREATED"
+              ? {
+                  id: task.automationId ?? `automation:${task.id}`,
+                  name: `Automation · ${task.automationName}`,
+                  email: "",
+                }
+              : null,
         })),
       },
     })

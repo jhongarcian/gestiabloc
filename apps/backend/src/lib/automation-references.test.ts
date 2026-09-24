@@ -31,4 +31,46 @@ describe("findEnabledAutomationReference", () => {
     assert.match(serializedWhere, /noteTitle/)
     assert.match(serializedWhere, /noteBody/)
   })
+
+  test("finds custom fields and task statuses nested in create-task configs", async () => {
+    const taskConfig = {
+      nameTemplate: "Review {contact.custom_field.renewal_date|date:medium}",
+      statusConfigId: "todo",
+      assignee: { mode: "CONTACT_ASSIGNEE" },
+      dueAt: {
+        source: { type: "CUSTOM_FIELD", key: "renewal_date" },
+        time: "09:00",
+      },
+    }
+    const prismaClient = {
+      contactCustomField: {
+        findFirst: async () => ({ key: "renewal_date" }),
+      },
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Renewal tasks",
+          actions: [{ taskConfig }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "customField", id: "field-1" },
+      ),
+      { id: "automation-1", name: "Renewal tasks" },
+    )
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "taskStatus", id: "todo" },
+      ),
+      { id: "automation-1", name: "Renewal tasks" },
+    )
+  })
 })

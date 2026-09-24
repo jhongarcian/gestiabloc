@@ -5606,8 +5606,9 @@ paths:
       responses:
         "200":
           description: >-
-            Pipelines, stages, statuses, members, tags, eligible custom fields with immutable keys,
-            and the safe regular contact fields and formatting options supported by note templates.
+            Pipelines, stages, contact and task statuses, services, members, tags, eligible custom
+            fields with immutable keys, and the safe regular contact fields and formatting options
+            supported by automation templates.
           content:
             application/json:
               schema:
@@ -6127,6 +6128,7 @@ components:
             - ADD_CONTACT_TAG
             - REMOVE_CONTACT_TAG
             - ADD_CONTACT_NOTE
+            - CREATE_TASK
             - WAIT
         customFieldId:
           type: string
@@ -6144,7 +6146,8 @@ components:
             Contact-note title template. Supports regular fields such as {contact.name},
             custom fields such as {contact.custom_field.bank}, and compatible date,
             phone, or USD currency format modifiers. Dynamic tenant-local dates use
-            {date.current|date:medium}; fixed date-only values use tokens such as
+            {date.current|date:medium}; relative dates use tokens such as
+            {date.relative.2.weeks|date:medium}; fixed date-only values use tokens such as
             {date.specific.2026-09-23|date:medium}.
         noteBody:
           type: string
@@ -6152,6 +6155,8 @@ components:
           description: >-
             Contact-note body template using the same contact-field token grammar as noteTitle.
             Contact values and current-date values are resolved when the action executes.
+        taskConfig:
+          $ref: "#/components/schemas/AutomationTaskConfig"
         waitConfig:
           oneOf:
             - type: object
@@ -6190,6 +6195,117 @@ components:
                 targetNodeKey:
                   type: string
                   format: uuid
+    AutomationTaskDateSource:
+      oneOf:
+        - type: object
+          required: [type]
+          properties:
+            type:
+              type: string
+              enum: [CURRENT_DATE]
+        - type: object
+          required: [type, amount, unit]
+          properties:
+            type:
+              type: string
+              enum: [RELATIVE_DATE]
+            amount:
+              type: integer
+              minimum: 1
+              maximum: 10000
+              description: Number of tenant-local calendar units after the action execution date.
+            unit:
+              type: string
+              enum: [DAYS, WEEKS, MONTHS]
+        - type: object
+          required: [type, key]
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_FIELD, CUSTOM_FIELD]
+            key:
+              type: string
+              description: Immutable safe contact or custom-field key.
+        - type: object
+          required: [type, date, timezone]
+          properties:
+            type:
+              type: string
+              enum: [SPECIFIC_DATE]
+            date:
+              type: string
+              format: date
+            timezone:
+              type: string
+              description: IANA timezone captured when the action is saved.
+    AutomationTaskDateTime:
+      type: object
+      required: [source, time]
+      properties:
+        source:
+          $ref: "#/components/schemas/AutomationTaskDateSource"
+        time:
+          type: string
+          pattern: "^([01]\\d|2[0-3]):[0-5]\\d$"
+    AutomationTaskConfig:
+      type: object
+      required: [nameTemplate, statusConfigId, assignee]
+      properties:
+        nameTemplate:
+          type: string
+          minLength: 1
+          maxLength: 160
+          description: >-
+            Contact template resolved when the task action executes. Supports contact
+            and custom fields plus current, relative, field-backed, and specific dates;
+            for example {date.relative.2.weeks|date:medium}.
+        descriptionTemplate:
+          type: string
+          maxLength: 4000
+          nullable: true
+        statusConfigId:
+          type: string
+        assignee:
+          oneOf:
+            - type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [UNASSIGNED, CONTACT_ASSIGNEE]
+            - type: object
+              required: [mode, userId]
+              properties:
+                mode:
+                  type: string
+                  enum: [SPECIFIC_USER]
+                userId:
+                  type: string
+        linkedService:
+          type: object
+          nullable: true
+          required: [id, nameSnapshot]
+          properties:
+            id:
+              type: string
+            nameSnapshot:
+              type: string
+              maxLength: 120
+        dueAt:
+          allOf:
+            - $ref: "#/components/schemas/AutomationTaskDateTime"
+          nullable: true
+        reminder:
+          type: object
+          nullable: true
+          required: [at]
+          properties:
+            at:
+              $ref: "#/components/schemas/AutomationTaskDateTime"
+            messageTemplate:
+              type: string
+              maxLength: 500
+              nullable: true
     AutomationConditionRequest:
       type: object
       required: [source, operator]

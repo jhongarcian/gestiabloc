@@ -1,5 +1,7 @@
 import { parsePhoneNumberFromString } from "libphonenumber-js"
 
+import { addCalendarDateOffset, type CalendarDateOffsetUnit } from "./calendar-date.js"
+
 export const CONTACT_TEMPLATE_DATE_FORMATS = [
   { value: "short", label: "Short", preview: "09/23/2026" },
   { value: "medium", label: "Medium", preview: "Sep 23, 2026" },
@@ -153,6 +155,28 @@ function parseToken(raw: string, expression: string, start: number, end: number)
     }
   }
 
+  const relativeDateMatch = path.match(/^date\.relative\.(\d+)\.(days|weeks|months)$/)
+  if (relativeDateMatch) {
+    const amount = Number(relativeDateMatch[1])
+    const unit = relativeDateMatch[2]!.toUpperCase() as CalendarDateOffsetUnit
+    if (
+      !Number.isInteger(amount) ||
+      amount < 1 ||
+      amount > 10_000 ||
+      (format && format.kind !== "date")
+    ) {
+      return null
+    }
+    return {
+      raw,
+      source: "DATE" as const,
+      key: `relative.${amount}.${unit}`,
+      ...(format ? { format } : {}),
+      start,
+      end,
+    }
+  }
+
   const specificDateMatch = path.match(/^date\.specific\.(\d{4}-\d{2}-\d{2})$/)
   if (specificDateMatch) {
     const date = specificDateMatch[1]!
@@ -273,7 +297,7 @@ export function validateContactTemplate(
     ) {
       issues.push({
         code: "CONTACT_TEMPLATE_FIELD_NOT_ALLOWED",
-        message: `${customField.label} cannot be used in automation notes.`,
+        message: `${customField.label} cannot be used in automation templates.`,
         token: token.raw,
       })
       continue
@@ -353,13 +377,16 @@ function formatTemplateValue(
   value: unknown,
   fieldType: ContactTemplateFieldType,
   format?: ContactTemplateFormat,
+  timezone = "UTC",
 ) {
   if (value === null || value === undefined || value === "") return ""
   if (fieldType === "MULTI_SELECT") {
     return Array.isArray(value) ? value.map(String).filter(Boolean).join(", ") : ""
   }
   if (fieldType === "CHECKBOX") return value === true ? "True" : "False"
-  if (fieldType === "DATE") return formatDate(value, format?.kind === "date" ? format.value : "medium")
+  if (fieldType === "DATE") {
+    return formatDate(value, format?.kind === "date" ? format.value : "medium", timezone)
+  }
   if (fieldType === "PHONE") return formatPhone(value, format?.kind === "phone" ? format.value : "national")
   if (fieldType === "CURRENCY") {
     const numericValue = Number(value)
@@ -462,31 +489,49 @@ function renderContactTemplate(
     if (token.source === "CONTACT") {
       const field = REGULAR_FIELD_MAP.get(token.key)
       result += field
-        ? formatTemplateValue(regularContactValue(contact, token.key), field.fieldType, token.format)
+        ? formatTemplateValue(
+            regularContactValue(contact, token.key),
+            field.fieldType,
+            token.format,
+            execution.timezone,
+          )
         : ""
     } else if (token.source === "CUSTOM_FIELD") {
       const field = customFields.get(token.key)
-      result += field ? formatTemplateValue(field.value, field.fieldType, token.format) : ""
+      result += field
+        ? formatTemplateValue(field.value, field.fieldType, token.format, execution.timezone)
+        : ""
     } else {
       const dateFormat = token.format?.kind === "date" ? token.format.value : "medium"
-      result += token.key === "current"
-        ? formatDate(execution.occurredAt, dateFormat, execution.timezone)
-        : formatDate(`${token.key}T12:00:00.000Z`, dateFormat)
+      if (token.key === "current") {
+        result += formatDate(execution.occurredAt, dateFormat, execution.timezone)
+      } else if (token.key.startsWith("relative.")) {
+        const relativeMatch = token.key.match(/^relative\.(\d+)\.(DAYS|WEEKS|MONTHS)$/)
+        const executionDate = formatDate(execution.occurredAt, "iso", execution.timezone)
+        const relativeDate = relativeMatch
+          ? addCalendarDateOffset(
+              executionDate,
+              Number(relativeMatch[1]),
+              relativeMatch[2] as CalendarDateOffsetUnit,
+            )
+          : null
+        result += relativeDate
+          ? formatDate(`${relativeDate}T12:00:00.000Z`, dateFormat)
+          : ""
+      } else {
+        result += formatDate(`${token.key}T12:00:00.000Z`, dateFormat)
+      }
     }
     cursor = token.end
   }
   return result + template.slice(cursor)
 }
 
-export async function renderContactNoteTemplates(
+async function loadContactTemplateContext(
   prismaTx: any,
   params: {
     tenantId: string
     contactId: string
-    titleTemplate: string
-    bodyTemplate: string
-    timezone?: string | null
-    occurredAt?: Date
   },
 ) {
   const contact = await prismaTx.contact.findFirst({
@@ -547,20 +592,112 @@ export async function renderContactNoteTemplates(
       },
     },
   })
-  if (!contact) throw new Error("The contact for this automation note is no longer available.")
+  if (!contact) throw new Error("The contact for this automation action is no longer available.")
 
   const customFields = new Map<string, { value: unknown; fieldType: ContactTemplateFieldType }>()
   for (const item of contact.customFieldValues ?? []) {
     if (!item.field?.isActive || item.field.isEncrypted || item.field.isSensitive) continue
     customFields.set(item.field.key, { value: item.value, fieldType: item.field.fieldType })
   }
-  const contactRecord = contact as Record<string, unknown>
+  return {
+    contact: contact as Record<string, unknown>,
+    customFields,
+  }
+}
+
+export async function renderContactTemplates(
+  prismaTx: any,
+  params: {
+    tenantId: string
+    contactId: string
+    templates: Record<string, string>
+    timezone?: string | null
+    occurredAt?: Date
+  },
+) {
+  const context = await loadContactTemplateContext(prismaTx, params)
   const execution = {
     occurredAt: params.occurredAt ?? new Date(),
     timezone: params.timezone?.trim() || DEFAULT_TIMEZONE,
   }
+
+  return Object.fromEntries(
+    Object.entries(params.templates).map(([key, template]) => [
+      key,
+      renderContactTemplate(template, context.contact, context.customFields, execution),
+    ]),
+  )
+}
+
+export async function renderContactNoteTemplates(
+  prismaTx: any,
+  params: {
+    tenantId: string
+    contactId: string
+    titleTemplate: string
+    bodyTemplate: string
+    timezone?: string | null
+    occurredAt?: Date
+  },
+) {
+  const rendered = await renderContactTemplates(prismaTx, {
+    tenantId: params.tenantId,
+    contactId: params.contactId,
+    templates: {
+      title: params.titleTemplate,
+      body: params.bodyTemplate,
+    },
+    timezone: params.timezone,
+    occurredAt: params.occurredAt,
+  })
+
   return {
-    title: renderContactTemplate(params.titleTemplate, contactRecord, customFields, execution),
-    body: renderContactTemplate(params.bodyTemplate, contactRecord, customFields, execution),
+    title: rendered.title ?? "",
+    body: rendered.body ?? "",
   }
+}
+
+function dateKeyForValue(value: unknown, timezone: string) {
+  if (typeof value === "string") {
+    const dateOnly = value.slice(0, 10)
+    if (isValidTemplateDate(dateOnly)) return dateOnly
+  }
+
+  const date = value instanceof Date ? value : new Date(String(value ?? ""))
+  if (Number.isNaN(date.getTime())) return null
+  return formatDate(date, "iso", timezone)
+}
+
+export async function resolveContactDateValue(
+  prismaTx: any,
+  params: {
+    tenantId: string
+    contactId: string
+    source:
+      | { type: "CURRENT_DATE" }
+      | { type: "CONTACT_FIELD"; key: string }
+      | { type: "CUSTOM_FIELD"; key: string }
+      | { type: "SPECIFIC_DATE"; date: string }
+    timezone?: string | null
+    occurredAt?: Date
+  },
+) {
+  const timezone = params.timezone?.trim() || DEFAULT_TIMEZONE
+  if (params.source.type === "CURRENT_DATE") {
+    return formatDate(params.occurredAt ?? new Date(), "iso", timezone)
+  }
+  if (params.source.type === "SPECIFIC_DATE") {
+    return isValidTemplateDate(params.source.date) ? params.source.date : null
+  }
+
+  const context = await loadContactTemplateContext(prismaTx, params)
+  if (params.source.type === "CONTACT_FIELD") {
+    const field = REGULAR_FIELD_MAP.get(params.source.key)
+    if (!field || field.fieldType !== "DATE") return null
+    return dateKeyForValue(regularContactValue(context.contact, params.source.key), timezone)
+  }
+
+  const field = context.customFields.get(params.source.key)
+  if (!field || field.fieldType !== "DATE") return null
+  return dateKeyForValue(field.value, timezone)
 }

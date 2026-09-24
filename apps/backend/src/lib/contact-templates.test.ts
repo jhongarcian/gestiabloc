@@ -38,7 +38,7 @@ const customFields = [
 describe("contact templates", () => {
   test("parses regular and custom fields while leaving ordinary braces alone", () => {
     const parsed = parseContactTemplate(
-      "Hello {contact.name}; {ordinary text}; balance {contact.custom_field.balance|currency:USD}; {date.current|date:medium}; {date.specific.2026-09-23|date:iso}.",
+      "Hello {contact.name}; {ordinary text}; balance {contact.custom_field.balance|currency:USD}; {date.current|date:medium}; {date.relative.2.weeks|date:long}; {date.specific.2026-09-23|date:iso}.",
     )
 
     assert.equal(parsed.issues.length, 0)
@@ -46,6 +46,7 @@ describe("contact templates", () => {
       ["CONTACT", "name"],
       ["CUSTOM_FIELD", "balance"],
       ["DATE", "current"],
+      ["DATE", "relative.2.WEEKS"],
       ["DATE", "2026-09-23"],
     ])
     assert.deepEqual(
@@ -76,6 +77,14 @@ describe("contact templates", () => {
     )
     assert.equal(
       parseContactTemplate("{date.current|phone:national}").issues[0]?.code,
+      "INVALID_TEMPLATE_TOKEN",
+    )
+    assert.equal(
+      parseContactTemplate("{date.relative.0.days|date:medium}").issues[0]?.code,
+      "INVALID_TEMPLATE_TOKEN",
+    )
+    assert.equal(
+      parseContactTemplate("{date.relative.2.years|date:medium}").issues[0]?.code,
       "INVALID_TEMPLATE_TOKEN",
     )
   })
@@ -231,7 +240,7 @@ describe("contact templates", () => {
         "Typed {contact.custom_field.score}; {contact.custom_field.nickname}; {contact.custom_field.tier}.",
         "Custom phone {contact.custom_field.mobile|phone:national}; notes {contact.custom_field.history}.",
         "Missing [{contact.custom_field.missing}]; protected [{contact.custom_field.secret}].",
-        "Execution date {date.current|date:iso}; fixed date {date.specific.2026-09-23|date:weekday}.",
+        "Execution date {date.current|date:iso}; relative date {date.relative.2.weeks|date:long}; fixed date {date.specific.2026-09-23|date:weekday}.",
       ].join("\n"),
       timezone: "America/Chicago",
       occurredAt: new Date("2026-09-24T04:30:00.000Z"),
@@ -249,7 +258,7 @@ describe("contact templates", () => {
     assert.match(rendered.body, /Typed 42\.5; Tay; Gold\./)
     assert.match(rendered.body, /Custom phone \(541\) 313-4664; notes Line 1\nLine 2\./)
     assert.match(rendered.body, /Missing \[\]; protected \[\]\./)
-    assert.match(rendered.body, /Execution date 2026-09-23; fixed date Wednesday, September 23, 2026\./)
+    assert.match(rendered.body, /Execution date 2026-09-23; relative date October 7, 2026; fixed date Wednesday, September 23, 2026\./)
 
     const renderedInTokyo = await renderContactNoteTemplates(prismaTx, {
       tenantId: "tenant-1",
@@ -261,5 +270,16 @@ describe("contact templates", () => {
     })
     assert.equal(renderedInTokyo.title, "2026-09-24")
     assert.equal(renderedInTokyo.body, "September 23, 2026")
+
+    const renderedMonthEnd = await renderContactNoteTemplates(prismaTx, {
+      tenantId: "tenant-1",
+      contactId: "contact-1",
+      titleTemplate: "{date.relative.1.months|date:iso}",
+      bodyTemplate: "{date.relative.1.days|date:iso}",
+      timezone: "America/Chicago",
+      occurredAt: new Date("2027-01-31T18:00:00.000Z"),
+    })
+    assert.equal(renderedMonthEnd.title, "2027-02-28")
+    assert.equal(renderedMonthEnd.body, "2027-02-01")
   })
 })

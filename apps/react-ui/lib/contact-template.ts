@@ -67,6 +67,24 @@ function parseToken(raw: string, expression: string): ParsedToken | null {
       ...(formatKind ? { formatKind, formatValue: formatParts[1] } : {}),
     }
   }
+  const relativeDateMatch = path.match(/^date\.relative\.(\d+)\.(days|weeks|months)$/)
+  if (relativeDateMatch) {
+    const amount = Number(relativeDateMatch[1])
+    if (
+      !Number.isInteger(amount) ||
+      amount < 1 ||
+      amount > 10_000 ||
+      (formatKind && formatKind !== "date")
+    ) {
+      return null
+    }
+    return {
+      raw,
+      source: "DATE",
+      key: `relative.${amount}.${relativeDateMatch[2]!.toUpperCase()}`,
+      ...(formatKind ? { formatKind, formatValue: formatParts[1] } : {}),
+    }
+  }
   const specificDateMatch = path.match(/^date\.specific\.(\d{4}-\d{2}-\d{2})$/)
   if (specificDateMatch) {
     const date = specificDateMatch[1]!
@@ -165,12 +183,25 @@ export function buildContactTemplateToken(params: {
 }
 
 export function buildDateTemplateToken(params: {
-  kind: "CURRENT" | "SPECIFIC"
+  kind: "CURRENT" | "RELATIVE" | "SPECIFIC"
   format?: string
   date?: string
+  amount?: number
+  unit?: "DAYS" | "WEEKS" | "MONTHS"
 }) {
   const format = params.format || "medium"
   if (params.kind === "CURRENT") return `{date.current|date:${format}}`
+  if (params.kind === "RELATIVE") {
+    if (
+      !Number.isInteger(params.amount) ||
+      (params.amount ?? 0) < 1 ||
+      (params.amount ?? 0) > 10_000 ||
+      !params.unit
+    ) {
+      return ""
+    }
+    return `{date.relative.${params.amount}.${params.unit.toLowerCase()}|date:${format}}`
+  }
   if (!params.date || !isValidTemplateDate(params.date)) return ""
   return `{date.specific.${params.date}|date:${format}}`
 }

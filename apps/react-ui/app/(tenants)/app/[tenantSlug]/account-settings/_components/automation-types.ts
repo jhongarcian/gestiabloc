@@ -75,6 +75,34 @@ export type AutomationWaitConfig =
       targetNodeKey?: string
     }
 
+export type AutomationTaskDateSource =
+  | { type: "CURRENT_DATE" }
+  | { type: "RELATIVE_DATE"; amount: number; unit: "DAYS" | "WEEKS" | "MONTHS" }
+  | { type: "CONTACT_FIELD"; key: string }
+  | { type: "CUSTOM_FIELD"; key: string }
+  | { type: "SPECIFIC_DATE"; date: string; timezone: string }
+
+export type AutomationTaskDateTime = {
+  source: AutomationTaskDateSource
+  time: string
+}
+
+export type AutomationTaskConfig = {
+  nameTemplate: string
+  descriptionTemplate?: string | null
+  statusConfigId: string
+  assignee:
+    | { mode: "UNASSIGNED" }
+    | { mode: "CONTACT_ASSIGNEE" }
+    | { mode: "SPECIFIC_USER"; userId: string }
+  linkedService?: { id: string; nameSnapshot: string } | null
+  dueAt?: AutomationTaskDateTime | null
+  reminder?: {
+    at: AutomationTaskDateTime
+    messageTemplate?: string | null
+  } | null
+}
+
 export type AutomationAction = {
   id?: string
   nodeKey?: string
@@ -87,6 +115,7 @@ export type AutomationAction = {
     | "ADD_CONTACT_TAG"
     | "REMOVE_CONTACT_TAG"
     | "ADD_CONTACT_NOTE"
+    | "CREATE_TASK"
     | "WAIT"
   customFieldId?: string | null
   statusConfigId?: string | null
@@ -96,6 +125,7 @@ export type AutomationAction = {
   waitConfig?: AutomationWaitConfig | null
   noteTitle?: string | null
   noteBody?: string | null
+  taskConfig?: AutomationTaskConfig | null
 }
 
 export type AutomationRecord = {
@@ -144,7 +174,15 @@ export type AutomationCatalog = {
     phoneFormats: ContactTemplateFormatOption[]
   }
   statuses: Array<{ id: string; name: string; bgColor: string; textColor: string }>
+  taskStatuses: Array<{
+    id: string
+    name: string
+    bgColor: string
+    textColor: string
+    isSystemDefault: boolean
+  }>
   tags: Array<{ id: string; name: string; bgColor: string; textColor: string }>
+  services: Array<{ id: string; name: string }>
   users: Array<{ id: string; name: string; email: string }>
 }
 
