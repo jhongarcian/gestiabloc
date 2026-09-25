@@ -43,4 +43,45 @@ describe("normalizeCustomFieldValue", () => {
     )
     assert.equal(required.ok, false)
   })
+
+  test("normalizes every custom-field type used by multi-field automation actions", () => {
+    const base = { id: "field", label: "Field", isRequired: false, options: [] as string[] }
+    assert.deepEqual(
+      normalizeCustomFieldValue({ ...base, fieldType: "TEXT" }, "  Text  "),
+      { ok: true, value: "Text" },
+    )
+    assert.deepEqual(
+      normalizeCustomFieldValue({ ...base, fieldType: "TEXTAREA" }, "Line 1\nLine 2"),
+      { ok: true, value: "Line 1\nLine 2" },
+    )
+    assert.deepEqual(
+      normalizeCustomFieldValue({ ...base, fieldType: "PHONE" }, "+15413134664"),
+      { ok: true, value: "+15413134664" },
+    )
+    assert.deepEqual(
+      normalizeCustomFieldValue({ ...base, fieldType: "CURRENCY" }, "125.50"),
+      { ok: true, value: 125.5 },
+    )
+    const date = normalizeCustomFieldValue({ ...base, fieldType: "DATE" }, "2026-09-24")
+    assert.equal(date.ok, true)
+    if (date.ok) assert.match(String(date.value), /^2026-09-24T/)
+    assert.deepEqual(
+      normalizeCustomFieldValue(
+        { ...base, fieldType: "MULTI_SELECT", options: ["Checking", "Savings"] },
+        ["Checking", "Savings"],
+      ),
+      { ok: true, value: ["Checking", "Savings"] },
+    )
+    assert.deepEqual(
+      normalizeCustomFieldValue(
+        { ...base, fieldType: "RADIO", options: ["Yes", "No"] },
+        "Yes",
+      ),
+      { ok: true, value: "Yes" },
+    )
+    assert.deepEqual(
+      normalizeCustomFieldValue({ ...base, fieldType: "CHECKBOX" }, false),
+      { ok: true, value: false },
+    )
+  })
 })

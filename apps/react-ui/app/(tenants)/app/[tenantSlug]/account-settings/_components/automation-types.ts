@@ -103,12 +103,17 @@ export type AutomationTaskConfig = {
   } | null
 }
 
+export type AutomationFieldUpdate =
+  | { customFieldId: string; operation: "SET"; value: unknown }
+  | { customFieldId: string; operation: "CLEAR" }
+  | { contactFieldKey: string; operation: "SET"; value: unknown }
+  | { contactFieldKey: string; operation: "CLEAR" }
+
 export type AutomationAction = {
   id?: string
   nodeKey?: string
   type:
-    | "SET_CONTACT_CUSTOM_FIELD"
-    | "CLEAR_CONTACT_CUSTOM_FIELD"
+    | "UPDATE_CONTACT_CUSTOM_FIELDS"
     | "SET_CONTACT_STATUS"
     | "SET_CONTACT_ASSIGNEE"
     | "CLEAR_CONTACT_ASSIGNEE"
@@ -117,11 +122,10 @@ export type AutomationAction = {
     | "ADD_CONTACT_NOTE"
     | "CREATE_TASK"
     | "WAIT"
-  customFieldId?: string | null
+  customFieldUpdates?: AutomationFieldUpdate[] | null
   statusConfigId?: string | null
   assignedUserId?: string | null
   tagId?: string | null
-  value?: unknown
   waitConfig?: AutomationWaitConfig | null
   noteTitle?: string | null
   noteBody?: string | null
@@ -167,6 +171,14 @@ export type AutomationCatalog = {
     isRequired: boolean
     options: string[]
     operators: AutomationOperator[]
+  }>
+  contactUpdateFields: Array<{
+    key: string
+    label: string
+    fieldType: "TEXT" | "EMAIL" | "PHONE" | "DATE" | "SELECT" | "CHECKBOX"
+    isRequired: boolean
+    maxLength: number
+    options: string[]
   }>
   templateFields: {
     contact: ContactTemplateField[]

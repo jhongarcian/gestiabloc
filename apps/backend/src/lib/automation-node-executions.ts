@@ -27,6 +27,7 @@ export type AutomationNodeLogData = {
 }
 
 const ACTION_LABELS: Record<string, string> = {
+  UPDATE_CONTACT_CUSTOM_FIELDS: "Update contact fields",
   SET_CONTACT_CUSTOM_FIELD: "Set contact custom field",
   CLEAR_CONTACT_CUSTOM_FIELD: "Clear contact custom field",
   SET_CONTACT_STATUS: "Set contact status",

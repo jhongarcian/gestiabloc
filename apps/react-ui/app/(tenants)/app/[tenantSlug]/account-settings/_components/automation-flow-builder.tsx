@@ -76,10 +76,12 @@ import { cn } from "@/lib/utils"
 
 import { AutomationContactsTab } from "./automation-contacts-tab"
 import { AutomationExecutionLogsTab } from "./automation-execution-logs-tab"
+import { AutomationFieldPicker } from "./automation-field-picker"
 import type {
   AutomationAction,
   AutomationCatalog,
   AutomationCondition,
+  AutomationFieldUpdate,
   AutomationOperator,
   AutomationRecord,
   AutomationTaskConfig,
@@ -149,11 +151,10 @@ function draftSnapshot(draft: Draft) {
     actions: draft.actions.map((action) => ({
       nodeKey: action.nodeKey,
       type: action.type,
-      customFieldId: action.customFieldId,
+      customFieldUpdates: action.customFieldUpdates,
       statusConfigId: action.statusConfigId,
       assignedUserId: action.assignedUserId,
       tagId: action.tagId,
-      value: action.value,
       waitConfig: action.waitConfig,
       noteTitle: action.noteTitle,
       noteBody: action.noteBody,
@@ -202,8 +203,7 @@ const STATUS_OPERATORS: AutomationOperator[] = ["EQUALS", "NOT_EQUALS", "IS_EMPT
 const VALUELESS_OPERATORS = new Set<AutomationOperator>(["IS_EMPTY", "IS_NOT_EMPTY", "IS_TRUE", "IS_FALSE"])
 
 const ACTION_LABELS: Record<AutomationAction["type"], string> = {
-  SET_CONTACT_CUSTOM_FIELD: "Set custom field",
-  CLEAR_CONTACT_CUSTOM_FIELD: "Clear custom field",
+  UPDATE_CONTACT_CUSTOM_FIELDS: "Update contact fields",
   SET_CONTACT_STATUS: "Set contact status",
   SET_CONTACT_ASSIGNEE: "Assign contact",
   CLEAR_CONTACT_ASSIGNEE: "Clear contact assignee",
@@ -289,14 +289,133 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
 
 const NODE_TYPES: NodeTypes = { automationNode: AutomationFlowNode }
 
+type AutomationCustomField = AutomationCatalog["customFields"][number]
+type AutomationContactUpdateField = AutomationCatalog["contactUpdateFields"][number]
+type AutomationValueField = {
+  label: string
+  fieldType: AutomationCustomField["fieldType"] | "EMAIL"
+  isRequired: boolean
+  options: string[]
+  maxLength?: number
+  formatOptionLabels?: boolean
+}
+
+function defaultFieldUpdateValue(field: AutomationValueField) {
+  if (field.fieldType === "CHECKBOX") return field.isRequired
+  if (field.fieldType === "MULTI_SELECT") return []
+  if (field.fieldType === "SELECT" || field.fieldType === "RADIO") {
+    return field.options[0] ?? ""
+  }
+  return ""
+}
+
+function updateIdentity(update: AutomationFieldUpdate) {
+  return "contactFieldKey" in update
+    ? `contact:${update.contactFieldKey}`
+    : `custom:${update.customFieldId}`
+}
+
+function contactValueField(field: AutomationContactUpdateField): AutomationValueField {
+  return { ...field, formatOptionLabels: true }
+}
+
+function fieldUpdateForReference(
+  fieldReference: string,
+  requestedOperation: "SET" | "CLEAR",
+  catalog: AutomationCatalog,
+): AutomationFieldUpdate | null {
+  if (fieldReference.startsWith("contact:")) {
+    const contactFieldKey = fieldReference.slice("contact:".length)
+    const field = catalog.contactUpdateFields.find((item) => item.key === contactFieldKey)
+    if (!field) return null
+    if (requestedOperation === "CLEAR" && !field.isRequired) {
+      return { contactFieldKey, operation: "CLEAR" }
+    }
+    return {
+      contactFieldKey,
+      operation: "SET",
+      value: defaultFieldUpdateValue(contactValueField(field)),
+    }
+  }
+  if (!fieldReference.startsWith("custom:")) return null
+  const customFieldId = fieldReference.slice("custom:".length)
+  const field = catalog.customFields.find((item) => item.id === customFieldId)
+  if (!field) return null
+  if (requestedOperation === "CLEAR" && !field.isRequired) {
+    return { customFieldId, operation: "CLEAR" }
+  }
+  return {
+    customFieldId,
+    operation: "SET",
+    value: defaultFieldUpdateValue(field),
+  }
+}
+
+function isFieldUpdateReady(
+  update: AutomationFieldUpdate,
+  catalog: AutomationCatalog,
+) {
+  const field: AutomationValueField | undefined = "contactFieldKey" in update
+    ? catalog.contactUpdateFields.find((item) => item.key === update.contactFieldKey)
+    : catalog.customFields.find((item) => item.id === update.customFieldId)
+  if (!field) return false
+  if (update.operation === "CLEAR") return !field.isRequired
+  const value = update.value
+  if (field.fieldType === "CHECKBOX") {
+    return typeof value === "boolean" && (!field.isRequired || value)
+  }
+  if (field.fieldType === "MULTI_SELECT") {
+    return Array.isArray(value) &&
+      value.length > 0 &&
+      value.every((item) => typeof item === "string" && field.options.includes(item))
+  }
+  if (field.fieldType === "NUMBER" || field.fieldType === "CURRENCY") {
+    return typeof value === "number" && Number.isFinite(value)
+  }
+  if (field.fieldType === "PHONE") {
+    return typeof value === "string" && /^\+[1-9]\d{7,14}$/.test(value.trim())
+  }
+  if (field.fieldType === "EMAIL") {
+    return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
+  }
+  if (field.fieldType === "DATE") {
+    return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(value).getTime())
+  }
+  if (field.fieldType === "SELECT" || field.fieldType === "RADIO") {
+    return typeof value === "string" && field.options.includes(value)
+  }
+  return typeof value === "string" &&
+    value.trim().length > 0 &&
+    (!field.maxLength || value.trim().length <= field.maxLength)
+}
+
 function actionDefaults(
   type: AutomationAction["type"],
   catalog: AutomationCatalog,
   existingNodeKey?: string,
 ): AutomationAction {
   const nodeKey = existingNodeKey ?? crypto.randomUUID()
-  if (type === "SET_CONTACT_CUSTOM_FIELD") return { nodeKey, type, customFieldId: catalog.customFields[0]?.id ?? "", value: "" }
-  if (type === "CLEAR_CONTACT_CUSTOM_FIELD") return { nodeKey, type, customFieldId: catalog.customFields.find((field) => !field.isRequired)?.id ?? "" }
+  if (type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
+    const contactField = catalog.contactUpdateFields[0]
+    const customField = catalog.customFields[0]
+    return {
+      nodeKey,
+      type,
+      customFieldUpdates: contactField
+        ? [{
+            contactFieldKey: contactField.key,
+            operation: "SET",
+            value: defaultFieldUpdateValue(contactValueField(contactField)),
+          }]
+        : customField
+          ? [{
+              customFieldId: customField.id,
+              operation: "SET",
+              value: defaultFieldUpdateValue(customField),
+            }]
+          : [],
+    }
+  }
   if (type === "SET_CONTACT_STATUS") return { nodeKey, type, statusConfigId: catalog.statuses[0]?.id ?? "" }
   if (type === "SET_CONTACT_ASSIGNEE") return { nodeKey, type, assignedUserId: catalog.users[0]?.id ?? "" }
   if (type === "ADD_CONTACT_TAG" || type === "REMOVE_CONTACT_TAG") return { nodeKey, type, tagId: catalog.tags[0]?.id ?? "" }
@@ -377,13 +496,14 @@ function isActionReady(
   targetActions: AutomationAction[] = [],
 ) {
   if (!action) return false
-  if (action.type === "SET_CONTACT_CUSTOM_FIELD") {
-    const hasValue = Array.isArray(action.value)
-      ? action.value.length > 0
-      : action.value !== null && action.value !== undefined && action.value !== ""
-    return Boolean(action.customFieldId) && hasValue
+  if (action.type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
+    const updates = action.customFieldUpdates ?? []
+    const fieldIds = updates.map(updateIdentity)
+    return updates.length > 0 &&
+      updates.length <= 20 &&
+      new Set(fieldIds).size === fieldIds.length &&
+      updates.every((update) => isFieldUpdateReady(update, catalog))
   }
-  if (action.type === "CLEAR_CONTACT_CUSTOM_FIELD") return Boolean(action.customFieldId)
   if (action.type === "SET_CONTACT_STATUS") return Boolean(action.statusConfigId)
   if (action.type === "SET_CONTACT_ASSIGNEE") return Boolean(action.assignedUserId)
   if (action.type === "ADD_CONTACT_TAG" || action.type === "REMOVE_CONTACT_TAG") {
@@ -533,11 +653,10 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
     actions: draft.actions.map((action) => ({
       nodeKey: action.nodeKey,
       type: action.type,
-      customFieldId: action.customFieldId,
+      customFieldUpdates: action.customFieldUpdates,
       statusConfigId: action.statusConfigId,
       assignedUserId: action.assignedUserId,
       tagId: action.tagId,
-      value: action.value,
       waitConfig: action.waitConfig,
       noteTitle: action.noteTitle,
       noteBody: action.noteBody,
@@ -1521,6 +1640,11 @@ function NewActionEditor({
             type="button"
             variant="outline"
             className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full justify-start")}
+            disabled={
+              value === "UPDATE_CONTACT_CUSTOM_FIELDS" &&
+              catalog.contactUpdateFields.length === 0 &&
+              catalog.customFields.length === 0
+            }
             onClick={() => onChange(actionDefaults(value as AutomationAction["type"], catalog))}
           >
             {label}
@@ -1555,7 +1679,6 @@ function ActionEditor({
     onDelete: () => void
   }
 }) {
-  const field = catalog.customFields.find((item) => item.id === action.customFieldId)
   const noteTitleError = action.type === "ADD_CONTACT_NOTE"
     ? noteTemplateError(action.noteTitle, 160, catalog)
     : null
@@ -1585,29 +1708,8 @@ function ActionEditor({
           </Field>
         ) : null}
 
-        {action.type === "SET_CONTACT_CUSTOM_FIELD" || action.type === "CLEAR_CONTACT_CUSTOM_FIELD" ? (
-          <Field>
-            <FieldLabel htmlFor="action-custom-field">Custom field</FieldLabel>
-            <Select
-              value={action.customFieldId ?? ""}
-              onValueChange={(customFieldId) => onChange({ ...action, customFieldId })}
-            >
-              <SelectTrigger id="action-custom-field" className={COMPACT_SELECT_TRIGGER_CLASS}>
-                <SelectValue placeholder="Select field" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {catalog.customFields
-                    .filter((item) => action.type !== "CLEAR_CONTACT_CUSTOM_FIELD" || !item.isRequired)
-                    .map((item) => <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>)}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-        ) : null}
-
-        {action.type === "SET_CONTACT_CUSTOM_FIELD" && field ? (
-          <ActionValueInput action={action} field={field} onChange={(value) => onChange({ ...action, value })} />
+        {action.type === "UPDATE_CONTACT_CUSTOM_FIELDS" ? (
+          <ContactFieldUpdatesEditor action={action} catalog={catalog} onChange={onChange} />
         ) : null}
 
         {action.type === "SET_CONTACT_STATUS" ? (
@@ -2146,11 +2248,269 @@ function WaitActionEditor({
   )
 }
 
-function ActionValueInput({ action, field, onChange }: { action: AutomationAction; field: AutomationCatalog["customFields"][number]; onChange: (value: unknown) => void }) {
-  if (field.fieldType === "CHECKBOX") return <label className="flex items-center gap-3 rounded-xl border border-slate-200 p-3"><Checkbox checked={action.value === true} onCheckedChange={(checked) => onChange(checked === true)} /><span className="text-sm font-medium">Checked</span></label>
-  if (field.fieldType === "SELECT" || field.fieldType === "RADIO") return <div className="space-y-2"><Label>Value</Label><Select value={String(action.value ?? "")} onValueChange={onChange}><SelectTrigger><SelectValue placeholder="Select value" /></SelectTrigger><SelectContent>{field.options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div>
-  if (field.fieldType === "MULTI_SELECT") return <div className="space-y-2"><Label>Values</Label><Input value={Array.isArray(action.value) ? action.value.join(", ") : ""} onChange={(event) => onChange(event.target.value.split(",").map((item) => item.trim()).filter(Boolean))} placeholder="Option A, Option B" /></div>
-  if (field.fieldType === "TEXTAREA") return <div className="space-y-2"><Label>Value</Label><Textarea value={String(action.value ?? "")} onChange={(event) => onChange(event.target.value)} /></div>
-  const type = field.fieldType === "DATE" ? "date" : field.fieldType === "NUMBER" || field.fieldType === "CURRENCY" ? "number" : "text"
-  return <div className="space-y-2"><Label>Value</Label><Input type={type} value={String(action.value ?? "")} onChange={(event) => onChange(type === "number" ? Number(event.target.value) : event.target.value)} /></div>
+function ContactFieldUpdatesEditor({
+  action,
+  catalog,
+  onChange,
+}: {
+  action: AutomationAction
+  catalog: AutomationCatalog
+  onChange: (action: AutomationAction) => void
+}) {
+  const updates = action.customFieldUpdates ?? []
+  const selectedIds = new Set(updates.map(updateIdentity))
+  const unusedContactFields = catalog.contactUpdateFields.filter(
+    (field) => !selectedIds.has(`contact:${field.key}`),
+  )
+  const unusedCustomFields = catalog.customFields.filter(
+    (field) => !selectedIds.has(`custom:${field.id}`),
+  )
+  const unusedContactFieldOptions = unusedContactFields.map((field) => ({
+    value: `contact:${field.key}`,
+    label: field.label,
+    searchText: field.key,
+  }))
+  const unusedCustomFieldOptions = unusedCustomFields.map((field) => ({
+    value: `custom:${field.id}`,
+    label: field.label,
+    searchText: field.key,
+  }))
+
+  const replaceUpdate = (index: number, update: AutomationFieldUpdate) => {
+    onChange({
+      ...action,
+      customFieldUpdates: updates.map((item, itemIndex) => itemIndex === index ? update : item),
+    })
+  }
+
+  const removeUpdate = (index: number) => {
+    onChange({
+      ...action,
+      customFieldUpdates: updates.filter((_, itemIndex) => itemIndex !== index),
+    })
+  }
+
+  const addUpdate = (fieldReference: string) => {
+    if (updates.length >= 20) return
+    const update = fieldUpdateForReference(fieldReference, "SET", catalog)
+    if (!update) return
+    onChange({
+      ...action,
+      customFieldUpdates: [...updates, update],
+    })
+  }
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      {updates.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-300 px-3 py-4 text-center text-xs text-slate-500">
+          Add a contact field to update.
+        </div>
+      ) : null}
+
+      {updates.map((update, index) => {
+        const contactField = "contactFieldKey" in update
+          ? catalog.contactUpdateFields.find((item) => item.key === update.contactFieldKey)
+          : undefined
+        const customField = "customFieldId" in update
+          ? catalog.customFields.find((item) => item.id === update.customFieldId)
+          : undefined
+        const field: AutomationValueField | undefined = contactField
+          ? contactValueField(contactField)
+          : customField
+        const contactFieldOptions = catalog.contactUpdateFields.filter(
+          (item) => item.key === contactField?.key || !selectedIds.has(`contact:${item.key}`),
+        ).map((item) => ({
+          value: `contact:${item.key}`,
+          label: item.label,
+          searchText: item.key,
+        }))
+        const customFieldOptions = catalog.customFields.filter(
+          (item) => item.id === customField?.id || !selectedIds.has(`custom:${item.id}`),
+        ).map((item) => ({
+          value: `custom:${item.id}`,
+          label: item.label,
+          searchText: item.key,
+        }))
+        const inputId = `contact-field-update-${action.nodeKey ?? "new"}-${index}`
+        const selectedValue = contactField
+          ? `contact:${contactField.key}`
+          : customField
+            ? `custom:${customField.id}`
+            : ""
+        return (
+          <div key={`${updateIdentity(update)}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50/70 p-2.5">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-600">Field {index + 1}</span>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="size-7 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                aria-label={`Remove field ${index + 1}`}
+                onClick={() => removeUpdate(index)}
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </div>
+            <div className="grid grid-cols-[minmax(0,1.45fr)_minmax(0,0.85fr)] gap-2">
+              <AutomationFieldPicker
+                value={selectedValue}
+                contactFields={contactFieldOptions}
+                customFields={customFieldOptions}
+                ariaLabel={`Contact field ${index + 1}`}
+                onValueChange={(fieldReference) => {
+                  const nextUpdate = fieldUpdateForReference(fieldReference, update.operation, catalog)
+                  if (nextUpdate) replaceUpdate(index, nextUpdate)
+                }}
+              />
+              <Select
+                value={update.operation}
+                onValueChange={(operation: "SET" | "CLEAR") => {
+                  if (!field) return
+                  if (contactField) {
+                    replaceUpdate(index, operation === "CLEAR"
+                      ? { contactFieldKey: contactField.key, operation }
+                      : {
+                          contactFieldKey: contactField.key,
+                          operation,
+                          value: defaultFieldUpdateValue(field),
+                        })
+                    return
+                  }
+                  if (!customField) return
+                  replaceUpdate(index, operation === "CLEAR"
+                    ? { customFieldId: customField.id, operation }
+                    : {
+                        customFieldId: customField.id,
+                        operation,
+                        value: defaultFieldUpdateValue(field),
+                      })
+                }}
+              >
+                <SelectTrigger aria-label={`Update operation ${index + 1}`} className={COMPACT_SELECT_TRIGGER_CLASS}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="SET">Set value</SelectItem>
+                  <SelectItem value="CLEAR" disabled={field?.isRequired}>Clear value</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {field && update.operation === "SET" ? (
+              <div className="mt-2">
+                <ActionValueInput
+                  id={inputId}
+                  value={update.value}
+                  field={field}
+                  onChange={(value) => replaceUpdate(index, { ...update, value })}
+                />
+              </div>
+            ) : null}
+          </div>
+        )
+      })}
+
+      <AutomationFieldPicker
+        mode="add"
+        ariaLabel="Add contact field"
+        contactFields={unusedContactFieldOptions}
+        customFields={unusedCustomFieldOptions}
+        disabled={
+          updates.length >= 20 ||
+          (unusedContactFields.length === 0 && unusedCustomFields.length === 0)
+        }
+        onValueChange={addUpdate}
+      />
+    </div>
+  )
+}
+
+function ActionValueInput({
+  id,
+  value,
+  field,
+  onChange,
+}: {
+  id: string
+  value: unknown
+  field: AutomationValueField
+  onChange: (value: unknown) => void
+}) {
+  if (field.fieldType === "CHECKBOX") {
+    return (
+      <label htmlFor={id} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-2.5">
+        <Checkbox id={id} checked={value === true} onCheckedChange={(checked) => onChange(checked === true)} />
+        <span className="text-sm font-medium">Checked</span>
+      </label>
+    )
+  }
+  if (field.fieldType === "SELECT" || field.fieldType === "RADIO") {
+    return (
+      <Select value={String(value ?? "")} onValueChange={onChange}>
+        <SelectTrigger aria-label={`${field.label} value`} className={COMPACT_SELECT_TRIGGER_CLASS}>
+          <SelectValue placeholder="Select value" />
+        </SelectTrigger>
+        <SelectContent>
+          {field.options.map((option) => (
+            <SelectItem key={option} value={option}>
+              {field.formatOptionLabels
+                ? option.toLocaleLowerCase().replace(/_/g, " ").replace(/(^|\s)\S/g, (letter) => letter.toLocaleUpperCase())
+                : option}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    )
+  }
+  if (field.fieldType === "MULTI_SELECT") {
+    return (
+      <Input
+        id={id}
+        aria-label={`${field.label} values`}
+        value={Array.isArray(value) ? value.join(", ") : ""}
+        onChange={(event) => onChange(event.target.value.split(",").map((item) => item.trim()).filter(Boolean))}
+        placeholder="Option A, Option B"
+        className="h-8 rounded-full"
+      />
+    )
+  }
+  if (field.fieldType === "TEXTAREA") {
+    return (
+      <Textarea
+        id={id}
+        aria-label={`${field.label} value`}
+        value={String(value ?? "")}
+        onChange={(event) => onChange(event.target.value)}
+        className="min-h-20 resize-y rounded-xl bg-white"
+      />
+    )
+  }
+  const type = field.fieldType === "DATE"
+    ? "date"
+    : field.fieldType === "NUMBER" || field.fieldType === "CURRENCY"
+      ? "number"
+      : field.fieldType === "EMAIL"
+        ? "email"
+        : "text"
+  const inputValue = type === "number"
+    ? typeof value === "number" && Number.isFinite(value) ? value : ""
+    : String(value ?? "")
+  return (
+    <Input
+      id={id}
+      aria-label={`${field.label} value`}
+      type={type}
+      value={inputValue}
+      maxLength={field.maxLength && field.maxLength > 0 ? field.maxLength : undefined}
+      placeholder={field.fieldType === "PHONE" ? "+15551234567" : undefined}
+      onChange={(event) => onChange(
+        type === "number"
+          ? event.target.value === "" ? Number.NaN : event.target.valueAsNumber
+          : event.target.value,
+      )}
+      className="h-8 rounded-full bg-white"
+    />
+  )
 }

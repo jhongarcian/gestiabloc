@@ -15,6 +15,7 @@ import {
   renderContactNoteTemplates,
   renderContactTemplates,
   CONTACT_TEMPLATE_REGULAR_FIELDS,
+  isValidTemplateDate,
   validateContactTemplate,
 } from "./contact-templates.js"
 import {
@@ -53,6 +54,7 @@ export const AUTOMATION_OPERATORS = [
 ] as const
 
 export const AUTOMATION_ACTION_TYPES = [
+  "UPDATE_CONTACT_CUSTOM_FIELDS",
   "SET_CONTACT_CUSTOM_FIELD",
   "CLEAR_CONTACT_CUSTOM_FIELD",
   "SET_CONTACT_STATUS",
@@ -66,6 +68,52 @@ export const AUTOMATION_ACTION_TYPES = [
 ] as const
 
 export const AUTOMATION_WAIT_UNITS = ["SECONDS", "MINUTES", "HOURS", "DAYS"] as const
+
+export const AUTOMATION_CONTACT_UPDATE_FIELDS = [
+  { key: "firstName", label: "First name", fieldType: "TEXT", isRequired: true, maxLength: 120, options: [] },
+  { key: "middleName", label: "Middle name", fieldType: "TEXT", isRequired: false, maxLength: 120, options: [] },
+  { key: "lastName", label: "Last name", fieldType: "TEXT", isRequired: true, maxLength: 120, options: [] },
+  { key: "phone", label: "Phone", fieldType: "PHONE", isRequired: false, maxLength: 60, options: [] },
+  { key: "secondaryPhone", label: "Secondary phone", fieldType: "PHONE", isRequired: false, maxLength: 60, options: [] },
+  { key: "email", label: "Email", fieldType: "EMAIL", isRequired: false, maxLength: 320, options: [] },
+  { key: "dateOfBirth", label: "Date of birth", fieldType: "DATE", isRequired: false, maxLength: 10, options: [] },
+  { key: "gender", label: "Gender", fieldType: "SELECT", isRequired: false, maxLength: 20, options: ["FEMALE", "MALE", "NON_BINARY", "OTHER", "UNKNOWN"] },
+  { key: "height", label: "Height", fieldType: "TEXT", isRequired: false, maxLength: 60, options: [] },
+  { key: "weight", label: "Weight", fieldType: "TEXT", isRequired: false, maxLength: 60, options: [] },
+  { key: "deceasedAt", label: "Deceased date", fieldType: "DATE", isRequired: false, maxLength: 10, options: [] },
+  { key: "medicarePartA", label: "Medicare Part A", fieldType: "CHECKBOX", isRequired: false, maxLength: 0, options: [] },
+  { key: "medicarePartB", label: "Medicare Part B", fieldType: "CHECKBOX", isRequired: false, maxLength: 0, options: [] },
+  { key: "smokerStatus", label: "Smoker status", fieldType: "SELECT", isRequired: false, maxLength: 20, options: ["UNKNOWN", "NEVER", "CURRENT", "FORMER"] },
+  { key: "addressLine1", label: "Address line 1", fieldType: "TEXT", isRequired: false, maxLength: 255, options: [] },
+  { key: "addressLine2", label: "Address line 2", fieldType: "TEXT", isRequired: false, maxLength: 255, options: [] },
+  { key: "city", label: "City", fieldType: "TEXT", isRequired: false, maxLength: 120, options: [] },
+  { key: "state", label: "State", fieldType: "TEXT", isRequired: false, maxLength: 120, options: [] },
+  { key: "postalCode", label: "Postal code", fieldType: "TEXT", isRequired: false, maxLength: 40, options: [] },
+  { key: "country", label: "Country", fieldType: "TEXT", isRequired: false, maxLength: 120, options: [] },
+  { key: "mailingAddressLine1", label: "Mailing address line 1", fieldType: "TEXT", isRequired: false, maxLength: 255, options: [] },
+  { key: "mailingAddressLine2", label: "Mailing address line 2", fieldType: "TEXT", isRequired: false, maxLength: 255, options: [] },
+  { key: "mailingCity", label: "Mailing city", fieldType: "TEXT", isRequired: false, maxLength: 120, options: [] },
+  { key: "mailingState", label: "Mailing state", fieldType: "TEXT", isRequired: false, maxLength: 120, options: [] },
+  { key: "mailingPostalCode", label: "Mailing postal code", fieldType: "TEXT", isRequired: false, maxLength: 40, options: [] },
+  { key: "mailingCountry", label: "Mailing country", fieldType: "TEXT", isRequired: false, maxLength: 120, options: [] },
+  { key: "emergencyContactName", label: "Emergency contact name", fieldType: "TEXT", isRequired: false, maxLength: 160, options: [] },
+  { key: "emergencyContactPhone", label: "Emergency contact phone", fieldType: "PHONE", isRequired: false, maxLength: 60, options: [] },
+  { key: "emergencyContactRelationship", label: "Emergency contact relationship", fieldType: "TEXT", isRequired: false, maxLength: 120, options: [] },
+  { key: "leadDate", label: "Lead date", fieldType: "DATE", isRequired: false, maxLength: 10, options: [] },
+  { key: "leadSource", label: "Lead source", fieldType: "TEXT", isRequired: false, maxLength: 160, options: [] },
+  { key: "leadOtherSource", label: "Other lead source", fieldType: "TEXT", isRequired: false, maxLength: 160, options: [] },
+] as const
+
+const AUTOMATION_CONTACT_UPDATE_FIELD_KEYS = AUTOMATION_CONTACT_UPDATE_FIELDS.map(
+  (field) => field.key,
+) as [
+  (typeof AUTOMATION_CONTACT_UPDATE_FIELDS)[number]["key"],
+  ...(typeof AUTOMATION_CONTACT_UPDATE_FIELDS)[number]["key"][],
+]
+const AutomationContactUpdateFieldKeySchema = z.enum(AUTOMATION_CONTACT_UPDATE_FIELD_KEYS)
+const AUTOMATION_CONTACT_UPDATE_FIELD_MAP = new Map(
+  AUTOMATION_CONTACT_UPDATE_FIELDS.map((field) => [field.key, field]),
+)
 
 const waitDurationConfigSchema = z.object({
   mode: z.literal("DURATION"),
@@ -153,6 +201,54 @@ const contactTagsConditionSchema = z.object({
   tagId: idSchema.nullable().optional(),
 })
 
+const setContactCustomFieldUpdateSchema = z.object({
+  customFieldId: idSchema,
+  operation: z.literal("SET"),
+  value: z.unknown(),
+}).strict()
+
+const clearContactCustomFieldUpdateSchema = z.object({
+  customFieldId: idSchema,
+  operation: z.literal("CLEAR"),
+}).strict()
+
+const setContactFieldUpdateSchema = z.object({
+  contactFieldKey: AutomationContactUpdateFieldKeySchema,
+  operation: z.literal("SET"),
+  value: z.unknown(),
+}).strict()
+
+const clearContactFieldUpdateSchema = z.object({
+  contactFieldKey: AutomationContactUpdateFieldKeySchema,
+  operation: z.literal("CLEAR"),
+}).strict()
+
+export const AutomationCustomFieldUpdatesSchema = z
+  .array(z.union([
+    setContactCustomFieldUpdateSchema,
+    clearContactCustomFieldUpdateSchema,
+    setContactFieldUpdateSchema,
+    clearContactFieldUpdateSchema,
+  ]))
+  .min(1, "Add at least one contact field update.")
+  .max(20, "A contact-field action can update at most 20 fields.")
+  .superRefine((updates, context) => {
+    const seen = new Set<string>()
+    updates.forEach((update, index) => {
+      const fieldIdentity = "contactFieldKey" in update
+        ? `contact:${update.contactFieldKey}`
+        : `custom:${update.customFieldId}`
+      if (seen.has(fieldIdentity)) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "contactFieldKey" in update ? "contactFieldKey" : "customFieldId"],
+          message: "Each contact field can only be updated once per action.",
+        })
+      }
+      seen.add(fieldIdentity)
+    })
+  })
+
 export const AutomationConditionInputSchema = z.discriminatedUnion("source", [
   opportunityValueConditionSchema,
   contactStatusConditionSchema,
@@ -162,6 +258,11 @@ export const AutomationConditionInputSchema = z.discriminatedUnion("source", [
 ])
 
 export const AutomationActionInputSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("UPDATE_CONTACT_CUSTOM_FIELDS"),
+    nodeKey: actionNodeKeySchema,
+    customFieldUpdates: AutomationCustomFieldUpdatesSchema,
+  }),
   z.object({
     type: z.literal("SET_CONTACT_CUSTOM_FIELD"),
     nodeKey: actionNodeKeySchema,
@@ -462,6 +563,49 @@ function fieldOptions(field: CustomFieldRecord) {
     : []
 }
 
+type AutomationContactUpdateField = (typeof AUTOMATION_CONTACT_UPDATE_FIELDS)[number]
+
+function normalizeAutomationContactFieldValue(
+  field: AutomationContactUpdateField,
+  rawValue: unknown,
+) {
+  if (field.fieldType === "CHECKBOX") {
+    return typeof rawValue === "boolean"
+      ? { ok: true as const, value: rawValue }
+      : { ok: false as const, message: `${field.label} must be checked or unchecked.` }
+  }
+  if (field.fieldType === "DATE") {
+    const value = typeof rawValue === "string" ? rawValue.trim() : ""
+    return isValidTemplateDate(value)
+      ? { ok: true as const, value }
+      : { ok: false as const, message: `${field.label} must use a valid date.` }
+  }
+  const value = typeof rawValue === "string" ? rawValue.trim() : ""
+  if (!value) return { ok: false as const, message: `${field.label} requires a value.` }
+  if (value.length > field.maxLength) {
+    return {
+      ok: false as const,
+      message: `${field.label} cannot exceed ${field.maxLength} characters.`,
+    }
+  }
+  if (field.fieldType === "PHONE" && !/^\+[1-9]\d{7,14}$/.test(value)) {
+    return { ok: false as const, message: `${field.label} must be a valid phone number.` }
+  }
+  if (field.fieldType === "EMAIL" && !z.email().safeParse(value).success) {
+    return { ok: false as const, message: `${field.label} must be a valid email address.` }
+  }
+  if (field.fieldType === "SELECT" && !(field.options as readonly string[]).includes(value)) {
+    return { ok: false as const, message: `${field.label} has an invalid option.` }
+  }
+  return { ok: true as const, value }
+}
+
+function contactFieldPersistenceValue(field: AutomationContactUpdateField, value: unknown) {
+  return field.fieldType === "DATE"
+    ? new Date(`${String(value)}T00:00:00.000Z`)
+    : value
+}
+
 export async function validateAutomationConfiguration(
   prismaClient: any,
   tenantId: string,
@@ -730,6 +874,72 @@ export async function validateAutomationConfiguration(
           linkedService,
         },
       }
+    }
+    if (action.type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
+      const customFieldUpdates = action.customFieldUpdates.map((update) => {
+        if ("contactFieldKey" in update) {
+          const field = AUTOMATION_CONTACT_UPDATE_FIELD_MAP.get(update.contactFieldKey)
+          if (!field) {
+            throw new AutomationConfigurationError(
+              "INVALID_CONTACT_FIELD",
+              "Select an available contact field.",
+            )
+          }
+          if (update.operation === "CLEAR") {
+            if (field.isRequired) {
+              throw new AutomationConfigurationError(
+                "REQUIRED_CONTACT_FIELD",
+                `${field.label} cannot be cleared.`,
+              )
+            }
+            return { contactFieldKey: field.key, operation: update.operation }
+          }
+          const normalized = normalizeAutomationContactFieldValue(field, update.value)
+          if (!normalized.ok) {
+            throw new AutomationConfigurationError(
+              "INVALID_CONTACT_FIELD_VALUE",
+              normalized.message,
+            )
+          }
+          return {
+            contactFieldKey: field.key,
+            operation: update.operation,
+            value: normalized.value,
+          }
+        }
+        const field = fieldMap.get(update.customFieldId)
+        if (!field || !field.isActive || field.isEncrypted || field.isSensitive) {
+          throw new AutomationConfigurationError(
+            "INVALID_CUSTOM_FIELD",
+            "Select an active, non-sensitive custom field.",
+          )
+        }
+        if (update.operation === "CLEAR") {
+          if (field.isRequired) {
+            throw new AutomationConfigurationError(
+              "REQUIRED_CUSTOM_FIELD",
+              `${field.label} cannot be cleared.`,
+            )
+          }
+          return { customFieldId: field.id, operation: update.operation }
+        }
+        const normalized = normalizeCustomFieldValue(
+          { ...field, options: fieldOptions(field) },
+          update.value,
+        )
+        if (!normalized.ok || normalized.value === null) {
+          throw new AutomationConfigurationError(
+            "INVALID_CUSTOM_FIELD_VALUE",
+            normalized.ok ? `${field.label} requires a value.` : normalized.message,
+          )
+        }
+        return {
+          customFieldId: field.id,
+          operation: update.operation,
+          value: normalized.value,
+        }
+      })
+      return { ...base, customFieldUpdates }
     }
     if (action.type === "SET_CONTACT_CUSTOM_FIELD" || action.type === "CLEAR_CONTACT_CUSTOM_FIELD") {
       const field = fieldMap.get(action.customFieldId)
@@ -1008,6 +1218,7 @@ function automationActionSnapshot(action: any): RuntimeAutomationAction {
     assignedUserId: action.assignedUserId,
     tagId: action.tagId,
     value: action.value,
+    customFieldUpdates: action.customFieldUpdates,
     waitConfig: action.waitConfig,
     noteTitle: action.noteTitle,
     noteBody: action.noteBody,
@@ -1040,7 +1251,85 @@ async function applyAutomationAction(
 ) {
   const { action, actionIndex, automationId, automationName, tenantId, contactId, catalog, occurredAt } = params
   try {
-    if (action.type === "SET_CONTACT_CUSTOM_FIELD") {
+    if (action.type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
+      const preparedUpdates = action.customFieldUpdates.map((update) => {
+        if ("contactFieldKey" in update) {
+          const field = AUTOMATION_CONTACT_UPDATE_FIELD_MAP.get(update.contactFieldKey)
+          if (!field) {
+            throw new Error("A configured contact field is unavailable.")
+          }
+          if (update.operation === "CLEAR") {
+            if (field.isRequired) {
+              throw new Error(`${field.label} cannot be cleared.`)
+            }
+            return { source: "CONTACT" as const, field, operation: update.operation }
+          }
+          const normalized = normalizeAutomationContactFieldValue(field, update.value)
+          if (!normalized.ok) throw new Error(normalized.message)
+          return {
+            source: "CONTACT" as const,
+            field,
+            operation: update.operation,
+            value: normalized.value,
+          }
+        }
+        const field = catalog.fieldMap.get(update.customFieldId)
+        if (!field) {
+          throw new Error("A configured custom field is unavailable.")
+        }
+        if (update.operation === "CLEAR") {
+          if (field.isRequired) {
+            throw new Error(`${field.label} cannot be cleared.`)
+          }
+          return { source: "CUSTOM_FIELD" as const, field, operation: update.operation }
+        }
+        const normalized = normalizeCustomFieldValue(
+          { ...field, options: fieldOptions(field) },
+          update.value,
+        )
+        if (!normalized.ok || normalized.value === null) {
+          throw new Error(normalized.ok ? `${field.label} requires a value.` : normalized.message)
+        }
+        return {
+          source: "CUSTOM_FIELD" as const,
+          field,
+          operation: update.operation,
+          value: normalized.value,
+        }
+      })
+
+      const contactData: Record<string, unknown> = {}
+      for (const update of preparedUpdates) {
+        if (update.source === "CONTACT") {
+          contactData[update.field.key] = update.operation === "CLEAR"
+            ? null
+            : contactFieldPersistenceValue(update.field, update.value)
+          continue
+        }
+        if (update.operation === "CLEAR") {
+          await prismaTx.contactCustomFieldValue.deleteMany({
+            where: { tenantId, contactId, fieldId: update.field.id },
+          })
+          continue
+        }
+        await prismaTx.contactCustomFieldValue.upsert({
+          where: { tenantId_contactId_fieldId: { tenantId, contactId, fieldId: update.field.id } },
+          create: { tenantId, contactId, fieldId: update.field.id, value: update.value },
+          update: {
+            value: update.value,
+            valueCiphertext: null,
+            valueIv: null,
+            valueAuthTag: null,
+            valueKeyVersion: null,
+          },
+        })
+      }
+      if (Object.keys(contactData).length > 0) {
+        await prismaTx.contact.update({ where: { id: contactId }, data: contactData })
+      }
+      const count = action.customFieldUpdates.length
+      return `Updated ${count} contact field${count === 1 ? "" : "s"}.`
+    } else if (action.type === "SET_CONTACT_CUSTOM_FIELD") {
       const field = catalog.fieldMap.get(action.customFieldId)
       if (!field) throw new Error("The configured custom field is unavailable.")
       const normalized = normalizeCustomFieldValue(

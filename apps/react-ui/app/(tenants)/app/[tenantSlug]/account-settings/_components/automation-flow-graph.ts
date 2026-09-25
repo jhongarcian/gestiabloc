@@ -99,7 +99,9 @@ export function buildAutomationFlowGraph(
       ? `Note: ${action.noteTitle?.trim() || "Add a title"}`
       : action.type === "CREATE_TASK"
         ? `Task: ${action.taskConfig?.nameTemplate.trim() || "Add a task name"}`
-      : waitSubtitle ?? `Action ${index + 1}`
+        : action.type === "UPDATE_CONTACT_CUSTOM_FIELDS"
+          ? `Update ${action.customFieldUpdates?.length ?? 0} field${action.customFieldUpdates?.length === 1 ? "" : "s"}`
+          : waitSubtitle ?? `Action ${index + 1}`
     nodes.push({
       id: actionId,
       type: "automationNode",
