@@ -6120,6 +6120,7 @@ components:
         type:
           type: string
           enum:
+            - UPDATE_CONTACT_CUSTOM_FIELDS
             - SET_CONTACT_CUSTOM_FIELD
             - CLEAR_CONTACT_CUSTOM_FIELD
             - SET_CONTACT_STATUS
@@ -6132,6 +6133,16 @@ components:
             - WAIT
         customFieldId:
           type: string
+        customFieldUpdates:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: false
+          description: >-
+            Distinct standard or custom contact fields updated atomically by one action node.
+            Standard fields use contactFieldKey; custom fields use customFieldId.
+          items:
+            $ref: "#/components/schemas/AutomationCustomFieldUpdate"
         statusConfigId:
           type: string
         assignedUserId:
@@ -6195,6 +6206,79 @@ components:
                 targetNodeKey:
                   type: string
                   format: uuid
+    AutomationCustomFieldUpdate:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [contactFieldKey, operation, value]
+          properties:
+            contactFieldKey:
+              type: string
+              enum:
+                - firstName
+                - middleName
+                - lastName
+                - phone
+                - secondaryPhone
+                - email
+                - dateOfBirth
+                - gender
+                - height
+                - weight
+                - deceasedAt
+                - medicarePartA
+                - medicarePartB
+                - smokerStatus
+                - addressLine1
+                - addressLine2
+                - city
+                - state
+                - postalCode
+                - country
+                - mailingAddressLine1
+                - mailingAddressLine2
+                - mailingCity
+                - mailingState
+                - mailingPostalCode
+                - mailingCountry
+                - emergencyContactName
+                - emergencyContactPhone
+                - emergencyContactRelationship
+                - leadDate
+                - leadSource
+                - leadOtherSource
+            operation:
+              type: string
+              enum: [SET]
+            value: {}
+        - type: object
+          additionalProperties: false
+          required: [contactFieldKey, operation]
+          properties:
+            contactFieldKey:
+              type: string
+            operation:
+              type: string
+              enum: [CLEAR]
+        - type: object
+          additionalProperties: false
+          required: [customFieldId, operation, value]
+          properties:
+            customFieldId:
+              type: string
+            operation:
+              type: string
+              enum: [SET]
+            value: {}
+        - type: object
+          additionalProperties: false
+          required: [customFieldId, operation]
+          properties:
+            customFieldId:
+              type: string
+            operation:
+              type: string
+              enum: [CLEAR]
     AutomationTaskDateSource:
       oneOf:
         - type: object

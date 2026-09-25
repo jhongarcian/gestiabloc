@@ -73,4 +73,36 @@ describe("findEnabledAutomationReference", () => {
       { id: "automation-1", name: "Renewal tasks" },
     )
   })
+
+  test("finds custom fields nested in a multi-field update action", async () => {
+    const prismaClient = {
+      contactCustomField: {
+        findFirst: async () => ({ key: "review_status" }),
+      },
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Prepare contact",
+          actions: [{
+            type: "UPDATE_CONTACT_CUSTOM_FIELDS",
+            taskConfig: null,
+            customFieldUpdates: [
+              { customFieldId: "field-1", operation: "SET", value: "Ready" },
+              { customFieldId: "field-2", operation: "CLEAR" },
+            ],
+          }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "customField", id: "field-2" },
+      ),
+      { id: "automation-1", name: "Prepare contact" },
+    )
+  })
 })

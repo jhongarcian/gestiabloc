@@ -28,12 +28,16 @@ function mutationPayload(record: AutomationRecord, isEnabled = record.isEnabled)
       compareValue: condition.compareValue,
     })),
     actions: record.actions.map((action) => ({
+      nodeKey: action.nodeKey,
       type: action.type,
-      customFieldId: action.customFieldId,
+      customFieldUpdates: action.customFieldUpdates,
       statusConfigId: action.statusConfigId,
       assignedUserId: action.assignedUserId,
       tagId: action.tagId,
-      value: action.value,
+      waitConfig: action.waitConfig,
+      noteTitle: action.noteTitle,
+      noteBody: action.noteBody,
+      taskConfig: action.taskConfig,
     })),
   }
 }

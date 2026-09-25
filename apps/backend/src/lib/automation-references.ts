@@ -2,6 +2,7 @@ import {
   AutomationTaskConfigSchema,
   taskConfigCustomFieldKeys,
 } from "./automation-task.js"
+import { AutomationCustomFieldUpdatesSchema } from "./opportunity-automations.js"
 
 type AutomationReference =
   | { kind: "pipeline"; id: string }
@@ -104,20 +105,37 @@ export async function findEnabledAutomationReference(
     where: {
       tenantId,
       isEnabled: true,
-      actions: { some: { type: "CREATE_TASK" } },
+      actions: {
+        some: {
+          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS"] },
+        },
+      },
     },
     select: {
       id: true,
       name: true,
       actions: {
-        where: { type: "CREATE_TASK" },
-        select: { taskConfig: true },
+        where: { type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS"] } },
+        select: { type: true, taskConfig: true, customFieldUpdates: true },
       },
     },
   })
 
   for (const automation of automations) {
     for (const action of automation.actions) {
+      if (action.type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
+        const updates = AutomationCustomFieldUpdatesSchema.safeParse(action.customFieldUpdates)
+        if (
+          updates.success &&
+          reference.kind === "customField" &&
+          updates.data.some(
+            (update) => "customFieldId" in update && update.customFieldId === reference.id,
+          )
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
+      }
       const parsed = AutomationTaskConfigSchema.safeParse(action.taskConfig)
       if (!parsed.success) continue
       if (

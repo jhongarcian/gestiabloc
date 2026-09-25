@@ -307,6 +307,7 @@ enum AutomationOperator {
 }
 
 enum AutomationActionType {
+  UPDATE_CONTACT_CUSTOM_FIELDS
   SET_CONTACT_CUSTOM_FIELD
   CLEAR_CONTACT_CUSTOM_FIELD
   SET_CONTACT_STATUS
@@ -1416,21 +1417,22 @@ model AutomationCondition {
 }
 
 model AutomationAction {
-  id             String               @id @default(uuid())
-  tenantId       String
-  automationId   String
-  nodeKey        String
-  type           AutomationActionType
-  customFieldId  String?
-  statusConfigId String?
-  assignedUserId String?
-  tagId          String?
-  value          Json?
-  waitConfig     Json?
-  noteTitle      String?
-  noteBody       String?
-  taskConfig     Json?
-  sortOrder      Int                  @default(0)
+  id                 String               @id @default(uuid())
+  tenantId           String
+  automationId       String
+  nodeKey            String
+  type               AutomationActionType
+  customFieldId      String?
+  statusConfigId     String?
+  assignedUserId     String?
+  tagId              String?
+  value              Json?
+  customFieldUpdates Json?
+  waitConfig         Json?
+  noteTitle          String?
+  noteBody           String?
+  taskConfig         Json?
+  sortOrder          Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
 

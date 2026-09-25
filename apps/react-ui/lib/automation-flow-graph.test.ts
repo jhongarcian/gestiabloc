@@ -4,8 +4,7 @@ import { describe, test } from "node:test"
 import { buildAutomationFlowGraph } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-flow-graph.js"
 
 const labels = {
-  SET_CONTACT_CUSTOM_FIELD: "Set custom field",
-  CLEAR_CONTACT_CUSTOM_FIELD: "Clear custom field",
+  UPDATE_CONTACT_CUSTOM_FIELDS: "Update contact fields",
   SET_CONTACT_STATUS: "Set contact status",
   SET_CONTACT_ASSIGNEE: "Assign contact",
   CLEAR_CONTACT_ASSIGNEE: "Clear contact assignee",
@@ -105,6 +104,32 @@ describe("buildAutomationFlowGraph", () => {
     assert.equal(waitNode?.data.subtitle, "Wait 2 hours")
     assert.equal(graph.nodes.filter((node) => node.data.kind === "action").length, 1)
     assert.equal(graph.nodes.at(-1)?.data.subtitle, "All actions completed")
+  })
+
+  test("summarizes one multi-field update action as one graph node", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "UPDATE_CONTACT_CUSTOM_FIELDS",
+          customFieldUpdates: [
+            { contactFieldKey: "phone", operation: "SET", value: "+15551234567" },
+            { customFieldId: "field-2", operation: "CLEAR" },
+          ],
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const updateNode = graph.nodes.find((node) => node.id.includes("00000000"))
+    assert.equal(updateNode?.data.label, "Update contact fields")
+    assert.equal(updateNode?.data.subtitle, "Update 2 fields")
+    assert.equal(graph.nodes.filter((node) => node.data.kind === "action").length, 1)
   })
 
   test("summarizes an add-note action by its title", () => {

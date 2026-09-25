@@ -118,6 +118,153 @@ describe("AutomationUpsertSchema", () => {
     assert.equal(result.success, false)
   })
 
+  test("accepts distinct standard and custom-field updates and rejects duplicates or overflow", () => {
+    const base = {
+      name: "Update contact fields",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+    }
+    const valid = AutomationUpsertSchema.safeParse({
+      ...base,
+      actions: [{
+        type: "UPDATE_CONTACT_CUSTOM_FIELDS",
+        customFieldUpdates: [
+          { contactFieldKey: "phone", operation: "SET", value: "+15551234567" },
+          { customFieldId: "field-name", operation: "SET", value: "Ready" },
+          { customFieldId: "field-old", operation: "CLEAR" },
+        ],
+      }],
+    })
+    assert.equal(valid.success, true)
+
+    const duplicate = AutomationUpsertSchema.safeParse({
+      ...base,
+      actions: [{
+        type: "UPDATE_CONTACT_CUSTOM_FIELDS",
+        customFieldUpdates: [
+          { customFieldId: "field-name", operation: "SET", value: "Ready" },
+          { customFieldId: "field-name", operation: "CLEAR" },
+        ],
+      }],
+    })
+    assert.equal(duplicate.success, false)
+
+    const duplicateContactField = AutomationUpsertSchema.safeParse({
+      ...base,
+      actions: [{
+        type: "UPDATE_CONTACT_CUSTOM_FIELDS",
+        customFieldUpdates: [
+          { contactFieldKey: "email", operation: "SET", value: "new@example.com" },
+          { contactFieldKey: "email", operation: "CLEAR" },
+        ],
+      }],
+    })
+    assert.equal(duplicateContactField.success, false)
+
+    const overflow = AutomationUpsertSchema.safeParse({
+      ...base,
+      actions: [{
+        type: "UPDATE_CONTACT_CUSTOM_FIELDS",
+        customFieldUpdates: Array.from({ length: 21 }, (_, index) => ({
+          customFieldId: `field-${index}`,
+          operation: "SET",
+          value: `Value ${index}`,
+        })),
+      }],
+    })
+    assert.equal(overflow.success, false)
+  })
+
+  test("normalizes multi-field values and prevents clearing required fields", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => [
+        {
+          id: "field-name",
+          key: "name_code",
+          label: "Name code",
+          fieldType: "TEXT",
+          isRequired: false,
+          isActive: true,
+          isEncrypted: false,
+          isSensitive: false,
+          options: [],
+        },
+        {
+          id: "field-old",
+          key: "old_value",
+          label: "Old value",
+          fieldType: "TEXT",
+          isRequired: false,
+          isActive: true,
+          isEncrypted: false,
+          isSensitive: false,
+          options: [],
+        },
+        {
+          id: "field-required",
+          key: "required_value",
+          label: "Required value",
+          fieldType: "TEXT",
+          isRequired: true,
+          isActive: true,
+          isEncrypted: false,
+          isSensitive: false,
+          options: [],
+        },
+      ] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const validInput = AutomationUpsertSchema.parse({
+      name: "Update fields",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{
+        type: "UPDATE_CONTACT_CUSTOM_FIELDS",
+        customFieldUpdates: [
+          { contactFieldKey: "email", operation: "SET", value: "  NEW@EXAMPLE.COM  " },
+          { customFieldId: "field-name", operation: "SET", value: "  Ready  " },
+          { customFieldId: "field-old", operation: "CLEAR" },
+        ],
+      }],
+    })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", validInput)
+    const normalizedAction = normalized.actions[0] as { customFieldUpdates?: unknown } | undefined
+    assert.deepEqual(normalizedAction?.customFieldUpdates, [
+      { contactFieldKey: "email", operation: "SET", value: "NEW@EXAMPLE.COM" },
+      { customFieldId: "field-name", operation: "SET", value: "Ready" },
+      { customFieldId: "field-old", operation: "CLEAR" },
+    ])
+
+    const invalidInput = AutomationUpsertSchema.parse({
+      ...validInput,
+      actions: [{
+        type: "UPDATE_CONTACT_CUSTOM_FIELDS",
+        customFieldUpdates: [{ customFieldId: "field-required", operation: "CLEAR" }],
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalidInput),
+      /Required value cannot be cleared/,
+    )
+
+    const invalidContactInput = AutomationUpsertSchema.parse({
+      ...validInput,
+      actions: [{
+        type: "UPDATE_CONTACT_CUSTOM_FIELDS",
+        customFieldUpdates: [{ contactFieldKey: "firstName", operation: "CLEAR" }],
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalidContactInput),
+      /First name cannot be cleared/,
+    )
+  })
+
   test("validates and sanitizes add-contact-note actions", () => {
     const result = AutomationUpsertSchema.safeParse({
       name: "Add a note",
@@ -432,6 +579,192 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(contactUpdates, 1)
     assert.equal(executions, 1)
     assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "EXECUTED", "EXECUTED"])
+  })
+
+  test("updates standard and custom fields in one logged action", async () => {
+    const writes: Array<Record<string, unknown>> = []
+    const clears: Array<Record<string, unknown>> = []
+    const contactUpdates: Array<Record<string, unknown>> = []
+    let nodeLogs: Array<Record<string, unknown>> = []
+    const fields = [
+      {
+        id: "field-status",
+        key: "review_status",
+        label: "Review status",
+        fieldType: "SELECT",
+        isRequired: true,
+        isActive: true,
+        isEncrypted: false,
+        isSensitive: false,
+        options: ["Ready", "Pending"],
+      },
+      {
+        id: "field-note",
+        key: "old_note",
+        label: "Old note",
+        fieldType: "TEXT",
+        isRequired: false,
+        isActive: true,
+        isEncrypted: false,
+        isSensitive: false,
+        options: [],
+      },
+    ]
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Prepare contact",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [{
+            nodeKey: "00000000-0000-4000-8000-000000000001",
+            type: "UPDATE_CONTACT_CUSTOM_FIELDS",
+            customFieldUpdates: [
+              { contactFieldKey: "phone", operation: "SET", value: "+15551234567" },
+              { customFieldId: "field-status", operation: "SET", value: "Ready" },
+              { customFieldId: "field-note", operation: "CLEAR" },
+            ],
+          }],
+        }],
+      },
+      contact: {
+        findFirst: async () => ({
+          id: "contact-1",
+          firstName: "Taylor",
+          middleName: null,
+          lastName: "Reed",
+          statusConfigId: "active",
+          assignedToUserId: null,
+          tags: [],
+          customFieldValues: [],
+        }),
+        update: async ({ data }: { data: Record<string, unknown> }) => {
+          contactUpdates.push(data)
+        },
+      },
+      contactCustomField: { findMany: async () => fields },
+      contactCustomFieldValue: {
+        upsert: async ({ create }: { create: Record<string, unknown> }) => { writes.push(create) },
+        deleteMany: async ({ where }: { where: Record<string, unknown> }) => { clears.push(where) },
+      },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async () => undefined,
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { nodeLogs = data },
+      },
+    }
+
+    await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.equal(writes.length, 1)
+    assert.equal(writes[0]?.fieldId, "field-status")
+    assert.equal(writes[0]?.value, "Ready")
+    assert.deepEqual(clears, [{ tenantId: "tenant-1", contactId: "contact-1", fieldId: "field-note" }])
+    assert.deepEqual(contactUpdates, [{ phone: "+15551234567" }])
+    assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "EXECUTED"])
+    assert.equal(nodeLogs[1]?.details, "Updated 3 contact fields.")
+  })
+
+  test("validates every custom-field update before writing any of them", async () => {
+    let writes = 0
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Invalid field update",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [{
+            nodeKey: "00000000-0000-4000-8000-000000000001",
+            type: "UPDATE_CONTACT_CUSTOM_FIELDS",
+            customFieldUpdates: [
+              { customFieldId: "field-valid", operation: "SET", value: "Ready" },
+              { customFieldId: "field-missing", operation: "SET", value: "Invalid" },
+            ],
+          }],
+        }],
+      },
+      contact: {
+        findFirst: async () => ({
+          id: "contact-1",
+          firstName: "Taylor",
+          middleName: null,
+          lastName: "Reed",
+          statusConfigId: "active",
+          assignedToUserId: null,
+          tags: [],
+          customFieldValues: [],
+        }),
+      },
+      contactCustomField: { findMany: async () => [{
+        id: "field-valid",
+        key: "valid",
+        label: "Valid field",
+        fieldType: "TEXT",
+        isRequired: false,
+        isActive: true,
+        isEncrypted: false,
+        isSensitive: false,
+        options: [],
+      }] },
+      contactCustomFieldValue: {
+        upsert: async () => { writes += 1 },
+        deleteMany: async () => { writes += 1 },
+      },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async () => undefined,
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: { createMany: async () => undefined },
+    }
+
+    await assert.rejects(
+      executeOpportunityAutomations(prismaTx, {
+        tenantId: "tenant-1",
+        actorUserId: "user-1",
+        triggerType: "OPPORTUNITY_CREATED",
+        opportunityId: "opportunity-1",
+        contactId: "contact-1",
+        pipelineId: "pipeline-work",
+        valueCents: 0,
+        sourceStageId: null,
+        targetStageId: "stage-new",
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof AutomationExecutionError)
+        assert.match(error.message, /configured custom field is unavailable/)
+        assert.equal(error.nodeExecutions[1]?.status, "FAILED")
+        return true
+      },
+    )
+    assert.equal(writes, 0)
   })
 
   test("creates an automation-authored contact note and logs its title", async () => {

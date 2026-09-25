@@ -4,6 +4,7 @@ import { z } from "zod"
 import { Prisma } from "../generated/prisma/index.js"
 
 import {
+  AUTOMATION_CONTACT_UPDATE_FIELDS,
   AutomationConfigurationError,
   AutomationUpsertSchema,
   getAutomationOperatorsForFieldType,
@@ -95,20 +96,28 @@ function serializeAutomation(record: any) {
       tagId: condition.tagId,
       compareValue: condition.compareValue,
     })),
-    actions: record.actions.map((action: any) => ({
-      id: action.id,
-      nodeKey: action.nodeKey,
-      type: action.type,
-      customFieldId: action.customFieldId,
-      statusConfigId: action.statusConfigId,
-      assignedUserId: action.assignedUserId,
-      tagId: action.tagId,
-      value: action.value,
-      waitConfig: action.waitConfig,
-      noteTitle: action.noteTitle,
-      noteBody: action.noteBody,
-      taskConfig: action.taskConfig,
-    })),
+    actions: record.actions.map((action: any) => {
+      const legacyCustomFieldUpdates = action.type === "SET_CONTACT_CUSTOM_FIELD"
+        ? [{ customFieldId: action.customFieldId, operation: "SET", value: action.value }]
+        : action.type === "CLEAR_CONTACT_CUSTOM_FIELD"
+          ? [{ customFieldId: action.customFieldId, operation: "CLEAR" }]
+          : null
+      return {
+        id: action.id,
+        nodeKey: action.nodeKey,
+        type: legacyCustomFieldUpdates ? "UPDATE_CONTACT_CUSTOM_FIELDS" : action.type,
+        customFieldId: legacyCustomFieldUpdates ? null : action.customFieldId,
+        customFieldUpdates: legacyCustomFieldUpdates ?? action.customFieldUpdates,
+        statusConfigId: action.statusConfigId,
+        assignedUserId: action.assignedUserId,
+        tagId: action.tagId,
+        value: legacyCustomFieldUpdates ? null : action.value,
+        waitConfig: action.waitConfig,
+        noteTitle: action.noteTitle,
+        noteBody: action.noteBody,
+        taskConfig: action.taskConfig,
+      }
+    }),
     lastExecution: record.executions?.[0]
       ? {
           id: record.executions[0].id,
@@ -194,6 +203,7 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
           options: Array.isArray(field.options) ? field.options : [],
           operators: getAutomationOperatorsForFieldType(field.fieldType),
         })),
+        contactUpdateFields: AUTOMATION_CONTACT_UPDATE_FIELDS,
         templateFields: {
           contact: CONTACT_TEMPLATE_REGULAR_FIELDS,
           dateFormats: CONTACT_TEMPLATE_DATE_FORMATS,

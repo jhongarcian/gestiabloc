@@ -115,6 +115,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
             assignedUserId: true,
             tagId: true,
             value: true,
+            customFieldUpdates: true,
             waitConfig: true,
             noteTitle: true,
             noteBody: true,
