@@ -212,6 +212,7 @@ const ACTION_LABELS: Record<AutomationAction["type"], string> = {
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_TASK: "Create task",
   WAIT: "Wait",
+  DELETE_CONTACT: "Delete contact",
 }
 
 const WAIT_UNIT_LABELS: Record<AutomationWaitUnit, string> = {
@@ -545,6 +546,7 @@ function isActionReady(
       return Boolean(config.targetNodeKey && targetActions.some((candidate) => candidate.nodeKey === config.targetNodeKey))
     }
   }
+  if (action.type === "DELETE_CONTACT") return targetActions.length === 0
   return true
 }
 
@@ -617,6 +619,10 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   const nodeKeys = draft.actions.map((action) => action.nodeKey).filter(Boolean)
   if (nodeKeys.length !== draft.actions.length || new Set(nodeKeys).size !== nodeKeys.length) {
     return "Every action needs a unique step identifier."
+  }
+  const deleteContactIndex = draft.actions.findIndex((action) => action.type === "DELETE_CONTACT")
+  if (deleteContactIndex >= 0 && deleteContactIndex !== draft.actions.length - 1) {
+    return "Delete contact can only be the last action in the automation."
   }
   for (let index = 0; index < draft.actions.length; index += 1) {
     if (!isActionReady(draft.actions[index] ?? null, catalog, draft.actions.slice(index + 1))) {
@@ -809,6 +815,11 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
   const moveAction = (index: number, direction: -1 | 1) => {
     const target = index + direction
     if (target < 0 || target >= draft.actions.length) return
+    const nextActions = [...draft.actions]
+    ;[nextActions[index], nextActions[target]] = [nextActions[target]!, nextActions[index]!]
+    if (nextActions.some((action, actionIndex) =>
+      action.type === "DELETE_CONTACT" && actionIndex !== nextActions.length - 1
+    )) return
     setDraft((current) => {
       const actions = [...current.actions]
       ;[actions[index], actions[target]] = [actions[target]!, actions[index]!]
@@ -1641,9 +1652,10 @@ function NewActionEditor({
             variant="outline"
             className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full justify-start")}
             disabled={
-              value === "UPDATE_CONTACT_CUSTOM_FIELDS" &&
-              catalog.contactUpdateFields.length === 0 &&
-              catalog.customFields.length === 0
+              (value === "UPDATE_CONTACT_CUSTOM_FIELDS" &&
+                catalog.contactUpdateFields.length === 0 &&
+                catalog.customFields.length === 0) ||
+              (value === "DELETE_CONTACT" && targetActions.length > 0)
             }
             onClick={() => onChange(actionDefaults(value as AutomationAction["type"], catalog))}
           >
@@ -1700,7 +1712,13 @@ function ActionEditor({
               <SelectContent>
                 <SelectGroup>
                   {Object.entries(ACTION_LABELS).map(([value, label]) => (
-                    <SelectItem key={value} value={value}>{label}</SelectItem>
+                    <SelectItem
+                      key={value}
+                      value={value}
+                      disabled={value === "DELETE_CONTACT" && targetActions.length > 0}
+                    >
+                      {label}
+                    </SelectItem>
                   ))}
                 </SelectGroup>
               </SelectContent>
@@ -1800,16 +1818,22 @@ function ActionEditor({
             onChange={(waitConfig) => onChange({ ...action, waitConfig })}
           />
         ) : null}
+
+        {action.type === "DELETE_CONTACT" ? (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-sm leading-5 text-rose-800">
+            This action can only be the last step of the workflow. The contact will be removed from all workflows and permanently deleted from this account.
+          </div>
+        ) : null}
       </FieldGroup>
 
       {management ? (
         <>
           <Separator />
           <div className="flex gap-2">
-            <Button type="button" size="icon" variant="outline" disabled={management.index === 0} onClick={() => management.onMove(-1)} aria-label="Move action up">
+            <Button type="button" size="icon" variant="outline" disabled={management.index === 0 || action.type === "DELETE_CONTACT"} onClick={() => management.onMove(-1)} aria-label="Move action up">
               <ArrowUp data-icon="inline-start" />
             </Button>
-            <Button type="button" size="icon" variant="outline" disabled={management.index === management.total - 1} onClick={() => management.onMove(1)} aria-label="Move action down">
+            <Button type="button" size="icon" variant="outline" disabled={management.index === management.total - 1 || targetActions[0]?.type === "DELETE_CONTACT"} onClick={() => management.onMove(1)} aria-label="Move action down">
               <ArrowDown data-icon="inline-start" />
             </Button>
             <Button type="button" variant="outline" className="ml-auto text-rose-600" onClick={management.onDelete}>

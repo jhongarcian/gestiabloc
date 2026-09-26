@@ -67,8 +67,10 @@ export function buildAutomationFlowGraph(
   const edges: Edge[] = []
   let previousId = "trigger"
   let y = 180
+  const endsWithDelete = draft.actions.at(-1)?.type === "DELETE_CONTACT"
 
   for (let index = 0; index <= draft.actions.length; index += 1) {
+    if (index === draft.actions.length && endsWithDelete) break
     const addId = `add-${index}`
     nodes.push({
       id: addId,
@@ -101,6 +103,8 @@ export function buildAutomationFlowGraph(
         ? `Task: ${action.taskConfig?.nameTemplate.trim() || "Add a task name"}`
         : action.type === "UPDATE_CONTACT_CUSTOM_FIELDS"
           ? `Update ${action.customFieldUpdates?.length ?? 0} field${action.customFieldUpdates?.length === 1 ? "" : "s"}`
+          : action.type === "DELETE_CONTACT"
+            ? "Remove from this account"
           : waitSubtitle ?? `Action ${index + 1}`
     nodes.push({
       id: actionId,
@@ -127,7 +131,11 @@ export function buildAutomationFlowGraph(
     id: "complete",
     type: "automationNode",
     position: { x: CARD_X, y },
-    data: { kind: "complete", label: "Complete", subtitle: "All actions completed" },
+    data: {
+      kind: "complete",
+      label: "Complete",
+      subtitle: endsWithDelete ? "Contact deleted" : "All actions completed",
+    },
   })
   edges.push({
     id: `${previousId}-complete`,

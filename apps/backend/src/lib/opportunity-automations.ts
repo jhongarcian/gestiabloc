@@ -65,6 +65,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "ADD_CONTACT_NOTE",
   "CREATE_TASK",
   "WAIT",
+  "DELETE_CONTACT",
 ] as const
 
 export const AUTOMATION_WAIT_UNITS = ["SECONDS", "MINUTES", "HOURS", "DAYS"] as const
@@ -287,6 +288,7 @@ export const AutomationActionInputSchema = z.discriminatedUnion("type", [
     taskConfig: AutomationTaskConfigSchema,
   }),
   z.object({ type: z.literal("WAIT"), nodeKey: actionNodeKeySchema, waitConfig: AutomationWaitConfigSchema }),
+  z.object({ type: z.literal("DELETE_CONTACT"), nodeKey: actionNodeKeySchema }),
 ])
 
 export const AutomationUpsertSchema = z
@@ -777,6 +779,15 @@ export async function validateAutomationConfiguration(
   const actions = input.actions.map((action, index) => {
     const nodeKey = actionNodeKeys[index]!
     const base = { tenantId, nodeKey, type: action.type, sortOrder: (index + 1) * 10 }
+    if (action.type === "DELETE_CONTACT") {
+      if (index !== input.actions.length - 1) {
+        throw new AutomationConfigurationError(
+          "DELETE_CONTACT_MUST_BE_LAST",
+          "Delete contact can only be the last action in an automation.",
+        )
+      }
+      return base
+    }
     if (action.type === "WAIT") {
       const waitConfig = action.waitConfig.mode === "FIXED_DATE"
         ? (() => {
@@ -1247,9 +1258,10 @@ async function applyAutomationAction(
     contactId: string
     catalog: AutomationRuntimeCatalog
     occurredAt: Date
+    runId?: string | null
   },
 ) {
-  const { action, actionIndex, automationId, automationName, tenantId, contactId, catalog, occurredAt } = params
+  const { action, actionIndex, automationId, automationName, tenantId, contactId, catalog, occurredAt, runId } = params
   try {
     if (action.type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
       const preparedUpdates = action.customFieldUpdates.map((update) => {
@@ -1571,6 +1583,52 @@ async function applyAutomationAction(
         details: `Created task “${name}” · ${assignee}${dueLabel ? ` · Due ${dueLabel}` : ""}.`,
         notificationIds,
       }
+    } else if (action.type === "DELETE_CONTACT") {
+      await prismaTx.automationRun.updateMany({
+        where: {
+          tenantId,
+          contactId,
+          status: { in: ["RUNNING", "WAITING"] },
+          ...(runId ? { id: { not: runId } } : {}),
+        },
+        data: {
+          status: "EXITED",
+          resumeAt: null,
+          waitingNodeKey: null,
+          waitingNodeExecutionId: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          exitedAt: occurredAt,
+        },
+      })
+      await prismaTx.automationNodeExecution.updateMany({
+        where: { tenantId, contactId, status: "WAITING" },
+        data: {
+          status: "SKIPPED",
+          reasonCode: "CONTACT_DELETED",
+          details: "The contact was deleted by an automation and removed from all workflows.",
+          occurredAt,
+        },
+      })
+      await prismaTx.automationProcessContact.updateMany({
+        where: { tenantId, contactId, status: "PENDING" },
+        data: {
+          status: "FAILED",
+          errorCode: "CONTACT_DELETED",
+          errorMessage: "The contact was deleted by an automation.",
+          completedAt: occurredAt,
+        },
+      })
+      await prismaTx.notification.updateMany({
+        where: { tenantId, contactId },
+        data: { contactId: null },
+      })
+      const deleted = await prismaTx.contact.deleteMany({ where: { tenantId, id: contactId } })
+      if (deleted.count !== 1) throw new Error("The contact is no longer available.")
+      return {
+        details: "Deleted the contact and removed it from all workflows in this account.",
+        contactDeleted: true,
+      }
     }
   } catch (error) {
     throw new AutomationExecutionError({
@@ -1591,6 +1649,15 @@ export async function applyAutomationActions(
   const occurredAt = new Date()
   for (let index = 0; index < actions.length; index += 1) {
     if (actions[index]!.type === "WAIT") continue
+    if (actions[index]!.type === "DELETE_CONTACT" && index !== actions.length - 1) {
+      throw new AutomationExecutionError({
+        automationId: params.automation.id,
+        automationName: params.automation.name,
+        actionIndex: index,
+        contactId: params.contactId,
+        message: "Delete contact can only be the last action in an automation.",
+      })
+    }
     await applyAutomationAction(prismaTx, {
       action: actions[index]!,
       actionIndex: index,
@@ -1600,6 +1667,7 @@ export async function applyAutomationActions(
       contactId: params.contactId,
       catalog: params.catalog,
       occurredAt,
+      runId: null,
     })
   }
 }
@@ -1732,6 +1800,7 @@ async function executeAutomationSegmentTx(
   } satisfies Omit<AutomationNodeLogData, "id" | "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
   const logs: AutomationNodeLogData[] = []
   const notificationIds: string[] = []
+  let contactDeleted = false
 
   for (let index = startIndex; index < actions.length; index += 1) {
     const action = actions[index]!
@@ -1760,7 +1829,7 @@ async function executeAutomationSegmentTx(
             leaseExpiresAt: null,
           },
         })
-        return { logs, notificationIds, status: "WAITING" as const }
+        return { logs, notificationIds, status: "WAITING" as const, contactDeleted: false }
       }
 
       logs.push(actionLog(
@@ -1804,7 +1873,7 @@ async function executeAutomationSegmentTx(
             actionCount: index + 1,
           },
         })
-        return { logs, notificationIds, status: "EXITED" as const }
+        return { logs, notificationIds, status: "EXITED" as const, contactDeleted: false }
       }
 
       if (action.waitConfig.mode === "FIXED_DATE" && action.waitConfig.pastBehavior === "GO_TO_STEP") {
@@ -1828,6 +1897,15 @@ async function executeAutomationSegmentTx(
     }
 
     try {
+      if (action.type === "DELETE_CONTACT" && index !== actions.length - 1) {
+        throw new AutomationExecutionError({
+          automationId: run.automationId,
+          automationName: run.automationName,
+          actionIndex: index,
+          contactId: run.contactId,
+          message: "Delete contact can only be the last action in an automation.",
+        })
+      }
       const successDetails = await applyAutomationAction(prismaTx, {
         action,
         actionIndex: index,
@@ -1837,12 +1915,21 @@ async function executeAutomationSegmentTx(
         contactId: run.contactId,
         catalog,
         occurredAt: now,
+        runId: run.id,
       })
       const details = typeof successDetails === "string"
         ? successDetails
         : successDetails?.details
       if (typeof successDetails === "object" && successDetails?.notificationIds) {
         notificationIds.push(...successDetails.notificationIds)
+      }
+      if (
+        typeof successDetails === "object" &&
+        successDetails !== null &&
+        "contactDeleted" in successDetails &&
+        successDetails.contactDeleted === true
+      ) {
+        contactDeleted = true
       }
       logs.push(actionLog(base, action, index, "EXECUTED", null, details ?? "Action completed successfully."))
     } catch (error) {
@@ -1881,7 +1968,12 @@ async function executeAutomationSegmentTx(
       actionCount: actions.length,
     },
   })
-  return { logs, notificationIds, status: "SUCCEEDED" as const }
+  return {
+    logs: contactDeleted ? logs.map((log) => ({ ...log, contactId: null })) : logs,
+    notificationIds,
+    status: "SUCCEEDED" as const,
+    contactDeleted,
+  }
 }
 
 function evaluateAutomationTrigger(
@@ -1934,7 +2026,12 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
     },
   })
   if (automations.length === 0) {
-    return { matchedCount: 0, executedCount: 0, notificationIds: [] as string[] }
+    return {
+      matchedCount: 0,
+      executedCount: 0,
+      notificationIds: [] as string[],
+      contactDeleted: false,
+    }
   }
 
   const [contact, catalog] = await Promise.all([
@@ -2025,9 +2122,24 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
   })
 
   const notificationIds: string[] = []
+  let executedCount = 0
+  let contactDeleted = false
   for (let planIndex = 0; planIndex < plans.length; planIndex += 1) {
     const plan = plans[planIndex]
     if (!plan.shouldRun) continue
+
+    if (contactDeleted) {
+      const triggerLog = plan.logs[0]!
+      plan.logs.push(...plan.actions.map((action, actionIndex) => actionLog(
+        triggerLog,
+        action,
+        actionIndex,
+        "SKIPPED",
+        "CONTACT_DELETED",
+        "Skipped because an earlier automation deleted the contact.",
+      )))
+      continue
+    }
 
     try {
       const triggerLog = plan.logs[0]!
@@ -2056,8 +2168,10 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
         catalog,
         startIndex: 0,
       })
+      executedCount += 1
       plan.logs.push(...result.logs)
       notificationIds.push(...result.notificationIds)
+      if (result.contactDeleted) contactDeleted = true
     } catch (error) {
       if (error instanceof AutomationExecutionError) {
         for (let index = 0; index < plans.length; index += 1) {
@@ -2103,13 +2217,15 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
     }
   }
 
-  const nodeExecutions = plans.flatMap((plan: { logs: AutomationNodeLogData[] }) => plan.logs)
+  const nodeExecutions = plans
+    .flatMap((plan: { logs: AutomationNodeLogData[] }) => plan.logs)
+    .map((log) => contactDeleted ? { ...log, contactId: null } : log)
   if (nodeExecutions.length > 0) {
     await prismaTx.automationNodeExecution.createMany({ data: nodeExecutions })
   }
 
   const matchedCount = plans.filter((plan: { shouldRun: boolean }) => plan.shouldRun).length
-  return { matchedCount, executedCount: matchedCount, notificationIds }
+  return { matchedCount, executedCount, notificationIds, contactDeleted }
 }
 
 export async function recordAutomationFailure(prismaClient: any, event: AutomationEvent, error: AutomationExecutionError) {

@@ -122,6 +122,7 @@ export type AutomationAction = {
     | "ADD_CONTACT_NOTE"
     | "CREATE_TASK"
     | "WAIT"
+    | "DELETE_CONTACT"
   customFieldUpdates?: AutomationFieldUpdate[] | null
   statusConfigId?: string | null
   assignedUserId?: string | null

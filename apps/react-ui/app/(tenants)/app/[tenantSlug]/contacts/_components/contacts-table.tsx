@@ -1696,6 +1696,7 @@ export function ContactsTable({
                                 <AvatarImage
                                   src={contact.assignedTo.image}
                                   alt={`${contact.assignedTo.name} profile photo`}
+                                  className="object-cover"
                                 />
                               ) : null}
                               <AvatarFallback>

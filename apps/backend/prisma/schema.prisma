@@ -318,6 +318,7 @@ enum AutomationActionType {
   ADD_CONTACT_NOTE
   CREATE_TASK
   WAIT
+  DELETE_CONTACT
 }
 
 enum AutomationExecutionStatus {

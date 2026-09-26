@@ -6131,6 +6131,10 @@ components:
             - ADD_CONTACT_NOTE
             - CREATE_TASK
             - WAIT
+            - DELETE_CONTACT
+          description: >-
+            DELETE_CONTACT permanently removes the contact from the tenant account and
+            must be the final action in the automation.
         customFieldId:
           type: string
         customFieldUpdates:

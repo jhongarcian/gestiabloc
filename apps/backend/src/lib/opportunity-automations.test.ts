@@ -354,6 +354,43 @@ describe("AutomationUpsertSchema", () => {
       /only go to an action that appears later/,
     )
   })
+
+  test("requires delete contact to be the final action", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const base = {
+      name: "Delete completed contact",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED" as const, pipelineId: "pipeline-1" },
+      conditions: [],
+    }
+    const valid = AutomationUpsertSchema.parse({
+      ...base,
+      actions: [
+        { type: "SET_CONTACT_STATUS", statusConfigId: "active" },
+        { type: "DELETE_CONTACT" },
+      ],
+    })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", valid)
+    assert.equal(normalized.actions.at(-1)?.type, "DELETE_CONTACT")
+
+    const invalid = AutomationUpsertSchema.parse({
+      ...base,
+      actions: [
+        { type: "DELETE_CONTACT" },
+        { type: "SET_CONTACT_STATUS", statusConfigId: "active" },
+      ],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalid),
+      /only be the last action/,
+    )
+  })
 })
 
 describe("executeOpportunityAutomations", () => {
@@ -484,7 +521,7 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 0, executedCount: 0, notificationIds: [] })
+    assert.deepEqual(result, { matchedCount: 0, executedCount: 0, notificationIds: [], contactDeleted: false })
     assert.equal(tagRemovals, 0)
     assert.equal(contactUpdates, 0)
     assert.equal(executions, 0)
@@ -574,11 +611,133 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 1, executedCount: 1, notificationIds: [] })
+    assert.deepEqual(result, { matchedCount: 1, executedCount: 1, notificationIds: [], contactDeleted: false })
     assert.equal(tagRemovals, 1)
     assert.equal(contactUpdates, 1)
     assert.equal(executions, 1)
     assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "EXECUTED", "EXECUTED"])
+  })
+
+  test("deletes the contact as a terminal action and skips later automations", async () => {
+    let runCreates = 0
+    let contactDeletes = 0
+    let contactUpdates = 0
+    let exitedRunWhere: Record<string, unknown> | null = null
+    let nodeLogs: Array<Record<string, unknown>> = []
+    const prismaTx = {
+      automation: {
+        findMany: async () => [
+          {
+            id: "automation-delete",
+            name: "Delete finished contact",
+            triggerType: "OPPORTUNITY_CREATED",
+            pipelineId: "pipeline-work",
+            targetStageId: null,
+            conditions: [],
+            actions: [{
+              nodeKey: "00000000-0000-4000-8000-000000000001",
+              type: "DELETE_CONTACT",
+            }],
+          },
+          {
+            id: "automation-later",
+            name: "Must not run",
+            triggerType: "OPPORTUNITY_CREATED",
+            pipelineId: "pipeline-work",
+            targetStageId: null,
+            conditions: [],
+            actions: [{
+              nodeKey: "00000000-0000-4000-8000-000000000002",
+              type: "SET_CONTACT_STATUS",
+              statusConfigId: "inactive",
+            }],
+          },
+        ],
+      },
+      contact: {
+        findFirst: async () => ({
+          id: "contact-1",
+          firstName: "Taylor",
+          middleName: null,
+          lastName: "Reed",
+          statusConfigId: "active",
+          assignedToUserId: null,
+          tags: [],
+          customFieldValues: [],
+        }),
+        update: async () => { contactUpdates += 1 },
+        deleteMany: async () => {
+          contactDeletes += 1
+          return { count: 1 }
+        },
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [
+        { id: "active", name: "Active" },
+        { id: "inactive", name: "Inactive" },
+      ] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: {
+        findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }],
+      },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => {
+          runCreates += 1
+          return { id: `run-${runCreates}`, ...data }
+        },
+        update: async () => undefined,
+        updateMany: async ({ where }: { where: Record<string, unknown> }) => {
+          exitedRunWhere = where
+          return { count: 1 }
+        },
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        updateMany: async () => ({ count: 1 }),
+        createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => {
+          nodeLogs = data
+        },
+      },
+      automationProcessContact: { updateMany: async () => ({ count: 0 }) },
+      notification: { updateMany: async () => ({ count: 0 }) },
+    }
+
+    const result = await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.deepEqual(result, {
+      matchedCount: 2,
+      executedCount: 1,
+      notificationIds: [],
+      contactDeleted: true,
+    })
+    assert.equal(runCreates, 1)
+    assert.equal(contactDeletes, 1)
+    assert.equal(contactUpdates, 0)
+    assert.deepEqual(exitedRunWhere, {
+      tenantId: "tenant-1",
+      contactId: "contact-1",
+      status: { in: ["RUNNING", "WAITING"] },
+      id: { not: "run-1" },
+    })
+    assert.deepEqual(nodeLogs.map((log) => log.status), [
+      "EXECUTED",
+      "EXECUTED",
+      "EXECUTED",
+      "SKIPPED",
+    ])
+    assert.ok(nodeLogs.every((log) => log.contactId === null))
+    assert.equal(nodeLogs[3]?.reasonCode, "CONTACT_DELETED")
   })
 
   test("updates standard and custom fields in one logged action", async () => {
@@ -1004,6 +1163,7 @@ describe("executeOpportunityAutomations", () => {
       matchedCount: 1,
       executedCount: 1,
       notificationIds: ["notification-1"],
+      contactDeleted: false,
     })
     assert.equal(created.task?.name, "Call Taylor Reed")
     assert.equal(created.task?.description, "Email: taylor@example.com")
@@ -1228,7 +1388,7 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 1, executedCount: 1, notificationIds: [] })
+    assert.deepEqual(result, { matchedCount: 1, executedCount: 1, notificationIds: [], contactDeleted: false })
     assert.equal(contactUpdates, 0)
     assert.equal(contactNotes, 1)
     assert.equal(executionCount, 0)
@@ -1464,7 +1624,7 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 0, executedCount: 0, notificationIds: [] })
+    assert.deepEqual(result, { matchedCount: 0, executedCount: 0, notificationIds: [], contactDeleted: false })
     assert.deepEqual(nodeLogs.map((log) => log.status), ["SKIPPED", "SKIPPED"])
     assert.match(String(nodeLogs[0]?.details), /listens for Opportunity enters stage/)
   })

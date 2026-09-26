@@ -13,6 +13,7 @@ const labels = {
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_TASK: "Create task",
   WAIT: "Wait",
+  DELETE_CONTACT: "Delete contact",
 } as const
 
 describe("buildAutomationFlowGraph", () => {
@@ -179,5 +180,33 @@ describe("buildAutomationFlowGraph", () => {
     const taskNode = graph.nodes.find((node) => node.id.includes("00000000"))
     assert.equal(taskNode?.data.label, "Create task")
     assert.equal(taskNode?.data.subtitle, "Task: Call {contact.name}")
+  })
+
+  test("places delete contact directly before completion", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "DELETE_CONTACT",
+        }],
+      },
+      null,
+      labels,
+    )
+
+    assert.deepEqual(
+      graph.nodes.map((node) => node.id),
+      ["trigger", "add-0", "action-00000000-0000-4000-8000-000000000001", "complete"],
+    )
+    assert.equal(graph.nodes.at(-2)?.data.subtitle, "Remove from this account")
+    assert.equal(graph.nodes.at(-1)?.data.subtitle, "Contact deleted")
+    assert.ok(graph.edges.some((edge) =>
+      edge.source === "action-00000000-0000-4000-8000-000000000001" &&
+      edge.target === "complete"
+    ))
   })
 })
