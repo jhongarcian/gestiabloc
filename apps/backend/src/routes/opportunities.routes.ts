@@ -4,6 +4,7 @@ import { z } from "zod"
 import { prisma } from "../lib/prisma.js"
 import {
   AutomationExecutionError,
+  deleteAutomationContactFileObjects,
   executeOpportunityAutomations,
   recordAutomationFailure,
 } from "../lib/opportunity-automations.js"
@@ -1096,7 +1097,14 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
     await emitStoredTaskNotifications(createdResult.automation.notificationIds).catch((error) => {
       console.error("Could not emit automation task notification", error)
     })
-    const { notificationIds: _notificationIds, ...automationResult } = createdResult.automation
+    await deleteAutomationContactFileObjects(
+      createdResult.automation.fileCleanupCandidates,
+    )
+    const {
+      notificationIds: _notificationIds,
+      fileCleanupCandidates: _fileCleanupCandidates,
+      ...automationResult
+    } = createdResult.automation
 
     return res.status(201).json({
       ok: true,
@@ -1204,6 +1212,7 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
                 matchedCount: 0,
                 executedCount: 0,
                 notificationIds: [] as string[],
+                fileCleanupCandidates: [],
                 contactDeleted: false,
               },
             }
@@ -1239,7 +1248,14 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
       await emitStoredTaskNotifications(moveResult.automation.notificationIds ?? []).catch((error) => {
         console.error("Could not emit automation task notification", error)
       })
-      const { notificationIds: _notificationIds, ...automationResult } = moveResult.automation
+      await deleteAutomationContactFileObjects(
+        moveResult.automation.fileCleanupCandidates,
+      )
+      const {
+        notificationIds: _notificationIds,
+        fileCleanupCandidates: _fileCleanupCandidates,
+        ...automationResult
+      } = moveResult.automation
 
       return res.json({
         ok: true,

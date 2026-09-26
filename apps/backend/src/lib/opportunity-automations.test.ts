@@ -9,6 +9,7 @@ import {
   getAutomationOperatorsForFieldType,
   recordAutomationFailure,
   resumeDueAutomationRuns,
+  deleteAutomationContactFileObjects,
   validateAutomationConfiguration,
 } from "./opportunity-automations.js"
 
@@ -41,6 +42,24 @@ describe("evaluateAutomationOperator", () => {
       "IS_EMPTY",
       "IS_NOT_EMPTY",
     ])
+  })
+})
+
+describe("deleteAutomationContactFileObjects", () => {
+  test("deduplicates storage objects and retries transient deletion failures", async () => {
+    let attempts = 0
+    await deleteAutomationContactFileObjects(
+      [
+        { id: "file-orphan", tenantId: "tenant-1", key: "notes/orphan.pdf" },
+        { id: "file-orphan", tenantId: "tenant-1", key: "notes/orphan.pdf" },
+      ],
+      async ({ path }) => {
+        assert.equal(path, "notes/orphan.pdf")
+        attempts += 1
+        if (attempts < 3) throw new Error("Temporary storage error")
+      },
+    )
+    assert.equal(attempts, 3)
   })
 })
 
@@ -521,7 +540,13 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 0, executedCount: 0, notificationIds: [], contactDeleted: false })
+    assert.deepEqual(result, {
+      matchedCount: 0,
+      executedCount: 0,
+      notificationIds: [],
+      fileCleanupCandidates: [],
+      contactDeleted: false,
+    })
     assert.equal(tagRemovals, 0)
     assert.equal(contactUpdates, 0)
     assert.equal(executions, 0)
@@ -611,7 +636,13 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 1, executedCount: 1, notificationIds: [], contactDeleted: false })
+    assert.deepEqual(result, {
+      matchedCount: 1,
+      executedCount: 1,
+      notificationIds: [],
+      fileCleanupCandidates: [],
+      contactDeleted: false,
+    })
     assert.equal(tagRemovals, 1)
     assert.equal(contactUpdates, 1)
     assert.equal(executions, 1)
@@ -623,6 +654,7 @@ describe("executeOpportunityAutomations", () => {
     let contactDeletes = 0
     let contactUpdates = 0
     let exitedRunWhere: Record<string, unknown> | null = null
+    let deletedFileWhere: Record<string, unknown> | null = null
     let nodeLogs: Array<Record<string, unknown>> = []
     const prismaTx = {
       automation: {
@@ -701,6 +733,31 @@ describe("executeOpportunityAutomations", () => {
       },
       automationProcessContact: { updateMany: async () => ({ count: 0 }) },
       notification: { updateMany: async () => ({ count: 0 }) },
+      contactNoteAttachment: {
+        findMany: async () => [{
+          file: { id: "file-1", tenantId: "tenant-1", key: "notes/file-1.pdf" },
+        }],
+      },
+      contactServiceNoteAttachment: {
+        findMany: async () => [
+          { file: { id: "file-1", tenantId: "tenant-1", key: "notes/file-1.pdf" } },
+          { file: { id: "file-2", tenantId: "tenant-1", key: "notes/file-2.pdf" } },
+        ],
+      },
+      file: {
+        findMany: async ({ where }: { where: Record<string, unknown> }) => {
+          assert.deepEqual(where, {
+            id: { in: ["file-1", "file-2"] },
+            noteAttachments: { none: {} },
+            serviceNoteAttachments: { none: {} },
+          })
+          return [{ id: "file-1", tenantId: "tenant-1", key: "notes/file-1.pdf" }]
+        },
+        deleteMany: async ({ where }: { where: Record<string, unknown> }) => {
+          deletedFileWhere = where
+          return { count: 1 }
+        },
+      },
     }
 
     const result = await executeOpportunityAutomations(prismaTx, {
@@ -719,11 +776,15 @@ describe("executeOpportunityAutomations", () => {
       matchedCount: 2,
       executedCount: 1,
       notificationIds: [],
+      fileCleanupCandidates: [
+        { id: "file-1", tenantId: "tenant-1", key: "notes/file-1.pdf" },
+      ],
       contactDeleted: true,
     })
     assert.equal(runCreates, 1)
     assert.equal(contactDeletes, 1)
     assert.equal(contactUpdates, 0)
+    assert.deepEqual(deletedFileWhere, { id: { in: ["file-1"] } })
     assert.deepEqual(exitedRunWhere, {
       tenantId: "tenant-1",
       contactId: "contact-1",
@@ -1163,6 +1224,7 @@ describe("executeOpportunityAutomations", () => {
       matchedCount: 1,
       executedCount: 1,
       notificationIds: ["notification-1"],
+      fileCleanupCandidates: [],
       contactDeleted: false,
     })
     assert.equal(created.task?.name, "Call Taylor Reed")
@@ -1388,7 +1450,13 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 1, executedCount: 1, notificationIds: [], contactDeleted: false })
+    assert.deepEqual(result, {
+      matchedCount: 1,
+      executedCount: 1,
+      notificationIds: [],
+      fileCleanupCandidates: [],
+      contactDeleted: false,
+    })
     assert.equal(contactUpdates, 0)
     assert.equal(contactNotes, 1)
     assert.equal(executionCount, 0)
@@ -1624,7 +1692,13 @@ describe("executeOpportunityAutomations", () => {
       targetStageId: "stage-new",
     })
 
-    assert.deepEqual(result, { matchedCount: 0, executedCount: 0, notificationIds: [], contactDeleted: false })
+    assert.deepEqual(result, {
+      matchedCount: 0,
+      executedCount: 0,
+      notificationIds: [],
+      fileCleanupCandidates: [],
+      contactDeleted: false,
+    })
     assert.deepEqual(nodeLogs.map((log) => log.status), ["SKIPPED", "SKIPPED"])
     assert.match(String(nodeLogs[0]?.details), /listens for Opportunity enters stage/)
   })

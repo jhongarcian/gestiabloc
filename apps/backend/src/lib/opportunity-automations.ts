@@ -26,6 +26,7 @@ import {
   type AutomationTaskConfig,
 } from "./automation-task.js"
 import { NoteBodyInputSchema, NoteTitleInputSchema } from "./note-inputs.js"
+import { deletePrivateObject } from "./private-storage.js"
 import { emitNotificationCreated, type RealtimeNotificationPayload } from "./realtime.js"
 import { getTaskPriorityFromDueDate, isCompletedStatusName } from "./task-priority-values.js"
 
@@ -1220,6 +1221,35 @@ export async function getAutomationRuntimeCatalog(
 
 type RuntimeAutomationAction = z.infer<typeof AutomationActionInputSchema> & { nodeKey: string }
 
+export type AutomationFileCleanupCandidate = {
+  id: string
+  tenantId: string
+  key: string
+}
+
+export async function deleteAutomationContactFileObjects(
+  candidates: AutomationFileCleanupCandidate[],
+  deleteObject: (params: { path: string }) => Promise<void> = deletePrivateObject,
+) {
+  const uniqueCandidates = [...new Map(
+    candidates.map((candidate) => [candidate.id, candidate]),
+  ).values()]
+  if (uniqueCandidates.length === 0) return
+
+  await Promise.all(uniqueCandidates.map(async (file) => {
+    let lastError: unknown = null
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await deleteObject({ path: file.key })
+        return
+      } catch (error) {
+        lastError = error
+      }
+    }
+    console.error(`Could not delete automation contact file ${file.id}`, lastError)
+  }))
+}
+
 function automationActionSnapshot(action: any): RuntimeAutomationAction {
   const parsed = AutomationActionInputSchema.parse({
     nodeKey: action.nodeKey ?? action.id ?? randomUUID(),
@@ -1584,6 +1614,27 @@ async function applyAutomationAction(
         notificationIds,
       }
     } else if (action.type === "DELETE_CONTACT") {
+      const [contactNoteAttachments, serviceNoteAttachments] = await Promise.all([
+        prismaTx.contactNoteAttachment.findMany({
+          where: { tenantId, note: { contactId } },
+          select: {
+            file: { select: { id: true, tenantId: true, key: true } },
+          },
+        }),
+        prismaTx.contactServiceNoteAttachment.findMany({
+          where: { tenantId, note: { contactService: { contactId } } },
+          select: {
+            file: { select: { id: true, tenantId: true, key: true } },
+          },
+        }),
+      ])
+      const possibleFileCleanupCandidates = [...new Map(
+        [...contactNoteAttachments, ...serviceNoteAttachments]
+          .map((attachment: { file: AutomationFileCleanupCandidate }) => [
+            attachment.file.id,
+            attachment.file,
+          ]),
+      ).values()]
       await prismaTx.automationRun.updateMany({
         where: {
           tenantId,
@@ -1625,9 +1676,26 @@ async function applyAutomationAction(
       })
       const deleted = await prismaTx.contact.deleteMany({ where: { tenantId, id: contactId } })
       if (deleted.count !== 1) throw new Error("The contact is no longer available.")
+      const fileCleanupCandidates: AutomationFileCleanupCandidate[] =
+        possibleFileCleanupCandidates.length > 0
+          ? await prismaTx.file.findMany({
+              where: {
+                id: { in: possibleFileCleanupCandidates.map((file) => file.id) },
+                noteAttachments: { none: {} },
+                serviceNoteAttachments: { none: {} },
+              },
+              select: { id: true, tenantId: true, key: true },
+            })
+          : []
+      if (fileCleanupCandidates.length > 0) {
+        await prismaTx.file.deleteMany({
+          where: { id: { in: fileCleanupCandidates.map((file) => file.id) } },
+        })
+      }
       return {
         details: "Deleted the contact and removed it from all workflows in this account.",
         contactDeleted: true,
+        fileCleanupCandidates,
       }
     }
   } catch (error) {
@@ -1800,6 +1868,7 @@ async function executeAutomationSegmentTx(
   } satisfies Omit<AutomationNodeLogData, "id" | "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
   const logs: AutomationNodeLogData[] = []
   const notificationIds: string[] = []
+  const fileCleanupCandidates: AutomationFileCleanupCandidate[] = []
   let contactDeleted = false
 
   for (let index = startIndex; index < actions.length; index += 1) {
@@ -1829,7 +1898,13 @@ async function executeAutomationSegmentTx(
             leaseExpiresAt: null,
           },
         })
-        return { logs, notificationIds, status: "WAITING" as const, contactDeleted: false }
+        return {
+          logs,
+          notificationIds,
+          fileCleanupCandidates,
+          status: "WAITING" as const,
+          contactDeleted: false,
+        }
       }
 
       logs.push(actionLog(
@@ -1873,7 +1948,13 @@ async function executeAutomationSegmentTx(
             actionCount: index + 1,
           },
         })
-        return { logs, notificationIds, status: "EXITED" as const, contactDeleted: false }
+        return {
+          logs,
+          notificationIds,
+          fileCleanupCandidates,
+          status: "EXITED" as const,
+          contactDeleted: false,
+        }
       }
 
       if (action.waitConfig.mode === "FIXED_DATE" && action.waitConfig.pastBehavior === "GO_TO_STEP") {
@@ -1931,6 +2012,14 @@ async function executeAutomationSegmentTx(
       ) {
         contactDeleted = true
       }
+      if (
+        typeof successDetails === "object" &&
+        successDetails !== null &&
+        "fileCleanupCandidates" in successDetails &&
+        Array.isArray(successDetails.fileCleanupCandidates)
+      ) {
+        fileCleanupCandidates.push(...successDetails.fileCleanupCandidates)
+      }
       logs.push(actionLog(base, action, index, "EXECUTED", null, details ?? "Action completed successfully."))
     } catch (error) {
       if (error instanceof AutomationExecutionError) {
@@ -1971,6 +2060,7 @@ async function executeAutomationSegmentTx(
   return {
     logs: contactDeleted ? logs.map((log) => ({ ...log, contactId: null })) : logs,
     notificationIds,
+    fileCleanupCandidates,
     status: "SUCCEEDED" as const,
     contactDeleted,
   }
@@ -2030,6 +2120,7 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
       matchedCount: 0,
       executedCount: 0,
       notificationIds: [] as string[],
+      fileCleanupCandidates: [] as AutomationFileCleanupCandidate[],
       contactDeleted: false,
     }
   }
@@ -2122,6 +2213,7 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
   })
 
   const notificationIds: string[] = []
+  const fileCleanupCandidates: AutomationFileCleanupCandidate[] = []
   let executedCount = 0
   let contactDeleted = false
   for (let planIndex = 0; planIndex < plans.length; planIndex += 1) {
@@ -2171,6 +2263,7 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
       executedCount += 1
       plan.logs.push(...result.logs)
       notificationIds.push(...result.notificationIds)
+      fileCleanupCandidates.push(...result.fileCleanupCandidates)
       if (result.contactDeleted) contactDeleted = true
     } catch (error) {
       if (error instanceof AutomationExecutionError) {
@@ -2225,7 +2318,13 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
   }
 
   const matchedCount = plans.filter((plan: { shouldRun: boolean }) => plan.shouldRun).length
-  return { matchedCount, executedCount, notificationIds, contactDeleted }
+  return {
+    matchedCount,
+    executedCount,
+    notificationIds,
+    fileCleanupCandidates,
+    contactDeleted,
+  }
 }
 
 export async function recordAutomationFailure(prismaClient: any, event: AutomationEvent, error: AutomationExecutionError) {
@@ -2384,7 +2483,13 @@ async function resumeAutomationRun(prismaClient: any, runId: string, leaseToken:
       const run = await transaction.automationRun.findFirst({
         where: { id: runId, status: "RUNNING", leaseToken },
       })
-      if (!run) return { status: "NOT_CLAIMED" as const, notificationIds: [] as string[] }
+      if (!run) {
+        return {
+          status: "NOT_CLAIMED" as const,
+          notificationIds: [] as string[],
+          fileCleanupCandidates: [] as AutomationFileCleanupCandidate[],
+        }
+      }
       const actions = parseActionSnapshot(run.actionSnapshot)
       const contact = run.contactId
         ? await transaction.contact.findFirst({ where: { tenantId: run.tenantId, id: run.contactId }, select: { id: true } })
@@ -2415,11 +2520,16 @@ async function resumeAutomationRun(prismaClient: any, runId: string, leaseToken:
       if (result.logs.length > 0) {
         await transaction.automationNodeExecution.createMany({ data: result.logs })
       }
-      return { status: result.status, notificationIds: result.notificationIds }
+      return {
+        status: result.status,
+        notificationIds: result.notificationIds,
+        fileCleanupCandidates: result.fileCleanupCandidates,
+      }
     })
     await emitAutomationTaskNotifications(prismaClient, result.notificationIds).catch((error) => {
       console.error("Could not emit automation task notification", error)
     })
+    await deleteAutomationContactFileObjects(result.fileCleanupCandidates)
     return { status: result.status }
   } catch (error) {
     await recordAutomationRunFailure(prismaClient, runId, leaseToken, error)
