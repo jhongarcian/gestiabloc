@@ -37,7 +37,11 @@ const ACTION_LABELS: Record<string, string> = {
   REMOVE_CONTACT_TAG: "Remove contact tag",
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_TASK: "Create task",
+  FORMAT_DATE_TIME: "Date/Time formatter",
+  FORMAT_NUMBER: "Number formatter",
+  MATH_OPERATION: "Math operation",
   WAIT: "Wait",
+  DELETE_CONTACT: "Delete contact",
 }
 
 export function getAutomationActionLabel(actionType: string) {

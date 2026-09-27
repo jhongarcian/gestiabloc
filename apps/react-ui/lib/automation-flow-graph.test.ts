@@ -12,7 +12,11 @@ const labels = {
   REMOVE_CONTACT_TAG: "Remove contact tag",
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_TASK: "Create task",
+  FORMAT_DATE_TIME: "Date/Time formatter",
+  FORMAT_NUMBER: "Number formatter",
+  MATH_OPERATION: "Math operation",
   WAIT: "Wait",
+  DELETE_CONTACT: "Delete contact",
 } as const
 
 describe("buildAutomationFlowGraph", () => {
@@ -179,5 +183,130 @@ describe("buildAutomationFlowGraph", () => {
     const taskNode = graph.nodes.find((node) => node.id.includes("00000000"))
     assert.equal(taskNode?.data.label, "Create task")
     assert.equal(taskNode?.data.subtitle, "Task: Call {contact.name}")
+  })
+
+  test("summarizes formatter outputs and comparisons", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "FORMAT_DATE_TIME",
+          dateTimeFormatterConfig: {
+            mode: "COMPARE_DATES",
+            from: { type: "CONTACT_FIELD", key: "date_of_birth" },
+            to: { type: "CURRENT_DATE" },
+            unit: "YEARS",
+            outputKey: "contact_age",
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const formatterNode = graph.nodes.find((node) => node.id.includes("00000000"))
+    assert.equal(formatterNode?.data.label, "Date/Time formatter")
+    assert.equal(formatterNode?.data.subtitle, "Compare dates · Years → contact_age")
+  })
+
+  test("summarizes number formatter output modes", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "FORMAT_NUMBER",
+          numberFormatterConfig: {
+            mode: "FORMAT_CURRENCY",
+            source: { type: "CUSTOM_FIELD", key: "premium" },
+            decimalMark: "PERIOD",
+            currencyCode: "USD",
+            outputKey: "premium_label",
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const formatterNode = graph.nodes.find((node) => node.id.includes("00000000"))
+    assert.equal(formatterNode?.data.label, "Number formatter")
+    assert.equal(formatterNode?.data.subtitle, "Currency · USD → premium_label")
+  })
+
+  test("summarizes number and date Math operations", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [
+          {
+            nodeKey: "00000000-0000-4000-8000-000000000001",
+            type: "MATH_OPERATION",
+            mathOperationConfig: {
+              mode: "NUMBER",
+              source: { type: "CUSTOM_FIELD", key: "premium" },
+              operation: "ADD",
+              operand: 25,
+              outputKey: "adjusted_premium",
+            },
+          },
+          {
+            nodeKey: "00000000-0000-4000-8000-000000000002",
+            type: "MATH_OPERATION",
+            mathOperationConfig: {
+              mode: "DATE",
+              source: { type: "CUSTOM_FIELD", key: "renewal_date" },
+              operation: "SUBTRACT",
+              amount: 2,
+              unit: "MONTHS",
+              outputKey: "notice_date",
+            },
+          },
+        ],
+      },
+      null,
+      labels,
+    )
+
+    assert.equal(graph.nodes.find((node) => node.id.endsWith("0001"))?.data.subtitle, "Add 25 → adjusted_premium")
+    assert.equal(graph.nodes.find((node) => node.id.endsWith("0002"))?.data.subtitle, "Subtract 2 months → notice_date")
+  })
+
+  test("places delete contact directly before completion", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "DELETE_CONTACT",
+        }],
+      },
+      null,
+      labels,
+    )
+
+    assert.deepEqual(
+      graph.nodes.map((node) => node.id),
+      ["trigger", "add-0", "action-00000000-0000-4000-8000-000000000001", "complete"],
+    )
+    assert.equal(graph.nodes.at(-2)?.data.subtitle, "Remove from this account")
+    assert.equal(graph.nodes.at(-1)?.data.subtitle, "Contact deleted")
+    assert.ok(graph.edges.some((edge) =>
+      edge.source === "action-00000000-0000-4000-8000-000000000001" &&
+      edge.target === "complete"
+    ))
   })
 })

@@ -141,7 +141,8 @@ type StageCardsResponse = {
 
 type MoveOpportunityResponse = {
   ok: boolean
-  opportunity: OpportunityCardRecord
+  opportunity: OpportunityCardRecord | null
+  contactDeleted?: boolean
   automation?: {
     matchedCount: number
     executedCount: number
@@ -1001,14 +1002,23 @@ export function OpportunitiesWorkspace({
         { stageId: targetStageId },
       )
 
+      if (data.contactDeleted) {
+        setBoardPipeline((current) => current ? closeOpportunityLocally(current, opportunityId) : current)
+        setSelectedOpportunity(null)
+        toast.success("Automation ran and deleted the contact.")
+        return
+      }
+      if (!data.opportunity) throw new Error("The moved opportunity is unavailable.")
+      const movedOpportunity = data.opportunity
+
       setBoardPipeline((current) => {
         if (!current) return current
-        return moveOpportunityLocally(current, opportunityId, targetStageId, data.opportunity)
+        return moveOpportunityLocally(current, opportunityId, targetStageId, movedOpportunity)
       })
 
       setSelectedOpportunity((current) => {
         if (!current || current.id !== opportunityId) return current
-        return data.opportunity
+        return movedOpportunity
       })
       if ((data.automation?.executedCount ?? 0) > 0) {
         toast.success(`${data.automation!.executedCount} automation${data.automation!.executedCount === 1 ? "" : "s"} ran.`)
@@ -1153,9 +1163,17 @@ export function OpportunitiesWorkspace({
         { stageId: targetStageId },
       )
 
+      if (data.contactDeleted) {
+        setBoardPipeline((current) => current ? closeOpportunityLocally(current, opportunityId) : current)
+        toast.success("Automation ran and deleted the contact.")
+        return
+      }
+      if (!data.opportunity) throw new Error("The moved opportunity is unavailable.")
+      const movedOpportunity = data.opportunity
+
       setBoardPipeline((current) => {
         if (!current) return current
-        return moveOpportunityLocally(current, opportunityId, targetStageId, data.opportunity)
+        return moveOpportunityLocally(current, opportunityId, targetStageId, movedOpportunity)
       })
       if ((data.automation?.executedCount ?? 0) > 0) {
         toast.success(`${data.automation!.executedCount} automation${data.automation!.executedCount === 1 ? "" : "s"} ran.`)

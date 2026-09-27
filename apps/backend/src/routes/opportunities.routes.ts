@@ -4,6 +4,7 @@ import { z } from "zod"
 import { prisma } from "../lib/prisma.js"
 import {
   AutomationExecutionError,
+  deleteAutomationContactFileObjects,
   executeOpportunityAutomations,
   recordAutomationFailure,
 } from "../lib/opportunity-automations.js"
@@ -1089,18 +1090,28 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
       throw error
     }
 
-    if (!createdResult.opportunity) {
+    if (!createdResult.opportunity && !createdResult.automation.contactDeleted) {
       throw new Error("Opportunity creation did not return a record.")
     }
 
     await emitStoredTaskNotifications(createdResult.automation.notificationIds).catch((error) => {
       console.error("Could not emit automation task notification", error)
     })
-    const { notificationIds: _notificationIds, ...automationResult } = createdResult.automation
+    await deleteAutomationContactFileObjects(
+      createdResult.automation.fileCleanupCandidates,
+    )
+    const {
+      notificationIds: _notificationIds,
+      fileCleanupCandidates: _fileCleanupCandidates,
+      ...automationResult
+    } = createdResult.automation
 
     return res.status(201).json({
       ok: true,
-      opportunity: serializeOpportunityCard(createdResult.opportunity),
+      opportunity: createdResult.opportunity
+        ? serializeOpportunityCard(createdResult.opportunity)
+        : null,
+      contactDeleted: createdResult.automation.contactDeleted,
       stage: firstStage,
       automation: automationResult,
     })
@@ -1197,7 +1208,13 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
             return {
               current,
               concurrent: true,
-              automation: { matchedCount: 0, executedCount: 0, notificationIds: [] as string[] },
+              automation: {
+                matchedCount: 0,
+                executedCount: 0,
+                notificationIds: [] as string[],
+                fileCleanupCandidates: [],
+                contactDeleted: false,
+              },
             }
           }
           const automation = await executeOpportunityAutomations(prismaTx, event)
@@ -1221,21 +1238,31 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
         throw error
       }
 
-      if (!moveResult.current) {
-        return res.status(404).json({ error: "OPPORTUNITY_NOT_FOUND" })
-      }
       if (moveResult.concurrent) {
         return res.status(409).json({ error: "OPPORTUNITY_STAGE_CHANGED_CONCURRENTLY" })
+      }
+      if (!moveResult.current && !moveResult.automation.contactDeleted) {
+        return res.status(404).json({ error: "OPPORTUNITY_NOT_FOUND" })
       }
 
       await emitStoredTaskNotifications(moveResult.automation.notificationIds ?? []).catch((error) => {
         console.error("Could not emit automation task notification", error)
       })
-      const { notificationIds: _notificationIds, ...automationResult } = moveResult.automation
+      await deleteAutomationContactFileObjects(
+        moveResult.automation.fileCleanupCandidates,
+      )
+      const {
+        notificationIds: _notificationIds,
+        fileCleanupCandidates: _fileCleanupCandidates,
+        ...automationResult
+      } = moveResult.automation
 
       return res.json({
         ok: true,
-        opportunity: serializeOpportunityCard(moveResult.current),
+        opportunity: moveResult.current
+          ? serializeOpportunityCard(moveResult.current)
+          : null,
+        contactDeleted: moveResult.automation.contactDeleted,
         stage: targetStage,
         automation: automationResult,
       })

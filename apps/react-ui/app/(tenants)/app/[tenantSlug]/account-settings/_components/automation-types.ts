@@ -75,16 +75,120 @@ export type AutomationWaitConfig =
       targetNodeKey?: string
     }
 
-export type AutomationTaskDateSource =
+export type AutomationDateSource =
   | { type: "CURRENT_DATE" }
   | { type: "RELATIVE_DATE"; amount: number; unit: "DAYS" | "WEEKS" | "MONTHS" }
   | { type: "CONTACT_FIELD"; key: string }
   | { type: "CUSTOM_FIELD"; key: string }
   | { type: "SPECIFIC_DATE"; date: string; timezone: string }
 
+export type AutomationFormatterDateSource =
+  | AutomationDateSource
+  | { type: "AUTOMATION_VALUE"; key: string }
+
 export type AutomationTaskDateTime = {
-  source: AutomationTaskDateSource
+  source: AutomationDateSource
   time: string
+}
+
+export type AutomationDateTimeFormatterConfig =
+  | {
+      mode: "DATE"
+      source: AutomationFormatterDateSource
+      format: string
+      outputKey: string
+    }
+  | {
+      mode: "DATE_TIME"
+      source: AutomationFormatterDateSource
+      format: string
+      time?: string
+      outputKey: string
+    }
+  | {
+      mode: "COMPARE_DATES"
+      from: AutomationFormatterDateSource
+      to: AutomationFormatterDateSource
+      unit: "DAYS" | "MONTHS" | "YEARS"
+      outputKey: string
+    }
+
+export type AutomationNumberSource =
+  | { type: "CONTACT_FIELD"; key: string }
+  | { type: "CUSTOM_FIELD"; key: string }
+  | { type: "AUTOMATION_VALUE"; key: string }
+
+export type AutomationNumberFormatterConfig =
+  | {
+      mode: "TEXT_TO_NUMBER"
+      source: AutomationNumberSource
+      decimalMark: "PERIOD" | "COMMA"
+      outputKey: string
+    }
+  | {
+      mode: "FORMAT_NUMBER"
+      source: AutomationNumberSource
+      decimalMark: "PERIOD" | "COMMA"
+      groupingStyle: "COMMA_PERIOD" | "PERIOD_COMMA" | "SPACE_COMMA" | "SPACE_PERIOD"
+      outputKey: string
+    }
+  | {
+      mode: "FORMAT_CURRENCY"
+      source: AutomationNumberSource
+      decimalMark: "PERIOD" | "COMMA"
+      currencyCode: string
+      outputKey: string
+    }
+  | {
+      mode: "FORMAT_PHONE_NUMBER"
+      source: AutomationNumberSource
+      countryCode: string
+      phoneFormat:
+        | "E164"
+        | "INTERNATIONAL"
+        | "INTERNATIONAL_NO_COUNTRY_CODE"
+        | "INTERNATIONAL_NO_HYPHENS"
+        | "INTERNATIONAL_NO_SYMBOLS"
+        | "NATIONAL"
+        | "NATIONAL_NO_PARENTHESIS"
+        | "NATIONAL_NO_SYMBOLS"
+        | "RFC3966"
+        | "RFC3966_NO_TEL"
+      outputKey: string
+    }
+  | {
+      mode: "RANDOM_NUMBER"
+      min: number
+      max: number
+      outputKey: string
+    }
+
+export type AutomationMathDateSource =
+  | { type: "CONTACT_FIELD"; key: string }
+  | { type: "CUSTOM_FIELD"; key: string }
+  | { type: "AUTOMATION_VALUE"; key: string }
+
+export type AutomationMathOperationConfig =
+  | {
+      mode: "NUMBER"
+      source: AutomationNumberSource
+      operation: "ADD" | "SUBTRACT" | "MULTIPLY" | "DIVIDE"
+      operand: number
+      outputKey: string
+    }
+  | {
+      mode: "DATE"
+      source: AutomationMathDateSource
+      operation: "ADD" | "SUBTRACT"
+      amount: number
+      unit: "DAYS" | "MONTHS" | "YEARS"
+      outputKey: string
+    }
+
+export type AutomationValueDefinition = {
+  key: string
+  label: string
+  valueKind: "NUMBER" | "DATE" | "NUMERIC_TEXT" | "PHONE" | "TEXT"
 }
 
 export type AutomationTaskConfig = {
@@ -121,7 +225,11 @@ export type AutomationAction = {
     | "REMOVE_CONTACT_TAG"
     | "ADD_CONTACT_NOTE"
     | "CREATE_TASK"
+    | "FORMAT_DATE_TIME"
+    | "FORMAT_NUMBER"
+    | "MATH_OPERATION"
     | "WAIT"
+    | "DELETE_CONTACT"
   customFieldUpdates?: AutomationFieldUpdate[] | null
   statusConfigId?: string | null
   assignedUserId?: string | null
@@ -130,6 +238,9 @@ export type AutomationAction = {
   noteTitle?: string | null
   noteBody?: string | null
   taskConfig?: AutomationTaskConfig | null
+  dateTimeFormatterConfig?: AutomationDateTimeFormatterConfig | null
+  numberFormatterConfig?: AutomationNumberFormatterConfig | null
+  mathOperationConfig?: AutomationMathOperationConfig | null
 }
 
 export type AutomationRecord = {

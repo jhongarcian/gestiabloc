@@ -3,6 +3,18 @@ import {
   taskConfigCustomFieldKeys,
 } from "./automation-task.js"
 import { AutomationCustomFieldUpdatesSchema } from "./opportunity-automations.js"
+import {
+  AutomationDateTimeFormatterConfigSchema,
+  dateTimeFormatterCustomFieldKeys,
+} from "./automation-date-time-formatter.js"
+import {
+  AutomationNumberFormatterConfigSchema,
+  numberFormatterCustomFieldKeys,
+} from "./automation-number-formatter.js"
+import {
+  AutomationMathOperationConfigSchema,
+  mathOperationCustomFieldKeys,
+} from "./automation-math-operation.js"
 
 type AutomationReference =
   | { kind: "pipeline"; id: string }
@@ -107,7 +119,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS"] },
+          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "MATH_OPERATION"] },
         },
       },
     },
@@ -115,8 +127,15 @@ export async function findEnabledAutomationReference(
       id: true,
       name: true,
       actions: {
-        where: { type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS"] } },
-        select: { type: true, taskConfig: true, customFieldUpdates: true },
+        where: { type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "MATH_OPERATION"] } },
+        select: {
+          type: true,
+          taskConfig: true,
+          customFieldUpdates: true,
+          dateTimeFormatterConfig: true,
+          numberFormatterConfig: true,
+          mathOperationConfig: true,
+        },
       },
     },
   })
@@ -131,6 +150,42 @@ export async function findEnabledAutomationReference(
           updates.data.some(
             (update) => "customFieldId" in update && update.customFieldId === reference.id,
           )
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
+      }
+      if (action.type === "FORMAT_DATE_TIME") {
+        const formatter = AutomationDateTimeFormatterConfigSchema.safeParse(action.dateTimeFormatterConfig)
+        if (
+          formatter.success &&
+          reference.kind === "customField" &&
+          customField?.key &&
+          dateTimeFormatterCustomFieldKeys(formatter.data).includes(customField.key)
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
+      }
+      if (action.type === "FORMAT_NUMBER") {
+        const formatter = AutomationNumberFormatterConfigSchema.safeParse(action.numberFormatterConfig)
+        if (
+          formatter.success &&
+          reference.kind === "customField" &&
+          customField?.key &&
+          numberFormatterCustomFieldKeys(formatter.data).includes(customField.key)
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
+      }
+      if (action.type === "MATH_OPERATION") {
+        const math = AutomationMathOperationConfigSchema.safeParse(action.mathOperationConfig)
+        if (
+          math.success &&
+          reference.kind === "customField" &&
+          customField?.key &&
+          mathOperationCustomFieldKeys(math.data).includes(customField.key)
         ) {
           return { id: automation.id, name: automation.name }
         }

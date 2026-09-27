@@ -1,0 +1,1 @@
+ALTER TYPE "AutomationActionType" ADD VALUE 'DELETE_CONTACT';

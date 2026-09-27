@@ -1,8 +1,9 @@
 "use client"
 
-import { Check } from "lucide-react"
+import { Braces, Check, ChevronsUpDown } from "lucide-react"
 import { useMemo, useState } from "react"
 
+import { Button } from "@/components/ui/button"
 import {
   Command,
   CommandEmpty,
@@ -14,6 +15,7 @@ import {
 import { DateInput, parseDateInput } from "@/components/ui/date-input"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -30,19 +32,106 @@ import { cn } from "@/lib/utils"
 const COMPACT_SELECT_TRIGGER_CLASS =
   "h-8 w-full cursor-pointer rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
 
+type SearchableDateOption = {
+  value: string
+  label: string
+  searchText?: string
+  detail?: string
+  kind?: "AUTOMATION_VALUE"
+}
+
+function SearchableDateOptionPicker({
+  open,
+  onOpenChange,
+  value,
+  options,
+  placeholder,
+  searchPlaceholder,
+  emptyMessage,
+  ariaLabel,
+  onValueChange,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  value: string
+  options: SearchableDateOption[]
+  placeholder: string
+  searchPlaceholder: string
+  emptyMessage: string
+  ariaLabel: string
+  onValueChange: (value: string) => void
+}) {
+  const selectedOption = options.find((option) => option.value === value)
+
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-label={ariaLabel}
+          aria-expanded={open}
+          className={cn(COMPACT_SELECT_TRIGGER_CLASS, "justify-between text-left")}
+        >
+          <span className="min-w-0 truncate">{selectedOption?.label ?? placeholder}</span>
+          <ChevronsUpDown className="shrink-0 opacity-50" aria-hidden="true" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] min-w-64 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl p-0"
+      >
+        <Command>
+          <CommandInput placeholder={searchPlaceholder} />
+          <CommandList className="max-h-56">
+            <CommandEmpty>{emptyMessage}</CommandEmpty>
+            <CommandGroup>
+              {options.map((option) => (
+                <CommandItem
+                  key={option.value}
+                  value={`${option.label} ${option.detail ?? ""} ${option.searchText ?? ""}`}
+                  onSelect={() => {
+                    onValueChange(option.value)
+                    onOpenChange(false)
+                  }}
+                >
+                  <Check
+                    className={cn("size-4", value === option.value ? "opacity-100" : "opacity-0")}
+                    aria-hidden="true"
+                  />
+                  {option.kind === "AUTOMATION_VALUE" ? (
+                    <Braces className="size-4 text-slate-400" aria-hidden="true" />
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  {option.detail ? (
+                    <span className="text-[11px] text-slate-400">{option.detail}</span>
+                  ) : null}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 export type ContactDateValue =
   | { type: "CURRENT_DATE" }
   | { type: "RELATIVE_DATE"; amount: number; unit: "DAYS" | "WEEKS" | "MONTHS" }
   | { type: "CONTACT_FIELD"; key: string }
   | { type: "CUSTOM_FIELD"; key: string }
   | { type: "SPECIFIC_DATE"; date: string; timezone: string }
+  | { type: "AUTOMATION_VALUE"; key: string }
 
-type DateKind = "CURRENT" | "RELATIVE" | "FIELD" | "SPECIFIC"
+type DateKind = "CURRENT" | "RELATIVE" | "FIELD" | "SPECIFIC" | "AUTOMATION_VALUE"
 
 function dateKind(value: ContactDateValue): DateKind {
   if (value.type === "CURRENT_DATE") return "CURRENT"
   if (value.type === "RELATIVE_DATE") return "RELATIVE"
   if (value.type === "SPECIFIC_DATE") return "SPECIFIC"
+  if (value.type === "AUTOMATION_VALUE") return "AUTOMATION_VALUE"
   return "FIELD"
 }
 
@@ -59,6 +148,7 @@ export function ContactDateValueInput({
   timezone,
   idPrefix,
   allowRelative = false,
+  automationValues = [],
 }: {
   value: ContactDateValue
   onChange: (value: ContactDateValue) => void
@@ -66,14 +156,29 @@ export function ContactDateValueInput({
   timezone?: string | null
   idPrefix: string
   allowRelative?: boolean
+  automationValues?: Array<{ key: string; label: string }>
 }) {
   const { dateFields } = useMemo(() => partitionContactTemplateFields(catalog), [catalog])
   const kind = dateKind(value)
   const selectedFieldId = value.type === "CONTACT_FIELD" || value.type === "CUSTOM_FIELD"
     ? `${value.type}:${value.key}`
     : ""
+  const dateFieldOptions = useMemo<SearchableDateOption[]>(() => dateFields.map((field) => ({
+    value: `${field.source === "CONTACT" ? "CONTACT_FIELD" : "CUSTOM_FIELD"}:${field.key}`,
+    label: field.label,
+    detail: field.sourceLabel,
+    searchText: field.key,
+  })), [dateFields])
+  const automationValueOptions = useMemo<SearchableDateOption[]>(() => automationValues.map((option) => ({
+    value: option.key,
+    label: option.label,
+    searchText: option.key,
+    kind: "AUTOMATION_VALUE",
+  })), [automationValues])
   const safeTimezone = timezone?.trim() || "America/Chicago"
   const [specificInput, setSpecificInput] = useState(() => dateInputValue(value))
+  const [fieldPickerOpen, setFieldPickerOpen] = useState(false)
+  const [automationValuePickerOpen, setAutomationValuePickerOpen] = useState(false)
 
   const setKind = (nextKind: DateKind) => {
     if (nextKind === "CURRENT") {
@@ -87,6 +192,11 @@ export function ContactDateValueInput({
     }
     if (nextKind === "RELATIVE") {
       onChange({ type: "RELATIVE_DATE", amount: 1, unit: "DAYS" })
+      return
+    }
+    if (nextKind === "AUTOMATION_VALUE") {
+      const first = automationValues[0]
+      if (first) onChange({ type: "AUTOMATION_VALUE", key: first.key })
       return
     }
     const first = dateFields[0]
@@ -110,40 +220,44 @@ export function ContactDateValueInput({
             <SelectItem value="CURRENT">Current date</SelectItem>
             {allowRelative ? <SelectItem value="RELATIVE">After action runs</SelectItem> : null}
             <SelectItem value="FIELD" disabled={dateFields.length === 0}>Date field</SelectItem>
+            {automationValues.length > 0 ? <SelectItem value="AUTOMATION_VALUE">Automation value</SelectItem> : null}
             <SelectItem value="SPECIFIC">Specific date</SelectItem>
           </SelectContent>
         </Select>
       </Field>
 
       {kind === "FIELD" ? (
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-          <Command>
-            <CommandInput placeholder="Search date fields" />
-            <CommandList className="max-h-44">
-              <CommandEmpty>No date fields found.</CommandEmpty>
-              <CommandGroup>
-                {dateFields.map((field) => {
-                  const source = field.source === "CONTACT" ? "CONTACT_FIELD" : "CUSTOM_FIELD"
-                  const fieldId = `${source}:${field.key}`
-                  return (
-                    <CommandItem
-                      key={fieldId}
-                      value={`${field.label} ${field.sourceLabel} ${field.key}`}
-                      onSelect={() => onChange({ type: source, key: field.key })}
-                    >
-                      <Check
-                        className={cn("size-4", selectedFieldId === fieldId ? "opacity-100" : "opacity-0")}
-                        aria-hidden="true"
-                      />
-                      <span className="min-w-0 flex-1 truncate">{field.label}</span>
-                      <span className="text-[11px] text-slate-400">{field.sourceLabel}</span>
-                    </CommandItem>
-                  )
-                })}
-              </CommandGroup>
-            </CommandList>
-          </Command>
-        </div>
+        <SearchableDateOptionPicker
+          open={fieldPickerOpen}
+          onOpenChange={setFieldPickerOpen}
+          value={selectedFieldId}
+          options={dateFieldOptions}
+          placeholder="Select date field"
+          searchPlaceholder="Search date fields"
+          emptyMessage="No date fields found."
+          ariaLabel="Select date field"
+          onValueChange={(fieldId) => {
+            const [source, key] = fieldId.split(":", 2)
+            onChange({
+              type: source === "CONTACT_FIELD" ? "CONTACT_FIELD" : "CUSTOM_FIELD",
+              key: key ?? "",
+            })
+          }}
+        />
+      ) : null}
+
+      {value.type === "AUTOMATION_VALUE" ? (
+        <SearchableDateOptionPicker
+          open={automationValuePickerOpen}
+          onOpenChange={setAutomationValuePickerOpen}
+          value={value.key}
+          options={automationValueOptions}
+          placeholder="Select automation value"
+          searchPlaceholder="Search automation values"
+          emptyMessage="No date values found."
+          ariaLabel="Select automation date value"
+          onValueChange={(key) => onChange({ type: "AUTOMATION_VALUE", key })}
+        />
       ) : null}
 
       {value.type === "RELATIVE_DATE" ? (

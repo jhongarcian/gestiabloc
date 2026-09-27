@@ -25,7 +25,28 @@ import {
   sanitizeTaskSingleLine,
   type AutomationTaskConfig,
 } from "./automation-task.js"
+import {
+  AutomationDateTimeFormatterConfigSchema,
+  resolveAutomationDateTimeFormatter,
+  type AutomationFormatterDateSource,
+} from "./automation-date-time-formatter.js"
+import {
+  AutomationMathOperationConfigSchema,
+  mathOperationAcceptsFieldType,
+  resolveAutomationMathOperation,
+  type AutomationMathOperationConfig,
+} from "./automation-math-operation.js"
+import {
+  AutomationNumberFormatterConfigSchema,
+  numberFormatterAcceptsFieldType,
+  numberFormatterAcceptsValueKind,
+  numberFormatterOutputKind,
+  resolveAutomationNumberFormatter,
+  type AutomationNumberSource,
+  type AutomationValueKind,
+} from "./automation-number-formatter.js"
 import { NoteBodyInputSchema, NoteTitleInputSchema } from "./note-inputs.js"
+import { deletePrivateObject } from "./private-storage.js"
 import { emitNotificationCreated, type RealtimeNotificationPayload } from "./realtime.js"
 import { getTaskPriorityFromDueDate, isCompletedStatusName } from "./task-priority-values.js"
 
@@ -64,7 +85,11 @@ export const AUTOMATION_ACTION_TYPES = [
   "REMOVE_CONTACT_TAG",
   "ADD_CONTACT_NOTE",
   "CREATE_TASK",
+  "FORMAT_DATE_TIME",
+  "FORMAT_NUMBER",
+  "MATH_OPERATION",
   "WAIT",
+  "DELETE_CONTACT",
 ] as const
 
 export const AUTOMATION_WAIT_UNITS = ["SECONDS", "MINUTES", "HOURS", "DAYS"] as const
@@ -286,7 +311,23 @@ export const AutomationActionInputSchema = z.discriminatedUnion("type", [
     nodeKey: actionNodeKeySchema,
     taskConfig: AutomationTaskConfigSchema,
   }),
+  z.object({
+    type: z.literal("FORMAT_DATE_TIME"),
+    nodeKey: actionNodeKeySchema,
+    dateTimeFormatterConfig: AutomationDateTimeFormatterConfigSchema,
+  }),
+  z.object({
+    type: z.literal("FORMAT_NUMBER"),
+    nodeKey: actionNodeKeySchema,
+    numberFormatterConfig: AutomationNumberFormatterConfigSchema,
+  }),
+  z.object({
+    type: z.literal("MATH_OPERATION"),
+    nodeKey: actionNodeKeySchema,
+    mathOperationConfig: AutomationMathOperationConfigSchema,
+  }),
   z.object({ type: z.literal("WAIT"), nodeKey: actionNodeKeySchema, waitConfig: AutomationWaitConfigSchema }),
+  z.object({ type: z.literal("DELETE_CONTACT"), nodeKey: actionNodeKeySchema }),
 ])
 
 export const AutomationUpsertSchema = z
@@ -774,9 +815,145 @@ export async function validateAutomationConfiguration(
     throw new AutomationConfigurationError("DUPLICATE_ACTION_NODE_KEY", "Every automation action must have a unique node key.")
   }
 
+  const automationOutputs = new Map<string, AutomationValueKind>()
+  const validateFormatterSource = (source: AutomationFormatterDateSource, label: string) => {
+    if (source.type === "CONTACT_FIELD") {
+      const regularField = CONTACT_TEMPLATE_REGULAR_FIELDS.find((field) => field.key === source.key)
+      if (!regularField || regularField.fieldType !== "DATE") {
+        throw new AutomationConfigurationError("INVALID_FORMATTER_DATE_FIELD", `${label} must use a date field.`)
+      }
+    } else if (source.type === "CUSTOM_FIELD") {
+      const field = fieldKeyMap.get(source.key)
+      if (!field || field.fieldType !== "DATE" || !field.isActive || field.isEncrypted || field.isSensitive) {
+        throw new AutomationConfigurationError(
+          "INVALID_FORMATTER_DATE_FIELD",
+          `${label} must use an active, non-sensitive date field.`,
+        )
+      }
+    } else if (source.type === "SPECIFIC_DATE") {
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: source.timezone }).format(new Date())
+      } catch {
+        throw new AutomationConfigurationError("INVALID_FORMATTER_TIMEZONE", `${label} uses an invalid timezone.`)
+      }
+    } else if (source.type === "AUTOMATION_VALUE") {
+      const outputKind = automationOutputs.get(source.key)
+      if (!outputKind) {
+        throw new AutomationConfigurationError(
+          "UNKNOWN_AUTOMATION_VALUE",
+          `The automation value “${source.key}” is not available before this action.`,
+        )
+      }
+      if (outputKind !== "DATE") {
+        throw new AutomationConfigurationError(
+          "INCOMPATIBLE_AUTOMATION_VALUE",
+          `The automation value “${source.key}” is not a date.`,
+        )
+      }
+    }
+  }
+  const validateNumberFormatterSource = (
+    source: AutomationNumberSource,
+    mode: "TEXT_TO_NUMBER" | "FORMAT_NUMBER" | "FORMAT_CURRENCY" | "FORMAT_PHONE_NUMBER",
+  ) => {
+    if (source.type === "CONTACT_FIELD") {
+      const regularField = CONTACT_TEMPLATE_REGULAR_FIELDS.find((field) => field.key === source.key)
+      if (!regularField || !numberFormatterAcceptsFieldType(mode, regularField.fieldType)) {
+        throw new AutomationConfigurationError(
+          "INVALID_NUMBER_FORMATTER_FIELD",
+          "Select a compatible contact field for this number formatter.",
+        )
+      }
+      return
+    }
+    if (source.type === "CUSTOM_FIELD") {
+      const field = fieldKeyMap.get(source.key)
+      if (
+        !field ||
+        !field.isActive ||
+        field.isEncrypted ||
+        field.isSensitive ||
+        !numberFormatterAcceptsFieldType(mode, field.fieldType)
+      ) {
+        throw new AutomationConfigurationError(
+          "INVALID_NUMBER_FORMATTER_FIELD",
+          "Select an active, non-sensitive field compatible with this number formatter.",
+        )
+      }
+      return
+    }
+    const outputKind = automationOutputs.get(source.key)
+    if (!outputKind) {
+      throw new AutomationConfigurationError(
+        "UNKNOWN_AUTOMATION_VALUE",
+        `The automation value “${source.key}” is not available before this action.`,
+      )
+    }
+    if (!numberFormatterAcceptsValueKind(mode, outputKind)) {
+      throw new AutomationConfigurationError(
+        "INCOMPATIBLE_AUTOMATION_VALUE",
+        `The automation value “${source.key}” is not compatible with this number formatter.`,
+      )
+    }
+  }
+  const validateMathSource = (
+    config: AutomationMathOperationConfig,
+  ) => {
+    const { source } = config
+    if (source.type === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === source.key)
+      if (!field || !mathOperationAcceptsFieldType(config.mode, field.fieldType)) {
+        throw new AutomationConfigurationError(
+          "INVALID_MATH_FIELD",
+          `Select a compatible contact ${config.mode === "DATE" ? "date" : "number"} field.`,
+        )
+      }
+      return
+    }
+    if (source.type === "CUSTOM_FIELD") {
+      const field = fieldKeyMap.get(source.key)
+      if (
+        !field ||
+        !field.isActive ||
+        field.isEncrypted ||
+        field.isSensitive ||
+        !mathOperationAcceptsFieldType(config.mode, field.fieldType)
+      ) {
+        throw new AutomationConfigurationError(
+          "INVALID_MATH_FIELD",
+          `Select an active, non-sensitive ${config.mode === "DATE" ? "date" : "number"} field.`,
+        )
+      }
+      return
+    }
+    const outputKind = automationOutputs.get(source.key)
+    if (!outputKind) {
+      throw new AutomationConfigurationError(
+        "UNKNOWN_AUTOMATION_VALUE",
+        `The automation value “${source.key}” is not available before this action.`,
+      )
+    }
+    const expectedKind: AutomationValueKind = config.mode === "DATE" ? "DATE" : "NUMBER"
+    if (outputKind !== expectedKind) {
+      throw new AutomationConfigurationError(
+        "INCOMPATIBLE_AUTOMATION_VALUE",
+        `The automation value “${source.key}” is not a ${config.mode === "DATE" ? "date" : "number"}.`,
+      )
+    }
+  }
+
   const actions = input.actions.map((action, index) => {
     const nodeKey = actionNodeKeys[index]!
     const base = { tenantId, nodeKey, type: action.type, sortOrder: (index + 1) * 10 }
+    if (action.type === "DELETE_CONTACT") {
+      if (index !== input.actions.length - 1) {
+        throw new AutomationConfigurationError(
+          "DELETE_CONTACT_MUST_BE_LAST",
+          "Delete contact can only be the last action in an automation.",
+        )
+      }
+      return base
+    }
     if (action.type === "WAIT") {
       const waitConfig = action.waitConfig.mode === "FIXED_DATE"
         ? (() => {
@@ -796,9 +973,60 @@ export async function validateAutomationConfiguration(
       }
       return { ...base, waitConfig }
     }
+    if (action.type === "MATH_OPERATION") {
+      const config = action.mathOperationConfig
+      if (automationOutputs.has(config.outputKey)) {
+        throw new AutomationConfigurationError(
+          "DUPLICATE_AUTOMATION_VALUE",
+          `The automation value “${config.outputKey}” is already created by an earlier action.`,
+        )
+      }
+      validateMathSource(config)
+      automationOutputs.set(config.outputKey, config.mode === "DATE" ? "DATE" : "NUMBER")
+      return { ...base, mathOperationConfig: config }
+    }
+    if (action.type === "FORMAT_DATE_TIME") {
+      const config = action.dateTimeFormatterConfig
+      if (automationOutputs.has(config.outputKey)) {
+        throw new AutomationConfigurationError(
+          "DUPLICATE_AUTOMATION_VALUE",
+          `The automation value “${config.outputKey}” is already created by an earlier formatter.`,
+        )
+      }
+      if (config.mode === "COMPARE_DATES") {
+        validateFormatterSource(config.from, "From date")
+        validateFormatterSource(config.to, "To date")
+      } else {
+        validateFormatterSource(config.source, "Formatter source")
+      }
+      automationOutputs.set(
+        config.outputKey,
+        config.mode === "COMPARE_DATES"
+          ? "NUMBER"
+          : config.format === "X"
+            ? "NUMERIC_TEXT"
+            : "TEXT",
+      )
+      return { ...base, dateTimeFormatterConfig: config }
+    }
+    if (action.type === "FORMAT_NUMBER") {
+      const config = action.numberFormatterConfig
+      if (automationOutputs.has(config.outputKey)) {
+        throw new AutomationConfigurationError(
+          "DUPLICATE_AUTOMATION_VALUE",
+          `The automation value “${config.outputKey}” is already created by an earlier formatter.`,
+        )
+      }
+      if (config.mode !== "RANDOM_NUMBER") {
+        validateNumberFormatterSource(config.source, config.mode)
+      }
+      automationOutputs.set(config.outputKey, numberFormatterOutputKind(config))
+      return { ...base, numberFormatterConfig: config }
+    }
     if (action.type === "ADD_CONTACT_NOTE") {
-      const titleValidation = validateContactTemplate(action.noteTitle, fields)
-      const bodyValidation = validateContactTemplate(action.noteBody, fields)
+      const availableOutputs = [...automationOutputs.keys()]
+      const titleValidation = validateContactTemplate(action.noteTitle, fields, availableOutputs)
+      const bodyValidation = validateContactTemplate(action.noteBody, fields, availableOutputs)
       const issue = titleValidation.issues[0] ?? bodyValidation.issues[0]
       if (issue) {
         throw new AutomationConfigurationError("INVALID_NOTE_TEMPLATE", issue.message)
@@ -817,7 +1045,7 @@ export async function validateAutomationConfiguration(
         config.reminder?.messageTemplate ?? "",
       ]
       for (const template of templates) {
-        const issue = validateContactTemplate(template, fields).issues[0]
+        const issue = validateContactTemplate(template, fields, [...automationOutputs.keys()]).issues[0]
         if (issue) {
           throw new AutomationConfigurationError("INVALID_TASK_TEMPLATE", issue.message)
         }
@@ -1209,6 +1437,35 @@ export async function getAutomationRuntimeCatalog(
 
 type RuntimeAutomationAction = z.infer<typeof AutomationActionInputSchema> & { nodeKey: string }
 
+export type AutomationFileCleanupCandidate = {
+  id: string
+  tenantId: string
+  key: string
+}
+
+export async function deleteAutomationContactFileObjects(
+  candidates: AutomationFileCleanupCandidate[],
+  deleteObject: (params: { path: string }) => Promise<void> = deletePrivateObject,
+) {
+  const uniqueCandidates = [...new Map(
+    candidates.map((candidate) => [candidate.id, candidate]),
+  ).values()]
+  if (uniqueCandidates.length === 0) return
+
+  await Promise.all(uniqueCandidates.map(async (file) => {
+    let lastError: unknown = null
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await deleteObject({ path: file.key })
+        return
+      } catch (error) {
+        lastError = error
+      }
+    }
+    console.error(`Could not delete automation contact file ${file.id}`, lastError)
+  }))
+}
+
 function automationActionSnapshot(action: any): RuntimeAutomationAction {
   const parsed = AutomationActionInputSchema.parse({
     nodeKey: action.nodeKey ?? action.id ?? randomUUID(),
@@ -1223,6 +1480,9 @@ function automationActionSnapshot(action: any): RuntimeAutomationAction {
     noteTitle: action.noteTitle,
     noteBody: action.noteBody,
     taskConfig: action.taskConfig,
+    dateTimeFormatterConfig: action.dateTimeFormatterConfig,
+    numberFormatterConfig: action.numberFormatterConfig,
+    mathOperationConfig: action.mathOperationConfig,
   })
   if (!parsed.nodeKey) throw new Error("Automation action is missing its stable node key.")
   return { ...parsed, nodeKey: parsed.nodeKey }
@@ -1247,9 +1507,22 @@ async function applyAutomationAction(
     contactId: string
     catalog: AutomationRuntimeCatalog
     occurredAt: Date
+    runId?: string | null
+    automationValues: Record<string, unknown>
   },
 ) {
-  const { action, actionIndex, automationId, automationName, tenantId, contactId, catalog, occurredAt } = params
+  const {
+    action,
+    actionIndex,
+    automationId,
+    automationName,
+    tenantId,
+    contactId,
+    catalog,
+    occurredAt,
+    runId,
+    automationValues,
+  } = params
   try {
     if (action.type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
       const preparedUpdates = action.customFieldUpdates.map((update) => {
@@ -1384,6 +1657,7 @@ async function applyAutomationAction(
         bodyTemplate: action.noteBody,
         timezone: catalog.timezone,
         occurredAt,
+        automationValues,
       })
       const title = NoteTitleInputSchema.safeParse(rendered.title)
       if (!title.success) {
@@ -1421,6 +1695,7 @@ async function applyAutomationAction(
         },
         timezone: catalog.timezone,
         occurredAt,
+        automationValues,
       })
       const name = sanitizeTaskSingleLine(rendered.name ?? "")
       if (!name || name.length > 160) {
@@ -1571,6 +1846,124 @@ async function applyAutomationAction(
         details: `Created task “${name}” · ${assignee}${dueLabel ? ` · Due ${dueLabel}` : ""}.`,
         notificationIds,
       }
+    } else if (action.type === "FORMAT_DATE_TIME") {
+      const value = await resolveAutomationDateTimeFormatter(prismaTx, {
+        tenantId,
+        contactId,
+        config: action.dateTimeFormatterConfig,
+        tenantTimezone: catalog.timezone,
+        occurredAt,
+        automationValues,
+      })
+      automationValues[action.dateTimeFormatterConfig.outputKey] = value
+      return `Created automation value “${action.dateTimeFormatterConfig.outputKey}”.`
+    } else if (action.type === "FORMAT_NUMBER") {
+      const result = await resolveAutomationNumberFormatter(prismaTx, {
+        tenantId,
+        contactId,
+        config: action.numberFormatterConfig,
+        automationValues,
+      })
+      if (result.status === "EMPTY_SOURCE") {
+        return "Source field was empty. No automation value was created."
+      }
+      automationValues[action.numberFormatterConfig.outputKey] = result.value
+      return `Created automation value “${action.numberFormatterConfig.outputKey}”.`
+    } else if (action.type === "MATH_OPERATION") {
+      const value = await resolveAutomationMathOperation(prismaTx, {
+        tenantId,
+        contactId,
+        config: action.mathOperationConfig,
+        tenantTimezone: catalog.timezone,
+        occurredAt,
+        automationValues,
+      })
+      automationValues[action.mathOperationConfig.outputKey] = value
+      return `Created automation value “${action.mathOperationConfig.outputKey}”.`
+    } else if (action.type === "DELETE_CONTACT") {
+      const [contactNoteAttachments, serviceNoteAttachments] = await Promise.all([
+        prismaTx.contactNoteAttachment.findMany({
+          where: { tenantId, note: { contactId } },
+          select: {
+            file: { select: { id: true, tenantId: true, key: true } },
+          },
+        }),
+        prismaTx.contactServiceNoteAttachment.findMany({
+          where: { tenantId, note: { contactService: { contactId } } },
+          select: {
+            file: { select: { id: true, tenantId: true, key: true } },
+          },
+        }),
+      ])
+      const possibleFileCleanupCandidates = [...new Map(
+        [...contactNoteAttachments, ...serviceNoteAttachments]
+          .map((attachment: { file: AutomationFileCleanupCandidate }) => [
+            attachment.file.id,
+            attachment.file,
+          ]),
+      ).values()]
+      await prismaTx.automationRun.updateMany({
+        where: {
+          tenantId,
+          contactId,
+          status: { in: ["RUNNING", "WAITING"] },
+          ...(runId ? { id: { not: runId } } : {}),
+        },
+        data: {
+          status: "EXITED",
+          resumeAt: null,
+          waitingNodeKey: null,
+          waitingNodeExecutionId: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          exitedAt: occurredAt,
+        },
+      })
+      await prismaTx.automationNodeExecution.updateMany({
+        where: { tenantId, contactId, status: "WAITING" },
+        data: {
+          status: "SKIPPED",
+          reasonCode: "CONTACT_DELETED",
+          details: "The contact was deleted by an automation and removed from all workflows.",
+          occurredAt,
+        },
+      })
+      await prismaTx.automationProcessContact.updateMany({
+        where: { tenantId, contactId, status: "PENDING" },
+        data: {
+          status: "FAILED",
+          errorCode: "CONTACT_DELETED",
+          errorMessage: "The contact was deleted by an automation.",
+          completedAt: occurredAt,
+        },
+      })
+      await prismaTx.notification.updateMany({
+        where: { tenantId, contactId },
+        data: { contactId: null },
+      })
+      const deleted = await prismaTx.contact.deleteMany({ where: { tenantId, id: contactId } })
+      if (deleted.count !== 1) throw new Error("The contact is no longer available.")
+      const fileCleanupCandidates: AutomationFileCleanupCandidate[] =
+        possibleFileCleanupCandidates.length > 0
+          ? await prismaTx.file.findMany({
+              where: {
+                id: { in: possibleFileCleanupCandidates.map((file) => file.id) },
+                noteAttachments: { none: {} },
+                serviceNoteAttachments: { none: {} },
+              },
+              select: { id: true, tenantId: true, key: true },
+            })
+          : []
+      if (fileCleanupCandidates.length > 0) {
+        await prismaTx.file.deleteMany({
+          where: { id: { in: fileCleanupCandidates.map((file) => file.id) } },
+        })
+      }
+      return {
+        details: "Deleted the contact and removed it from all workflows in this account.",
+        contactDeleted: true,
+        fileCleanupCandidates,
+      }
     }
   } catch (error) {
     throw new AutomationExecutionError({
@@ -1589,8 +1982,18 @@ export async function applyAutomationActions(
 ) {
   const actions = params.automation.actions.map(automationActionSnapshot)
   const occurredAt = new Date()
+  const automationValues: Record<string, unknown> = {}
   for (let index = 0; index < actions.length; index += 1) {
     if (actions[index]!.type === "WAIT") continue
+    if (actions[index]!.type === "DELETE_CONTACT" && index !== actions.length - 1) {
+      throw new AutomationExecutionError({
+        automationId: params.automation.id,
+        automationName: params.automation.name,
+        actionIndex: index,
+        contactId: params.contactId,
+        message: "Delete contact can only be the last action in an automation.",
+      })
+    }
     await applyAutomationAction(prismaTx, {
       action: actions[index]!,
       actionIndex: index,
@@ -1600,6 +2003,8 @@ export async function applyAutomationActions(
       contactId: params.contactId,
       catalog: params.catalog,
       occurredAt,
+      runId: null,
+      automationValues,
     })
   }
 }
@@ -1702,6 +2107,14 @@ type SegmentRun = {
   sourceStageId: string | null
   targetStageId: string | null
   cursorIndex: number
+  variables: unknown
+}
+
+function normalizeAutomationVariables(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {} as Record<string, unknown>
+  }
+  return { ...(value as Record<string, unknown>) }
 }
 
 async function executeAutomationSegmentTx(
@@ -1732,6 +2145,9 @@ async function executeAutomationSegmentTx(
   } satisfies Omit<AutomationNodeLogData, "id" | "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
   const logs: AutomationNodeLogData[] = []
   const notificationIds: string[] = []
+  const fileCleanupCandidates: AutomationFileCleanupCandidate[] = []
+  const automationValues = normalizeAutomationVariables(run.variables)
+  let contactDeleted = false
 
   for (let index = startIndex; index < actions.length; index += 1) {
     const action = actions[index]!
@@ -1758,9 +2174,16 @@ async function executeAutomationSegmentTx(
             waitingNodeExecutionId: logId,
             leaseToken: null,
             leaseExpiresAt: null,
+            variables: automationValues,
           },
         })
-        return { logs, notificationIds, status: "WAITING" as const }
+        return {
+          logs,
+          notificationIds,
+          fileCleanupCandidates,
+          status: "WAITING" as const,
+          contactDeleted: false,
+        }
       }
 
       logs.push(actionLog(
@@ -1787,6 +2210,7 @@ async function executeAutomationSegmentTx(
             leaseToken: null,
             leaseExpiresAt: null,
             exitedAt: now,
+            variables: automationValues,
           },
         })
         await prismaTx.automationExecution.create({
@@ -1804,7 +2228,13 @@ async function executeAutomationSegmentTx(
             actionCount: index + 1,
           },
         })
-        return { logs, notificationIds, status: "EXITED" as const }
+        return {
+          logs,
+          notificationIds,
+          fileCleanupCandidates,
+          status: "EXITED" as const,
+          contactDeleted: false,
+        }
       }
 
       if (action.waitConfig.mode === "FIXED_DATE" && action.waitConfig.pastBehavior === "GO_TO_STEP") {
@@ -1828,6 +2258,15 @@ async function executeAutomationSegmentTx(
     }
 
     try {
+      if (action.type === "DELETE_CONTACT" && index !== actions.length - 1) {
+        throw new AutomationExecutionError({
+          automationId: run.automationId,
+          automationName: run.automationName,
+          actionIndex: index,
+          contactId: run.contactId,
+          message: "Delete contact can only be the last action in an automation.",
+        })
+      }
       const successDetails = await applyAutomationAction(prismaTx, {
         action,
         actionIndex: index,
@@ -1837,12 +2276,30 @@ async function executeAutomationSegmentTx(
         contactId: run.contactId,
         catalog,
         occurredAt: now,
+        runId: run.id,
+        automationValues,
       })
       const details = typeof successDetails === "string"
         ? successDetails
         : successDetails?.details
       if (typeof successDetails === "object" && successDetails?.notificationIds) {
         notificationIds.push(...successDetails.notificationIds)
+      }
+      if (
+        typeof successDetails === "object" &&
+        successDetails !== null &&
+        "contactDeleted" in successDetails &&
+        successDetails.contactDeleted === true
+      ) {
+        contactDeleted = true
+      }
+      if (
+        typeof successDetails === "object" &&
+        successDetails !== null &&
+        "fileCleanupCandidates" in successDetails &&
+        Array.isArray(successDetails.fileCleanupCandidates)
+      ) {
+        fileCleanupCandidates.push(...successDetails.fileCleanupCandidates)
       }
       logs.push(actionLog(base, action, index, "EXECUTED", null, details ?? "Action completed successfully."))
     } catch (error) {
@@ -1864,6 +2321,7 @@ async function executeAutomationSegmentTx(
       leaseToken: null,
       leaseExpiresAt: null,
       completedAt: now,
+      variables: automationValues,
     },
   })
   await prismaTx.automationExecution.create({
@@ -1881,7 +2339,13 @@ async function executeAutomationSegmentTx(
       actionCount: actions.length,
     },
   })
-  return { logs, notificationIds, status: "SUCCEEDED" as const }
+  return {
+    logs: contactDeleted ? logs.map((log) => ({ ...log, contactId: null })) : logs,
+    notificationIds,
+    fileCleanupCandidates,
+    status: "SUCCEEDED" as const,
+    contactDeleted,
+  }
 }
 
 function evaluateAutomationTrigger(
@@ -1934,7 +2398,13 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
     },
   })
   if (automations.length === 0) {
-    return { matchedCount: 0, executedCount: 0, notificationIds: [] as string[] }
+    return {
+      matchedCount: 0,
+      executedCount: 0,
+      notificationIds: [] as string[],
+      fileCleanupCandidates: [] as AutomationFileCleanupCandidate[],
+      contactDeleted: false,
+    }
   }
 
   const [contact, catalog] = await Promise.all([
@@ -2025,9 +2495,25 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
   })
 
   const notificationIds: string[] = []
+  const fileCleanupCandidates: AutomationFileCleanupCandidate[] = []
+  let executedCount = 0
+  let contactDeleted = false
   for (let planIndex = 0; planIndex < plans.length; planIndex += 1) {
     const plan = plans[planIndex]
     if (!plan.shouldRun) continue
+
+    if (contactDeleted) {
+      const triggerLog = plan.logs[0]!
+      plan.logs.push(...plan.actions.map((action, actionIndex) => actionLog(
+        triggerLog,
+        action,
+        actionIndex,
+        "SKIPPED",
+        "CONTACT_DELETED",
+        "Skipped because an earlier automation deleted the contact.",
+      )))
+      continue
+    }
 
     try {
       const triggerLog = plan.logs[0]!
@@ -2056,8 +2542,11 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
         catalog,
         startIndex: 0,
       })
+      executedCount += 1
       plan.logs.push(...result.logs)
       notificationIds.push(...result.notificationIds)
+      fileCleanupCandidates.push(...result.fileCleanupCandidates)
+      if (result.contactDeleted) contactDeleted = true
     } catch (error) {
       if (error instanceof AutomationExecutionError) {
         for (let index = 0; index < plans.length; index += 1) {
@@ -2103,13 +2592,21 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Automa
     }
   }
 
-  const nodeExecutions = plans.flatMap((plan: { logs: AutomationNodeLogData[] }) => plan.logs)
+  const nodeExecutions = plans
+    .flatMap((plan: { logs: AutomationNodeLogData[] }) => plan.logs)
+    .map((log) => contactDeleted ? { ...log, contactId: null } : log)
   if (nodeExecutions.length > 0) {
     await prismaTx.automationNodeExecution.createMany({ data: nodeExecutions })
   }
 
   const matchedCount = plans.filter((plan: { shouldRun: boolean }) => plan.shouldRun).length
-  return { matchedCount, executedCount: matchedCount, notificationIds }
+  return {
+    matchedCount,
+    executedCount,
+    notificationIds,
+    fileCleanupCandidates,
+    contactDeleted,
+  }
 }
 
 export async function recordAutomationFailure(prismaClient: any, event: AutomationEvent, error: AutomationExecutionError) {
@@ -2268,7 +2765,13 @@ async function resumeAutomationRun(prismaClient: any, runId: string, leaseToken:
       const run = await transaction.automationRun.findFirst({
         where: { id: runId, status: "RUNNING", leaseToken },
       })
-      if (!run) return { status: "NOT_CLAIMED" as const, notificationIds: [] as string[] }
+      if (!run) {
+        return {
+          status: "NOT_CLAIMED" as const,
+          notificationIds: [] as string[],
+          fileCleanupCandidates: [] as AutomationFileCleanupCandidate[],
+        }
+      }
       const actions = parseActionSnapshot(run.actionSnapshot)
       const contact = run.contactId
         ? await transaction.contact.findFirst({ where: { tenantId: run.tenantId, id: run.contactId }, select: { id: true } })
@@ -2299,11 +2802,16 @@ async function resumeAutomationRun(prismaClient: any, runId: string, leaseToken:
       if (result.logs.length > 0) {
         await transaction.automationNodeExecution.createMany({ data: result.logs })
       }
-      return { status: result.status, notificationIds: result.notificationIds }
+      return {
+        status: result.status,
+        notificationIds: result.notificationIds,
+        fileCleanupCandidates: result.fileCleanupCandidates,
+      }
     })
     await emitAutomationTaskNotifications(prismaClient, result.notificationIds).catch((error) => {
       console.error("Could not emit automation task notification", error)
     })
+    await deleteAutomationContactFileObjects(result.fileCleanupCandidates)
     return { status: result.status }
   } catch (error) {
     await recordAutomationRunFailure(prismaClient, runId, leaseToken, error)

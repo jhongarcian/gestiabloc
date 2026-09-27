@@ -105,4 +105,73 @@ describe("findEnabledAutomationReference", () => {
       { id: "automation-1", name: "Prepare contact" },
     )
   })
+
+  test("finds custom fields used by a number formatter", async () => {
+    const prismaClient = {
+      contactCustomField: {
+        findFirst: async () => ({ key: "premium" }),
+      },
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Format premium",
+          actions: [{
+            type: "FORMAT_NUMBER",
+            numberFormatterConfig: {
+              mode: "FORMAT_CURRENCY",
+              source: { type: "CUSTOM_FIELD", key: "premium" },
+              decimalMark: "PERIOD",
+              currencyCode: "USD",
+              outputKey: "premium_label",
+            },
+          }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "customField", id: "field-1" },
+      ),
+      { id: "automation-1", name: "Format premium" },
+    )
+  })
+
+  test("finds custom fields used by a Math operation", async () => {
+    const prismaClient = {
+      contactCustomField: {
+        findFirst: async () => ({ key: "renewal_date" }),
+      },
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Calculate renewal",
+          actions: [{
+            type: "MATH_OPERATION",
+            mathOperationConfig: {
+              mode: "DATE",
+              source: { type: "CUSTOM_FIELD", key: "renewal_date" },
+              operation: "ADD",
+              amount: 1,
+              unit: "YEARS",
+              outputKey: "next_renewal",
+            },
+          }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "customField", id: "field-1" },
+      ),
+      { id: "automation-1", name: "Calculate renewal" },
+    )
+  })
 })

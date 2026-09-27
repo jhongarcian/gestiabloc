@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
 import {
+  buildAutomationValueToken,
   buildContactTemplateToken,
   buildDateTemplateToken,
   partitionContactTemplateFields,
@@ -48,6 +49,7 @@ describe("contact template UI helpers", () => {
       buildContactTemplateToken({ source: "CUSTOM_FIELD", key: "balance", fieldType: "CURRENCY" }),
       "{contact.custom_field.balance|currency:USD}",
     )
+    assert.equal(buildAutomationValueToken("appointment_date"), "{automation.appointment_date}")
     assert.equal(
       buildDateTemplateToken({ kind: "CURRENT" }),
       "{date.current|date:medium}",
@@ -89,6 +91,22 @@ describe("contact template UI helpers", () => {
     assert.equal(
       validateContactTemplate("Today {date.current|date:weekday}; later {date.relative.2.weeks|date:medium}; fixed {date.specific.2026-09-23|date:long}.", catalog),
       null,
+    )
+    assert.equal(
+      validateContactTemplate(
+        "On {automation.appointment_date}.",
+        catalog,
+        [{ key: "appointment_date" }],
+      ),
+      null,
+    )
+    assert.match(
+      validateContactTemplate(
+        "On {automation.future_value}.",
+        catalog,
+        [{ key: "appointment_date" }],
+      ) ?? "",
+      /not available before this action/,
     )
     assert.match(
       validateContactTemplate("{contact.name|date:medium}", catalog) ?? "",

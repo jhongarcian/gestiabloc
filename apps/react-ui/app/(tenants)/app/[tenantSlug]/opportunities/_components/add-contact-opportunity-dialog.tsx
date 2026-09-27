@@ -2,6 +2,7 @@
 
 import { isAxiosError } from "axios"
 import { Loader2, Target } from "lucide-react"
+import { useParams, useRouter } from "next/navigation"
 import {
   type FormEvent,
   type ReactNode,
@@ -124,7 +125,8 @@ type CreatedOpportunity = {
 
 type CreateOpportunityResponse = {
   ok: boolean
-  opportunity: CreatedOpportunity
+  opportunity: CreatedOpportunity | null
+  contactDeleted?: boolean
   stage: {
     id: string
     name: string
@@ -168,6 +170,8 @@ export function AddContactOpportunityDialog({
   lockPipeline = false,
   onCreated,
 }: AddContactOpportunityDialogProps) {
+  const router = useRouter()
+  const params = useParams<{ tenantSlug: string }>()
   const [open, setOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isLoadingPipelines, setIsLoadingPipelines] = useState(false)
@@ -388,13 +392,20 @@ export function AddContactOpportunityDialog({
       })
 
       toast.success(
-        (data.automation?.executedCount ?? 0) > 0
+        data.contactDeleted
+          ? "Automation ran and deleted the contact."
+          : (data.automation?.executedCount ?? 0) > 0
           ? `Opportunity added and ${data.automation!.executedCount} automation${data.automation!.executedCount === 1 ? "" : "s"} ran.`
           : "Opportunity added.",
       )
       setOpen(false)
       reset()
-      await onCreated?.(data.opportunity)
+      if (data.opportunity) {
+        await onCreated?.(data.opportunity)
+      } else if (data.contactDeleted && lockContact) {
+        router.replace(`/app/${params.tenantSlug}/contacts`)
+        router.refresh()
+      }
     } catch (error) {
       const backendError = isAxiosError(error)
         ? error.response?.data?.error

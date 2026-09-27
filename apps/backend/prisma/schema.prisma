@@ -317,7 +317,11 @@ enum AutomationActionType {
   REMOVE_CONTACT_TAG
   ADD_CONTACT_NOTE
   CREATE_TASK
+  FORMAT_DATE_TIME
+  FORMAT_NUMBER
+  MATH_OPERATION
   WAIT
+  DELETE_CONTACT
 }
 
 enum AutomationExecutionStatus {
@@ -1432,6 +1436,9 @@ model AutomationAction {
   noteTitle          String?
   noteBody           String?
   taskConfig         Json?
+  dateTimeFormatterConfig Json?
+  numberFormatterConfig Json?
+  mathOperationConfig Json?
   sortOrder          Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
@@ -1531,6 +1538,7 @@ model AutomationRun {
   sourceStageId          String?
   targetStageId          String?
   actionSnapshot         Json
+  variables              Json                      @default("{}")
   cursorIndex            Int                       @default(0)
   status                 AutomationRunStatus       @default(RUNNING)
   resumeAt               DateTime?
