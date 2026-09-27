@@ -118,6 +118,7 @@ function serializeAutomation(record: any) {
         taskConfig: action.taskConfig,
         dateTimeFormatterConfig: action.dateTimeFormatterConfig,
         numberFormatterConfig: action.numberFormatterConfig,
+        mathOperationConfig: action.mathOperationConfig,
       }
     }),
     lastExecution: record.executions?.[0]

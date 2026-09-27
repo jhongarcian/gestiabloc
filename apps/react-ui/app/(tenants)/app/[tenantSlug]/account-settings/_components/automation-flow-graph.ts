@@ -142,6 +142,10 @@ export function buildAutomationFlowGraph(
                 : action.numberFormatterConfig?.mode === "TEXT_TO_NUMBER"
                   ? `Text to number → ${action.numberFormatterConfig.outputKey}`
                   : `Format number → ${action.numberFormatterConfig?.outputKey || "value"}`
+        : action.type === "MATH_OPERATION"
+          ? action.mathOperationConfig?.mode === "DATE"
+            ? `${action.mathOperationConfig.operation === "ADD" ? "Add" : "Subtract"} ${action.mathOperationConfig.amount} ${action.mathOperationConfig.unit.toLocaleLowerCase()} → ${action.mathOperationConfig.outputKey}`
+            : `${action.mathOperationConfig?.operation === "SUBTRACT" ? "Subtract" : action.mathOperationConfig?.operation === "MULTIPLY" ? "Multiply" : action.mathOperationConfig?.operation === "DIVIDE" ? "Divide" : "Add"} ${action.mathOperationConfig?.operand ?? ""} → ${action.mathOperationConfig?.outputKey || "value"}`
         : action.type === "UPDATE_CONTACT_CUSTOM_FIELDS"
           ? `Update ${action.customFieldUpdates?.length ?? 0} field${action.customFieldUpdates?.length === 1 ? "" : "s"}`
           : action.type === "DELETE_CONTACT"

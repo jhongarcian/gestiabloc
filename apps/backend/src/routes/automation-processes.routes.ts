@@ -122,6 +122,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
             taskConfig: true,
             dateTimeFormatterConfig: true,
             numberFormatterConfig: true,
+            mathOperationConfig: true,
           },
         },
       },

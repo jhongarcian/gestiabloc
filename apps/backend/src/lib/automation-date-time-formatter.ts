@@ -2,6 +2,7 @@ import { z } from "zod"
 
 import { addCalendarDateOffset } from "./calendar-date.js"
 import { isValidTemplateDate } from "./contact-templates.js"
+import { AUTOMATION_OUTPUT_KEY_SCHEMA } from "./automation-number-formatter.js"
 import { zonedDateTimeToUtc } from "./timezone-date-time.js"
 
 export const AUTOMATION_DATE_FORMAT_OPTIONS = [
@@ -64,29 +65,37 @@ export const AutomationDateSourceSchema = z.discriminatedUnion("type", [
   }).strict(),
 ])
 
-const OUTPUT_KEY_SCHEMA = z.string()
-  .trim()
-  .regex(/^[a-z][a-z0-9_]{0,63}$/, "Use a lowercase name that starts with a letter and contains only letters, numbers, and underscores.")
+const AutomationDateValueSourceSchema = z.object({
+  type: z.literal("AUTOMATION_VALUE"),
+  key: AUTOMATION_OUTPUT_KEY_SCHEMA,
+}).strict()
+
+export const AutomationFormatterDateSourceSchema = z.union([
+  AutomationDateSourceSchema,
+  AutomationDateValueSourceSchema,
+])
+
 const TIME_SCHEMA = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Enter a valid time.")
 
 const DateFormatterConfigSchema = z.object({
   mode: z.literal("DATE"),
-  source: AutomationDateSourceSchema,
+  source: AutomationFormatterDateSourceSchema,
   format: z.enum(DATE_FORMAT_VALUES),
-  outputKey: OUTPUT_KEY_SCHEMA,
+  outputKey: AUTOMATION_OUTPUT_KEY_SCHEMA,
 }).strict()
 
 const DateTimeFormatterConfigSchema = z.object({
   mode: z.literal("DATE_TIME"),
-  source: AutomationDateSourceSchema,
+  source: AutomationFormatterDateSourceSchema,
   format: z.enum(DATE_TIME_FORMAT_VALUES),
   time: TIME_SCHEMA.optional(),
-  outputKey: OUTPUT_KEY_SCHEMA,
+  outputKey: AUTOMATION_OUTPUT_KEY_SCHEMA,
 }).strict().superRefine((config, context) => {
   if (
     (
       config.source.type === "CUSTOM_FIELD" ||
       config.source.type === "SPECIFIC_DATE" ||
+      config.source.type === "AUTOMATION_VALUE" ||
       (
         config.source.type === "CONTACT_FIELD" &&
         config.source.key !== "created_at" &&
@@ -105,10 +114,10 @@ const DateTimeFormatterConfigSchema = z.object({
 
 const CompareDatesFormatterConfigSchema = z.object({
   mode: z.literal("COMPARE_DATES"),
-  from: AutomationDateSourceSchema,
-  to: AutomationDateSourceSchema,
+  from: AutomationFormatterDateSourceSchema,
+  to: AutomationFormatterDateSourceSchema,
   unit: z.enum(["DAYS", "MONTHS", "YEARS"]),
-  outputKey: OUTPUT_KEY_SCHEMA,
+  outputKey: AUTOMATION_OUTPUT_KEY_SCHEMA,
 }).strict()
 
 export const AutomationDateTimeFormatterConfigSchema = z.discriminatedUnion("mode", [
@@ -118,6 +127,7 @@ export const AutomationDateTimeFormatterConfigSchema = z.discriminatedUnion("mod
 ])
 
 export type AutomationDateSource = z.infer<typeof AutomationDateSourceSchema>
+export type AutomationFormatterDateSource = z.infer<typeof AutomationFormatterDateSourceSchema>
 export type AutomationDateTimeFormatterConfig = z.infer<typeof AutomationDateTimeFormatterConfigSchema>
 
 export function dateTimeFormatterCustomFieldKeys(config: AutomationDateTimeFormatterConfig) {
@@ -254,13 +264,29 @@ async function resolveDateSource(
   params: {
     tenantId: string
     contactId: string
-    source: AutomationDateSource
+    source: AutomationFormatterDateSource
     tenantTimezone: string
     occurredAt: Date
     dateOnlyTime?: string
+    automationValues: Record<string, unknown>
   },
 ): Promise<ResolvedDateSource> {
   const { source, tenantTimezone, occurredAt } = params
+  if (source.type === "AUTOMATION_VALUE") {
+    if (!Object.prototype.hasOwnProperty.call(params.automationValues, source.key)) {
+      throw new Error(`The automation value “${source.key}” was not created for this run.`)
+    }
+    const value = params.automationValues[source.key]
+    if (typeof value !== "string" || !isValidTemplateDate(value)) {
+      throw new Error(`The automation value “${source.key}” is not a valid date.`)
+    }
+    return {
+      dateKey: value,
+      instant: resolveLocalInstant(value, params.dateOnlyTime ?? "00:00", tenantTimezone),
+      timezone: tenantTimezone,
+      precision: "DATE",
+    }
+  }
   if (source.type === "CURRENT_DATE") {
     return {
       dateKey: dateKeyForInstant(occurredAt, tenantTimezone),
@@ -289,7 +315,11 @@ async function resolveDateSource(
     }
   }
 
-  const stored = await resolveStoredDateSource(prismaTx, params)
+  const stored = await resolveStoredDateSource(prismaTx, {
+    tenantId: params.tenantId,
+    contactId: params.contactId,
+    source,
+  })
   if (!stored) throw new Error("The configured date source is unavailable.")
   if (stored.precision === "DATE_TIME") {
     const instant = stored.raw instanceof Date ? stored.raw : new Date(String(stored.raw))
@@ -390,13 +420,15 @@ export async function resolveAutomationDateTimeFormatter(
     config: AutomationDateTimeFormatterConfig
     tenantTimezone: string
     occurredAt: Date
+    automationValues?: Record<string, unknown>
   },
 ) {
   const { config } = params
+  const automationValues = params.automationValues ?? {}
   if (config.mode === "COMPARE_DATES") {
     const [from, to] = await Promise.all([
-      resolveDateSource(prismaTx, { ...params, source: config.from }),
-      resolveDateSource(prismaTx, { ...params, source: config.to }),
+      resolveDateSource(prismaTx, { ...params, automationValues, source: config.from }),
+      resolveDateSource(prismaTx, { ...params, automationValues, source: config.to }),
     ])
     if (config.unit === "MONTHS") return wholeMonths(from.dateKey, to.dateKey)
     if (config.unit === "YEARS") return wholeYears(from.dateKey, to.dateKey)
@@ -405,6 +437,7 @@ export async function resolveAutomationDateTimeFormatter(
 
   const resolved = await resolveDateSource(prismaTx, {
     ...params,
+    automationValues,
     source: config.source,
     dateOnlyTime: config.mode === "DATE_TIME" ? config.time : undefined,
   })

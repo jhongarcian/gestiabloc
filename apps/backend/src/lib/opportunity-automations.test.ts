@@ -175,6 +175,42 @@ describe("AutomationUpsertSchema", () => {
     }
   })
 
+  test("accepts number and date Math operation configurations", () => {
+    const base = {
+      name: "Calculate values",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+    }
+    assert.equal(AutomationUpsertSchema.safeParse({
+      ...base,
+      actions: [{
+        type: "MATH_OPERATION",
+        mathOperationConfig: {
+          mode: "NUMBER",
+          source: { type: "CUSTOM_FIELD", key: "premium" },
+          operation: "MULTIPLY",
+          operand: 1.1,
+          outputKey: "adjusted_premium",
+        },
+      }],
+    }).success, true)
+    assert.equal(AutomationUpsertSchema.safeParse({
+      ...base,
+      actions: [{
+        type: "MATH_OPERATION",
+        mathOperationConfig: {
+          mode: "DATE",
+          source: { type: "CONTACT_FIELD", key: "date_of_birth" },
+          operation: "ADD",
+          amount: 1,
+          unit: "YEARS",
+          outputKey: "next_birthday",
+        },
+      }],
+    }).success, true)
+  })
+
   test("rejects the removed clear-contact-status action", () => {
     const result = AutomationUpsertSchema.safeParse({
       name: "Invalid clear status action",
@@ -446,6 +482,142 @@ describe("AutomationUpsertSchema", () => {
     await assert.rejects(
       validateAutomationConfiguration(prismaClient, "tenant-1", forwardReference),
       /not available before this action/,
+    )
+  })
+
+  test("validates Math chaining and typed date formatter sources", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => [
+        {
+          id: "field-premium",
+          key: "premium",
+          label: "Premium",
+          fieldType: "CURRENCY",
+          isRequired: false,
+          isActive: true,
+          isEncrypted: false,
+          isSensitive: false,
+          options: [],
+        },
+        {
+          id: "field-renewal",
+          key: "renewal_date",
+          label: "Renewal date",
+          fieldType: "DATE",
+          isRequired: false,
+          isActive: true,
+          isEncrypted: false,
+          isSensitive: false,
+          options: [],
+        },
+      ] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const actions = [
+      {
+        type: "FORMAT_NUMBER" as const,
+        numberFormatterConfig: {
+          mode: "TEXT_TO_NUMBER" as const,
+          source: { type: "CUSTOM_FIELD" as const, key: "premium" },
+          decimalMark: "PERIOD" as const,
+          outputKey: "raw_premium",
+        },
+      },
+      {
+        type: "MATH_OPERATION" as const,
+        mathOperationConfig: {
+          mode: "NUMBER" as const,
+          source: { type: "AUTOMATION_VALUE" as const, key: "raw_premium" },
+          operation: "MULTIPLY" as const,
+          operand: 1.1,
+          outputKey: "adjusted_premium",
+        },
+      },
+      {
+        type: "MATH_OPERATION" as const,
+        mathOperationConfig: {
+          mode: "NUMBER" as const,
+          source: { type: "AUTOMATION_VALUE" as const, key: "adjusted_premium" },
+          operation: "ADD" as const,
+          operand: 25,
+          outputKey: "renewal_premium",
+        },
+      },
+      {
+        type: "FORMAT_NUMBER" as const,
+        numberFormatterConfig: {
+          mode: "FORMAT_CURRENCY" as const,
+          source: { type: "AUTOMATION_VALUE" as const, key: "renewal_premium" },
+          decimalMark: "PERIOD" as const,
+          currencyCode: "USD",
+          outputKey: "renewal_premium_label",
+        },
+      },
+      {
+        type: "MATH_OPERATION" as const,
+        mathOperationConfig: {
+          mode: "DATE" as const,
+          source: { type: "CUSTOM_FIELD" as const, key: "renewal_date" },
+          operation: "ADD" as const,
+          amount: 1,
+          unit: "YEARS" as const,
+          outputKey: "next_renewal",
+        },
+      },
+      {
+        type: "FORMAT_DATE_TIME" as const,
+        dateTimeFormatterConfig: {
+          mode: "DATE" as const,
+          source: { type: "AUTOMATION_VALUE" as const, key: "next_renewal" },
+          format: "MMM D, YYYY" as const,
+          outputKey: "renewal_label",
+        },
+      },
+    ]
+    const valid = AutomationUpsertSchema.parse({
+      name: "Calculate renewal",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions,
+    })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", valid)
+    assert.equal(normalized.actions[1]?.type, "MATH_OPERATION")
+    assert.equal(normalized.actions[2]?.type, "MATH_OPERATION")
+    assert.equal(normalized.actions[3]?.type, "FORMAT_NUMBER")
+    assert.equal(normalized.actions[5]?.type, "FORMAT_DATE_TIME")
+
+    const formattedNumberFirst = AutomationUpsertSchema.parse({
+      ...valid,
+      actions: [
+        {
+          type: "FORMAT_NUMBER",
+          numberFormatterConfig: {
+            mode: "FORMAT_NUMBER",
+            source: { type: "CUSTOM_FIELD", key: "premium" },
+            decimalMark: "PERIOD",
+            groupingStyle: "COMMA_PERIOD",
+            outputKey: "formatted_premium",
+          },
+        },
+        {
+          type: "MATH_OPERATION",
+          mathOperationConfig: {
+            mode: "NUMBER",
+            source: { type: "AUTOMATION_VALUE", key: "formatted_premium" },
+            operation: "ADD",
+            operand: 1,
+            outputKey: "invalid_total",
+          },
+        },
+      ],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", formattedNumberFirst),
+      /not a number/,
     )
   })
 
@@ -1445,6 +1617,166 @@ describe("executeOpportunityAutomations", () => {
     )
   })
 
+  test("executes chained number and date Math operations", async () => {
+    let createdNote: Record<string, unknown> | null = null
+    let runUpdate: Record<string, unknown> | null = null
+    let nodeLogs: Array<Record<string, unknown>> = []
+    const customFieldValues = [
+      {
+        fieldId: "field-premium",
+        value: 100,
+        field: {
+          key: "premium",
+          fieldType: "CURRENCY",
+          isActive: true,
+          isEncrypted: false,
+          isSensitive: false,
+        },
+      },
+      {
+        fieldId: "field-renewal",
+        value: "2024-02-29",
+        field: {
+          key: "renewal_date",
+          fieldType: "DATE",
+          isActive: true,
+          isEncrypted: false,
+          isSensitive: false,
+        },
+      },
+    ]
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Calculate values",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000001",
+              type: "MATH_OPERATION",
+              mathOperationConfig: {
+                mode: "NUMBER",
+                source: { type: "CUSTOM_FIELD", key: "premium" },
+                operation: "ADD",
+                operand: 25,
+                outputKey: "adjusted_premium",
+              },
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000005",
+              type: "FORMAT_NUMBER",
+              numberFormatterConfig: {
+                mode: "FORMAT_CURRENCY",
+                source: { type: "AUTOMATION_VALUE", key: "adjusted_premium" },
+                decimalMark: "PERIOD",
+                currencyCode: "USD",
+                outputKey: "adjusted_premium_label",
+              },
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000002",
+              type: "MATH_OPERATION",
+              mathOperationConfig: {
+                mode: "DATE",
+                source: { type: "CUSTOM_FIELD", key: "renewal_date" },
+                operation: "ADD",
+                amount: 1,
+                unit: "YEARS",
+                outputKey: "next_renewal",
+              },
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000003",
+              type: "FORMAT_DATE_TIME",
+              dateTimeFormatterConfig: {
+                mode: "DATE",
+                source: { type: "AUTOMATION_VALUE", key: "next_renewal" },
+                format: "MMM D, YYYY",
+                outputKey: "renewal_label",
+              },
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000004",
+              type: "ADD_CONTACT_NOTE",
+              noteTitle: "Calculated values",
+              noteBody: "Premium {automation.adjusted_premium} ({automation.adjusted_premium_label}); renewal {automation.renewal_label}.",
+            },
+          ],
+        }],
+      },
+      contact: {
+        findFirst: async (args: { select?: Record<string, unknown> }) => args.select?.email
+          ? {
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              email: "taylor@example.com",
+              customFieldValues,
+            }
+          : {
+              id: "contact-1",
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              statusConfigId: "active",
+              assignedToUserId: null,
+              tags: [],
+              customFieldValues,
+            },
+      },
+      contactCustomField: { findMany: async () => [
+        { id: "field-premium", key: "premium", label: "Premium", fieldType: "CURRENCY", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: [] },
+        { id: "field-renewal", key: "renewal_date", label: "Renewal date", fieldType: "DATE", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: [] },
+      ] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      contactNote: {
+        create: async ({ data }: { data: Record<string, unknown> }) => { createdNote = data },
+      },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async ({ data }: { data: Record<string, unknown> }) => { runUpdate = data },
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { nodeLogs = data },
+      },
+    }
+
+    await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.equal((createdNote as Record<string, unknown> | null)?.body, "Premium 125 ($125.00); renewal Feb 28, 2025.")
+    assert.deepEqual(nodeLogs.slice(1).map((log) => log.nodeLabel), [
+      "Math operation",
+      "Number formatter",
+      "Math operation",
+      "Date/Time formatter",
+      "Add contact note",
+    ])
+    assert.equal(nodeLogs[1]?.details, "Created automation value “adjusted_premium”.")
+    const variables = (runUpdate as Record<string, unknown> | null)?.variables as Record<string, unknown>
+    assert.equal(variables.adjusted_premium, 125)
+    assert.equal(variables.adjusted_premium_label, "$125.00")
+    assert.equal(variables.next_renewal, "2025-02-28")
+    assert.equal(variables.renewal_label, "Feb 28, 2025")
+  })
+
   test("creates a contact-linked task with live templates, reminder, and notification", async () => {
     const created: {
       task?: Record<string, unknown>
@@ -2169,6 +2501,7 @@ describe("resumeDueAutomationRuns", () => {
     let contactUpdates = 0
     let waitingLogUpdates = 0
     let runStatus: string | null = null
+    let runVariables: Record<string, unknown> = {}
     let summaryCount = 0
     let createdNote: Record<string, unknown> | null = null
     const actions = [
@@ -2179,12 +2512,23 @@ describe("resumeDueAutomationRuns", () => {
       },
       {
         nodeKey: "00000000-0000-4000-8000-000000000002",
-        type: "ADD_CONTACT_NOTE",
-        noteTitle: "Pinned note for {contact.name}",
-        noteBody: "Current email: {contact.email}. Resumed date: {date.current|date:iso}.",
+        type: "MATH_OPERATION",
+        mathOperationConfig: {
+          mode: "NUMBER",
+          source: { type: "AUTOMATION_VALUE", key: "raw_premium" },
+          operation: "ADD",
+          operand: 25,
+          outputKey: "adjusted_premium",
+        },
       },
       {
         nodeKey: "00000000-0000-4000-8000-000000000003",
+        type: "ADD_CONTACT_NOTE",
+        noteTitle: "Pinned note for {contact.name}",
+        noteBody: "Current email: {contact.email}. Premium: {automation.adjusted_premium}. Resumed date: {date.current|date:iso}.",
+      },
+      {
+        nodeKey: "00000000-0000-4000-8000-000000000004",
         type: "SET_CONTACT_STATUS",
         statusConfigId: "inactive",
       },
@@ -2207,13 +2551,17 @@ describe("resumeDueAutomationRuns", () => {
           targetStageId: "stage-new",
           actionSnapshot: actions,
           cursorIndex: 1,
+          variables: { raw_premium: 100 },
           status: "RUNNING",
           resumeAt: new Date(Date.now() - 1_000),
           waitingNodeKey: actions[0]!.nodeKey,
           waitingNodeExecutionId: "wait-log-1",
           leaseToken,
         }),
-        update: async ({ data }: { data: { status: string } }) => { runStatus = data.status },
+        update: async ({ data }: { data: { status: string; variables?: Record<string, unknown> } }) => {
+          runStatus = data.status
+          runVariables = data.variables ?? runVariables
+        },
       },
       contact: {
         findFirst: async (args: { select?: Record<string, unknown> }) => args.select?.email
@@ -2263,8 +2611,9 @@ describe("resumeDueAutomationRuns", () => {
     assert.equal((createdNote as Record<string, unknown>).title, "Pinned note for Taylor Reed")
     assert.match(
       String((createdNote as Record<string, unknown>).body),
-      /^Current email: current@example\.com\. Resumed date: \d{4}-\d{2}-\d{2}\.$/,
+      /^Current email: current@example\.com\. Premium: 125\. Resumed date: \d{4}-\d{2}-\d{2}\.$/,
     )
+    assert.deepEqual(runVariables, { raw_premium: 100, adjusted_premium: 125 })
     assert.equal(waitingLogUpdates, 1)
     assert.equal(runStatus, "SUCCEEDED")
     assert.equal(summaryCount, 1)

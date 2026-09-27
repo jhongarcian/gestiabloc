@@ -14,6 +14,7 @@ const labels = {
   CREATE_TASK: "Create task",
   FORMAT_DATE_TIME: "Date/Time formatter",
   FORMAT_NUMBER: "Number formatter",
+  MATH_OPERATION: "Math operation",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 } as const
@@ -238,6 +239,47 @@ describe("buildAutomationFlowGraph", () => {
     const formatterNode = graph.nodes.find((node) => node.id.includes("00000000"))
     assert.equal(formatterNode?.data.label, "Number formatter")
     assert.equal(formatterNode?.data.subtitle, "Currency · USD → premium_label")
+  })
+
+  test("summarizes number and date Math operations", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [
+          {
+            nodeKey: "00000000-0000-4000-8000-000000000001",
+            type: "MATH_OPERATION",
+            mathOperationConfig: {
+              mode: "NUMBER",
+              source: { type: "CUSTOM_FIELD", key: "premium" },
+              operation: "ADD",
+              operand: 25,
+              outputKey: "adjusted_premium",
+            },
+          },
+          {
+            nodeKey: "00000000-0000-4000-8000-000000000002",
+            type: "MATH_OPERATION",
+            mathOperationConfig: {
+              mode: "DATE",
+              source: { type: "CUSTOM_FIELD", key: "renewal_date" },
+              operation: "SUBTRACT",
+              amount: 2,
+              unit: "MONTHS",
+              outputKey: "notice_date",
+            },
+          },
+        ],
+      },
+      null,
+      labels,
+    )
+
+    assert.equal(graph.nodes.find((node) => node.id.endsWith("0001"))?.data.subtitle, "Add 25 → adjusted_premium")
+    assert.equal(graph.nodes.find((node) => node.id.endsWith("0002"))?.data.subtitle, "Subtract 2 months → notice_date")
   })
 
   test("places delete contact directly before completion", () => {

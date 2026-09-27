@@ -319,6 +319,7 @@ enum AutomationActionType {
   CREATE_TASK
   FORMAT_DATE_TIME
   FORMAT_NUMBER
+  MATH_OPERATION
   WAIT
   DELETE_CONTACT
 }
@@ -1437,6 +1438,7 @@ model AutomationAction {
   taskConfig         Json?
   dateTimeFormatterConfig Json?
   numberFormatterConfig Json?
+  mathOperationConfig Json?
   sortOrder          Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)

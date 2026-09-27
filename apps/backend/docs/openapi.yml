@@ -6132,6 +6132,7 @@ components:
             - CREATE_TASK
             - FORMAT_DATE_TIME
             - FORMAT_NUMBER
+            - MATH_OPERATION
             - WAIT
             - DELETE_CONTACT
           description: >-
@@ -6180,6 +6181,8 @@ components:
           $ref: "#/components/schemas/AutomationDateTimeFormatterConfig"
         numberFormatterConfig:
           $ref: "#/components/schemas/AutomationNumberFormatterConfig"
+        mathOperationConfig:
+          $ref: "#/components/schemas/AutomationMathOperationConfig"
         waitConfig:
           oneOf:
             - type: object
@@ -6412,7 +6415,7 @@ components:
               type: string
               enum: [DATE]
             source:
-              $ref: "#/components/schemas/AutomationTaskDateSource"
+              $ref: "#/components/schemas/AutomationFormatterDateSource"
             format:
               type: string
               enum:
@@ -6436,11 +6439,11 @@ components:
               type: string
               enum: [DATE_TIME]
             source:
-              $ref: "#/components/schemas/AutomationTaskDateSource"
+              $ref: "#/components/schemas/AutomationFormatterDateSource"
             time:
               type: string
               pattern: "^([01]\\d|2[0-3]):[0-5]\\d$"
-              description: Required for date-only contact, custom, and specific date sources.
+              description: Required for date-only contact, custom, specific-date, and automation-value sources.
             format:
               type: string
               enum:
@@ -6467,15 +6470,29 @@ components:
               type: string
               enum: [COMPARE_DATES]
             from:
-              $ref: "#/components/schemas/AutomationTaskDateSource"
+              $ref: "#/components/schemas/AutomationFormatterDateSource"
             to:
-              $ref: "#/components/schemas/AutomationTaskDateSource"
+              $ref: "#/components/schemas/AutomationFormatterDateSource"
             unit:
               type: string
               enum: [DAYS, MONTHS, YEARS]
             outputKey:
               type: string
               pattern: "^[a-z][a-z0-9_]{0,63}$"
+    AutomationFormatterDateSource:
+      oneOf:
+        - $ref: "#/components/schemas/AutomationTaskDateSource"
+        - type: object
+          additionalProperties: false
+          required: [type, key]
+          properties:
+            type:
+              type: string
+              enum: [AUTOMATION_VALUE]
+            key:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+              description: Date value produced by an earlier Math operation.
     AutomationNumberSource:
       oneOf:
         - type: object
@@ -6498,7 +6515,7 @@ components:
             key:
               type: string
               pattern: "^[a-z][a-z0-9_]{0,63}$"
-              description: Compatible run-scoped value produced by an earlier formatter.
+              description: Compatible run-scoped value produced by an earlier formatter or Math operation.
     AutomationNumberFormatterConfig:
       description: Creates a named, run-scoped numeric or formatted text value for later actions.
       oneOf:
@@ -6583,6 +6600,72 @@ components:
             max:
               type: integer
               description: Inclusive maximum; must be greater than or equal to min.
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+    AutomationMathDateSource:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, key]
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_FIELD, CUSTOM_FIELD]
+            key:
+              type: string
+              description: Immutable safe date-field key.
+        - type: object
+          additionalProperties: false
+          required: [type, key]
+          properties:
+            type:
+              type: string
+              enum: [AUTOMATION_VALUE]
+            key:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+              description: Date result produced by an earlier Math operation.
+    AutomationMathOperationConfig:
+      description: Calculates and stores a named run-scoped number or canonical YYYY-MM-DD date.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mode, source, operation, operand, outputKey]
+          properties:
+            mode:
+              type: string
+              enum: [NUMBER]
+            source:
+              $ref: "#/components/schemas/AutomationNumberSource"
+            operation:
+              type: string
+              enum: [ADD, SUBTRACT, MULTIPLY, DIVIDE]
+            operand:
+              type: number
+              description: Fixed finite operand. It cannot be zero when operation is DIVIDE.
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          additionalProperties: false
+          required: [mode, source, operation, amount, unit, outputKey]
+          properties:
+            mode:
+              type: string
+              enum: [DATE]
+            source:
+              $ref: "#/components/schemas/AutomationMathDateSource"
+            operation:
+              type: string
+              enum: [ADD, SUBTRACT]
+            amount:
+              type: integer
+              minimum: 1
+              maximum: 10000
+            unit:
+              type: string
+              enum: [DAYS, MONTHS, YEARS]
             outputKey:
               type: string
               pattern: "^[a-z][a-z0-9_]{0,63}$"

@@ -93,6 +93,38 @@ describe("automation date/time formatter", () => {
     }), "2026-12-21 09:45 AM")
   })
 
+  test("formats a date created by an earlier Math operation", async () => {
+    assert.equal(await resolveAutomationDateTimeFormatter(noStoredDates, {
+      tenantId: "tenant-1",
+      contactId: "contact-1",
+      config: {
+        mode: "DATE",
+        source: { type: "AUTOMATION_VALUE", key: "renewal_date" },
+        format: "MMMM Do YYYY",
+        outputKey: "renewal_label",
+      },
+      tenantTimezone: "America/Chicago",
+      occurredAt: new Date("2026-09-25T18:30:59.000Z"),
+      automationValues: { renewal_date: "2027-02-28" },
+    }), "February 28th 2027")
+    await assert.rejects(
+      resolveAutomationDateTimeFormatter(noStoredDates, {
+        tenantId: "tenant-1",
+        contactId: "contact-1",
+        config: {
+          mode: "DATE",
+          source: { type: "AUTOMATION_VALUE", key: "missing_date" },
+          format: "YYYY-MM-DD",
+          outputKey: "renewal_label",
+        },
+        tenantTimezone: "America/Chicago",
+        occurredAt: new Date("2026-09-25T18:30:59.000Z"),
+        automationValues: {},
+      }),
+      /was not created/,
+    )
+  })
+
   test("compares signed whole calendar days, months, and years", async () => {
     const compare = async (from: string, to: string, unit: "DAYS" | "MONTHS" | "YEARS") =>
       resolveAutomationDateTimeFormatter(noStoredDates, {

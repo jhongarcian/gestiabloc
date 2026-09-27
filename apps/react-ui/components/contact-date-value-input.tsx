@@ -1,6 +1,6 @@
 "use client"
 
-import { Check } from "lucide-react"
+import { Braces, Check } from "lucide-react"
 import { useMemo, useState } from "react"
 
 import {
@@ -36,13 +36,15 @@ export type ContactDateValue =
   | { type: "CONTACT_FIELD"; key: string }
   | { type: "CUSTOM_FIELD"; key: string }
   | { type: "SPECIFIC_DATE"; date: string; timezone: string }
+  | { type: "AUTOMATION_VALUE"; key: string }
 
-type DateKind = "CURRENT" | "RELATIVE" | "FIELD" | "SPECIFIC"
+type DateKind = "CURRENT" | "RELATIVE" | "FIELD" | "SPECIFIC" | "AUTOMATION_VALUE"
 
 function dateKind(value: ContactDateValue): DateKind {
   if (value.type === "CURRENT_DATE") return "CURRENT"
   if (value.type === "RELATIVE_DATE") return "RELATIVE"
   if (value.type === "SPECIFIC_DATE") return "SPECIFIC"
+  if (value.type === "AUTOMATION_VALUE") return "AUTOMATION_VALUE"
   return "FIELD"
 }
 
@@ -59,6 +61,7 @@ export function ContactDateValueInput({
   timezone,
   idPrefix,
   allowRelative = false,
+  automationValues = [],
 }: {
   value: ContactDateValue
   onChange: (value: ContactDateValue) => void
@@ -66,6 +69,7 @@ export function ContactDateValueInput({
   timezone?: string | null
   idPrefix: string
   allowRelative?: boolean
+  automationValues?: Array<{ key: string; label: string }>
 }) {
   const { dateFields } = useMemo(() => partitionContactTemplateFields(catalog), [catalog])
   const kind = dateKind(value)
@@ -89,6 +93,11 @@ export function ContactDateValueInput({
       onChange({ type: "RELATIVE_DATE", amount: 1, unit: "DAYS" })
       return
     }
+    if (nextKind === "AUTOMATION_VALUE") {
+      const first = automationValues[0]
+      if (first) onChange({ type: "AUTOMATION_VALUE", key: first.key })
+      return
+    }
     const first = dateFields[0]
     if (first) {
       onChange({
@@ -110,6 +119,7 @@ export function ContactDateValueInput({
             <SelectItem value="CURRENT">Current date</SelectItem>
             {allowRelative ? <SelectItem value="RELATIVE">After action runs</SelectItem> : null}
             <SelectItem value="FIELD" disabled={dateFields.length === 0}>Date field</SelectItem>
+            {automationValues.length > 0 ? <SelectItem value="AUTOMATION_VALUE">Automation value</SelectItem> : null}
             <SelectItem value="SPECIFIC">Specific date</SelectItem>
           </SelectContent>
         </Select>
@@ -140,6 +150,33 @@ export function ContactDateValueInput({
                     </CommandItem>
                   )
                 })}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </div>
+      ) : null}
+
+      {value.type === "AUTOMATION_VALUE" ? (
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+          <Command>
+            <CommandInput placeholder="Search automation values" />
+            <CommandList className="max-h-44">
+              <CommandEmpty>No date values found.</CommandEmpty>
+              <CommandGroup>
+                {automationValues.map((option) => (
+                  <CommandItem
+                    key={option.key}
+                    value={`${option.label} ${option.key}`}
+                    onSelect={() => onChange({ type: "AUTOMATION_VALUE", key: option.key })}
+                  >
+                    <Check
+                      className={cn("size-4", value.key === option.key ? "opacity-100" : "opacity-0")}
+                      aria-hidden="true"
+                    />
+                    <Braces className="size-4 text-slate-400" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  </CommandItem>
+                ))}
               </CommandGroup>
             </CommandList>
           </Command>

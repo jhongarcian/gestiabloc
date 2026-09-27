@@ -28,8 +28,14 @@ import {
 import {
   AutomationDateTimeFormatterConfigSchema,
   resolveAutomationDateTimeFormatter,
-  type AutomationDateSource,
+  type AutomationFormatterDateSource,
 } from "./automation-date-time-formatter.js"
+import {
+  AutomationMathOperationConfigSchema,
+  mathOperationAcceptsFieldType,
+  resolveAutomationMathOperation,
+  type AutomationMathOperationConfig,
+} from "./automation-math-operation.js"
 import {
   AutomationNumberFormatterConfigSchema,
   numberFormatterAcceptsFieldType,
@@ -81,6 +87,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "CREATE_TASK",
   "FORMAT_DATE_TIME",
   "FORMAT_NUMBER",
+  "MATH_OPERATION",
   "WAIT",
   "DELETE_CONTACT",
 ] as const
@@ -313,6 +320,11 @@ export const AutomationActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("FORMAT_NUMBER"),
     nodeKey: actionNodeKeySchema,
     numberFormatterConfig: AutomationNumberFormatterConfigSchema,
+  }),
+  z.object({
+    type: z.literal("MATH_OPERATION"),
+    nodeKey: actionNodeKeySchema,
+    mathOperationConfig: AutomationMathOperationConfigSchema,
   }),
   z.object({ type: z.literal("WAIT"), nodeKey: actionNodeKeySchema, waitConfig: AutomationWaitConfigSchema }),
   z.object({ type: z.literal("DELETE_CONTACT"), nodeKey: actionNodeKeySchema }),
@@ -804,7 +816,7 @@ export async function validateAutomationConfiguration(
   }
 
   const automationOutputs = new Map<string, AutomationValueKind>()
-  const validateFormatterSource = (source: AutomationDateSource, label: string) => {
+  const validateFormatterSource = (source: AutomationFormatterDateSource, label: string) => {
     if (source.type === "CONTACT_FIELD") {
       const regularField = CONTACT_TEMPLATE_REGULAR_FIELDS.find((field) => field.key === source.key)
       if (!regularField || regularField.fieldType !== "DATE") {
@@ -823,6 +835,20 @@ export async function validateAutomationConfiguration(
         new Intl.DateTimeFormat("en-US", { timeZone: source.timezone }).format(new Date())
       } catch {
         throw new AutomationConfigurationError("INVALID_FORMATTER_TIMEZONE", `${label} uses an invalid timezone.`)
+      }
+    } else if (source.type === "AUTOMATION_VALUE") {
+      const outputKind = automationOutputs.get(source.key)
+      if (!outputKind) {
+        throw new AutomationConfigurationError(
+          "UNKNOWN_AUTOMATION_VALUE",
+          `The automation value “${source.key}” is not available before this action.`,
+        )
+      }
+      if (outputKind !== "DATE") {
+        throw new AutomationConfigurationError(
+          "INCOMPATIBLE_AUTOMATION_VALUE",
+          `The automation value “${source.key}” is not a date.`,
+        )
       }
     }
   }
@@ -870,6 +896,51 @@ export async function validateAutomationConfiguration(
       )
     }
   }
+  const validateMathSource = (
+    config: AutomationMathOperationConfig,
+  ) => {
+    const { source } = config
+    if (source.type === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === source.key)
+      if (!field || !mathOperationAcceptsFieldType(config.mode, field.fieldType)) {
+        throw new AutomationConfigurationError(
+          "INVALID_MATH_FIELD",
+          `Select a compatible contact ${config.mode === "DATE" ? "date" : "number"} field.`,
+        )
+      }
+      return
+    }
+    if (source.type === "CUSTOM_FIELD") {
+      const field = fieldKeyMap.get(source.key)
+      if (
+        !field ||
+        !field.isActive ||
+        field.isEncrypted ||
+        field.isSensitive ||
+        !mathOperationAcceptsFieldType(config.mode, field.fieldType)
+      ) {
+        throw new AutomationConfigurationError(
+          "INVALID_MATH_FIELD",
+          `Select an active, non-sensitive ${config.mode === "DATE" ? "date" : "number"} field.`,
+        )
+      }
+      return
+    }
+    const outputKind = automationOutputs.get(source.key)
+    if (!outputKind) {
+      throw new AutomationConfigurationError(
+        "UNKNOWN_AUTOMATION_VALUE",
+        `The automation value “${source.key}” is not available before this action.`,
+      )
+    }
+    const expectedKind: AutomationValueKind = config.mode === "DATE" ? "DATE" : "NUMBER"
+    if (outputKind !== expectedKind) {
+      throw new AutomationConfigurationError(
+        "INCOMPATIBLE_AUTOMATION_VALUE",
+        `The automation value “${source.key}” is not a ${config.mode === "DATE" ? "date" : "number"}.`,
+      )
+    }
+  }
 
   const actions = input.actions.map((action, index) => {
     const nodeKey = actionNodeKeys[index]!
@@ -901,6 +972,18 @@ export async function validateAutomationConfiguration(
         }
       }
       return { ...base, waitConfig }
+    }
+    if (action.type === "MATH_OPERATION") {
+      const config = action.mathOperationConfig
+      if (automationOutputs.has(config.outputKey)) {
+        throw new AutomationConfigurationError(
+          "DUPLICATE_AUTOMATION_VALUE",
+          `The automation value “${config.outputKey}” is already created by an earlier action.`,
+        )
+      }
+      validateMathSource(config)
+      automationOutputs.set(config.outputKey, config.mode === "DATE" ? "DATE" : "NUMBER")
+      return { ...base, mathOperationConfig: config }
     }
     if (action.type === "FORMAT_DATE_TIME") {
       const config = action.dateTimeFormatterConfig
@@ -1399,6 +1482,7 @@ function automationActionSnapshot(action: any): RuntimeAutomationAction {
     taskConfig: action.taskConfig,
     dateTimeFormatterConfig: action.dateTimeFormatterConfig,
     numberFormatterConfig: action.numberFormatterConfig,
+    mathOperationConfig: action.mathOperationConfig,
   })
   if (!parsed.nodeKey) throw new Error("Automation action is missing its stable node key.")
   return { ...parsed, nodeKey: parsed.nodeKey }
@@ -1769,6 +1853,7 @@ async function applyAutomationAction(
         config: action.dateTimeFormatterConfig,
         tenantTimezone: catalog.timezone,
         occurredAt,
+        automationValues,
       })
       automationValues[action.dateTimeFormatterConfig.outputKey] = value
       return `Created automation value “${action.dateTimeFormatterConfig.outputKey}”.`
@@ -1781,6 +1866,17 @@ async function applyAutomationAction(
       })
       automationValues[action.numberFormatterConfig.outputKey] = value
       return `Created automation value “${action.numberFormatterConfig.outputKey}”.`
+    } else if (action.type === "MATH_OPERATION") {
+      const value = await resolveAutomationMathOperation(prismaTx, {
+        tenantId,
+        contactId,
+        config: action.mathOperationConfig,
+        tenantTimezone: catalog.timezone,
+        occurredAt,
+        automationValues,
+      })
+      automationValues[action.mathOperationConfig.outputKey] = value
+      return `Created automation value “${action.mathOperationConfig.outputKey}”.`
     } else if (action.type === "DELETE_CONTACT") {
       const [contactNoteAttachments, serviceNoteAttachments] = await Promise.all([
         prismaTx.contactNoteAttachment.findMany({

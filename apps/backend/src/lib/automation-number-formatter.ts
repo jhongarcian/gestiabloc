@@ -33,9 +33,9 @@ export const AUTOMATION_NUMBER_CURRENCIES = [
   "NOK", "DKK", "PLN", "CZK", "TRY", "ZAR", "AED", "SAR", "EGP", "ILS",
 ] as const
 
-export type AutomationValueKind = "NUMBER" | "NUMERIC_TEXT" | "PHONE" | "TEXT"
+export type AutomationValueKind = "NUMBER" | "DATE" | "NUMERIC_TEXT" | "PHONE" | "TEXT"
 
-const OUTPUT_KEY_SCHEMA = z.string()
+export const AUTOMATION_OUTPUT_KEY_SCHEMA = z.string()
   .trim()
   .regex(
     /^[a-z][a-z0-9_]{0,63}$/,
@@ -53,14 +53,14 @@ export const AutomationNumberSourceSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     type: z.literal("AUTOMATION_VALUE"),
-    key: OUTPUT_KEY_SCHEMA,
+    key: AUTOMATION_OUTPUT_KEY_SCHEMA,
   }).strict(),
 ])
 
 const numericSourceShape = {
   source: AutomationNumberSourceSchema,
   decimalMark: z.enum(["PERIOD", "COMMA"]),
-  outputKey: OUTPUT_KEY_SCHEMA,
+  outputKey: AUTOMATION_OUTPUT_KEY_SCHEMA,
 }
 
 const TextToNumberConfigSchema = z.object({
@@ -85,14 +85,14 @@ const FormatPhoneConfigSchema = z.object({
   source: AutomationNumberSourceSchema,
   countryCode: z.string().trim().regex(/^\+\d{1,4}$/, "Enter a country code such as +1."),
   phoneFormat: z.enum(AUTOMATION_NUMBER_PHONE_FORMATS),
-  outputKey: OUTPUT_KEY_SCHEMA,
+  outputKey: AUTOMATION_OUTPUT_KEY_SCHEMA,
 }).strict()
 
 const RandomNumberConfigSchema = z.object({
   mode: z.literal("RANDOM_NUMBER"),
   min: z.number().int().safe(),
   max: z.number().int().safe(),
-  outputKey: OUTPUT_KEY_SCHEMA,
+  outputKey: AUTOMATION_OUTPUT_KEY_SCHEMA,
 }).strict().superRefine((config, context) => {
   if (config.min > config.max) {
     context.addIssue({

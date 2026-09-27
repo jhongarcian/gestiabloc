@@ -139,4 +139,39 @@ describe("findEnabledAutomationReference", () => {
       { id: "automation-1", name: "Format premium" },
     )
   })
+
+  test("finds custom fields used by a Math operation", async () => {
+    const prismaClient = {
+      contactCustomField: {
+        findFirst: async () => ({ key: "renewal_date" }),
+      },
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Calculate renewal",
+          actions: [{
+            type: "MATH_OPERATION",
+            mathOperationConfig: {
+              mode: "DATE",
+              source: { type: "CUSTOM_FIELD", key: "renewal_date" },
+              operation: "ADD",
+              amount: 1,
+              unit: "YEARS",
+              outputKey: "next_renewal",
+            },
+          }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "customField", id: "field-1" },
+      ),
+      { id: "automation-1", name: "Calculate renewal" },
+    )
+  })
 })

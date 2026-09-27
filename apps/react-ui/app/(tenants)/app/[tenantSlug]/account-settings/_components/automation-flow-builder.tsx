@@ -85,6 +85,8 @@ import type {
   AutomationDateSource,
   AutomationDateTimeFormatterConfig,
   AutomationFieldUpdate,
+  AutomationFormatterDateSource,
+  AutomationMathOperationConfig,
   AutomationNumberFormatterConfig,
   AutomationNumberSource,
   AutomationOperator,
@@ -167,6 +169,7 @@ function draftSnapshot(draft: Draft) {
       taskConfig: action.taskConfig,
       dateTimeFormatterConfig: action.dateTimeFormatterConfig,
       numberFormatterConfig: action.numberFormatterConfig,
+      mathOperationConfig: action.mathOperationConfig,
     })),
   })
 }
@@ -225,8 +228,9 @@ const ACTION_DEFINITIONS = {
   WAIT: { label: "Wait", group: "INTERNAL", order: 0 },
   FORMAT_DATE_TIME: { label: "Date/Time formatter", group: "INTERNAL", order: 1 },
   FORMAT_NUMBER: { label: "Number formatter", group: "INTERNAL", order: 2 },
-  CREATE_TASK: { label: "Create task", group: "INTERNAL", order: 3 },
-  ADD_CONTACT_NOTE: { label: "Add contact note", group: "INTERNAL", order: 4 },
+  MATH_OPERATION: { label: "Math operation", group: "INTERNAL", order: 3 },
+  CREATE_TASK: { label: "Create task", group: "INTERNAL", order: 4 },
+  ADD_CONTACT_NOTE: { label: "Add contact note", group: "INTERNAL", order: 5 },
   UPDATE_CONTACT_CUSTOM_FIELDS: { label: "Update contact fields", group: "CONTACT", order: 0 },
   SET_CONTACT_STATUS: { label: "Set contact status", group: "CONTACT", order: 1 },
   SET_CONTACT_ASSIGNEE: { label: "Assign contact", group: "CONTACT", order: 2 },
@@ -576,6 +580,28 @@ function actionDefaults(
       },
     }
   }
+  if (type === "MATH_OPERATION") {
+    const preferredCustomField = catalog.customFields.find(
+      (field) => field.fieldType === "NUMBER" || field.fieldType === "CURRENCY",
+    )
+    const preferredContactField = catalog.templateFields.contact.find(
+      (field) => field.fieldType === "NUMBER" || field.fieldType === "CURRENCY",
+    )
+    const source = preferredCustomField
+      ? { type: "CUSTOM_FIELD" as const, key: preferredCustomField.key }
+      : { type: "CONTACT_FIELD" as const, key: preferredContactField?.key ?? "" }
+    return {
+      nodeKey,
+      type,
+      mathOperationConfig: {
+        mode: "NUMBER",
+        source,
+        operation: "ADD",
+        operand: 1,
+        outputKey: "calculated_value",
+      },
+    }
+  }
   if (type === "WAIT") return { nodeKey, type, waitConfig: { mode: "DURATION", amount: 1, unit: "HOURS" } }
   return { nodeKey, type }
 }
@@ -613,6 +639,8 @@ function formatterOutputs(actions: AutomationAction[]): AutomationValueDefinitio
       ? action.dateTimeFormatterConfig?.outputKey.trim()
       : action.type === "FORMAT_NUMBER"
         ? action.numberFormatterConfig?.outputKey.trim()
+        : action.type === "MATH_OPERATION"
+          ? action.mathOperationConfig?.outputKey.trim()
         : ""
     const valueKind: AutomationValueDefinition["valueKind"] = action.type === "FORMAT_DATE_TIME"
       ? action.dateTimeFormatterConfig?.mode === "COMPARE_DATES"
@@ -629,6 +657,8 @@ function formatterOutputs(actions: AutomationAction[]): AutomationValueDefinitio
             : action.numberFormatterConfig?.mode === "FORMAT_PHONE_NUMBER"
               ? "PHONE"
               : "TEXT"
+        : action.type === "MATH_OPERATION"
+          ? action.mathOperationConfig?.mode === "DATE" ? "DATE" : "NUMBER"
         : "TEXT"
     return key && /^[a-z][a-z0-9_]{0,63}$/.test(key)
       ? [{ key, label: key, valueKind }]
@@ -672,7 +702,11 @@ function isNumberFormatterSourceReady(
   return Boolean(output && numberFormatterAcceptsValueKind(mode, output.valueKind))
 }
 
-function isFormatterSourceReady(source: AutomationDateSource, catalog: AutomationCatalog) {
+function isFormatterSourceReady(
+  source: AutomationFormatterDateSource,
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+) {
   if (source.type === "CURRENT_DATE") return true
   if (source.type === "RELATIVE_DATE") {
     return Number.isInteger(source.amount) && source.amount > 0 && source.amount <= 10_000
@@ -685,15 +719,42 @@ function isFormatterSourceReady(source: AutomationDateSource, catalog: Automatio
       (field) => field.key === source.key && field.fieldType === "DATE",
     )
   }
+  if (source.type === "AUTOMATION_VALUE") {
+    return automationOutputs.some(
+      (output) => output.key === source.key && output.valueKind === "DATE",
+    )
+  }
   return catalog.customFields.some(
     (field) => field.key === source.key && field.fieldType === "DATE",
   )
 }
 
-function formatterSourceNeedsTime(source: AutomationDateSource) {
+function formatterSourceNeedsTime(source: AutomationFormatterDateSource) {
   return source.type === "CUSTOM_FIELD" ||
     source.type === "SPECIFIC_DATE" ||
+    source.type === "AUTOMATION_VALUE" ||
     (source.type === "CONTACT_FIELD" && source.key !== "created_at" && source.key !== "updated_at")
+}
+
+function isMathSourceReady(
+  config: AutomationMathOperationConfig,
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+) {
+  const { source } = config
+  if (source.type === "AUTOMATION_VALUE") {
+    const expectedKind = config.mode === "DATE" ? "DATE" : "NUMBER"
+    return automationOutputs.some(
+      (output) => output.key === source.key && output.valueKind === expectedKind,
+    )
+  }
+  const field = source.type === "CONTACT_FIELD"
+    ? catalog.templateFields.contact.find((candidate) => candidate.key === source.key)
+    : catalog.customFields.find((candidate) => candidate.key === source.key)
+  if (!field) return false
+  return config.mode === "DATE"
+    ? field.fieldType === "DATE"
+    : field.fieldType === "NUMBER" || field.fieldType === "CURRENCY"
 }
 
 function isTaskDateTimeReady(value: AutomationTaskDateTime, catalog: AutomationCatalog) {
@@ -773,10 +834,10 @@ function isActionReady(
     if (!config || !/^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)) return false
     if (availableOutputs.some((output) => output.key === config.outputKey)) return false
     if (config.mode === "COMPARE_DATES") {
-      return isFormatterSourceReady(config.from, catalog) &&
-        isFormatterSourceReady(config.to, catalog)
+      return isFormatterSourceReady(config.from, catalog, availableOutputs) &&
+        isFormatterSourceReady(config.to, catalog, availableOutputs)
     }
-    if (!isFormatterSourceReady(config.source, catalog)) return false
+    if (!isFormatterSourceReady(config.source, catalog, availableOutputs)) return false
     if (
       config.mode === "DATE_TIME" &&
       formatterSourceNeedsTime(config.source) &&
@@ -796,6 +857,19 @@ function isActionReady(
     if (!isNumberFormatterSourceReady(config.source, config.mode, catalog, availableOutputs)) return false
     if (config.mode === "FORMAT_PHONE_NUMBER") return /^\+\d{1,4}$/.test(config.countryCode)
     return config.decimalMark === "PERIOD" || config.decimalMark === "COMMA"
+  }
+  if (action.type === "MATH_OPERATION") {
+    const config = action.mathOperationConfig
+    if (!config || !/^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)) return false
+    if (availableOutputs.some((output) => output.key === config.outputKey)) return false
+    if (!isMathSourceReady(config, catalog, availableOutputs)) return false
+    if (config.mode === "DATE") {
+      return Number.isInteger(config.amount) &&
+        config.amount > 0 &&
+        config.amount <= 10_000
+    }
+    return Number.isFinite(config.operand) &&
+      !(config.operation === "DIVIDE" && config.operand === 0)
   }
   if (action.type === "WAIT") {
     const config = action.waitConfig
@@ -935,6 +1009,7 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
       taskConfig: action.taskConfig,
       dateTimeFormatterConfig: action.dateTimeFormatterConfig,
       numberFormatterConfig: action.numberFormatterConfig,
+      mathOperationConfig: action.mathOperationConfig,
     })),
   }
 }
@@ -2121,6 +2196,7 @@ function ActionEditor({
             config={action.dateTimeFormatterConfig}
             catalog={catalog}
             timezone={timezone}
+            automationOutputs={availableAutomationOutputs}
             onChange={(dateTimeFormatterConfig) => onChange({ ...action, dateTimeFormatterConfig })}
           />
         ) : null}
@@ -2131,6 +2207,16 @@ function ActionEditor({
             catalog={catalog}
             automationOutputs={availableAutomationOutputs}
             onChange={(numberFormatterConfig) => onChange({ ...action, numberFormatterConfig })}
+          />
+        ) : null}
+
+        {action.type === "MATH_OPERATION" && action.mathOperationConfig ? (
+          <MathOperationActionEditor
+            actionKey={action.nodeKey ?? "math-operation"}
+            config={action.mathOperationConfig}
+            catalog={catalog}
+            automationOutputs={availableAutomationOutputs}
+            onChange={(mathOperationConfig) => onChange({ ...action, mathOperationConfig })}
           />
         ) : null}
 
@@ -2476,15 +2562,239 @@ function NumberFormatterActionEditor({
   )
 }
 
+function MathAmountInput({
+  id,
+  value,
+  integer,
+  invalid,
+  onChange,
+}: {
+  id: string
+  value: number
+  integer: boolean
+  invalid: boolean
+  onChange: (value: number) => void
+}) {
+  const [draftValue, setDraftValue] = useState(Number.isFinite(value) ? String(value) : "")
+  return (
+    <Input
+      id={id}
+      type="text"
+      inputMode={integer ? "numeric" : "decimal"}
+      value={draftValue}
+      className="h-8 rounded-full"
+      aria-invalid={invalid}
+      onChange={(event) => {
+        const next = event.target.value
+        const allowed = integer ? /^\d*$/.test(next) : /^-?(?:\d+)?(?:\.\d*)?$/.test(next)
+        if (!allowed) return
+        setDraftValue(next)
+        const complete = integer ? /^\d+$/.test(next) : /^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(next)
+        onChange(complete ? Number(next) : Number.NaN)
+      }}
+    />
+  )
+}
+
+function MathOperationActionEditor({
+  actionKey,
+  config,
+  catalog,
+  automationOutputs,
+  onChange,
+}: {
+  actionKey: string
+  config: AutomationMathOperationConfig
+  catalog: AutomationCatalog
+  automationOutputs: AutomationValueDefinition[]
+  onChange: (config: AutomationMathOperationConfig) => void
+}) {
+  const outputKeyValid = /^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)
+  const duplicateOutputKey = automationOutputs.some((output) => output.key === config.outputKey)
+  const expectedKind = config.mode === "DATE" ? "DATE" : "NUMBER"
+  const compatibleFieldType = (fieldType: string) => config.mode === "DATE"
+    ? fieldType === "DATE"
+    : fieldType === "NUMBER" || fieldType === "CURRENCY"
+  const contactFields = catalog.templateFields.contact
+    .filter((field) => compatibleFieldType(field.fieldType))
+    .map((field) => ({ value: `contact:${field.key}`, label: field.label, searchText: field.key }))
+  const customFields = catalog.customFields
+    .filter((field) => compatibleFieldType(field.fieldType))
+    .map((field) => ({ value: `custom:${field.key}`, label: field.label, searchText: field.key }))
+  const compatibleAutomationOutputs = automationOutputs
+    .filter((output) => output.valueKind === expectedKind)
+    .map((output) => ({ value: `automation:${output.key}`, label: output.label, searchText: output.key }))
+  const sourceValue = `${config.source.type === "CONTACT_FIELD" ? "contact" : config.source.type === "CUSTOM_FIELD" ? "custom" : "automation"}:${config.source.key}`
+
+  const defaultSource = (mode: AutomationMathOperationConfig["mode"]) => {
+    const fieldTypeMatches = (fieldType: string) => mode === "DATE"
+      ? fieldType === "DATE"
+      : fieldType === "NUMBER" || fieldType === "CURRENCY"
+    const custom = catalog.customFields.find((field) => fieldTypeMatches(field.fieldType))
+    const contact = catalog.templateFields.contact.find((field) => fieldTypeMatches(field.fieldType))
+    const output = automationOutputs.find(
+      (candidate) => candidate.valueKind === (mode === "DATE" ? "DATE" : "NUMBER"),
+    )
+    if (custom) return { type: "CUSTOM_FIELD" as const, key: custom.key }
+    if (contact) return { type: "CONTACT_FIELD" as const, key: contact.key }
+    if (output) return { type: "AUTOMATION_VALUE" as const, key: output.key }
+    return { type: "CUSTOM_FIELD" as const, key: "" }
+  }
+
+  const setMode = (mode: AutomationMathOperationConfig["mode"]) => {
+    const source = defaultSource(mode)
+    if (mode === "DATE") {
+      onChange({
+        mode,
+        source,
+        operation: "ADD",
+        amount: 1,
+        unit: "DAYS",
+        outputKey: config.outputKey,
+      })
+      return
+    }
+    onChange({
+      mode,
+      source,
+      operation: "ADD",
+      operand: 1,
+      outputKey: config.outputKey,
+    })
+  }
+
+  const changeSource = (value: string) => {
+    const separator = value.indexOf(":")
+    const category = value.slice(0, separator)
+    const key = value.slice(separator + 1)
+    const source = category === "contact"
+      ? { type: "CONTACT_FIELD" as const, key }
+      : category === "custom"
+        ? { type: "CUSTOM_FIELD" as const, key }
+        : { type: "AUTOMATION_VALUE" as const, key }
+    onChange({ ...config, source })
+  }
+
+  const amountInvalid = config.mode === "DATE"
+    ? !Number.isInteger(config.amount) || config.amount < 1 || config.amount > 10_000
+    : !Number.isFinite(config.operand) || (config.operation === "DIVIDE" && config.operand === 0)
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Field className="gap-1.5" data-invalid={!outputKeyValid || duplicateOutputKey}>
+        <FieldLabel htmlFor="math-result-name">Result name</FieldLabel>
+        <Input
+          id="math-result-name"
+          value={config.outputKey}
+          maxLength={64}
+          className="h-8 rounded-full"
+          aria-invalid={!outputKeyValid || duplicateOutputKey}
+          onChange={(event) => onChange({ ...config, outputKey: event.target.value.toLowerCase() })}
+          placeholder="calculated_value"
+        />
+        {!outputKeyValid ? (
+          <p className="text-xs text-rose-600">Start with a letter and use lowercase letters, numbers, or underscores.</p>
+        ) : duplicateOutputKey ? (
+          <p className="text-xs text-rose-600">This result name is already used by an earlier action.</p>
+        ) : null}
+      </Field>
+
+      <Field className="gap-1.5">
+        <FieldLabel htmlFor="math-value-type">Value type</FieldLabel>
+        <Select value={config.mode} onValueChange={(value) => setMode(value as AutomationMathOperationConfig["mode"])}>
+          <SelectTrigger id="math-value-type" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="NUMBER">Number</SelectItem>
+            <SelectItem value="DATE">Date</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+
+      <Field className="gap-1.5">
+        <FieldLabel>Source</FieldLabel>
+        <AutomationFieldPicker
+          value={sourceValue}
+          contactFields={contactFields}
+          customFields={customFields}
+          automationValues={compatibleAutomationOutputs}
+          onValueChange={changeSource}
+          ariaLabel="Math operation source"
+        />
+      </Field>
+
+      <Field className="gap-1.5">
+        <FieldLabel htmlFor="math-operation">Operation</FieldLabel>
+        <Select
+          value={config.operation}
+          onValueChange={(operation) => {
+            if (config.mode === "DATE") {
+              onChange({ ...config, operation: operation as "ADD" | "SUBTRACT" })
+              return
+            }
+            onChange({
+              ...config,
+              operation: operation as "ADD" | "SUBTRACT" | "MULTIPLY" | "DIVIDE",
+            })
+          }}
+        >
+          <SelectTrigger id="math-operation" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ADD">Add</SelectItem>
+            <SelectItem value="SUBTRACT">Subtract</SelectItem>
+            {config.mode === "NUMBER" ? <SelectItem value="MULTIPLY">Multiply</SelectItem> : null}
+            {config.mode === "NUMBER" ? <SelectItem value="DIVIDE">Divide</SelectItem> : null}
+          </SelectContent>
+        </Select>
+      </Field>
+
+      <Field className="gap-1.5" data-invalid={amountInvalid}>
+        <FieldLabel htmlFor="math-amount">{config.mode === "DATE" ? "Amount" : "Value"}</FieldLabel>
+        <div className={config.mode === "DATE" ? "grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-2" : undefined}>
+          <MathAmountInput
+            key={`${actionKey}-${config.mode}`}
+            id="math-amount"
+            value={config.mode === "DATE" ? config.amount : config.operand}
+            integer={config.mode === "DATE"}
+            invalid={amountInvalid}
+            onChange={(value) => onChange(
+              config.mode === "DATE"
+                ? { ...config, amount: value }
+                : { ...config, operand: value },
+            )}
+          />
+          {config.mode === "DATE" ? (
+            <Select
+              value={config.unit}
+              onValueChange={(unit) => onChange({ ...config, unit: unit as typeof config.unit })}
+            >
+              <SelectTrigger aria-label="Date Math unit" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="DAYS">Days</SelectItem>
+                <SelectItem value="MONTHS">Months</SelectItem>
+                <SelectItem value="YEARS">Years</SelectItem>
+              </SelectContent>
+            </Select>
+          ) : null}
+        </div>
+        {config.mode === "NUMBER" && config.operation === "DIVIDE" && config.operand === 0 ? (
+          <p className="text-xs text-rose-600">The divisor cannot be zero.</p>
+        ) : null}
+      </Field>
+    </div>
+  )
+}
+
 function DateTimeFormatterActionEditor({
   config,
   catalog,
   timezone,
+  automationOutputs,
   onChange,
 }: {
   config: AutomationDateTimeFormatterConfig
   catalog: AutomationCatalog
   timezone?: string | null
+  automationOutputs: AutomationValueDefinition[]
   onChange: (config: AutomationDateTimeFormatterConfig) => void
 }) {
   const outputKeyValid = /^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)
@@ -2510,18 +2820,21 @@ function DateTimeFormatterActionEditor({
   const dateSource = (
     idPrefix: string,
     label: string,
-    value: AutomationDateSource,
-    change: (source: AutomationDateSource) => void,
+    value: AutomationFormatterDateSource,
+    change: (source: AutomationFormatterDateSource) => void,
   ) => (
     <div className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
       <p className="text-xs font-semibold text-slate-700">{label}</p>
       <ContactDateValueInput
         idPrefix={idPrefix}
         value={value as ContactDateValue}
-        onChange={(source) => change(source)}
+        onChange={(source) => change(source as AutomationFormatterDateSource)}
         catalog={catalog}
         timezone={timezone}
         allowRelative
+        automationValues={automationOutputs
+          .filter((output) => output.valueKind === "DATE")
+          .map((output) => ({ key: output.key, label: output.label }))}
       />
     </div>
   )
@@ -2631,7 +2944,7 @@ function TaskDateTimeEditor({
       <ContactDateValueInput
         idPrefix={idPrefix}
         value={value.source as ContactDateValue}
-        onChange={(source) => onChange({ ...value, source })}
+        onChange={(source) => onChange({ ...value, source: source as AutomationDateSource })}
         catalog={catalog}
         timezone={timezone}
         allowRelative

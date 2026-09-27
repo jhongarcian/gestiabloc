@@ -11,6 +11,10 @@ import {
   AutomationNumberFormatterConfigSchema,
   numberFormatterCustomFieldKeys,
 } from "./automation-number-formatter.js"
+import {
+  AutomationMathOperationConfigSchema,
+  mathOperationCustomFieldKeys,
+} from "./automation-math-operation.js"
 
 type AutomationReference =
   | { kind: "pipeline"; id: string }
@@ -115,7 +119,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER"] },
+          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "MATH_OPERATION"] },
         },
       },
     },
@@ -123,13 +127,14 @@ export async function findEnabledAutomationReference(
       id: true,
       name: true,
       actions: {
-        where: { type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER"] } },
+        where: { type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "MATH_OPERATION"] } },
         select: {
           type: true,
           taskConfig: true,
           customFieldUpdates: true,
           dateTimeFormatterConfig: true,
           numberFormatterConfig: true,
+          mathOperationConfig: true,
         },
       },
     },
@@ -169,6 +174,18 @@ export async function findEnabledAutomationReference(
           reference.kind === "customField" &&
           customField?.key &&
           numberFormatterCustomFieldKeys(formatter.data).includes(customField.key)
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
+      }
+      if (action.type === "MATH_OPERATION") {
+        const math = AutomationMathOperationConfigSchema.safeParse(action.mathOperationConfig)
+        if (
+          math.success &&
+          reference.kind === "customField" &&
+          customField?.key &&
+          mathOperationCustomFieldKeys(math.data).includes(customField.key)
         ) {
           return { id: automation.id, name: automation.name }
         }

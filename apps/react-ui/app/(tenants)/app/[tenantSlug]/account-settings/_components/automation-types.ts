@@ -82,6 +82,10 @@ export type AutomationDateSource =
   | { type: "CUSTOM_FIELD"; key: string }
   | { type: "SPECIFIC_DATE"; date: string; timezone: string }
 
+export type AutomationFormatterDateSource =
+  | AutomationDateSource
+  | { type: "AUTOMATION_VALUE"; key: string }
+
 export type AutomationTaskDateTime = {
   source: AutomationDateSource
   time: string
@@ -90,21 +94,21 @@ export type AutomationTaskDateTime = {
 export type AutomationDateTimeFormatterConfig =
   | {
       mode: "DATE"
-      source: AutomationDateSource
+      source: AutomationFormatterDateSource
       format: string
       outputKey: string
     }
   | {
       mode: "DATE_TIME"
-      source: AutomationDateSource
+      source: AutomationFormatterDateSource
       format: string
       time?: string
       outputKey: string
     }
   | {
       mode: "COMPARE_DATES"
-      from: AutomationDateSource
-      to: AutomationDateSource
+      from: AutomationFormatterDateSource
+      to: AutomationFormatterDateSource
       unit: "DAYS" | "MONTHS" | "YEARS"
       outputKey: string
     }
@@ -159,10 +163,32 @@ export type AutomationNumberFormatterConfig =
       outputKey: string
     }
 
+export type AutomationMathDateSource =
+  | { type: "CONTACT_FIELD"; key: string }
+  | { type: "CUSTOM_FIELD"; key: string }
+  | { type: "AUTOMATION_VALUE"; key: string }
+
+export type AutomationMathOperationConfig =
+  | {
+      mode: "NUMBER"
+      source: AutomationNumberSource
+      operation: "ADD" | "SUBTRACT" | "MULTIPLY" | "DIVIDE"
+      operand: number
+      outputKey: string
+    }
+  | {
+      mode: "DATE"
+      source: AutomationMathDateSource
+      operation: "ADD" | "SUBTRACT"
+      amount: number
+      unit: "DAYS" | "MONTHS" | "YEARS"
+      outputKey: string
+    }
+
 export type AutomationValueDefinition = {
   key: string
   label: string
-  valueKind: "NUMBER" | "NUMERIC_TEXT" | "PHONE" | "TEXT"
+  valueKind: "NUMBER" | "DATE" | "NUMERIC_TEXT" | "PHONE" | "TEXT"
 }
 
 export type AutomationTaskConfig = {
@@ -201,6 +227,7 @@ export type AutomationAction = {
     | "CREATE_TASK"
     | "FORMAT_DATE_TIME"
     | "FORMAT_NUMBER"
+    | "MATH_OPERATION"
     | "WAIT"
     | "DELETE_CONTACT"
   customFieldUpdates?: AutomationFieldUpdate[] | null
@@ -213,6 +240,7 @@ export type AutomationAction = {
   taskConfig?: AutomationTaskConfig | null
   dateTimeFormatterConfig?: AutomationDateTimeFormatterConfig | null
   numberFormatterConfig?: AutomationNumberFormatterConfig | null
+  mathOperationConfig?: AutomationMathOperationConfig | null
 }
 
 export type AutomationRecord = {
