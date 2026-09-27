@@ -6130,6 +6130,8 @@ components:
             - REMOVE_CONTACT_TAG
             - ADD_CONTACT_NOTE
             - CREATE_TASK
+            - FORMAT_DATE_TIME
+            - FORMAT_NUMBER
             - WAIT
             - DELETE_CONTACT
           description: >-
@@ -6170,8 +6172,14 @@ components:
           description: >-
             Contact-note body template using the same contact-field token grammar as noteTitle.
             Contact values and current-date values are resolved when the action executes.
+            Formatter outputs from earlier actions use {automation.output_key} without a
+            formatting modifier.
         taskConfig:
           $ref: "#/components/schemas/AutomationTaskConfig"
+        dateTimeFormatterConfig:
+          $ref: "#/components/schemas/AutomationDateTimeFormatterConfig"
+        numberFormatterConfig:
+          $ref: "#/components/schemas/AutomationNumberFormatterConfig"
         waitConfig:
           oneOf:
             - type: object
@@ -6394,6 +6402,190 @@ components:
               type: string
               maxLength: 500
               nullable: true
+    AutomationDateTimeFormatterConfig:
+      description: Creates a named, run-scoped value for later note and task text templates.
+      oneOf:
+        - type: object
+          required: [mode, source, format, outputKey]
+          properties:
+            mode:
+              type: string
+              enum: [DATE]
+            source:
+              $ref: "#/components/schemas/AutomationTaskDateSource"
+            format:
+              type: string
+              enum:
+                - YYYY-MM-DD
+                - MM/DD/YYYY
+                - DD/MM/YYYY
+                - MMMM DD YYYY
+                - dddd, MMMM D, YYYY
+                - MMM D, YYYY
+                - MMMM Do YYYY
+                - MM-DD-YYYY
+                - DD-MMM-YYYY
+                - X
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          required: [mode, source, format, outputKey]
+          properties:
+            mode:
+              type: string
+              enum: [DATE_TIME]
+            source:
+              $ref: "#/components/schemas/AutomationTaskDateSource"
+            time:
+              type: string
+              pattern: "^([01]\\d|2[0-3]):[0-5]\\d$"
+              description: Required for date-only contact, custom, and specific date sources.
+            format:
+              type: string
+              enum:
+                - ddd MMM DD HH:mm:ss YYYY
+                - MMMM DD YYYY HH:mm:ss
+                - YYYY-MM-DD HH:mm:ss
+                - YYYY-MM-DD hh:mm A
+                - DD/MM/YYYY HH:mm:ss
+                - MM/DD/YYYY hh:mm A
+                - dddd, MMMM D, YYYY hh:mm A
+                - MMM D, YYYY hh:mm:ss A
+                - YYYY-MM-DDTHH:mm:ss
+                - MMMM Do YYYY hh:mm A
+                - MM-DD-YYYY hh:mm A
+                - DD-MMM-YYYY hh:mm A
+                - X
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          required: [mode, from, to, unit, outputKey]
+          properties:
+            mode:
+              type: string
+              enum: [COMPARE_DATES]
+            from:
+              $ref: "#/components/schemas/AutomationTaskDateSource"
+            to:
+              $ref: "#/components/schemas/AutomationTaskDateSource"
+            unit:
+              type: string
+              enum: [DAYS, MONTHS, YEARS]
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+    AutomationNumberSource:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, key]
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_FIELD, CUSTOM_FIELD]
+            key:
+              type: string
+              description: Immutable safe field key compatible with the selected formatter mode.
+        - type: object
+          additionalProperties: false
+          required: [type, key]
+          properties:
+            type:
+              type: string
+              enum: [AUTOMATION_VALUE]
+            key:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+              description: Compatible run-scoped value produced by an earlier formatter.
+    AutomationNumberFormatterConfig:
+      description: Creates a named, run-scoped numeric or formatted text value for later actions.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mode, source, decimalMark, outputKey]
+          properties:
+            mode:
+              type: string
+              enum: [TEXT_TO_NUMBER]
+            source:
+              $ref: "#/components/schemas/AutomationNumberSource"
+            decimalMark:
+              type: string
+              enum: [PERIOD, COMMA]
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          additionalProperties: false
+          required: [mode, source, decimalMark, groupingStyle, outputKey]
+          properties:
+            mode:
+              type: string
+              enum: [FORMAT_NUMBER]
+            source:
+              $ref: "#/components/schemas/AutomationNumberSource"
+            decimalMark:
+              type: string
+              enum: [PERIOD, COMMA]
+            groupingStyle:
+              type: string
+              enum: [COMMA_PERIOD, PERIOD_COMMA, SPACE_COMMA, SPACE_PERIOD]
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          additionalProperties: false
+          required: [mode, source, decimalMark, currencyCode, outputKey]
+          properties:
+            mode:
+              type: string
+              enum: [FORMAT_CURRENCY]
+            source:
+              $ref: "#/components/schemas/AutomationNumberSource"
+            decimalMark:
+              type: string
+              enum: [PERIOD, COMMA]
+            currencyCode:
+              type: string
+              enum: [USD, EUR, GBP, CAD, AUD, MXN, BRL, COP, ARS, CLP, PEN, JPY, CNY, INR, KRW, SGD, HKD, NZD, CHF, SEK, NOK, DKK, PLN, CZK, TRY, ZAR, AED, SAR, EGP, ILS]
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          additionalProperties: false
+          required: [mode, source, countryCode, phoneFormat, outputKey]
+          properties:
+            mode:
+              type: string
+              enum: [FORMAT_PHONE_NUMBER]
+            source:
+              $ref: "#/components/schemas/AutomationNumberSource"
+            countryCode:
+              type: string
+              pattern: "^\\+\\d{1,4}$"
+            phoneFormat:
+              type: string
+              enum: [E164, INTERNATIONAL, INTERNATIONAL_NO_COUNTRY_CODE, INTERNATIONAL_NO_HYPHENS, INTERNATIONAL_NO_SYMBOLS, NATIONAL, NATIONAL_NO_PARENTHESIS, NATIONAL_NO_SYMBOLS, RFC3966, RFC3966_NO_TEL]
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          additionalProperties: false
+          required: [mode, min, max, outputKey]
+          properties:
+            mode:
+              type: string
+              enum: [RANDOM_NUMBER]
+            min:
+              type: integer
+            max:
+              type: integer
+              description: Inclusive maximum; must be greater than or equal to min.
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
     AutomationConditionRequest:
       type: object
       required: [source, operator]

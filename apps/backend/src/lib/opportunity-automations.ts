@@ -25,6 +25,20 @@ import {
   sanitizeTaskSingleLine,
   type AutomationTaskConfig,
 } from "./automation-task.js"
+import {
+  AutomationDateTimeFormatterConfigSchema,
+  resolveAutomationDateTimeFormatter,
+  type AutomationDateSource,
+} from "./automation-date-time-formatter.js"
+import {
+  AutomationNumberFormatterConfigSchema,
+  numberFormatterAcceptsFieldType,
+  numberFormatterAcceptsValueKind,
+  numberFormatterOutputKind,
+  resolveAutomationNumberFormatter,
+  type AutomationNumberSource,
+  type AutomationValueKind,
+} from "./automation-number-formatter.js"
 import { NoteBodyInputSchema, NoteTitleInputSchema } from "./note-inputs.js"
 import { deletePrivateObject } from "./private-storage.js"
 import { emitNotificationCreated, type RealtimeNotificationPayload } from "./realtime.js"
@@ -65,6 +79,8 @@ export const AUTOMATION_ACTION_TYPES = [
   "REMOVE_CONTACT_TAG",
   "ADD_CONTACT_NOTE",
   "CREATE_TASK",
+  "FORMAT_DATE_TIME",
+  "FORMAT_NUMBER",
   "WAIT",
   "DELETE_CONTACT",
 ] as const
@@ -287,6 +303,16 @@ export const AutomationActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("CREATE_TASK"),
     nodeKey: actionNodeKeySchema,
     taskConfig: AutomationTaskConfigSchema,
+  }),
+  z.object({
+    type: z.literal("FORMAT_DATE_TIME"),
+    nodeKey: actionNodeKeySchema,
+    dateTimeFormatterConfig: AutomationDateTimeFormatterConfigSchema,
+  }),
+  z.object({
+    type: z.literal("FORMAT_NUMBER"),
+    nodeKey: actionNodeKeySchema,
+    numberFormatterConfig: AutomationNumberFormatterConfigSchema,
   }),
   z.object({ type: z.literal("WAIT"), nodeKey: actionNodeKeySchema, waitConfig: AutomationWaitConfigSchema }),
   z.object({ type: z.literal("DELETE_CONTACT"), nodeKey: actionNodeKeySchema }),
@@ -777,6 +803,74 @@ export async function validateAutomationConfiguration(
     throw new AutomationConfigurationError("DUPLICATE_ACTION_NODE_KEY", "Every automation action must have a unique node key.")
   }
 
+  const automationOutputs = new Map<string, AutomationValueKind>()
+  const validateFormatterSource = (source: AutomationDateSource, label: string) => {
+    if (source.type === "CONTACT_FIELD") {
+      const regularField = CONTACT_TEMPLATE_REGULAR_FIELDS.find((field) => field.key === source.key)
+      if (!regularField || regularField.fieldType !== "DATE") {
+        throw new AutomationConfigurationError("INVALID_FORMATTER_DATE_FIELD", `${label} must use a date field.`)
+      }
+    } else if (source.type === "CUSTOM_FIELD") {
+      const field = fieldKeyMap.get(source.key)
+      if (!field || field.fieldType !== "DATE" || !field.isActive || field.isEncrypted || field.isSensitive) {
+        throw new AutomationConfigurationError(
+          "INVALID_FORMATTER_DATE_FIELD",
+          `${label} must use an active, non-sensitive date field.`,
+        )
+      }
+    } else if (source.type === "SPECIFIC_DATE") {
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: source.timezone }).format(new Date())
+      } catch {
+        throw new AutomationConfigurationError("INVALID_FORMATTER_TIMEZONE", `${label} uses an invalid timezone.`)
+      }
+    }
+  }
+  const validateNumberFormatterSource = (
+    source: AutomationNumberSource,
+    mode: "TEXT_TO_NUMBER" | "FORMAT_NUMBER" | "FORMAT_CURRENCY" | "FORMAT_PHONE_NUMBER",
+  ) => {
+    if (source.type === "CONTACT_FIELD") {
+      const regularField = CONTACT_TEMPLATE_REGULAR_FIELDS.find((field) => field.key === source.key)
+      if (!regularField || !numberFormatterAcceptsFieldType(mode, regularField.fieldType)) {
+        throw new AutomationConfigurationError(
+          "INVALID_NUMBER_FORMATTER_FIELD",
+          "Select a compatible contact field for this number formatter.",
+        )
+      }
+      return
+    }
+    if (source.type === "CUSTOM_FIELD") {
+      const field = fieldKeyMap.get(source.key)
+      if (
+        !field ||
+        !field.isActive ||
+        field.isEncrypted ||
+        field.isSensitive ||
+        !numberFormatterAcceptsFieldType(mode, field.fieldType)
+      ) {
+        throw new AutomationConfigurationError(
+          "INVALID_NUMBER_FORMATTER_FIELD",
+          "Select an active, non-sensitive field compatible with this number formatter.",
+        )
+      }
+      return
+    }
+    const outputKind = automationOutputs.get(source.key)
+    if (!outputKind) {
+      throw new AutomationConfigurationError(
+        "UNKNOWN_AUTOMATION_VALUE",
+        `The automation value “${source.key}” is not available before this action.`,
+      )
+    }
+    if (!numberFormatterAcceptsValueKind(mode, outputKind)) {
+      throw new AutomationConfigurationError(
+        "INCOMPATIBLE_AUTOMATION_VALUE",
+        `The automation value “${source.key}” is not compatible with this number formatter.`,
+      )
+    }
+  }
+
   const actions = input.actions.map((action, index) => {
     const nodeKey = actionNodeKeys[index]!
     const base = { tenantId, nodeKey, type: action.type, sortOrder: (index + 1) * 10 }
@@ -808,9 +902,48 @@ export async function validateAutomationConfiguration(
       }
       return { ...base, waitConfig }
     }
+    if (action.type === "FORMAT_DATE_TIME") {
+      const config = action.dateTimeFormatterConfig
+      if (automationOutputs.has(config.outputKey)) {
+        throw new AutomationConfigurationError(
+          "DUPLICATE_AUTOMATION_VALUE",
+          `The automation value “${config.outputKey}” is already created by an earlier formatter.`,
+        )
+      }
+      if (config.mode === "COMPARE_DATES") {
+        validateFormatterSource(config.from, "From date")
+        validateFormatterSource(config.to, "To date")
+      } else {
+        validateFormatterSource(config.source, "Formatter source")
+      }
+      automationOutputs.set(
+        config.outputKey,
+        config.mode === "COMPARE_DATES"
+          ? "NUMBER"
+          : config.format === "X"
+            ? "NUMERIC_TEXT"
+            : "TEXT",
+      )
+      return { ...base, dateTimeFormatterConfig: config }
+    }
+    if (action.type === "FORMAT_NUMBER") {
+      const config = action.numberFormatterConfig
+      if (automationOutputs.has(config.outputKey)) {
+        throw new AutomationConfigurationError(
+          "DUPLICATE_AUTOMATION_VALUE",
+          `The automation value “${config.outputKey}” is already created by an earlier formatter.`,
+        )
+      }
+      if (config.mode !== "RANDOM_NUMBER") {
+        validateNumberFormatterSource(config.source, config.mode)
+      }
+      automationOutputs.set(config.outputKey, numberFormatterOutputKind(config))
+      return { ...base, numberFormatterConfig: config }
+    }
     if (action.type === "ADD_CONTACT_NOTE") {
-      const titleValidation = validateContactTemplate(action.noteTitle, fields)
-      const bodyValidation = validateContactTemplate(action.noteBody, fields)
+      const availableOutputs = [...automationOutputs.keys()]
+      const titleValidation = validateContactTemplate(action.noteTitle, fields, availableOutputs)
+      const bodyValidation = validateContactTemplate(action.noteBody, fields, availableOutputs)
       const issue = titleValidation.issues[0] ?? bodyValidation.issues[0]
       if (issue) {
         throw new AutomationConfigurationError("INVALID_NOTE_TEMPLATE", issue.message)
@@ -829,7 +962,7 @@ export async function validateAutomationConfiguration(
         config.reminder?.messageTemplate ?? "",
       ]
       for (const template of templates) {
-        const issue = validateContactTemplate(template, fields).issues[0]
+        const issue = validateContactTemplate(template, fields, [...automationOutputs.keys()]).issues[0]
         if (issue) {
           throw new AutomationConfigurationError("INVALID_TASK_TEMPLATE", issue.message)
         }
@@ -1264,6 +1397,8 @@ function automationActionSnapshot(action: any): RuntimeAutomationAction {
     noteTitle: action.noteTitle,
     noteBody: action.noteBody,
     taskConfig: action.taskConfig,
+    dateTimeFormatterConfig: action.dateTimeFormatterConfig,
+    numberFormatterConfig: action.numberFormatterConfig,
   })
   if (!parsed.nodeKey) throw new Error("Automation action is missing its stable node key.")
   return { ...parsed, nodeKey: parsed.nodeKey }
@@ -1289,9 +1424,21 @@ async function applyAutomationAction(
     catalog: AutomationRuntimeCatalog
     occurredAt: Date
     runId?: string | null
+    automationValues: Record<string, unknown>
   },
 ) {
-  const { action, actionIndex, automationId, automationName, tenantId, contactId, catalog, occurredAt, runId } = params
+  const {
+    action,
+    actionIndex,
+    automationId,
+    automationName,
+    tenantId,
+    contactId,
+    catalog,
+    occurredAt,
+    runId,
+    automationValues,
+  } = params
   try {
     if (action.type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
       const preparedUpdates = action.customFieldUpdates.map((update) => {
@@ -1426,6 +1573,7 @@ async function applyAutomationAction(
         bodyTemplate: action.noteBody,
         timezone: catalog.timezone,
         occurredAt,
+        automationValues,
       })
       const title = NoteTitleInputSchema.safeParse(rendered.title)
       if (!title.success) {
@@ -1463,6 +1611,7 @@ async function applyAutomationAction(
         },
         timezone: catalog.timezone,
         occurredAt,
+        automationValues,
       })
       const name = sanitizeTaskSingleLine(rendered.name ?? "")
       if (!name || name.length > 160) {
@@ -1613,6 +1762,25 @@ async function applyAutomationAction(
         details: `Created task “${name}” · ${assignee}${dueLabel ? ` · Due ${dueLabel}` : ""}.`,
         notificationIds,
       }
+    } else if (action.type === "FORMAT_DATE_TIME") {
+      const value = await resolveAutomationDateTimeFormatter(prismaTx, {
+        tenantId,
+        contactId,
+        config: action.dateTimeFormatterConfig,
+        tenantTimezone: catalog.timezone,
+        occurredAt,
+      })
+      automationValues[action.dateTimeFormatterConfig.outputKey] = value
+      return `Created automation value “${action.dateTimeFormatterConfig.outputKey}”.`
+    } else if (action.type === "FORMAT_NUMBER") {
+      const value = await resolveAutomationNumberFormatter(prismaTx, {
+        tenantId,
+        contactId,
+        config: action.numberFormatterConfig,
+        automationValues,
+      })
+      automationValues[action.numberFormatterConfig.outputKey] = value
+      return `Created automation value “${action.numberFormatterConfig.outputKey}”.`
     } else if (action.type === "DELETE_CONTACT") {
       const [contactNoteAttachments, serviceNoteAttachments] = await Promise.all([
         prismaTx.contactNoteAttachment.findMany({
@@ -1715,6 +1883,7 @@ export async function applyAutomationActions(
 ) {
   const actions = params.automation.actions.map(automationActionSnapshot)
   const occurredAt = new Date()
+  const automationValues: Record<string, unknown> = {}
   for (let index = 0; index < actions.length; index += 1) {
     if (actions[index]!.type === "WAIT") continue
     if (actions[index]!.type === "DELETE_CONTACT" && index !== actions.length - 1) {
@@ -1736,6 +1905,7 @@ export async function applyAutomationActions(
       catalog: params.catalog,
       occurredAt,
       runId: null,
+      automationValues,
     })
   }
 }
@@ -1838,6 +2008,14 @@ type SegmentRun = {
   sourceStageId: string | null
   targetStageId: string | null
   cursorIndex: number
+  variables: unknown
+}
+
+function normalizeAutomationVariables(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {} as Record<string, unknown>
+  }
+  return { ...(value as Record<string, unknown>) }
 }
 
 async function executeAutomationSegmentTx(
@@ -1869,6 +2047,7 @@ async function executeAutomationSegmentTx(
   const logs: AutomationNodeLogData[] = []
   const notificationIds: string[] = []
   const fileCleanupCandidates: AutomationFileCleanupCandidate[] = []
+  const automationValues = normalizeAutomationVariables(run.variables)
   let contactDeleted = false
 
   for (let index = startIndex; index < actions.length; index += 1) {
@@ -1896,6 +2075,7 @@ async function executeAutomationSegmentTx(
             waitingNodeExecutionId: logId,
             leaseToken: null,
             leaseExpiresAt: null,
+            variables: automationValues,
           },
         })
         return {
@@ -1931,6 +2111,7 @@ async function executeAutomationSegmentTx(
             leaseToken: null,
             leaseExpiresAt: null,
             exitedAt: now,
+            variables: automationValues,
           },
         })
         await prismaTx.automationExecution.create({
@@ -1997,6 +2178,7 @@ async function executeAutomationSegmentTx(
         catalog,
         occurredAt: now,
         runId: run.id,
+        automationValues,
       })
       const details = typeof successDetails === "string"
         ? successDetails
@@ -2040,6 +2222,7 @@ async function executeAutomationSegmentTx(
       leaseToken: null,
       leaseExpiresAt: null,
       completedAt: now,
+      variables: automationValues,
     },
   })
   await prismaTx.automationExecution.create({

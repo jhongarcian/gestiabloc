@@ -32,6 +32,31 @@ function waitUnitLabel(amount: number, unit: string) {
   return amount === 1 ? label.replace(/s$/, "") : label
 }
 
+const FORMATTER_PREVIEWS: Record<string, string> = {
+  "YYYY-MM-DD": "2026-09-25",
+  "MM/DD/YYYY": "09/25/2026",
+  "DD/MM/YYYY": "25/09/2026",
+  "MMMM DD YYYY": "September 25 2026",
+  "dddd, MMMM D, YYYY": "Friday, September 25, 2026",
+  "MMM D, YYYY": "Sep 25, 2026",
+  "MMMM Do YYYY": "September 25th 2026",
+  "MM-DD-YYYY": "09-25-2026",
+  "DD-MMM-YYYY": "25-Sep-2026",
+  "ddd MMM DD HH:mm:ss YYYY": "Fri Sep 25 13:30:59 2026",
+  "MMMM DD YYYY HH:mm:ss": "September 25 2026 13:30:59",
+  "YYYY-MM-DD HH:mm:ss": "2026-09-25 13:30:59",
+  "YYYY-MM-DD hh:mm A": "2026-09-25 01:30 PM",
+  "DD/MM/YYYY HH:mm:ss": "25/09/2026 13:30:59",
+  "MM/DD/YYYY hh:mm A": "09/25/2026 01:30 PM",
+  "dddd, MMMM D, YYYY hh:mm A": "Friday, September 25, 2026 01:30 PM",
+  "MMM D, YYYY hh:mm:ss A": "Sep 25, 2026 01:30:59 PM",
+  "YYYY-MM-DDTHH:mm:ss": "2026-09-25T13:30:59",
+  "MMMM Do YYYY hh:mm A": "September 25th 2026 01:30 PM",
+  "MM-DD-YYYY hh:mm A": "09-25-2026 01:30 PM",
+  "DD-MMM-YYYY hh:mm A": "25-Sep-2026 01:30 PM",
+  X: "Unix timestamp",
+}
+
 export function buildAutomationFlowGraph(
   draft: AutomationFlowDraft,
   catalog: AutomationCatalog | null,
@@ -101,6 +126,22 @@ export function buildAutomationFlowGraph(
       ? `Note: ${action.noteTitle?.trim() || "Add a title"}`
       : action.type === "CREATE_TASK"
         ? `Task: ${action.taskConfig?.nameTemplate.trim() || "Add a task name"}`
+        : action.type === "FORMAT_DATE_TIME"
+          ? action.dateTimeFormatterConfig?.mode === "COMPARE_DATES"
+            ? `Compare dates · ${action.dateTimeFormatterConfig.unit.charAt(0)}${action.dateTimeFormatterConfig.unit.slice(1).toLowerCase()} → ${action.dateTimeFormatterConfig.outputKey}`
+            : `Save ${action.dateTimeFormatterConfig?.outputKey || "value"} · ${
+                FORMATTER_PREVIEWS[action.dateTimeFormatterConfig?.format ?? ""] || "Select a format"
+              }`
+        : action.type === "FORMAT_NUMBER"
+          ? action.numberFormatterConfig?.mode === "FORMAT_CURRENCY"
+            ? `Currency · ${action.numberFormatterConfig.currencyCode} → ${action.numberFormatterConfig.outputKey}`
+            : action.numberFormatterConfig?.mode === "RANDOM_NUMBER"
+              ? `Random ${action.numberFormatterConfig.min}–${action.numberFormatterConfig.max} → ${action.numberFormatterConfig.outputKey}`
+              : action.numberFormatterConfig?.mode === "FORMAT_PHONE_NUMBER"
+                ? `Format phone → ${action.numberFormatterConfig.outputKey}`
+                : action.numberFormatterConfig?.mode === "TEXT_TO_NUMBER"
+                  ? `Text to number → ${action.numberFormatterConfig.outputKey}`
+                  : `Format number → ${action.numberFormatterConfig?.outputKey || "value"}`
         : action.type === "UPDATE_CONTACT_CUSTOM_FIELDS"
           ? `Update ${action.customFieldUpdates?.length ?? 0} field${action.customFieldUpdates?.length === 1 ? "" : "s"}`
           : action.type === "DELETE_CONTACT"

@@ -87,6 +87,40 @@ describe("contact templates", () => {
       parseContactTemplate("{date.relative.2.years|date:medium}").issues[0]?.code,
       "INVALID_TEMPLATE_TOKEN",
     )
+    assert.equal(
+      validateContactTemplate("{automation.appointment_date}", customFields).issues[0]?.code,
+      "AUTOMATION_TEMPLATE_VALUE_NOT_FOUND",
+    )
+    assert.equal(
+      validateContactTemplate(
+        "{automation.appointment_date|date:medium}",
+        customFields,
+        ["appointment_date"],
+      ).issues[0]?.code,
+      "INVALID_TEMPLATE_TOKEN",
+    )
+  })
+
+  test("validates and renders run-scoped automation values", async () => {
+    assert.equal(
+      validateContactTemplate(
+        "Appointment: {automation.appointment_date}",
+        customFields,
+        ["appointment_date"],
+      ).issues.length,
+      0,
+    )
+    const prismaTx = {
+      contact: { findFirst: async () => ({ customFieldValues: [] }) },
+    }
+    const rendered = await renderContactNoteTemplates(prismaTx, {
+      tenantId: "tenant-1",
+      contactId: "contact-1",
+      titleTemplate: "Appointment",
+      bodyTemplate: "Scheduled {automation.appointment_date}; skipped {automation.missing_value}.",
+      automationValues: { appointment_date: "Sep 25, 2026" },
+    })
+    assert.equal(rendered.body, "Scheduled Sep 25, 2026; skipped .")
   })
 
   test("renders current regular and custom values with type-aware formatting", async () => {

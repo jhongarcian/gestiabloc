@@ -87,7 +87,7 @@ type ContactTemplateFormat =
 
 export type ContactTemplateToken = {
   raw: string
-  source: "CONTACT" | "CUSTOM_FIELD" | "DATE"
+  source: "CONTACT" | "CUSTOM_FIELD" | "DATE" | "AUTOMATION_VALUE"
   key: string
   format?: ContactTemplateFormat
   start: number
@@ -112,7 +112,7 @@ const REGULAR_FIELD_MAP = new Map<string, ContactTemplateFieldDefinition>(
 const DATE_FORMATS = new Set<string>(CONTACT_TEMPLATE_DATE_FORMATS.map((item) => item.value))
 const PHONE_FORMATS = new Set<string>(CONTACT_TEMPLATE_PHONE_FORMATS.map((item) => item.value))
 const BRACED_EXPRESSION = /\{([^{}]*)\}/g
-const TEMPLATE_TOKEN_START = /\{(?:contact|date)\./g
+const TEMPLATE_TOKEN_START = /\{(?:contact|date|automation)\./g
 const DEFAULT_TIMEZONE = "America/Chicago"
 
 export function isValidTemplateDate(value: string) {
@@ -191,6 +191,18 @@ function parseToken(raw: string, expression: string, start: number, end: number)
     }
   }
 
+  const automationMatch = path.match(/^automation\.([a-z][a-z0-9_]{0,63})$/)
+  if (automationMatch) {
+    if (format) return null
+    return {
+      raw,
+      source: "AUTOMATION_VALUE" as const,
+      key: automationMatch[1]!,
+      start,
+      end,
+    }
+  }
+
   const customMatch = path.match(/^contact\.custom_field\.([a-z0-9_]+)$/)
   if (customMatch) {
     return {
@@ -222,7 +234,11 @@ export function parseContactTemplate(template: string) {
 
   for (const match of template.matchAll(BRACED_EXPRESSION)) {
     const expression = match[1] ?? ""
-    if (!expression.startsWith("contact.") && !expression.startsWith("date.")) continue
+    if (
+      !expression.startsWith("contact.") &&
+      !expression.startsWith("date.") &&
+      !expression.startsWith("automation.")
+    ) continue
     const start = match.index
     const end = start + match[0].length
     templateExpressionRanges.push({ start, end })
@@ -270,13 +286,25 @@ function formatMatchesField(format: ContactTemplateFormat | undefined, fieldType
 export function validateContactTemplate(
   template: string,
   customFields: readonly CustomFieldReference[] = [],
+  automationOutputKeys: readonly string[] = [],
 ) {
   const parsed = parseContactTemplate(template)
   const issues = [...parsed.issues]
   const customFieldMap = new Map(customFields.map((field) => [field.key, field]))
+  const automationOutputs = new Set(automationOutputKeys)
 
   for (const token of parsed.tokens) {
     if (token.source === "DATE") continue
+    if (token.source === "AUTOMATION_VALUE") {
+      if (!automationOutputs.has(token.key)) {
+        issues.push({
+          code: "AUTOMATION_TEMPLATE_VALUE_NOT_FOUND",
+          message: `The automation value used by ${token.raw} is not available before this action.`,
+          token: token.raw,
+        })
+      }
+      continue
+    }
     const field = token.source === "CONTACT"
       ? REGULAR_FIELD_MAP.get(token.key)
       : customFieldMap.get(token.key)
@@ -318,6 +346,14 @@ export function contactTemplateCustomFieldKeys(template: string) {
   return [...new Set(
     parseContactTemplate(template).tokens
       .filter((token) => token.source === "CUSTOM_FIELD")
+      .map((token) => token.key),
+  )]
+}
+
+export function contactTemplateAutomationOutputKeys(template: string) {
+  return [...new Set(
+    parseContactTemplate(template).tokens
+      .filter((token) => token.source === "AUTOMATION_VALUE")
       .map((token) => token.key),
   )]
 }
@@ -477,6 +513,7 @@ function renderContactTemplate(
   contact: Record<string, unknown>,
   customFields: Map<string, { value: unknown; fieldType: ContactTemplateFieldType }>,
   execution: { occurredAt: Date; timezone: string },
+  automationValues: Record<string, unknown>,
 ) {
   const parsed = parseContactTemplate(template)
   if (parsed.issues.length > 0) throw new Error(parsed.issues[0]!.message)
@@ -501,7 +538,7 @@ function renderContactTemplate(
       result += field
         ? formatTemplateValue(field.value, field.fieldType, token.format, execution.timezone)
         : ""
-    } else {
+    } else if (token.source === "DATE") {
       const dateFormat = token.format?.kind === "date" ? token.format.value : "medium"
       if (token.key === "current") {
         result += formatDate(execution.occurredAt, dateFormat, execution.timezone)
@@ -521,6 +558,8 @@ function renderContactTemplate(
       } else {
         result += formatDate(`${token.key}T12:00:00.000Z`, dateFormat)
       }
+    } else {
+      result += String(automationValues[token.key] ?? "")
     }
     cursor = token.end
   }
@@ -605,6 +644,29 @@ async function loadContactTemplateContext(
   }
 }
 
+export async function resolveSafeContactTemplateFieldValue(
+  prismaTx: any,
+  params: {
+    tenantId: string
+    contactId: string
+    source: "CONTACT_FIELD" | "CUSTOM_FIELD"
+    key: string
+  },
+) {
+  const context = await loadContactTemplateContext(prismaTx, params)
+  if (params.source === "CONTACT_FIELD") {
+    const field = REGULAR_FIELD_MAP.get(params.key)
+    if (!field) return null
+    return {
+      value: regularContactValue(context.contact, params.key),
+      fieldType: field.fieldType,
+    }
+  }
+
+  const field = context.customFields.get(params.key)
+  return field ? { value: field.value, fieldType: field.fieldType } : null
+}
+
 export async function renderContactTemplates(
   prismaTx: any,
   params: {
@@ -613,6 +675,7 @@ export async function renderContactTemplates(
     templates: Record<string, string>
     timezone?: string | null
     occurredAt?: Date
+    automationValues?: Record<string, unknown>
   },
 ) {
   const context = await loadContactTemplateContext(prismaTx, params)
@@ -624,7 +687,13 @@ export async function renderContactTemplates(
   return Object.fromEntries(
     Object.entries(params.templates).map(([key, template]) => [
       key,
-      renderContactTemplate(template, context.contact, context.customFields, execution),
+      renderContactTemplate(
+        template,
+        context.contact,
+        context.customFields,
+        execution,
+        params.automationValues ?? {},
+      ),
     ]),
   )
 }
@@ -638,6 +707,7 @@ export async function renderContactNoteTemplates(
     bodyTemplate: string
     timezone?: string | null
     occurredAt?: Date
+    automationValues?: Record<string, unknown>
   },
 ) {
   const rendered = await renderContactTemplates(prismaTx, {
@@ -649,6 +719,7 @@ export async function renderContactNoteTemplates(
     },
     timezone: params.timezone,
     occurredAt: params.occurredAt,
+    automationValues: params.automationValues,
   })
 
   return {

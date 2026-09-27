@@ -125,6 +125,56 @@ describe("AutomationUpsertSchema", () => {
     assert.equal(noActions.success, false)
   })
 
+  test("accepts date/time formatter configurations and automation value tokens", () => {
+    const result = AutomationUpsertSchema.safeParse({
+      name: "Format appointment",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [
+        {
+          type: "FORMAT_DATE_TIME",
+          dateTimeFormatterConfig: {
+            mode: "DATE_TIME",
+            source: { type: "CURRENT_DATE" },
+            format: "MMM D, YYYY hh:mm:ss A",
+            outputKey: "appointment_date",
+          },
+        },
+        {
+          type: "ADD_CONTACT_NOTE",
+          noteTitle: "Appointment",
+          noteBody: "Scheduled {automation.appointment_date}",
+        },
+      ],
+    })
+
+    assert.equal(result.success, true)
+  })
+
+  test("accepts every number formatter mode", () => {
+    const source = { type: "CONTACT_FIELD", key: "weight" }
+    const base = {
+      name: "Format numbers",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+    }
+    const configs = [
+      { mode: "TEXT_TO_NUMBER", source, decimalMark: "PERIOD", outputKey: "raw_weight" },
+      { mode: "FORMAT_NUMBER", source, decimalMark: "PERIOD", groupingStyle: "COMMA_PERIOD", outputKey: "weight" },
+      { mode: "FORMAT_CURRENCY", source, decimalMark: "PERIOD", currencyCode: "USD", outputKey: "premium" },
+      { mode: "FORMAT_PHONE_NUMBER", source: { type: "CONTACT_FIELD", key: "phone" }, countryCode: "+1", phoneFormat: "E164", outputKey: "phone" },
+      { mode: "RANDOM_NUMBER", min: 1, max: 100, outputKey: "draw" },
+    ]
+    for (const numberFormatterConfig of configs) {
+      assert.equal(AutomationUpsertSchema.safeParse({
+        ...base,
+        actions: [{ type: "FORMAT_NUMBER", numberFormatterConfig }],
+      }).success, true)
+    }
+  })
+
   test("rejects the removed clear-contact-status action", () => {
     const result = AutomationUpsertSchema.safeParse({
       name: "Invalid clear status action",
@@ -281,6 +331,121 @@ describe("AutomationUpsertSchema", () => {
     await assert.rejects(
       validateAutomationConfiguration(prismaClient, "tenant-1", invalidContactInput),
       /First name cannot be cleared/,
+    )
+  })
+
+  test("allows only unique formatter values produced before their template consumers", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const formatter = {
+      type: "FORMAT_DATE_TIME" as const,
+      dateTimeFormatterConfig: {
+        mode: "DATE" as const,
+        source: { type: "CURRENT_DATE" as const },
+        format: "MMM D, YYYY" as const,
+        outputKey: "appointment_date",
+      },
+    }
+    const note = {
+      type: "ADD_CONTACT_NOTE" as const,
+      noteTitle: "Appointment",
+      noteBody: "Scheduled {automation.appointment_date}",
+    }
+    const valid = AutomationUpsertSchema.parse({
+      name: "Valid formatter order",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [formatter, note],
+    })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", valid)
+    assert.equal(normalized.actions[0]?.type, "FORMAT_DATE_TIME")
+
+    const forwardReference = AutomationUpsertSchema.parse({
+      ...valid,
+      name: "Invalid formatter order",
+      actions: [note, formatter],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", forwardReference),
+      /not available before this action/,
+    )
+
+    const duplicate = AutomationUpsertSchema.parse({
+      ...valid,
+      name: "Duplicate formatter values",
+      actions: [formatter, formatter],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", duplicate),
+      /already created by an earlier formatter/,
+    )
+  })
+
+  test("validates compatible number formatter sources and shared output ordering", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => [{
+        id: "field-premium",
+        key: "premium",
+        label: "Premium",
+        fieldType: "CURRENCY",
+        isRequired: false,
+        isActive: true,
+        isEncrypted: false,
+        isSensitive: false,
+        options: [],
+      }] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const raw = {
+      type: "FORMAT_NUMBER" as const,
+      numberFormatterConfig: {
+        mode: "TEXT_TO_NUMBER" as const,
+        source: { type: "CUSTOM_FIELD" as const, key: "premium" },
+        decimalMark: "PERIOD" as const,
+        outputKey: "raw_premium",
+      },
+    }
+    const formatted = {
+      type: "FORMAT_NUMBER" as const,
+      numberFormatterConfig: {
+        mode: "FORMAT_CURRENCY" as const,
+        source: { type: "AUTOMATION_VALUE" as const, key: "raw_premium" },
+        decimalMark: "PERIOD" as const,
+        currencyCode: "USD" as const,
+        outputKey: "premium_label",
+      },
+    }
+    const note = {
+      type: "ADD_CONTACT_NOTE" as const,
+      noteTitle: "Premium",
+      noteBody: "Current premium: {automation.premium_label}",
+    }
+    const valid = AutomationUpsertSchema.parse({
+      name: "Format premium",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [raw, formatted, note],
+    })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", valid)
+    assert.equal(normalized.actions[1]?.type, "FORMAT_NUMBER")
+
+    const forwardReference = AutomationUpsertSchema.parse({
+      ...valid,
+      actions: [formatted, raw, note],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", forwardReference),
+      /not available before this action/,
     )
   })
 
@@ -1091,6 +1256,193 @@ describe("executeOpportunityAutomations", () => {
     })
     assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "EXECUTED"])
     assert.equal(nodeLogs[1]?.details, "Added contact note “Opportunity for Taylor Reed”.")
+  })
+
+  test("creates and interpolates a run-scoped formatter value", async () => {
+    let createdNote: Record<string, unknown> | null = null
+    let runUpdate: Record<string, unknown> | null = null
+    let nodeLogs: Array<Record<string, unknown>> = []
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Format appointment",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000001",
+              type: "FORMAT_DATE_TIME",
+              dateTimeFormatterConfig: {
+                mode: "DATE",
+                source: { type: "CURRENT_DATE" },
+                format: "MMM D, YYYY",
+                outputKey: "appointment_date",
+              },
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000002",
+              type: "ADD_CONTACT_NOTE",
+              noteTitle: "Appointment",
+              noteBody: "Scheduled {automation.appointment_date}.",
+            },
+          ],
+        }],
+      },
+      contact: {
+        findFirst: async (args: { select?: Record<string, unknown> }) => args.select?.email
+          ? {
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              email: "taylor@example.com",
+              customFieldValues: [],
+            }
+          : {
+              id: "contact-1",
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              statusConfigId: "active",
+              assignedToUserId: null,
+              tags: [],
+              customFieldValues: [],
+            },
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      contactNote: {
+        create: async ({ data }: { data: Record<string, unknown> }) => { createdNote = data },
+      },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async ({ data }: { data: Record<string, unknown> }) => { runUpdate = data },
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { nodeLogs = data },
+      },
+    }
+
+    await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.match(
+      String((createdNote as Record<string, unknown> | null)?.body),
+      /^Scheduled [A-Z][a-z]{2} \d{1,2}, \d{4}\.$/,
+    )
+    assert.equal(nodeLogs[1]?.nodeLabel, "Date/Time formatter")
+    assert.equal(nodeLogs[1]?.details, "Created automation value “appointment_date”.")
+    assert.equal(
+      typeof ((runUpdate as Record<string, unknown> | null)?.variables as Record<string, unknown>)?.appointment_date,
+      "string",
+    )
+  })
+
+  test("executes a number formatter and exposes its value to a later note", async () => {
+    let createdNote: Record<string, unknown> | null = null
+    let runUpdate: Record<string, unknown> | null = null
+    let nodeLogs: Array<Record<string, unknown>> = []
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Draw a number",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000001",
+              type: "FORMAT_NUMBER",
+              numberFormatterConfig: {
+                mode: "RANDOM_NUMBER",
+                min: 7,
+                max: 7,
+                outputKey: "draw_number",
+              },
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000002",
+              type: "ADD_CONTACT_NOTE",
+              noteTitle: "Draw result",
+              noteBody: "Number {automation.draw_number}.",
+            },
+          ],
+        }],
+      },
+      contact: {
+        findFirst: async (args: { select?: Record<string, unknown> }) => args.select?.email
+          ? {
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              email: "taylor@example.com",
+              customFieldValues: [],
+            }
+          : {
+              id: "contact-1",
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              statusConfigId: "active",
+              assignedToUserId: null,
+              tags: [],
+              customFieldValues: [],
+            },
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      contactNote: {
+        create: async ({ data }: { data: Record<string, unknown> }) => { createdNote = data },
+      },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async ({ data }: { data: Record<string, unknown> }) => { runUpdate = data },
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { nodeLogs = data },
+      },
+    }
+
+    await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.equal((createdNote as Record<string, unknown> | null)?.body, "Number 7.")
+    assert.equal(nodeLogs[1]?.nodeLabel, "Number formatter")
+    assert.equal(nodeLogs[1]?.details, "Created automation value “draw_number”.")
+    assert.equal(
+      ((runUpdate as Record<string, unknown> | null)?.variables as Record<string, unknown>)?.draw_number,
+      7,
+    )
   })
 
   test("creates a contact-linked task with live templates, reminder, and notification", async () => {

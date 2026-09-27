@@ -59,6 +59,7 @@ import {
   SelectContent,
   SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -81,12 +82,17 @@ import type {
   AutomationAction,
   AutomationCatalog,
   AutomationCondition,
+  AutomationDateSource,
+  AutomationDateTimeFormatterConfig,
   AutomationFieldUpdate,
+  AutomationNumberFormatterConfig,
+  AutomationNumberSource,
   AutomationOperator,
   AutomationRecord,
   AutomationTaskConfig,
   AutomationTaskDateTime,
   AutomationTriggerType,
+  AutomationValueDefinition,
   AutomationWaitConfig,
   AutomationWaitUnit,
 } from "./automation-types"
@@ -159,6 +165,8 @@ function draftSnapshot(draft: Draft) {
       noteTitle: action.noteTitle,
       noteBody: action.noteBody,
       taskConfig: action.taskConfig,
+      dateTimeFormatterConfig: action.dateTimeFormatterConfig,
+      numberFormatterConfig: action.numberFormatterConfig,
     })),
   })
 }
@@ -202,17 +210,47 @@ const NUMERIC_OPERATORS: AutomationOperator[] = [
 const STATUS_OPERATORS: AutomationOperator[] = ["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]
 const VALUELESS_OPERATORS = new Set<AutomationOperator>(["IS_EMPTY", "IS_NOT_EMPTY", "IS_TRUE", "IS_FALSE"])
 
-const ACTION_LABELS: Record<AutomationAction["type"], string> = {
-  UPDATE_CONTACT_CUSTOM_FIELDS: "Update contact fields",
-  SET_CONTACT_STATUS: "Set contact status",
-  SET_CONTACT_ASSIGNEE: "Assign contact",
-  CLEAR_CONTACT_ASSIGNEE: "Clear contact assignee",
-  ADD_CONTACT_TAG: "Add contact tag",
-  REMOVE_CONTACT_TAG: "Remove contact tag",
-  ADD_CONTACT_NOTE: "Add contact note",
-  CREATE_TASK: "Create task",
-  WAIT: "Wait",
-  DELETE_CONTACT: "Delete contact",
+type AutomationActionGroupId = "INTERNAL" | "CONTACT" | "COMMUNICATION"
+
+const ACTION_GROUPS: ReadonlyArray<{
+  id: AutomationActionGroupId
+  label: string
+}> = [
+  { id: "INTERNAL", label: "Internal actions" },
+  { id: "CONTACT", label: "Contact actions" },
+  { id: "COMMUNICATION", label: "Communication actions" },
+]
+
+const ACTION_DEFINITIONS = {
+  WAIT: { label: "Wait", group: "INTERNAL", order: 0 },
+  FORMAT_DATE_TIME: { label: "Date/Time formatter", group: "INTERNAL", order: 1 },
+  FORMAT_NUMBER: { label: "Number formatter", group: "INTERNAL", order: 2 },
+  CREATE_TASK: { label: "Create task", group: "INTERNAL", order: 3 },
+  ADD_CONTACT_NOTE: { label: "Add contact note", group: "INTERNAL", order: 4 },
+  UPDATE_CONTACT_CUSTOM_FIELDS: { label: "Update contact fields", group: "CONTACT", order: 0 },
+  SET_CONTACT_STATUS: { label: "Set contact status", group: "CONTACT", order: 1 },
+  SET_CONTACT_ASSIGNEE: { label: "Assign contact", group: "CONTACT", order: 2 },
+  CLEAR_CONTACT_ASSIGNEE: { label: "Clear contact assignee", group: "CONTACT", order: 3 },
+  ADD_CONTACT_TAG: { label: "Add contact tag", group: "CONTACT", order: 4 },
+  REMOVE_CONTACT_TAG: { label: "Remove contact tag", group: "CONTACT", order: 5 },
+  DELETE_CONTACT: { label: "Delete contact", group: "CONTACT", order: 6 },
+} satisfies Record<AutomationAction["type"], {
+  label: string
+  group: AutomationActionGroupId
+  order: number
+}>
+
+const ACTION_LABELS = Object.fromEntries(
+  Object.entries(ACTION_DEFINITIONS).map(([type, definition]) => [type, definition.label]),
+) as Record<AutomationAction["type"], string>
+
+function actionsForGroup(groupId: AutomationActionGroupId) {
+  return (Object.entries(ACTION_DEFINITIONS) as Array<[
+    AutomationAction["type"],
+    (typeof ACTION_DEFINITIONS)[AutomationAction["type"]],
+  ]>)
+    .filter(([, definition]) => definition.group === groupId)
+    .sort((left, right) => left[1].order - right[1].order)
 }
 
 const WAIT_UNIT_LABELS: Record<AutomationWaitUnit, string> = {
@@ -221,6 +259,73 @@ const WAIT_UNIT_LABELS: Record<AutomationWaitUnit, string> = {
   HOURS: "Hours",
   DAYS: "Days",
 }
+
+const DATE_FORMAT_OPTIONS = [
+  ["YYYY-MM-DD", "2026-09-25"],
+  ["MM/DD/YYYY", "09/25/2026"],
+  ["DD/MM/YYYY", "25/09/2026"],
+  ["MMMM DD YYYY", "September 25 2026"],
+  ["dddd, MMMM D, YYYY", "Friday, September 25, 2026"],
+  ["MMM D, YYYY", "Sep 25, 2026"],
+  ["MMMM Do YYYY", "September 25th 2026"],
+  ["MM-DD-YYYY", "09-25-2026"],
+  ["DD-MMM-YYYY", "25-Sep-2026"],
+  ["X", "1790294400"],
+] as const
+
+const DATE_TIME_FORMAT_OPTIONS = [
+  ["ddd MMM DD HH:mm:ss YYYY", "Fri Sep 25 13:30:59 2026"],
+  ["MMMM DD YYYY HH:mm:ss", "September 25 2026 13:30:59"],
+  ["YYYY-MM-DD HH:mm:ss", "2026-09-25 13:30:59"],
+  ["YYYY-MM-DD hh:mm A", "2026-09-25 01:30 PM"],
+  ["DD/MM/YYYY HH:mm:ss", "25/09/2026 13:30:59"],
+  ["MM/DD/YYYY hh:mm A", "09/25/2026 01:30 PM"],
+  ["dddd, MMMM D, YYYY hh:mm A", "Friday, September 25, 2026 01:30 PM"],
+  ["MMM D, YYYY hh:mm:ss A", "Sep 25, 2026 01:30:59 PM"],
+  ["YYYY-MM-DDTHH:mm:ss", "2026-09-25T13:30:59"],
+  ["MMMM Do YYYY hh:mm A", "September 25th 2026 01:30 PM"],
+  ["MM-DD-YYYY hh:mm A", "09-25-2026 01:30 PM"],
+  ["DD-MMM-YYYY hh:mm A", "25-Sep-2026 01:30 PM"],
+  ["X", "1790343059"],
+] as const
+
+const NUMBER_GROUPING_OPTIONS = [
+  ["COMMA_PERIOD", "Comma grouping, period decimal", "1,234,567.89"],
+  ["PERIOD_COMMA", "Period grouping, comma decimal", "1.234.567,89"],
+  ["SPACE_COMMA", "Space grouping, comma decimal", "1 234 567,89"],
+  ["SPACE_PERIOD", "Space grouping, period decimal", "1 234 567.89"],
+] as const
+
+const NUMBER_PHONE_FORMAT_OPTIONS = [
+  ["E164", "E164", "+15413134664"],
+  ["INTERNATIONAL", "International", "+1 541-313-4664"],
+  ["INTERNATIONAL_NO_COUNTRY_CODE", "International, no country code", "541-313-4664"],
+  ["INTERNATIONAL_NO_HYPHENS", "International, no hyphens", "+1 541 313 4664"],
+  ["INTERNATIONAL_NO_SYMBOLS", "International, no symbols", "15413134664"],
+  ["NATIONAL", "National", "(541) 313-4664"],
+  ["NATIONAL_NO_PARENTHESIS", "National, no parenthesis", "541 313-4664"],
+  ["NATIONAL_NO_SYMBOLS", "National, no symbols", "5413134664"],
+  ["RFC3966", "RFC3966", "tel:+1-541-313-4664"],
+  ["RFC3966_NO_TEL", "RFC3966, no tel", "+1-541-313-4664"],
+] as const
+
+const NUMBER_CURRENCY_OPTIONS = [
+  ["USD", "USD - US Dollar"], ["EUR", "EUR - Euro"], ["GBP", "GBP - British Pound"],
+  ["CAD", "CAD - Canadian Dollar"], ["AUD", "AUD - Australian Dollar"],
+  ["MXN", "MXN - Mexican Peso"], ["BRL", "BRL - Brazilian Real"],
+  ["COP", "COP - Colombian Peso"], ["ARS", "ARS - Argentine Peso"],
+  ["CLP", "CLP - Chilean Peso"], ["PEN", "PEN - Peruvian Sol"],
+  ["JPY", "JPY - Japanese Yen"], ["CNY", "CNY - Chinese Yuan"],
+  ["INR", "INR - Indian Rupee"], ["KRW", "KRW - South Korean Won"],
+  ["SGD", "SGD - Singapore Dollar"], ["HKD", "HKD - Hong Kong Dollar"],
+  ["NZD", "NZD - New Zealand Dollar"], ["CHF", "CHF - Swiss Franc"],
+  ["SEK", "SEK - Swedish Krona"], ["NOK", "NOK - Norwegian Krone"],
+  ["DKK", "DKK - Danish Krone"], ["PLN", "PLN - Polish Zloty"],
+  ["CZK", "CZK - Czech Koruna"], ["TRY", "TRY - Turkish Lira"],
+  ["ZAR", "ZAR - South African Rand"], ["AED", "AED - UAE Dirham"],
+  ["SAR", "SAR - Saudi Riyal"], ["EGP", "EGP - Egyptian Pound"],
+  ["ILS", "ILS - Israeli New Shekel"],
+] as const
 
 const COMPACT_PRIMARY_BUTTON_CLASS =
   "h-8 shrink-0 cursor-pointer rounded-full bg-blue-950 px-3 py-1 text-xs font-semibold text-white shadow-sm ring-1 ring-black/5 transition hover:bg-blue-900 hover:text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
@@ -437,6 +542,40 @@ function actionDefaults(
       },
     }
   }
+  if (type === "FORMAT_DATE_TIME") {
+    return {
+      nodeKey,
+      type,
+      dateTimeFormatterConfig: {
+        mode: "DATE",
+        source: { type: "CURRENT_DATE" },
+        format: "MMM D, YYYY",
+        outputKey: "formatted_date",
+      },
+    }
+  }
+  if (type === "FORMAT_NUMBER") {
+    const preferredCustomField = catalog.customFields.find(
+      (field) => field.fieldType === "NUMBER" || field.fieldType === "CURRENCY",
+    )
+    const preferredContactField = catalog.templateFields.contact.find(
+      (field) => field.key === "weight",
+    ) ?? catalog.templateFields.contact.find((field) => field.fieldType === "TEXT")
+    const source: AutomationNumberSource = preferredCustomField
+      ? { type: "CUSTOM_FIELD", key: preferredCustomField.key }
+      : { type: "CONTACT_FIELD", key: preferredContactField?.key ?? "weight" }
+    return {
+      nodeKey,
+      type,
+      numberFormatterConfig: {
+        mode: "FORMAT_NUMBER",
+        source,
+        decimalMark: "PERIOD",
+        groupingStyle: "COMMA_PERIOD",
+        outputKey: "formatted_number",
+      },
+    }
+  }
   if (type === "WAIT") return { nodeKey, type, waitConfig: { mode: "DURATION", amount: 1, unit: "HOURS" } }
   return { nodeKey, type }
 }
@@ -445,6 +584,7 @@ function noteTemplateError(
   value: string | null | undefined,
   maxLength: number,
   catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[] = [],
 ) {
   if (!value) return "This field is required."
   if (value.length > maxLength) return `Use ${maxLength.toLocaleString()} characters or fewer.`
@@ -453,17 +593,107 @@ function noteTemplateError(
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
     .trim().length > 0
   if (!hasText) return "This field is required."
-  return validateContactTemplate(value, catalog)
+  return validateContactTemplate(value, catalog, automationOutputs)
 }
 
 function optionalTemplateError(
   value: string | null | undefined,
   maxLength: number,
   catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[] = [],
 ) {
   if (!value) return null
   if (value.length > maxLength) return `Use ${maxLength.toLocaleString()} characters or fewer.`
-  return validateContactTemplate(value, catalog)
+  return validateContactTemplate(value, catalog, automationOutputs)
+}
+
+function formatterOutputs(actions: AutomationAction[]): AutomationValueDefinition[] {
+  return actions.flatMap((action) => {
+    const key = action.type === "FORMAT_DATE_TIME"
+      ? action.dateTimeFormatterConfig?.outputKey.trim()
+      : action.type === "FORMAT_NUMBER"
+        ? action.numberFormatterConfig?.outputKey.trim()
+        : ""
+    const valueKind: AutomationValueDefinition["valueKind"] = action.type === "FORMAT_DATE_TIME"
+      ? action.dateTimeFormatterConfig?.mode === "COMPARE_DATES"
+        ? "NUMBER"
+        : action.dateTimeFormatterConfig?.format === "X"
+          ? "NUMERIC_TEXT"
+          : "TEXT"
+      : action.type === "FORMAT_NUMBER"
+        ? action.numberFormatterConfig?.mode === "TEXT_TO_NUMBER" ||
+          action.numberFormatterConfig?.mode === "RANDOM_NUMBER"
+          ? "NUMBER"
+          : action.numberFormatterConfig?.mode === "FORMAT_NUMBER"
+            ? "NUMERIC_TEXT"
+            : action.numberFormatterConfig?.mode === "FORMAT_PHONE_NUMBER"
+              ? "PHONE"
+              : "TEXT"
+        : "TEXT"
+    return key && /^[a-z][a-z0-9_]{0,63}$/.test(key)
+      ? [{ key, label: key, valueKind }]
+      : []
+  })
+}
+
+function numberFormatterAcceptsFieldType(
+  mode: AutomationNumberFormatterConfig["mode"],
+  fieldType: string,
+) {
+  if (mode === "RANDOM_NUMBER") return false
+  if (mode === "FORMAT_PHONE_NUMBER") return fieldType === "PHONE"
+  return ["TEXT", "TEXTAREA", "NUMBER", "CURRENCY"].includes(fieldType)
+}
+
+function numberFormatterAcceptsValueKind(
+  mode: AutomationNumberFormatterConfig["mode"],
+  valueKind: AutomationValueDefinition["valueKind"],
+) {
+  if (mode === "RANDOM_NUMBER") return false
+  if (mode === "FORMAT_PHONE_NUMBER") return valueKind === "PHONE"
+  return valueKind === "NUMBER" || valueKind === "NUMERIC_TEXT"
+}
+
+function isNumberFormatterSourceReady(
+  source: AutomationNumberSource,
+  mode: AutomationNumberFormatterConfig["mode"],
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+) {
+  if (source.type === "CONTACT_FIELD") {
+    const field = catalog.templateFields.contact.find((candidate) => candidate.key === source.key)
+    return Boolean(field && numberFormatterAcceptsFieldType(mode, field.fieldType))
+  }
+  if (source.type === "CUSTOM_FIELD") {
+    const field = catalog.customFields.find((candidate) => candidate.key === source.key)
+    return Boolean(field && numberFormatterAcceptsFieldType(mode, field.fieldType))
+  }
+  const output = automationOutputs.find((candidate) => candidate.key === source.key)
+  return Boolean(output && numberFormatterAcceptsValueKind(mode, output.valueKind))
+}
+
+function isFormatterSourceReady(source: AutomationDateSource, catalog: AutomationCatalog) {
+  if (source.type === "CURRENT_DATE") return true
+  if (source.type === "RELATIVE_DATE") {
+    return Number.isInteger(source.amount) && source.amount > 0 && source.amount <= 10_000
+  }
+  if (source.type === "SPECIFIC_DATE") {
+    return /^\d{4}-\d{2}-\d{2}$/.test(source.date) && Boolean(source.timezone)
+  }
+  if (source.type === "CONTACT_FIELD") {
+    return catalog.templateFields.contact.some(
+      (field) => field.key === source.key && field.fieldType === "DATE",
+    )
+  }
+  return catalog.customFields.some(
+    (field) => field.key === source.key && field.fieldType === "DATE",
+  )
+}
+
+function formatterSourceNeedsTime(source: AutomationDateSource) {
+  return source.type === "CUSTOM_FIELD" ||
+    source.type === "SPECIFIC_DATE" ||
+    (source.type === "CONTACT_FIELD" && source.key !== "created_at" && source.key !== "updated_at")
 }
 
 function isTaskDateTimeReady(value: AutomationTaskDateTime, catalog: AutomationCatalog) {
@@ -495,8 +725,10 @@ function isActionReady(
   action: AutomationAction | null,
   catalog: AutomationCatalog,
   targetActions: AutomationAction[] = [],
+  previousActions: AutomationAction[] = [],
 ) {
   if (!action) return false
+  const availableOutputs = formatterOutputs(previousActions)
   if (action.type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
     const updates = action.customFieldUpdates ?? []
     const fieldIds = updates.map(updateIdentity)
@@ -511,14 +743,14 @@ function isActionReady(
     return Boolean(action.tagId)
   }
   if (action.type === "ADD_CONTACT_NOTE") {
-    return !noteTemplateError(action.noteTitle, 160, catalog) &&
-      !noteTemplateError(action.noteBody, 5_000, catalog)
+    return !noteTemplateError(action.noteTitle, 160, catalog, availableOutputs) &&
+      !noteTemplateError(action.noteBody, 5_000, catalog, availableOutputs)
   }
   if (action.type === "CREATE_TASK") {
     const config = action.taskConfig
     if (!config) return false
-    if (noteTemplateError(config.nameTemplate, 160, catalog)) return false
-    if (optionalTemplateError(config.descriptionTemplate, 4_000, catalog)) return false
+    if (noteTemplateError(config.nameTemplate, 160, catalog, availableOutputs)) return false
+    if (optionalTemplateError(config.descriptionTemplate, 4_000, catalog, availableOutputs)) return false
     if (!catalog.taskStatuses.some((status) => status.id === config.statusConfigId)) return false
     if (config.assignee.mode === "SPECIFIC_USER") {
       const userId = config.assignee.userId
@@ -532,9 +764,38 @@ function isActionReady(
     if (config.reminder) {
       if (!config.dueAt || config.assignee.mode === "UNASSIGNED") return false
       if (!isTaskDateTimeReady(config.reminder.at, catalog)) return false
-      if (optionalTemplateError(config.reminder.messageTemplate, 500, catalog)) return false
+      if (optionalTemplateError(config.reminder.messageTemplate, 500, catalog, availableOutputs)) return false
     }
     return true
+  }
+  if (action.type === "FORMAT_DATE_TIME") {
+    const config = action.dateTimeFormatterConfig
+    if (!config || !/^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)) return false
+    if (availableOutputs.some((output) => output.key === config.outputKey)) return false
+    if (config.mode === "COMPARE_DATES") {
+      return isFormatterSourceReady(config.from, catalog) &&
+        isFormatterSourceReady(config.to, catalog)
+    }
+    if (!isFormatterSourceReady(config.source, catalog)) return false
+    if (
+      config.mode === "DATE_TIME" &&
+      formatterSourceNeedsTime(config.source) &&
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(config.time ?? "")
+    ) return false
+    return true
+  }
+  if (action.type === "FORMAT_NUMBER") {
+    const config = action.numberFormatterConfig
+    if (!config || !/^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)) return false
+    if (availableOutputs.some((output) => output.key === config.outputKey)) return false
+    if (config.mode === "RANDOM_NUMBER") {
+      return Number.isSafeInteger(config.min) &&
+        Number.isSafeInteger(config.max) &&
+        config.min <= config.max
+    }
+    if (!isNumberFormatterSourceReady(config.source, config.mode, catalog, availableOutputs)) return false
+    if (config.mode === "FORMAT_PHONE_NUMBER") return /^\+\d{1,4}$/.test(config.countryCode)
+    return config.decimalMark === "PERIOD" || config.decimalMark === "COMMA"
   }
   if (action.type === "WAIT") {
     const config = action.waitConfig
@@ -625,7 +886,12 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
     return "Delete contact can only be the last action in the automation."
   }
   for (let index = 0; index < draft.actions.length; index += 1) {
-    if (!isActionReady(draft.actions[index] ?? null, catalog, draft.actions.slice(index + 1))) {
+    if (!isActionReady(
+      draft.actions[index] ?? null,
+      catalog,
+      draft.actions.slice(index + 1),
+      draft.actions.slice(0, index),
+    )) {
       return `Finish configuring action ${index + 1}.`
     }
   }
@@ -667,6 +933,8 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
       noteTitle: action.noteTitle,
       noteBody: action.noteBody,
       taskConfig: action.taskConfig,
+      dateTimeFormatterConfig: action.dateTimeFormatterConfig,
+      numberFormatterConfig: action.numberFormatterConfig,
     })),
   }
 }
@@ -1099,6 +1367,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     catalog={catalog}
                     onChange={setEditingAction}
                     targetActions={draft.actions.slice(selected.index + 1)}
+                    previousActions={draft.actions.slice(0, selected.index)}
                     actionIndex={selected.index}
                     timezone={timezone}
                     management={{
@@ -1117,6 +1386,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     catalog={catalog}
                     onChange={setPendingAction}
                     targetActions={draft.actions.slice(selected.insertionIndex)}
+                    previousActions={draft.actions.slice(0, selected.insertionIndex)}
                     actionIndex={selected.insertionIndex}
                     timezone={timezone}
                   />
@@ -1140,7 +1410,12 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       type="button"
                       variant="ghost"
                       className={COMPACT_PRIMARY_BUTTON_CLASS}
-                      disabled={!isActionReady(editingAction, catalog, draft.actions.slice(selected.index + 1)) || !actionPanelHasChanges}
+                      disabled={!isActionReady(
+                        editingAction,
+                        catalog,
+                        draft.actions.slice(selected.index + 1),
+                        draft.actions.slice(0, selected.index),
+                      ) || !actionPanelHasChanges}
                       onClick={() => {
                         if (!editingAction) return
                         updateAction(selected.index, structuredClone(editingAction))
@@ -1184,7 +1459,12 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       type="button"
                       variant="ghost"
                       className={COMPACT_PRIMARY_BUTTON_CLASS}
-                      disabled={!isActionReady(pendingAction, catalog, draft.actions.slice(selected.insertionIndex))}
+                      disabled={!isActionReady(
+                        pendingAction,
+                        catalog,
+                        draft.actions.slice(selected.insertionIndex),
+                        draft.actions.slice(0, selected.insertionIndex),
+                      )}
                       onClick={() => {
                         if (!pendingAction) return
                         insertAction(selected.insertionIndex, pendingAction)
@@ -1601,6 +1881,7 @@ function NewActionEditor({
   catalog,
   onChange,
   targetActions,
+  previousActions,
   actionIndex,
   timezone,
 }: {
@@ -1608,6 +1889,7 @@ function NewActionEditor({
   catalog: AutomationCatalog
   onChange: (action: AutomationAction | null) => void
   targetActions: AutomationAction[]
+  previousActions: AutomationAction[]
   actionIndex: number
   timezone?: string | null
 }) {
@@ -1634,6 +1916,7 @@ function NewActionEditor({
           onChange={onChange}
           showTypePicker={false}
           targetActions={targetActions}
+          previousActions={previousActions}
           actionIndex={actionIndex}
           timezone={timezone}
         />
@@ -1644,24 +1927,35 @@ function NewActionEditor({
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm font-semibold text-slate-950">Choose an action</p>
-      <div className="flex flex-col gap-2">
-        {Object.entries(ACTION_LABELS).map(([value, label]) => (
-          <Button
-            key={value}
-            type="button"
-            variant="outline"
-            className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full justify-start")}
-            disabled={
-              (value === "UPDATE_CONTACT_CUSTOM_FIELDS" &&
-                catalog.contactUpdateFields.length === 0 &&
-                catalog.customFields.length === 0) ||
-              (value === "DELETE_CONTACT" && targetActions.length > 0)
-            }
-            onClick={() => onChange(actionDefaults(value as AutomationAction["type"], catalog))}
-          >
-            {label}
-          </Button>
-        ))}
+      <div className="flex flex-col gap-4">
+        {ACTION_GROUPS.map((group) => {
+          const actions = actionsForGroup(group.id)
+          if (actions.length === 0) return null
+          return (
+            <section key={group.id} className="space-y-2">
+              <p className="px-1 text-xs font-semibold text-slate-500">{group.label}</p>
+              <div className="flex flex-col gap-2">
+                {actions.map(([value, definition]) => (
+                  <Button
+                    key={value}
+                    type="button"
+                    variant="outline"
+                    className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full justify-start")}
+                    disabled={
+                      (value === "UPDATE_CONTACT_CUSTOM_FIELDS" &&
+                        catalog.contactUpdateFields.length === 0 &&
+                        catalog.customFields.length === 0) ||
+                      (value === "DELETE_CONTACT" && targetActions.length > 0)
+                    }
+                    onClick={() => onChange(actionDefaults(value, catalog))}
+                  >
+                    {definition.label}
+                  </Button>
+                ))}
+              </div>
+            </section>
+          )
+        })}
       </div>
     </div>
   )
@@ -1674,6 +1968,7 @@ function ActionEditor({
   management,
   showTypePicker = true,
   targetActions = [],
+  previousActions = [],
   actionIndex = 0,
   timezone,
 }: {
@@ -1682,6 +1977,7 @@ function ActionEditor({
   onChange: (action: AutomationAction) => void
   showTypePicker?: boolean
   targetActions?: AutomationAction[]
+  previousActions?: AutomationAction[]
   actionIndex?: number
   timezone?: string | null
   management?: {
@@ -1691,11 +1987,12 @@ function ActionEditor({
     onDelete: () => void
   }
 }) {
+  const availableAutomationOutputs = formatterOutputs(previousActions)
   const noteTitleError = action.type === "ADD_CONTACT_NOTE"
-    ? noteTemplateError(action.noteTitle, 160, catalog)
+    ? noteTemplateError(action.noteTitle, 160, catalog, availableAutomationOutputs)
     : null
   const noteBodyError = action.type === "ADD_CONTACT_NOTE"
-    ? noteTemplateError(action.noteBody, 5_000, catalog)
+    ? noteTemplateError(action.noteBody, 5_000, catalog, availableAutomationOutputs)
     : null
 
   return (
@@ -1710,17 +2007,24 @@ function ActionEditor({
             >
               <SelectTrigger id="action-type" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectGroup>
-                  {Object.entries(ACTION_LABELS).map(([value, label]) => (
-                    <SelectItem
-                      key={value}
-                      value={value}
-                      disabled={value === "DELETE_CONTACT" && targetActions.length > 0}
-                    >
-                      {label}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
+                {ACTION_GROUPS.map((group) => {
+                  const actions = actionsForGroup(group.id)
+                  if (actions.length === 0) return null
+                  return (
+                    <SelectGroup key={group.id}>
+                      <SelectLabel className="font-semibold">{group.label}</SelectLabel>
+                      {actions.map(([value, definition]) => (
+                        <SelectItem
+                          key={value}
+                          value={value}
+                          disabled={value === "DELETE_CONTACT" && targetActions.length > 0}
+                        >
+                          {definition.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )
+                })}
               </SelectContent>
             </Select>
           </Field>
@@ -1781,6 +2085,7 @@ function ActionEditor({
               maxLength={160}
               catalog={catalog}
               timezone={timezone}
+              automationOutputs={availableAutomationOutputs}
               error={noteTitleError}
               onChange={(noteTitle) => onChange({ ...action, noteTitle })}
               placeholder="Note title"
@@ -1792,6 +2097,7 @@ function ActionEditor({
               maxLength={5000}
               catalog={catalog}
               timezone={timezone}
+              automationOutputs={availableAutomationOutputs}
               error={noteBodyError}
               onChange={(noteBody) => onChange({ ...action, noteBody })}
               multiline
@@ -1805,7 +2111,26 @@ function ActionEditor({
             config={action.taskConfig}
             catalog={catalog}
             timezone={timezone}
+            automationOutputs={availableAutomationOutputs}
             onChange={(taskConfig) => onChange({ ...action, taskConfig })}
+          />
+        ) : null}
+
+        {action.type === "FORMAT_DATE_TIME" && action.dateTimeFormatterConfig ? (
+          <DateTimeFormatterActionEditor
+            config={action.dateTimeFormatterConfig}
+            catalog={catalog}
+            timezone={timezone}
+            onChange={(dateTimeFormatterConfig) => onChange({ ...action, dateTimeFormatterConfig })}
+          />
+        ) : null}
+
+        {action.type === "FORMAT_NUMBER" && action.numberFormatterConfig ? (
+          <NumberFormatterActionEditor
+            config={action.numberFormatterConfig}
+            catalog={catalog}
+            automationOutputs={availableAutomationOutputs}
+            onChange={(numberFormatterConfig) => onChange({ ...action, numberFormatterConfig })}
           />
         ) : null}
 
@@ -1842,6 +2167,445 @@ function ActionEditor({
           </div>
         </>
       ) : null}
+    </div>
+  )
+}
+
+function FormatterIntegerInput({
+  id,
+  label,
+  value,
+  onChange,
+}: {
+  id: string
+  label: string
+  value: number
+  onChange: (value: number) => void
+}) {
+  const [draftValue, setDraftValue] = useState(Number.isFinite(value) ? String(value) : "")
+  return (
+    <Field className="gap-1.5" data-invalid={!Number.isSafeInteger(value)}>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <Input
+        id={id}
+        type="text"
+        inputMode="numeric"
+        value={draftValue}
+        className="h-8 rounded-full"
+        aria-invalid={!Number.isSafeInteger(value)}
+        onChange={(event) => {
+          const next = event.target.value
+          if (!/^-?\d*$/.test(next)) return
+          setDraftValue(next)
+          onChange(/^-?\d+$/.test(next) ? Number(next) : Number.NaN)
+        }}
+      />
+    </Field>
+  )
+}
+
+function NumberFormatterActionEditor({
+  config,
+  catalog,
+  automationOutputs,
+  onChange,
+}: {
+  config: AutomationNumberFormatterConfig
+  catalog: AutomationCatalog
+  automationOutputs: AutomationValueDefinition[]
+  onChange: (config: AutomationNumberFormatterConfig) => void
+}) {
+  const outputKeyValid = /^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)
+  const duplicateOutputKey = automationOutputs.some((output) => output.key === config.outputKey)
+  const mode = config.mode
+  const contactFields = catalog.templateFields.contact
+    .filter((field) => numberFormatterAcceptsFieldType(mode, field.fieldType))
+    .map((field) => ({
+      value: `contact:${field.key}`,
+      label: field.label,
+      searchText: field.key,
+    }))
+  const customFields = catalog.customFields
+    .filter((field) => numberFormatterAcceptsFieldType(mode, field.fieldType))
+    .map((field) => ({
+      value: `custom:${field.key}`,
+      label: field.label,
+      searchText: field.key,
+    }))
+  const compatibleAutomationOutputs = automationOutputs
+    .filter((output) => numberFormatterAcceptsValueKind(mode, output.valueKind))
+    .map((output) => ({
+      value: `automation:${output.key}`,
+      label: output.label,
+      searchText: output.key,
+    }))
+
+  const defaultSource = (nextMode: AutomationNumberFormatterConfig["mode"]): AutomationNumberSource => {
+    const contactCandidates = catalog.templateFields.contact.filter(
+      (field) => numberFormatterAcceptsFieldType(nextMode, field.fieldType),
+    )
+    const customCandidates = catalog.customFields.filter(
+      (field) => numberFormatterAcceptsFieldType(nextMode, field.fieldType),
+    )
+    const contactField = nextMode === "FORMAT_PHONE_NUMBER"
+      ? contactCandidates[0]
+      : contactCandidates.find((field) => field.key === "weight" || field.key === "height") ??
+        contactCandidates[0]
+    const customField = nextMode === "FORMAT_PHONE_NUMBER"
+      ? customCandidates[0]
+      : customCandidates.find((field) => field.fieldType === "NUMBER" || field.fieldType === "CURRENCY") ??
+        customCandidates[0]
+    const output = automationOutputs.find(
+      (candidate) => numberFormatterAcceptsValueKind(nextMode, candidate.valueKind),
+    )
+    if (customField) return { type: "CUSTOM_FIELD", key: customField.key }
+    if (contactField) return { type: "CONTACT_FIELD", key: contactField.key }
+    if (output) return { type: "AUTOMATION_VALUE", key: output.key }
+    return { type: "CONTACT_FIELD", key: "" }
+  }
+
+  const setMode = (nextMode: AutomationNumberFormatterConfig["mode"]) => {
+    const outputKey = config.outputKey
+    if (nextMode === "RANDOM_NUMBER") {
+      onChange({ mode: nextMode, min: 1, max: 100, outputKey })
+      return
+    }
+    const source = defaultSource(nextMode)
+    if (nextMode === "FORMAT_PHONE_NUMBER") {
+      onChange({
+        mode: nextMode,
+        source,
+        countryCode: "+1",
+        phoneFormat: "E164",
+        outputKey,
+      })
+      return
+    }
+    if (nextMode === "FORMAT_CURRENCY") {
+      onChange({
+        mode: nextMode,
+        source,
+        decimalMark: "PERIOD",
+        currencyCode: "USD",
+        outputKey,
+      })
+      return
+    }
+    if (nextMode === "FORMAT_NUMBER") {
+      onChange({
+        mode: nextMode,
+        source,
+        decimalMark: "PERIOD",
+        groupingStyle: "COMMA_PERIOD",
+        outputKey,
+      })
+      return
+    }
+    onChange({ mode: nextMode, source, decimalMark: "PERIOD", outputKey })
+  }
+
+  const sourceValue = config.mode === "RANDOM_NUMBER"
+    ? undefined
+    : `${config.source.type === "CONTACT_FIELD" ? "contact" : config.source.type === "CUSTOM_FIELD" ? "custom" : "automation"}:${config.source.key}`
+
+  const changeSource = (value: string) => {
+    if (config.mode === "RANDOM_NUMBER") return
+    const separator = value.indexOf(":")
+    const category = value.slice(0, separator)
+    const key = value.slice(separator + 1)
+    const source: AutomationNumberSource = category === "contact"
+      ? { type: "CONTACT_FIELD", key }
+      : category === "custom"
+        ? { type: "CUSTOM_FIELD", key }
+        : { type: "AUTOMATION_VALUE", key }
+    onChange({ ...config, source })
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Field className="gap-1.5" data-invalid={!outputKeyValid || duplicateOutputKey}>
+        <FieldLabel htmlFor="number-formatter-result-name">Result name</FieldLabel>
+        <Input
+          id="number-formatter-result-name"
+          value={config.outputKey}
+          maxLength={64}
+          className="h-8 rounded-full"
+          aria-invalid={!outputKeyValid || duplicateOutputKey}
+          onChange={(event) => onChange({ ...config, outputKey: event.target.value.toLowerCase() })}
+          placeholder="formatted_number"
+        />
+        {!outputKeyValid ? (
+          <p className="text-xs text-rose-600">Start with a letter and use lowercase letters, numbers, or underscores.</p>
+        ) : duplicateOutputKey ? (
+          <p className="text-xs text-rose-600">This result name is already used by an earlier formatter.</p>
+        ) : null}
+      </Field>
+
+      <Field className="gap-1.5">
+        <FieldLabel htmlFor="number-formatter-mode">Mode</FieldLabel>
+        <Select value={config.mode} onValueChange={(value) => setMode(value as AutomationNumberFormatterConfig["mode"])}>
+          <SelectTrigger id="number-formatter-mode" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="TEXT_TO_NUMBER">Text to number</SelectItem>
+            <SelectItem value="FORMAT_NUMBER">Format number</SelectItem>
+            <SelectItem value="FORMAT_PHONE_NUMBER">Format phone number</SelectItem>
+            <SelectItem value="FORMAT_CURRENCY">Format currency</SelectItem>
+            <SelectItem value="RANDOM_NUMBER">Random number</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+
+      {config.mode === "RANDOM_NUMBER" ? (
+        <div className="grid grid-cols-2 gap-2">
+          <FormatterIntegerInput
+            key={`min-${config.outputKey}`}
+            id="number-formatter-min"
+            label="Minimum"
+            value={config.min}
+            onChange={(min) => onChange({ ...config, min })}
+          />
+          <FormatterIntegerInput
+            key={`max-${config.outputKey}`}
+            id="number-formatter-max"
+            label="Maximum"
+            value={config.max}
+            onChange={(max) => onChange({ ...config, max })}
+          />
+        </div>
+      ) : (
+        <Field className="gap-1.5">
+          <FieldLabel>Source</FieldLabel>
+          <AutomationFieldPicker
+            value={sourceValue}
+            contactFields={contactFields}
+            customFields={customFields}
+            automationValues={compatibleAutomationOutputs}
+            onValueChange={changeSource}
+            ariaLabel="Number formatter source"
+          />
+        </Field>
+      )}
+
+      {config.mode !== "RANDOM_NUMBER" && config.mode !== "FORMAT_PHONE_NUMBER" ? (
+        <Field className="gap-1.5">
+          <FieldLabel htmlFor="number-formatter-decimal-mark">Input decimal mark</FieldLabel>
+          <Select
+            value={config.decimalMark}
+            onValueChange={(decimalMark) => onChange({
+              ...config,
+              decimalMark: decimalMark as "PERIOD" | "COMMA",
+            })}
+          >
+            <SelectTrigger id="number-formatter-decimal-mark" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="PERIOD">Period (.)</SelectItem>
+              <SelectItem value="COMMA">Comma (,)</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
+
+      {config.mode === "FORMAT_NUMBER" ? (
+        <Field className="gap-1.5">
+          <FieldLabel htmlFor="number-formatter-grouping">Output format</FieldLabel>
+          <Select
+            value={config.groupingStyle}
+            onValueChange={(groupingStyle) => onChange({
+              ...config,
+              groupingStyle: groupingStyle as typeof config.groupingStyle,
+            })}
+          >
+            <SelectTrigger id="number-formatter-grouping" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {NUMBER_GROUPING_OPTIONS.map(([value, label, preview]) => (
+                <SelectItem key={value} value={value}>{label} · {preview}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
+
+      {config.mode === "FORMAT_CURRENCY" ? (
+        <Field className="gap-1.5">
+          <FieldLabel htmlFor="number-formatter-currency">Currency</FieldLabel>
+          <Select value={config.currencyCode} onValueChange={(currencyCode) => onChange({ ...config, currencyCode })}>
+            <SelectTrigger id="number-formatter-currency" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {NUMBER_CURRENCY_OPTIONS.map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
+
+      {config.mode === "FORMAT_PHONE_NUMBER" ? (
+        <>
+          <Field className="gap-1.5" data-invalid={!/^\+\d{1,4}$/.test(config.countryCode)}>
+            <FieldLabel htmlFor="number-formatter-country-code">Country code</FieldLabel>
+            <Input
+              id="number-formatter-country-code"
+              value={config.countryCode}
+              maxLength={5}
+              className="h-8 rounded-full"
+              aria-invalid={!/^\+\d{1,4}$/.test(config.countryCode)}
+              onChange={(event) => onChange({ ...config, countryCode: event.target.value })}
+              placeholder="+1"
+            />
+          </Field>
+          <Field className="gap-1.5">
+            <FieldLabel htmlFor="number-formatter-phone-format">Output format</FieldLabel>
+            <Select
+              value={config.phoneFormat}
+              onValueChange={(phoneFormat) => onChange({
+                ...config,
+                phoneFormat: phoneFormat as typeof config.phoneFormat,
+              })}
+            >
+              <SelectTrigger id="number-formatter-phone-format" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {NUMBER_PHONE_FORMAT_OPTIONS.map(([value, label, preview]) => (
+                  <SelectItem key={value} value={value}>{label} · {preview}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+function DateTimeFormatterActionEditor({
+  config,
+  catalog,
+  timezone,
+  onChange,
+}: {
+  config: AutomationDateTimeFormatterConfig
+  catalog: AutomationCatalog
+  timezone?: string | null
+  onChange: (config: AutomationDateTimeFormatterConfig) => void
+}) {
+  const outputKeyValid = /^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)
+  const setMode = (mode: AutomationDateTimeFormatterConfig["mode"]) => {
+    if (mode === "COMPARE_DATES") {
+      onChange({
+        mode,
+        from: { type: "CURRENT_DATE" },
+        to: { type: "RELATIVE_DATE", amount: 1, unit: "DAYS" },
+        unit: "DAYS",
+        outputKey: config.outputKey,
+      })
+      return
+    }
+    onChange({
+      mode,
+      source: { type: "CURRENT_DATE" },
+      format: mode === "DATE" ? "MMM D, YYYY" : "MMM D, YYYY hh:mm:ss A",
+      outputKey: config.outputKey,
+    })
+  }
+
+  const dateSource = (
+    idPrefix: string,
+    label: string,
+    value: AutomationDateSource,
+    change: (source: AutomationDateSource) => void,
+  ) => (
+    <div className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+      <p className="text-xs font-semibold text-slate-700">{label}</p>
+      <ContactDateValueInput
+        idPrefix={idPrefix}
+        value={value as ContactDateValue}
+        onChange={(source) => change(source)}
+        catalog={catalog}
+        timezone={timezone}
+        allowRelative
+      />
+    </div>
+  )
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Field className="gap-1.5" data-invalid={!outputKeyValid}>
+        <FieldLabel htmlFor="formatter-result-name">Result name</FieldLabel>
+        <Input
+          id="formatter-result-name"
+          value={config.outputKey}
+          maxLength={64}
+          className="h-8 rounded-full"
+          aria-invalid={!outputKeyValid}
+          onChange={(event) => onChange({ ...config, outputKey: event.target.value.toLowerCase() })}
+          placeholder="appointment_date"
+        />
+        {!outputKeyValid ? (
+          <p className="text-xs text-rose-600">Start with a letter and use lowercase letters, numbers, or underscores.</p>
+        ) : null}
+      </Field>
+
+      <Field className="gap-1.5">
+        <FieldLabel htmlFor="formatter-mode">Mode</FieldLabel>
+        <Select value={config.mode} onValueChange={(mode) => setMode(mode as AutomationDateTimeFormatterConfig["mode"])}>
+          <SelectTrigger id="formatter-mode" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="DATE">Date</SelectItem>
+            <SelectItem value="DATE_TIME">Date and time</SelectItem>
+            <SelectItem value="COMPARE_DATES">Compare dates</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+
+      {config.mode === "COMPARE_DATES" ? (
+        <>
+          {dateSource("formatter-from", "From", config.from, (from) => onChange({ ...config, from }))}
+          {dateSource("formatter-to", "To", config.to, (to) => onChange({ ...config, to }))}
+          <Field className="gap-1.5">
+            <FieldLabel htmlFor="formatter-comparison-unit">Unit</FieldLabel>
+            <Select value={config.unit} onValueChange={(unit) => onChange({ ...config, unit: unit as "DAYS" | "MONTHS" | "YEARS" })}>
+              <SelectTrigger id="formatter-comparison-unit" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="DAYS">Days</SelectItem>
+                <SelectItem value="MONTHS">Months</SelectItem>
+                <SelectItem value="YEARS">Years</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        </>
+      ) : (
+        <>
+          {dateSource("formatter-source", "Date source", config.source, (source) => onChange({
+            ...config,
+            source,
+            ...(config.mode === "DATE_TIME" && formatterSourceNeedsTime(source) && !config.time
+              ? { time: "00:00" }
+              : {}),
+          }))}
+          {config.mode === "DATE_TIME" && formatterSourceNeedsTime(config.source) ? (
+            <Field className="gap-1.5">
+              <FieldLabel htmlFor="formatter-time">Time</FieldLabel>
+              <Input
+                id="formatter-time"
+                type="time"
+                value={config.time ?? "00:00"}
+                className="h-8 rounded-full"
+                onChange={(event) => onChange({ ...config, time: event.target.value })}
+              />
+            </Field>
+          ) : null}
+          <Field className="gap-1.5">
+            <FieldLabel htmlFor="formatter-format">Format</FieldLabel>
+            <Select value={config.format} onValueChange={(format) => onChange({ ...config, format })}>
+              <SelectTrigger id="formatter-format" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {(config.mode === "DATE" ? DATE_FORMAT_OPTIONS : DATE_TIME_FORMAT_OPTIONS).map(([value, preview]) => (
+                  <SelectItem key={value} value={value}>{value === "X" ? "Unix timestamp" : value} · {preview}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        </>
+      )}
     </div>
   )
 }
@@ -1890,19 +2654,22 @@ function TaskActionEditor({
   config,
   catalog,
   timezone,
+  automationOutputs,
   onChange,
 }: {
   config: AutomationTaskConfig
   catalog: AutomationCatalog
   timezone?: string | null
+  automationOutputs: AutomationValueDefinition[]
   onChange: (config: AutomationTaskConfig) => void
 }) {
-  const nameError = noteTemplateError(config.nameTemplate, 160, catalog)
-  const descriptionError = optionalTemplateError(config.descriptionTemplate, 4_000, catalog)
+  const nameError = noteTemplateError(config.nameTemplate, 160, catalog, automationOutputs)
+  const descriptionError = optionalTemplateError(config.descriptionTemplate, 4_000, catalog, automationOutputs)
   const reminderMessageError = optionalTemplateError(
     config.reminder?.messageTemplate,
     500,
     catalog,
+    automationOutputs,
   )
   const defaultDateTime = (): AutomationTaskDateTime => ({
     source: { type: "CURRENT_DATE" },
@@ -1918,6 +2685,7 @@ function TaskActionEditor({
         maxLength={160}
         catalog={catalog}
         timezone={timezone}
+        automationOutputs={automationOutputs}
         error={nameError}
         onChange={(nameTemplate) => onChange({ ...config, nameTemplate })}
         placeholder="Follow up with {contact.name}"
@@ -1929,6 +2697,7 @@ function TaskActionEditor({
         maxLength={4_000}
         catalog={catalog}
         timezone={timezone}
+        automationOutputs={automationOutputs}
         error={descriptionError}
         onChange={(descriptionTemplate) => onChange({ ...config, descriptionTemplate })}
         multiline
@@ -2092,6 +2861,7 @@ function TaskActionEditor({
             maxLength={500}
             catalog={catalog}
             timezone={timezone}
+            automationOutputs={automationOutputs}
             error={reminderMessageError}
             onChange={(messageTemplate) => onChange({
               ...config,

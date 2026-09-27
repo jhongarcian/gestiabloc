@@ -29,14 +29,14 @@ export type ContactTemplateCatalog = {
 
 type ParsedToken = {
   raw: string
-  source: "CONTACT" | "CUSTOM_FIELD" | "DATE"
+  source: "CONTACT" | "CUSTOM_FIELD" | "DATE" | "AUTOMATION_VALUE"
   key: string
   formatKind?: "date" | "phone" | "currency"
   formatValue?: string
 }
 
 const BRACED_EXPRESSION = /\{([^{}]*)\}/g
-const TEMPLATE_TOKEN_START = /\{(?:contact|date)\./g
+const TEMPLATE_TOKEN_START = /\{(?:contact|date|automation)\./g
 
 export function isValidTemplateDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
@@ -58,6 +58,15 @@ function parseToken(raw: string, expression: string): ParsedToken | null {
     rawFormatKind === "date" || rawFormatKind === "phone" || rawFormatKind === "currency"
       ? rawFormatKind
       : undefined
+  const automationValueMatch = path.match(/^automation\.([a-z][a-z0-9_]{0,63})$/)
+  if (automationValueMatch) {
+    if (formatKind) return null
+    return {
+      raw,
+      source: "AUTOMATION_VALUE",
+      key: automationValueMatch[1]!,
+    }
+  }
   if (path === "date.current") {
     if (formatKind && formatKind !== "date") return null
     return {
@@ -115,12 +124,20 @@ function parseToken(raw: string, expression: string): ParsedToken | null {
   }
 }
 
-export function validateContactTemplate(value: string, catalog: ContactTemplateCatalog) {
+export function validateContactTemplate(
+  value: string,
+  catalog: ContactTemplateCatalog,
+  automationOutputs: Array<{ key: string }> = [],
+) {
   const ranges: Array<{ start: number; end: number }> = []
   const tokens: ParsedToken[] = []
   for (const match of value.matchAll(BRACED_EXPRESSION)) {
     const expression = match[1] ?? ""
-    if (!expression.startsWith("contact.") && !expression.startsWith("date.")) continue
+    if (
+      !expression.startsWith("contact.") &&
+      !expression.startsWith("date.") &&
+      !expression.startsWith("automation.")
+    ) continue
     const start = match.index
     const end = start + match[0].length
     ranges.push({ start, end })
@@ -141,8 +158,15 @@ export function validateContactTemplate(value: string, catalog: ContactTemplateC
   const customFields = new Map(catalog.customFields.map((field) => [field.key, field]))
   const dateFormats = new Set(catalog.templateFields.dateFormats.map((option) => option.value))
   const phoneFormats = new Set(catalog.templateFields.phoneFormats.map((option) => option.value))
+  const automationOutputKeys = new Set(automationOutputs.map((output) => output.key))
 
   for (const token of tokens) {
+    if (token.source === "AUTOMATION_VALUE") {
+      if (!automationOutputKeys.has(token.key)) {
+        return `The automation value used by ${token.raw} is not available before this action.`
+      }
+      continue
+    }
     if (token.source === "DATE") {
       if (token.formatKind && (token.formatKind !== "date" || !dateFormats.has(token.formatValue ?? ""))) {
         return `${token.raw} does not use a valid date format.`
@@ -165,6 +189,10 @@ export function validateContactTemplate(value: string, catalog: ContactTemplateC
     }
   }
   return null
+}
+
+export function buildAutomationValueToken(key: string) {
+  return /^[a-z][a-z0-9_]{0,63}$/.test(key) ? `{automation.${key}}` : ""
 }
 
 export function buildContactTemplateToken(params: {

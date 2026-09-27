@@ -3,6 +3,7 @@
 import { useRef, useState } from "react"
 import {
   ArrowLeft,
+  Braces,
   Check,
   ChevronRight,
   ChevronsUpDown,
@@ -29,12 +30,13 @@ export type AutomationFieldPickerOption = {
   searchText?: string
 }
 
-type FieldCategory = "CONTACT" | "CUSTOM_FIELD"
+type FieldCategory = "CONTACT" | "CUSTOM_FIELD" | "AUTOMATION_VALUE"
 
 type AutomationFieldPickerProps = {
   value?: string
   contactFields: AutomationFieldPickerOption[]
   customFields: AutomationFieldPickerOption[]
+  automationValues?: AutomationFieldPickerOption[]
   onValueChange: (value: string) => void
   ariaLabel: string
   mode?: "select" | "add"
@@ -50,6 +52,7 @@ const SECONDARY_BUTTON_CLASS =
 function categoryForValue(value?: string): FieldCategory | null {
   if (value?.startsWith("contact:")) return "CONTACT"
   if (value?.startsWith("custom:")) return "CUSTOM_FIELD"
+  if (value?.startsWith("automation:")) return "AUTOMATION_VALUE"
   return null
 }
 
@@ -57,6 +60,7 @@ export function AutomationFieldPicker({
   value,
   contactFields,
   customFields,
+  automationValues = [],
   onValueChange,
   ariaLabel,
   mode = "select",
@@ -66,10 +70,20 @@ export function AutomationFieldPicker({
   const [category, setCategory] = useState<FieldCategory | null>(null)
   const contactCategoryRef = useRef<HTMLButtonElement>(null)
   const customCategoryRef = useRef<HTMLButtonElement>(null)
+  const automationCategoryRef = useRef<HTMLButtonElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
-  const selectedOption = [...contactFields, ...customFields].find((option) => option.value === value)
-  const activeFields = category === "CONTACT" ? contactFields : customFields
-  const categoryLabel = category === "CONTACT" ? "Contact fields" : "Custom fields"
+  const selectedOption = [...contactFields, ...customFields, ...automationValues]
+    .find((option) => option.value === value)
+  const activeFields = category === "CONTACT"
+    ? contactFields
+    : category === "CUSTOM_FIELD"
+      ? customFields
+      : automationValues
+  const categoryLabel = category === "CONTACT"
+    ? "Contact fields"
+    : category === "CUSTOM_FIELD"
+      ? "Custom fields"
+      : "Automation values"
 
   const changeOpen = (nextOpen: boolean) => {
     setOpen(nextOpen)
@@ -89,7 +103,11 @@ export function AutomationFieldPicker({
   const showCategories = () => {
     setCategory(null)
     requestAnimationFrame(() => {
-      const target = contactFields.length > 0 ? contactCategoryRef.current : customCategoryRef.current
+      const target = contactFields.length > 0
+        ? contactCategoryRef.current
+        : customFields.length > 0
+          ? customCategoryRef.current
+          : automationCategoryRef.current
       target?.focus()
     })
   }
@@ -169,6 +187,24 @@ export function AutomationFieldPicker({
               </span>
               <ChevronRight className="text-slate-400" aria-hidden="true" />
             </Button>
+            {automationValues.length > 0 ? (
+              <Button
+                ref={automationCategoryRef}
+                type="button"
+                variant="ghost"
+                className="h-auto w-full justify-start rounded-lg px-2.5 py-2 text-left"
+                onClick={() => selectCategory("AUTOMATION_VALUE")}
+              >
+                <Braces className="text-slate-500" aria-hidden="true" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium text-slate-800">Automation values</span>
+                  <span className="block text-xs font-normal text-slate-500">
+                    {automationValues.length} available
+                  </span>
+                </span>
+                <ChevronRight className="text-slate-400" aria-hidden="true" />
+              </Button>
+            ) : null}
           </div>
         ) : (
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">

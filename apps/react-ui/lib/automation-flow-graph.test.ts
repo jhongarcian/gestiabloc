@@ -12,6 +12,8 @@ const labels = {
   REMOVE_CONTACT_TAG: "Remove contact tag",
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_TASK: "Create task",
+  FORMAT_DATE_TIME: "Date/Time formatter",
+  FORMAT_NUMBER: "Number formatter",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 } as const
@@ -180,6 +182,62 @@ describe("buildAutomationFlowGraph", () => {
     const taskNode = graph.nodes.find((node) => node.id.includes("00000000"))
     assert.equal(taskNode?.data.label, "Create task")
     assert.equal(taskNode?.data.subtitle, "Task: Call {contact.name}")
+  })
+
+  test("summarizes formatter outputs and comparisons", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "FORMAT_DATE_TIME",
+          dateTimeFormatterConfig: {
+            mode: "COMPARE_DATES",
+            from: { type: "CONTACT_FIELD", key: "date_of_birth" },
+            to: { type: "CURRENT_DATE" },
+            unit: "YEARS",
+            outputKey: "contact_age",
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const formatterNode = graph.nodes.find((node) => node.id.includes("00000000"))
+    assert.equal(formatterNode?.data.label, "Date/Time formatter")
+    assert.equal(formatterNode?.data.subtitle, "Compare dates · Years → contact_age")
+  })
+
+  test("summarizes number formatter output modes", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "FORMAT_NUMBER",
+          numberFormatterConfig: {
+            mode: "FORMAT_CURRENCY",
+            source: { type: "CUSTOM_FIELD", key: "premium" },
+            decimalMark: "PERIOD",
+            currencyCode: "USD",
+            outputKey: "premium_label",
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const formatterNode = graph.nodes.find((node) => node.id.includes("00000000"))
+    assert.equal(formatterNode?.data.label, "Number formatter")
+    assert.equal(formatterNode?.data.subtitle, "Currency · USD → premium_label")
   })
 
   test("places delete contact directly before completion", () => {

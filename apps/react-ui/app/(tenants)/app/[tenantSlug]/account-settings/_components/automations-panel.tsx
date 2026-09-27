@@ -38,6 +38,8 @@ function mutationPayload(record: AutomationRecord, isEnabled = record.isEnabled)
       noteTitle: action.noteTitle,
       noteBody: action.noteBody,
       taskConfig: action.taskConfig,
+      dateTimeFormatterConfig: action.dateTimeFormatterConfig,
+      numberFormatterConfig: action.numberFormatterConfig,
     })),
   }
 }
