@@ -1858,13 +1858,16 @@ async function applyAutomationAction(
       automationValues[action.dateTimeFormatterConfig.outputKey] = value
       return `Created automation value “${action.dateTimeFormatterConfig.outputKey}”.`
     } else if (action.type === "FORMAT_NUMBER") {
-      const value = await resolveAutomationNumberFormatter(prismaTx, {
+      const result = await resolveAutomationNumberFormatter(prismaTx, {
         tenantId,
         contactId,
         config: action.numberFormatterConfig,
         automationValues,
       })
-      automationValues[action.numberFormatterConfig.outputKey] = value
+      if (result.status === "EMPTY_SOURCE") {
+        return "Source field was empty. No automation value was created."
+      }
+      automationValues[action.numberFormatterConfig.outputKey] = result.value
       return `Created automation value “${action.numberFormatterConfig.outputKey}”.`
     } else if (action.type === "MATH_OPERATION") {
       const value = await resolveAutomationMathOperation(prismaTx, {

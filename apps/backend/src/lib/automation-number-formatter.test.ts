@@ -61,7 +61,7 @@ describe("automation number formatter", () => {
 
   test("formats earlier automation values and uses inclusive random boundaries", async () => {
     const noDatabaseReads = {}
-    assert.equal(await resolveAutomationNumberFormatter(noDatabaseReads, {
+    assert.deepEqual(await resolveAutomationNumberFormatter(noDatabaseReads, {
       tenantId: "tenant-1",
       contactId: "contact-1",
       config: {
@@ -72,13 +72,13 @@ describe("automation number formatter", () => {
         outputKey: "total",
       },
       automationValues: { raw_total: 1234567.89 },
-    }), "1,234,567.89")
-    assert.equal(await resolveAutomationNumberFormatter(noDatabaseReads, {
+    }), { status: "CREATED", value: "1,234,567.89" })
+    assert.deepEqual(await resolveAutomationNumberFormatter(noDatabaseReads, {
       tenantId: "tenant-1",
       contactId: "contact-1",
       config: { mode: "RANDOM_NUMBER", min: 7, max: 7, outputKey: "draw" },
       automationValues: {},
-    }), 7)
+    }), { status: "CREATED", value: 7 })
     await assert.rejects(
       resolveAutomationNumberFormatter(noDatabaseReads, {
         tenantId: "tenant-1",
@@ -92,6 +92,20 @@ describe("automation number formatter", () => {
         automationValues: {},
       }),
       /was not created/,
+    )
+    await assert.rejects(
+      resolveAutomationNumberFormatter(noDatabaseReads, {
+        tenantId: "tenant-1",
+        contactId: "contact-1",
+        config: {
+          mode: "TEXT_TO_NUMBER",
+          source: { type: "AUTOMATION_VALUE", key: "empty" },
+          decimalMark: "PERIOD",
+          outputKey: "value",
+        },
+        automationValues: { empty: "" },
+      }),
+      /is empty/,
     )
   })
 
@@ -116,7 +130,7 @@ describe("automation number formatter", () => {
         }),
       },
     }
-    assert.equal(await resolveAutomationNumberFormatter(prismaTx, {
+    assert.deepEqual(await resolveAutomationNumberFormatter(prismaTx, {
       tenantId: "tenant-1",
       contactId: "contact-1",
       config: {
@@ -126,8 +140,8 @@ describe("automation number formatter", () => {
         outputKey: "weight",
       },
       automationValues: {},
-    }), 1234.5)
-    assert.equal(await resolveAutomationNumberFormatter(prismaTx, {
+    }), { status: "CREATED", value: 1234.5 })
+    assert.deepEqual(await resolveAutomationNumberFormatter(prismaTx, {
       tenantId: "tenant-1",
       contactId: "contact-1",
       config: {
@@ -138,6 +152,55 @@ describe("automation number formatter", () => {
         outputKey: "premium",
       },
       automationValues: {},
-    }), "$2,500.00")
+    }), { status: "CREATED", value: "$2,500.00" })
+  })
+
+  test("treats empty contact and custom fields as successful no-ops", async () => {
+    const prismaTx = {
+      contact: {
+        findFirst: async () => ({
+          firstName: "Taylor",
+          middleName: null,
+          lastName: "Reed",
+          weight: "   ",
+          customFieldValues: [{
+            value: null,
+            field: {
+              key: "premium",
+              fieldType: "CURRENCY",
+              isActive: true,
+              isEncrypted: false,
+              isSensitive: false,
+            },
+          }],
+        }),
+      },
+    }
+
+    assert.deepEqual(await resolveAutomationNumberFormatter(prismaTx, {
+      tenantId: "tenant-1",
+      contactId: "contact-1",
+      config: {
+        mode: "FORMAT_NUMBER",
+        source: { type: "CONTACT_FIELD", key: "weight" },
+        decimalMark: "PERIOD",
+        groupingStyle: "COMMA_PERIOD",
+        outputKey: "weight",
+      },
+      automationValues: {},
+    }), { status: "EMPTY_SOURCE" })
+
+    assert.deepEqual(await resolveAutomationNumberFormatter(prismaTx, {
+      tenantId: "tenant-1",
+      contactId: "contact-1",
+      config: {
+        mode: "FORMAT_CURRENCY",
+        source: { type: "CUSTOM_FIELD", key: "premium" },
+        decimalMark: "PERIOD",
+        currencyCode: "USD",
+        outputKey: "premium",
+      },
+      automationValues: {},
+    }), { status: "EMPTY_SOURCE" })
   })
 })

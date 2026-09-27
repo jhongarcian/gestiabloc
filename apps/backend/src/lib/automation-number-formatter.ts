@@ -114,6 +114,9 @@ export const AutomationNumberFormatterConfigSchema = z.discriminatedUnion("mode"
 export type AutomationNumberSource = z.infer<typeof AutomationNumberSourceSchema>
 export type AutomationNumberFormatterConfig = z.infer<typeof AutomationNumberFormatterConfigSchema>
 export type AutomationNumberFormatterMode = AutomationNumberFormatterConfig["mode"]
+export type AutomationNumberFormatterResult =
+  | { status: "CREATED"; value: number | string }
+  | { status: "EMPTY_SOURCE" }
 
 export function numberFormatterCustomFieldKeys(config: AutomationNumberFormatterConfig) {
   return config.mode !== "RANDOM_NUMBER" && config.source.type === "CUSTOM_FIELD"
@@ -170,7 +173,7 @@ async function resolveNumberSource(
     if (isEmptySourceValue(value)) {
       throw new Error(`The automation value “${params.source.key}” is empty.`)
     }
-    return value
+    return { status: "VALUE" as const, value }
   }
 
   const resolved = await resolveSafeContactTemplateFieldValue(prismaTx, {
@@ -183,9 +186,9 @@ async function resolveNumberSource(
     throw new Error("The configured number formatter field is unavailable or incompatible.")
   }
   if (isEmptySourceValue(resolved.value)) {
-    throw new Error("The configured number formatter field is empty.")
+    return { status: "EMPTY_SOURCE" as const }
   }
-  return resolved.value
+  return { status: "VALUE" as const, value: resolved.value }
 }
 
 export function parseAutomationNumber(value: unknown, decimalMark: "PERIOD" | "COMMA") {
@@ -234,26 +237,36 @@ export async function resolveAutomationNumberFormatter(
     config: AutomationNumberFormatterConfig
     automationValues: Record<string, unknown>
   },
-) {
+): Promise<AutomationNumberFormatterResult> {
   const { config } = params
-  if (config.mode === "RANDOM_NUMBER") return randomInt(config.min, config.max + 1)
+  if (config.mode === "RANDOM_NUMBER") {
+    return { status: "CREATED", value: randomInt(config.min, config.max + 1) }
+  }
 
   const source = await resolveNumberSource(prismaTx, {
     ...params,
     source: config.source,
     mode: config.mode,
   })
+  if (source.status === "EMPTY_SOURCE") return source
+
   if (config.mode === "FORMAT_PHONE_NUMBER") {
-    return formatAutomationPhone(source, config.phoneFormat, config.countryCode)
+    return {
+      status: "CREATED",
+      value: formatAutomationPhone(source.value, config.phoneFormat, config.countryCode),
+    }
   }
 
-  const number = parseAutomationNumber(source, config.decimalMark)
-  if (config.mode === "TEXT_TO_NUMBER") return number
+  const number = parseAutomationNumber(source.value, config.decimalMark)
+  if (config.mode === "TEXT_TO_NUMBER") return { status: "CREATED", value: number }
   if (config.mode === "FORMAT_CURRENCY") {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: config.currencyCode,
-    }).format(number)
+    return {
+      status: "CREATED",
+      value: new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: config.currencyCode,
+      }).format(number),
+    }
   }
   const locale = config.groupingStyle === "PERIOD_COMMA"
     ? "de-DE"
@@ -262,5 +275,8 @@ export async function resolveAutomationNumberFormatter(
       : config.groupingStyle === "SPACE_PERIOD"
         ? "en-ZA"
         : "en-US"
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: 20 }).format(number)
+  return {
+    status: "CREATED",
+    value: new Intl.NumberFormat(locale, { maximumFractionDigits: 20 }).format(number),
+  }
 }

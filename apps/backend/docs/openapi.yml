@@ -6517,7 +6517,10 @@ components:
               pattern: "^[a-z][a-z0-9_]{0,63}$"
               description: Compatible run-scoped value produced by an earlier formatter or Math operation.
     AutomationNumberFormatterConfig:
-      description: Creates a named, run-scoped numeric or formatted text value for later actions.
+      description: >-
+        Creates a named, run-scoped numeric or formatted text value for later actions.
+        An empty contact or custom-field source completes as a successful no-op and does
+        not create the configured automation value.
       oneOf:
         - type: object
           additionalProperties: false

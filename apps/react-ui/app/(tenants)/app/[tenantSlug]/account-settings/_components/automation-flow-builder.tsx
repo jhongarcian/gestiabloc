@@ -218,28 +218,107 @@ type AutomationActionGroupId = "INTERNAL" | "CONTACT" | "COMMUNICATION"
 const ACTION_GROUPS: ReadonlyArray<{
   id: AutomationActionGroupId
   label: string
+  description: string
 }> = [
-  { id: "INTERNAL", label: "Internal actions" },
-  { id: "CONTACT", label: "Contact actions" },
-  { id: "COMMUNICATION", label: "Communication actions" },
+  {
+    id: "INTERNAL",
+    label: "Internal actions",
+    description: "Control timing, create work, and prepare values for later steps.",
+  },
+  {
+    id: "CONTACT",
+    label: "Contact actions",
+    description: "Update the contact record or remove it from the account.",
+  },
+  {
+    id: "COMMUNICATION",
+    label: "Communication actions",
+    description: "Send information to the contact through connected channels.",
+  },
 ]
 
 const ACTION_DEFINITIONS = {
-  WAIT: { label: "Wait", group: "INTERNAL", order: 0 },
-  FORMAT_DATE_TIME: { label: "Date/Time formatter", group: "INTERNAL", order: 1 },
-  FORMAT_NUMBER: { label: "Number formatter", group: "INTERNAL", order: 2 },
-  MATH_OPERATION: { label: "Math operation", group: "INTERNAL", order: 3 },
-  CREATE_TASK: { label: "Create task", group: "INTERNAL", order: 4 },
-  ADD_CONTACT_NOTE: { label: "Add contact note", group: "INTERNAL", order: 5 },
-  UPDATE_CONTACT_CUSTOM_FIELDS: { label: "Update contact fields", group: "CONTACT", order: 0 },
-  SET_CONTACT_STATUS: { label: "Set contact status", group: "CONTACT", order: 1 },
-  SET_CONTACT_ASSIGNEE: { label: "Assign contact", group: "CONTACT", order: 2 },
-  CLEAR_CONTACT_ASSIGNEE: { label: "Clear contact assignee", group: "CONTACT", order: 3 },
-  ADD_CONTACT_TAG: { label: "Add contact tag", group: "CONTACT", order: 4 },
-  REMOVE_CONTACT_TAG: { label: "Remove contact tag", group: "CONTACT", order: 5 },
-  DELETE_CONTACT: { label: "Delete contact", group: "CONTACT", order: 6 },
+  WAIT: {
+    label: "Wait",
+    description: "Pause the contact before the next action.",
+    group: "INTERNAL",
+    order: 0,
+  },
+  FORMAT_DATE_TIME: {
+    label: "Date/Time formatter",
+    description: "Format or compare dates for later actions.",
+    group: "INTERNAL",
+    order: 1,
+  },
+  FORMAT_NUMBER: {
+    label: "Number formatter",
+    description: "Convert or format a number for later actions.",
+    group: "INTERNAL",
+    order: 2,
+  },
+  MATH_OPERATION: {
+    label: "Math operation",
+    description: "Calculate a number or adjust a date.",
+    group: "INTERNAL",
+    order: 3,
+  },
+  CREATE_TASK: {
+    label: "Create task",
+    description: "Create a task linked to this contact.",
+    group: "INTERNAL",
+    order: 4,
+  },
+  ADD_CONTACT_NOTE: {
+    label: "Add contact note",
+    description: "Add a note using live contact information.",
+    group: "INTERNAL",
+    order: 5,
+  },
+  UPDATE_CONTACT_CUSTOM_FIELDS: {
+    label: "Update contact fields",
+    description: "Set or clear multiple contact and custom fields.",
+    group: "CONTACT",
+    order: 0,
+  },
+  SET_CONTACT_STATUS: {
+    label: "Set contact status",
+    description: "Change the contact's current status.",
+    group: "CONTACT",
+    order: 1,
+  },
+  SET_CONTACT_ASSIGNEE: {
+    label: "Assign contact",
+    description: "Assign the contact to a teammate.",
+    group: "CONTACT",
+    order: 2,
+  },
+  CLEAR_CONTACT_ASSIGNEE: {
+    label: "Clear contact assignee",
+    description: "Remove the contact's current assignee.",
+    group: "CONTACT",
+    order: 3,
+  },
+  ADD_CONTACT_TAG: {
+    label: "Add contact tag",
+    description: "Add an existing tag to the contact.",
+    group: "CONTACT",
+    order: 4,
+  },
+  REMOVE_CONTACT_TAG: {
+    label: "Remove contact tag",
+    description: "Remove an existing tag from the contact.",
+    group: "CONTACT",
+    order: 5,
+  },
+  DELETE_CONTACT: {
+    label: "Delete contact",
+    description: "Permanently delete the contact as the final action.",
+    group: "CONTACT",
+    order: 6,
+  },
 } satisfies Record<AutomationAction["type"], {
   label: string
+  description: string
   group: AutomationActionGroupId
   order: number
 }>
@@ -1419,7 +1498,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
           </div>
 
           {selected ? (
-            <aside className="flex h-full max-h-full min-h-0 w-full max-w-md shrink-0 flex-col overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm">
+            <aside className="flex h-full max-h-full min-h-0 w-full max-w-md shrink-0 flex-col overflow-hidden rounded-[20px] border border-slate-200 bg-white/95 shadow-sm backdrop-blur">
               <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-3 py-2.5">
                 <div>
                   <p className="text-xs font-medium text-slate-500">Configuration</p>
@@ -1435,7 +1514,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                   <X data-icon="inline-start" />
                 </Button>
               </div>
-              <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain p-3 [scrollbar-gutter:stable]">
+              <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain p-4 [scrollbar-gutter:stable]">
                 {selected.kind === "action" && editingAction ? (
                   <ActionEditor
                     action={editingAction}
@@ -1972,9 +2051,12 @@ function NewActionEditor({
     return (
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-2.5">
-          <div className="min-w-0">
+          <div className="flex min-w-0 flex-col gap-0.5">
             <p className="text-xs text-slate-500">Action</p>
             <p className="truncate text-sm font-semibold text-slate-950">{ACTION_LABELS[action.type]}</p>
+            <p className="text-xs leading-4 text-slate-500">
+              {ACTION_DEFINITIONS[action.type].description}
+            </p>
           </div>
           <Button
             type="button"
@@ -2001,21 +2083,31 @@ function NewActionEditor({
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-sm font-semibold text-slate-950">Choose an action</p>
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-semibold text-slate-950">Choose an action</p>
+        <p className="text-xs leading-4 text-slate-500">Select what you want to add between workflow steps.</p>
+      </div>
+      <div className="flex flex-col gap-3">
         {ACTION_GROUPS.map((group) => {
           const actions = actionsForGroup(group.id)
           if (actions.length === 0) return null
           return (
-            <section key={group.id} className="space-y-2">
-              <p className="px-1 text-xs font-semibold text-slate-500">{group.label}</p>
+            <section
+              key={group.id}
+              className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3"
+            >
+              <div className="flex flex-col gap-0.5">
+                <p className="text-xs font-semibold text-slate-700">{group.label}</p>
+                <p className="text-xs leading-4 text-slate-500">{group.description}</p>
+              </div>
+              <Separator />
               <div className="flex flex-col gap-2">
                 {actions.map(([value, definition]) => (
                   <Button
                     key={value}
                     type="button"
                     variant="outline"
-                    className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full justify-start")}
+                    className="h-auto w-full cursor-pointer flex-col items-start gap-0.5 whitespace-normal rounded-lg border-slate-200 bg-white px-3 py-2.5 text-left shadow-none transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-100"
                     disabled={
                       (value === "UPDATE_CONTACT_CUSTOM_FIELDS" &&
                         catalog.contactUpdateFields.length === 0 &&
@@ -2024,7 +2116,10 @@ function NewActionEditor({
                     }
                     onClick={() => onChange(actionDefaults(value, catalog))}
                   >
-                    {definition.label}
+                    <span className="text-sm font-medium text-slate-900">{definition.label}</span>
+                    <span className="text-xs font-normal leading-4 text-slate-500">
+                      {definition.description}
+                    </span>
                   </Button>
                 ))}
               </div>

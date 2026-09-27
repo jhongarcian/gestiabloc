@@ -1617,6 +1617,90 @@ describe("executeOpportunityAutomations", () => {
     )
   })
 
+  test("executes an empty-field number formatter as a no-op", async () => {
+    let runUpdate: Record<string, unknown> | null = null
+    let nodeLogs: Array<Record<string, unknown>> = []
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Format optional weight",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [{
+            nodeKey: "00000000-0000-4000-8000-000000000001",
+            type: "FORMAT_NUMBER",
+            numberFormatterConfig: {
+              mode: "FORMAT_NUMBER",
+              source: { type: "CONTACT_FIELD", key: "weight" },
+              decimalMark: "PERIOD",
+              groupingStyle: "COMMA_PERIOD",
+              outputKey: "formatted_weight",
+            },
+          }],
+        }],
+      },
+      contact: {
+        findFirst: async (args: { select?: Record<string, unknown> }) => args.select?.email
+          ? {
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              email: "taylor@example.com",
+              weight: "",
+              customFieldValues: [],
+            }
+          : {
+              id: "contact-1",
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              statusConfigId: "active",
+              assignedToUserId: null,
+              tags: [],
+              customFieldValues: [],
+            },
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async ({ data }: { data: Record<string, unknown> }) => { runUpdate = data },
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { nodeLogs = data },
+      },
+    }
+
+    await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.deepEqual(
+      (runUpdate as Record<string, unknown> | null)?.variables,
+      {},
+    )
+    assert.equal(nodeLogs[1]?.status, "EXECUTED")
+    assert.equal(
+      nodeLogs[1]?.details,
+      "Source field was empty. No automation value was created.",
+    )
+  })
+
   test("executes chained number and date Math operations", async () => {
     let createdNote: Record<string, unknown> | null = null
     let runUpdate: Record<string, unknown> | null = null
