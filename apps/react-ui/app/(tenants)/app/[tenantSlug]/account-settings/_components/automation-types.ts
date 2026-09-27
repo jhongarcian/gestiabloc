@@ -355,3 +355,19 @@ export type AutomationContact = {
   executionCount: number
   lastStatus: "SUCCEEDED" | "FAILED" | "EXITED" | null
 }
+
+export type AutomationWaitNodeCount = {
+  nodeKey: string
+  count: number
+}
+
+export type AutomationWaitingRun = {
+  runId: string
+  contact: {
+    id: string | null
+    name: string
+    phoneNumber: string | null
+  }
+  enteredAt: string
+  nextActionAt: string | null
+}

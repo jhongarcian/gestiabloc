@@ -15,10 +15,16 @@ import {
   CONTACT_TEMPLATE_PHONE_FORMATS,
   CONTACT_TEMPLATE_REGULAR_FIELDS,
 } from "../lib/contact-templates.js"
+import {
+  AutomationWaitingRunError,
+  exitAutomationWaitingRun,
+  getAutomationWaitingRuns,
+  getAutomationWaitNodeCounts,
+} from "../lib/automation-waiting-runs.js"
 import { prisma } from "../lib/prisma.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { ensureDefaultTaskStatuses } from "../lib/tenant-defaults.js"
-import { requireAuth } from "../middleware/requireAuth.js"
+import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 import { requireTenantAdmin } from "../middleware/requireTenantAdmin.js"
 
 const router = Router()
@@ -27,6 +33,15 @@ const prismaWithAutomations = prisma as any
 const TenantPathSchema = z.object({ tenantId: z.string().trim().min(1) })
 const AutomationPathSchema = TenantPathSchema.extend({
   automationId: z.string().trim().min(1),
+})
+const AutomationWaitNodePathSchema = AutomationPathSchema.extend({
+  nodeKey: z.string().uuid(),
+})
+const AutomationWaitingRunPathSchema = AutomationWaitNodePathSchema.extend({
+  runId: z.string().uuid(),
+})
+const AutomationWaitingRunsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
 })
 const ExecutionQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -136,6 +151,12 @@ function serializeAutomation(record: any) {
 
 function handleConfigurationError(error: unknown, res: any) {
   if (!(error instanceof AutomationConfigurationError)) return false
+  res.status(error.status).json({ error: error.code, message: error.message })
+  return true
+}
+
+function handleWaitingRunError(error: unknown, res: any) {
+  if (!(error instanceof AutomationWaitingRunError)) return false
   res.status(error.status).json({ error: error.code, message: error.message })
   return true
 }
@@ -332,6 +353,57 @@ router.get("/:tenantId/automations/:automationId/execution-logs", ...readMiddlew
       },
     })
   } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/automations/:automationId/wait-nodes", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId, automationId } = AutomationPathSchema.parse(req.params)
+    const items = await getAutomationWaitNodeCounts(prismaWithAutomations, {
+      tenantId,
+      automationId,
+    })
+    return res.json({ ok: true, items })
+  } catch (error) {
+    if (handleWaitingRunError(error, res)) return
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/automations/:automationId/wait-nodes/:nodeKey/waiting-runs", ...readMiddlewares, async (req, res, next) => {
+  try {
+    const { tenantId, automationId, nodeKey } = AutomationWaitNodePathSchema.parse(req.params)
+    const { page } = AutomationWaitingRunsQuerySchema.parse(req.query)
+    const result = await getAutomationWaitingRuns(prismaWithAutomations, {
+      tenantId,
+      automationId,
+      nodeKey,
+      page,
+    })
+    return res.json({ ok: true, ...result })
+  } catch (error) {
+    if (handleWaitingRunError(error, res)) return
+    return next(error)
+  }
+})
+
+router.delete("/:tenantId/automations/:automationId/wait-nodes/:nodeKey/waiting-runs/:runId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const { tenantId, automationId, nodeKey, runId } = AutomationWaitingRunPathSchema.parse(req.params)
+    const user = (req as AuthedRequest).user
+    const result = await exitAutomationWaitingRun(prismaWithAutomations, {
+      tenantId,
+      automationId,
+      nodeKey,
+      runId,
+      actorUserId: user.id,
+      actorDisplayName: user.name?.trim() || user.email,
+    })
+    return res.json({ ok: true, ...result })
+  } catch (error) {
+    if (handleWaitingRunError(error, res)) return
     return next(error)
   }
 })

@@ -1564,6 +1564,7 @@ model AutomationRun {
   @@unique([tenantId, id])
   @@unique([tenantId, attemptId])
   @@index([tenantId, automationId, createdAt])
+  @@index([tenantId, automationId, status, waitingNodeKey, resumeAt], map: "AutomationRun_wait_monitoring_idx")
   @@index([tenantId, contactId, createdAt])
   @@index([status, resumeAt, leaseExpiresAt])
 }

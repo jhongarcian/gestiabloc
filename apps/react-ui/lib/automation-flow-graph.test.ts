@@ -86,6 +86,7 @@ describe("buildAutomationFlowGraph", () => {
   })
 
   test("summarizes wait actions without adding extra graph nodes", () => {
+    const openWaitingRuns = () => undefined
     const graph = buildAutomationFlowGraph(
       {
         triggerType: "OPPORTUNITY_CREATED",
@@ -101,13 +102,47 @@ describe("buildAutomationFlowGraph", () => {
       null,
       labels,
       "America/Chicago",
+      {
+        "00000000-0000-4000-8000-000000000001": {
+          count: 12,
+          state: "ready",
+          onClick: openWaitingRuns,
+        },
+      },
     )
 
     const waitNode = graph.nodes.find((node) => node.id.includes("00000000"))
     assert.equal(waitNode?.data.label, "Wait")
     assert.equal(waitNode?.data.subtitle, "Wait 2 hours")
+    assert.equal(waitNode?.data.waitBadge?.count, 12)
+    assert.equal(waitNode?.data.waitBadge?.state, "ready")
+    assert.equal(waitNode?.data.waitBadge?.onClick, openWaitingRuns)
     assert.equal(graph.nodes.filter((node) => node.data.kind === "action").length, 1)
     assert.equal(graph.nodes.at(-1)?.data.subtitle, "All actions completed")
+  })
+
+  test("does not add monitoring metadata to non-Wait actions", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "ADD_CONTACT_TAG",
+          tagId: "tag-1",
+        }],
+      },
+      null,
+      labels,
+      "America/Chicago",
+      {
+        "00000000-0000-4000-8000-000000000001": { count: 4, state: "ready" },
+      },
+    )
+
+    assert.equal(graph.nodes.find((node) => node.data.kind === "action")?.data.waitBadge, undefined)
   })
 
   test("summarizes one multi-field update action as one graph node", () => {

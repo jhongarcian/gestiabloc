@@ -5783,6 +5783,86 @@ paths:
           description: Node-level execution logs and pagination metadata
         "404":
           description: Automation not found in this tenant
+  /api/account-settings/{tenantId}/automations/{automationId}/wait-nodes:
+    get:
+      tags: [Automations]
+      summary: List saved Wait nodes and their active waiting-run counts
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AutomationIdPathParam"
+      responses:
+        "200":
+          description: Zero-inclusive active waiting-run counts for saved Wait nodes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationWaitNodeCountsResponse"
+        "404":
+          description: Automation not found in this tenant
+  /api/account-settings/{tenantId}/automations/{automationId}/wait-nodes/{nodeKey}/waiting-runs:
+    get:
+      tags: [Automations]
+      summary: List active runs waiting at one saved Wait node
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AutomationIdPathParam"
+        - in: path
+          name: nodeKey
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+      responses:
+        "200":
+          description: Ten waiting runs per page, ordered by the next action time
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationWaitingRunsResponse"
+        "404":
+          description: Automation or saved Wait node not found
+  /api/account-settings/{tenantId}/automations/{automationId}/wait-nodes/{nodeKey}/waiting-runs/{runId}:
+    delete:
+      tags: [Automations]
+      summary: Exit one waiting automation run without deleting its contact
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AutomationIdPathParam"
+        - in: path
+          name: nodeKey
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The selected run was exited and its remaining actions were logged as skipped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationWaitingRunExitResponse"
+        "404":
+          description: Automation, saved Wait node, or waiting run not found
+        "409":
+          description: The run is no longer waiting because it was already claimed or resumed
   /api/onboarding/{tenantId}:
     get:
       tags: [Onboarding]
@@ -6086,6 +6166,91 @@ components:
               type: integer
             memberCount:
               type: integer
+    AutomationWaitNodeCountsResponse:
+      type: object
+      required: [ok, items]
+      properties:
+        ok:
+          type: boolean
+        items:
+          type: array
+          items:
+            type: object
+            required: [nodeKey, count]
+            properties:
+              nodeKey:
+                type: string
+                format: uuid
+              count:
+                type: integer
+                minimum: 0
+    AutomationWaitingRun:
+      type: object
+      required: [runId, contact, enteredAt, nextActionAt]
+      properties:
+        runId:
+          type: string
+          format: uuid
+        contact:
+          type: object
+          required: [id, name, phoneNumber]
+          properties:
+            id:
+              type: string
+              nullable: true
+            name:
+              type: string
+            phoneNumber:
+              type: string
+              nullable: true
+        enteredAt:
+          type: string
+          format: date-time
+        nextActionAt:
+          type: string
+          format: date-time
+          nullable: true
+    AutomationWaitingRunsResponse:
+      type: object
+      required: [ok, items, pagination]
+      properties:
+        ok:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AutomationWaitingRun"
+        pagination:
+          type: object
+          required: [page, pageSize, total, totalPages]
+          properties:
+            page:
+              type: integer
+              minimum: 1
+            pageSize:
+              type: integer
+              enum: [10]
+            total:
+              type: integer
+              minimum: 0
+            totalPages:
+              type: integer
+              minimum: 1
+    AutomationWaitingRunExitResponse:
+      type: object
+      required: [ok, runId, status, exitedAt]
+      properties:
+        ok:
+          type: boolean
+        runId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [EXITED]
+        exitedAt:
+          type: string
+          format: date-time
     AutomationMutationRequest:
       type: object
       required: [name, isEnabled, trigger, conditions, actions]

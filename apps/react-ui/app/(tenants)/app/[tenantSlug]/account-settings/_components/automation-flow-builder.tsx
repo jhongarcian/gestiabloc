@@ -2,7 +2,7 @@
 
 import "@xyflow/react/dist/style.css"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -67,6 +67,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
+import { parseAutomationWaitIntegerDraft } from "@/lib/automation-wait-input"
 import { validateContactTemplate } from "@/lib/contact-template"
 import {
   dateTimeDraftToUtcIso,
@@ -78,6 +79,7 @@ import { cn } from "@/lib/utils"
 import { AutomationContactsTab } from "./automation-contacts-tab"
 import { AutomationExecutionLogsTab } from "./automation-execution-logs-tab"
 import { AutomationFieldPicker } from "./automation-field-picker"
+import { AutomationWaitingRunsSheet } from "./automation-waiting-runs-sheet"
 import type {
   AutomationAction,
   AutomationCatalog,
@@ -96,6 +98,7 @@ import type {
   AutomationTriggerType,
   AutomationValueDefinition,
   AutomationWaitConfig,
+  AutomationWaitNodeCount,
   AutomationWaitUnit,
 } from "./automation-types"
 import {
@@ -452,9 +455,56 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
         ? "border-border bg-muted text-foreground"
         : "border-border bg-card text-card-foreground"
 
+  const waitBadgeLabel = data.waitBadge
+    ? data.waitBadge.state === "loading"
+      ? "Loading contacts waiting at this action"
+      : data.waitBadge.state === "error"
+        ? "Waiting contacts could not be loaded. Open the list to retry."
+        : data.waitBadge.state === "unsaved"
+          ? "Save the automation before viewing waiting contacts"
+          : `View ${data.waitBadge.count} waiting ${data.waitBadge.count === 1 ? "run" : "runs"}`
+    : null
+
   return (
-    <div className={cn("w-64 rounded-2xl border-2 px-4 py-3 shadow-sm transition-colors", tone)}>
+    <div className={cn("relative w-64 rounded-2xl border-2 px-4 py-3 shadow-sm transition-colors", tone)}>
       <Handle type="target" position={Position.Top} className="opacity-0" />
+      {data.waitBadge ? (
+        <Badge
+          asChild
+          variant="outline"
+          className={cn(
+            "nodrag nopan absolute -right-2.5 -top-3 z-10 inline-flex min-h-7 min-w-7 items-center justify-center rounded-full border px-2 text-[11px] font-bold shadow-sm transition",
+            data.waitBadge.state === "ready" && data.waitBadge.count > 0
+              ? "cursor-pointer border-blue-800 bg-blue-950 text-white hover:bg-blue-900"
+              : data.waitBadge.state === "error"
+                ? "cursor-pointer border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                : "border-slate-200 bg-white text-slate-600",
+            data.waitBadge.state === "loading" || data.waitBadge.state === "unsaved"
+              ? "cursor-not-allowed"
+              : null,
+          )}
+        >
+          <button
+            type="button"
+            aria-label={waitBadgeLabel ?? undefined}
+            title={waitBadgeLabel ?? undefined}
+            disabled={data.waitBadge.state === "loading" || data.waitBadge.state === "unsaved"}
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              data.waitBadge?.onClick?.()
+            }}
+          >
+            {data.waitBadge.state === "loading"
+              ? "…"
+              : data.waitBadge.state === "error"
+                ? "!"
+                : data.waitBadge.state === "unsaved"
+                  ? "0 · Save first"
+                  : data.waitBadge.count}
+          </button>
+        </Badge>
+      ) : null}
       <div className="flex items-center gap-3">
         <div className={cn(
           "flex size-9 shrink-0 items-center justify-center rounded-xl shadow-sm",
@@ -953,9 +1003,9 @@ function isActionReady(
   if (action.type === "WAIT") {
     const config = action.waitConfig
     if (!config) return false
-    if (config.mode === "DURATION") return Number.isInteger(config.amount) && config.amount > 0
+    if (config.mode === "DURATION") return Number.isSafeInteger(config.amount) && config.amount > 0
     if (Number.isNaN(new Date(config.dateTime).getTime())) return false
-    if (config.timing !== "ON" && (!Number.isInteger(config.offsetAmount) || (config.offsetAmount ?? 0) <= 0 || !config.offsetUnit)) return false
+    if (config.timing !== "ON" && (!Number.isSafeInteger(config.offsetAmount) || (config.offsetAmount ?? 0) <= 0 || !config.offsetUnit)) return false
     if (config.pastBehavior === "GO_TO_STEP") {
       return Boolean(config.targetNodeKey && targetActions.some((candidate) => candidate.nodeKey === config.targetNodeKey))
     }
@@ -1108,6 +1158,11 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
   const [saving, setSaving] = useState(false)
   const [statusSaving, setStatusSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [waitNodeCounts, setWaitNodeCounts] = useState<Record<string, number>>({})
+  const [waitNodeCountState, setWaitNodeCountState] = useState<"loading" | "ready" | "error">(
+    automationId ? "loading" : "ready",
+  )
+  const [waitingNodeKey, setWaitingNodeKey] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -1152,9 +1207,63 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     }
   }, [automationId, tenantId])
 
+  const loadWaitNodeCounts = useCallback(async () => {
+    if (!automationId) {
+      setWaitNodeCounts({})
+      setWaitNodeCountState("ready")
+      return
+    }
+    setWaitNodeCountState("loading")
+    try {
+      const { data } = await api.get<{ ok: boolean; items: AutomationWaitNodeCount[] }>(
+        `/api/account-settings/${tenantId}/automations/${automationId}/wait-nodes`,
+      )
+      setWaitNodeCounts(Object.fromEntries(data.items.map((item) => [item.nodeKey, item.count])))
+      setWaitNodeCountState("ready")
+    } catch {
+      setWaitNodeCountState("error")
+    }
+  }, [automationId, tenantId])
+
+  useEffect(() => {
+    void loadWaitNodeCounts()
+  }, [loadWaitNodeCounts])
+
+  const updateWaitNodeCount = useCallback((nodeKey: string, count: number) => {
+    setWaitNodeCounts((current) => ({ ...current, [nodeKey]: count }))
+  }, [])
+
+  const savedWaitNodeKeys = useMemo(
+    () => new Set(
+      lastSavedDraft.actions
+        .filter((action) => action.type === "WAIT" && action.nodeKey)
+        .map((action) => action.nodeKey!),
+    ),
+    [lastSavedDraft.actions],
+  )
+
+  const waitNodeBadges = useMemo(() => Object.fromEntries(
+    draft.actions
+      .filter((action) => action.type === "WAIT" && action.nodeKey)
+      .map((action) => {
+        const nodeKey = action.nodeKey!
+        const isSaved = Boolean(automationId) && savedWaitNodeKeys.has(nodeKey)
+        return [
+          nodeKey,
+          isSaved
+            ? {
+                count: waitNodeCounts[nodeKey] ?? 0,
+                state: waitNodeCountState,
+                onClick: () => setWaitingNodeKey(nodeKey),
+              }
+            : { count: 0, state: "unsaved" as const },
+        ]
+      }),
+  ), [automationId, draft.actions, savedWaitNodeKeys, waitNodeCountState, waitNodeCounts])
+
   const graph = useMemo(
-    () => buildAutomationFlowGraph(draft, catalog, ACTION_LABELS, timezone),
-    [catalog, draft, timezone],
+    () => buildAutomationFlowGraph(draft, catalog, ACTION_LABELS, timezone, waitNodeBadges),
+    [catalog, draft, timezone, waitNodeBadges],
   )
   const triggerPipeline = catalog?.pipelines.find(
     (item) => item.id === triggerEditorDraft?.pipelineId,
@@ -1291,6 +1400,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
           ? cloneDraft(persistedDraft)
           : { ...current, isEnabled: savedAutomation.isEnabled },
       )
+      if (automationId) void loadWaitNodeCounts()
       toast.success(automationId ? "Automation saved." : "Automation created as a draft.")
     } catch (error) {
       toast.error(apiError(error))
@@ -1645,6 +1755,22 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
           tenantSlug={tenantSlug}
           automationId={automationId}
           timezone={timezone}
+        />
+      ) : null}
+
+      {automationId && waitingNodeKey ? (
+        <AutomationWaitingRunsSheet
+          key={waitingNodeKey}
+          open
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) setWaitingNodeKey(null)
+          }}
+          tenantId={tenantId}
+          automationId={automationId}
+          nodeKey={waitingNodeKey}
+          timezone={timezone}
+          onCountChange={updateWaitNodeCount}
+          onRefreshCounts={loadWaitNodeCounts}
         />
       ) : null}
     </div>
@@ -3343,22 +3469,17 @@ function WaitActionEditor({
 
       {config.mode === "DURATION" ? (
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-2">
-          <Field>
-            <FieldLabel htmlFor="wait-amount">Amount</FieldLabel>
-            <Input
+          <Field data-invalid={!Number.isSafeInteger(config.amount) || config.amount <= 0}>
+            <WaitIntegerInput
               id="wait-amount"
-              type="number"
-              min={1}
-              step={1}
               value={config.amount}
-              onChange={(event) => onChange({ ...config, amount: Number(event.target.value) })}
-              className="h-8 rounded-full"
+              ariaLabel="Wait amount"
+              onChange={(amount) => onChange({ ...config, amount })}
             />
           </Field>
           <Field>
-            <FieldLabel htmlFor="wait-unit">Unit</FieldLabel>
             <Select value={config.unit} onValueChange={(unit) => onChange({ ...config, unit: unit as AutomationWaitUnit })}>
-              <SelectTrigger id="wait-unit" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+              <SelectTrigger id="wait-unit" aria-label="Wait unit" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
               <SelectContent><SelectGroup>{Object.entries(WAIT_UNIT_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectGroup></SelectContent>
             </Select>
           </Field>
@@ -3389,22 +3510,17 @@ function WaitActionEditor({
 
           {config.timing !== "ON" ? (
             <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-2">
-              <Field>
-                <FieldLabel htmlFor="wait-offset-amount">Offset</FieldLabel>
-                <Input
+              <Field data-invalid={!Number.isSafeInteger(config.offsetAmount) || (config.offsetAmount ?? 0) <= 0}>
+                <WaitIntegerInput
                   id="wait-offset-amount"
-                  type="number"
-                  min={1}
-                  step={1}
                   value={config.offsetAmount ?? 1}
-                  onChange={(event) => onChange({ ...config, offsetAmount: Number(event.target.value) })}
-                  className="h-8 rounded-full"
+                  ariaLabel="Wait offset amount"
+                  onChange={(offsetAmount) => onChange({ ...config, offsetAmount })}
                 />
               </Field>
               <Field>
-                <FieldLabel htmlFor="wait-offset-unit">Unit</FieldLabel>
                 <Select value={config.offsetUnit ?? "HOURS"} onValueChange={(unit) => onChange({ ...config, offsetUnit: unit as AutomationWaitUnit })}>
-                  <SelectTrigger id="wait-offset-unit" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="wait-offset-unit" aria-label="Wait offset unit" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
                   <SelectContent><SelectGroup>{Object.entries(WAIT_UNIT_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectGroup></SelectContent>
                 </Select>
               </Field>
@@ -3447,6 +3563,39 @@ function WaitActionEditor({
         </>
       )}
     </div>
+  )
+}
+
+function WaitIntegerInput({
+  id,
+  value,
+  ariaLabel,
+  onChange,
+}: {
+  id: string
+  value: number
+  ariaLabel: string
+  onChange: (value: number) => void
+}) {
+  const [draftValue, setDraftValue] = useState(Number.isFinite(value) ? String(value) : "")
+  const invalid = !Number.isSafeInteger(value) || value <= 0
+
+  return (
+    <Input
+      id={id}
+      type="text"
+      inputMode="numeric"
+      value={draftValue}
+      aria-label={ariaLabel}
+      aria-invalid={invalid}
+      className="h-8 rounded-full"
+      onChange={(event) => {
+        const parsed = parseAutomationWaitIntegerDraft(event.target.value)
+        if (!parsed) return
+        setDraftValue(parsed.draft)
+        onChange(parsed.value)
+      }}
+    />
   )
 }
 

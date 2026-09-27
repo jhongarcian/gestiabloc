@@ -11,7 +11,14 @@ export type AutomationFlowNodeData = {
   configured?: boolean
   index?: number
   insertionIndex?: number
+  waitBadge?: {
+    count: number
+    state: "loading" | "ready" | "error" | "unsaved"
+    onClick?: () => void
+  }
 }
+
+export type AutomationWaitNodeBadge = NonNullable<AutomationFlowNodeData["waitBadge"]>
 
 export type AutomationFlowDraft = {
   triggerType: AutomationTriggerType | null
@@ -62,6 +69,7 @@ export function buildAutomationFlowGraph(
   catalog: AutomationCatalog | null,
   actionLabels: Record<AutomationAction["type"], string>,
   timezone?: string | null,
+  waitNodeBadges: Record<string, AutomationWaitNodeBadge> = {},
 ) {
   const pipeline = catalog?.pipelines.find((item) => item.id === draft.pipelineId)
   const target = pipeline?.stages.find((item) => item.id === draft.targetStageId)
@@ -160,6 +168,9 @@ export function buildAutomationFlowGraph(
         label: actionLabels[action.type],
         subtitle: actionSubtitle,
         index,
+        ...(action.type === "WAIT" && action.nodeKey && waitNodeBadges[action.nodeKey]
+          ? { waitBadge: waitNodeBadges[action.nodeKey] }
+          : {}),
       },
     })
     edges.push({
