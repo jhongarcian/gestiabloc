@@ -157,6 +157,7 @@ type OpportunitiesWorkspaceProps = {
   tenantTimezone: string | null
   currentUserId: string
   canManageTags: boolean
+  canEditOpportunityValue: boolean
   taskStatusOptions: Array<{
     label: string
     value: string
@@ -455,7 +456,8 @@ function OpportunityCard({
     disabled: overlay,
   })
 
-  const dragInteractionProps = overlay ? {} : { ...attributes, ...listeners }
+  const dragInteractionProps =
+    overlay ? {} : { ...attributes, ...listeners }
 
   const handleCardClick = () => {
     if (!overlay && onOpenDetail) {
@@ -723,6 +725,7 @@ export function OpportunitiesWorkspace({
   tenantTimezone,
   currentUserId,
   canManageTags,
+  canEditOpportunityValue,
   taskStatusOptions,
   taskAssigneeOptions,
   calendarMeta,
@@ -1066,7 +1069,7 @@ export function OpportunitiesWorkspace({
   }
 
   const handleDrawerValueChange = async (opportunityId: string, newValueCents: number) => {
-    if (!boardPipeline) return
+    if (!boardPipeline || !canEditOpportunityValue) return
 
     const updateValueInPipeline = (pipeline: BoardPipelineRecord): BoardPipelineRecord => ({
       ...pipeline,
@@ -1459,7 +1462,9 @@ export function OpportunitiesWorkspace({
           }}
           onStageChange={handleDrawerStageChange}
           onCloseOpportunity={handleDrawerCloseOpportunity}
-          onValueChange={handleDrawerValueChange}
+          onValueChange={
+            canEditOpportunityValue ? handleDrawerValueChange : undefined
+          }
         />
       ) : null}
 

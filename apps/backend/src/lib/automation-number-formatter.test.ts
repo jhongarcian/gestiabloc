@@ -175,6 +175,10 @@ describe("automation number formatter", () => {
           }],
         }),
       },
+      contactCustomField: {
+        findFirst: async ({ where }: { where: { key: string } }) =>
+          where.key === "empty_number" ? { fieldType: "NUMBER" } : null,
+      },
     }
 
     assert.deepEqual(await resolveAutomationNumberFormatter(prismaTx, {
@@ -202,5 +206,34 @@ describe("automation number formatter", () => {
       },
       automationValues: {},
     }), { status: "EMPTY_SOURCE" })
+
+    assert.deepEqual(await resolveAutomationNumberFormatter(prismaTx, {
+      tenantId: "tenant-1",
+      contactId: "contact-1",
+      config: {
+        mode: "FORMAT_NUMBER",
+        source: { type: "CUSTOM_FIELD", key: "empty_number" },
+        decimalMark: "PERIOD",
+        groupingStyle: "COMMA_PERIOD",
+        outputKey: "empty_number",
+      },
+      automationValues: {},
+    }), { status: "EMPTY_SOURCE" })
+
+    await assert.rejects(
+      resolveAutomationNumberFormatter(prismaTx, {
+        tenantId: "tenant-1",
+        contactId: "contact-1",
+        config: {
+          mode: "FORMAT_NUMBER",
+          source: { type: "CUSTOM_FIELD", key: "unavailable_number" },
+          decimalMark: "PERIOD",
+          groupingStyle: "COMMA_PERIOD",
+          outputKey: "unavailable_number",
+        },
+        automationValues: {},
+      }),
+      /unavailable or incompatible/,
+    )
   })
 })

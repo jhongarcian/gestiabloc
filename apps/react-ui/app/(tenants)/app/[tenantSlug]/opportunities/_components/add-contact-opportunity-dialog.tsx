@@ -96,6 +96,9 @@ type ContactOpportunityResponse = {
       sortOrder: number
     }
   }>
+  summary?: {
+    assignedPipelineIds?: string[]
+  }
 }
 
 type CreatedOpportunity = {
@@ -256,10 +259,13 @@ export function AddContactOpportunityDialog({
       try {
         const { data } = await api.get<ContactOpportunityResponse>(
           `/api/opportunities/${tenantId}/contact/${initialContact.id}`,
+          { params: { includePipelineIds: true } },
         )
 
         if (!cancelled) {
-          setDisabledPipelineIds(data.items.map((item) => item.pipelineId))
+          setDisabledPipelineIds(
+            data.summary?.assignedPipelineIds ?? data.items.map((item) => item.pipelineId),
+          )
         }
       } catch {
         if (!cancelled) {

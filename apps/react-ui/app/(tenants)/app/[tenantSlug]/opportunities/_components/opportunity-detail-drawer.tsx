@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -99,8 +100,8 @@ type OpportunityDetailDrawerProps = {
   stages: StageOption[]
   open: boolean
   onOpenChange: (open: boolean) => void
-  onStageChange: (opportunityId: string, targetStageId: string) => Promise<void>
-  onCloseOpportunity: (opportunityId: string, result: "WON" | "LOST") => Promise<void>
+  onStageChange?: (opportunityId: string, targetStageId: string) => Promise<void>
+  onCloseOpportunity?: (opportunityId: string, result: "WON" | "LOST") => Promise<void>
   onValueChange?: (opportunityId: string, newValueCents: number) => Promise<void>
 }
 
@@ -121,7 +122,7 @@ export function OpportunityDetailDrawer({
   const [isSavingValue, setIsSavingValue] = useState(false)
 
   const handleStageChange = async (targetStageId: string) => {
-    if (targetStageId === opportunity.stageId) return
+    if (!onStageChange || targetStageId === opportunity.stageId) return
 
     setIsMovingStage(true)
     try {
@@ -132,6 +133,8 @@ export function OpportunityDetailDrawer({
   }
 
   const handleClose = async (result: "WON" | "LOST") => {
+    if (!onCloseOpportunity) return
+
     setIsClosing(true)
     try {
       await onCloseOpportunity(opportunity.id, result)
@@ -340,35 +343,42 @@ export function OpportunityDetailDrawer({
                   })}
                 </div>
 
-                <Select
-                  value={opportunity.stageId}
-                  onValueChange={(value) => void handleStageChange(value)}
-                  disabled={isMovingStage}
-                >
-                  <SelectTrigger className="h-9 w-full rounded-lg border-slate-200 text-sm">
-                    <SelectValue>
-                      <div className="flex items-center gap-2">
-                        {isMovingStage && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
-                        <span>{currentStageName}</span>
-                      </div>
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent
-                    position="popper"
-                    side="bottom"
-                    align="start"
-                    sideOffset={4}
-                    className="rounded-lg border-slate-200"
+                {onStageChange ? (
+                  <Select
+                    value={opportunity.stageId}
+                    onValueChange={(value) => void handleStageChange(value)}
+                    disabled={isMovingStage}
                   >
-                    {stages.map((stage) => (
-                      <SelectItem key={stage.id} value={stage.id}>
-                        {stage.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                    <SelectTrigger className="h-9 w-full rounded-lg border-slate-200 text-sm">
+                      <SelectValue>
+                        <div className="flex items-center gap-2">
+                          {isMovingStage ? (
+                            <Loader2 className="h-3 w-3 animate-spin text-slate-400" />
+                          ) : null}
+                          <span>{currentStageName}</span>
+                        </div>
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent
+                      position="popper"
+                      side="bottom"
+                      align="start"
+                      sideOffset={4}
+                      className="rounded-lg border-slate-200"
+                    >
+                      <SelectGroup>
+                        {stages.map((stage) => (
+                          <SelectItem key={stage.id} value={stage.id}>
+                            {stage.name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                ) : null}
 
-                <div className="flex gap-2">
+                {onCloseOpportunity ? (
+                  <div className="flex gap-2">
                   <button
                     type="button"
                     disabled={isClosing}
@@ -401,7 +411,8 @@ export function OpportunityDetailDrawer({
                     )}
                     Lost
                   </button>
-                </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>

@@ -664,7 +664,21 @@ export async function resolveSafeContactTemplateFieldValue(
   }
 
   const field = context.customFields.get(params.key)
-  return field ? { value: field.value, fieldType: field.fieldType } : null
+  if (field) return { value: field.value, fieldType: field.fieldType }
+
+  const emptyField = await prismaTx.contactCustomField.findFirst({
+    where: {
+      tenantId: params.tenantId,
+      key: params.key,
+      isActive: true,
+      isEncrypted: false,
+      isSensitive: false,
+    },
+    select: { fieldType: true },
+  })
+  return emptyField
+    ? { value: null, fieldType: emptyField.fieldType as ContactTemplateFieldType }
+    : null
 }
 
 export async function renderContactTemplates(

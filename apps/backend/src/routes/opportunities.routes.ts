@@ -1,6 +1,7 @@
 import { type Response, Router } from "express"
 import { z } from "zod"
 
+import { Prisma, type OpportunityResult } from "../generated/prisma/index.js"
 import { prisma } from "../lib/prisma.js"
 import {
   AutomationExecutionError,
@@ -11,8 +12,12 @@ import {
 import { enforceSameOrigin } from "../lib/security.js"
 import { emitStoredTaskNotifications } from "../lib/task-notifications.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
+import { requireTenantSecurityLevel } from "../middleware/requireTenantSecurityLevel.js"
 
 const router = Router()
+const requireOpportunityDeleteAccess = requireTenantSecurityLevel({
+  minimumLevel: "MEDIUM",
+})
 
 const TenantPathSchema = z.object({
   tenantId: z.string().trim().min(1),
@@ -214,6 +219,35 @@ const StageCardsPaginationSchema = z.object({
     }, z.array(CustomFieldFilterSchema).max(20))
     .optional()
     .default([]),
+})
+
+const ContactOpportunityListQuerySchema = z.object({
+  search: z.preprocess(
+    (value) => (typeof value === "string" ? sanitizeSearchQuery(value) : value),
+    z.string().max(120).optional().default(""),
+  ),
+  sort: z
+    .enum([
+      "UPDATED_DESC",
+      "UPDATED_ASC",
+      "VALUE_DESC",
+      "VALUE_ASC",
+      "PIPELINE_ASC",
+    ])
+    .default("UPDATED_DESC"),
+  includePipelineIds: z
+    .enum(["true", "false"])
+    .optional()
+    .default("false")
+    .transform((value) => value === "true"),
+  page: z.coerce.number().int().min(1).max(10000).default(1),
+  pageSize: z.coerce
+    .number()
+    .int()
+    .refine((value) => value === 10 || value === 25, {
+      message: "pageSize must be 10 or 25",
+    })
+    .default(10),
 })
 
 const CreateOpportunitySchema = z.object({
@@ -909,20 +943,68 @@ router.get("/:tenantId/contact/:contactId", requireAuth, async (req, res, next) 
   try {
     const authed = req as AuthedRequest
     const { tenantId, contactId } = TenantContactPathSchema.parse(req.params)
+    const { includePipelineIds, page, pageSize, search, sort } =
+      ContactOpportunityListQuerySchema.parse(req.query)
 
     if (!(await requireActiveMembership(authed, res, tenantId))) return
 
-    const [contact, items] = await Promise.all([
+    const resultSearch = search.toUpperCase()
+    const resultFilter: OpportunityResult | null =
+      resultSearch === "OPEN" || resultSearch === "WON" || resultSearch === "LOST"
+        ? resultSearch
+        : null
+    const where: Prisma.ContactOpportunityWhereInput = {
+      tenantId,
+      contactId,
+      ...(search
+        ? {
+            OR: [
+              {
+                pipeline: {
+                  name: { contains: search, mode: "insensitive" as const },
+                },
+              },
+              {
+                stage: {
+                  name: { contains: search, mode: "insensitive" as const },
+                },
+              },
+              ...(resultFilter ? [{ result: resultFilter }] : []),
+            ],
+          }
+        : {}),
+    }
+    const orderBy: Prisma.ContactOpportunityOrderByWithRelationInput[] =
+      sort === "UPDATED_ASC"
+        ? [{ updatedAt: "asc" }, { id: "asc" }]
+        : sort === "VALUE_DESC"
+          ? [{ valueCents: "desc" }, { updatedAt: "desc" }, { id: "desc" }]
+          : sort === "VALUE_ASC"
+            ? [{ valueCents: "asc" }, { updatedAt: "desc" }, { id: "desc" }]
+            : sort === "PIPELINE_ASC"
+              ? [{ pipeline: { name: "asc" } }, { updatedAt: "desc" }, { id: "desc" }]
+              : [{ updatedAt: "desc" }, { id: "desc" }]
+
+    const [contact, total, activeTotal, assignedPipelines, items] = await Promise.all([
       prisma.contact.findFirst({
         where: { id: contactId, tenantId },
         select: { id: true },
       }),
+      prisma.contactOpportunity.count({ where }),
+      prisma.contactOpportunity.count({
+        where: { tenantId, contactId, result: "OPEN" },
+      }),
+      includePipelineIds
+        ? prisma.contactOpportunity.findMany({
+            where: { tenantId, contactId },
+            select: { pipelineId: true },
+          })
+        : Promise.resolve([]),
       prisma.contactOpportunity.findMany({
-        where: {
-          tenantId,
-          contactId,
-        },
-        orderBy: [{ updatedAt: "desc" }],
+        where,
+        orderBy,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
         select: {
           id: true,
           pipelineId: true,
@@ -936,6 +1018,14 @@ router.get("/:tenantId/contact/:contactId", requireAuth, async (req, res, next) 
               id: true,
               name: true,
               color: true,
+              stages: {
+                orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+                select: {
+                  id: true,
+                  name: true,
+                  sortOrder: true,
+                },
+              },
             },
           },
           stage: {
@@ -966,6 +1056,16 @@ router.get("/:tenantId/contact/:contactId", requireAuth, async (req, res, next) 
         pipeline: item.pipeline,
         stage: item.stage,
       })),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      },
+      summary: {
+        active: activeTotal,
+        assignedPipelineIds: assignedPipelines.map((item) => item.pipelineId),
+      },
     })
   } catch (error) {
     return next(error)
@@ -1127,18 +1227,22 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
     const authed = req as AuthedRequest
     const { tenantId, opportunityId } = TenantOpportunityPathSchema.parse(req.params)
     const payload = UpdateOpportunitySchema.parse(req.body)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
 
-    if (!(await requireActiveMembership(authed, res, tenantId))) return
+    if ("valueCents" in payload && membership.securityLevel === "LOW") {
+      return res.status(403).json({ error: "FORBIDDEN" })
+    }
 
     const existing = await prisma.contactOpportunity.findUnique({
-        where: {
-          tenantId_id: {
-            tenantId,
-            id: opportunityId,
-          },
+      where: {
+        tenantId_id: {
+          tenantId,
+          id: opportunityId,
         },
-        select: opportunityCardSelect,
-      })
+      },
+      select: opportunityCardSelect,
+    })
 
     if (!existing) {
       return res.status(404).json({ error: "OPPORTUNITY_NOT_FOUND" })
@@ -1311,12 +1415,11 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
   }
 })
 
-router.delete("/:tenantId/:opportunityId", requireAuth, async (req, res, next) => {
+router.delete("/:tenantId/:opportunityId", requireAuth, requireOpportunityDeleteAccess, async (req, res, next) => {
   try {
-    const authed = req as AuthedRequest
-    const { tenantId, opportunityId } = TenantOpportunityPathSchema.parse(req.params)
+    enforceSameOrigin(req)
 
-    if (!(await requireActiveMembership(authed, res, tenantId))) return
+    const { tenantId, opportunityId } = TenantOpportunityPathSchema.parse(req.params)
 
     const existing = await prisma.contactOpportunity.findUnique({
       where: {
