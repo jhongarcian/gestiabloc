@@ -570,6 +570,7 @@ model Tenant {
   contacts                          Contact[]
   tasks                             Task[]
   contactStatusConfigs              ContactStatusConfig[]
+  contactLeadSourceConfigs          ContactLeadSourceConfig[]
   taskStatusConfigs                 TaskStatusConfig[]
   taskReminders                     TaskReminder[]
   notifications                     Notification[]
@@ -1177,6 +1178,23 @@ model ContactStatusConfig {
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contacts Contact[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+}
+
+model ContactLeadSourceConfig {
+  id              String  @id @default(uuid())
+  tenantId        String
+  name            String
+  sortOrder       Int     @default(0)
+  isSystemDefault Boolean @default(false)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

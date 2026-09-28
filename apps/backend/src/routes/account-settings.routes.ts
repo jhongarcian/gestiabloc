@@ -26,6 +26,7 @@ import { requireTenantAdmin } from "../middleware/requireTenantAdmin.js";
 import { getPlanDetails } from "../lib/subscription-plans.js";
 import { findEnabledAutomationReference } from "../lib/automation-references.js";
 import {
+  ensureDefaultContactLeadSources,
   ensureDefaultContactStatuses,
   ensureDefaultTaskStatuses,
 } from "../lib/tenant-defaults.js";
@@ -110,6 +111,9 @@ const FollowUpTemplateExecutionLogsQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(5).max(50).optional().default(20),
 });
 const TenantStatusConfigRecordPathSchema = TenantStatusConfigPathSchema.extend({
+  recordId: z.string().trim().min(1),
+});
+const TenantLeadSourceRecordPathSchema = TenantPathSchema.extend({
   recordId: z.string().trim().min(1),
 });
 const TenantUserPathSchema = TenantPathSchema.extend({
@@ -538,6 +542,14 @@ const UpdateContactStatusConfigSchema = z.object({
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
   isActive: z.boolean().optional(),
 });
+
+const CreateContactLeadSourceConfigSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+}).strict();
+
+const UpdateContactLeadSourceConfigSchema = z.object({
+  sortOrder: z.coerce.number().int().min(30).max(9999),
+}).strict();
 
 const CreateTenantTagSchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -3197,35 +3209,50 @@ router.get("/:tenantId/status-config", ...readMiddlewares, async (req, res, next
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
 
-    await ensureDefaultContactStatuses(prismaWithContacts, tenantId);
-    await ensureDefaultTaskStatuses(prismaWithContacts, tenantId);
+    await Promise.all([
+      ensureDefaultContactStatuses(prismaWithContacts, tenantId),
+      ensureDefaultTaskStatuses(prismaWithContacts, tenantId),
+      ensureDefaultContactLeadSources(prismaWithContacts, tenantId),
+    ]);
 
-    const contactStatuses = await prismaWithContacts.contactStatusConfig.findMany({
-      where: { tenantId },
-      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-      select: {
-        id: true,
-        name: true,
-        bgColor: true,
-        textColor: true,
-        sortOrder: true,
-        isActive: true,
-        isSystemDefault: true,
-      },
-    });
-    const taskStatuses = await prismaWithContacts.taskStatusConfig.findMany({
-      where: { tenantId },
-      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-      select: {
-        id: true,
-        name: true,
-        bgColor: true,
-        textColor: true,
-        sortOrder: true,
-        isActive: true,
-        isSystemDefault: true,
-      },
-    });
+    const [contactStatuses, taskStatuses, leadSources] = await Promise.all([
+      prismaWithContacts.contactStatusConfig.findMany({
+        where: { tenantId },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          bgColor: true,
+          textColor: true,
+          sortOrder: true,
+          isActive: true,
+          isSystemDefault: true,
+        },
+      }),
+      prismaWithContacts.taskStatusConfig.findMany({
+        where: { tenantId },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          bgColor: true,
+          textColor: true,
+          sortOrder: true,
+          isActive: true,
+          isSystemDefault: true,
+        },
+      }),
+      prismaWithContacts.contactLeadSourceConfig.findMany({
+        where: { tenantId },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          sortOrder: true,
+          isSystemDefault: true,
+        },
+      }),
+    ]);
 
     return res.json({
       ok: true,
@@ -3242,14 +3269,221 @@ router.get("/:tenantId/status-config", ...readMiddlewares, async (req, res, next
           statusCount: taskStatuses.length,
           activeStatusCount: taskStatuses.filter((item: { isActive: boolean }) => item.isActive).length,
         },
+        {
+          key: "lead-sources",
+          label: "Lead Sources",
+          statusCount: leadSources.length,
+          activeStatusCount: leadSources.length,
+        },
       ],
       contactStatuses,
       taskStatuses,
+      leadSources,
     });
   } catch (error) {
     return next(error);
   }
 });
+
+router.get(
+  "/:tenantId/status-config/lead-sources",
+  ...readMiddlewares,
+  async (req, res, next) => {
+    try {
+      const { tenantId } = TenantPathSchema.parse(req.params);
+      await ensureDefaultContactLeadSources(prismaWithContacts, tenantId);
+
+      const items = await prismaWithContacts.contactLeadSourceConfig.findMany({
+        where: { tenantId },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          sortOrder: true,
+          isSystemDefault: true,
+        },
+      });
+
+      return res.json({ ok: true, configKey: "lead-sources", items });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/:tenantId/status-config/lead-sources",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId } = TenantPathSchema.parse(req.params);
+      const payload = CreateContactLeadSourceConfigSchema.parse(req.body);
+      await ensureDefaultContactLeadSources(prismaWithContacts, tenantId);
+
+      const normalizedName = payload.name.replace(/\s+/g, " ").trim();
+      const duplicate = await prismaWithContacts.contactLeadSourceConfig.findFirst({
+        where: {
+          tenantId,
+          name: {
+            equals: normalizedName,
+            mode: "insensitive",
+          },
+        },
+        select: { id: true },
+      });
+      if (duplicate) {
+        return res.status(409).json({ error: "LEAD_SOURCE_ALREADY_EXISTS" });
+      }
+
+      const lastCustomSource =
+        await prismaWithContacts.contactLeadSourceConfig.findFirst({
+          where: { tenantId, isSystemDefault: false },
+          orderBy: { sortOrder: "desc" },
+          select: { sortOrder: true },
+        });
+      const nextSortOrder = Math.max(lastCustomSource?.sortOrder ?? 20, 20) + 10;
+
+      let item;
+      try {
+        item = await prismaWithContacts.contactLeadSourceConfig.create({
+          data: {
+            tenantId,
+            name: normalizedName,
+            sortOrder: nextSortOrder,
+            isSystemDefault: false,
+          },
+          select: {
+            id: true,
+            name: true,
+            sortOrder: true,
+            isSystemDefault: true,
+          },
+        });
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "P2002"
+        ) {
+          return res.status(409).json({ error: "LEAD_SOURCE_ALREADY_EXISTS" });
+        }
+        throw error;
+      }
+
+      return res.status(201).json({ ok: true, item });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.patch(
+  "/:tenantId/status-config/lead-sources/:recordId",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId, recordId } =
+        TenantLeadSourceRecordPathSchema.parse(req.params);
+      const payload = UpdateContactLeadSourceConfigSchema.parse(req.body);
+      await ensureDefaultContactLeadSources(prismaWithContacts, tenantId);
+
+      const existing =
+        await prismaWithContacts.contactLeadSourceConfig.findUnique({
+          where: { id: recordId },
+          select: {
+            id: true,
+            tenantId: true,
+            isSystemDefault: true,
+          },
+        });
+      if (!existing || existing.tenantId !== tenantId) {
+        return res.status(404).json({ error: "LEAD_SOURCE_NOT_FOUND" });
+      }
+      if (existing.isSystemDefault) {
+        return res
+          .status(409)
+          .json({ error: "DEFAULT_LEAD_SOURCE_CANNOT_BE_CHANGED" });
+      }
+
+      const item = await prismaWithContacts.contactLeadSourceConfig.update({
+        where: { id: recordId },
+        data: { sortOrder: payload.sortOrder },
+        select: {
+          id: true,
+          name: true,
+          sortOrder: true,
+          isSystemDefault: true,
+        },
+      });
+
+      return res.json({ ok: true, item });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.delete(
+  "/:tenantId/status-config/lead-sources/:recordId",
+  ...writeMiddlewares,
+  async (req, res, next) => {
+    try {
+      enforceSameOrigin(req);
+
+      const { tenantId, recordId } =
+        TenantLeadSourceRecordPathSchema.parse(req.params);
+      await ensureDefaultContactLeadSources(prismaWithContacts, tenantId);
+
+      const existing =
+        await prismaWithContacts.contactLeadSourceConfig.findUnique({
+          where: { id: recordId },
+          select: {
+            id: true,
+            tenantId: true,
+            name: true,
+            isSystemDefault: true,
+          },
+        });
+      if (!existing || existing.tenantId !== tenantId) {
+        return res.status(404).json({ error: "LEAD_SOURCE_NOT_FOUND" });
+      }
+      if (existing.isSystemDefault) {
+        return res
+          .status(409)
+          .json({ error: "CANNOT_DELETE_DEFAULT_LEAD_SOURCE" });
+      }
+
+      const contactCount = await prismaWithContacts.contact.count({
+        where: {
+          tenantId,
+          leadSource: {
+            equals: existing.name,
+            mode: "insensitive",
+          },
+        },
+      });
+      if (contactCount > 0) {
+        return res.status(409).json({
+          error: "LEAD_SOURCE_IN_USE",
+          details: { contactCount },
+        });
+      }
+
+      await prismaWithContacts.contactLeadSourceConfig.delete({
+        where: { id: recordId },
+      });
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 router.get("/:tenantId/status-config/:configKey", ...readMiddlewares, async (req, res, next) => {
   try {

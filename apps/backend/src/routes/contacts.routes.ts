@@ -19,6 +19,7 @@ import { enforceSameOrigin } from "../lib/security.js"
 import { normalizeTagSearchTerm, parseCsvIds } from "../lib/tag-utils.js"
 import { serializeNotification } from "../lib/task-notifications.js"
 import {
+  ensureDefaultContactLeadSources,
   ensureContactsHaveDefaultStatus,
   ensureDefaultContactStatuses,
 } from "../lib/tenant-defaults.js"
@@ -245,31 +246,60 @@ const optionalEmailField = () =>
     return trimmed.length > 0 ? trimmed.toLowerCase() : null
   }, z.string().email().max(255).nullable().optional())
 
+const optionalPhoneField = () =>
+  z.preprocess(
+    (value) => {
+      if (typeof value !== "string") return value
+      const trimmed = value.trim()
+      return trimmed.length > 0 ? trimmed : null
+    },
+    z
+      .string()
+      .regex(/^\+[1-9]\d{7,14}$/, "Enter a valid phone number.")
+      .nullable()
+      .optional(),
+  )
+
 const optionalDateField = () =>
   z.preprocess((value) => {
-    if (value === null || value === undefined) return null
+    if (value === undefined) return undefined
+    if (value === null) return null
     if (typeof value !== "string") return value
     const trimmed = value.trim()
     return trimmed.length > 0 ? trimmed : null
   }, z.string().datetime().nullable().optional())
+
+const ContactGenderSchema = z.enum([
+  "FEMALE",
+  "MALE",
+  "NON_BINARY",
+  "OTHER",
+  "UNKNOWN",
+])
+const ContactSmokerStatusSchema = z.enum([
+  "UNKNOWN",
+  "NEVER",
+  "CURRENT",
+  "FORMER",
+])
 
 const CreateContactSchema = z.object({
   firstName: z.string().trim().min(1).max(120),
   middleName: optionalStringField(120),
   lastName: z.string().trim().min(1).max(120),
   dateOfBirth: optionalDateField(),
-  phone: optionalStringField(60),
+  phone: optionalPhoneField(),
   email: optionalEmailField(),
   statusConfigId: optionalStringField(80),
 })
 
 const UpdateContactSchema = z.object({
-  firstName: z.string().trim().min(1).max(120),
+  firstName: z.string().trim().min(1).max(120).optional(),
   middleName: optionalStringField(120),
-  lastName: z.string().trim().min(1).max(120),
+  lastName: z.string().trim().min(1).max(120).optional(),
   dateOfBirth: optionalDateField(),
-  phone: optionalStringField(60),
-  secondaryPhone: optionalStringField(60),
+  phone: optionalPhoneField(),
+  secondaryPhone: optionalPhoneField(),
   email: optionalEmailField(),
   addressLine1: optionalStringField(255),
   addressLine2: optionalStringField(255),
@@ -277,7 +307,24 @@ const UpdateContactSchema = z.object({
   state: optionalStringField(120),
   postalCode: optionalStringField(40),
   country: optionalStringField(120),
-  statusConfigId: z.string().trim().min(1).max(80),
+  mailingAddressLine1: optionalStringField(255),
+  mailingAddressLine2: optionalStringField(255),
+  mailingCity: optionalStringField(120),
+  mailingState: optionalStringField(120),
+  mailingPostalCode: optionalStringField(40),
+  mailingCountry: optionalStringField(120),
+  emergencyContactName: optionalStringField(255),
+  emergencyContactPhone: optionalPhoneField(),
+  emergencyContactRelationship: optionalStringField(120),
+  gender: ContactGenderSchema.nullable().optional(),
+  height: optionalStringField(60),
+  weight: optionalStringField(60),
+  deceasedAt: optionalDateField(),
+  smokerStatus: ContactSmokerStatusSchema.nullable().optional(),
+  leadDate: optionalDateField(),
+  leadSource: optionalStringField(80),
+  leadOtherSource: optionalStringField(160),
+  statusConfigId: z.string().trim().min(1).max(80).optional(),
   assignedToUserId: optionalStringField(80),
   customFieldValues: z
     .array(
@@ -286,8 +333,7 @@ const UpdateContactSchema = z.object({
         value: z.unknown().nullable().optional(),
       }),
     )
-    .optional()
-    .default([]),
+    .optional(),
 })
 
 const UpdateContactAssigneeSchema = z.object({
@@ -1193,6 +1239,33 @@ router.get("/:tenantId/statuses", requireAuth, async (req, res, next) => {
   }
 })
 
+router.get("/:tenantId/lead-sources", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    await ensureDefaultContactLeadSources(prismaWithContacts, tenantId)
+
+    const items = await prismaWithContacts.contactLeadSourceConfig.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        sortOrder: true,
+        isSystemDefault: true,
+      },
+    })
+
+    return res.json({ ok: true, items })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.get("/:tenantId/tags", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
@@ -1657,7 +1730,23 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
             state: true,
             postalCode: true,
             country: true,
+            mailingAddressLine1: true,
+            mailingAddressLine2: true,
+            mailingCity: true,
+            mailingState: true,
+            mailingPostalCode: true,
+            mailingCountry: true,
+            emergencyContactName: true,
+            emergencyContactPhone: true,
+            emergencyContactRelationship: true,
             gender: true,
+            height: true,
+            weight: true,
+            deceasedAt: true,
+            smokerStatus: true,
+            leadDate: true,
+            leadSource: true,
+            leadOtherSource: true,
             assignedToUserId: true,
             assignedToMembership: {
               select: {
@@ -1909,6 +1998,25 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           postalCode: contact.postalCode ?? null,
           country: contact.country ?? null,
         },
+        mailingAddress: {
+          addressLine1: contact.mailingAddressLine1 ?? null,
+          addressLine2: contact.mailingAddressLine2 ?? null,
+          city: contact.mailingCity ?? null,
+          state: contact.mailingState ?? null,
+          postalCode: contact.mailingPostalCode ?? null,
+          country: contact.mailingCountry ?? null,
+        },
+        emergencyContactName: contact.emergencyContactName ?? null,
+        emergencyContactPhone: contact.emergencyContactPhone ?? null,
+        emergencyContactRelationship: contact.emergencyContactRelationship ?? null,
+        gender: contact.gender ?? null,
+        height: contact.height ?? null,
+        weight: contact.weight ?? null,
+        deceasedAt: contact.deceasedAt ?? null,
+        smokerStatus: contact.smokerStatus ?? null,
+        leadDate: contact.leadDate ?? null,
+        leadSource: contact.leadSource ?? null,
+        leadOtherSource: contact.leadOtherSource ?? null,
         assignedTo: contact.assignedToMembership
           ? {
               userId: contact.assignedToMembership.userId,
@@ -3857,7 +3965,7 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
       .map((grant) => grant.id)
 
     const customFieldInputMap = new Map(
-      payload.customFieldValues.map((item) => [item.fieldId, item.value]),
+      (payload.customFieldValues ?? []).map((item) => [item.fieldId, item.value]),
     )
 
     const normalizedCustomFieldValues: Array<{
@@ -3894,6 +4002,10 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
     }
 
     for (const field of customFields as Array<any>) {
+      if (!customFieldInputMap.has(field.id)) {
+        continue
+      }
+
       const hasGrant = grantFieldIds.has(field.id)
       const canReadSensitiveValue = !field.isSensitive
         ? true
@@ -3930,14 +4042,50 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
     }
 
     const resolvedStatusConfigId = payload.statusConfigId
-    const selectedStatus =
-      await prismaWithContacts.contactStatusConfig.findUnique({
-        where: { id: resolvedStatusConfigId },
-        select: { id: true, tenantId: true, isActive: true },
-      })
+    if (resolvedStatusConfigId !== undefined) {
+      const selectedStatus =
+        await prismaWithContacts.contactStatusConfig.findUnique({
+          where: { id: resolvedStatusConfigId },
+          select: { id: true, tenantId: true, isActive: true },
+        })
 
-    if (!selectedStatus || selectedStatus.tenantId !== tenantId || !selectedStatus.isActive) {
-      return res.status(400).json({ error: "INVALID_STATUS_CONFIG" })
+      if (
+        !selectedStatus ||
+        selectedStatus.tenantId !== tenantId ||
+        !selectedStatus.isActive
+      ) {
+        return res.status(400).json({ error: "INVALID_STATUS_CONFIG" })
+      }
+    }
+
+    let resolvedLeadSource = payload.leadSource
+    if (payload.leadSource !== undefined && payload.leadSource !== null) {
+      await ensureDefaultContactLeadSources(prismaWithContacts, tenantId)
+      const configuredLeadSource =
+        await prismaWithContacts.contactLeadSourceConfig.findFirst({
+          where: {
+            tenantId,
+            name: {
+              equals: payload.leadSource,
+              mode: "insensitive",
+            },
+          },
+          select: { name: true },
+        })
+
+      if (!configuredLeadSource) {
+        return res.status(400).json({
+          error: "INVALID_LEAD_SOURCE",
+          details: [
+            {
+              path: "leadSource",
+              message: "Select a configured lead source.",
+            },
+          ],
+        })
+      }
+
+      resolvedLeadSource = configuredLeadSource.name
     }
 
     const assigneeUpdate = buildContactAssigneeUpdate(payload.assignedToUserId)
@@ -4029,22 +4177,98 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
       const updatedContact = await tx.contact.update({
         where: { id: contactId },
         data: {
-          firstName: payload.firstName,
-          middleName: payload.middleName ?? null,
-          lastName: payload.lastName,
-          dateOfBirth: payload.dateOfBirth
-            ? new Date(payload.dateOfBirth)
-            : null,
-          phone: payload.phone ?? null,
-          secondaryPhone: payload.secondaryPhone ?? null,
-          email: payload.email ?? null,
-          addressLine1: payload.addressLine1 ?? null,
-          addressLine2: payload.addressLine2 ?? null,
-          city: payload.city ?? null,
-          state: payload.state ?? null,
-          postalCode: payload.postalCode ?? null,
-          country: payload.country ?? null,
-          statusConfigId: resolvedStatusConfigId,
+          ...(payload.firstName !== undefined
+            ? { firstName: payload.firstName }
+            : {}),
+          ...(payload.middleName !== undefined
+            ? { middleName: payload.middleName }
+            : {}),
+          ...(payload.lastName !== undefined
+            ? { lastName: payload.lastName }
+            : {}),
+          ...(payload.dateOfBirth !== undefined
+            ? {
+                dateOfBirth: payload.dateOfBirth
+                  ? new Date(payload.dateOfBirth)
+                  : null,
+              }
+            : {}),
+          ...(payload.phone !== undefined ? { phone: payload.phone } : {}),
+          ...(payload.secondaryPhone !== undefined
+            ? { secondaryPhone: payload.secondaryPhone }
+            : {}),
+          ...(payload.email !== undefined ? { email: payload.email } : {}),
+          ...(payload.addressLine1 !== undefined
+            ? { addressLine1: payload.addressLine1 }
+            : {}),
+          ...(payload.addressLine2 !== undefined
+            ? { addressLine2: payload.addressLine2 }
+            : {}),
+          ...(payload.city !== undefined ? { city: payload.city } : {}),
+          ...(payload.state !== undefined ? { state: payload.state } : {}),
+          ...(payload.postalCode !== undefined
+            ? { postalCode: payload.postalCode }
+            : {}),
+          ...(payload.country !== undefined
+            ? { country: payload.country }
+            : {}),
+          ...(payload.mailingAddressLine1 !== undefined
+            ? { mailingAddressLine1: payload.mailingAddressLine1 }
+            : {}),
+          ...(payload.mailingAddressLine2 !== undefined
+            ? { mailingAddressLine2: payload.mailingAddressLine2 }
+            : {}),
+          ...(payload.mailingCity !== undefined
+            ? { mailingCity: payload.mailingCity }
+            : {}),
+          ...(payload.mailingState !== undefined
+            ? { mailingState: payload.mailingState }
+            : {}),
+          ...(payload.mailingPostalCode !== undefined
+            ? { mailingPostalCode: payload.mailingPostalCode }
+            : {}),
+          ...(payload.mailingCountry !== undefined
+            ? { mailingCountry: payload.mailingCountry }
+            : {}),
+          ...(payload.emergencyContactName !== undefined
+            ? { emergencyContactName: payload.emergencyContactName }
+            : {}),
+          ...(payload.emergencyContactPhone !== undefined
+            ? { emergencyContactPhone: payload.emergencyContactPhone }
+            : {}),
+          ...(payload.emergencyContactRelationship !== undefined
+            ? {
+                emergencyContactRelationship:
+                  payload.emergencyContactRelationship,
+              }
+            : {}),
+          ...(payload.gender !== undefined ? { gender: payload.gender } : {}),
+          ...(payload.height !== undefined ? { height: payload.height } : {}),
+          ...(payload.weight !== undefined ? { weight: payload.weight } : {}),
+          ...(payload.deceasedAt !== undefined
+            ? {
+                deceasedAt: payload.deceasedAt
+                  ? new Date(payload.deceasedAt)
+                  : null,
+              }
+            : {}),
+          ...(payload.smokerStatus !== undefined
+            ? { smokerStatus: payload.smokerStatus }
+            : {}),
+          ...(payload.leadDate !== undefined
+            ? {
+                leadDate: payload.leadDate ? new Date(payload.leadDate) : null,
+              }
+            : {}),
+          ...(payload.leadSource !== undefined
+            ? { leadSource: resolvedLeadSource }
+            : {}),
+          ...(payload.leadOtherSource !== undefined
+            ? { leadOtherSource: payload.leadOtherSource }
+            : {}),
+          ...(resolvedStatusConfigId !== undefined
+            ? { statusConfigId: resolvedStatusConfigId }
+            : {}),
           ...assigneeUpdate,
         },
         select: {
@@ -4062,6 +4286,23 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           state: true,
           postalCode: true,
           country: true,
+          mailingAddressLine1: true,
+          mailingAddressLine2: true,
+          mailingCity: true,
+          mailingState: true,
+          mailingPostalCode: true,
+          mailingCountry: true,
+          emergencyContactName: true,
+          emergencyContactPhone: true,
+          emergencyContactRelationship: true,
+          gender: true,
+          height: true,
+          weight: true,
+          deceasedAt: true,
+          smokerStatus: true,
+          leadDate: true,
+          leadSource: true,
+          leadOtherSource: true,
           assignedToUserId: true,
           assignedToMembership: {
             select: {
@@ -4188,6 +4429,28 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           postalCode: updated.updatedContact.postalCode ?? null,
           country: updated.updatedContact.country ?? null,
         },
+        mailingAddress: {
+          addressLine1: updated.updatedContact.mailingAddressLine1 ?? null,
+          addressLine2: updated.updatedContact.mailingAddressLine2 ?? null,
+          city: updated.updatedContact.mailingCity ?? null,
+          state: updated.updatedContact.mailingState ?? null,
+          postalCode: updated.updatedContact.mailingPostalCode ?? null,
+          country: updated.updatedContact.mailingCountry ?? null,
+        },
+        emergencyContactName:
+          updated.updatedContact.emergencyContactName ?? null,
+        emergencyContactPhone:
+          updated.updatedContact.emergencyContactPhone ?? null,
+        emergencyContactRelationship:
+          updated.updatedContact.emergencyContactRelationship ?? null,
+        gender: updated.updatedContact.gender ?? null,
+        height: updated.updatedContact.height ?? null,
+        weight: updated.updatedContact.weight ?? null,
+        deceasedAt: updated.updatedContact.deceasedAt ?? null,
+        smokerStatus: updated.updatedContact.smokerStatus ?? null,
+        leadDate: updated.updatedContact.leadDate ?? null,
+        leadSource: updated.updatedContact.leadSource ?? null,
+        leadOtherSource: updated.updatedContact.leadOtherSource ?? null,
         assignedTo: updated.updatedContact.assignedToMembership
           ? {
               userId: updated.updatedContact.assignedToMembership.userId,

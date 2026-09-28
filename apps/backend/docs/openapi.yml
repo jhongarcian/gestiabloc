@@ -811,6 +811,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AutomationProcessDetailResponse"
+  /api/contacts/{tenantId}/lead-sources:
+    get:
+      tags: [Contacts]
+      summary: List configured contact lead sources
+      description: Returns the tenant's ordered lead-source options for contact forms. Available to any active tenant member.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Lead-source options returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactLeadSourceListResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/contacts/{tenantId}/{contactId}:
     get:
       tags: [Contacts]
@@ -875,7 +903,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ContactDetailsResponse"
         "400":
-          description: Invalid input or invalid status config
+          description: Invalid input, status config, or lead-source config
           content:
             application/json:
               schema:
@@ -1742,7 +1770,7 @@ paths:
     get:
       tags: [Account Settings]
       summary: List status configuration groups
-      description: Returns overview counts for contact and task statuses, plus the full configured lists.
+      description: Returns overview counts for contact statuses, task statuses, and lead sources, plus the full configured lists.
       security:
         - cookieAuth: []
       parameters:
@@ -1769,8 +1797,8 @@ paths:
   /api/account-settings/{tenantId}/status-config/{configKey}:
     get:
       tags: [Account Settings]
-      summary: Get statuses for a configuration group
-      description: Returns ordered statuses for `contacts` or `tasks`.
+      summary: Get a status configuration group
+      description: Returns ordered statuses for `contacts` or `tasks`, or ordered source options for `lead-sources`.
       security:
         - cookieAuth: []
       parameters:
@@ -1786,7 +1814,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AccountSettingsStatusConfigGroupResponse"
+                oneOf:
+                  - $ref: "#/components/schemas/AccountSettingsStatusConfigGroupResponse"
+                  - $ref: "#/components/schemas/AccountSettingsLeadSourceGroupResponse"
         "401":
           description: Not authenticated
           content:
@@ -1801,8 +1831,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
     post:
       tags: [Account Settings]
-      summary: Create a status in a configuration group
-      description: Creates a new status for `contacts` or `tasks`.
+      summary: Create a configurable status or lead source
+      description: Creates a new status for `contacts` or `tasks`, or a custom source for `lead-sources`.
       security:
         - cookieAuth: []
       parameters:
@@ -1817,14 +1847,18 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AccountSettingsStatusConfigCreateRequest"
+              oneOf:
+                - $ref: "#/components/schemas/AccountSettingsStatusConfigCreateRequest"
+                - $ref: "#/components/schemas/AccountSettingsLeadSourceCreateRequest"
       responses:
         "201":
           description: Status created
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AccountSettingsStatusConfigCreateResponse"
+                oneOf:
+                  - $ref: "#/components/schemas/AccountSettingsStatusConfigCreateResponse"
+                  - $ref: "#/components/schemas/AccountSettingsLeadSourceMutationResponse"
         "400":
           description: Invalid request
           content:
@@ -1843,11 +1877,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: A lead source with the same name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/account-settings/{tenantId}/status-config/{configKey}/{recordId}:
     patch:
       tags: [Account Settings]
-      summary: Update a status in a configuration group
-      description: Updates a status for `contacts` or `tasks`.
+      summary: Update a configurable status or lead source
+      description: Updates a status for `contacts` or `tasks`, or reorders a custom `lead-sources` item. Protected lead sources cannot be changed.
       security:
         - cookieAuth: []
       parameters:
@@ -1863,14 +1903,18 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AccountSettingsStatusConfigUpdateRequest"
+              oneOf:
+                - $ref: "#/components/schemas/AccountSettingsStatusConfigUpdateRequest"
+                - $ref: "#/components/schemas/AccountSettingsLeadSourceUpdateRequest"
       responses:
         "200":
           description: Status updated
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AccountSettingsStatusConfigUpdateResponse"
+                oneOf:
+                  - $ref: "#/components/schemas/AccountSettingsStatusConfigUpdateResponse"
+                  - $ref: "#/components/schemas/AccountSettingsLeadSourceMutationResponse"
         "400":
           description: Invalid request
           content:
@@ -1903,8 +1947,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
     delete:
       tags: [Account Settings]
-      summary: Delete a status in a configuration group
-      description: Deletes a non-default status for `contacts` or `tasks`. Contact statuses cannot be deleted while in use.
+      summary: Delete a configurable status or lead source
+      description: Deletes a non-default status or custom lead source. Contact statuses and lead sources cannot be deleted while in use; protected lead sources cannot be deleted.
       security:
         - cookieAuth: []
       parameters:
@@ -7551,7 +7595,19 @@ components:
           type: integer
     AccountSettingsStatusConfigKey:
       type: string
-      enum: [contacts, tasks]
+      enum: [contacts, tasks, lead-sources]
+    AccountSettingsLeadSourceItem:
+      type: object
+      required: [id, name, sortOrder, isSystemDefault]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        sortOrder:
+          type: integer
+        isSystemDefault:
+          type: boolean
     AccountSettingsStatusConfigListResponse:
       type: object
       properties:
@@ -7570,6 +7626,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
+        leadSources:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsLeadSourceItem"
     AccountSettingsStatusConfigGroupResponse:
       type: object
       properties:
@@ -7582,6 +7642,20 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
+    AccountSettingsLeadSourceGroupResponse:
+      type: object
+      required: [ok, configKey, items]
+      properties:
+        ok:
+          type: boolean
+          example: true
+        configKey:
+          type: string
+          enum: [lead-sources]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountSettingsLeadSourceItem"
     AccountSettingsStatusConfigCreateRequest:
       type: object
       required: [name, bgColor, textColor]
@@ -7614,6 +7688,24 @@ components:
           example: true
         status:
           $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
+    AccountSettingsLeadSourceCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: Display name for a tenant-specific source. Names must be unique within the tenant, ignoring case.
+    AccountSettingsLeadSourceMutationResponse:
+      type: object
+      required: [ok, item]
+      properties:
+        ok:
+          type: boolean
+          example: true
+        item:
+          $ref: "#/components/schemas/AccountSettingsLeadSourceItem"
     AccountSettingsStatusConfigUpdateRequest:
       type: object
       properties:
@@ -7642,6 +7734,15 @@ components:
           example: true
         status:
           $ref: "#/components/schemas/AccountSettingsStatusConfigItem"
+    AccountSettingsLeadSourceUpdateRequest:
+      type: object
+      required: [sortOrder]
+      properties:
+        sortOrder:
+          type: integer
+          minimum: 30
+          maximum: 9999
+          description: Custom sources may only be reordered beneath the protected Marketing and Referral sources.
     AccountSettingsTagItem:
       type: object
       properties:
@@ -7947,6 +8048,29 @@ components:
           type: string
         statusTextColor:
           type: string
+    ContactLeadSourceItem:
+      type: object
+      required: [id, name, sortOrder, isSystemDefault]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        sortOrder:
+          type: integer
+        isSystemDefault:
+          type: boolean
+    ContactLeadSourceListResponse:
+      type: object
+      required: [ok, items]
+      properties:
+        ok:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactLeadSourceItem"
     ContactDetailsResponse:
       type: object
       properties:
@@ -8001,6 +8125,65 @@ components:
                 country:
                   type: string
                   nullable: true
+            mailingAddress:
+              type: object
+              properties:
+                addressLine1:
+                  type: string
+                  nullable: true
+                addressLine2:
+                  type: string
+                  nullable: true
+                city:
+                  type: string
+                  nullable: true
+                state:
+                  type: string
+                  nullable: true
+                postalCode:
+                  type: string
+                  nullable: true
+                country:
+                  type: string
+                  nullable: true
+            emergencyContactName:
+              type: string
+              nullable: true
+            emergencyContactPhone:
+              type: string
+              nullable: true
+              pattern: "^\\+[1-9]\\d{7,14}$"
+            emergencyContactRelationship:
+              type: string
+              nullable: true
+            gender:
+              type: string
+              enum: [FEMALE, MALE, NON_BINARY, OTHER, UNKNOWN]
+              nullable: true
+            height:
+              type: string
+              nullable: true
+            weight:
+              type: string
+              nullable: true
+            deceasedAt:
+              type: string
+              format: date-time
+              nullable: true
+            smokerStatus:
+              type: string
+              enum: [UNKNOWN, NEVER, CURRENT, FORMER]
+              nullable: true
+            leadDate:
+              type: string
+              format: date-time
+              nullable: true
+            leadSource:
+              type: string
+              nullable: true
+            leadOtherSource:
+              type: string
+              nullable: true
             status:
               type: string
             statusConfigId:
@@ -8101,6 +8284,7 @@ components:
         phone:
           type: string
           nullable: true
+          pattern: "^\\+[1-9]\\d{7,14}$"
         email:
           type: string
           format: email
@@ -8150,7 +8334,7 @@ components:
               format: date-time
     UpdateContactRequest:
       type: object
-      required: [firstName, lastName, statusConfigId]
+      description: Patch-style update. Omitted properties preserve their existing values; send null for nullable properties to clear them.
       properties:
         firstName:
           type: string
@@ -8171,9 +8355,11 @@ components:
         phone:
           type: string
           nullable: true
+          pattern: "^\\+[1-9]\\d{7,14}$"
         secondaryPhone:
           type: string
           nullable: true
+          pattern: "^\\+[1-9]\\d{7,14}$"
         email:
           type: string
           format: email
@@ -8196,6 +8382,75 @@ components:
         country:
           type: string
           nullable: true
+        mailingAddressLine1:
+          type: string
+          nullable: true
+          maxLength: 255
+        mailingAddressLine2:
+          type: string
+          nullable: true
+          maxLength: 255
+        mailingCity:
+          type: string
+          nullable: true
+          maxLength: 120
+        mailingState:
+          type: string
+          nullable: true
+          maxLength: 120
+        mailingPostalCode:
+          type: string
+          nullable: true
+          maxLength: 40
+        mailingCountry:
+          type: string
+          nullable: true
+          maxLength: 120
+        emergencyContactName:
+          type: string
+          nullable: true
+          maxLength: 255
+        emergencyContactPhone:
+          type: string
+          nullable: true
+          pattern: "^\\+[1-9]\\d{7,14}$"
+        emergencyContactRelationship:
+          type: string
+          nullable: true
+          maxLength: 120
+        gender:
+          type: string
+          enum: [FEMALE, MALE, NON_BINARY, OTHER, UNKNOWN]
+          nullable: true
+        height:
+          type: string
+          nullable: true
+          maxLength: 60
+        weight:
+          type: string
+          nullable: true
+          maxLength: 60
+        deceasedAt:
+          type: string
+          format: date-time
+          nullable: true
+        smokerStatus:
+          type: string
+          enum: [UNKNOWN, NEVER, CURRENT, FORMER]
+          nullable: true
+        leadDate:
+          type: string
+          format: date-time
+          nullable: true
+        leadSource:
+          type: string
+          nullable: true
+          maxLength: 80
+          description: Must match a lead source configured for the tenant. Omit to preserve the current value; send null to clear it.
+        leadOtherSource:
+          type: string
+          nullable: true
+          maxLength: 160
         statusConfigId:
           type: string
         assignedToUserId:
