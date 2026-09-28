@@ -15,7 +15,7 @@ import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 import { requireTenantSecurityLevel } from "../middleware/requireTenantSecurityLevel.js"
 
 const router = Router()
-const requireOpportunityMutationAccess = requireTenantSecurityLevel({
+const requireOpportunityDeleteAccess = requireTenantSecurityLevel({
   minimumLevel: "MEDIUM",
 })
 
@@ -1220,13 +1220,19 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
   }
 })
 
-router.patch("/:tenantId/:opportunityId", requireAuth, requireOpportunityMutationAccess, async (req, res, next) => {
+router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) => {
   try {
     enforceSameOrigin(req)
 
     const authed = req as AuthedRequest
     const { tenantId, opportunityId } = TenantOpportunityPathSchema.parse(req.params)
     const payload = UpdateOpportunitySchema.parse(req.body)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+
+    if ("valueCents" in payload && membership.securityLevel === "LOW") {
+      return res.status(403).json({ error: "FORBIDDEN" })
+    }
 
     const existing = await prisma.contactOpportunity.findUnique({
       where: {
@@ -1409,7 +1415,7 @@ router.patch("/:tenantId/:opportunityId", requireAuth, requireOpportunityMutatio
   }
 })
 
-router.delete("/:tenantId/:opportunityId", requireAuth, requireOpportunityMutationAccess, async (req, res, next) => {
+router.delete("/:tenantId/:opportunityId", requireAuth, requireOpportunityDeleteAccess, async (req, res, next) => {
   try {
     enforceSameOrigin(req)
 
