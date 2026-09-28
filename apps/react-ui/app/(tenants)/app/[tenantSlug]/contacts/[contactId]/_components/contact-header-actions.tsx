@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { ListTodo, NotebookPen, ShoppingBag } from "lucide-react"
-import { useRouter } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import type { ComponentProps } from "react"
 
 import { Button } from "@/components/ui/button"
@@ -17,6 +17,7 @@ import { AddContactsToAutomationDialog } from "../../_components/add-contacts-to
 import { CreateContactNoteDialog } from "../../_components/create-contact-note-dialog"
 import { AddContactOpportunityDialog } from "../../../opportunities/_components/add-contact-opportunity-dialog"
 import { CreateTaskDialog } from "../../../tasks/_components/create-task-dialog"
+import { dispatchContactOpportunitiesRefresh } from "../_lib/contact-opportunity-events"
 import { ContactHeaderAssignee } from "./contact-header-assignee"
 import { ContactHeaderStatus } from "./contact-header-status"
 
@@ -77,7 +78,18 @@ export function ContactHeaderActions({
   initialAssignedTo,
   contactAssigneeOptions,
 }: ContactHeaderActionsProps) {
+  const pathname = usePathname()
   const router = useRouter()
+  const contactOpportunitiesPath = `/app/${tenantSlug}/contacts/${contactId}/opportunities`
+
+  const handleOpportunityCreated = () => {
+    if (pathname === contactOpportunitiesPath) {
+      dispatchContactOpportunitiesRefresh({ tenantId, contactId })
+      return
+    }
+
+    router.refresh()
+  }
 
   return (
     <div className="flex w-full max-w-full shrink-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] xl:w-auto xl:justify-end xl:overflow-visible xl:pb-0 [&::-webkit-scrollbar]:hidden">
@@ -88,7 +100,7 @@ export function ContactHeaderActions({
         iconOnly
         triggerTooltip="Create opportunity"
         triggerClassName="inline-flex h-8 w-8 items-center justify-center border-white/70 shadow-sm backdrop-blur transition hover:bg-blue-900"
-        onCreated={() => router.refresh()}
+        onCreated={handleOpportunityCreated}
       />
       <CreateAppointmentDialog
         tenantId={tenantId}

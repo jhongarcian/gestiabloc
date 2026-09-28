@@ -175,6 +175,7 @@ export default async function OpportunitiesPage({
       tenantTimezone={tenantTimezone}
       currentUserId={user.id}
       canManageTags={membership.role === "TENANT_ADMIN" || membership.securityLevel !== "LOW"}
+      canManageOpportunities={membership.securityLevel !== "LOW"}
       taskStatusOptions={taskStatusOptions}
       taskAssigneeOptions={taskAssigneeOptions}
       calendarMeta={calendarMeta}

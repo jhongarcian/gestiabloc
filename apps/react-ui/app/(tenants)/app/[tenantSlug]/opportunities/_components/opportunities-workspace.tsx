@@ -157,6 +157,7 @@ type OpportunitiesWorkspaceProps = {
   tenantTimezone: string | null
   currentUserId: string
   canManageTags: boolean
+  canManageOpportunities: boolean
   taskStatusOptions: Array<{
     label: string
     value: string
@@ -428,6 +429,7 @@ function OpportunityCard({
   tenantTimezone,
   currentUserId,
   canManageTags,
+  canManageOpportunities,
   taskStatusOptions,
   taskAssigneeOptions,
   calendarMeta,
@@ -440,6 +442,7 @@ function OpportunityCard({
   tenantTimezone: string | null
   currentUserId: string
   canManageTags: boolean
+  canManageOpportunities: boolean
   taskStatusOptions: OpportunitiesWorkspaceProps["taskStatusOptions"]
   taskAssigneeOptions: OpportunitiesWorkspaceProps["taskAssigneeOptions"]
   calendarMeta: OpportunitiesWorkspaceProps["calendarMeta"]
@@ -452,10 +455,11 @@ function OpportunityCard({
       opportunityId: opportunity.id,
       stageId: opportunity.stageId,
     },
-    disabled: overlay,
+    disabled: overlay || !canManageOpportunities,
   })
 
-  const dragInteractionProps = overlay ? {} : { ...attributes, ...listeners }
+  const dragInteractionProps =
+    overlay || !canManageOpportunities ? {} : { ...attributes, ...listeners }
 
   const handleCardClick = () => {
     if (!overlay && onOpenDetail) {
@@ -723,6 +727,7 @@ export function OpportunitiesWorkspace({
   tenantTimezone,
   currentUserId,
   canManageTags,
+  canManageOpportunities,
   taskStatusOptions,
   taskAssigneeOptions,
   calendarMeta,
@@ -986,7 +991,7 @@ export function OpportunitiesWorkspace({
   }
 
   const handleDrawerStageChange = async (opportunityId: string, targetStageId: string) => {
-    if (!boardPipeline) return
+    if (!boardPipeline || !canManageOpportunities) return
 
     const previousPipeline = boardPipeline
     setBoardPipeline(moveOpportunityLocally(boardPipeline, opportunityId, targetStageId))
@@ -1035,7 +1040,7 @@ export function OpportunitiesWorkspace({
   }
 
   const handleDrawerCloseOpportunity = async (opportunityId: string, result: "WON" | "LOST") => {
-    if (!boardPipeline) return
+    if (!boardPipeline || !canManageOpportunities) return
 
     const previousPipeline = boardPipeline
     setBoardPipeline(closeOpportunityLocally(boardPipeline, opportunityId))
@@ -1066,7 +1071,7 @@ export function OpportunitiesWorkspace({
   }
 
   const handleDrawerValueChange = async (opportunityId: string, newValueCents: number) => {
-    if (!boardPipeline) return
+    if (!boardPipeline || !canManageOpportunities) return
 
     const updateValueInPipeline = (pipeline: BoardPipelineRecord): BoardPipelineRecord => ({
       ...pipeline,
@@ -1109,6 +1114,8 @@ export function OpportunitiesWorkspace({
 
   const handleDragEnd = async (event: DragEndEvent) => {
     setActiveOpportunityId(null)
+
+    if (!canManageOpportunities) return
 
     const opportunityId = String(event.active.id)
     const overId = event.over?.id ? String(event.over.id) : null
@@ -1375,6 +1382,7 @@ export function OpportunitiesWorkspace({
                             tenantTimezone={tenantTimezone}
                             currentUserId={currentUserId}
                             canManageTags={canManageTags}
+                            canManageOpportunities={canManageOpportunities}
                             taskStatusOptions={taskStatusOptions}
                             taskAssigneeOptions={taskAssigneeOptions}
                             calendarMeta={calendarMeta}
@@ -1436,6 +1444,7 @@ export function OpportunitiesWorkspace({
                     tenantTimezone={tenantTimezone}
                     currentUserId={currentUserId}
                     canManageTags={canManageTags}
+                    canManageOpportunities={canManageOpportunities}
                     taskStatusOptions={taskStatusOptions}
                     taskAssigneeOptions={taskAssigneeOptions}
                     calendarMeta={calendarMeta}
@@ -1457,9 +1466,15 @@ export function OpportunitiesWorkspace({
           onOpenChange={(open) => {
             if (!open) setSelectedOpportunity(null)
           }}
-          onStageChange={handleDrawerStageChange}
-          onCloseOpportunity={handleDrawerCloseOpportunity}
-          onValueChange={handleDrawerValueChange}
+          onStageChange={
+            canManageOpportunities ? handleDrawerStageChange : undefined
+          }
+          onCloseOpportunity={
+            canManageOpportunities ? handleDrawerCloseOpportunity : undefined
+          }
+          onValueChange={
+            canManageOpportunities ? handleDrawerValueChange : undefined
+          }
         />
       ) : null}
 
