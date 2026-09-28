@@ -2,8 +2,10 @@ import assert from "node:assert/strict"
 import test, { describe } from "node:test"
 
 import {
+  CONTACT_DEFAULT_LEAD_SOURCES,
   CONTACT_DEFAULT_STATUSES,
   ensureContactsHaveDefaultStatus,
+  ensureDefaultContactLeadSources,
   ensureDefaultContactStatuses,
   ensureTenantOperationalDefaults,
 } from "./tenant-defaults.js"
@@ -11,6 +13,12 @@ import {
 test("tenant operational defaults are idempotent", async () => {
   const contacts: Array<{ tenantId: string; name: string }> = []
   const tasks: Array<{ tenantId: string; name: string }> = []
+  const leadSources: Array<{
+    tenantId: string
+    name: string
+    sortOrder: number
+    isSystemDefault: boolean
+  }> = []
   const pipelines: Array<{
     id: string
     tenantId: string
@@ -41,6 +49,34 @@ test("tenant operational defaults are idempotent", async () => {
   const fakeClient = {
     contactStatusConfig: createStatusModel(contacts),
     taskStatusConfig: createStatusModel(tasks),
+    contactLeadSourceConfig: {
+      upsert: async ({
+        where,
+        update,
+        create,
+      }: {
+        where: { tenantId_name: { tenantId: string; name: string } }
+        update: { sortOrder: number; isSystemDefault: boolean }
+        create: {
+          tenantId: string
+          name: string
+          sortOrder: number
+          isSystemDefault: boolean
+        }
+      }) => {
+        const existing = leadSources.find(
+          (item) =>
+            item.tenantId === where.tenantId_name.tenantId &&
+            item.name === where.tenantId_name.name,
+        )
+        if (existing) {
+          Object.assign(existing, update)
+          return existing
+        }
+        leadSources.push(create)
+        return create
+      },
+    },
     opportunityPipeline: {
       upsert: async ({
         where,
@@ -101,11 +137,123 @@ test("tenant operational defaults are idempotent", async () => {
     tasks.map((item) => item.name),
     ["To Do", "In Progress", "Completed"],
   )
+  assert.deepEqual(
+    leadSources.map((item) => item.name),
+    ["Marketing", "Referral"],
+  )
   assert.equal(pipelines.length, 1)
   assert.deepEqual(
     stages.map((item) => item.name),
     ["New", "Contacted", "Qualified", "Proposal"],
   )
+})
+
+describe("ensureDefaultContactLeadSources", () => {
+  test("keeps Marketing and Referral at their protected positions", async () => {
+    const calls: unknown[] = []
+    const client = {
+      contactLeadSourceConfig: {
+        upsert: async (args: unknown) => {
+          calls.push(args)
+        },
+      },
+    }
+
+    await ensureDefaultContactLeadSources(client as never, "tenant-1")
+
+    assert.deepEqual(
+      calls,
+      CONTACT_DEFAULT_LEAD_SOURCES.map((item) => ({
+        where: {
+          tenantId_name: {
+            tenantId: "tenant-1",
+            name: item.name,
+          },
+        },
+        update: {
+          sortOrder: item.sortOrder,
+          isSystemDefault: true,
+        },
+        create: {
+          tenantId: "tenant-1",
+          ...item,
+          isSystemDefault: true,
+        },
+      })),
+    )
+  })
+
+  test("repairs mutated defaults without changing custom sources and remains idempotent", async () => {
+    const records = [
+      {
+        tenantId: "tenant-1",
+        name: "Marketing",
+        sortOrder: 900,
+        isSystemDefault: false,
+      },
+      {
+        tenantId: "tenant-1",
+        name: "Referral",
+        sortOrder: 800,
+        isSystemDefault: false,
+      },
+      {
+        tenantId: "tenant-1",
+        name: "Community Event",
+        sortOrder: 30,
+        isSystemDefault: false,
+      },
+    ]
+    const client = {
+      contactLeadSourceConfig: {
+        upsert: async ({
+          where,
+          update,
+          create,
+        }: {
+          where: { tenantId_name: { tenantId: string; name: string } }
+          update: { sortOrder: number; isSystemDefault: boolean }
+          create: (typeof records)[number]
+        }) => {
+          const existing = records.find(
+            (item) =>
+              item.tenantId === where.tenantId_name.tenantId &&
+              item.name === where.tenantId_name.name,
+          )
+          if (existing) {
+            Object.assign(existing, update)
+            return existing
+          }
+          records.push(create)
+          return create
+        },
+      },
+    }
+
+    await ensureDefaultContactLeadSources(client as never, "tenant-1")
+    await ensureDefaultContactLeadSources(client as never, "tenant-1")
+
+    assert.deepEqual(records, [
+      {
+        tenantId: "tenant-1",
+        name: "Marketing",
+        sortOrder: 10,
+        isSystemDefault: true,
+      },
+      {
+        tenantId: "tenant-1",
+        name: "Referral",
+        sortOrder: 20,
+        isSystemDefault: true,
+      },
+      {
+        tenantId: "tenant-1",
+        name: "Community Event",
+        sortOrder: 30,
+        isSystemDefault: false,
+      },
+    ])
+  })
 })
 
 describe("ensureDefaultContactStatuses", () => {

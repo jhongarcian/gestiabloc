@@ -42,6 +42,17 @@ export const TASK_DEFAULT_STATUSES = [
   },
 ] as const
 
+export const CONTACT_DEFAULT_LEAD_SOURCES = [
+  {
+    name: "Marketing",
+    sortOrder: 10,
+  },
+  {
+    name: "Referral",
+    sortOrder: 20,
+  },
+] as const
+
 export const STARTER_PIPELINE = {
   name: "Sales Pipeline",
   color: "#4F46E5",
@@ -137,6 +148,33 @@ export async function ensureDefaultTaskStatuses(
   })
 }
 
+export async function ensureDefaultContactLeadSources(
+  client: TenantDefaultsClient,
+  tenantId: string,
+) {
+  await Promise.all(
+    CONTACT_DEFAULT_LEAD_SOURCES.map((item) =>
+      client.contactLeadSourceConfig.upsert({
+        where: {
+          tenantId_name: {
+            tenantId,
+            name: item.name,
+          },
+        },
+        update: {
+          sortOrder: item.sortOrder,
+          isSystemDefault: true,
+        },
+        create: {
+          tenantId,
+          ...item,
+          isSystemDefault: true,
+        },
+      }),
+    ),
+  )
+}
+
 export async function ensureStarterOpportunityPipeline(
   client: TenantDefaultsClient,
   tenantId: string,
@@ -193,6 +231,7 @@ export async function ensureTenantOperationalDefaults(
   tenantId: string,
 ) {
   await ensureDefaultContactStatuses(client, tenantId)
+  await ensureDefaultContactLeadSources(client, tenantId)
   await ensureDefaultTaskStatuses(client, tenantId)
   return ensureStarterOpportunityPipeline(client, tenantId)
 }
