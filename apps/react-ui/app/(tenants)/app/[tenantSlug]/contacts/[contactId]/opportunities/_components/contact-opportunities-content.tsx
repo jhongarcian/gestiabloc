@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { ExternalLink, Target, Trash2 } from "lucide-react"
+import { useRouter } from "next/navigation"
 
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
@@ -83,6 +84,7 @@ export function ContactOpportunitiesPageContent({
   contact,
   opportunities,
 }: ContactOpportunitiesPageContentProps) {
+  const router = useRouter()
   const [selectedOpportunity, setSelectedOpportunity] = useState<OpportunityRecord | null>(null)
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
 
@@ -157,6 +159,7 @@ export function ContactOpportunitiesPageContent({
               }}
               lockContact
               triggerLabel="Add to pipeline"
+              onCreated={() => router.refresh()}
             />
           </div>
         </div>
@@ -304,6 +307,7 @@ export function ContactOpportunitiesPageContent({
               }}
               lockContact
               triggerLabel="Add to pipeline"
+              onCreated={() => router.refresh()}
             />
           </div>
         </div>

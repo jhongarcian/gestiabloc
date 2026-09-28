@@ -88,6 +88,7 @@ export function ContactHeaderActions({
         iconOnly
         triggerTooltip="Create opportunity"
         triggerClassName="inline-flex h-8 w-8 items-center justify-center border-white/70 shadow-sm backdrop-blur transition hover:bg-blue-900"
+        onCreated={() => router.refresh()}
       />
       <CreateAppointmentDialog
         tenantId={tenantId}
