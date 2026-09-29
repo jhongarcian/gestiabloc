@@ -64,6 +64,23 @@ const FORMATTER_PREVIEWS: Record<string, string> = {
   X: "Unix timestamp",
 }
 
+const TEXT_FORMATTER_MODE_LABELS: Record<string, string> = {
+  UPPER_CASE: "Upper case",
+  LOWER_CASE: "Lower case",
+  TITLE_CASE: "Title case",
+  CAPITALIZE: "Capitalize",
+  DEFAULT_VALUE: "Default value",
+  TRIM: "Trim to length",
+  TRIM_WHITESPACE: "Trim whitespace",
+  REPLACE_TEXT: "Replace text",
+  FIND: "Find",
+  WORD_COUNT: "Word count",
+  LENGTH: "Length",
+  SPLIT_TEXT: "Split text",
+  EXTRACT_EMAIL: "Extract email",
+  EXTRACT_URL: "Extract URL",
+}
+
 export function buildAutomationFlowGraph(
   draft: AutomationFlowDraft,
   catalog: AutomationCatalog | null,
@@ -150,6 +167,8 @@ export function buildAutomationFlowGraph(
                 : action.numberFormatterConfig?.mode === "TEXT_TO_NUMBER"
                   ? `Text to number → ${action.numberFormatterConfig.outputKey}`
                   : `Format number → ${action.numberFormatterConfig?.outputKey || "value"}`
+        : action.type === "FORMAT_TEXT"
+          ? `${TEXT_FORMATTER_MODE_LABELS[action.textFormatterConfig?.mode ?? ""] ?? "Format text"} → ${action.textFormatterConfig?.outputKey || "value"}`
         : action.type === "MATH_OPERATION"
           ? action.mathOperationConfig?.mode === "DATE"
             ? `${action.mathOperationConfig.operation === "ADD" ? "Add" : "Subtract"} ${action.mathOperationConfig.amount} ${action.mathOperationConfig.unit.toLocaleLowerCase()} → ${action.mathOperationConfig.outputKey}`
@@ -165,7 +184,9 @@ export function buildAutomationFlowGraph(
       position: { x: CARD_X, y },
       data: {
         kind: "action",
-        label: actionLabels[action.type],
+        label: action.type === "FORMAT_TEXT"
+          ? action.textFormatterConfig?.actionName.trim() || actionLabels[action.type]
+          : actionLabels[action.type],
         subtitle: actionSubtitle,
         index,
         ...(action.type === "WAIT" && action.nodeKey && waitNodeBadges[action.nodeKey]

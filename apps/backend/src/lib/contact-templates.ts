@@ -106,6 +106,34 @@ type CustomFieldReference = ContactTemplateFieldDefinition & {
   isSensitive: boolean
 }
 
+type LoadedContactTemplateContext = {
+  contact: Record<string, unknown>
+  customFields: Map<string, { value: unknown; fieldType: ContactTemplateFieldType }>
+  completeCustomFieldCatalog: boolean
+}
+
+export class ContactTemplateExecutionContext {
+  private cacheKey: string | null = null
+  private cached: Promise<LoadedContactTemplateContext> | null = null
+
+  load(cacheKey: string, loader: () => Promise<LoadedContactTemplateContext>) {
+    if (this.cacheKey !== cacheKey || !this.cached) {
+      this.cacheKey = cacheKey
+      this.cached = loader()
+    }
+    return this.cached
+  }
+
+  invalidate() {
+    this.cacheKey = null
+    this.cached = null
+  }
+}
+
+export function createContactTemplateExecutionContext() {
+  return new ContactTemplateExecutionContext()
+}
+
 const REGULAR_FIELD_MAP = new Map<string, ContactTemplateFieldDefinition>(
   CONTACT_TEMPLATE_REGULAR_FIELDS.map((field) => [field.key, field]),
 )
@@ -572,8 +600,10 @@ async function loadContactTemplateContext(
     tenantId: string
     contactId: string
   },
+  executionContext?: ContactTemplateExecutionContext,
 ) {
-  const contact = await prismaTx.contact.findFirst({
+  const load = async (): Promise<LoadedContactTemplateContext> => {
+  const [contact, fieldDefinitions] = await Promise.all([prismaTx.contact.findFirst({
     where: { tenantId: params.tenantId, id: params.contactId },
     select: {
       firstName: true,
@@ -630,10 +660,23 @@ async function loadContactTemplateContext(
         },
       },
     },
-  })
+  }), prismaTx.contactCustomField?.findMany
+    ? prismaTx.contactCustomField.findMany({
+        where: {
+          tenantId: params.tenantId,
+          isActive: true,
+          isEncrypted: false,
+          isSensitive: false,
+        },
+        select: { key: true, fieldType: true },
+      })
+    : Promise.resolve([])])
   if (!contact) throw new Error("The contact for this automation action is no longer available.")
 
   const customFields = new Map<string, { value: unknown; fieldType: ContactTemplateFieldType }>()
+  for (const field of fieldDefinitions) {
+    customFields.set(field.key, { value: null, fieldType: field.fieldType })
+  }
   for (const item of contact.customFieldValues ?? []) {
     if (!item.field?.isActive || item.field.isEncrypted || item.field.isSensitive) continue
     customFields.set(item.field.key, { value: item.value, fieldType: item.field.fieldType })
@@ -641,7 +684,13 @@ async function loadContactTemplateContext(
   return {
     contact: contact as Record<string, unknown>,
     customFields,
+    completeCustomFieldCatalog: Boolean(prismaTx.contactCustomField?.findMany),
   }
+  }
+
+  return executionContext
+    ? executionContext.load(`${params.tenantId}:${params.contactId}`, load)
+    : load()
 }
 
 export async function resolveSafeContactTemplateFieldValue(
@@ -651,9 +700,10 @@ export async function resolveSafeContactTemplateFieldValue(
     contactId: string
     source: "CONTACT_FIELD" | "CUSTOM_FIELD"
     key: string
+    executionContext?: ContactTemplateExecutionContext
   },
 ) {
-  const context = await loadContactTemplateContext(prismaTx, params)
+  const context = await loadContactTemplateContext(prismaTx, params, params.executionContext)
   if (params.source === "CONTACT_FIELD") {
     const field = REGULAR_FIELD_MAP.get(params.key)
     if (!field) return null
@@ -665,7 +715,8 @@ export async function resolveSafeContactTemplateFieldValue(
 
   const field = context.customFields.get(params.key)
   if (field) return { value: field.value, fieldType: field.fieldType }
-
+  if (context.completeCustomFieldCatalog) return null
+  if (!prismaTx.contactCustomField?.findFirst) return null
   const emptyField = await prismaTx.contactCustomField.findFirst({
     where: {
       tenantId: params.tenantId,
@@ -690,9 +741,10 @@ export async function renderContactTemplates(
     timezone?: string | null
     occurredAt?: Date
     automationValues?: Record<string, unknown>
+    executionContext?: ContactTemplateExecutionContext
   },
 ) {
-  const context = await loadContactTemplateContext(prismaTx, params)
+  const context = await loadContactTemplateContext(prismaTx, params, params.executionContext)
   const execution = {
     occurredAt: params.occurredAt ?? new Date(),
     timezone: params.timezone?.trim() || DEFAULT_TIMEZONE,
@@ -722,6 +774,7 @@ export async function renderContactNoteTemplates(
     timezone?: string | null
     occurredAt?: Date
     automationValues?: Record<string, unknown>
+    executionContext?: ContactTemplateExecutionContext
   },
 ) {
   const rendered = await renderContactTemplates(prismaTx, {
@@ -734,6 +787,7 @@ export async function renderContactNoteTemplates(
     timezone: params.timezone,
     occurredAt: params.occurredAt,
     automationValues: params.automationValues,
+    executionContext: params.executionContext,
   })
 
   return {
@@ -765,6 +819,7 @@ export async function resolveContactDateValue(
       | { type: "SPECIFIC_DATE"; date: string }
     timezone?: string | null
     occurredAt?: Date
+    executionContext?: ContactTemplateExecutionContext
   },
 ) {
   const timezone = params.timezone?.trim() || DEFAULT_TIMEZONE
@@ -775,7 +830,7 @@ export async function resolveContactDateValue(
     return isValidTemplateDate(params.source.date) ? params.source.date : null
   }
 
-  const context = await loadContactTemplateContext(prismaTx, params)
+  const context = await loadContactTemplateContext(prismaTx, params, params.executionContext)
   if (params.source.type === "CONTACT_FIELD") {
     const field = REGULAR_FIELD_MAP.get(params.source.key)
     if (!field || field.fieldType !== "DATE") return null

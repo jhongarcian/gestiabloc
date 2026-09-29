@@ -68,7 +68,7 @@ import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { parseAutomationWaitIntegerDraft } from "@/lib/automation-wait-input"
-import { validateContactTemplate } from "@/lib/contact-template"
+import { uniqueAutomationOutputs, validateContactTemplate } from "@/lib/contact-template"
 import {
   dateTimeDraftToUtcIso,
   formatUtcIsoToDateTimeDraft,
@@ -95,6 +95,8 @@ import type {
   AutomationRecord,
   AutomationTaskConfig,
   AutomationTaskDateTime,
+  AutomationTextFormatterConfig,
+  AutomationTextSource,
   AutomationTriggerType,
   AutomationValueDefinition,
   AutomationWaitConfig,
@@ -172,6 +174,7 @@ function draftSnapshot(draft: Draft) {
       taskConfig: action.taskConfig,
       dateTimeFormatterConfig: action.dateTimeFormatterConfig,
       numberFormatterConfig: action.numberFormatterConfig,
+      textFormatterConfig: action.textFormatterConfig,
       mathOperationConfig: action.mathOperationConfig,
     })),
   })
@@ -259,23 +262,29 @@ const ACTION_DEFINITIONS = {
     group: "INTERNAL",
     order: 2,
   },
+  FORMAT_TEXT: {
+    label: "Text formatter",
+    description: "Transform text for later actions.",
+    group: "INTERNAL",
+    order: 3,
+  },
   MATH_OPERATION: {
     label: "Math operation",
     description: "Calculate a number or adjust a date.",
     group: "INTERNAL",
-    order: 3,
+    order: 4,
   },
   CREATE_TASK: {
     label: "Create task",
     description: "Create a task linked to this contact.",
     group: "INTERNAL",
-    order: 4,
+    order: 5,
   },
   ADD_CONTACT_NOTE: {
     label: "Add contact note",
     description: "Add a note using live contact information.",
     group: "INTERNAL",
-    order: 5,
+    order: 6,
   },
   UPDATE_CONTACT_CUSTOM_FIELDS: {
     label: "Update contact fields",
@@ -709,6 +718,27 @@ function actionDefaults(
       },
     }
   }
+  if (type === "FORMAT_TEXT") {
+    const preferredContactField = catalog.templateFields.contact.find(
+      (field) => textFormatterAcceptsFieldType(field.fieldType),
+    )
+    const preferredCustomField = catalog.customFields.find(
+      (field) => textFormatterAcceptsFieldType(field.fieldType),
+    )
+    const source: AutomationTextSource = preferredContactField
+      ? { type: "CONTACT_FIELD", key: preferredContactField.key }
+      : { type: "CUSTOM_FIELD", key: preferredCustomField?.key ?? "" }
+    return {
+      nodeKey,
+      type,
+      textFormatterConfig: {
+        actionName: "Text formatter",
+        mode: "UPPER_CASE",
+        source,
+        outputKey: "formatted_text",
+      },
+    }
+  }
   if (type === "MATH_OPERATION") {
     const preferredCustomField = catalog.customFields.find(
       (field) => field.fieldType === "NUMBER" || field.fieldType === "CURRENCY",
@@ -763,14 +793,16 @@ function optionalTemplateError(
 }
 
 function formatterOutputs(actions: AutomationAction[]): AutomationValueDefinition[] {
-  return actions.flatMap((action) => {
+  return uniqueAutomationOutputs(actions.flatMap((action) => {
     const key = action.type === "FORMAT_DATE_TIME"
       ? action.dateTimeFormatterConfig?.outputKey.trim()
       : action.type === "FORMAT_NUMBER"
         ? action.numberFormatterConfig?.outputKey.trim()
-        : action.type === "MATH_OPERATION"
-          ? action.mathOperationConfig?.outputKey.trim()
-        : ""
+        : action.type === "FORMAT_TEXT"
+          ? action.textFormatterConfig?.outputKey.trim()
+          : action.type === "MATH_OPERATION"
+            ? action.mathOperationConfig?.outputKey.trim()
+            : ""
     const valueKind: AutomationValueDefinition["valueKind"] = action.type === "FORMAT_DATE_TIME"
       ? action.dateTimeFormatterConfig?.mode === "COMPARE_DATES"
         ? "NUMBER"
@@ -786,13 +818,19 @@ function formatterOutputs(actions: AutomationAction[]): AutomationValueDefinitio
             : action.numberFormatterConfig?.mode === "FORMAT_PHONE_NUMBER"
               ? "PHONE"
               : "TEXT"
-        : action.type === "MATH_OPERATION"
-          ? action.mathOperationConfig?.mode === "DATE" ? "DATE" : "NUMBER"
-        : "TEXT"
+        : action.type === "FORMAT_TEXT"
+          ? action.textFormatterConfig?.mode === "FIND" ||
+            action.textFormatterConfig?.mode === "WORD_COUNT" ||
+            action.textFormatterConfig?.mode === "LENGTH"
+            ? "NUMBER"
+            : "TEXT"
+          : action.type === "MATH_OPERATION"
+            ? action.mathOperationConfig?.mode === "DATE" ? "DATE" : "NUMBER"
+            : "TEXT"
     return key && /^[a-z][a-z0-9_]{0,63}$/.test(key)
       ? [{ key, label: key, valueKind }]
       : []
-  })
+  }))
 }
 
 function numberFormatterAcceptsFieldType(
@@ -811,6 +849,34 @@ function numberFormatterAcceptsValueKind(
   if (mode === "RANDOM_NUMBER") return false
   if (mode === "FORMAT_PHONE_NUMBER") return valueKind === "PHONE"
   return valueKind === "NUMBER" || valueKind === "NUMERIC_TEXT"
+}
+
+function textFormatterAcceptsFieldType(fieldType: string) {
+  return ["TEXT", "TEXTAREA", "PHONE", "SELECT", "RADIO", "MULTI_SELECT"].includes(fieldType)
+}
+
+function textFormatterAcceptsValueKind(valueKind: AutomationValueDefinition["valueKind"]) {
+  return valueKind === "TEXT" || valueKind === "PHONE" || valueKind === "NUMERIC_TEXT"
+}
+
+function isTextFormatterSourceReady(
+  source: AutomationTextSource,
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+) {
+  if (source.type === "CONTACT_FIELD") {
+    return catalog.templateFields.contact.some(
+      (field) => field.key === source.key && textFormatterAcceptsFieldType(field.fieldType),
+    )
+  }
+  if (source.type === "CUSTOM_FIELD") {
+    return catalog.customFields.some(
+      (field) => field.key === source.key && textFormatterAcceptsFieldType(field.fieldType),
+    )
+  }
+  return automationOutputs.some(
+    (output) => output.key === source.key && textFormatterAcceptsValueKind(output.valueKind),
+  )
 }
 
 function isNumberFormatterSourceReady(
@@ -987,6 +1053,35 @@ function isActionReady(
     if (config.mode === "FORMAT_PHONE_NUMBER") return /^\+\d{1,4}$/.test(config.countryCode)
     return config.decimalMark === "PERIOD" || config.decimalMark === "COMMA"
   }
+  if (action.type === "FORMAT_TEXT") {
+    const config = action.textFormatterConfig
+    if (!config || !config.actionName.trim() || config.actionName.trim().length > 120) return false
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)) return false
+    if (availableOutputs.some((output) => output.key === config.outputKey)) return false
+    if (!isTextFormatterSourceReady(config.source, catalog, availableOutputs)) return false
+    if (config.mode === "DEFAULT_VALUE") {
+      return config.defaultValue.trim().length > 0 && config.defaultValue.length <= 5_000
+    }
+    if (config.mode === "TRIM") {
+      return Number.isInteger(config.maxLength) && config.maxLength > 0 && config.maxLength <= 10_000
+    }
+    if (config.mode === "REPLACE_TEXT") {
+      return config.searchText.length > 0 &&
+        config.searchText.length <= 5_000 &&
+        config.replacementText.length <= 5_000
+    }
+    if (config.mode === "FIND") {
+      return config.searchText.length > 0 && config.searchText.length <= 5_000
+    }
+    if (config.mode === "SPLIT_TEXT") {
+      return config.separator.length > 0 &&
+        config.separator.length <= 100 &&
+        Number.isInteger(config.segment) &&
+        config.segment > 0 &&
+        config.segment <= 10_000
+    }
+    return true
+  }
   if (action.type === "MATH_OPERATION") {
     const config = action.mathOperationConfig
     if (!config || !/^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)) return false
@@ -1138,6 +1233,7 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
       taskConfig: action.taskConfig,
       dateTimeFormatterConfig: action.dateTimeFormatterConfig,
       numberFormatterConfig: action.numberFormatterConfig,
+      textFormatterConfig: action.textFormatterConfig,
       mathOperationConfig: action.mathOperationConfig,
     })),
   }
@@ -2431,6 +2527,16 @@ function ActionEditor({
           />
         ) : null}
 
+        {action.type === "FORMAT_TEXT" && action.textFormatterConfig ? (
+          <TextFormatterActionEditor
+            actionKey={action.nodeKey ?? "text-formatter"}
+            config={action.textFormatterConfig}
+            catalog={catalog}
+            automationOutputs={availableAutomationOutputs}
+            onChange={(textFormatterConfig) => onChange({ ...action, textFormatterConfig })}
+          />
+        ) : null}
+
         {action.type === "MATH_OPERATION" && action.mathOperationConfig ? (
           <MathOperationActionEditor
             actionKey={action.nodeKey ?? "math-operation"}
@@ -2482,16 +2588,19 @@ function FormatterIntegerInput({
   id,
   label,
   value,
+  invalid = false,
   onChange,
 }: {
   id: string
   label: string
   value: number
+  invalid?: boolean
   onChange: (value: number) => void
 }) {
   const [draftValue, setDraftValue] = useState(Number.isFinite(value) ? String(value) : "")
+  const inputInvalid = invalid || !Number.isSafeInteger(value)
   return (
-    <Field className="gap-1.5" data-invalid={!Number.isSafeInteger(value)}>
+    <Field className="gap-1.5" data-invalid={inputInvalid}>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
       <Input
         id={id}
@@ -2499,7 +2608,7 @@ function FormatterIntegerInput({
         inputMode="numeric"
         value={draftValue}
         className="h-8 rounded-full"
-        aria-invalid={!Number.isSafeInteger(value)}
+        aria-invalid={inputInvalid}
         onChange={(event) => {
           const next = event.target.value
           if (!/^-?\d*$/.test(next)) return
@@ -2778,6 +2887,267 @@ function NumberFormatterActionEditor({
             </Select>
           </Field>
         </>
+      ) : null}
+    </div>
+  )
+}
+
+const TEXT_FORMATTER_MODE_OPTIONS: Array<{
+  value: AutomationTextFormatterConfig["mode"]
+  label: string
+  description: string
+}> = [
+  { value: "UPPER_CASE", label: "Upper case", description: "Converts all letters to uppercase." },
+  { value: "LOWER_CASE", label: "Lower case", description: "Converts all letters to lowercase." },
+  { value: "TITLE_CASE", label: "Title case", description: "Lowercases the text, then capitalizes each word." },
+  { value: "CAPITALIZE", label: "Capitalize", description: "Lowercases the text, then capitalizes its first letter." },
+  { value: "DEFAULT_VALUE", label: "Default value", description: "Uses the fallback when the source is empty or only whitespace." },
+  { value: "TRIM", label: "Trim to length", description: "Keeps only the first specified number of characters." },
+  { value: "TRIM_WHITESPACE", label: "Trim whitespace", description: "Removes whitespace from the beginning and end." },
+  { value: "REPLACE_TEXT", label: "Replace text", description: "Replaces every exact, case-sensitive match." },
+  { value: "FIND", label: "Find", description: "Returns the zero-based position of the first exact match, or -1." },
+  { value: "WORD_COUNT", label: "Word count", description: "Returns the number of words in the text." },
+  { value: "LENGTH", label: "Length", description: "Returns the number of visible characters." },
+  { value: "SPLIT_TEXT", label: "Split text", description: "Splits the text by a separator and returns the selected segment." },
+  { value: "EXTRACT_EMAIL", label: "Extract email", description: "Returns the first valid email address found." },
+  { value: "EXTRACT_URL", label: "Extract URL", description: "Returns the first http, https, or www URL found." },
+]
+
+function TextFormatterActionEditor({
+  actionKey,
+  config,
+  catalog,
+  automationOutputs,
+  onChange,
+}: {
+  actionKey: string
+  config: AutomationTextFormatterConfig
+  catalog: AutomationCatalog
+  automationOutputs: AutomationValueDefinition[]
+  onChange: (config: AutomationTextFormatterConfig) => void
+}) {
+  const actionNameValid = config.actionName.trim().length > 0 && config.actionName.trim().length <= 120
+  const outputKeyValid = /^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)
+  const duplicateOutputKey = automationOutputs.some((output) => output.key === config.outputKey)
+  const sourceReady = isTextFormatterSourceReady(config.source, catalog, automationOutputs)
+  const contactFields = catalog.templateFields.contact
+    .filter((field) => textFormatterAcceptsFieldType(field.fieldType))
+    .map((field) => ({ value: `contact:${field.key}`, label: field.label, searchText: field.key }))
+  const customFields = catalog.customFields
+    .filter((field) => textFormatterAcceptsFieldType(field.fieldType))
+    .map((field) => ({ value: `custom:${field.key}`, label: field.label, searchText: field.key }))
+  const compatibleAutomationOutputs = automationOutputs
+    .filter((output) => textFormatterAcceptsValueKind(output.valueKind))
+    .map((output) => ({ value: `automation:${output.key}`, label: output.label, searchText: output.key }))
+  const sourceValue = `${config.source.type === "CONTACT_FIELD" ? "contact" : config.source.type === "CUSTOM_FIELD" ? "custom" : "automation"}:${config.source.key}`
+  const selectedMode = TEXT_FORMATTER_MODE_OPTIONS.find((option) => option.value === config.mode)
+
+  const changeSource = (value: string) => {
+    const separatorIndex = value.indexOf(":")
+    const category = value.slice(0, separatorIndex)
+    const key = value.slice(separatorIndex + 1)
+    const source: AutomationTextSource = category === "contact"
+      ? { type: "CONTACT_FIELD", key }
+      : category === "custom"
+        ? { type: "CUSTOM_FIELD", key }
+        : { type: "AUTOMATION_VALUE", key }
+    onChange({ ...config, source })
+  }
+
+  const setMode = (mode: AutomationTextFormatterConfig["mode"]) => {
+    const base = {
+      actionName: config.actionName,
+      source: config.source,
+      outputKey: config.outputKey,
+    }
+    if (mode === "DEFAULT_VALUE") {
+      onChange({ ...base, mode, defaultValue: "Unknown" })
+      return
+    }
+    if (mode === "TRIM") {
+      onChange({ ...base, mode, maxLength: 100 })
+      return
+    }
+    if (mode === "REPLACE_TEXT") {
+      onChange({ ...base, mode, searchText: "", replacementText: "" })
+      return
+    }
+    if (mode === "FIND") {
+      onChange({ ...base, mode, searchText: "" })
+      return
+    }
+    if (mode === "SPLIT_TEXT") {
+      onChange({ ...base, mode, separator: " ", segment: 1 })
+      return
+    }
+    onChange({ ...base, mode })
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+        <p className="text-sm font-semibold text-slate-800">Action details</p>
+        <Field className="gap-1.5" data-invalid={!actionNameValid}>
+          <FieldLabel htmlFor="text-formatter-action-name">Action name</FieldLabel>
+          <Input
+            id="text-formatter-action-name"
+            value={config.actionName}
+            maxLength={120}
+            className="h-8 rounded-full bg-white"
+            aria-invalid={!actionNameValid}
+            onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+            placeholder="Normalize lead name"
+          />
+          {!actionNameValid ? <p className="text-xs text-rose-600">Enter an action name.</p> : null}
+        </Field>
+        <Field className="gap-1.5">
+          <FieldLabel htmlFor="text-formatter-mode">Action type</FieldLabel>
+          <Select value={config.mode} onValueChange={(value) => setMode(value as AutomationTextFormatterConfig["mode"])}>
+            <SelectTrigger
+              id="text-formatter-mode"
+              aria-describedby="text-formatter-mode-description"
+              className={cn(COMPACT_SELECT_TRIGGER_CLASS, "bg-white")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TEXT_FORMATTER_MODE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p id="text-formatter-mode-description" className="text-xs leading-5 text-slate-500">
+            {selectedMode?.description}
+          </p>
+        </Field>
+      </div>
+
+      <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/45 p-3">
+        <p className="text-sm font-semibold text-slate-800">Input and result</p>
+        <Field className="gap-1.5" data-invalid={!sourceReady}>
+          <FieldLabel>Source</FieldLabel>
+          <AutomationFieldPicker
+            value={sourceValue}
+            contactFields={contactFields}
+            customFields={customFields}
+            automationValues={compatibleAutomationOutputs}
+            onValueChange={changeSource}
+            ariaLabel="Text formatter source"
+          />
+          {!sourceReady ? <p className="text-xs text-rose-600">Select a compatible text source.</p> : null}
+        </Field>
+        <Field className="gap-1.5" data-invalid={!outputKeyValid || duplicateOutputKey}>
+          <FieldLabel htmlFor="text-formatter-result-name">Result name</FieldLabel>
+          <Input
+            id="text-formatter-result-name"
+            value={config.outputKey}
+            maxLength={64}
+            className="h-8 rounded-full bg-white"
+            aria-invalid={!outputKeyValid || duplicateOutputKey}
+            onChange={(event) => onChange({ ...config, outputKey: event.target.value.toLowerCase() })}
+            placeholder="formatted_text"
+          />
+          {!outputKeyValid ? (
+            <p className="text-xs text-rose-600">Start with a letter and use lowercase letters, numbers, or underscores.</p>
+          ) : duplicateOutputKey ? (
+            <p className="text-xs text-rose-600">This result name is already used by an earlier action.</p>
+          ) : null}
+        </Field>
+      </div>
+
+      {config.mode === "DEFAULT_VALUE" ||
+      config.mode === "TRIM" ||
+      config.mode === "REPLACE_TEXT" ||
+      config.mode === "FIND" ||
+      config.mode === "SPLIT_TEXT" ? (
+        <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+          <p className="text-sm font-semibold text-slate-800">Formatter settings</p>
+          {config.mode === "DEFAULT_VALUE" ? (
+            <Field className="gap-1.5" data-invalid={!config.defaultValue.trim() || config.defaultValue.length > 5_000}>
+              <FieldLabel htmlFor="text-formatter-default">Default value</FieldLabel>
+              <Textarea
+                id="text-formatter-default"
+                value={config.defaultValue}
+                maxLength={5_000}
+                rows={3}
+                className="resize-none rounded-xl bg-white"
+                aria-invalid={!config.defaultValue.trim() || config.defaultValue.length > 5_000}
+                onChange={(event) => onChange({ ...config, defaultValue: event.target.value })}
+              />
+            </Field>
+          ) : null}
+          {config.mode === "TRIM" ? (
+            <FormatterIntegerInput
+              key={`${actionKey}-trim`}
+              id="text-formatter-max-length"
+              label="Maximum characters"
+              value={config.maxLength}
+              invalid={!Number.isInteger(config.maxLength) || config.maxLength < 1 || config.maxLength > 10_000}
+              onChange={(maxLength) => onChange({ ...config, maxLength })}
+            />
+          ) : null}
+          {config.mode === "REPLACE_TEXT" ? (
+            <>
+              <Field className="gap-1.5" data-invalid={!config.searchText.length}>
+                <FieldLabel htmlFor="text-formatter-search">Find</FieldLabel>
+                <Input
+                  id="text-formatter-search"
+                  value={config.searchText}
+                  maxLength={5_000}
+                  className="h-8 rounded-full bg-white"
+                  aria-invalid={!config.searchText.length}
+                  onChange={(event) => onChange({ ...config, searchText: event.target.value })}
+                />
+              </Field>
+              <Field className="gap-1.5">
+                <FieldLabel htmlFor="text-formatter-replacement">Replace with</FieldLabel>
+                <Input
+                  id="text-formatter-replacement"
+                  value={config.replacementText}
+                  maxLength={5_000}
+                  className="h-8 rounded-full bg-white"
+                  onChange={(event) => onChange({ ...config, replacementText: event.target.value })}
+                />
+              </Field>
+            </>
+          ) : null}
+          {config.mode === "FIND" ? (
+            <Field className="gap-1.5" data-invalid={!config.searchText.length}>
+              <FieldLabel htmlFor="text-formatter-find">Value to find</FieldLabel>
+              <Input
+                id="text-formatter-find"
+                value={config.searchText}
+                maxLength={5_000}
+                className="h-8 rounded-full bg-white"
+                aria-invalid={!config.searchText.length}
+                onChange={(event) => onChange({ ...config, searchText: event.target.value })}
+              />
+            </Field>
+          ) : null}
+          {config.mode === "SPLIT_TEXT" ? (
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.7fr)] gap-2">
+              <Field className="gap-1.5" data-invalid={!config.separator.length}>
+                <FieldLabel htmlFor="text-formatter-separator">Separator</FieldLabel>
+                <Input
+                  id="text-formatter-separator"
+                  value={config.separator}
+                  maxLength={100}
+                  className="h-8 rounded-full bg-white"
+                  aria-invalid={!config.separator.length}
+                  onChange={(event) => onChange({ ...config, separator: event.target.value })}
+                />
+              </Field>
+              <FormatterIntegerInput
+                key={`${actionKey}-split`}
+                id="text-formatter-segment"
+                label="Segment"
+                value={config.segment}
+                invalid={!Number.isInteger(config.segment) || config.segment < 1 || config.segment > 10_000}
+                onChange={(segment) => onChange({ ...config, segment })}
+              />
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )

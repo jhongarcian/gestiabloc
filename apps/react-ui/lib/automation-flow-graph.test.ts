@@ -14,6 +14,7 @@ const labels = {
   CREATE_TASK: "Create task",
   FORMAT_DATE_TIME: "Date/Time formatter",
   FORMAT_NUMBER: "Number formatter",
+  FORMAT_TEXT: "Text formatter",
   MATH_OPERATION: "Math operation",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
@@ -274,6 +275,33 @@ describe("buildAutomationFlowGraph", () => {
     const formatterNode = graph.nodes.find((node) => node.id.includes("00000000"))
     assert.equal(formatterNode?.data.label, "Number formatter")
     assert.equal(formatterNode?.data.subtitle, "Currency · USD → premium_label")
+  })
+
+  test("uses the editable Text formatter node name and mode summary", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "FORMAT_TEXT",
+          textFormatterConfig: {
+            actionName: "Normalize lead name",
+            mode: "TITLE_CASE",
+            source: { type: "CONTACT_FIELD", key: "name" },
+            outputKey: "contact_name",
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const formatterNode = graph.nodes.find((node) => node.id.includes("00000000"))
+    assert.equal(formatterNode?.data.label, "Normalize lead name")
+    assert.equal(formatterNode?.data.subtitle, "Title case → contact_name")
   })
 
   test("summarizes number and date Math operations", () => {

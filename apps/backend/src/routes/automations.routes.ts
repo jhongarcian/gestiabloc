@@ -61,7 +61,7 @@ const AutomationExecutionLogsQuerySchema = z.object({
     { message: "pageSize must be 10, 25, or 50" },
   ).default(10),
   search: z.string().trim().max(120).default(""),
-  status: z.enum(["EXECUTED", "SKIPPED", "FAILED", "WAITING"]).optional(),
+  status: z.enum(["QUEUED", "EXECUTED", "SKIPPED", "FAILED", "WAITING"]).optional(),
 })
 const ReorderSchema = z.object({
   automationIds: z.array(z.string().trim().min(1)).min(1).max(200),
@@ -133,6 +133,7 @@ function serializeAutomation(record: any) {
         taskConfig: action.taskConfig,
         dateTimeFormatterConfig: action.dateTimeFormatterConfig,
         numberFormatterConfig: action.numberFormatterConfig,
+        textFormatterConfig: action.textFormatterConfig,
         mathOperationConfig: action.mathOperationConfig,
       }
     }),

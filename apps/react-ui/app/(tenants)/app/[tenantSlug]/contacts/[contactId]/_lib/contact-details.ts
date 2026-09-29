@@ -25,6 +25,25 @@ export type ContactDetailsResponse = {
       postalCode: string | null
       country: string | null
     }
+    mailingAddress: {
+      addressLine1: string | null
+      addressLine2: string | null
+      city: string | null
+      state: string | null
+      postalCode: string | null
+      country: string | null
+    }
+    emergencyContactName: string | null
+    emergencyContactPhone: string | null
+    emergencyContactRelationship: string | null
+    gender: "FEMALE" | "MALE" | "NON_BINARY" | "OTHER" | "UNKNOWN" | null
+    height: string | null
+    weight: string | null
+    deceasedAt: string | null
+    smokerStatus: "UNKNOWN" | "NEVER" | "CURRENT" | "FORMER" | null
+    leadDate: string | null
+    leadSource: string | null
+    leadOtherSource: string | null
     assignedTo: {
       userId: string
       name: string

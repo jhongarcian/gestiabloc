@@ -174,4 +174,37 @@ describe("findEnabledAutomationReference", () => {
       { id: "automation-1", name: "Calculate renewal" },
     )
   })
+
+  test("finds custom fields used by a Text formatter", async () => {
+    const prismaClient = {
+      contactCustomField: {
+        findFirst: async () => ({ key: "intake_notes" }),
+      },
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Normalize intake notes",
+          actions: [{
+            type: "FORMAT_TEXT",
+            textFormatterConfig: {
+              actionName: "Clean notes",
+              mode: "TRIM_WHITESPACE",
+              source: { type: "CUSTOM_FIELD", key: "intake_notes" },
+              outputKey: "clean_notes",
+            },
+          }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "customField", id: "field-1" },
+      ),
+      { id: "automation-1", name: "Normalize intake notes" },
+    )
+  })
 })

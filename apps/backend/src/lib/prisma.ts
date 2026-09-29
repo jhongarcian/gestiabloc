@@ -4,7 +4,15 @@ import { PrismaPg } from "@prisma/adapter-pg"
 
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL missing")
 
-const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! })
+const configuredPoolSize = Number(process.env.PRISMA_POOL_MAX ?? "20")
+if (!Number.isInteger(configuredPoolSize) || configuredPoolSize < 5 || configuredPoolSize > 100) {
+  throw new Error("PRISMA_POOL_MAX must be an integer between 5 and 100.")
+}
+
+const adapter = new PrismaPg({
+  connectionString: process.env.DATABASE_URL!,
+  max: configuredPoolSize,
+})
 
 const globalForPrisma = global as unknown as { prisma: PrismaClient }
 

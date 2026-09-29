@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 
 import {
-  getAutomationActionLabel,
+  getAutomationActionNodeLabel,
   getAutomationTriggerLabel,
   getContactDisplayName,
 } from "./automation-node-executions.js"
@@ -70,7 +70,7 @@ export async function enrollAutomationProcessContact(
             nodeKind: "ACTION" as const,
             nodeOrder: index + 1,
             nodeKey: action.nodeKey ?? action.type,
-            nodeLabel: getAutomationActionLabel(action.type),
+            nodeLabel: getAutomationActionNodeLabel(action),
             status: "SKIPPED" as const,
             reasonCode: "TRIGGER_NOT_MET",
             details: "Skipped because the automation trigger did not run.",

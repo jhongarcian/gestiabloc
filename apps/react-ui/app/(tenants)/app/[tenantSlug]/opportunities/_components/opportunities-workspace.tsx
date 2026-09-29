@@ -146,6 +146,9 @@ type MoveOpportunityResponse = {
   automation?: {
     matchedCount: number
     executedCount: number
+    automationEventId?: string | null
+    automationStatus?: "QUEUED" | "NOT_APPLICABLE"
+    queuedAutomationCount?: number
   }
 }
 
@@ -1023,7 +1026,9 @@ export function OpportunitiesWorkspace({
         if (!current || current.id !== opportunityId) return current
         return movedOpportunity
       })
-      if ((data.automation?.executedCount ?? 0) > 0) {
+      if (data.automation?.automationStatus === "QUEUED") {
+        toast.success("Opportunity moved. Automation queued.")
+      } else if ((data.automation?.executedCount ?? 0) > 0) {
         toast.success(`${data.automation!.executedCount} automation${data.automation!.executedCount === 1 ? "" : "s"} ran.`)
       }
     } catch (error) {
@@ -1178,7 +1183,9 @@ export function OpportunitiesWorkspace({
         if (!current) return current
         return moveOpportunityLocally(current, opportunityId, targetStageId, movedOpportunity)
       })
-      if ((data.automation?.executedCount ?? 0) > 0) {
+      if (data.automation?.automationStatus === "QUEUED") {
+        toast.success("Opportunity moved. Automation queued.")
+      } else if ((data.automation?.executedCount ?? 0) > 0) {
         toast.success(`${data.automation!.executedCount} automation${data.automation!.executedCount === 1 ? "" : "s"} ran.`)
       }
     } catch (error) {

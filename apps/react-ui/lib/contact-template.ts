@@ -27,6 +27,15 @@ export type ContactTemplateCatalog = {
   }
 }
 
+export function uniqueAutomationOutputs<T extends { key: string }>(outputs: T[]) {
+  const seen = new Set<string>()
+  return outputs.filter((output) => {
+    if (seen.has(output.key)) return false
+    seen.add(output.key)
+    return true
+  })
+}
+
 type ParsedToken = {
   raw: string
   source: "CONTACT" | "CUSTOM_FIELD" | "DATE" | "AUTOMATION_VALUE"

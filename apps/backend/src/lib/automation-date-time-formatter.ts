@@ -1,7 +1,11 @@
 import { z } from "zod"
 
 import { addCalendarDateOffset } from "./calendar-date.js"
-import { isValidTemplateDate } from "./contact-templates.js"
+import {
+  isValidTemplateDate,
+  resolveSafeContactTemplateFieldValue,
+  type ContactTemplateExecutionContext,
+} from "./contact-templates.js"
 import { AUTOMATION_OUTPUT_KEY_SCHEMA } from "./automation-number-formatter.js"
 import { zonedDateTimeToUtc } from "./timezone-date-time.js"
 
@@ -222,38 +226,56 @@ function resolveLocalInstant(dateKey: string, time: string, timezone: string) {
 
 async function resolveStoredDateSource(
   prismaTx: any,
-  params: { tenantId: string; contactId: string; source: AutomationDateSource },
+  params: {
+    tenantId: string
+    contactId: string
+    source: AutomationDateSource
+    executionContext?: ContactTemplateExecutionContext
+  },
 ) {
   const { source } = params
   if (source.type === "CONTACT_FIELD") {
     const definition = CONTACT_DATE_FIELDS[source.key as keyof typeof CONTACT_DATE_FIELDS]
     if (!definition) throw new Error("The configured contact date field is unavailable.")
-    const contact = await prismaTx.contact.findFirst({
-      where: { tenantId: params.tenantId, id: params.contactId },
-      select: { [definition.field]: true },
+    const resolved = await resolveSafeContactTemplateFieldValue(prismaTx, {
+      tenantId: params.tenantId,
+      contactId: params.contactId,
+      source: "CONTACT_FIELD",
+      key: source.key,
+      executionContext: params.executionContext,
     })
-    const raw = contact?.[definition.field]
+    const raw = resolved?.value
     if (raw === null || raw === undefined || raw === "") {
       throw new Error("The configured contact date field is empty.")
     }
     return { raw, precision: definition.precision }
   }
   if (source.type !== "CUSTOM_FIELD") return null
-  const value = await prismaTx.contactCustomFieldValue.findFirst({
-    where: {
-      tenantId: params.tenantId,
-      contactId: params.contactId,
-      field: {
-        key: source.key,
-        fieldType: "DATE",
-        isActive: true,
-        isEncrypted: false,
-        isSensitive: false,
-      },
-    },
-    select: { value: true },
+  let value = await resolveSafeContactTemplateFieldValue(prismaTx, {
+    tenantId: params.tenantId,
+    contactId: params.contactId,
+    source: "CUSTOM_FIELD",
+    key: source.key,
+    executionContext: params.executionContext,
   })
-  if (!value || value.value === null || value.value === undefined || value.value === "") {
+  if (!value && !params.executionContext && prismaTx.contactCustomFieldValue?.findFirst) {
+    const legacyValue = await prismaTx.contactCustomFieldValue.findFirst({
+      where: {
+        tenantId: params.tenantId,
+        contactId: params.contactId,
+        field: {
+          key: source.key,
+          fieldType: "DATE",
+          isActive: true,
+          isEncrypted: false,
+          isSensitive: false,
+        },
+      },
+      select: { value: true },
+    })
+    value = legacyValue ? { value: legacyValue.value, fieldType: "DATE" } : null
+  }
+  if (!value || value.fieldType !== "DATE" || value.value === null || value.value === undefined || value.value === "") {
     throw new Error("The configured custom date field is empty or unavailable.")
   }
   return { raw: value.value, precision: "DATE" as const }
@@ -269,6 +291,7 @@ async function resolveDateSource(
     occurredAt: Date
     dateOnlyTime?: string
     automationValues: Record<string, unknown>
+    executionContext?: ContactTemplateExecutionContext
   },
 ): Promise<ResolvedDateSource> {
   const { source, tenantTimezone, occurredAt } = params
@@ -319,6 +342,7 @@ async function resolveDateSource(
     tenantId: params.tenantId,
     contactId: params.contactId,
     source,
+    executionContext: params.executionContext,
   })
   if (!stored) throw new Error("The configured date source is unavailable.")
   if (stored.precision === "DATE_TIME") {
@@ -421,6 +445,7 @@ export async function resolveAutomationDateTimeFormatter(
     tenantTimezone: string
     occurredAt: Date
     automationValues?: Record<string, unknown>
+    executionContext?: ContactTemplateExecutionContext
   },
 ) {
   const { config } = params

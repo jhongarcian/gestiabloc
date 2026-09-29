@@ -20,17 +20,13 @@ export default function ContactOverviewLoading() {
       aria-busy="true"
       aria-label="Loading contact overview"
     >
-      <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-3">
-            <Skeleton className="h-3 w-32" />
-            <Skeleton className="h-7 w-44" />
-            <Skeleton className="h-4 w-80 max-w-full" />
-          </div>
-          <Skeleton className="h-11 w-36 rounded-2xl" />
-        </div>
+      <div className="relative overflow-hidden rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-20 -top-24 size-56 rounded-full bg-blue-200/30 blur-3xl"
+        />
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="relative grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {Array.from({ length: 4 }, (_, index) => (
             <MetricSkeleton key={index} />
           ))}

@@ -175,6 +175,32 @@ describe("AutomationUpsertSchema", () => {
     }
   })
 
+  test("accepts every text formatter mode", () => {
+    const common = {
+      actionName: "Normalize text",
+      source: { type: "CONTACT_FIELD", key: "name" },
+      outputKey: "formatted_text",
+    }
+    const configs = [
+      ...["UPPER_CASE", "LOWER_CASE", "TITLE_CASE", "CAPITALIZE", "TRIM_WHITESPACE", "WORD_COUNT", "LENGTH", "EXTRACT_EMAIL", "EXTRACT_URL"]
+        .map((mode) => ({ ...common, mode })),
+      { ...common, mode: "DEFAULT_VALUE", defaultValue: "Unknown" },
+      { ...common, mode: "TRIM", maxLength: 100 },
+      { ...common, mode: "REPLACE_TEXT", searchText: "old", replacementText: "new" },
+      { ...common, mode: "FIND", searchText: "value" },
+      { ...common, mode: "SPLIT_TEXT", separator: " ", segment: 1 },
+    ]
+    for (const textFormatterConfig of configs) {
+      assert.equal(AutomationUpsertSchema.safeParse({
+        name: "Format text",
+        isEnabled: false,
+        trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+        conditions: [],
+        actions: [{ type: "FORMAT_TEXT", textFormatterConfig }],
+      }).success, true)
+    }
+  })
+
   test("accepts number and date Math operation configurations", () => {
     const base = {
       name: "Calculate values",
@@ -481,6 +507,82 @@ describe("AutomationUpsertSchema", () => {
     })
     await assert.rejects(
       validateAutomationConfiguration(prismaClient, "tenant-1", forwardReference),
+      /not available before this action/,
+    )
+  })
+
+  test("validates Text formatter sources, custom labels, and typed chaining", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => [{
+        id: "field-notes",
+        key: "intake_notes",
+        label: "Intake notes",
+        fieldType: "TEXTAREA",
+        isRequired: false,
+        isActive: true,
+        isEncrypted: false,
+        isSensitive: false,
+        options: [],
+      }] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const valid = AutomationUpsertSchema.parse({
+      name: "Normalize contact text",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [
+        {
+          type: "FORMAT_TEXT",
+          textFormatterConfig: {
+            actionName: "Normalize intake notes",
+            mode: "TITLE_CASE",
+            source: { type: "CUSTOM_FIELD", key: "intake_notes" },
+            outputKey: "normalized_notes",
+          },
+        },
+        {
+          type: "FORMAT_TEXT",
+          textFormatterConfig: {
+            actionName: "Count note characters",
+            mode: "LENGTH",
+            source: { type: "AUTOMATION_VALUE", key: "normalized_notes" },
+            outputKey: "note_length",
+          },
+        },
+        {
+          type: "FORMAT_NUMBER",
+          numberFormatterConfig: {
+            mode: "FORMAT_NUMBER",
+            source: { type: "AUTOMATION_VALUE", key: "note_length" },
+            decimalMark: "PERIOD",
+            groupingStyle: "COMMA_PERIOD",
+            outputKey: "note_length_label",
+          },
+        },
+        {
+          type: "ADD_CONTACT_NOTE",
+          noteTitle: "Intake summary",
+          noteBody: "{automation.normalized_notes} ({automation.note_length_label})",
+        },
+      ],
+    })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", valid)
+    assert.equal(normalized.actions[0]?.type, "FORMAT_TEXT")
+    assert.deepEqual(
+      (normalized.actions[0] as any).textFormatterConfig,
+      (valid.actions[0] as any)?.textFormatterConfig,
+    )
+
+    const incompatible = AutomationUpsertSchema.parse({
+      ...valid,
+      actions: [valid.actions[1], valid.actions[0]],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", incompatible),
       /not available before this action/,
     )
   })
@@ -1522,6 +1624,98 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(
       typeof ((runUpdate as Record<string, unknown> | null)?.variables as Record<string, unknown>)?.appointment_date,
       "string",
+    )
+  })
+
+  test("executes a Text formatter with its custom node label and exposes the value", async () => {
+    let createdNote: Record<string, unknown> | null = null
+    let runUpdate: Record<string, unknown> | null = null
+    let nodeLogs: Array<Record<string, unknown>> = []
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Normalize lead name",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000001",
+              type: "FORMAT_TEXT",
+              textFormatterConfig: {
+                actionName: "Clean contact name",
+                mode: "TITLE_CASE",
+                source: { type: "CONTACT_FIELD", key: "name" },
+                outputKey: "contact_name",
+              },
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000002",
+              type: "ADD_CONTACT_NOTE",
+              noteTitle: "Formatted contact",
+              noteBody: "Name: {automation.contact_name}.",
+            },
+          ],
+        }],
+      },
+      contact: {
+        findFirst: async (args: { select?: Record<string, unknown> }) => args.select?.email
+          ? {
+              firstName: "tAYLOR",
+              middleName: null,
+              lastName: "rEED",
+              email: "taylor@example.com",
+              customFieldValues: [],
+            }
+          : {
+              id: "contact-1",
+              firstName: "tAYLOR",
+              middleName: null,
+              lastName: "rEED",
+              statusConfigId: "active",
+              assignedToUserId: null,
+              tags: [],
+              customFieldValues: [],
+            },
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: { findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }] },
+      contactNote: {
+        create: async ({ data }: { data: Record<string, unknown> }) => { createdNote = data },
+      },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async ({ data }: { data: Record<string, unknown> }) => { runUpdate = data },
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { nodeLogs = data },
+      },
+    }
+
+    await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.equal((createdNote as Record<string, unknown> | null)?.body, "Name: Taylor Reed.")
+    assert.equal(nodeLogs[1]?.nodeLabel, "Clean contact name")
+    assert.equal(nodeLogs[1]?.details, "Created automation value “contact_name”.")
+    assert.equal(
+      ((runUpdate as Record<string, unknown> | null)?.variables as Record<string, unknown>)?.contact_name,
+      "Taylor Reed",
     )
   })
 

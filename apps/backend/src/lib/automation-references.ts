@@ -15,6 +15,10 @@ import {
   AutomationMathOperationConfigSchema,
   mathOperationCustomFieldKeys,
 } from "./automation-math-operation.js"
+import {
+  AutomationTextFormatterConfigSchema,
+  textFormatterCustomFieldKeys,
+} from "./automation-text-formatter.js"
 
 type AutomationReference =
   | { kind: "pipeline"; id: string }
@@ -119,7 +123,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "MATH_OPERATION"] },
+          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION"] },
         },
       },
     },
@@ -127,13 +131,14 @@ export async function findEnabledAutomationReference(
       id: true,
       name: true,
       actions: {
-        where: { type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "MATH_OPERATION"] } },
+        where: { type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION"] } },
         select: {
           type: true,
           taskConfig: true,
           customFieldUpdates: true,
           dateTimeFormatterConfig: true,
           numberFormatterConfig: true,
+          textFormatterConfig: true,
           mathOperationConfig: true,
         },
       },
@@ -174,6 +179,18 @@ export async function findEnabledAutomationReference(
           reference.kind === "customField" &&
           customField?.key &&
           numberFormatterCustomFieldKeys(formatter.data).includes(customField.key)
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
+      }
+      if (action.type === "FORMAT_TEXT") {
+        const formatter = AutomationTextFormatterConfigSchema.safeParse(action.textFormatterConfig)
+        if (
+          formatter.success &&
+          reference.kind === "customField" &&
+          customField?.key &&
+          textFormatterCustomFieldKeys(formatter.data).includes(customField.key)
         ) {
           return { id: automation.id, name: automation.name }
         }

@@ -36,6 +36,12 @@ import { parse as parseYaml } from "yaml"
 import { getAllowedWebOrigins } from "./lib/security"
 import { runAutomationProcessQueue } from "./lib/automation-process-worker"
 import { resumeDueAutomationRuns } from "./lib/opportunity-automations"
+import {
+  AUTOMATION_EVENT_WORKER_CONFIG,
+  reportAutomationQueueMetrics,
+  runAutomationEventWorkerOnce,
+  runAutomationSideEffectWorkerOnce,
+} from "./lib/automation-event-worker"
 
 const env = {
   port: Number(process.env.PORT ?? 4000),
@@ -291,6 +297,35 @@ const start = async () => {
   }, 3_000)
 
   automationProcessInterval.unref?.()
+
+  if (process.env.AUTOMATION_ASYNC_EVENTS_ENABLED?.trim().toLowerCase() === "true") {
+    void runAutomationEventWorkerOnce().catch((error) => {
+      console.error("Failed to process automation events on startup:", error)
+    })
+    void runAutomationSideEffectWorkerOnce().catch((error) => {
+      console.error("Failed to process automation side effects on startup:", error)
+    })
+    const automationEventInterval = setInterval(() => {
+      void runAutomationEventWorkerOnce().catch((error) => {
+        console.error("Failed to process automation events:", error)
+      })
+    }, AUTOMATION_EVENT_WORKER_CONFIG.pollMs)
+    automationEventInterval.unref?.()
+
+    const automationSideEffectInterval = setInterval(() => {
+      void runAutomationSideEffectWorkerOnce().catch((error) => {
+        console.error("Failed to process automation side effects:", error)
+      })
+    }, AUTOMATION_EVENT_WORKER_CONFIG.pollMs)
+    automationSideEffectInterval.unref?.()
+
+    const automationMetricsInterval = setInterval(() => {
+      void reportAutomationQueueMetrics().catch((error) => {
+        console.error("Failed to report automation queue metrics:", error)
+      })
+    }, AUTOMATION_EVENT_WORKER_CONFIG.metricsMs)
+    automationMetricsInterval.unref?.()
+  }
 
   server.listen(env.port, () => {
     console.log(`Backend listening on http://localhost:${env.port}`)

@@ -3,6 +3,7 @@ import { Prisma } from "../generated/prisma/index.js"
 import { AutomationActionInputSchema } from "./opportunity-automations.js"
 import {
   getAutomationActionLabel,
+  getAutomationActionNodeLabel,
   getContactDisplayName,
 } from "./automation-node-executions.js"
 
@@ -320,7 +321,9 @@ export async function exitAutomationWaitingRun(
           nodeKind: "ACTION",
           nodeOrder: run.cursorIndex,
           nodeKey: params.nodeKey,
-          nodeLabel: getAutomationActionLabel(waitingAction?.type ?? "WAIT"),
+          nodeLabel: waitingAction
+            ? getAutomationActionNodeLabel(waitingAction)
+            : getAutomationActionLabel("WAIT"),
           status: "EXECUTED",
           reasonCode: "CONTACT_REMOVED_FROM_AUTOMATION",
           details: waitDetails,
@@ -343,7 +346,7 @@ export async function exitAutomationWaitingRun(
       nodeKind: "ACTION" as const,
       nodeOrder: run.cursorIndex + offset + 1,
       nodeKey: action.nodeKey,
-      nodeLabel: getAutomationActionLabel(action.type),
+      nodeLabel: getAutomationActionNodeLabel(action),
       status: "SKIPPED" as const,
       reasonCode: "CONTACT_REMOVED_FROM_AUTOMATION",
       details: "Skipped because the contact was removed from this automation while waiting.",

@@ -5821,12 +5821,80 @@ paths:
           name: status
           schema:
             type: string
-            enum: [EXECUTED, SKIPPED, FAILED, WAITING]
+            enum: [QUEUED, EXECUTED, SKIPPED, FAILED, WAITING]
       responses:
         "200":
           description: Node-level execution logs and pagination metadata
         "404":
           description: Automation not found in this tenant
+  /api/opportunities/{tenantId}/automation-events/{eventId}:
+    get:
+      tags: [Opportunities, Automations]
+      summary: Get the processing status of an opportunity automation event
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: eventId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Aggregate queue progress for the event
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [event]
+                properties:
+                  event:
+                    $ref: "#/components/schemas/AutomationEventStatusResponse"
+        "404":
+          description: Automation event not found in this tenant
+  /api/opportunities/{tenantId}:
+    post:
+      tags: [Opportunities]
+      summary: Create an opportunity and queue relevant automations
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "201":
+          description: Opportunity created; automation dispatch is reported in the response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  automation:
+                    $ref: "#/components/schemas/OpportunityAutomationDispatchResult"
+  /api/opportunities/{tenantId}/{opportunityId}:
+    patch:
+      tags: [Opportunities]
+      summary: Update an opportunity and queue relevant stage-change automations
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: opportunityId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Opportunity updated; automation dispatch is reported when applicable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  automation:
+                    $ref: "#/components/schemas/OpportunityAutomationDispatchResult"
   /api/account-settings/{tenantId}/automations/{automationId}/wait-nodes:
     get:
       tags: [Automations]
@@ -6068,6 +6136,67 @@ components:
         enum: [10, 25]
         default: 10
   schemas:
+    OpportunityAutomationDispatchResult:
+      type: object
+      required: [matchedCount, executedCount]
+      properties:
+        automationEventId:
+          type: string
+          format: uuid
+          nullable: true
+        automationStatus:
+          type: string
+          enum: [QUEUED, NOT_APPLICABLE]
+        queuedAutomationCount:
+          type: integer
+          minimum: 0
+        matchedCount:
+          type: integer
+          minimum: 0
+          description: Dispatches whose trigger and event-time contact filters matched.
+        executedCount:
+          type: integer
+          minimum: 0
+          description: Always zero in the initial asynchronous opportunity response.
+    AutomationEventStatusResponse:
+      type: object
+      required: [id, status, total, queued, running, completed, skipped, failed, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [QUEUED, PROCESSING, COMPLETED, COMPLETED_WITH_ERRORS, FAILED, CANCELED]
+        total:
+          type: integer
+          minimum: 0
+        queued:
+          type: integer
+          minimum: 0
+        running:
+          type: integer
+          minimum: 0
+        completed:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+        failed:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        processingStartedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
     OnboardingProfileRequest:
       type: object
       required:
@@ -6341,6 +6470,7 @@ components:
             - CREATE_TASK
             - FORMAT_DATE_TIME
             - FORMAT_NUMBER
+            - FORMAT_TEXT
             - MATH_OPERATION
             - WAIT
             - DELETE_CONTACT
@@ -6390,6 +6520,8 @@ components:
           $ref: "#/components/schemas/AutomationDateTimeFormatterConfig"
         numberFormatterConfig:
           $ref: "#/components/schemas/AutomationNumberFormatterConfig"
+        textFormatterConfig:
+          $ref: "#/components/schemas/AutomationTextFormatterConfig"
         mathOperationConfig:
           $ref: "#/components/schemas/AutomationMathOperationConfig"
         waitConfig:
@@ -6812,6 +6944,159 @@ components:
             max:
               type: integer
               description: Inclusive maximum; must be greater than or equal to min.
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+    AutomationTextSource:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, key]
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_FIELD, CUSTOM_FIELD]
+            key:
+              type: string
+              description: Immutable key for a safe text-like field.
+        - type: object
+          additionalProperties: false
+          required: [type, key]
+          properties:
+            type:
+              type: string
+              enum: [AUTOMATION_VALUE]
+            key:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+              description: Textual run-scoped value produced by an earlier action.
+    AutomationTextFormatterConfig:
+      description: >-
+        Transforms a live text-like value and creates a named run-scoped value. Empty
+        sources create deterministic empty, zero, or -1 results depending on the mode.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [actionName, mode, source, outputKey]
+          properties:
+            actionName:
+              type: string
+              minLength: 1
+              maxLength: 120
+            mode:
+              type: string
+              enum: [UPPER_CASE, LOWER_CASE, TITLE_CASE, CAPITALIZE, TRIM_WHITESPACE, WORD_COUNT, LENGTH, EXTRACT_EMAIL, EXTRACT_URL]
+            source:
+              $ref: "#/components/schemas/AutomationTextSource"
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          additionalProperties: false
+          required: [actionName, mode, source, defaultValue, outputKey]
+          properties:
+            actionName:
+              type: string
+              minLength: 1
+              maxLength: 120
+            mode:
+              type: string
+              enum: [DEFAULT_VALUE]
+            source:
+              $ref: "#/components/schemas/AutomationTextSource"
+            defaultValue:
+              type: string
+              minLength: 1
+              maxLength: 5000
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          additionalProperties: false
+          required: [actionName, mode, source, maxLength, outputKey]
+          properties:
+            actionName:
+              type: string
+              minLength: 1
+              maxLength: 120
+            mode:
+              type: string
+              enum: [TRIM]
+            source:
+              $ref: "#/components/schemas/AutomationTextSource"
+            maxLength:
+              type: integer
+              minimum: 1
+              maximum: 10000
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          additionalProperties: false
+          required: [actionName, mode, source, searchText, replacementText, outputKey]
+          properties:
+            actionName:
+              type: string
+              minLength: 1
+              maxLength: 120
+            mode:
+              type: string
+              enum: [REPLACE_TEXT]
+            source:
+              $ref: "#/components/schemas/AutomationTextSource"
+            searchText:
+              type: string
+              minLength: 1
+              maxLength: 5000
+            replacementText:
+              type: string
+              maxLength: 5000
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          additionalProperties: false
+          required: [actionName, mode, source, searchText, outputKey]
+          properties:
+            actionName:
+              type: string
+              minLength: 1
+              maxLength: 120
+            mode:
+              type: string
+              enum: [FIND]
+            source:
+              $ref: "#/components/schemas/AutomationTextSource"
+            searchText:
+              type: string
+              minLength: 1
+              maxLength: 5000
+            outputKey:
+              type: string
+              pattern: "^[a-z][a-z0-9_]{0,63}$"
+        - type: object
+          additionalProperties: false
+          required: [actionName, mode, source, separator, segment, outputKey]
+          properties:
+            actionName:
+              type: string
+              minLength: 1
+              maxLength: 120
+            mode:
+              type: string
+              enum: [SPLIT_TEXT]
+            source:
+              $ref: "#/components/schemas/AutomationTextSource"
+            separator:
+              type: string
+              minLength: 1
+              maxLength: 100
+              description: Literal separator; whitespace-only separators are supported.
+            segment:
+              type: integer
+              minimum: 1
+              maximum: 10000
+              description: One-based segment number.
             outputKey:
               type: string
               pattern: "^[a-z][a-z0-9_]{0,63}$"

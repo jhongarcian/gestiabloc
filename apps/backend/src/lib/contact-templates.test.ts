@@ -3,8 +3,10 @@ import { describe, test } from "node:test"
 
 import {
   contactTemplateCustomFieldKeys,
+  createContactTemplateExecutionContext,
   parseContactTemplate,
   renderContactNoteTemplates,
+  resolveSafeContactTemplateFieldValue,
   validateContactTemplate,
 } from "./contact-templates.js"
 
@@ -315,5 +317,52 @@ describe("contact templates", () => {
     })
     assert.equal(renderedMonthEnd.title, "2027-02-28")
     assert.equal(renderedMonthEnd.body, "2027-02-01")
+  })
+
+  test("caches one contact/template context per segment and reloads after invalidation", async () => {
+    let contactReads = 0
+    let definitionReads = 0
+    const prismaTx = {
+      contact: {
+        findFirst: async () => {
+          contactReads += 1
+          return { firstName: "Taylor", lastName: "Reed", customFieldValues: [] }
+        },
+      },
+      contactCustomField: {
+        findMany: async () => {
+          definitionReads += 1
+          return [{ key: "nickname", fieldType: "TEXT" }]
+        },
+      },
+    }
+    const executionContext = createContactTemplateExecutionContext()
+    const shared = {
+      tenantId: "tenant-1",
+      contactId: "contact-1",
+      executionContext,
+    }
+
+    await resolveSafeContactTemplateFieldValue(prismaTx, {
+      ...shared,
+      source: "CONTACT_FIELD",
+      key: "first_name",
+    })
+    await resolveSafeContactTemplateFieldValue(prismaTx, {
+      ...shared,
+      source: "CUSTOM_FIELD",
+      key: "nickname",
+    })
+    assert.equal(contactReads, 1)
+    assert.equal(definitionReads, 1)
+
+    executionContext.invalidate()
+    await resolveSafeContactTemplateFieldValue(prismaTx, {
+      ...shared,
+      source: "CONTACT_FIELD",
+      key: "first_name",
+    })
+    assert.equal(contactReads, 2)
+    assert.equal(definitionReads, 2)
   })
 })

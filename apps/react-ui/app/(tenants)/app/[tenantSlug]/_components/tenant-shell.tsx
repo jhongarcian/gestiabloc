@@ -110,9 +110,19 @@ type RealtimeNotificationItem = NotificationItem & {
   userId: string
 }
 
+type RealtimeAutomationEvent = {
+  eventId: string
+  tenantId: string
+  status: string
+  completed: number
+  skipped: number
+  failed: number
+  contactDeleted: boolean
+}
+
 type SocketClient = {
-  on: (event: string, callback: (payload: RealtimeNotificationItem) => void) => void
-  off: (event: string, callback: (payload: RealtimeNotificationItem) => void) => void
+  on: (event: string, callback: (payload: never) => void) => void
+  off: (event: string, callback: (payload: never) => void) => void
   disconnect: () => void
 }
 
@@ -855,6 +865,9 @@ export function TenantShell({
     let notificationHandler:
       | ((payload: RealtimeNotificationItem) => void)
       | null = null
+    let automationHandler:
+      | ((payload: RealtimeAutomationEvent) => void)
+      | null = null
 
     const loadSocketScript = async () => {
       if (window.io) return
@@ -930,7 +943,16 @@ export function TenantShell({
           setUnreadCount((current) => current + (payload.readAt ? 0 : 1))
         }
 
-        socket.on("notification:created", notificationHandler)
+        automationHandler = (payload) => {
+          if (payload.tenantId !== tenantId) return
+          if (payload.failed > 0) {
+            toast.error("Automation finished with errors. Review the execution logs.")
+          }
+          if (payload.contactDeleted) router.refresh()
+        }
+
+        socket.on("notification:created", notificationHandler as (payload: never) => void)
+        socket.on("automation:event-completed", automationHandler as (payload: never) => void)
       } catch {
         // Polling remains as a fallback when realtime setup fails.
       }
@@ -941,12 +963,15 @@ export function TenantShell({
     return () => {
       isCancelled = true
       if (socketRef.current && notificationHandler) {
-        socketRef.current.off("notification:created", notificationHandler)
+        socketRef.current.off("notification:created", notificationHandler as (payload: never) => void)
+      }
+      if (socketRef.current && automationHandler) {
+        socketRef.current.off("automation:event-completed", automationHandler as (payload: never) => void)
       }
       socketRef.current?.disconnect()
       socketRef.current = null
     }
-  }, [backendUrl, tenantId])
+  }, [backendUrl, router, tenantId])
 
   return (
     <SidebarProvider className="min-h-screen w-full bg-slate-50">

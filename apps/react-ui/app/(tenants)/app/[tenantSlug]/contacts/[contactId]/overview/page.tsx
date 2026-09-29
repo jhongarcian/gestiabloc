@@ -3,7 +3,6 @@ import Link from "next/link"
 import {
   CalendarClock,
   CircleDollarSign,
-  FileText,
   ListTodo,
   Target,
   type LucideIcon,
@@ -23,6 +22,16 @@ type ContactStatusesResponse = {
   items: Array<{
     id: string
     name: string
+  }>
+}
+
+type ContactLeadSourcesResponse = {
+  ok: boolean
+  items: Array<{
+    id: string
+    name: string
+    sortOrder: number
+    isSystemDefault: boolean
   }>
 }
 
@@ -66,11 +75,11 @@ function ProfileMetric({
       <article className="h-full min-w-0 rounded-[22px] border border-white/80 bg-white/70 p-4 shadow-sm backdrop-blur transition group-hover:-translate-y-0.5 group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-md">
         <div className="flex items-center gap-2 text-slate-400">
           <Icon aria-hidden="true" className="size-4" />
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">
+          <p className="text-xs font-medium text-slate-500">
             {label}
           </p>
         </div>
-        <p className="mt-2 truncate text-xl font-semibold tracking-tight text-slate-950">
+        <p className="mt-2 truncate text-xl font-semibold text-slate-950">
           {value}
         </p>
         <p className="mt-1 truncate text-xs text-slate-500">{helper}</p>
@@ -108,12 +117,19 @@ export default async function ContactOverviewPage({
   const cookie = (await headers()).get("cookie") ?? ""
 
   let statusOptions: Array<{ label: string; value: string }> = []
+  let leadSourceOptions: Array<{ label: string; value: string }> = []
   let metrics = EMPTY_METRICS
   let metricsErrorMessage: string | null = null
 
-  const [statusesResult, metricsResult] = await Promise.allSettled([
+  const [statusesResult, leadSourcesResult, metricsResult] = await Promise.allSettled([
     api.get<ContactStatusesResponse>(
       `/api/contacts/${tenantId}/statuses`,
+      {
+        headers: { cookie },
+      },
+    ),
+    api.get<ContactLeadSourcesResponse>(
+      `/api/contacts/${tenantId}/lead-sources`,
       {
         headers: { cookie },
       },
@@ -126,6 +142,23 @@ export default async function ContactOverviewPage({
       label: status.name,
       value: status.id,
     }))
+  }
+
+  if (leadSourcesResult.status === "fulfilled") {
+    leadSourceOptions = leadSourcesResult.value.data.items.map((source) => ({
+      label: source.name,
+      value: source.name,
+    }))
+  }
+
+  if (
+    contact.leadSource &&
+    !leadSourceOptions.some((option) => option.value === contact.leadSource)
+  ) {
+    leadSourceOptions = [
+      { label: contact.leadSource, value: contact.leadSource },
+      ...leadSourceOptions,
+    ]
   }
 
   if (metricsResult.status === "fulfilled") {
@@ -159,40 +192,22 @@ export default async function ContactOverviewPage({
 
   return (
     <section className="flex flex-col gap-5">
-      <div className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-2">
-            <div className="space-y-1">
-              <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
-                Profile details
-              </h1>
-              <p className="text-sm text-slate-600">
-                Review and update the main profile details and custom fields for this contact.
-              </p>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm md:self-center">
-            <span className="inline-flex items-center gap-2">
-              <FileText className="h-4 w-4 text-slate-500" />
-              <span className="font-semibold text-slate-950">
-                {contact.customFields.length}
-              </span>{" "}
-              custom fields
-            </span>
-          </div>
-        </div>
+      <div className="relative overflow-hidden rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-5">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-20 -top-24 size-56 rounded-full bg-blue-200/30 blur-3xl"
+        />
 
         {metricsErrorMessage ? (
           <div
             role="alert"
-            className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
+            className="relative mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
           >
             {metricsErrorMessage}
           </div>
         ) : null}
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="relative grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <ProfileMetric
             href={`${contactBaseHref}/services`}
             icon={CircleDollarSign}
@@ -245,6 +260,7 @@ export default async function ContactOverviewPage({
         canManageTags={canManageContactTags}
         initialContact={contact}
         statusOptions={statusOptions}
+        leadSourceOptions={leadSourceOptions}
       />
     </section>
   )

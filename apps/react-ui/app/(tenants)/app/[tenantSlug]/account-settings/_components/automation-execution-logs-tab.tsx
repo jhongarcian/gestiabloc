@@ -57,6 +57,7 @@ type ExecutionLogsResponse = {
 }
 
 const STATUS_STYLES: Record<AutomationNodeExecutionStatus, string> = {
+  QUEUED: "border-sky-200 bg-sky-50 text-sky-700",
   EXECUTED: "border-emerald-200 bg-emerald-50 text-emerald-700",
   SKIPPED: "border-amber-200 bg-amber-50 text-amber-700",
   FAILED: "border-rose-200 bg-rose-50 text-rose-700",
@@ -192,6 +193,7 @@ export function AutomationExecutionLogsTab({
                 <SelectGroup>
                   <SelectItem value="ALL">All statuses</SelectItem>
                   <SelectItem value="WAITING">Waiting</SelectItem>
+                  <SelectItem value="QUEUED">Queued</SelectItem>
                   <SelectItem value="EXECUTED">Executed</SelectItem>
                   <SelectItem value="SKIPPED">Skipped</SelectItem>
                   <SelectItem value="FAILED">Failed</SelectItem>

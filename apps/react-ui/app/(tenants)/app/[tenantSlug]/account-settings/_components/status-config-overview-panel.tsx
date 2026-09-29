@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
-import { ArrowRight, ListChecks, Users } from "lucide-react"
+import { ArrowRight, ListChecks, Megaphone, Users } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { api } from "@/lib/api"
@@ -24,6 +24,7 @@ type StatusConfigResponse = {
   }>
   contactStatuses?: Array<unknown>
   taskStatuses?: Array<unknown>
+  leadSources?: Array<unknown>
 }
 
 type ConfigCard = {
@@ -51,6 +52,15 @@ const CONFIG_CARDS: ConfigCard[] = [
     description: "Define task workflow states for team operations.",
     href: "tasks",
     icon: ListChecks,
+    alwaysAvailable: true,
+  },
+  {
+    key: "lead-sources",
+    label: "Lead Sources",
+    description:
+      "Manage the selectable sources used to track how contacts became leads.",
+    href: "lead-sources",
+    icon: Megaphone,
     alwaysAvailable: true,
   },
 ]

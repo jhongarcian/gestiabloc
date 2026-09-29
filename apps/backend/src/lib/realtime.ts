@@ -37,3 +37,18 @@ export function emitNotificationCreated(
 ) {
   io?.to(getUserRoom(userId)).emit("notification:created", notification)
 }
+
+export function emitAutomationEventCompleted(
+  userId: string,
+  payload: {
+    eventId: string
+    tenantId: string
+    status: string
+    completed: number
+    skipped: number
+    failed: number
+    contactDeleted: boolean
+  },
+) {
+  io?.to(getUserRoom(userId)).emit("automation:event-completed", payload)
+}

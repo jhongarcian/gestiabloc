@@ -5,6 +5,7 @@ import {
   isValidTemplateDate,
   parseContactTemplate,
   resolveContactDateValue,
+  type ContactTemplateExecutionContext,
 } from "./contact-templates.js"
 import { zonedDateTimeToUtc } from "./timezone-date-time.js"
 
@@ -157,6 +158,7 @@ export async function resolveAutomationTaskDateTime(
     tenantTimezone: string
     occurredAt: Date
     label: string
+    executionContext?: ContactTemplateExecutionContext
   },
 ) {
   const dateKey = params.config.source.type === "RELATIVE_DATE"
@@ -167,6 +169,7 @@ export async function resolveAutomationTaskDateTime(
           source: { type: "CURRENT_DATE" },
           timezone: params.tenantTimezone,
           occurredAt: params.occurredAt,
+          executionContext: params.executionContext,
         }) ?? "",
         params.config.source.amount,
         params.config.source.unit,
@@ -177,6 +180,7 @@ export async function resolveAutomationTaskDateTime(
         source: params.config.source,
         timezone: params.tenantTimezone,
         occurredAt: params.occurredAt,
+        executionContext: params.executionContext,
       })
   if (!dateKey) {
     throw new Error(`${params.label} could not be resolved because its configured date is empty or unavailable.`)
