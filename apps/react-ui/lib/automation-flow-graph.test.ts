@@ -16,6 +16,7 @@ const labels = {
   FORMAT_NUMBER: "Number formatter",
   FORMAT_TEXT: "Text formatter",
   MATH_OPERATION: "Math operation",
+  IF_ELSE: "If/Else",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 } as const
@@ -371,5 +372,54 @@ describe("buildAutomationFlowGraph", () => {
       edge.source === "action-00000000-0000-4000-8000-000000000001" &&
       edge.target === "complete"
     ))
+  })
+
+  test("renders If/Else branches with orthogonal connectors and no Default add button", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          type: "IF_ELSE",
+          nodeKey: "00000000-0000-4000-8000-000000000101",
+          ifElseConfig: {
+            actionName: "Route lead",
+            branches: [
+              {
+                branchKey: "00000000-0000-4000-8000-000000000102",
+                name: "Qualified",
+                isDefault: false,
+                matchMode: "ALL",
+                conditions: [],
+                actions: [{
+                  type: "SET_CONTACT_STATUS",
+                  nodeKey: "00000000-0000-4000-8000-000000000103",
+                  statusConfigId: "active",
+                }],
+              },
+              {
+                branchKey: "00000000-0000-4000-8000-000000000104",
+                name: "Default",
+                isDefault: true,
+                matchMode: "ALL",
+                conditions: [],
+                actions: [],
+              },
+            ],
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    assert.equal(graph.nodes.find((node) => node.id === "action-00000000-0000-4000-8000-000000000101")?.data.label, "Route lead")
+    assert.ok(graph.nodes.some((node) => node.data.kind === "branch" && node.data.label === "Qualified"))
+    assert.ok(graph.nodes.some((node) => node.data.kind === "branch" && node.data.label === "Default"))
+    assert.ok(graph.nodes.some((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000102"))
+    assert.equal(graph.nodes.some((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000104"), false)
+    assert.ok(graph.edges.some((edge) => edge.source === "action-00000000-0000-4000-8000-000000000101" && edge.type === "step"))
   })
 })

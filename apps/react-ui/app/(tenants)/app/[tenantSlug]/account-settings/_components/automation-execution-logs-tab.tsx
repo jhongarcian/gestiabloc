@@ -77,6 +77,11 @@ function NodeLabel({ item }: { item: AutomationNodeExecution }) {
   return (
     <div className="min-w-0">
       <p className="truncate font-medium text-slate-900" title={item.node.label}>{item.node.label}</p>
+      {item.node.branchPath.length > 0 ? (
+        <p className="truncate text-xs text-slate-500" title={item.node.branchPath.map((branch) => branch.branchName).join(" › ")}>
+          {item.node.branchPath.map((branch) => branch.branchName).join(" › ")}
+        </p>
+      ) : null}
       <p className="text-xs text-slate-500">
         {item.node.kind === "TRIGGER" ? "Trigger" : `Action ${item.node.index ?? ""}`}
       </p>

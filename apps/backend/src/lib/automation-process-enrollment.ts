@@ -5,7 +5,7 @@ import {
   getAutomationTriggerLabel,
   getContactDisplayName,
 } from "./automation-node-executions.js"
-import { AutomationActionInputSchema } from "./opportunity-automations.js"
+import { flattenAutomationActionTree, parseActionSnapshot } from "./opportunity-automations.js"
 
 function enrollmentErrorDetails(error: unknown) {
   if (error instanceof Error) {
@@ -36,7 +36,7 @@ export async function enrollAutomationProcessContact(
       })
       if (!contact) throw new Error("This contact is no longer available.")
 
-      const actions = AutomationActionInputSchema.array().max(20).parse(process.actionSnapshot)
+      const actions = parseActionSnapshot(process.actionSnapshot)
       const occurredAt = new Date()
       const attemptId = randomUUID()
       const base = {
@@ -65,15 +65,16 @@ export async function enrollAutomationProcessContact(
             reasonCode: "NO_TRIGGER_EVENT",
             details: "No opportunity event occurred; the contact was enrolled manually.",
           },
-          ...actions.map((action, index) => ({
+          ...flattenAutomationActionTree(actions).map(({ action, nodeOrder, branchPath }) => ({
             ...base,
             nodeKind: "ACTION" as const,
-            nodeOrder: index + 1,
-            nodeKey: action.nodeKey ?? action.type,
+            nodeOrder,
+            nodeKey: action.nodeKey,
             nodeLabel: getAutomationActionNodeLabel(action),
             status: "SKIPPED" as const,
             reasonCode: "TRIGGER_NOT_MET",
             details: "Skipped because the automation trigger did not run.",
+            branchPath,
           })),
         ],
       })

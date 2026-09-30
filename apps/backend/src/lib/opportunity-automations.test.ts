@@ -849,6 +849,65 @@ describe("AutomationUpsertSchema", () => {
       /only be the last action/,
     )
   })
+
+  test("normalizes recursive If/Else branches and enforces terminal placement", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const ifElse = {
+      type: "IF_ELSE" as const,
+      ifElseConfig: {
+        actionName: "Route qualified contacts",
+        branches: [
+          {
+            name: "Qualified",
+            isDefault: false,
+            matchMode: "ALL" as const,
+            conditions: [{
+              source: "CONTACT_FIELD" as const,
+              fieldKey: "name",
+              operator: "EQUALS" as const,
+              compareValue: "John",
+            }],
+            actions: [{ type: "SET_CONTACT_STATUS" as const, statusConfigId: "active" }],
+          },
+          {
+            name: "Default",
+            isDefault: true,
+            matchMode: "ALL" as const,
+            conditions: [],
+            actions: [],
+          },
+        ],
+      },
+    }
+    const base = {
+      name: "Branch contacts",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED" as const, pipelineId: "pipeline-1" },
+      conditions: [],
+    }
+    const valid = AutomationUpsertSchema.parse({ ...base, actions: [ifElse] })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", valid)
+    const config = normalized.actions[0]?.ifElseConfig
+    assert.equal(normalized.actions[0]?.type, "IF_ELSE")
+    assert.equal(typeof normalized.actions[0]?.nodeKey, "string")
+    assert.equal(typeof config?.branches[0]?.branchKey, "string")
+    assert.equal(typeof config?.branches[0]?.conditions[0]?.conditionKey, "string")
+
+    const invalid = AutomationUpsertSchema.parse({
+      ...base,
+      actions: [ifElse, { type: "SET_CONTACT_STATUS", statusConfigId: "active" }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalid),
+      /only be the final action in its path/,
+    )
+  })
 })
 
 describe("executeOpportunityAutomations", () => {

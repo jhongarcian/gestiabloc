@@ -5,6 +5,7 @@ import { Prisma } from "../generated/prisma/index.js"
 
 import {
   AUTOMATION_CONTACT_UPDATE_FIELDS,
+  AUTOMATION_OPERATORS,
   AutomationConfigurationError,
   AutomationUpsertSchema,
   getAutomationOperatorsForFieldType,
@@ -135,6 +136,7 @@ function serializeAutomation(record: any) {
         numberFormatterConfig: action.numberFormatterConfig,
         textFormatterConfig: action.textFormatterConfig,
         mathOperationConfig: action.mathOperationConfig,
+        ifElseConfig: action.ifElseConfig,
       }
     }),
     lastExecution: record.executions?.[0]
@@ -234,6 +236,19 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
           dateFormats: CONTACT_TEMPLATE_DATE_FORMATS,
           phoneFormats: CONTACT_TEMPLATE_PHONE_FORMATS,
         },
+        branchConditions: {
+          sources: [
+            "CONTACT_FIELD",
+            "CONTACT_CUSTOM_FIELD",
+            "CONTACT_STATUS",
+            "CONTACT_ASSIGNEE",
+            "CONTACT_TAGS",
+            "AUTOMATION_VALUE",
+            "CURRENT_DATE_TIME",
+            "OPPORTUNITY_FIELD",
+          ],
+          operators: AUTOMATION_OPERATORS,
+        },
         statuses,
         taskStatuses,
         tags,
@@ -321,6 +336,7 @@ router.get("/:tenantId/automations/:automationId/execution-logs", ...readMiddlew
           nodeLabel: true,
           status: true,
           details: true,
+          branchPath: true,
           occurredAt: true,
         },
       }),
@@ -341,6 +357,7 @@ router.get("/:tenantId/automations/:automationId/execution-logs", ...readMiddlew
           key: record.nodeKey,
           label: record.nodeLabel,
           index: record.nodeKind === "ACTION" ? record.nodeOrder : null,
+          branchPath: Array.isArray(record.branchPath) ? record.branchPath : [],
         },
         status: record.status,
         details: record.details,

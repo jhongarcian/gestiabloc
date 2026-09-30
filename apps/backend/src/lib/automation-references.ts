@@ -105,7 +105,9 @@ export async function findEnabledAutomationReference(
 
   if (
     reference.kind !== "customField" &&
+    reference.kind !== "status" &&
     reference.kind !== "taskStatus" &&
+    reference.kind !== "tag" &&
     reference.kind !== "user"
   ) {
     return null
@@ -123,7 +125,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION"] },
+          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "IF_ELSE"] },
         },
       },
     },
@@ -131,22 +133,85 @@ export async function findEnabledAutomationReference(
       id: true,
       name: true,
       actions: {
-        where: { type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION"] } },
         select: {
           type: true,
+          customFieldId: true,
+          statusConfigId: true,
+          assignedUserId: true,
+          tagId: true,
+          noteTitle: true,
+          noteBody: true,
           taskConfig: true,
           customFieldUpdates: true,
           dateTimeFormatterConfig: true,
           numberFormatterConfig: true,
           textFormatterConfig: true,
           mathOperationConfig: true,
+          ifElseConfig: true,
         },
       },
     },
   })
 
+  const nestedActions = (actions: any[]): any[] => actions.flatMap((action) => {
+    if (action.type !== "IF_ELSE") return [action]
+    const config = action.ifElseConfig && typeof action.ifElseConfig === "object"
+      ? action.ifElseConfig as { branches?: Array<{ conditions?: any[]; actions?: any[] }> }
+      : null
+    return [
+      action,
+      ...(config?.branches ?? []).flatMap((branch) => nestedActions(Array.isArray(branch.actions) ? branch.actions : [])),
+    ]
+  })
+
   for (const automation of automations) {
-    for (const action of automation.actions) {
+    for (const action of nestedActions(automation.actions)) {
+      if (action.type === "IF_ELSE") {
+        const branches = action.ifElseConfig && typeof action.ifElseConfig === "object"
+          ? (action.ifElseConfig as { branches?: Array<{ conditions?: any[] }> }).branches ?? []
+          : []
+        const conditions = branches.flatMap((branch) => Array.isArray(branch.conditions) ? branch.conditions : [])
+        if (
+          reference.kind === "customField" && conditions.some((condition) =>
+            condition.source === "CONTACT_CUSTOM_FIELD" && condition.customFieldId === reference.id,
+          ) ||
+          reference.kind === "status" && conditions.some((condition) =>
+            condition.source === "CONTACT_STATUS" && condition.statusConfigId === reference.id,
+          ) ||
+          reference.kind === "tag" && conditions.some((condition) =>
+            condition.source === "CONTACT_TAGS" && condition.tagId === reference.id,
+          ) ||
+          reference.kind === "user" && conditions.some((condition) =>
+            condition.source === "CONTACT_ASSIGNEE" && condition.assignedUserId === reference.id,
+          )
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
+      }
+      if (reference.kind === "customField" && action.customFieldId === reference.id) {
+        return { id: automation.id, name: automation.name }
+      }
+      if (reference.kind === "status" && action.statusConfigId === reference.id) {
+        return { id: automation.id, name: automation.name }
+      }
+      if (reference.kind === "tag" && action.tagId === reference.id) {
+        return { id: automation.id, name: automation.name }
+      }
+      if (reference.kind === "user" && action.assignedUserId === reference.id) {
+        return { id: automation.id, name: automation.name }
+      }
+      if (
+        reference.kind === "customField" &&
+        customField?.key &&
+        action.type === "ADD_CONTACT_NOTE"
+      ) {
+        const tokenStart = `{contact.custom_field.${customField.key}`
+        const templates = [action.noteTitle, action.noteBody].filter((value): value is string => typeof value === "string")
+        if (templates.some((template) => template.includes(`${tokenStart}}`) || template.includes(`${tokenStart}|`))) {
+          return { id: automation.id, name: automation.name }
+        }
+      }
       if (action.type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
         const updates = AutomationCustomFieldUpdatesSchema.safeParse(action.customFieldUpdates)
         if (

@@ -5,18 +5,23 @@ import { formatDateTimeForDisplay } from "@/lib/date-time"
 import type { AutomationAction, AutomationCatalog, AutomationCondition, AutomationTriggerType } from "./automation-types"
 
 export type AutomationFlowNodeData = {
-  kind: "trigger" | "action" | "add" | "complete"
+  kind: "trigger" | "action" | "add" | "branch" | "complete"
   label: string
   subtitle?: string
   configured?: boolean
   index?: number
   insertionIndex?: number
+  actionNodeKey?: string
+  actionPath?: AutomationGraphBranchPath
+  insertionPath?: AutomationGraphBranchPath
   waitBadge?: {
     count: number
     state: "loading" | "ready" | "error" | "unsaved"
     onClick?: () => void
   }
 }
+
+export type AutomationGraphBranchPath = Array<{ ifElseNodeKey: string; branchKey: string }>
 
 export type AutomationWaitNodeBadge = NonNullable<AutomationFlowNodeData["waitBadge"]>
 
@@ -32,7 +37,6 @@ const FLOW_CENTER_X = 308
 const CARD_WIDTH = 256
 const ADD_NODE_WIDTH = 40
 const CARD_X = FLOW_CENTER_X - CARD_WIDTH / 2
-const ADD_NODE_X = FLOW_CENTER_X - ADD_NODE_WIDTH / 2
 
 function waitUnitLabel(amount: number, unit: string) {
   const label = unit.toLocaleLowerCase()
@@ -115,30 +119,10 @@ export function buildAutomationFlowGraph(
     },
   ]
   const edges: Edge[] = []
-  let previousId = "trigger"
-  let y = 180
-  const endsWithDelete = draft.actions.at(-1)?.type === "DELETE_CONTACT"
+  const endpoints: Array<{ id: string; x: number; y: number }> = []
+  let maximumY = 30
 
-  for (let index = 0; index <= draft.actions.length; index += 1) {
-    if (index === draft.actions.length && endsWithDelete) break
-    const addId = `add-${index}`
-    nodes.push({
-      id: addId,
-      type: "automationNode",
-      position: { x: ADD_NODE_X, y },
-      data: { kind: "add", label: "Add action", insertionIndex: index },
-    })
-    edges.push({
-      id: `${previousId}-${addId}`,
-      source: previousId,
-      target: addId,
-      type: "straight",
-    })
-    previousId = addId
-    y += 85
-    const action = draft.actions[index]
-    if (!action) continue
-    const actionId = `action-${action.nodeKey ?? index}`
+  const actionPresentation = (action: AutomationAction, actionNumber: number) => {
     const waitConfig = action.type === "WAIT" ? action.waitConfig : null
     const waitSubtitle = waitConfig?.mode === "DURATION"
       ? `Wait ${waitConfig.amount} ${waitUnitLabel(waitConfig.amount, waitConfig.unit)}`
@@ -177,48 +161,131 @@ export function buildAutomationFlowGraph(
           ? `Update ${action.customFieldUpdates?.length ?? 0} field${action.customFieldUpdates?.length === 1 ? "" : "s"}`
           : action.type === "DELETE_CONTACT"
             ? "Remove from this account"
-          : waitSubtitle ?? `Action ${index + 1}`
-    nodes.push({
-      id: actionId,
-      type: "automationNode",
-      position: { x: CARD_X, y },
-      data: {
-        kind: "action",
-        label: action.type === "FORMAT_TEXT"
-          ? action.textFormatterConfig?.actionName.trim() || actionLabels[action.type]
+          : action.type === "IF_ELSE"
+            ? `First match · ${Math.max(0, (action.ifElseConfig?.branches.length ?? 1) - 1)} branches`
+            : waitSubtitle ?? `Action ${actionNumber}`
+    return {
+      label: action.type === "FORMAT_TEXT"
+        ? action.textFormatterConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "IF_ELSE"
+          ? action.ifElseConfig?.actionName.trim() || actionLabels[action.type]
           : actionLabels[action.type],
-        subtitle: actionSubtitle,
-        index,
-        ...(action.type === "WAIT" && action.nodeKey && waitNodeBadges[action.nodeKey]
-          ? { waitBadge: waitNodeBadges[action.nodeKey] }
-          : {}),
-      },
-    })
-    edges.push({
-      id: `${previousId}-${actionId}`,
-      source: previousId,
-      target: actionId,
-      type: "straight",
-    })
-    previousId = actionId
-    y += 145
+      subtitle: actionSubtitle,
+    }
   }
 
+  const renderPath = (
+    actions: AutomationAction[],
+    sourceId: string,
+    centerX: number,
+    startY: number,
+    path: AutomationGraphBranchPath,
+  ) => {
+    let previousId = sourceId
+    let y = startY
+    const endsWithTerminal = actions.at(-1)?.type === "DELETE_CONTACT" || actions.at(-1)?.type === "IF_ELSE"
+
+    for (let index = 0; index <= actions.length; index += 1) {
+      if (index === actions.length && endsWithTerminal) break
+      const pathKey = path.map((part) => `${part.ifElseNodeKey}-${part.branchKey}`).join("-") || "root"
+      const addId = path.length === 0 ? `add-${index}` : `add-${pathKey}-${index}`
+      nodes.push({
+        id: addId,
+        type: "automationNode",
+        position: { x: centerX - ADD_NODE_WIDTH / 2, y },
+        data: { kind: "add", label: "Add action", insertionIndex: index, insertionPath: path },
+      })
+      edges.push({ id: `${previousId}-${addId}`, source: previousId, target: addId, type: "straight" })
+      previousId = addId
+      maximumY = Math.max(maximumY, y)
+      y += 85
+
+      const action = actions[index]
+      if (!action) continue
+      const actionId = `action-${action.nodeKey ?? (path.length === 0 ? index : `${pathKey}-${index}`)}`
+      const presentation = actionPresentation(action, index + 1)
+      nodes.push({
+        id: actionId,
+        type: "automationNode",
+        position: { x: centerX - CARD_WIDTH / 2, y },
+        data: {
+          kind: "action",
+          ...presentation,
+          index: path.length === 0 ? index : undefined,
+          actionNodeKey: action.nodeKey,
+          actionPath: path,
+          ...(action.type === "WAIT" && action.nodeKey && waitNodeBadges[action.nodeKey]
+            ? { waitBadge: waitNodeBadges[action.nodeKey] }
+            : {}),
+        },
+      })
+      edges.push({ id: `${previousId}-${actionId}`, source: previousId, target: actionId, type: "straight" })
+      previousId = actionId
+      maximumY = Math.max(maximumY, y)
+      y += 145
+
+      if (action.type !== "IF_ELSE" || !action.ifElseConfig) continue
+      const branches = action.ifElseConfig.branches
+      const gap = branches.length <= 2 ? 360 : 320
+      const firstX = centerX - ((branches.length - 1) * gap) / 2
+      branches.forEach((branch, branchIndex) => {
+        const branchX = firstX + branchIndex * gap
+        const branchId = `branch-${action.nodeKey}-${branch.branchKey ?? branchIndex}`
+        const branchPath = [
+          ...path,
+          { ifElseNodeKey: action.nodeKey ?? actionId, branchKey: branch.branchKey ?? String(branchIndex) },
+        ]
+        nodes.push({
+          id: branchId,
+          type: "automationNode",
+          position: { x: branchX - CARD_WIDTH / 2, y },
+          data: {
+            kind: "branch",
+            label: branch.name,
+            subtitle: branch.isDefault
+              ? "Default · no actions"
+              : branch.matchMode === "ALL" ? "All conditions" : "Any condition",
+          },
+        })
+        edges.push({
+          id: `${actionId}-${branchId}`,
+          source: actionId,
+          target: branchId,
+          type: "step",
+        })
+        maximumY = Math.max(maximumY, y)
+        if (branch.isDefault) {
+          endpoints.push({ id: branchId, x: branchX, y })
+        } else {
+          renderPath(branch.actions, branchId, branchX, y + 105, branchPath)
+        }
+      })
+      return
+    }
+
+    endpoints.push({ id: previousId, x: centerX, y: Math.max(startY, y - 85) })
+  }
+
+  renderPath(draft.actions, "trigger", FLOW_CENTER_X, 180, [])
+  const endsWithDelete = draft.actions.at(-1)?.type === "DELETE_CONTACT"
+  const completeY = Math.max(maximumY + 165, ...endpoints.map((endpoint) => endpoint.y + 165))
   nodes.push({
     id: "complete",
     type: "automationNode",
-    position: { x: CARD_X, y },
+    position: { x: CARD_X, y: completeY },
     data: {
       kind: "complete",
       label: "Complete",
       subtitle: endsWithDelete ? "Contact deleted" : "All actions completed",
     },
   })
-  edges.push({
-    id: `${previousId}-complete`,
-    source: previousId,
-    target: "complete",
-    type: "straight",
-  })
+  for (const endpoint of endpoints) {
+    edges.push({
+      id: `${endpoint.id}-complete`,
+      source: endpoint.id,
+      target: "complete",
+      type: endpoints.length > 1 ? "step" : "straight",
+    })
+  }
   return { nodes, edges }
 }

@@ -321,6 +321,7 @@ enum AutomationActionType {
   FORMAT_NUMBER
   FORMAT_TEXT
   MATH_OPERATION
+  IF_ELSE
   WAIT
   DELETE_CONTACT
 }
@@ -1502,6 +1503,7 @@ model AutomationAction {
   numberFormatterConfig   Json?
   textFormatterConfig     Json?
   mathOperationConfig     Json?
+  ifElseConfig            Json?
   sortOrder               Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
@@ -1568,6 +1570,7 @@ model AutomationNodeExecution {
   status         AutomationNodeExecutionStatus
   reasonCode     String?
   details        String?
+  branchPath     Json?
   occurredAt     DateTime                      @default(now())
 
   tenant     Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1604,6 +1607,9 @@ model AutomationRun {
   actionSnapshot         Json
   variables              Json                      @default("{}")
   cursorIndex            Int                       @default(0)
+  cursorPath             Json?
+  branchDecisions        Json                      @default("{}")
+  eventContext           Json                      @default("{}")
   status                 AutomationRunStatus       @default(RUNNING)
   resumeAt               DateTime?
   waitingNodeKey         String?

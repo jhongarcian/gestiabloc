@@ -1,6 +1,11 @@
 import { Prisma } from "../generated/prisma/index.js"
 
-import { AutomationActionInputSchema } from "./opportunity-automations.js"
+import {
+  automationActionSnapshot,
+  flattenAutomationActionTree,
+  parseActionSnapshot,
+  selectedAutomationActionSteps,
+} from "./opportunity-automations.js"
 import {
   getAutomationActionLabel,
   getAutomationActionNodeLabel,
@@ -28,7 +33,7 @@ export class AutomationWaitingRunError extends Error {
 async function ensureAutomation(prismaClient: any, tenantId: string, automationId: string) {
   const automation = await prismaClient.automation.findUnique({
     where: { tenantId_id: { tenantId, id: automationId } },
-    select: { id: true },
+    include: { actions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] } },
   })
   if (!automation) {
     throw new AutomationWaitingRunError(
@@ -37,6 +42,7 @@ async function ensureAutomation(prismaClient: any, tenantId: string, automationI
       "The automation is no longer available.",
     )
   }
+  return automation
 }
 
 async function ensureWaitNode(
@@ -45,11 +51,14 @@ async function ensureWaitNode(
   automationId: string,
   nodeKey: string,
 ) {
-  await ensureAutomation(prismaClient, tenantId, automationId)
-  const action = await prismaClient.automationAction.findFirst({
-    where: { tenantId, automationId, nodeKey, type: "WAIT" },
-    select: { nodeKey: true },
-  })
+  const automation = await ensureAutomation(prismaClient, tenantId, automationId)
+  const action = Array.isArray(automation.actions)
+    ? flattenAutomationActionTree(automation.actions.map(automationActionSnapshot))
+        .find((item) => item.action.nodeKey === nodeKey && item.action.type === "WAIT")?.action
+    : await prismaClient.automationAction.findFirst({
+        where: { tenantId, automationId, nodeKey, type: "WAIT" },
+        select: { nodeKey: true },
+      })
   if (!action) {
     throw new AutomationWaitingRunError(
       "WAIT_NODE_NOT_FOUND",
@@ -64,17 +73,16 @@ export async function getAutomationWaitNodeCounts(
   prismaClient: any,
   params: { tenantId: string; automationId: string },
 ) {
-  await ensureAutomation(prismaClient, params.tenantId, params.automationId)
-  const actions = await prismaClient.automationAction.findMany({
-    where: {
-      tenantId: params.tenantId,
-      automationId: params.automationId,
-      type: "WAIT",
-    },
-    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-    select: { nodeKey: true },
-  })
-  const nodeKeys = actions.map((action: { nodeKey: string }) => action.nodeKey)
+  const automation = await ensureAutomation(prismaClient, params.tenantId, params.automationId)
+  const nodeKeys = Array.isArray(automation.actions)
+    ? flattenAutomationActionTree(automation.actions.map(automationActionSnapshot))
+        .filter((item) => item.action.type === "WAIT")
+        .map((item) => item.action.nodeKey)
+    : (await prismaClient.automationAction.findMany({
+        where: { tenantId: params.tenantId, automationId: params.automationId, type: "WAIT" },
+        orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        select: { nodeKey: true },
+      })).map((action: { nodeKey: string }) => action.nodeKey)
   if (nodeKeys.length === 0) return []
 
   const groups = await prismaClient.automationRun.groupBy({
@@ -214,11 +222,11 @@ export async function getAutomationWaitingRuns(
 }
 
 function parsePinnedActions(value: unknown) {
-  const parsed = AutomationActionInputSchema.array().max(20).safeParse(value)
-  if (!parsed.success) return []
-  return parsed.data.filter(
-    (action): action is typeof action & { nodeKey: string } => Boolean(action.nodeKey),
-  )
+  try {
+    return parseActionSnapshot(value)
+  } catch {
+    return []
+  }
 }
 
 export async function exitAutomationWaitingRun(
@@ -303,8 +311,9 @@ export async function exitAutomationWaitingRun(
     })
 
     const actions = parsePinnedActions(run.actionSnapshot)
-    const waitingActionIndex = Math.max(0, run.cursorIndex - 1)
-    const waitingAction = actions[waitingActionIndex]
+    const flattenedActions = flattenAutomationActionTree(actions)
+    const waitingStep = flattenedActions.find((step) => step.action.nodeKey === params.nodeKey)
+    const waitingAction = waitingStep?.action
     if (waitLogUpdate.count === 0) {
       await transaction.automationNodeExecution.create({
         data: {
@@ -319,7 +328,7 @@ export async function exitAutomationWaitingRun(
           attemptId: run.attemptId,
           eventSource: run.eventSource,
           nodeKind: "ACTION",
-          nodeOrder: run.cursorIndex,
+          nodeOrder: waitingStep?.nodeOrder ?? run.cursorIndex,
           nodeKey: params.nodeKey,
           nodeLabel: waitingAction
             ? getAutomationActionNodeLabel(waitingAction)
@@ -327,12 +336,33 @@ export async function exitAutomationWaitingRun(
           status: "EXECUTED",
           reasonCode: "CONTACT_REMOVED_FROM_AUTOMATION",
           details: waitDetails,
+          branchPath: waitingStep?.branchPath ?? null,
           occurredAt,
         },
       })
     }
 
-    const remainingLogs = actions.slice(run.cursorIndex).map((action, offset) => ({
+    const branchDecisions = (run.branchDecisions ?? {}) as Record<string, unknown>
+    const selectedSteps = selectedAutomationActionSteps(actions, branchDecisions as any)
+    const cursorPath = run.cursorPath && typeof run.cursorPath === "object" && !Array.isArray(run.cursorPath)
+      ? run.cursorPath as Record<string, unknown>
+      : null
+    const nextNodeKey = typeof cursorPath?.nextNodeKey === "string" ? cursorPath.nextNodeKey : null
+    const selectedRemainingSteps = nextNodeKey
+      ? selectedSteps.slice(Math.max(0, selectedSteps.findIndex((step) => step.action.nodeKey === nextNodeKey)))
+      : selectedSteps.slice(run.cursorIndex)
+    const allSteps = flattenAutomationActionTree(actions)
+    const remainingByKey = new Map(selectedRemainingSteps.map((step) => [step.action.nodeKey, step]))
+    for (const step of selectedRemainingSteps) {
+      if (step.action.type !== "IF_ELSE" || branchDecisions[step.action.nodeKey]) continue
+      for (const descendant of allSteps) {
+        if (descendant.branchPath.some((entry) => entry.nodeKey === step.action.nodeKey)) {
+          remainingByKey.set(descendant.action.nodeKey, descendant)
+        }
+      }
+    }
+    const remainingSteps = [...remainingByKey.values()].sort((left, right) => left.nodeOrder - right.nodeOrder)
+    const remainingLogs = remainingSteps.map(({ action, nodeOrder, branchPath }) => ({
       tenantId: params.tenantId,
       automationId: params.automationId,
       automationName: run.automationName,
@@ -344,12 +374,13 @@ export async function exitAutomationWaitingRun(
       attemptId: run.attemptId,
       eventSource: run.eventSource,
       nodeKind: "ACTION" as const,
-      nodeOrder: run.cursorIndex + offset + 1,
+      nodeOrder,
       nodeKey: action.nodeKey,
       nodeLabel: getAutomationActionNodeLabel(action),
       status: "SKIPPED" as const,
       reasonCode: "CONTACT_REMOVED_FROM_AUTOMATION",
       details: "Skipped because the contact was removed from this automation while waiting.",
+      branchPath,
       occurredAt,
     }))
     if (remainingLogs.length > 0) {

@@ -207,4 +207,46 @@ describe("findEnabledAutomationReference", () => {
       { id: "automation-1", name: "Normalize intake notes" },
     )
   })
+
+  test("finds references inside If/Else conditions and nested branch actions", async () => {
+    const prismaClient = {
+      contactCustomField: {
+        findFirst: async () => ({ key: "risk_level" }),
+      },
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Risk routing",
+          actions: [{
+            type: "IF_ELSE",
+            ifElseConfig: {
+              actionName: "Route risk",
+              branches: [{
+                conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-1" }],
+                actions: [{ type: "SET_CONTACT_STATUS", statusConfigId: "inactive" }],
+              }],
+            },
+          }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "customField", id: "field-1" },
+      ),
+      { id: "automation-1", name: "Risk routing" },
+    )
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "status", id: "inactive" },
+      ),
+      { id: "automation-1", name: "Risk routing" },
+    )
+  })
 })

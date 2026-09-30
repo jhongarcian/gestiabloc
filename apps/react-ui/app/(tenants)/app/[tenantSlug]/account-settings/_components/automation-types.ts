@@ -252,6 +252,42 @@ export type AutomationFieldUpdate =
   | { contactFieldKey: string; operation: "SET"; value: unknown }
   | { contactFieldKey: string; operation: "CLEAR" }
 
+export type AutomationBranchCondition = {
+  conditionKey?: string
+  source:
+    | "CONTACT_FIELD"
+    | "CONTACT_CUSTOM_FIELD"
+    | "CONTACT_STATUS"
+    | "CONTACT_ASSIGNEE"
+    | "CONTACT_TAGS"
+    | "AUTOMATION_VALUE"
+    | "CURRENT_DATE_TIME"
+    | "OPPORTUNITY_FIELD"
+  operator: AutomationOperator
+  fieldKey?: string
+  customFieldId?: string
+  statusConfigId?: string | null
+  assignedUserId?: string | null
+  tagId?: string | null
+  key?: string
+  field?: "VALUE" | "PIPELINE" | "PREVIOUS_STAGE" | "CURRENT_STAGE"
+  compareValue?: unknown
+}
+
+export type AutomationIfElseBranch = {
+  branchKey?: string
+  name: string
+  isDefault: boolean
+  matchMode: "ALL" | "ANY"
+  conditions: AutomationBranchCondition[]
+  actions: AutomationAction[]
+}
+
+export type AutomationIfElseConfig = {
+  actionName: string
+  branches: AutomationIfElseBranch[]
+}
+
 export type AutomationAction = {
   id?: string
   nodeKey?: string
@@ -268,6 +304,7 @@ export type AutomationAction = {
     | "FORMAT_NUMBER"
     | "FORMAT_TEXT"
     | "MATH_OPERATION"
+    | "IF_ELSE"
     | "WAIT"
     | "DELETE_CONTACT"
   customFieldUpdates?: AutomationFieldUpdate[] | null
@@ -282,6 +319,7 @@ export type AutomationAction = {
   numberFormatterConfig?: AutomationNumberFormatterConfig | null
   textFormatterConfig?: AutomationTextFormatterConfig | null
   mathOperationConfig?: AutomationMathOperationConfig | null
+  ifElseConfig?: AutomationIfElseConfig | null
 }
 
 export type AutomationRecord = {
@@ -337,6 +375,10 @@ export type AutomationCatalog = {
     dateFormats: ContactTemplateFormatOption[]
     phoneFormats: ContactTemplateFormatOption[]
   }
+  branchConditions: {
+    sources: AutomationBranchCondition["source"][]
+    operators: AutomationOperator[]
+  }
   statuses: Array<{ id: string; name: string; bgColor: string; textColor: string }>
   taskStatuses: Array<{
     id: string
@@ -378,6 +420,7 @@ export type AutomationNodeExecution = {
     key: string
     label: string
     index: number | null
+    branchPath: Array<{ nodeKey: string; branchKey: string; branchName: string }>
   }
   status: AutomationNodeExecutionStatus
   details: string | null

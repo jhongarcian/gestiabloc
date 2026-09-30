@@ -6,6 +6,7 @@ import {
   evaluateAutomationConditions,
   evaluateAutomationTrigger,
   executeAutomationSegmentTx,
+  flattenAutomationActionTree,
   getAutomationRuntimeCatalog,
   parseActionSnapshot,
   type OpportunityAutomationEvent,
@@ -35,7 +36,7 @@ function actionLogs(params: {
   reasonCode: string
   details: string
 }) {
-  return params.actions.map((action, index) => ({
+  return flattenAutomationActionTree(params.actions).map(({ action, nodeOrder, branchPath }) => ({
     tenantId: params.dispatch.tenantId,
     automationId: params.dispatch.automationId,
     automationName: params.dispatch.automationName,
@@ -47,12 +48,13 @@ function actionLogs(params: {
     attemptId: params.dispatch.attemptId,
     eventSource: params.event.triggerType,
     nodeKind: "ACTION" as const,
-    nodeOrder: index + 1,
+    nodeOrder,
     nodeKey: action.nodeKey,
     nodeLabel: getAutomationActionNodeLabel(action),
     status: params.status,
     reasonCode: params.reasonCode,
     details: params.details,
+    branchPath,
     occurredAt: new Date(),
   }))
 }
@@ -365,6 +367,13 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
         targetStageId: event.targetStageId,
         actionSnapshot: actions,
         cursorIndex: 0,
+        eventContext: {
+          pipelineId: event.pipelineId,
+          valueCents: event.valueCents,
+          sourceStageId: event.sourceStageId,
+          targetStageId: event.targetStageId,
+          occurredAt: event.createdAt instanceof Date ? event.createdAt.toISOString() : String(event.createdAt),
+        },
         status: "RUNNING",
       },
     })
@@ -459,6 +468,9 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
             occurredAt: new Date(),
           }]
     const now = new Date()
+    const failedStep = executionError
+      ? flattenAutomationActionTree(actions).find((step) => step.nodeOrder - 1 === executionError.actionIndex)
+      : null
     await prismaTx.automationNodeExecution.update({
       where: { id: dispatch.triggerExecutionId },
       data: {
@@ -487,14 +499,27 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
         targetStageId: dispatch.event.targetStageId,
         actionSnapshot: actions,
         cursorIndex: Math.max(0, executionError?.actionIndex ?? 0),
+        cursorPath: executionError?.cursorPath ?? null,
+        branchDecisions: executionError?.branchDecisions ?? {},
+        eventContext: {
+          pipelineId: dispatch.event.pipelineId,
+          valueCents: dispatch.event.valueCents,
+          sourceStageId: dispatch.event.sourceStageId,
+          targetStageId: dispatch.event.targetStageId,
+          occurredAt: dispatch.event.createdAt instanceof Date
+            ? dispatch.event.createdAt.toISOString()
+            : String(dispatch.event.createdAt),
+        },
         status: "FAILED",
-        failureNodeKey: actions[executionError?.actionIndex ?? 0]?.nodeKey ?? null,
+        failureNodeKey: failedStep?.action.nodeKey ?? actions[executionError?.actionIndex ?? 0]?.nodeKey ?? null,
         failureCode: "AUTOMATION_EXECUTION_FAILED",
         failureMessage: message.slice(0, 500),
         failedAt: now,
       },
       update: {
         status: "FAILED",
+        cursorPath: executionError?.cursorPath ?? undefined,
+        branchDecisions: executionError?.branchDecisions ?? undefined,
         failureCode: "AUTOMATION_EXECUTION_FAILED",
         failureMessage: message.slice(0, 500),
         failedAt: now,

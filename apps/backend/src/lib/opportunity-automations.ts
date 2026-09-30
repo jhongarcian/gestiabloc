@@ -18,6 +18,7 @@ import {
   isValidTemplateDate,
   validateContactTemplate,
   createContactTemplateExecutionContext,
+  resolveSafeContactTemplateFieldValue,
   type ContactTemplateExecutionContext,
 } from "./contact-templates.js"
 import {
@@ -59,6 +60,7 @@ import { NoteBodyInputSchema, NoteTitleInputSchema } from "./note-inputs.js"
 import { deletePrivateObject } from "./private-storage.js"
 import { emitNotificationCreated, type RealtimeNotificationPayload } from "./realtime.js"
 import { getTaskPriorityFromDueDate, isCompletedStatusName } from "./task-priority-values.js"
+import { evaluateWorkflowOperator } from "./service-followup-runtime.js"
 
 export const AUTOMATION_TRIGGER_TYPES = [
   "OPPORTUNITY_CREATED",
@@ -99,6 +101,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "FORMAT_NUMBER",
   "FORMAT_TEXT",
   "MATH_OPERATION",
+  "IF_ELSE",
   "WAIT",
   "DELETE_CONTACT",
 ] as const
@@ -293,7 +296,7 @@ export const AutomationConditionInputSchema = z.discriminatedUnion("source", [
   contactTagsConditionSchema,
 ])
 
-export const AutomationActionInputSchema = z.discriminatedUnion("type", [
+const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("UPDATE_CONTACT_CUSTOM_FIELDS"),
     nodeKey: actionNodeKeySchema,
@@ -345,6 +348,100 @@ export const AutomationActionInputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("WAIT"), nodeKey: actionNodeKeySchema, waitConfig: AutomationWaitConfigSchema }),
   z.object({ type: z.literal("DELETE_CONTACT"), nodeKey: actionNodeKeySchema }),
 ])
+
+const automationBranchConditionBase = {
+  conditionKey: z.string().uuid().optional(),
+  operator: operatorSchema,
+  compareValue: z.unknown().nullable().optional(),
+}
+
+export const AutomationBranchConditionSchema = z.discriminatedUnion("source", [
+  z.object({
+    ...automationBranchConditionBase,
+    source: z.literal("CONTACT_FIELD"),
+    fieldKey: z.string().trim().min(1).max(100),
+  }).strict(),
+  z.object({
+    ...automationBranchConditionBase,
+    source: z.literal("CONTACT_CUSTOM_FIELD"),
+    customFieldId: idSchema,
+  }).strict(),
+  z.object({
+    ...automationBranchConditionBase,
+    source: z.literal("CONTACT_STATUS"),
+    statusConfigId: idSchema.nullable().optional(),
+  }).strict(),
+  z.object({
+    ...automationBranchConditionBase,
+    source: z.literal("CONTACT_ASSIGNEE"),
+    assignedUserId: idSchema.nullable().optional(),
+  }).strict(),
+  z.object({
+    ...automationBranchConditionBase,
+    source: z.literal("CONTACT_TAGS"),
+    tagId: idSchema.nullable().optional(),
+  }).strict(),
+  z.object({
+    ...automationBranchConditionBase,
+    source: z.literal("AUTOMATION_VALUE"),
+    key: z.string().trim().regex(/^[a-z][a-z0-9_]{0,63}$/),
+  }).strict(),
+  z.object({
+    ...automationBranchConditionBase,
+    source: z.literal("CURRENT_DATE_TIME"),
+  }).strict(),
+  z.object({
+    ...automationBranchConditionBase,
+    source: z.literal("OPPORTUNITY_FIELD"),
+    field: z.enum(["VALUE", "PIPELINE", "PREVIOUS_STAGE", "CURRENT_STAGE"]),
+  }).strict(),
+])
+
+type NonBranchAutomationActionInput = z.infer<typeof NonBranchAutomationActionInputSchema>
+export type AutomationBranchConditionInput = z.infer<typeof AutomationBranchConditionSchema>
+
+export type AutomationIfElseBranchInput = {
+  branchKey?: string
+  name: string
+  isDefault: boolean
+  matchMode: "ALL" | "ANY"
+  conditions: AutomationBranchConditionInput[]
+  actions: AutomationActionInput[]
+}
+
+export type AutomationIfElseConfigInput = {
+  actionName: string
+  branches: AutomationIfElseBranchInput[]
+}
+
+export type AutomationIfElseActionInput = {
+  type: "IF_ELSE"
+  nodeKey?: string
+  ifElseConfig: AutomationIfElseConfigInput
+}
+
+export type AutomationActionInput = NonBranchAutomationActionInput | AutomationIfElseActionInput
+
+const AutomationIfElseBranchSchema: z.ZodType<AutomationIfElseBranchInput> = z.lazy(() => z.object({
+  branchKey: z.string().uuid().optional(),
+  name: z.string().trim().min(1).max(120),
+  isDefault: z.boolean(),
+  matchMode: z.enum(["ALL", "ANY"]),
+  conditions: z.array(AutomationBranchConditionSchema).max(20),
+  actions: z.array(AutomationActionInputSchema).max(20),
+}).strict())
+
+export const AutomationActionInputSchema: z.ZodType<AutomationActionInput> = z.lazy(() => z.union([
+  NonBranchAutomationActionInputSchema,
+  z.object({
+    type: z.literal("IF_ELSE"),
+    nodeKey: actionNodeKeySchema,
+    ifElseConfig: z.object({
+      actionName: z.string().trim().min(1).max(120),
+      branches: z.array(AutomationIfElseBranchSchema).min(2).max(20),
+    }).strict(),
+  }).strict(),
+]))
 
 export const AutomationUpsertSchema = z
   .object({
@@ -453,6 +550,8 @@ export class AutomationExecutionError extends Error {
   attemptId: string | null
   eventSource: AutomationNodeEventSource | null
   contactName: string | null
+  branchDecisions: AutomationBranchDecisions | null
+  cursorPath: { nextNodeKey: string | null } | null
 
   constructor(params: {
     automationId: string | null
@@ -472,6 +571,8 @@ export class AutomationExecutionError extends Error {
     this.attemptId = null
     this.eventSource = null
     this.contactName = null
+    this.branchDecisions = null
+    this.cursorPath = null
   }
 }
 
@@ -826,12 +927,9 @@ export async function validateAutomationConfiguration(
     }
   })
 
-  const actionNodeKeys = input.actions.map((action) => action.nodeKey ?? randomUUID())
-  if (new Set(actionNodeKeys).size !== actionNodeKeys.length) {
-    throw new AutomationConfigurationError("DUPLICATE_ACTION_NODE_KEY", "Every automation action must have a unique node key.")
-  }
-
-  const automationOutputs = new Map<string, AutomationValueKind>()
+  const actionNodeKeys = new Set<string>()
+  let totalActionCount = 0
+  let automationOutputs = new Map<string, AutomationValueKind>()
   const validateFormatterSource = (source: AutomationFormatterDateSource, label: string) => {
     if (source.type === "CONTACT_FIELD") {
       const regularField = CONTACT_TEMPLATE_REGULAR_FIELDS.find((field) => field.key === source.key)
@@ -999,11 +1097,185 @@ export async function validateAutomationConfiguration(
     }
   }
 
-  const actions = input.actions.map((action, index) => {
-    const nodeKey = actionNodeKeys[index]!
-    const base = { tenantId, nodeKey, type: action.type, sortOrder: (index + 1) * 10 }
+  const normalizeBranchCondition = (
+    condition: AutomationBranchConditionInput,
+    branchOutputs: Map<string, AutomationValueKind>,
+  ) => {
+    const conditionKey = condition.conditionKey ?? randomUUID()
+    let valueType: ValueType
+    let compareValue = condition.compareValue
+    let allowedOptions: string[] | null = null
+
+    if (condition.source === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === condition.fieldKey)
+      if (!field) {
+        throw new AutomationConfigurationError("INVALID_BRANCH_FIELD", "Select an available contact field.")
+      }
+      valueType = valueTypeForCustomField(field.fieldType as CustomFieldType)
+      if (!new Set(getAutomationOperatorsForFieldType(field.fieldType as CustomFieldType)).has(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_BRANCH_OPERATOR", `The selected operator is not available for ${field.label}.`)
+      }
+    } else if (condition.source === "CONTACT_CUSTOM_FIELD") {
+      const field = fieldMap.get(condition.customFieldId)
+      if (!field || !field.isActive || field.isEncrypted || field.isSensitive) {
+        throw new AutomationConfigurationError("INVALID_BRANCH_FIELD", "Select an active, non-sensitive custom field.")
+      }
+      valueType = valueTypeForCustomField(field.fieldType)
+      if (["SELECT", "RADIO", "MULTI_SELECT"].includes(field.fieldType)) {
+        allowedOptions = fieldOptions(field)
+      }
+      if (!new Set(getAutomationOperatorsForFieldType(field.fieldType)).has(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_BRANCH_OPERATOR", `The selected operator is not available for ${field.label}.`)
+      }
+    } else if (condition.source === "AUTOMATION_VALUE") {
+      const kind = branchOutputs.get(condition.key)
+      if (!kind) {
+        throw new AutomationConfigurationError(
+          "UNKNOWN_AUTOMATION_VALUE",
+          `The automation value “${condition.key}” is not available before this branch.`,
+        )
+      }
+      valueType = kind === "NUMBER" ? "number" : kind === "DATE" ? "date" : "string"
+      const allowed = valueType === "number" || valueType === "date" ? NUMBER_OPERATORS : STRING_OPERATORS
+      if (!allowed.has(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_BRANCH_OPERATOR", "The selected operator is not compatible with this automation value.")
+      }
+    } else if (condition.source === "CURRENT_DATE_TIME") {
+      valueType = "date"
+      if (!NUMBER_OPERATORS.has(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_BRANCH_OPERATOR", "The selected operator is not available for the current date and time.")
+      }
+    } else if (condition.source === "OPPORTUNITY_FIELD") {
+      valueType = condition.field === "VALUE" ? "number" : "string"
+      const allowed = valueType === "number" ? NUMBER_OPERATORS : STRING_OPERATORS
+      if (!allowed.has(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_BRANCH_OPERATOR", "The selected operator is not available for this opportunity field.")
+      }
+    } else if (condition.source === "CONTACT_TAGS") {
+      valueType = "stringArray"
+      const allowed = new Set<AutomationOperator>(["INCLUDES_ANY", "INCLUDES_ALL", "EXCLUDES_ALL", "IS_EMPTY", "IS_NOT_EMPTY"])
+      if (!allowed.has(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_BRANCH_OPERATOR", "The selected operator is not available for contact tags.")
+      }
+      if (!EMPTY_OPERATORS.has(condition.operator)) {
+        if (!condition.tagId || !tagIds.has(condition.tagId)) {
+          throw new AutomationConfigurationError("INVALID_TAG", "Select a tenant tag.")
+        }
+        compareValue = [condition.tagId]
+      }
+    } else {
+      valueType = "string"
+      const allowed = new Set<AutomationOperator>(["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"])
+      if (!allowed.has(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_BRANCH_OPERATOR", "The selected operator is not available for this condition.")
+      }
+      if (!EMPTY_OPERATORS.has(condition.operator)) {
+        const referenceId = condition.source === "CONTACT_STATUS"
+          ? condition.statusConfigId
+          : condition.assignedUserId
+        const exists = condition.source === "CONTACT_STATUS"
+          ? Boolean(referenceId && activeStatusIds.has(referenceId))
+          : Boolean(referenceId && activeUserIds.has(referenceId))
+        if (!exists) {
+          throw new AutomationConfigurationError(
+            condition.source === "CONTACT_STATUS" ? "INVALID_STATUS_CONFIG" : "INVALID_ASSIGNEE",
+            condition.source === "CONTACT_STATUS" ? "Select an active contact status." : "Select an active tenant member.",
+          )
+        }
+        compareValue = referenceId
+      }
+    }
+
+    if (condition.source !== "CONTACT_TAGS" || EMPTY_OPERATORS.has(condition.operator)) {
+      compareValue = normalizeCompareValue(condition.operator, compareValue, valueType)
+    }
+    if (allowedOptions && !EMPTY_OPERATORS.has(condition.operator)) {
+      const selectedValues = Array.isArray(compareValue) ? compareValue.map(String) : [String(compareValue)]
+      if (selectedValues.some((value) => !allowedOptions!.includes(value))) {
+        throw new AutomationConfigurationError("INVALID_BRANCH_VALUE", "Select an available custom-field option.")
+      }
+    }
+    return { ...condition, conditionKey, compareValue }
+  }
+
+  const normalizeActionPath = (
+    actionInputs: AutomationActionInput[],
+    inheritedOutputs: Map<string, AutomationValueKind>,
+    depth: number,
+  ): any[] => {
+    const previousOutputs = automationOutputs
+    automationOutputs = new Map(inheritedOutputs)
+    const pathNodeKeys = actionInputs.map((action) => action.nodeKey ?? randomUUID())
+
+    for (const nodeKey of pathNodeKeys) {
+      if (actionNodeKeys.has(nodeKey)) {
+        throw new AutomationConfigurationError("DUPLICATE_ACTION_NODE_KEY", "Every automation action must have a unique node key.")
+      }
+      actionNodeKeys.add(nodeKey)
+      totalActionCount += 1
+      if (totalActionCount > 20) {
+        throw new AutomationConfigurationError("TOO_MANY_ACTIONS", "An automation can contain at most 20 action nodes across all branches.")
+      }
+    }
+
+    const normalizedActions = actionInputs.map((action, index) => {
+    const nodeKey = pathNodeKeys[index]!
+    const base = depth === 0
+      ? { tenantId, nodeKey, type: action.type, sortOrder: (index + 1) * 10 }
+      : { nodeKey, type: action.type }
+    if (action.type === "IF_ELSE") {
+      if (index !== actionInputs.length - 1) {
+        throw new AutomationConfigurationError("IF_ELSE_MUST_BE_LAST", "If/Else can only be the final action in its path.")
+      }
+      if (depth >= 3) {
+        throw new AutomationConfigurationError("IF_ELSE_MAX_DEPTH", "If/Else can be nested up to three levels.")
+      }
+      const branchNames = new Set<string>()
+      const branchKeys = new Set<string>()
+      const defaultIndexes = action.ifElseConfig.branches
+        .map((branch, branchIndex) => branch.isDefault ? branchIndex : -1)
+        .filter((branchIndex) => branchIndex >= 0)
+      if (defaultIndexes.length !== 1 || defaultIndexes[0] !== action.ifElseConfig.branches.length - 1) {
+        throw new AutomationConfigurationError("INVALID_DEFAULT_BRANCH", "If/Else requires one Default branch in the last position.")
+      }
+      const branches = action.ifElseConfig.branches.map((branch) => {
+        const branchKey = branch.branchKey ?? randomUUID()
+        const normalizedName = branch.name.trim().toLocaleLowerCase()
+        if (branchKeys.has(branchKey)) {
+          throw new AutomationConfigurationError("DUPLICATE_BRANCH_KEY", "Every branch in an If/Else action must have a unique key.")
+        }
+        if (branchNames.has(normalizedName)) {
+          throw new AutomationConfigurationError("DUPLICATE_BRANCH_NAME", "Branch names must be unique within an If/Else action.")
+        }
+        branchKeys.add(branchKey)
+        branchNames.add(normalizedName)
+        if (branch.isDefault) {
+          if (branch.conditions.length > 0 || branch.actions.length > 0) {
+            throw new AutomationConfigurationError("INVALID_DEFAULT_BRANCH", "The Default branch cannot contain conditions or actions.")
+          }
+          return { ...branch, branchKey, matchMode: "ALL" as const, conditions: [], actions: [] }
+        }
+        if (branch.conditions.length === 0) {
+          throw new AutomationConfigurationError("EMPTY_IF_ELSE_BRANCH", `Add at least one condition to “${branch.name}”.`)
+        }
+        if (branch.actions.length === 0) {
+          throw new AutomationConfigurationError("EMPTY_IF_ELSE_BRANCH", `Add at least one action to “${branch.name}”.`)
+        }
+        const branchOutputs = new Map(automationOutputs)
+        const normalizedConditions = branch.conditions.map((condition) => normalizeBranchCondition(condition, branchOutputs))
+        const branchActions = normalizeActionPath(branch.actions, branchOutputs, depth + 1)
+        return { ...branch, branchKey, conditions: normalizedConditions, actions: branchActions }
+      })
+      return {
+        ...base,
+        ifElseConfig: {
+          actionName: action.ifElseConfig.actionName.trim(),
+          branches,
+        },
+      }
+    }
     if (action.type === "DELETE_CONTACT") {
-      if (index !== input.actions.length - 1) {
+      if (index !== actionInputs.length - 1) {
         throw new AutomationConfigurationError(
           "DELETE_CONTACT_MUST_BE_LAST",
           "Delete contact can only be the last action in an automation.",
@@ -1020,7 +1292,7 @@ export async function validateAutomationConfiguration(
           })()
         : action.waitConfig
       if (waitConfig.mode === "FIXED_DATE" && waitConfig.pastBehavior === "GO_TO_STEP") {
-        const targetIndex = actionNodeKeys.indexOf(waitConfig.targetNodeKey ?? "")
+        const targetIndex = pathNodeKeys.indexOf(waitConfig.targetNodeKey ?? "")
         if (targetIndex <= index) {
           throw new AutomationConfigurationError(
             "INVALID_WAIT_TARGET",
@@ -1269,7 +1541,12 @@ export async function validateAutomationConfiguration(
       return { ...base, tagId: action.tagId }
     }
     return base
-  })
+    })
+    automationOutputs = previousOutputs
+    return normalizedActions
+  }
+
+  const actions = normalizeActionPath(input.actions, new Map(), 0)
 
   return {
     name: input.name,
@@ -1504,7 +1781,75 @@ export async function getAutomationRuntimeCatalog(
   }
 }
 
-export type RuntimeAutomationAction = z.infer<typeof AutomationActionInputSchema> & { nodeKey: string }
+type WithRequiredNodeKey<T> = T extends { nodeKey?: string }
+  ? Omit<T, "nodeKey"> & { nodeKey: string }
+  : T
+
+export type RuntimeAutomationIfElseBranch = Omit<AutomationIfElseBranchInput, "branchKey" | "actions"> & {
+  branchKey: string
+  actions: RuntimeAutomationAction[]
+}
+
+export type RuntimeAutomationAction =
+  | WithRequiredNodeKey<NonBranchAutomationActionInput>
+  | {
+      type: "IF_ELSE"
+      nodeKey: string
+      ifElseConfig: {
+        actionName: string
+        branches: RuntimeAutomationIfElseBranch[]
+      }
+    }
+
+export type AutomationBranchPathEntry = {
+  nodeKey: string
+  branchKey: string
+  branchName: string
+}
+
+export type FlattenedAutomationAction = {
+  action: RuntimeAutomationAction
+  nodeOrder: number
+  branchPath: AutomationBranchPathEntry[]
+}
+
+export function flattenAutomationActionTree(actions: RuntimeAutomationAction[]) {
+  const flattened: FlattenedAutomationAction[] = []
+  const visit = (pathActions: RuntimeAutomationAction[], branchPath: AutomationBranchPathEntry[]) => {
+    for (const action of pathActions) {
+      flattened.push({ action, nodeOrder: flattened.length + 1, branchPath })
+      if (action.type !== "IF_ELSE") continue
+      for (const branch of action.ifElseConfig.branches) {
+        if (branch.isDefault) continue
+        visit(branch.actions, [
+          ...branchPath,
+          { nodeKey: action.nodeKey, branchKey: branch.branchKey, branchName: branch.name },
+        ])
+      }
+    }
+  }
+  visit(actions, [])
+  return flattened
+}
+
+function ensureRuntimeAutomationAction(action: AutomationActionInput): RuntimeAutomationAction {
+  const nodeKey = action.nodeKey ?? randomUUID()
+  if (action.type !== "IF_ELSE") return { ...action, nodeKey } as RuntimeAutomationAction
+  return {
+    ...action,
+    nodeKey,
+    ifElseConfig: {
+      ...action.ifElseConfig,
+      branches: action.ifElseConfig.branches.map((branch) => {
+        return {
+          ...branch,
+          branchKey: branch.branchKey ?? randomUUID(),
+          actions: branch.actions.map(ensureRuntimeAutomationAction),
+        }
+      }),
+    },
+  }
+}
 
 const CONTACT_CONTEXT_MUTATING_ACTIONS = new Set<RuntimeAutomationAction["type"]>([
   "UPDATE_CONTACT_CUSTOM_FIELDS",
@@ -1564,17 +1909,20 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
     numberFormatterConfig: action.numberFormatterConfig,
     textFormatterConfig: action.textFormatterConfig,
     mathOperationConfig: action.mathOperationConfig,
+    ifElseConfig: action.ifElseConfig,
   })
-  if (!parsed.nodeKey) throw new Error("Automation action is missing its stable node key.")
-  return { ...parsed, nodeKey: parsed.nodeKey }
+  return ensureRuntimeAutomationAction(parsed)
 }
 
 export function parseActionSnapshot(value: unknown): RuntimeAutomationAction[] {
   const parsed = AutomationActionInputSchema.array().max(20).parse(value)
-  return parsed.map((action) => {
-    if (!action.nodeKey) throw new Error("Automation run contains an action without a node key.")
-    return { ...action, nodeKey: action.nodeKey }
-  })
+  const runtimeActions = parsed.map(ensureRuntimeAutomationAction)
+  const flattened = flattenAutomationActionTree(runtimeActions)
+  if (flattened.length > 20) throw new Error("Automation run contains more than 20 action nodes.")
+  if (new Set(flattened.map((item) => item.action.nodeKey)).size !== flattened.length) {
+    throw new Error("Automation run contains duplicate action node keys.")
+  }
+  return runtimeActions
 }
 
 async function applyAutomationAction(
@@ -2233,18 +2581,213 @@ function actionLog(
   reasonCode: string | null,
   details: string,
   id?: string,
+  metadata?: { nodeOrder: number; branchPath: AutomationBranchPathEntry[] },
 ): AutomationNodeLogData {
   return {
     ...(id ? { id } : {}),
     ...base,
     nodeKind: "ACTION",
-    nodeOrder: index + 1,
+    nodeOrder: metadata?.nodeOrder ?? index + 1,
     nodeKey: action.nodeKey,
     nodeLabel: getAutomationActionNodeLabel(action),
     status,
     reasonCode,
     details,
+    branchPath: metadata?.branchPath ?? null,
   }
+}
+
+type AutomationBranchDecision = {
+  branchKey: string
+  branchName: string
+  decidedAt: string
+}
+
+type AutomationBranchDecisions = Record<string, AutomationBranchDecision>
+
+function normalizeBranchDecisions(value: unknown): AutomationBranchDecisions {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  const decisions: AutomationBranchDecisions = {}
+  for (const [nodeKey, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue
+    const record = raw as Record<string, unknown>
+    if (typeof record.branchKey !== "string" || typeof record.branchName !== "string") continue
+    decisions[nodeKey] = {
+      branchKey: record.branchKey,
+      branchName: record.branchName,
+      decidedAt: typeof record.decidedAt === "string" ? record.decidedAt : new Date(0).toISOString(),
+    }
+  }
+  return decisions
+}
+
+export function selectedAutomationActionSteps(
+  actions: RuntimeAutomationAction[],
+  decisions: AutomationBranchDecisions,
+) {
+  const flatByKey = new Map(flattenAutomationActionTree(actions).map((item) => [item.action.nodeKey, item]))
+  const selected: FlattenedAutomationAction[] = []
+  const visit = (pathActions: RuntimeAutomationAction[]) => {
+    for (const action of pathActions) {
+      const step = flatByKey.get(action.nodeKey)
+      if (!step) continue
+      selected.push(step)
+      if (action.type !== "IF_ELSE") continue
+      const decision = decisions[action.nodeKey]
+      if (!decision) return
+      const branch = action.ifElseConfig.branches.find((candidate) => candidate.branchKey === decision.branchKey)
+      if (!branch || branch.isDefault) return
+      visit(branch.actions)
+      return
+    }
+  }
+  visit(actions)
+  return selected
+}
+
+type AutomationOpportunityEventContext = {
+  pipelineId?: string | null
+  valueCents?: number | null
+  sourceStageId?: string | null
+  targetStageId?: string | null
+  occurredAt?: string | null
+}
+
+function normalizeOpportunityEventContext(value: unknown): AutomationOpportunityEventContext {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  const record = value as Record<string, unknown>
+  return {
+    pipelineId: typeof record.pipelineId === "string" ? record.pipelineId : null,
+    valueCents: typeof record.valueCents === "number" && Number.isFinite(record.valueCents) ? record.valueCents : null,
+    sourceStageId: typeof record.sourceStageId === "string" ? record.sourceStageId : null,
+    targetStageId: typeof record.targetStageId === "string" ? record.targetStageId : null,
+    occurredAt: typeof record.occurredAt === "string" ? record.occurredAt : null,
+  }
+}
+
+async function evaluateIfElseCondition(
+  prismaTx: any,
+  params: {
+    condition: AutomationBranchConditionInput
+    run: SegmentRun
+    catalog: AutomationRuntimeCatalog
+    automationValues: Record<string, unknown>
+    occurredAt: Date
+    eventContext: AutomationOpportunityEventContext
+    templateContext: ContactTemplateExecutionContext
+    directContactContext: () => Promise<{
+      statusConfigId: string | null
+      assignedToUserId: string | null
+      tagIds: string[]
+    }>
+  },
+) {
+  const { condition } = params
+  let currentValue: unknown = null
+  let valueType: ValueType = "string"
+
+  if (condition.source === "CONTACT_FIELD") {
+    const resolved = await resolveSafeContactTemplateFieldValue(prismaTx, {
+      tenantId: params.run.tenantId,
+      contactId: params.run.contactId!,
+      source: "CONTACT_FIELD",
+      key: condition.fieldKey,
+      executionContext: params.templateContext,
+    })
+    currentValue = resolved?.value ?? null
+    valueType = resolved ? valueTypeForCustomField(resolved.fieldType as CustomFieldType) : "string"
+  } else if (condition.source === "CONTACT_CUSTOM_FIELD") {
+    const field = params.catalog.fieldMap.get(condition.customFieldId)
+    if (!field) throw new Error("The configured branch custom field is unavailable.")
+    const resolved = await resolveSafeContactTemplateFieldValue(prismaTx, {
+      tenantId: params.run.tenantId,
+      contactId: params.run.contactId!,
+      source: "CUSTOM_FIELD",
+      key: field.key,
+      executionContext: params.templateContext,
+    })
+    currentValue = resolved?.value ?? null
+    valueType = valueTypeForCustomField(field.fieldType)
+  } else if (condition.source === "CONTACT_STATUS") {
+    currentValue = (await params.directContactContext()).statusConfigId
+  } else if (condition.source === "CONTACT_ASSIGNEE") {
+    currentValue = (await params.directContactContext()).assignedToUserId
+  } else if (condition.source === "CONTACT_TAGS") {
+    currentValue = (await params.directContactContext()).tagIds
+    valueType = "stringArray"
+  } else if (condition.source === "AUTOMATION_VALUE") {
+    currentValue = params.automationValues[condition.key]
+    if (typeof currentValue === "number") valueType = "number"
+    else if (typeof currentValue === "boolean") valueType = "boolean"
+    else if (Array.isArray(currentValue)) valueType = "stringArray"
+    else if (/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(String(currentValue ?? ""))) valueType = "date"
+  } else if (condition.source === "CURRENT_DATE_TIME") {
+    currentValue = params.occurredAt.toISOString()
+    valueType = "date"
+  } else if (condition.field === "VALUE") {
+    currentValue = params.eventContext.valueCents === null || params.eventContext.valueCents === undefined
+      ? null
+      : params.eventContext.valueCents / 100
+    valueType = "number"
+  } else if (condition.field === "PIPELINE") {
+    currentValue = params.eventContext.pipelineId ?? null
+  } else if (condition.field === "PREVIOUS_STAGE") {
+    currentValue = params.eventContext.sourceStageId ?? null
+  } else {
+    currentValue = params.eventContext.targetStageId ?? null
+  }
+
+  if (!EMPTY_OPERATORS.has(condition.operator) && isEmptyValue(currentValue, valueType)) return false
+  if (valueType === "stringArray" || condition.operator === "BETWEEN") {
+    return evaluateAutomationOperator(condition.operator, currentValue, condition.compareValue, valueType)
+  }
+  const workflowOperators: Partial<Record<AutomationOperator, "eq" | "neq" | "includes" | "not_includes" | "gt" | "gte" | "lt" | "lte" | "is_empty" | "is_not_empty">> = {
+    EQUALS: "eq",
+    NOT_EQUALS: "neq",
+    CONTAINS: "includes",
+    NOT_CONTAINS: "not_includes",
+    GREATER_THAN: "gt",
+    GREATER_THAN_OR_EQUAL: "gte",
+    LESS_THAN: "lt",
+    LESS_THAN_OR_EQUAL: "lte",
+    IS_EMPTY: "is_empty",
+    IS_NOT_EMPTY: "is_not_empty",
+    IS_TRUE: "eq",
+    IS_FALSE: "eq",
+  }
+  const operator = workflowOperators[condition.operator]
+  if (!operator) return false
+  return evaluateWorkflowOperator({
+    id: condition.conditionKey ?? "automation-condition",
+    source: "variable",
+    variableKey: "automation-condition",
+    valueType: valueType === "date" ? "dateTime" : valueType,
+    operator,
+    compareValue: condition.operator === "IS_TRUE"
+      ? true
+      : condition.operator === "IS_FALSE"
+        ? false
+        : condition.compareValue,
+  }, currentValue)
+}
+
+async function selectIfElseBranch(
+  prismaTx: any,
+  params: Omit<Parameters<typeof evaluateIfElseCondition>[1], "condition"> & {
+    action: Extract<RuntimeAutomationAction, { type: "IF_ELSE" }>
+  },
+) {
+  const defaultBranch = params.action.ifElseConfig.branches.find((branch) => branch.isDefault)
+  for (const branch of params.action.ifElseConfig.branches) {
+    if (branch.isDefault) continue
+    const results = await Promise.all(branch.conditions.map((condition) =>
+      evaluateIfElseCondition(prismaTx, { ...params, condition }),
+    ))
+    const matches = branch.matchMode === "ALL" ? results.every(Boolean) : results.some(Boolean)
+    if (matches) return branch
+  }
+  if (!defaultBranch) throw new Error("The If/Else action does not contain a Default branch.")
+  return defaultBranch
 }
 
 function failureLogsForSegment(
@@ -2292,6 +2835,9 @@ export type SegmentRun = {
   sourceStageId: string | null
   targetStageId: string | null
   cursorIndex: number
+  cursorPath?: unknown
+  branchDecisions?: unknown
+  eventContext?: unknown
   variables: unknown
 }
 
@@ -2300,6 +2846,414 @@ function normalizeAutomationVariables(value: unknown) {
     return {} as Record<string, unknown>
   }
   return { ...(value as Record<string, unknown>) }
+}
+
+function branchFailureLogs(
+  base: Omit<AutomationNodeLogData, "id" | "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">,
+  steps: FlattenedAutomationAction[],
+  startIndex: number,
+  failedIndex: number,
+  completedLogs: AutomationNodeLogData[],
+  message: string,
+) {
+  const priorByKey = new Map(completedLogs.map((log) => [log.nodeKey, log]))
+  const selectedPathKeys = new Set(steps.map((step) => step.action.nodeKey))
+  const logs = steps.slice(startIndex).map((step, relativeIndex) => {
+    const index = startIndex + relativeIndex
+    const prior = priorByKey.get(step.action.nodeKey)
+    if (prior?.status === "SKIPPED") return prior
+    if (index < failedIndex && prior) {
+      return {
+        ...prior,
+        status: "FAILED" as const,
+        reasonCode: "TRANSACTION_ROLLED_BACK",
+        details: "This action ran, but its changes were rolled back because a later action failed.",
+      }
+    }
+    if (index === failedIndex) {
+      return actionLog(
+        base,
+        step.action,
+        step.nodeOrder - 1,
+        "FAILED",
+        "AUTOMATION_EXECUTION_FAILED",
+        message.slice(0, 500),
+        undefined,
+        step,
+      )
+    }
+    if (!prior) {
+      return actionLog(
+        base,
+        step.action,
+        step.nodeOrder - 1,
+        "SKIPPED",
+        "PREVIOUS_ACTION_FAILED",
+        "Skipped because an earlier action failed.",
+        undefined,
+        step,
+      )
+    }
+    return prior
+  })
+  for (const prior of completedLogs) {
+    if (prior.status === "SKIPPED" && !selectedPathKeys.has(prior.nodeKey)) logs.push(prior)
+  }
+  return logs.sort((left, right) => left.nodeOrder - right.nodeOrder)
+}
+
+async function executeBranchedAutomationSegmentTx(
+  prismaTx: any,
+  params: {
+    run: SegmentRun
+    actions: RuntimeAutomationAction[]
+    catalog: AutomationRuntimeCatalog
+    occurredAt?: Date
+  },
+) {
+  const { run, actions, catalog } = params
+  if (!run.contactId) throw new Error("The contact for this automation run is no longer available.")
+  const now = params.occurredAt ?? new Date()
+  const base = {
+    tenantId: run.tenantId,
+    automationId: run.automationId,
+    automationName: run.automationName,
+    contactId: run.contactId,
+    contactName: run.contactName,
+    actorUserId: run.actorUserId,
+    processId: null,
+    opportunityId: run.opportunityId,
+    attemptId: run.attemptId,
+    eventSource: run.eventSource,
+    occurredAt: now,
+  } satisfies Omit<AutomationNodeLogData, "id" | "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
+  const logs: AutomationNodeLogData[] = []
+  const notificationIds: string[] = []
+  const fileCleanupCandidates: AutomationFileCleanupCandidate[] = []
+  const automationValues = normalizeAutomationVariables(run.variables)
+  const branchDecisions = normalizeBranchDecisions(run.branchDecisions)
+  const eventContext = normalizeOpportunityEventContext(run.eventContext)
+  const templateContext = createContactTemplateExecutionContext()
+  let directContactPromise: Promise<{ statusConfigId: string | null; assignedToUserId: string | null; tagIds: string[] }> | null = null
+  const directContactContext = () => {
+    if (!directContactPromise) {
+      directContactPromise = prismaTx.contact.findFirst({
+        where: { tenantId: run.tenantId, id: run.contactId },
+        select: {
+          statusConfigId: true,
+          assignedToUserId: true,
+          tags: { select: { tagId: true } },
+        },
+      }).then((contact: any) => {
+        if (!contact) throw new Error("The contact for this If/Else action is no longer available.")
+        return {
+          statusConfigId: contact.statusConfigId ?? null,
+          assignedToUserId: contact.assignedToUserId ?? null,
+          tagIds: (contact.tags ?? []).map((item: any) => item.tagId),
+        }
+      })
+    }
+    return directContactPromise!
+  }
+  const invalidateContactContext = () => {
+    templateContext.invalidate()
+    directContactPromise = null
+  }
+
+  let steps = selectedAutomationActionSteps(actions, branchDecisions)
+  const cursorRecord = run.cursorPath && typeof run.cursorPath === "object" && !Array.isArray(run.cursorPath)
+    ? run.cursorPath as Record<string, unknown>
+    : null
+  const nextNodeKey = typeof cursorRecord?.nextNodeKey === "string" ? cursorRecord.nextNodeKey : null
+  let index = nextNodeKey ? steps.findIndex((step) => step.action.nodeKey === nextNodeKey) : 0
+  if (nextNodeKey && index < 0) {
+    throw new AutomationExecutionError({
+      automationId: run.automationId,
+      automationName: run.automationName,
+      actionIndex: 0,
+      contactId: run.contactId,
+      message: "The saved branch continuation is no longer available in this pinned run.",
+    })
+  }
+  const segmentStartIndex = Math.max(0, index)
+  let contactDeleted = false
+
+  while (index < steps.length) {
+    const step = steps[index]!
+    const action = step.action
+
+    if (action.type === "IF_ELSE") {
+      try {
+        const selectedBranch = await selectIfElseBranch(prismaTx, {
+          action,
+          run,
+          catalog,
+          automationValues,
+          occurredAt: now,
+          eventContext,
+          templateContext,
+          directContactContext,
+        })
+        branchDecisions[action.nodeKey] = {
+          branchKey: selectedBranch.branchKey,
+          branchName: selectedBranch.name,
+          decidedAt: now.toISOString(),
+        }
+        logs.push(actionLog(
+          base,
+          action,
+          step.nodeOrder - 1,
+          "EXECUTED",
+          selectedBranch.isDefault ? "DEFAULT_BRANCH_SELECTED" : "BRANCH_SELECTED",
+          selectedBranch.isDefault
+            ? `No conditions matched; selected ${selectedBranch.name}.`
+            : `Selected branch “${selectedBranch.name}”.`,
+          undefined,
+          step,
+        ))
+
+        for (const branch of action.ifElseConfig.branches) {
+          if (branch.isDefault || branch.branchKey === selectedBranch.branchKey) continue
+          const skippedPath = [
+            ...step.branchPath,
+            { nodeKey: action.nodeKey, branchKey: branch.branchKey, branchName: branch.name },
+          ]
+          for (const skipped of flattenAutomationActionTree(branch.actions)) {
+            logs.push(actionLog(
+              base,
+              skipped.action,
+              skipped.nodeOrder - 1,
+              "SKIPPED",
+              "BRANCH_NOT_SELECTED",
+              `Skipped because branch “${branch.name}” was not selected.`,
+              undefined,
+              {
+                nodeOrder: flattenAutomationActionTree(actions).find((item) => item.action.nodeKey === skipped.action.nodeKey)?.nodeOrder ?? skipped.nodeOrder,
+                branchPath: [...skippedPath, ...skipped.branchPath],
+              },
+            ))
+          }
+        }
+
+        steps = selectedAutomationActionSteps(actions, branchDecisions)
+        index = steps.findIndex((candidate) => candidate.action.nodeKey === action.nodeKey) + 1
+        if (selectedBranch.isDefault) index = steps.length
+        continue
+      } catch (error) {
+        const executionError = error instanceof AutomationExecutionError
+          ? error
+          : new AutomationExecutionError({
+              automationId: run.automationId,
+              automationName: run.automationName,
+              actionIndex: step.nodeOrder - 1,
+              contactId: run.contactId,
+              message: error instanceof Error ? error.message : "The If/Else conditions could not be evaluated.",
+            })
+        const failureLogs = branchFailureLogs(base, steps, segmentStartIndex, index, logs, executionError.message)
+        const loggedKeys = new Set(failureLogs.map((log) => log.nodeKey))
+        for (const descendant of flattenAutomationActionTree(actions)) {
+          if (
+            loggedKeys.has(descendant.action.nodeKey) ||
+            !descendant.branchPath.some((entry) => entry.nodeKey === action.nodeKey)
+          ) continue
+          failureLogs.push(actionLog(
+            base,
+            descendant.action,
+            descendant.nodeOrder - 1,
+            "SKIPPED",
+            "PREVIOUS_ACTION_FAILED",
+            "Skipped because the If/Else conditions could not be evaluated.",
+            undefined,
+            descendant,
+          ))
+        }
+        executionError.nodeExecutions = failureLogs.sort((left, right) => left.nodeOrder - right.nodeOrder)
+        executionError.branchDecisions = { ...branchDecisions }
+        executionError.cursorPath = { nextNodeKey: action.nodeKey }
+        throw executionError
+      }
+    }
+
+    if (action.type === "WAIT") {
+      const resumeAt = calculateWaitAt(action.waitConfig, now)
+      if (resumeAt.getTime() > now.getTime()) {
+        const logId = randomUUID()
+        logs.push(actionLog(
+          base,
+          action,
+          step.nodeOrder - 1,
+          "WAITING",
+          "WAIT_SCHEDULED",
+          `Waiting until ${formatWaitInstant(resumeAt, catalog.timezone)}.`,
+          logId,
+          step,
+        ))
+        const nextStep = steps[index + 1]
+        await prismaTx.automationRun.update({
+          where: { id: run.id },
+          data: {
+            status: "WAITING",
+            cursorIndex: index + 1,
+            cursorPath: { nextNodeKey: nextStep?.action.nodeKey ?? null },
+            branchDecisions,
+            resumeAt,
+            waitingNodeKey: action.nodeKey,
+            waitingNodeExecutionId: logId,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            variables: automationValues,
+          },
+        })
+        return { logs, notificationIds, fileCleanupCandidates, status: "WAITING" as const, contactDeleted: false }
+      }
+
+      logs.push(actionLog(
+        base,
+        action,
+        step.nodeOrder - 1,
+        "EXECUTED",
+        "WAIT_TIME_PASSED",
+        `The calculated wait time (${formatWaitInstant(resumeAt, catalog.timezone)}) had already passed.`,
+        undefined,
+        step,
+      ))
+      if (action.waitConfig.mode === "FIXED_DATE" && action.waitConfig.pastBehavior === "EXIT") {
+        for (const skipped of steps.slice(index + 1)) {
+          logs.push(actionLog(base, skipped.action, skipped.nodeOrder - 1, "SKIPPED", "WAIT_EXITED", "Skipped because the wait action exited this run.", undefined, skipped))
+        }
+        await prismaTx.automationRun.update({
+          where: { id: run.id },
+          data: {
+            status: "EXITED",
+            cursorIndex: index + 1,
+            cursorPath: { nextNodeKey: null },
+            branchDecisions,
+            resumeAt: null,
+            waitingNodeKey: null,
+            waitingNodeExecutionId: null,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            exitedAt: now,
+            variables: automationValues,
+          },
+        })
+        await prismaTx.automationExecution.create({
+          data: {
+            tenantId: run.tenantId,
+            automationId: run.automationId,
+            automationName: run.automationName,
+            triggerType: run.triggerType,
+            status: "EXITED",
+            opportunityId: run.opportunityId,
+            contactId: run.contactId,
+            sourceStageId: run.sourceStageId,
+            targetStageId: run.targetStageId,
+            actorUserId: run.actorUserId,
+            actionCount: index + 1,
+          },
+        })
+        return { logs, notificationIds, fileCleanupCandidates, status: "EXITED" as const, contactDeleted: false }
+      }
+      if (action.waitConfig.mode === "FIXED_DATE" && action.waitConfig.pastBehavior === "GO_TO_STEP") {
+        const targetNodeKey = action.waitConfig.targetNodeKey
+        const targetIndex = steps.findIndex((candidate) => candidate.action.nodeKey === targetNodeKey)
+        if (targetIndex <= index) {
+          throw new AutomationExecutionError({
+            automationId: run.automationId,
+            automationName: run.automationName,
+            actionIndex: step.nodeOrder - 1,
+            contactId: run.contactId,
+            message: "The configured wait destination is no longer available in this branch.",
+          })
+        }
+        for (const skipped of steps.slice(index + 1, targetIndex)) {
+          logs.push(actionLog(base, skipped.action, skipped.nodeOrder - 1, "SKIPPED", "WAIT_JUMPED", "Skipped because the wait action continued at a later step.", undefined, skipped))
+        }
+        index = targetIndex
+        continue
+      }
+      index += 1
+      continue
+    }
+
+    try {
+      const successDetails = await applyAutomationAction(prismaTx, {
+        action,
+        actionIndex: step.nodeOrder - 1,
+        automationId: run.automationId,
+        automationName: run.automationName,
+        tenantId: run.tenantId,
+        contactId: run.contactId,
+        catalog,
+        occurredAt: now,
+        runId: run.id,
+        automationValues,
+        templateContext,
+      })
+      if (CONTACT_CONTEXT_MUTATING_ACTIONS.has(action.type)) invalidateContactContext()
+      const details = typeof successDetails === "string" ? successDetails : successDetails?.details
+      if (typeof successDetails === "object" && successDetails?.notificationIds) notificationIds.push(...successDetails.notificationIds)
+      if (typeof successDetails === "object" && successDetails && "contactDeleted" in successDetails && successDetails.contactDeleted === true) contactDeleted = true
+      if (typeof successDetails === "object" && successDetails && "fileCleanupCandidates" in successDetails && Array.isArray(successDetails.fileCleanupCandidates)) {
+        fileCleanupCandidates.push(...successDetails.fileCleanupCandidates)
+      }
+      logs.push(actionLog(base, action, step.nodeOrder - 1, "EXECUTED", null, details ?? "Action completed successfully.", undefined, step))
+    } catch (error) {
+      const executionError = error instanceof AutomationExecutionError
+        ? error
+        : new AutomationExecutionError({
+            automationId: run.automationId,
+            automationName: run.automationName,
+            actionIndex: step.nodeOrder - 1,
+            contactId: run.contactId,
+            message: error instanceof Error ? error.message : "The automation action failed.",
+          })
+      executionError.nodeExecutions = branchFailureLogs(base, steps, segmentStartIndex, index, logs, executionError.message)
+      executionError.branchDecisions = { ...branchDecisions }
+      executionError.cursorPath = { nextNodeKey: action.nodeKey }
+      throw executionError
+    }
+    index += 1
+  }
+
+  await prismaTx.automationRun.update({
+    where: { id: run.id },
+    data: {
+      status: "SUCCEEDED",
+      cursorIndex: steps.length,
+      cursorPath: { nextNodeKey: null },
+      branchDecisions,
+      resumeAt: null,
+      waitingNodeKey: null,
+      waitingNodeExecutionId: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      completedAt: now,
+      variables: automationValues,
+    },
+  })
+  await prismaTx.automationExecution.create({
+    data: {
+      tenantId: run.tenantId,
+      automationId: run.automationId,
+      automationName: run.automationName,
+      triggerType: run.triggerType,
+      status: "SUCCEEDED",
+      opportunityId: run.opportunityId,
+      contactId: run.contactId,
+      sourceStageId: run.sourceStageId,
+      targetStageId: run.targetStageId,
+      actorUserId: run.actorUserId,
+      actionCount: steps.length,
+    },
+  })
+  return {
+    logs: contactDeleted ? logs.map((log) => ({ ...log, contactId: null })) : logs,
+    notificationIds,
+    fileCleanupCandidates,
+    status: "SUCCEEDED" as const,
+    contactDeleted,
+  }
 }
 
 export async function executeAutomationSegmentTx(
@@ -2312,6 +3266,9 @@ export async function executeAutomationSegmentTx(
     occurredAt?: Date
   },
 ) {
+  if (params.actions.some((action) => action.type === "IF_ELSE") || params.run.cursorPath) {
+    return executeBranchedAutomationSegmentTx(prismaTx, params)
+  }
   const { run, actions, catalog, startIndex } = params
   if (!run.contactId) throw new Error("The contact for this automation run is no longer available.")
   const now = params.occurredAt ?? new Date()
@@ -2650,15 +3607,16 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Opport
     }]
 
     if (!trigger.matches) {
-      logs.push(...actions.map((action, index) => ({
+      logs.push(...flattenAutomationActionTree(actions).map(({ action, nodeOrder, branchPath }) => ({
         ...base,
         nodeKind: "ACTION" as const,
-        nodeOrder: index + 1,
+        nodeOrder,
         nodeKey: action.nodeKey,
         nodeLabel: getAutomationActionNodeLabel(action),
         status: "SKIPPED" as const,
         reasonCode: "TRIGGER_NOT_MET",
         details: `Skipped because the automation trigger did not match. ${trigger.details}`,
+        branchPath,
       })))
       return { automation, actions, logs, shouldRun: false }
     }
@@ -2666,15 +3624,16 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Opport
     const conditionResult = evaluateAutomationConditions(automation, event, contact, catalog)
     if (!conditionResult.matches) {
       const details = conditionResult.failures.join(" ")
-      logs.push(...actions.map((action, index) => ({
+      logs.push(...flattenAutomationActionTree(actions).map(({ action, nodeOrder, branchPath }) => ({
         ...base,
         nodeKind: "ACTION" as const,
-        nodeOrder: index + 1,
+        nodeOrder,
         nodeKey: action.nodeKey,
         nodeLabel: getAutomationActionNodeLabel(action),
         status: "SKIPPED" as const,
         reasonCode: "FILTERS_NOT_MET",
         details,
+        branchPath,
       })))
       return { automation, actions, logs, shouldRun: false }
     }
@@ -2692,13 +3651,15 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Opport
 
     if (contactDeleted) {
       const triggerLog = plan.logs[0]!
-      plan.logs.push(...plan.actions.map((action, actionIndex) => actionLog(
+      plan.logs.push(...flattenAutomationActionTree(plan.actions).map(({ action, nodeOrder, branchPath }) => actionLog(
         triggerLog,
         action,
-        actionIndex,
+        nodeOrder - 1,
         "SKIPPED",
         "CONTACT_DELETED",
         "Skipped because an earlier automation deleted the contact.",
+        undefined,
+        { nodeOrder, branchPath },
       )))
       continue
     }
@@ -2721,6 +3682,13 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Opport
           targetStageId: event.targetStageId,
           actionSnapshot: plan.actions,
           cursorIndex: 0,
+          eventContext: {
+            pipelineId: event.pipelineId,
+            valueCents: event.valueCents,
+            sourceStageId: event.sourceStageId,
+            targetStageId: event.targetStageId,
+            occurredAt: triggerLog.occurredAt.toISOString(),
+          },
           status: "RUNNING",
         },
       })
@@ -2760,13 +3728,15 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Opport
           }
           tracePlan.logs = [
             triggerLog,
-            ...tracePlan.actions.map((action, actionIndex) => actionLog(
+            ...flattenAutomationActionTree(tracePlan.actions).map(({ action, nodeOrder, branchPath }) => actionLog(
               triggerLog,
               action,
-              actionIndex,
+              nodeOrder - 1,
               "SKIPPED",
               "PREVIOUS_AUTOMATION_FAILED",
               "Skipped because an earlier automation failed.",
+              undefined,
+              { nodeOrder, branchPath },
             )),
           ]
         }
@@ -2801,6 +3771,8 @@ export async function recordAutomationFailure(prismaClient: any, event: Opportun
   await prismaClient.$transaction(async (transaction: any) => {
     const opportunityId = event.triggerType === "OPPORTUNITY_CREATED" ? null : event.opportunityId
     if (error.attemptId && error.contactName && error.actionSnapshot.length > 0) {
+      const failedStep = flattenAutomationActionTree(error.actionSnapshot as RuntimeAutomationAction[])
+        .find((step) => step.nodeOrder - 1 === error.actionIndex)
       await transaction.automationRun.create({
         data: {
           tenantId: event.tenantId,
@@ -2817,8 +3789,17 @@ export async function recordAutomationFailure(prismaClient: any, event: Opportun
           targetStageId: event.targetStageId,
           actionSnapshot: error.actionSnapshot,
           cursorIndex: error.actionIndex,
+          cursorPath: error.cursorPath,
+          branchDecisions: error.branchDecisions ?? {},
+          eventContext: {
+            pipelineId: event.pipelineId,
+            valueCents: event.valueCents,
+            sourceStageId: event.sourceStageId,
+            targetStageId: event.targetStageId,
+            occurredAt: new Date().toISOString(),
+          },
           status: "FAILED",
-          failureNodeKey: (error.actionSnapshot[error.actionIndex] as { nodeKey?: string } | undefined)?.nodeKey,
+          failureNodeKey: failedStep?.action.nodeKey ?? (error.actionSnapshot[error.actionIndex] as { nodeKey?: string } | undefined)?.nodeKey,
           failureCode: error.code,
           failureMessage: error.message.slice(0, 500),
           failedAt: new Date(),
@@ -2893,9 +3874,25 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
     eventSource: run.eventSource,
     occurredAt: now,
   } satisfies Omit<AutomationNodeLogData, "id" | "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
+  const branchedSteps = actions.some((action) => action.type === "IF_ELSE")
+    ? selectedAutomationActionSteps(actions, normalizeBranchDecisions(run.branchDecisions))
+    : []
+  const cursorRecord = run.cursorPath && typeof run.cursorPath === "object" && !Array.isArray(run.cursorPath)
+    ? run.cursorPath as Record<string, unknown>
+    : null
+  const nextNodeKey = typeof cursorRecord?.nextNodeKey === "string" ? cursorRecord.nextNodeKey : null
+  const branchStartIndex = nextNodeKey
+    ? Math.max(0, branchedSteps.findIndex((step) => step.action.nodeKey === nextNodeKey))
+    : Math.min(run.cursorIndex, Math.max(0, branchedSteps.length - 1))
+  const branchFailedIndex = Math.max(
+    branchStartIndex,
+    branchedSteps.findIndex((step) => step.nodeOrder - 1 === error.actionIndex),
+  )
   const logs = error.nodeExecutions.length > 0
     ? error.nodeExecutions
-    : actions.length > 0
+    : branchedSteps.length > 0
+      ? branchFailureLogs(base, branchedSteps, branchStartIndex, branchFailedIndex, [], error.message)
+      : actions.length > 0
       ? failureLogsForSegment(base, actions, run.cursorIndex, error.actionIndex, [], error.message)
       : []
 
@@ -2917,7 +3914,9 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
       where: { id: run.id, status: "RUNNING", leaseToken },
       data: {
         status: "FAILED",
-        failureNodeKey: actions[error.actionIndex]?.nodeKey ?? run.waitingNodeKey,
+        cursorPath: error.cursorPath ?? run.cursorPath,
+        branchDecisions: error.branchDecisions ?? run.branchDecisions ?? {},
+        failureNodeKey: flattenAutomationActionTree(actions).find((step) => step.nodeOrder - 1 === error.actionIndex)?.action.nodeKey ?? run.waitingNodeKey,
         failureCode: error.code,
         failureMessage: error.message.slice(0, 500),
         failedAt: now,

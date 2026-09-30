@@ -42,6 +42,7 @@ function mutationPayload(record: AutomationRecord, isEnabled = record.isEnabled)
       numberFormatterConfig: action.numberFormatterConfig,
       textFormatterConfig: action.textFormatterConfig,
       mathOperationConfig: action.mathOperationConfig,
+      ifElseConfig: action.ifElseConfig,
     })),
   }
 }
