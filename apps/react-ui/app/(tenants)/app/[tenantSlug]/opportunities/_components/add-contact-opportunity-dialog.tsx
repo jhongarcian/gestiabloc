@@ -137,6 +137,9 @@ type CreateOpportunityResponse = {
   automation?: {
     matchedCount: number
     executedCount: number
+    automationEventId?: string | null
+    automationStatus?: "QUEUED" | "NOT_APPLICABLE"
+    queuedAutomationCount?: number
   }
 }
 
@@ -400,9 +403,11 @@ export function AddContactOpportunityDialog({
       toast.success(
         data.contactDeleted
           ? "Automation ran and deleted the contact."
+          : data.automation?.automationStatus === "QUEUED"
+          ? "Opportunity created. Automation queued."
           : (data.automation?.executedCount ?? 0) > 0
           ? `Opportunity added and ${data.automation!.executedCount} automation${data.automation!.executedCount === 1 ? "" : "s"} ran.`
-          : "Opportunity added.",
+          : "Opportunity created.",
       )
       setOpen(false)
       reset()

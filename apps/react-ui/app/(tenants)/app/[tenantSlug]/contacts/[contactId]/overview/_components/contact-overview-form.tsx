@@ -22,6 +22,7 @@ import { AppPhoneInput } from "@/components/ui/phone-input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -41,6 +42,9 @@ type StatusOption = {
   label: string
   value: string
 }
+
+type ContactGender = "FEMALE" | "MALE" | "NON_BINARY" | "OTHER" | "UNKNOWN"
+type ContactSmokerStatus = "UNKNOWN" | "NEVER" | "CURRENT" | "FORMER"
 
 type ContactOverviewFormProps = {
   tenantId: string
@@ -65,6 +69,25 @@ type ContactOverviewFormProps = {
       postalCode: string | null
       country: string | null
     }
+    mailingAddress: {
+      addressLine1: string | null
+      addressLine2: string | null
+      city: string | null
+      state: string | null
+      postalCode: string | null
+      country: string | null
+    }
+    emergencyContactName: string | null
+    emergencyContactPhone: string | null
+    emergencyContactRelationship: string | null
+    gender: ContactGender | null
+    height: string | null
+    weight: string | null
+    deceasedAt: string | null
+    smokerStatus: ContactSmokerStatus | null
+    leadDate: string | null
+    leadSource: string | null
+    leadOtherSource: string | null
     statusConfigId: string
     tags: Array<{
       id: string
@@ -114,10 +137,16 @@ type ContactOverviewFormProps = {
     }>
   }
   statusOptions: StatusOption[]
+  leadSourceOptions: StatusOption[]
 }
 
 type CustomField = ContactOverviewFormProps["initialContact"]["customFields"][number]
 type FieldErrors = Partial<Record<string, string>>
+
+const PROFILE_SELECT_TRIGGER_CLASSNAME =
+  "h-9 w-full cursor-pointer rounded-full border-border/80 bg-background/80 px-3 text-sm font-medium text-foreground shadow-sm backdrop-blur transition-colors hover:bg-accent/70 hover:text-accent-foreground"
+const COMPACT_SELECT_TRIGGER_CLASSNAME =
+  "h-8 w-full cursor-pointer rounded-full border-border/80 bg-background/80 px-3 text-xs font-semibold text-foreground shadow-sm backdrop-blur transition-colors hover:bg-accent/70 hover:text-accent-foreground"
 
 const SENSITIVE_ACCESS_GRANT_OPTIONS = [
   { value: "ONCE", label: "One time" },
@@ -141,6 +170,20 @@ const optionalPhoneSchema = z
     "Enter a valid phone number.",
   )
 
+const contactGenderSchema = z.enum([
+  "FEMALE",
+  "MALE",
+  "NON_BINARY",
+  "OTHER",
+  "UNKNOWN",
+])
+const contactSmokerStatusSchema = z.enum([
+  "UNKNOWN",
+  "NEVER",
+  "CURRENT",
+  "FORMER",
+])
+
 const baseContactSchema = z.object({
   firstName: z.string().trim().min(1, "First name is required.").max(100),
   middleName: z.string().trim().max(100),
@@ -161,6 +204,23 @@ const baseContactSchema = z.object({
   state: optionalStringSchema,
   postalCode: z.string().trim().max(20, "Postal code is too long."),
   country: optionalStringSchema,
+  mailingAddressLine1: optionalStringSchema,
+  mailingAddressLine2: optionalStringSchema,
+  mailingCity: optionalStringSchema,
+  mailingState: optionalStringSchema,
+  mailingPostalCode: z.string().trim().max(40, "Postal code is too long."),
+  mailingCountry: optionalStringSchema,
+  emergencyContactName: optionalStringSchema,
+  emergencyContactPhone: optionalPhoneSchema,
+  emergencyContactRelationship: optionalStringSchema,
+  gender: z.union([contactGenderSchema, z.literal("")]),
+  height: z.string().trim().max(60),
+  weight: z.string().trim().max(60),
+  deceasedAt: z.date().optional(),
+  smokerStatus: z.union([contactSmokerStatusSchema, z.literal("")]),
+  leadDate: z.date().optional(),
+  leadSource: z.string().trim().max(80),
+  leadOtherSource: z.string().trim().max(160),
   statusConfigId: z.string(),
 })
 
@@ -459,9 +519,12 @@ export function ContactOverviewForm({
   canManageTags,
   initialContact,
   statusOptions,
+  leadSourceOptions,
 }: ContactOverviewFormProps) {
   const router = useRouter()
   const initialDateOfBirth = parseStoredDate(initialContact.dateOfBirth)
+  const initialDeceasedAt = parseStoredDate(initialContact.deceasedAt)
+  const initialLeadDate = parseStoredDate(initialContact.leadDate)
   const [isSaving, setIsSaving] = useState(false)
   const [requestingFieldId, setRequestingFieldId] = useState<string | null>(null)
   const [resolvingRequestId, setResolvingRequestId] = useState<string | null>(null)
@@ -495,6 +558,56 @@ export function ContactOverviewForm({
     initialContact.address.postalCode ?? "",
   )
   const [country, setCountry] = useState(initialContact.address.country ?? "")
+  const [hasDifferentMailingAddress, setHasDifferentMailingAddress] = useState(
+    () => Object.values(initialContact.mailingAddress).some(Boolean),
+  )
+  const [mailingAddressLine1, setMailingAddressLine1] = useState(
+    initialContact.mailingAddress.addressLine1 ?? "",
+  )
+  const [mailingAddressLine2, setMailingAddressLine2] = useState(
+    initialContact.mailingAddress.addressLine2 ?? "",
+  )
+  const [mailingCity, setMailingCity] = useState(
+    initialContact.mailingAddress.city ?? "",
+  )
+  const [mailingState, setMailingState] = useState(
+    initialContact.mailingAddress.state ?? "",
+  )
+  const [mailingPostalCode, setMailingPostalCode] = useState(
+    initialContact.mailingAddress.postalCode ?? "",
+  )
+  const [mailingCountry, setMailingCountry] = useState(
+    initialContact.mailingAddress.country ?? "",
+  )
+  const [emergencyContactName, setEmergencyContactName] = useState(
+    initialContact.emergencyContactName ?? "",
+  )
+  const [emergencyContactPhone, setEmergencyContactPhone] = useState(
+    initialContact.emergencyContactPhone ?? "",
+  )
+  const [emergencyContactRelationship, setEmergencyContactRelationship] = useState(
+    initialContact.emergencyContactRelationship ?? "",
+  )
+  const [gender, setGender] = useState<ContactGender | "">(
+    initialContact.gender ?? "",
+  )
+  const [height, setHeight] = useState(initialContact.height ?? "")
+  const [weight, setWeight] = useState(initialContact.weight ?? "")
+  const [deceasedAt, setDeceasedAt] = useState<Date | undefined>(initialDeceasedAt)
+  const [deceasedAtInput, setDeceasedAtInput] = useState(
+    initialDeceasedAt ? format(initialDeceasedAt, "MM/dd/yyyy") : "",
+  )
+  const [smokerStatus, setSmokerStatus] = useState<ContactSmokerStatus | "">(
+    initialContact.smokerStatus ?? "",
+  )
+  const [leadDate, setLeadDate] = useState<Date | undefined>(initialLeadDate)
+  const [leadDateInput, setLeadDateInput] = useState(
+    initialLeadDate ? format(initialLeadDate, "MM/dd/yyyy") : "",
+  )
+  const [leadSource, setLeadSource] = useState(initialContact.leadSource ?? "")
+  const [leadOtherSource, setLeadOtherSource] = useState(
+    initialContact.leadOtherSource ?? "",
+  )
   const [statusConfigId, setStatusConfigId] = useState(
     initialContact.statusConfigId,
   )
@@ -508,6 +621,8 @@ export function ContactOverviewForm({
       ),
   )
   const parsedDateOfBirthInput = parseDateInput(dateOfBirthInput)
+  const parsedDeceasedAtInput = parseDateInput(deceasedAtInput)
+  const parsedLeadDateInput = parseDateInput(leadDateInput)
   const editableCustomFields = useMemo(
     () =>
       initialContact.customFields.filter(
@@ -530,6 +645,25 @@ export function ContactOverviewForm({
       state: initialContact.address.state ?? "",
       postalCode: initialContact.address.postalCode ?? "",
       country: initialContact.address.country ?? "",
+      hasDifferentMailingAddress: Object.values(initialContact.mailingAddress).some(Boolean),
+      mailingAddressLine1: initialContact.mailingAddress.addressLine1 ?? "",
+      mailingAddressLine2: initialContact.mailingAddress.addressLine2 ?? "",
+      mailingCity: initialContact.mailingAddress.city ?? "",
+      mailingState: initialContact.mailingAddress.state ?? "",
+      mailingPostalCode: initialContact.mailingAddress.postalCode ?? "",
+      mailingCountry: initialContact.mailingAddress.country ?? "",
+      emergencyContactName: initialContact.emergencyContactName ?? "",
+      emergencyContactPhone: initialContact.emergencyContactPhone ?? "",
+      emergencyContactRelationship:
+        initialContact.emergencyContactRelationship ?? "",
+      gender: initialContact.gender ?? "",
+      height: initialContact.height ?? "",
+      weight: initialContact.weight ?? "",
+      deceasedAt: initialDeceasedAt ? format(initialDeceasedAt, "MM/dd/yyyy") : "",
+      smokerStatus: initialContact.smokerStatus ?? "",
+      leadDate: initialLeadDate ? format(initialLeadDate, "MM/dd/yyyy") : "",
+      leadSource: initialContact.leadSource ?? "",
+      leadOtherSource: initialContact.leadOtherSource ?? "",
       statusConfigId: initialContact.statusConfigId,
     }
 
@@ -547,6 +681,24 @@ export function ContactOverviewForm({
       state,
       postalCode,
       country,
+      hasDifferentMailingAddress,
+      mailingAddressLine1,
+      mailingAddressLine2,
+      mailingCity,
+      mailingState,
+      mailingPostalCode,
+      mailingCountry,
+      emergencyContactName,
+      emergencyContactPhone,
+      emergencyContactRelationship,
+      gender,
+      height,
+      weight,
+      deceasedAt: deceasedAtInput,
+      smokerStatus,
+      leadDate: leadDateInput,
+      leadSource,
+      leadOtherSource,
       statusConfigId,
     }
 
@@ -574,16 +726,36 @@ export function ContactOverviewForm({
     customFieldValues,
     dateOfBirthInput,
     email,
+    emergencyContactName,
+    emergencyContactPhone,
+    emergencyContactRelationship,
     firstName,
+    gender,
+    hasDifferentMailingAddress,
+    height,
     initialContact,
     initialDateOfBirth,
+    initialDeceasedAt,
+    initialLeadDate,
     lastName,
+    leadDateInput,
+    leadOtherSource,
+    leadSource,
+    mailingAddressLine1,
+    mailingAddressLine2,
+    mailingCity,
+    mailingCountry,
+    mailingPostalCode,
+    mailingState,
     middleName,
     phone,
     postalCode,
     secondaryPhone,
+    smokerStatus,
     state,
     statusConfigId,
+    deceasedAtInput,
+    weight,
   ])
 
   const validateForm = () => {
@@ -604,6 +776,24 @@ export function ContactOverviewForm({
       state,
       postalCode,
       country,
+      mailingAddressLine1,
+      mailingAddressLine2,
+      mailingCity,
+      mailingState,
+      mailingPostalCode,
+      mailingCountry,
+      emergencyContactName,
+      emergencyContactPhone,
+      emergencyContactRelationship,
+      gender,
+      height,
+      weight,
+      deceasedAt:
+        parsedDeceasedAtInput === null ? undefined : parsedDeceasedAtInput,
+      smokerStatus,
+      leadDate: parsedLeadDateInput === null ? undefined : parsedLeadDateInput,
+      leadSource,
+      leadOtherSource,
       statusConfigId,
     })
 
@@ -611,6 +801,18 @@ export function ContactOverviewForm({
 
     if (parsedDateOfBirthInput === null) {
       nextErrors.dateOfBirth = "Enter a valid date in MM/DD/YYYY format."
+    }
+    if (parsedDeceasedAtInput === null) {
+      nextErrors.deceasedAt = "Enter a valid date in MM/DD/YYYY format."
+    }
+    if (parsedLeadDateInput === null) {
+      nextErrors.leadDate = "Enter a valid date in MM/DD/YYYY format."
+    }
+    if (
+      leadSource &&
+      !leadSourceOptions.some((option) => option.value === leadSource)
+    ) {
+      nextErrors.leadSource = "Select a configured lead source."
     }
 
     if (!validationResult.success) {
@@ -643,6 +845,8 @@ export function ContactOverviewForm({
     setFieldErrors({})
 
     const dateOfBirthIso = serializeDateOnly(dateOfBirth)
+    const deceasedAtIso = serializeDateOnly(deceasedAt)
+    const leadDateIso = serializeDateOnly(leadDate)
 
     try {
       await api.patch(`/api/contacts/${tenantId}/${contactId}`, {
@@ -659,6 +863,36 @@ export function ContactOverviewForm({
         state: state.trim() || null,
         postalCode: postalCode.trim() || null,
         country: country.trim() || null,
+        mailingAddressLine1: hasDifferentMailingAddress
+          ? mailingAddressLine1.trim() || null
+          : null,
+        mailingAddressLine2: hasDifferentMailingAddress
+          ? mailingAddressLine2.trim() || null
+          : null,
+        mailingCity: hasDifferentMailingAddress
+          ? mailingCity.trim() || null
+          : null,
+        mailingState: hasDifferentMailingAddress
+          ? mailingState.trim() || null
+          : null,
+        mailingPostalCode: hasDifferentMailingAddress
+          ? mailingPostalCode.trim() || null
+          : null,
+        mailingCountry: hasDifferentMailingAddress
+          ? mailingCountry.trim() || null
+          : null,
+        emergencyContactName: emergencyContactName.trim() || null,
+        emergencyContactPhone: emergencyContactPhone.trim() || null,
+        emergencyContactRelationship:
+          emergencyContactRelationship.trim() || null,
+        gender: gender || null,
+        height: height.trim() || null,
+        weight: weight.trim() || null,
+        deceasedAt: deceasedAtIso,
+        smokerStatus: smokerStatus || null,
+        leadDate: leadDateIso,
+        leadSource: leadSource || null,
+        leadOtherSource: leadOtherSource.trim() || null,
         statusConfigId,
         customFieldValues: editableCustomFields.map((field) => ({
           fieldId: field.id,
@@ -770,8 +1004,8 @@ export function ContactOverviewForm({
 
   return (
     <TooltipProvider>
-      <div className="grid gap-6">
-        <div className="grid gap-6">
+      <div className="grid gap-4">
+        <div className="grid gap-4">
           <section className="space-y-4 rounded-xl border border-slate-100 p-4 md:p-5">
             <div className="space-y-1">
               <h3 className="text-sm font-semibold text-slate-900">Name</h3>
@@ -780,7 +1014,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-3 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel
                   htmlFor="contact-overview-first-name"
@@ -838,7 +1072,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel htmlFor="contact-overview-dob" label="Date of Birth" />
                 <DateInput
@@ -863,15 +1097,24 @@ export function ContactOverviewForm({
               <div className="grid gap-2">
                 <FieldLabel label="Status" />
                 <Select value={statusConfigId} onValueChange={setStatusConfigId}>
-                  <SelectTrigger aria-invalid={Boolean(fieldErrors.statusConfigId)}>
+                  <SelectTrigger
+                    className={PROFILE_SELECT_TRIGGER_CLASSNAME}
+                    aria-invalid={Boolean(fieldErrors.statusConfigId)}
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {statusOptions.map((status) => (
-                      <SelectItem key={status.value} value={status.value}>
-                        {status.label}
-                      </SelectItem>
-                    ))}
+                    <SelectGroup>
+                      {statusOptions.map((status) => (
+                        <SelectItem
+                          key={status.value}
+                          value={status.value}
+                          className="cursor-pointer"
+                        >
+                          {status.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
                 <FieldError message={fieldErrors.statusConfigId} />
@@ -921,14 +1164,162 @@ export function ContactOverviewForm({
 
           <section className="space-y-4 rounded-xl border border-slate-100 p-4 md:p-5">
             <div className="space-y-1">
-              <h3 className="text-sm font-semibold text-slate-900">Address</h3>
+              <h3 className="text-sm font-semibold text-slate-900">
+                Personal Details
+              </h3>
               <p className="text-sm text-slate-500">
-                Mailing and location-related details for this contact.
+                Demographic and health-related profile information.
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="grid gap-2 md:col-span-2">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
+              <div className="grid gap-2">
+                <FieldLabel label="Gender" />
+                <Select
+                  value={gender || "__empty__"}
+                  onValueChange={(value) =>
+                    setGender(
+                      value === "__empty__" ? "" : (value as ContactGender),
+                    )
+                  }
+                >
+                  <SelectTrigger
+                    className={PROFILE_SELECT_TRIGGER_CLASSNAME}
+                    aria-invalid={Boolean(fieldErrors.gender)}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="__empty__" className="cursor-pointer">
+                        No selection
+                      </SelectItem>
+                      <SelectItem value="FEMALE" className="cursor-pointer">
+                        Female
+                      </SelectItem>
+                      <SelectItem value="MALE" className="cursor-pointer">
+                        Male
+                      </SelectItem>
+                      <SelectItem value="NON_BINARY" className="cursor-pointer">
+                        Non-binary
+                      </SelectItem>
+                      <SelectItem value="OTHER" className="cursor-pointer">
+                        Other
+                      </SelectItem>
+                      <SelectItem value="UNKNOWN" className="cursor-pointer">
+                        Unknown
+                      </SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldError message={fieldErrors.gender} />
+              </div>
+
+              <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+                <div className="grid min-w-0 gap-2">
+                  <FieldLabel htmlFor="contact-overview-height" label="Height" />
+                  <Input
+                    id="contact-overview-height"
+                    value={height}
+                    onChange={(event) => setHeight(event.target.value)}
+                    placeholder="5 ft 8 in"
+                    maxLength={60}
+                    aria-invalid={Boolean(fieldErrors.height)}
+                  />
+                  <FieldError message={fieldErrors.height} />
+                </div>
+
+                <div className="grid min-w-0 gap-2">
+                  <FieldLabel htmlFor="contact-overview-weight" label="Weight" />
+                  <Input
+                    id="contact-overview-weight"
+                    value={weight}
+                    onChange={(event) => setWeight(event.target.value)}
+                    placeholder="165 lb"
+                    maxLength={60}
+                    aria-invalid={Boolean(fieldErrors.weight)}
+                  />
+                  <FieldError message={fieldErrors.weight} />
+                </div>
+              </div>
+
+              <div className="grid gap-2">
+                <FieldLabel label="Smoker Status" />
+                <Select
+                  value={smokerStatus || "__empty__"}
+                  onValueChange={(value) =>
+                    setSmokerStatus(
+                      value === "__empty__"
+                        ? ""
+                        : (value as ContactSmokerStatus),
+                    )
+                  }
+                >
+                  <SelectTrigger
+                    className={PROFILE_SELECT_TRIGGER_CLASSNAME}
+                    aria-invalid={Boolean(fieldErrors.smokerStatus)}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="__empty__" className="cursor-pointer">
+                        No selection
+                      </SelectItem>
+                      <SelectItem value="NEVER" className="cursor-pointer">
+                        Never
+                      </SelectItem>
+                      <SelectItem value="CURRENT" className="cursor-pointer">
+                        Current
+                      </SelectItem>
+                      <SelectItem value="FORMER" className="cursor-pointer">
+                        Former
+                      </SelectItem>
+                      <SelectItem value="UNKNOWN" className="cursor-pointer">
+                        Unknown
+                      </SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldError message={fieldErrors.smokerStatus} />
+              </div>
+
+              <div className="grid gap-2">
+                <FieldLabel
+                  htmlFor="contact-overview-deceased-at"
+                  label="Deceased Date"
+                />
+                <DateInput
+                  id="contact-overview-deceased-at"
+                  value={deceasedAtInput}
+                  onValueChange={(nextValue) => {
+                    setDeceasedAtInput(nextValue)
+                    if (fieldErrors.deceasedAt) {
+                      setFieldErrors((previous) => {
+                        const next = { ...previous }
+                        delete next.deceasedAt
+                        return next
+                      })
+                    }
+                  }}
+                  onDateChange={setDeceasedAt}
+                  ariaInvalid={Boolean(fieldErrors.deceasedAt)}
+                />
+                <FieldError message={fieldErrors.deceasedAt} />
+              </div>
+            </div>
+          </section>
+
+          <section className="space-y-4 rounded-xl border border-slate-100 p-4 md:p-5">
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold text-slate-900">Address</h3>
+              <p className="text-sm text-slate-500">
+                Primary and optional mailing details for this contact.
+              </p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
+              <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
                 <FieldLabel
                   htmlFor="contact-overview-address-line-1"
                   label="Address Line 1"
@@ -942,7 +1333,7 @@ export function ContactOverviewForm({
                 <FieldError message={fieldErrors.addressLine1} />
               </div>
 
-              <div className="grid gap-2 md:col-span-2">
+              <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
                 <FieldLabel
                   htmlFor="contact-overview-address-line-2"
                   label="Address Line 2"
@@ -1003,6 +1394,252 @@ export function ContactOverviewForm({
                 <FieldError message={fieldErrors.country} />
               </div>
             </div>
+
+            <div className="border-t border-slate-100 pt-4">
+              <label
+                htmlFor="contact-overview-different-mailing-address"
+                className="flex cursor-pointer items-center gap-3 text-sm font-medium text-slate-700"
+              >
+                <Checkbox
+                  id="contact-overview-different-mailing-address"
+                  checked={hasDifferentMailingAddress}
+                  onCheckedChange={(checked) => {
+                    const enabled = checked === true
+                    setHasDifferentMailingAddress(enabled)
+                    if (!enabled) {
+                      setMailingAddressLine1("")
+                      setMailingAddressLine2("")
+                      setMailingCity("")
+                      setMailingState("")
+                      setMailingPostalCode("")
+                      setMailingCountry("")
+                    }
+                  }}
+                />
+                Mailing address is different from the primary address
+              </label>
+            </div>
+
+            {hasDifferentMailingAddress ? (
+              <div className="grid gap-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
+                <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
+                  <FieldLabel
+                    htmlFor="contact-overview-mailing-address-line-1"
+                    label="Mailing Address Line 1"
+                  />
+                  <Input
+                    id="contact-overview-mailing-address-line-1"
+                    value={mailingAddressLine1}
+                    onChange={(event) => setMailingAddressLine1(event.target.value)}
+                    aria-invalid={Boolean(fieldErrors.mailingAddressLine1)}
+                  />
+                  <FieldError message={fieldErrors.mailingAddressLine1} />
+                </div>
+
+                <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
+                  <FieldLabel
+                    htmlFor="contact-overview-mailing-address-line-2"
+                    label="Mailing Address Line 2"
+                  />
+                  <Input
+                    id="contact-overview-mailing-address-line-2"
+                    value={mailingAddressLine2}
+                    onChange={(event) => setMailingAddressLine2(event.target.value)}
+                    aria-invalid={Boolean(fieldErrors.mailingAddressLine2)}
+                  />
+                  <FieldError message={fieldErrors.mailingAddressLine2} />
+                </div>
+
+                <div className="grid gap-2">
+                  <FieldLabel htmlFor="contact-overview-mailing-city" label="Mailing City" />
+                  <Input
+                    id="contact-overview-mailing-city"
+                    value={mailingCity}
+                    onChange={(event) => setMailingCity(event.target.value)}
+                    aria-invalid={Boolean(fieldErrors.mailingCity)}
+                  />
+                  <FieldError message={fieldErrors.mailingCity} />
+                </div>
+
+                <div className="grid gap-2">
+                  <FieldLabel htmlFor="contact-overview-mailing-state" label="Mailing State" />
+                  <Input
+                    id="contact-overview-mailing-state"
+                    value={mailingState}
+                    onChange={(event) => setMailingState(event.target.value)}
+                    aria-invalid={Boolean(fieldErrors.mailingState)}
+                  />
+                  <FieldError message={fieldErrors.mailingState} />
+                </div>
+
+                <div className="grid gap-2">
+                  <FieldLabel
+                    htmlFor="contact-overview-mailing-postal-code"
+                    label="Mailing Postal Code"
+                  />
+                  <Input
+                    id="contact-overview-mailing-postal-code"
+                    value={mailingPostalCode}
+                    onChange={(event) => setMailingPostalCode(event.target.value)}
+                    aria-invalid={Boolean(fieldErrors.mailingPostalCode)}
+                  />
+                  <FieldError message={fieldErrors.mailingPostalCode} />
+                </div>
+
+                <div className="grid gap-2">
+                  <FieldLabel
+                    htmlFor="contact-overview-mailing-country"
+                    label="Mailing Country"
+                  />
+                  <Input
+                    id="contact-overview-mailing-country"
+                    value={mailingCountry}
+                    onChange={(event) => setMailingCountry(event.target.value)}
+                    aria-invalid={Boolean(fieldErrors.mailingCountry)}
+                  />
+                  <FieldError message={fieldErrors.mailingCountry} />
+                </div>
+              </div>
+            ) : null}
+          </section>
+
+          <section className="space-y-4 rounded-xl border border-slate-100 p-4 md:p-5">
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold text-slate-900">
+                Emergency Contact
+              </h3>
+              <p className="text-sm text-slate-500">
+                Optional person to contact in an emergency.
+              </p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3 [&>*]:min-w-0">
+              <div className="grid gap-2">
+                <FieldLabel
+                  htmlFor="contact-overview-emergency-name"
+                  label="Name"
+                />
+                <Input
+                  id="contact-overview-emergency-name"
+                  value={emergencyContactName}
+                  onChange={(event) => setEmergencyContactName(event.target.value)}
+                  aria-invalid={Boolean(fieldErrors.emergencyContactName)}
+                />
+                <FieldError message={fieldErrors.emergencyContactName} />
+              </div>
+
+              <div className="grid gap-2">
+                <FieldLabel
+                  htmlFor="contact-overview-emergency-phone"
+                  label="Phone"
+                />
+                <AppPhoneInput
+                  id="contact-overview-emergency-phone"
+                  defaultCountry="US"
+                  countryCallingCodeEditable={false}
+                  value={emergencyContactPhone}
+                  onChange={(value) => setEmergencyContactPhone(value ?? "")}
+                />
+                <FieldError message={fieldErrors.emergencyContactPhone} />
+              </div>
+
+              <div className="grid gap-2">
+                <FieldLabel
+                  htmlFor="contact-overview-emergency-relationship"
+                  label="Relationship"
+                />
+                <Input
+                  id="contact-overview-emergency-relationship"
+                  value={emergencyContactRelationship}
+                  onChange={(event) =>
+                    setEmergencyContactRelationship(event.target.value)
+                  }
+                  aria-invalid={Boolean(fieldErrors.emergencyContactRelationship)}
+                />
+                <FieldError message={fieldErrors.emergencyContactRelationship} />
+              </div>
+            </div>
+          </section>
+
+          <section className="space-y-4 rounded-xl border border-slate-100 p-4 md:p-5">
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold text-slate-900">Lead Details</h3>
+              <p className="text-sm text-slate-500">
+                Track when and how this contact became a lead.
+              </p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3 [&>*]:min-w-0">
+              <div className="grid gap-2">
+                <FieldLabel htmlFor="contact-overview-lead-date" label="Lead Date" />
+                <DateInput
+                  id="contact-overview-lead-date"
+                  value={leadDateInput}
+                  onValueChange={(nextValue) => {
+                    setLeadDateInput(nextValue)
+                    if (fieldErrors.leadDate) {
+                      setFieldErrors((previous) => {
+                        const next = { ...previous }
+                        delete next.leadDate
+                        return next
+                      })
+                    }
+                  }}
+                  onDateChange={setLeadDate}
+                  ariaInvalid={Boolean(fieldErrors.leadDate)}
+                />
+                <FieldError message={fieldErrors.leadDate} />
+              </div>
+
+              <div className="grid gap-2">
+                <FieldLabel label="Lead Source" />
+                <Select
+                  value={leadSource || "__empty__"}
+                  onValueChange={(value) =>
+                    setLeadSource(value === "__empty__" ? "" : value)
+                  }
+                >
+                  <SelectTrigger
+                    className={PROFILE_SELECT_TRIGGER_CLASSNAME}
+                    aria-invalid={Boolean(fieldErrors.leadSource)}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="__empty__" className="cursor-pointer">
+                        No selection
+                      </SelectItem>
+                      {leadSourceOptions.map((option) => (
+                        <SelectItem
+                          key={option.value}
+                          value={option.value}
+                          className="cursor-pointer"
+                        >
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldError message={fieldErrors.leadSource} />
+              </div>
+
+              <div className="grid gap-2">
+                <FieldLabel
+                  htmlFor="contact-overview-lead-other-source"
+                  label="Lead Other Source"
+                />
+                <Input
+                  id="contact-overview-lead-other-source"
+                  value={leadOtherSource}
+                  onChange={(event) => setLeadOtherSource(event.target.value)}
+                  maxLength={160}
+                  aria-invalid={Boolean(fieldErrors.leadOtherSource)}
+                />
+                <FieldError message={fieldErrors.leadOtherSource} />
+              </div>
+            </div>
           </section>
 
           {initialContact.customFields.length > 0 ? (
@@ -1014,7 +1651,7 @@ export function ContactOverviewForm({
                 </p>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {initialContact.customFields.map((field) => {
                   const value = customFieldValues[field.id]
                   const error =
@@ -1029,8 +1666,9 @@ export function ContactOverviewForm({
                     <div
                       key={field.id}
                       className={cn(
-                        "grid gap-2",
-                        isFullWidth && "md:col-span-2 lg:col-span-3",
+                        "grid min-w-0 gap-2",
+                        isFullWidth &&
+                          "md:col-span-2 lg:col-span-3 xl:col-span-4",
                       )}
                     >
                       <FieldLabel
@@ -1067,15 +1705,23 @@ export function ContactOverviewForm({
                                       }))
                                     }}
                                   >
-                                    <SelectTrigger className="h-8 cursor-pointer text-xs">
+                                    <SelectTrigger
+                                      className={COMPACT_SELECT_TRIGGER_CLASSNAME}
+                                    >
                                       <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      {SENSITIVE_ACCESS_GRANT_OPTIONS.map((option) => (
-                                        <SelectItem key={option.value} value={option.value}>
-                                          {option.label}
-                                        </SelectItem>
-                                      ))}
+                                      <SelectGroup>
+                                        {SENSITIVE_ACCESS_GRANT_OPTIONS.map((option) => (
+                                          <SelectItem
+                                            key={option.value}
+                                            value={option.value}
+                                            className="cursor-pointer"
+                                          >
+                                            {option.label}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectGroup>
                                     </SelectContent>
                                   </Select>
                                 </div>
@@ -1386,7 +2032,7 @@ export function ContactOverviewForm({
                             <SelectTrigger
                               id={`custom-field-${field.id}`}
                               className={cn(
-                                "w-full",
+                                PROFILE_SELECT_TRIGGER_CLASSNAME,
                                 field.isEncrypted ? "pr-10" : undefined,
                               )}
                               aria-invalid={Boolean(error)}
@@ -1394,12 +2040,23 @@ export function ContactOverviewForm({
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="__empty__">No selection</SelectItem>
-                              {field.options.map((option) => (
-                                <SelectItem key={option} value={option}>
-                                  {option}
+                              <SelectGroup>
+                                <SelectItem
+                                  value="__empty__"
+                                  className="cursor-pointer"
+                                >
+                                  No selection
                                 </SelectItem>
-                              ))}
+                                {field.options.map((option) => (
+                                  <SelectItem
+                                    key={option}
+                                    value={option}
+                                    className="cursor-pointer"
+                                  >
+                                    {option}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
                             </SelectContent>
                           </Select>
                         </EncryptedFieldShell>

@@ -32,6 +32,7 @@ import {
   buildContactTemplateToken,
   buildAutomationValueToken,
   partitionContactTemplateFields,
+  uniqueAutomationOutputs,
   type ContactTemplateCatalog,
   type ContactTemplateFieldType,
 } from "@/lib/contact-template"
@@ -92,6 +93,10 @@ export function ContactTemplateInput({
     () => partitionContactTemplateFields(catalog),
     [catalog],
   )
+  const availableAutomationOutputs = useMemo(
+    () => uniqueAutomationOutputs(automationOutputs),
+    [automationOutputs],
+  )
   const fields = useMemo(
     () => source === "CONTACT" ? contactFields : source === "CUSTOM_FIELD" ? customFields : [],
     [contactFields, customFields, source],
@@ -132,7 +137,7 @@ export function ContactTemplateInput({
           unit: dateValue.type === "RELATIVE_DATE" ? dateValue.unit : undefined,
         })
     : source === "AUTOMATION_VALUE"
-      ? buildAutomationValueToken(selectedKey || automationOutputs[0]?.key || "")
+      ? buildAutomationValueToken(selectedKey || availableAutomationOutputs[0]?.key || "")
     : selectedField
       ? buildContactTemplateToken({
           source,
@@ -159,7 +164,7 @@ export function ContactTemplateInput({
     setSource(nextSource)
     setSelectedKey(
       nextSource === "AUTOMATION_VALUE"
-        ? automationOutputs[0]?.key ?? ""
+        ? availableAutomationOutputs[0]?.key ?? ""
         : nextFields[0]?.key ?? "",
     )
     setFormat("")
@@ -209,7 +214,7 @@ export function ContactTemplateInput({
               <SelectItem value="CONTACT">Contact field</SelectItem>
               <SelectItem value="CUSTOM_FIELD" disabled={customFields.length === 0}>Custom field</SelectItem>
               <SelectItem value="DATE">Date</SelectItem>
-              <SelectItem value="AUTOMATION_VALUE" disabled={automationOutputs.length === 0}>
+              <SelectItem value="AUTOMATION_VALUE" disabled={availableAutomationOutputs.length === 0}>
                 Automation value
               </SelectItem>
             </SelectContent>
@@ -230,12 +235,12 @@ export function ContactTemplateInput({
         ) : source === "AUTOMATION_VALUE" ? (
           <Field className="gap-1.5">
             <FieldLabel className="text-xs">Value</FieldLabel>
-            <Select value={selectedKey || automationOutputs[0]?.key || ""} onValueChange={setSelectedKey}>
+            <Select value={selectedKey || availableAutomationOutputs[0]?.key || ""} onValueChange={setSelectedKey}>
               <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}>
                 <SelectValue placeholder="Select a value" />
               </SelectTrigger>
               <SelectContent>
-                {automationOutputs.map((output) => (
+                {availableAutomationOutputs.map((output) => (
                   <SelectItem key={output.key} value={output.key}>
                     {output.label}
                   </SelectItem>

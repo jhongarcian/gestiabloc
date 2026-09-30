@@ -6,6 +6,7 @@ import {
   buildContactTemplateToken,
   buildDateTemplateToken,
   partitionContactTemplateFields,
+  uniqueAutomationOutputs,
   validateContactTemplate,
 } from "./contact-template"
 
@@ -36,6 +37,20 @@ const catalog = {
 }
 
 describe("contact template UI helpers", () => {
+  test("keeps only the first automation output for each result key", () => {
+    assert.deepEqual(
+      uniqueAutomationOutputs([
+        { key: "formatted_text5", label: "First" },
+        { key: "formatted_text5", label: "Duplicate" },
+        { key: "contact_name", label: "Contact name" },
+      ]),
+      [
+        { key: "formatted_text5", label: "First" },
+        { key: "contact_name", label: "Contact name" },
+      ],
+    )
+  })
+
   test("builds canonical tokens with type-aware defaults", () => {
     assert.equal(
       buildContactTemplateToken({ source: "CONTACT", key: "name", fieldType: "TEXT" }),

@@ -4,6 +4,7 @@ import { z } from "zod"
 
 import {
   resolveSafeContactTemplateFieldValue,
+  type ContactTemplateExecutionContext,
   type ContactTemplateFieldType,
 } from "./contact-templates.js"
 
@@ -163,6 +164,7 @@ async function resolveNumberSource(
     source: AutomationNumberSource
     mode: AutomationNumberFormatterMode
     automationValues: Record<string, unknown>
+    executionContext?: ContactTemplateExecutionContext
   },
 ) {
   if (params.source.type === "AUTOMATION_VALUE") {
@@ -181,6 +183,7 @@ async function resolveNumberSource(
     contactId: params.contactId,
     source: params.source.type,
     key: params.source.key,
+    executionContext: params.executionContext,
   })
   if (!resolved || !numberFormatterAcceptsFieldType(params.mode, resolved.fieldType)) {
     throw new Error("The configured number formatter field is unavailable or incompatible.")
@@ -236,6 +239,7 @@ export async function resolveAutomationNumberFormatter(
     contactId: string
     config: AutomationNumberFormatterConfig
     automationValues: Record<string, unknown>
+    executionContext?: ContactTemplateExecutionContext
   },
 ): Promise<AutomationNumberFormatterResult> {
   const { config } = params

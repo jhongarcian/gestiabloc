@@ -3,6 +3,23 @@
 import "@xyflow/react/dist/style.css"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core"
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -24,6 +41,7 @@ import {
   ArrowLeft,
   ArrowUp,
   CheckCircle2,
+  GripVertical,
   ListChecks,
   Loader2,
   MousePointerClick,
@@ -67,8 +85,12 @@ import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
+import {
+  ifElseWrapIssue,
+  wrapFollowingActionsInFirstBranch,
+} from "@/lib/automation-if-else-insertion"
 import { parseAutomationWaitIntegerDraft } from "@/lib/automation-wait-input"
-import { validateContactTemplate } from "@/lib/contact-template"
+import { uniqueAutomationOutputs, validateContactTemplate } from "@/lib/contact-template"
 import {
   dateTimeDraftToUtcIso,
   formatUtcIsoToDateTimeDraft,
@@ -87,6 +109,8 @@ import type {
   AutomationDateSource,
   AutomationDateTimeFormatterConfig,
   AutomationFieldUpdate,
+  AutomationBranchCondition,
+  AutomationIfElseBranch,
   AutomationFormatterDateSource,
   AutomationMathOperationConfig,
   AutomationNumberFormatterConfig,
@@ -95,6 +119,8 @@ import type {
   AutomationRecord,
   AutomationTaskConfig,
   AutomationTaskDateTime,
+  AutomationTextFormatterConfig,
+  AutomationTextSource,
   AutomationTriggerType,
   AutomationValueDefinition,
   AutomationWaitConfig,
@@ -103,6 +129,7 @@ import type {
 } from "./automation-types"
 import {
   buildAutomationFlowGraph,
+  type AutomationGraphBranchPath,
   type AutomationFlowNodeData as CanvasNodeData,
 } from "./automation-flow-graph"
 
@@ -126,8 +153,8 @@ type Draft = {
 type CanvasNode = Node<CanvasNodeData>
 type SelectedPanel =
   | { kind: "trigger" }
-  | { kind: "action"; index: number }
-  | { kind: "new-action"; insertionIndex: number }
+  | { kind: "action"; nodeKey: string; path: AutomationGraphBranchPath; index: number }
+  | { kind: "new-action"; path: AutomationGraphBranchPath; insertionIndex: number }
 
 const EMPTY_DRAFT: Draft = {
   name: "",
@@ -141,6 +168,84 @@ const EMPTY_DRAFT: Draft = {
 
 function cloneDraft(draft: Draft): Draft {
   return structuredClone(draft)
+}
+
+function actionsAtPath(actions: AutomationAction[], path: AutomationGraphBranchPath) {
+  let current = actions
+  for (const part of path) {
+    const ifElse = current.find((action) => action.nodeKey === part.ifElseNodeKey && action.type === "IF_ELSE")
+    const branch = ifElse?.ifElseConfig?.branches.find((candidate) => candidate.branchKey === part.branchKey)
+    if (!branch) return null
+    current = branch.actions
+  }
+  return current
+}
+
+function ancestorActionsForPath(actions: AutomationAction[], path: AutomationGraphBranchPath) {
+  const ancestors: AutomationAction[] = []
+  let current = actions
+  for (const part of path) {
+    const ifElseIndex = current.findIndex((action) => action.nodeKey === part.ifElseNodeKey && action.type === "IF_ELSE")
+    if (ifElseIndex < 0) return ancestors
+    ancestors.push(...current.slice(0, ifElseIndex))
+    const branch = current[ifElseIndex]?.ifElseConfig?.branches.find((candidate) => candidate.branchKey === part.branchKey)
+    if (!branch) return ancestors
+    current = branch.actions
+  }
+  return ancestors
+}
+
+function mutateActionsAtPath(
+  draft: Draft,
+  path: AutomationGraphBranchPath,
+  mutate: (actions: AutomationAction[]) => void,
+) {
+  const next = cloneDraft(draft)
+  const actions = actionsAtPath(next.actions, path)
+  if (!actions) return draft
+  mutate(actions)
+  return next
+}
+
+function flattenDraftActions(actions: AutomationAction[]) {
+  const flattened: AutomationAction[] = []
+  const visit = (pathActions: AutomationAction[]) => {
+    for (const action of pathActions) {
+      flattened.push(action)
+      if (action.type !== "IF_ELSE") continue
+      for (const branch of action.ifElseConfig?.branches ?? []) visit(branch.actions)
+    }
+  }
+  visit(actions)
+  return flattened
+}
+
+function serializeAutomationAction(action: AutomationAction): AutomationAction {
+  return {
+    nodeKey: action.nodeKey,
+    type: action.type,
+    customFieldUpdates: action.customFieldUpdates,
+    statusConfigId: action.statusConfigId,
+    assignedUserId: action.assignedUserId,
+    tagId: action.tagId,
+    waitConfig: action.waitConfig,
+    noteTitle: action.noteTitle,
+    noteBody: action.noteBody,
+    taskConfig: action.taskConfig,
+    dateTimeFormatterConfig: action.dateTimeFormatterConfig,
+    numberFormatterConfig: action.numberFormatterConfig,
+    textFormatterConfig: action.textFormatterConfig,
+    mathOperationConfig: action.mathOperationConfig,
+    ifElseConfig: action.ifElseConfig
+      ? {
+          ...action.ifElseConfig,
+          branches: action.ifElseConfig.branches.map((branch) => ({
+            ...branch,
+            actions: branch.actions.map(serializeAutomationAction),
+          })),
+        }
+      : null,
+  }
 }
 
 function draftSnapshot(draft: Draft) {
@@ -159,21 +264,7 @@ function draftSnapshot(draft: Draft) {
       tagId: condition.tagId,
       compareValue: condition.compareValue,
     })),
-    actions: draft.actions.map((action) => ({
-      nodeKey: action.nodeKey,
-      type: action.type,
-      customFieldUpdates: action.customFieldUpdates,
-      statusConfigId: action.statusConfigId,
-      assignedUserId: action.assignedUserId,
-      tagId: action.tagId,
-      waitConfig: action.waitConfig,
-      noteTitle: action.noteTitle,
-      noteBody: action.noteBody,
-      taskConfig: action.taskConfig,
-      dateTimeFormatterConfig: action.dateTimeFormatterConfig,
-      numberFormatterConfig: action.numberFormatterConfig,
-      mathOperationConfig: action.mathOperationConfig,
-    })),
+    actions: draft.actions.map(serializeAutomationAction),
   })
 }
 
@@ -259,23 +350,35 @@ const ACTION_DEFINITIONS = {
     group: "INTERNAL",
     order: 2,
   },
+  FORMAT_TEXT: {
+    label: "Text formatter",
+    description: "Transform text for later actions.",
+    group: "INTERNAL",
+    order: 3,
+  },
   MATH_OPERATION: {
     label: "Math operation",
     description: "Calculate a number or adjust a date.",
     group: "INTERNAL",
-    order: 3,
+    order: 4,
+  },
+  IF_ELSE: {
+    label: "If/Else",
+    description: "Route the contact through the first matching branch.",
+    group: "INTERNAL",
+    order: 5,
   },
   CREATE_TASK: {
     label: "Create task",
     description: "Create a task linked to this contact.",
     group: "INTERNAL",
-    order: 4,
+    order: 6,
   },
   ADD_CONTACT_NOTE: {
     label: "Add contact note",
     description: "Add a note using live contact information.",
     group: "INTERNAL",
-    order: 5,
+    order: 7,
   },
   UPDATE_CONTACT_CUSTOM_FIELDS: {
     label: "Update contact fields",
@@ -709,6 +812,27 @@ function actionDefaults(
       },
     }
   }
+  if (type === "FORMAT_TEXT") {
+    const preferredContactField = catalog.templateFields.contact.find(
+      (field) => textFormatterAcceptsFieldType(field.fieldType),
+    )
+    const preferredCustomField = catalog.customFields.find(
+      (field) => textFormatterAcceptsFieldType(field.fieldType),
+    )
+    const source: AutomationTextSource = preferredContactField
+      ? { type: "CONTACT_FIELD", key: preferredContactField.key }
+      : { type: "CUSTOM_FIELD", key: preferredCustomField?.key ?? "" }
+    return {
+      nodeKey,
+      type,
+      textFormatterConfig: {
+        actionName: "Text formatter",
+        mode: "UPPER_CASE",
+        source,
+        outputKey: "formatted_text",
+      },
+    }
+  }
   if (type === "MATH_OPERATION") {
     const preferredCustomField = catalog.customFields.find(
       (field) => field.fieldType === "NUMBER" || field.fieldType === "CURRENCY",
@@ -728,6 +852,33 @@ function actionDefaults(
         operation: "ADD",
         operand: 1,
         outputKey: "calculated_value",
+      },
+    }
+  }
+  if (type === "IF_ELSE") {
+    return {
+      nodeKey,
+      type,
+      ifElseConfig: {
+        actionName: "If/Else",
+        branches: [
+          {
+            branchKey: crypto.randomUUID(),
+            name: "Branch 1",
+            isDefault: false,
+            matchMode: "ALL",
+            conditions: [defaultBranchCondition(catalog)],
+            actions: [],
+          },
+          {
+            branchKey: crypto.randomUUID(),
+            name: "Default",
+            isDefault: true,
+            matchMode: "ALL",
+            conditions: [],
+            actions: [],
+          },
+        ],
       },
     }
   }
@@ -763,14 +914,16 @@ function optionalTemplateError(
 }
 
 function formatterOutputs(actions: AutomationAction[]): AutomationValueDefinition[] {
-  return actions.flatMap((action) => {
+  return uniqueAutomationOutputs(actions.flatMap((action) => {
     const key = action.type === "FORMAT_DATE_TIME"
       ? action.dateTimeFormatterConfig?.outputKey.trim()
       : action.type === "FORMAT_NUMBER"
         ? action.numberFormatterConfig?.outputKey.trim()
-        : action.type === "MATH_OPERATION"
-          ? action.mathOperationConfig?.outputKey.trim()
-        : ""
+        : action.type === "FORMAT_TEXT"
+          ? action.textFormatterConfig?.outputKey.trim()
+          : action.type === "MATH_OPERATION"
+            ? action.mathOperationConfig?.outputKey.trim()
+            : ""
     const valueKind: AutomationValueDefinition["valueKind"] = action.type === "FORMAT_DATE_TIME"
       ? action.dateTimeFormatterConfig?.mode === "COMPARE_DATES"
         ? "NUMBER"
@@ -786,13 +939,19 @@ function formatterOutputs(actions: AutomationAction[]): AutomationValueDefinitio
             : action.numberFormatterConfig?.mode === "FORMAT_PHONE_NUMBER"
               ? "PHONE"
               : "TEXT"
-        : action.type === "MATH_OPERATION"
-          ? action.mathOperationConfig?.mode === "DATE" ? "DATE" : "NUMBER"
-        : "TEXT"
+        : action.type === "FORMAT_TEXT"
+          ? action.textFormatterConfig?.mode === "FIND" ||
+            action.textFormatterConfig?.mode === "WORD_COUNT" ||
+            action.textFormatterConfig?.mode === "LENGTH"
+            ? "NUMBER"
+            : "TEXT"
+          : action.type === "MATH_OPERATION"
+            ? action.mathOperationConfig?.mode === "DATE" ? "DATE" : "NUMBER"
+            : "TEXT"
     return key && /^[a-z][a-z0-9_]{0,63}$/.test(key)
       ? [{ key, label: key, valueKind }]
       : []
-  })
+  }))
 }
 
 function numberFormatterAcceptsFieldType(
@@ -811,6 +970,34 @@ function numberFormatterAcceptsValueKind(
   if (mode === "RANDOM_NUMBER") return false
   if (mode === "FORMAT_PHONE_NUMBER") return valueKind === "PHONE"
   return valueKind === "NUMBER" || valueKind === "NUMERIC_TEXT"
+}
+
+function textFormatterAcceptsFieldType(fieldType: string) {
+  return ["TEXT", "TEXTAREA", "PHONE", "SELECT", "RADIO", "MULTI_SELECT"].includes(fieldType)
+}
+
+function textFormatterAcceptsValueKind(valueKind: AutomationValueDefinition["valueKind"]) {
+  return valueKind === "TEXT" || valueKind === "PHONE" || valueKind === "NUMERIC_TEXT"
+}
+
+function isTextFormatterSourceReady(
+  source: AutomationTextSource,
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+) {
+  if (source.type === "CONTACT_FIELD") {
+    return catalog.templateFields.contact.some(
+      (field) => field.key === source.key && textFormatterAcceptsFieldType(field.fieldType),
+    )
+  }
+  if (source.type === "CUSTOM_FIELD") {
+    return catalog.customFields.some(
+      (field) => field.key === source.key && textFormatterAcceptsFieldType(field.fieldType),
+    )
+  }
+  return automationOutputs.some(
+    (output) => output.key === source.key && textFormatterAcceptsValueKind(output.valueKind),
+  )
 }
 
 function isNumberFormatterSourceReady(
@@ -911,6 +1098,70 @@ function isTaskDateTimeReady(value: AutomationTaskDateTime, catalog: AutomationC
   return true
 }
 
+function isBranchConditionReady(
+  condition: AutomationBranchCondition,
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+) {
+  if (!condition.conditionKey) return false
+  if (condition.source === "CONTACT_FIELD" && !catalog.templateFields.contact.some((field) => field.key === condition.fieldKey)) return false
+  if (condition.source === "CONTACT_CUSTOM_FIELD" && !catalog.customFields.some((field) => field.id === condition.customFieldId)) return false
+  if (condition.source === "CONTACT_STATUS" && !VALUELESS_OPERATORS.has(condition.operator) && !catalog.statuses.some((item) => item.id === condition.statusConfigId)) return false
+  if (condition.source === "CONTACT_ASSIGNEE" && !VALUELESS_OPERATORS.has(condition.operator) && !catalog.users.some((item) => item.id === condition.assignedUserId)) return false
+  if (condition.source === "CONTACT_TAGS" && !VALUELESS_OPERATORS.has(condition.operator) && !catalog.tags.some((item) => item.id === condition.tagId)) return false
+  if (condition.source === "AUTOMATION_VALUE" && !automationOutputs.some((item) => item.key === condition.key)) return false
+  if (condition.source === "OPPORTUNITY_FIELD" && !condition.field) return false
+  if (!VALUELESS_OPERATORS.has(condition.operator)) {
+    if (condition.operator === "BETWEEN") {
+      const range = condition.compareValue as { min?: unknown; max?: unknown } | null
+      return range?.min !== "" && range?.min !== undefined && range?.max !== "" && range?.max !== undefined
+    }
+    if (["CONTACT_STATUS", "CONTACT_ASSIGNEE", "CONTACT_TAGS"].includes(condition.source)) return true
+    if (Array.isArray(condition.compareValue)) return condition.compareValue.length > 0
+    if (condition.compareValue === null || condition.compareValue === undefined || condition.compareValue === "") return false
+  }
+  return true
+}
+
+function isIfElseReady(
+  action: AutomationAction,
+  catalog: AutomationCatalog,
+  previousActions: AutomationAction[],
+  depth = 1,
+  requireBranchActions = true,
+): boolean {
+  const config = action.ifElseConfig
+  if (!config || !config.actionName.trim() || config.actionName.trim().length > 120 || depth > 3) return false
+  if (config.branches.length < 2 || config.branches.length > 20) return false
+  const names = config.branches.map((branch) => branch.name.trim().toLocaleLowerCase())
+  if (names.some((name) => !name) || new Set(names).size !== names.length) return false
+  const keys = config.branches.map((branch) => branch.branchKey)
+  if (keys.some((key) => !key) || new Set(keys).size !== keys.length) return false
+  const defaultIndexes = config.branches.flatMap((branch, index) => branch.isDefault ? [index] : [])
+  if (defaultIndexes.length !== 1 || defaultIndexes[0] !== config.branches.length - 1) return false
+  const inheritedOutputs = formatterOutputs(previousActions)
+
+  return config.branches.every((branch) => {
+    if (branch.isDefault) return branch.conditions.length === 0 && branch.actions.length === 0
+    if (branch.conditions.length < 1 || branch.conditions.length > 20) return false
+    if (!branch.conditions.every((condition) => isBranchConditionReady(condition, catalog, inheritedOutputs))) return false
+    if (!requireBranchActions && branch.actions.length === 0) return true
+    if (branch.actions.length === 0) return false
+    return branch.actions.every((branchAction, index) => {
+      if (branchAction.type === "IF_ELSE" && index !== branch.actions.length - 1) return false
+      if (branchAction.type === "DELETE_CONTACT" && index !== branch.actions.length - 1) return false
+      return branchAction.type === "IF_ELSE"
+        ? isIfElseReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1, requireBranchActions)
+        : isActionReady(
+            branchAction,
+            catalog,
+            branch.actions.slice(index + 1),
+            [...previousActions, ...branch.actions.slice(0, index)],
+          )
+    })
+  })
+}
+
 function isActionReady(
   action: AutomationAction | null,
   catalog: AutomationCatalog,
@@ -987,6 +1238,35 @@ function isActionReady(
     if (config.mode === "FORMAT_PHONE_NUMBER") return /^\+\d{1,4}$/.test(config.countryCode)
     return config.decimalMark === "PERIOD" || config.decimalMark === "COMMA"
   }
+  if (action.type === "FORMAT_TEXT") {
+    const config = action.textFormatterConfig
+    if (!config || !config.actionName.trim() || config.actionName.trim().length > 120) return false
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)) return false
+    if (availableOutputs.some((output) => output.key === config.outputKey)) return false
+    if (!isTextFormatterSourceReady(config.source, catalog, availableOutputs)) return false
+    if (config.mode === "DEFAULT_VALUE") {
+      return config.defaultValue.trim().length > 0 && config.defaultValue.length <= 5_000
+    }
+    if (config.mode === "TRIM") {
+      return Number.isInteger(config.maxLength) && config.maxLength > 0 && config.maxLength <= 10_000
+    }
+    if (config.mode === "REPLACE_TEXT") {
+      return config.searchText.length > 0 &&
+        config.searchText.length <= 5_000 &&
+        config.replacementText.length <= 5_000
+    }
+    if (config.mode === "FIND") {
+      return config.searchText.length > 0 && config.searchText.length <= 5_000
+    }
+    if (config.mode === "SPLIT_TEXT") {
+      return config.separator.length > 0 &&
+        config.separator.length <= 100 &&
+        Number.isInteger(config.segment) &&
+        config.segment > 0 &&
+        config.segment <= 10_000
+    }
+    return true
+  }
   if (action.type === "MATH_OPERATION") {
     const config = action.mathOperationConfig
     if (!config || !/^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)) return false
@@ -999,6 +1279,9 @@ function isActionReady(
     }
     return Number.isFinite(config.operand) &&
       !(config.operation === "DIVIDE" && config.operand === 0)
+  }
+  if (action.type === "IF_ELSE") {
+    return targetActions.length === 0 && isIfElseReady(action, catalog, previousActions)
   }
   if (action.type === "WAIT") {
     const config = action.waitConfig
@@ -1080,25 +1363,32 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   if (!draft.pipelineId) return "Select a pipeline."
   if (draft.triggerType === "OPPORTUNITY_STAGE_CHANGED" && !draft.targetStageId) return "Select a stage."
   if (draft.actions.length === 0) return "Add at least one action."
-  const nodeKeys = draft.actions.map((action) => action.nodeKey).filter(Boolean)
-  if (nodeKeys.length !== draft.actions.length || new Set(nodeKeys).size !== nodeKeys.length) {
+  const allActions = flattenDraftActions(draft.actions)
+  if (allActions.length > 20) return "An automation can contain at most 20 action nodes across all branches."
+  const nodeKeys = allActions.map((action) => action.nodeKey).filter(Boolean)
+  if (nodeKeys.length !== allActions.length || new Set(nodeKeys).size !== nodeKeys.length) {
     return "Every action needs a unique step identifier."
   }
-  const deleteContactIndex = draft.actions.findIndex((action) => action.type === "DELETE_CONTACT")
-  if (deleteContactIndex >= 0 && deleteContactIndex !== draft.actions.length - 1) {
-    return "Delete contact can only be the last action in the automation."
-  }
-  for (let index = 0; index < draft.actions.length; index += 1) {
-    if (!isActionReady(
-      draft.actions[index] ?? null,
-      catalog,
-      draft.actions.slice(index + 1),
-      draft.actions.slice(0, index),
-    )) {
-      return `Finish configuring action ${index + 1}.`
+  const validatePath = (actions: AutomationAction[], inherited: AutomationAction[]): string | null => {
+    for (let index = 0; index < actions.length; index += 1) {
+      const action = actions[index]!
+      if ((action.type === "DELETE_CONTACT" || action.type === "IF_ELSE") && index !== actions.length - 1) {
+        return `${ACTION_LABELS[action.type]} can only be the final action in its path.`
+      }
+      if (!isActionReady(action, catalog, actions.slice(index + 1), [...inherited, ...actions.slice(0, index)])) {
+        return `Finish configuring ${ACTION_LABELS[action.type]}.`
+      }
+      if (action.type === "IF_ELSE") {
+        for (const branch of action.ifElseConfig?.branches ?? []) {
+          if (branch.isDefault) continue
+          const nestedIssue = validatePath(branch.actions, [...inherited, ...actions.slice(0, index)])
+          if (nestedIssue) return nestedIssue
+        }
+      }
     }
+    return null
   }
-  return null
+  return validatePath(draft.actions, [])
 }
 
 function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
@@ -1125,21 +1415,7 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
       tagId: condition.tagId,
       compareValue: condition.compareValue,
     })),
-    actions: draft.actions.map((action) => ({
-      nodeKey: action.nodeKey,
-      type: action.type,
-      customFieldUpdates: action.customFieldUpdates,
-      statusConfigId: action.statusConfigId,
-      assignedUserId: action.assignedUserId,
-      tagId: action.tagId,
-      waitConfig: action.waitConfig,
-      noteTitle: action.noteTitle,
-      noteBody: action.noteBody,
-      taskConfig: action.taskConfig,
-      dateTimeFormatterConfig: action.dateTimeFormatterConfig,
-      numberFormatterConfig: action.numberFormatterConfig,
-      mathOperationConfig: action.mathOperationConfig,
-    })),
+    actions: draft.actions.map(serializeAutomationAction),
   }
 }
 
@@ -1235,7 +1511,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
 
   const savedWaitNodeKeys = useMemo(
     () => new Set(
-      lastSavedDraft.actions
+      flattenDraftActions(lastSavedDraft.actions)
         .filter((action) => action.type === "WAIT" && action.nodeKey)
         .map((action) => action.nodeKey!),
     ),
@@ -1243,7 +1519,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
   )
 
   const waitNodeBadges = useMemo(() => Object.fromEntries(
-    draft.actions
+    flattenDraftActions(draft.actions)
       .filter((action) => action.type === "WAIT" && action.nodeKey)
       .map((action) => {
         const nodeKey = action.nodeKey!
@@ -1277,28 +1553,78 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
       triggerEditorDraft &&
       draftSnapshot(triggerEditorDraft) !== draftSnapshot(draft),
   )
+  const selectedPathActions = selected?.kind === "action" || selected?.kind === "new-action"
+    ? actionsAtPath(draft.actions, selected.path) ?? []
+    : []
+  const selectedStoredAction = selected?.kind === "action"
+    ? selectedPathActions[selected.index] ?? null
+    : null
   const actionPanelHasChanges = Boolean(
     selected?.kind === "action" &&
       editingAction &&
-      (JSON.stringify(editingAction) !== JSON.stringify(draft.actions[selected.index]) ||
+      (JSON.stringify(editingAction) !== JSON.stringify(selectedStoredAction) ||
         (panelOriginalDraft && draftSnapshot(panelOriginalDraft) !== draftSnapshot(draft))),
   )
   const hasUncommittedPanelChanges =
     triggerPanelHasChanges || actionPanelHasChanges || (selected?.kind === "new-action" && pendingAction !== null)
+  const actionCount = flattenDraftActions(draft.actions).length
+  const editingWillWrapFollowingActions = Boolean(
+    selected?.kind === "action" &&
+      editingAction?.type === "IF_ELSE" &&
+      selectedStoredAction?.type !== "IF_ELSE",
+  )
+  const editingFollowingActions = selected?.kind === "action" && editingWillWrapFollowingActions
+    ? selectedPathActions.slice(selected.index + 1)
+    : []
+  const editingIfElseWrapIssue = selected?.kind === "action" && editingAction?.type === "IF_ELSE" && editingWillWrapFollowingActions
+    ? ifElseWrapIssue({
+        action: editingAction,
+        followingActions: editingFollowingActions,
+        precedingPathActions: selectedPathActions.slice(0, selected.index),
+        pathDepth: selected.path.length,
+        currentActionCount: actionCount,
+        replacesExistingAction: true,
+      })
+    : null
+  const pendingFollowingActions = selected?.kind === "new-action"
+    ? selectedPathActions.slice(selected.insertionIndex)
+    : []
+  const pendingIfElseWrapIssue = selected?.kind === "new-action" && pendingAction?.type === "IF_ELSE"
+    ? ifElseWrapIssue({
+        action: pendingAction,
+        followingActions: pendingFollowingActions,
+        precedingPathActions: selectedPathActions.slice(0, selected.insertionIndex),
+        pathDepth: selected.path.length,
+        currentActionCount: actionCount,
+        replacesExistingAction: false,
+      })
+    : null
 
-  const updateAction = (index: number, action: AutomationAction) => {
-    setDraft((current) => ({
-      ...current,
-      actions: current.actions.map((item, actionIndex) => (actionIndex === index ? action : item)),
+  const updateAction = (path: AutomationGraphBranchPath, index: number, action: AutomationAction) => {
+    setDraft((current) => mutateActionsAtPath(current, path, (actions) => {
+      actions[index] = action
     }))
   }
 
-  const insertAction = (index: number, action: AutomationAction) => {
-    setDraft((current) => {
-      const actions = [...current.actions]
+  const insertAction = (path: AutomationGraphBranchPath, index: number, action: AutomationAction) => {
+    setDraft((current) => mutateActionsAtPath(current, path, (actions) => {
       actions.splice(index, 0, action)
-      return { ...current, actions }
-    })
+    }))
+  }
+
+  const wrapFollowingActionsWithIfElse = (
+    path: AutomationGraphBranchPath,
+    index: number,
+    action: AutomationAction,
+    replacesExistingAction: boolean,
+  ) => {
+    setDraft((current) => mutateActionsAtPath(current, path, (actions) => {
+      const followingStart = replacesExistingAction ? index + 1 : index
+      const followingActions = actions.splice(followingStart)
+      const wrappedAction = wrapFollowingActionsInFirstBranch(action, followingActions)
+      if (replacesExistingAction) actions[index] = wrappedAction
+      else actions.splice(index, 0, wrappedAction)
+    }))
   }
 
   const closePanel = () => {
@@ -1325,38 +1651,37 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     setSelected({ kind: "trigger" })
   }
 
-  const openActionPanel = (index: number) => {
-    const action = draft.actions[index]
+  const openActionPanel = (path: AutomationGraphBranchPath, index: number, nodeKey: string) => {
+    const action = actionsAtPath(draft.actions, path)?.[index]
     if (!action) return
     setPendingAction(null)
     setTriggerEditorDraft(null)
     setPanelOriginalDraft(cloneDraft(draft))
     setEditingAction(structuredClone(action))
-    setSelected({ kind: "action", index })
+    setSelected({ kind: "action", nodeKey, path, index })
   }
 
-  const openNewActionPanel = (insertionIndex: number) => {
+  const openNewActionPanel = (path: AutomationGraphBranchPath, insertionIndex: number) => {
     setEditingAction(null)
     setTriggerEditorDraft(null)
     setPanelOriginalDraft(cloneDraft(draft))
     setPendingAction(null)
-    setSelected({ kind: "new-action", insertionIndex })
+    setSelected({ kind: "new-action", path, insertionIndex })
   }
 
-  const moveAction = (index: number, direction: -1 | 1) => {
+  const moveAction = (path: AutomationGraphBranchPath, index: number, direction: -1 | 1) => {
+    const pathActions = actionsAtPath(draft.actions, path) ?? []
     const target = index + direction
-    if (target < 0 || target >= draft.actions.length) return
-    const nextActions = [...draft.actions]
+    if (target < 0 || target >= pathActions.length) return
+    const nextActions = [...pathActions]
     ;[nextActions[index], nextActions[target]] = [nextActions[target]!, nextActions[index]!]
     if (nextActions.some((action, actionIndex) =>
-      action.type === "DELETE_CONTACT" && actionIndex !== nextActions.length - 1
+      (action.type === "DELETE_CONTACT" || action.type === "IF_ELSE") && actionIndex !== nextActions.length - 1
     )) return
-    setDraft((current) => {
-      const actions = [...current.actions]
+    setDraft((current) => mutateActionsAtPath(current, path, (actions) => {
       ;[actions[index], actions[target]] = [actions[target]!, actions[index]!]
-      return { ...current, actions }
-    })
-    setSelected({ kind: "action", index: target })
+    }))
+    setSelected((current) => current?.kind === "action" ? { ...current, index: target } : current)
   }
 
   const saveChanges = async () => {
@@ -1592,12 +1917,27 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     openTriggerPanel()
                     return
                   }
-                  if (node.data.kind === "action" && node.data.index !== undefined) {
-                    openActionPanel(node.data.index)
+                  if (
+                    node.data.kind === "action" &&
+                    node.data.actionNodeKey &&
+                    node.data.actionPath &&
+                    node.data.index !== undefined
+                  ) {
+                    openActionPanel(node.data.actionPath, node.data.index, node.data.actionNodeKey)
                     return
                   }
-                  if (node.data.kind === "add" && node.data.insertionIndex !== undefined) {
-                    openNewActionPanel(node.data.insertionIndex)
+                  if (node.data.kind === "action" && node.data.actionNodeKey && node.data.actionPath) {
+                    const pathActions = actionsAtPath(draft.actions, node.data.actionPath) ?? []
+                    const index = pathActions.findIndex((action) => action.nodeKey === node.data.actionNodeKey)
+                    if (index >= 0) openActionPanel(node.data.actionPath, index, node.data.actionNodeKey)
+                    return
+                  }
+                  if (
+                    node.data.kind === "add" &&
+                    node.data.insertionIndex !== undefined &&
+                    node.data.insertionPath
+                  ) {
+                    openNewActionPanel(node.data.insertionPath, node.data.insertionIndex)
                   }
                 }}
               >
@@ -1630,16 +1970,27 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     action={editingAction}
                     catalog={catalog}
                     onChange={setEditingAction}
-                    targetActions={draft.actions.slice(selected.index + 1)}
-                    previousActions={draft.actions.slice(0, selected.index)}
+                    targetActions={selectedPathActions.slice(selected.index + 1)}
+                    previousActions={[
+                      ...ancestorActionsForPath(draft.actions, selected.path),
+                      ...selectedPathActions.slice(0, selected.index),
+                    ]}
                     actionIndex={selected.index}
                     timezone={timezone}
+                    ifElseWrapIssue={editingIfElseWrapIssue}
                     management={{
                       index: selected.index,
-                      total: draft.actions.length,
-                      onMove: (direction) => moveAction(selected.index, direction),
+                      total: selectedPathActions.length,
+                      onMove: (direction) => moveAction(selected.path, selected.index, direction),
                       onDelete: () => {
-                        setDraft((current) => ({ ...current, actions: current.actions.filter((_, index) => index !== selected.index) }))
+                        if (
+                          editingAction?.type === "IF_ELSE" &&
+                          editingAction.ifElseConfig?.branches.some((branch) => branch.actions.length > 0) &&
+                          !window.confirm("Delete this If/Else action and every action inside its branches?")
+                        ) return
+                        setDraft((current) => mutateActionsAtPath(current, selected.path, (actions) => {
+                          actions.splice(selected.index, 1)
+                        }))
                         closePanel()
                       },
                     }}
@@ -1649,10 +2000,14 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     action={pendingAction}
                     catalog={catalog}
                     onChange={setPendingAction}
-                    targetActions={draft.actions.slice(selected.insertionIndex)}
-                    previousActions={draft.actions.slice(0, selected.insertionIndex)}
+                    targetActions={selectedPathActions.slice(selected.insertionIndex)}
+                    previousActions={[
+                      ...ancestorActionsForPath(draft.actions, selected.path),
+                      ...selectedPathActions.slice(0, selected.insertionIndex),
+                    ]}
                     actionIndex={selected.insertionIndex}
                     timezone={timezone}
+                    ifElseWrapIssue={pendingIfElseWrapIssue}
                   />
                 ) : selected.kind === "trigger" && triggerEditorDraft ? (
                   <TriggerEditor
@@ -1674,15 +2029,35 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       type="button"
                       variant="ghost"
                       className={COMPACT_PRIMARY_BUTTON_CLASS}
-                      disabled={!isActionReady(
-                        editingAction,
-                        catalog,
-                        draft.actions.slice(selected.index + 1),
-                        draft.actions.slice(0, selected.index),
-                      ) || !actionPanelHasChanges}
+                      disabled={!(editingAction?.type === "IF_ELSE"
+                        ? !editingIfElseWrapIssue && isIfElseReady(
+                            editingWillWrapFollowingActions
+                              ? wrapFollowingActionsInFirstBranch(editingAction, editingFollowingActions)
+                              : editingAction,
+                            catalog,
+                            [
+                              ...ancestorActionsForPath(draft.actions, selected.path),
+                              ...selectedPathActions.slice(0, selected.index),
+                            ],
+                            selected.path.length + 1,
+                            false,
+                          )
+                        : isActionReady(
+                            editingAction,
+                            catalog,
+                            selectedPathActions.slice(selected.index + 1),
+                            [
+                              ...ancestorActionsForPath(draft.actions, selected.path),
+                              ...selectedPathActions.slice(0, selected.index),
+                            ],
+                          )) || !actionPanelHasChanges}
                       onClick={() => {
                         if (!editingAction) return
-                        updateAction(selected.index, structuredClone(editingAction))
+                        if (editingWillWrapFollowingActions) {
+                          wrapFollowingActionsWithIfElse(selected.path, selected.index, editingAction, true)
+                        } else {
+                          updateAction(selected.path, selected.index, structuredClone(editingAction))
+                        }
                         closePanel()
                       }}
                     >
@@ -1723,15 +2098,33 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       type="button"
                       variant="ghost"
                       className={COMPACT_PRIMARY_BUTTON_CLASS}
-                      disabled={!isActionReady(
-                        pendingAction,
-                        catalog,
-                        draft.actions.slice(selected.insertionIndex),
-                        draft.actions.slice(0, selected.insertionIndex),
-                      )}
+                      disabled={actionCount >= 20 || !(pendingAction?.type === "IF_ELSE"
+                        ? !pendingIfElseWrapIssue && isIfElseReady(
+                            wrapFollowingActionsInFirstBranch(pendingAction, pendingFollowingActions),
+                            catalog,
+                            [
+                              ...ancestorActionsForPath(draft.actions, selected.path),
+                              ...selectedPathActions.slice(0, selected.insertionIndex),
+                            ],
+                            selected.path.length + 1,
+                            false,
+                          )
+                        : isActionReady(
+                            pendingAction,
+                            catalog,
+                            selectedPathActions.slice(selected.insertionIndex),
+                            [
+                              ...ancestorActionsForPath(draft.actions, selected.path),
+                              ...selectedPathActions.slice(0, selected.insertionIndex),
+                            ],
+                          ))}
                       onClick={() => {
                         if (!pendingAction) return
-                        insertAction(selected.insertionIndex, pendingAction)
+                        if (pendingAction.type === "IF_ELSE") {
+                          wrapFollowingActionsWithIfElse(selected.path, selected.insertionIndex, pendingAction, false)
+                        } else {
+                          insertAction(selected.path, selected.insertionIndex, pendingAction)
+                        }
                         closePanel()
                       }}
                     >
@@ -2164,6 +2557,7 @@ function NewActionEditor({
   previousActions,
   actionIndex,
   timezone,
+  ifElseWrapIssue,
 }: {
   action: AutomationAction | null
   catalog: AutomationCatalog
@@ -2172,6 +2566,7 @@ function NewActionEditor({
   previousActions: AutomationAction[]
   actionIndex: number
   timezone?: string | null
+  ifElseWrapIssue?: string | null
 }) {
   if (action) {
     return (
@@ -2202,6 +2597,7 @@ function NewActionEditor({
           previousActions={previousActions}
           actionIndex={actionIndex}
           timezone={timezone}
+          ifElseWrapIssue={ifElseWrapIssue}
         />
       </div>
     )
@@ -2267,6 +2663,7 @@ function ActionEditor({
   previousActions = [],
   actionIndex = 0,
   timezone,
+  ifElseWrapIssue,
 }: {
   action: AutomationAction
   catalog: AutomationCatalog
@@ -2276,6 +2673,7 @@ function ActionEditor({
   previousActions?: AutomationAction[]
   actionIndex?: number
   timezone?: string | null
+  ifElseWrapIssue?: string | null
   management?: {
     index: number
     total: number
@@ -2431,6 +2829,16 @@ function ActionEditor({
           />
         ) : null}
 
+        {action.type === "FORMAT_TEXT" && action.textFormatterConfig ? (
+          <TextFormatterActionEditor
+            actionKey={action.nodeKey ?? "text-formatter"}
+            config={action.textFormatterConfig}
+            catalog={catalog}
+            automationOutputs={availableAutomationOutputs}
+            onChange={(textFormatterConfig) => onChange({ ...action, textFormatterConfig })}
+          />
+        ) : null}
+
         {action.type === "MATH_OPERATION" && action.mathOperationConfig ? (
           <MathOperationActionEditor
             actionKey={action.nodeKey ?? "math-operation"}
@@ -2439,6 +2847,28 @@ function ActionEditor({
             automationOutputs={availableAutomationOutputs}
             onChange={(mathOperationConfig) => onChange({ ...action, mathOperationConfig })}
           />
+        ) : null}
+
+        {action.type === "IF_ELSE" && action.ifElseConfig ? (
+          <>
+            {targetActions.length > 0 || ifElseWrapIssue ? (
+              <div className={cn(
+                "rounded-xl border px-3 py-2.5 text-xs leading-5",
+                ifElseWrapIssue
+                  ? "border-amber-200 bg-amber-50 text-amber-900"
+                  : "border-sky-200 bg-sky-50 text-sky-900",
+              )}>
+                {ifElseWrapIssue ?? `${targetActions.length} following action${targetActions.length === 1 ? "" : "s"} will move to Branch 1.`}
+              </div>
+            ) : null}
+            <IfElseActionEditor
+              action={action}
+              catalog={catalog}
+              automationOutputs={availableAutomationOutputs}
+              timezone={timezone}
+              onChange={onChange}
+            />
+          </>
         ) : null}
 
         {action.type === "WAIT" && action.waitConfig ? (
@@ -2478,20 +2908,493 @@ function ActionEditor({
   )
 }
 
+function defaultBranchCondition(catalog: AutomationCatalog): AutomationBranchCondition {
+  const contactField = catalog.templateFields.contact.find((field) => field.key === "name") ?? catalog.templateFields.contact[0]
+  return {
+    conditionKey: crypto.randomUUID(),
+    source: "CONTACT_FIELD",
+    fieldKey: contactField?.key ?? "name",
+    operator: "EQUALS",
+    compareValue: "",
+  }
+}
+
+function branchConditionOperators(
+  condition: AutomationBranchCondition,
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+) {
+  if (condition.source === "CONTACT_STATUS" || condition.source === "CONTACT_ASSIGNEE") return STATUS_OPERATORS
+  if (condition.source === "CONTACT_TAGS") return ["INCLUDES_ANY", "INCLUDES_ALL", "EXCLUDES_ALL", "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[]
+  if (condition.source === "CURRENT_DATE_TIME") return [...NUMERIC_OPERATORS, "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[]
+  if (condition.source === "OPPORTUNITY_FIELD") {
+    return condition.field === "VALUE"
+      ? [...NUMERIC_OPERATORS, "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[]
+      : [...STATUS_OPERATORS]
+  }
+  const fieldType = condition.source === "CONTACT_FIELD"
+    ? catalog.templateFields.contact.find((field) => field.key === condition.fieldKey)?.fieldType
+    : condition.source === "CONTACT_CUSTOM_FIELD"
+      ? catalog.customFields.find((field) => field.id === condition.customFieldId)?.fieldType
+      : automationOutputs.find((output) => output.key === condition.key)?.valueKind
+  if (fieldType === "NUMBER" || fieldType === "CURRENCY" || fieldType === "DATE") {
+    return [...NUMERIC_OPERATORS, "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[]
+  }
+  if (fieldType === "CHECKBOX") return ["IS_TRUE", "IS_FALSE", "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[]
+  if (fieldType === "MULTI_SELECT") return ["INCLUDES_ANY", "INCLUDES_ALL", "EXCLUDES_ALL", "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[]
+  return ["EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_CONTAINS", "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[]
+}
+
+function defaultBranchOperator(fieldType: string | undefined): AutomationOperator {
+  if (fieldType === "CHECKBOX") return "IS_TRUE"
+  if (fieldType === "MULTI_SELECT") return "INCLUDES_ANY"
+  return "EQUALS"
+}
+
+function SortableBranchCard({
+  branch,
+  children,
+}: {
+  branch: AutomationIfElseBranch
+  children: React.ReactNode
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: branch.branchKey ?? branch.name })
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={cn("rounded-xl border border-slate-200 bg-white p-3 shadow-sm", isDragging && "z-20 opacity-70 shadow-lg")}
+    >
+      <div className="mb-3 flex items-center gap-2">
+        <button
+          type="button"
+          className="cursor-grab touch-none rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 active:cursor-grabbing"
+          aria-label={`Move ${branch.name}`}
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical className="h-4 w-4" />
+        </button>
+        <span className="text-xs font-semibold text-slate-600">Condition branch</span>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function IfElseActionEditor({
+  action,
+  catalog,
+  automationOutputs,
+  timezone,
+  onChange,
+}: {
+  action: AutomationAction
+  catalog: AutomationCatalog
+  automationOutputs: AutomationValueDefinition[]
+  timezone?: string | null
+  onChange: (action: AutomationAction) => void
+}) {
+  const config = action.ifElseConfig!
+  const conditionBranches = config.branches.filter((branch) => !branch.isDefault)
+  const defaultBranch = config.branches.find((branch) => branch.isDefault)!
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+  const updateBranches = (branches: AutomationIfElseBranch[]) => onChange({
+    ...action,
+    ifElseConfig: { ...config, branches: [...branches, defaultBranch] },
+  })
+  const updateBranch = (branchKey: string | undefined, patch: Partial<AutomationIfElseBranch>) => {
+    updateBranches(conditionBranches.map((branch) => branch.branchKey === branchKey ? { ...branch, ...patch } : branch))
+  }
+  const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return
+    const oldIndex = conditionBranches.findIndex((branch) => branch.branchKey === active.id)
+    const newIndex = conditionBranches.findIndex((branch) => branch.branchKey === over.id)
+    if (oldIndex >= 0 && newIndex >= 0) updateBranches(arrayMove(conditionBranches, oldIndex, newIndex))
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <section className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+        <Field className="gap-1.5">
+          <FieldLabel htmlFor={`if-name-${action.nodeKey}`}>Action name</FieldLabel>
+          <Input
+            id={`if-name-${action.nodeKey}`}
+            value={config.actionName}
+            maxLength={120}
+            onChange={(event) => onChange({ ...action, ifElseConfig: { ...config, actionName: event.target.value } })}
+            placeholder="If/Else"
+          />
+          <p className="text-xs leading-4 text-slate-500">The first matching branch runs. If none match, the contact exits through Default.</p>
+        </Field>
+      </section>
+
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext
+          items={conditionBranches.map((branch) => branch.branchKey ?? branch.name)}
+          strategy={verticalListSortingStrategy}
+        >
+          <div className="flex flex-col gap-3">
+            {conditionBranches.map((branch, branchIndex) => (
+              <SortableBranchCard key={branch.branchKey} branch={branch}>
+                <div className="flex flex-col gap-3">
+                  <div className="grid grid-cols-[1fr_auto] gap-2">
+                    <Input
+                      aria-label={`Branch ${branchIndex + 1} name`}
+                      value={branch.name}
+                      maxLength={120}
+                      onChange={(event) => updateBranch(branch.branchKey, { name: event.target.value })}
+                    />
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="text-rose-600"
+                      aria-label={`Delete ${branch.name}`}
+                      onClick={() => {
+                        if (conditionBranches.length === 1) return
+                        if (branch.actions.length > 0 && !window.confirm(`Delete “${branch.name}” and all actions inside it?`)) return
+                        updateBranches(conditionBranches.filter((candidate) => candidate.branchKey !== branch.branchKey))
+                      }}
+                      disabled={conditionBranches.length === 1}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <Field className="gap-1.5">
+                    <FieldLabel>Match</FieldLabel>
+                    <Select value={branch.matchMode} onValueChange={(matchMode: "ALL" | "ANY") => updateBranch(branch.branchKey, { matchMode })}>
+                      <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ALL">All conditions (AND)</SelectItem>
+                        <SelectItem value="ANY">Any condition (OR)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <div className="flex flex-col gap-2">
+                    {branch.conditions.map((condition, conditionIndex) => (
+                      <BranchConditionEditor
+                        key={condition.conditionKey}
+                        condition={condition}
+                        index={conditionIndex}
+                        catalog={catalog}
+                        automationOutputs={automationOutputs}
+                        timezone={timezone}
+                        onChange={(nextCondition) => updateBranch(branch.branchKey, {
+                          conditions: branch.conditions.map((item, index) => index === conditionIndex ? nextCondition : item),
+                        })}
+                        onDelete={() => updateBranch(branch.branchKey, {
+                          conditions: branch.conditions.filter((_, index) => index !== conditionIndex),
+                        })}
+                      />
+                    ))}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full")}
+                      disabled={branch.conditions.length >= 20}
+                      onClick={() => updateBranch(branch.branchKey, {
+                        conditions: [...branch.conditions, defaultBranchCondition(catalog)],
+                      })}
+                    >
+                      <Plus className="h-3.5 w-3.5" /> Add condition
+                    </Button>
+                  </div>
+                  <div className="rounded-lg bg-slate-50 px-2.5 py-2 text-xs text-slate-600">
+                    {branch.actions.length} {branch.actions.length === 1 ? "action" : "actions"} in this branch. Add and edit them on the canvas.
+                  </div>
+                </div>
+              </SortableBranchCard>
+            ))}
+          </div>
+        </SortableContext>
+      </DndContext>
+
+      <Button
+        type="button"
+        variant="outline"
+        className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full")}
+        disabled={config.branches.length >= 20}
+        onClick={() => updateBranches([
+          ...conditionBranches,
+          {
+            branchKey: crypto.randomUUID(),
+            name: `Branch ${conditionBranches.length + 1}`,
+            isDefault: false,
+            matchMode: "ALL",
+            conditions: [defaultBranchCondition(catalog)],
+            actions: [],
+          },
+        ])}
+      >
+        <Plus className="h-3.5 w-3.5" /> Add branch
+      </Button>
+
+      <section className="rounded-xl border border-slate-200 bg-slate-100/80 p-3">
+        <div className="mb-2 flex items-center gap-2">
+          <Badge variant="outline" className="rounded-full border-slate-300 bg-white text-[10px] font-semibold text-slate-600">Default</Badge>
+          <p className="text-xs text-slate-500">Always last · no actions</p>
+        </div>
+        <Input
+          aria-label="Default branch name"
+          value={defaultBranch.name}
+          maxLength={120}
+          onChange={(event) => onChange({
+            ...action,
+            ifElseConfig: {
+              ...config,
+              branches: [...conditionBranches, { ...defaultBranch, name: event.target.value }],
+            },
+          })}
+        />
+      </section>
+    </div>
+  )
+}
+
+function BranchConditionEditor({
+  condition,
+  index,
+  catalog,
+  automationOutputs,
+  timezone,
+  onChange,
+  onDelete,
+}: {
+  condition: AutomationBranchCondition
+  index: number
+  catalog: AutomationCatalog
+  automationOutputs: AutomationValueDefinition[]
+  timezone?: string | null
+  onChange: (condition: AutomationBranchCondition) => void
+  onDelete: () => void
+}) {
+  const operators = branchConditionOperators(condition, catalog, automationOutputs)
+  const updateSource = (sourceValue: string) => {
+    if (sourceValue.startsWith("OPPORTUNITY_")) {
+      onChange({
+        conditionKey: condition.conditionKey,
+        source: "OPPORTUNITY_FIELD",
+        field: sourceValue.replace("OPPORTUNITY_", "") as AutomationBranchCondition["field"],
+        operator: sourceValue === "OPPORTUNITY_VALUE" ? "GREATER_THAN_OR_EQUAL" : "EQUALS",
+        compareValue: sourceValue === "OPPORTUNITY_VALUE" ? 0 : "",
+      })
+      return
+    }
+    const source = sourceValue as AutomationBranchCondition["source"]
+    const base = { conditionKey: condition.conditionKey, source, operator: "EQUALS" as AutomationOperator, compareValue: "" }
+    if (source === "CONTACT_FIELD") onChange({ ...base, fieldKey: catalog.templateFields.contact[0]?.key ?? "name" })
+    else if (source === "CONTACT_CUSTOM_FIELD") {
+      const field = catalog.customFields[0]
+      onChange({
+        ...base,
+        customFieldId: field?.id ?? "",
+        operator: defaultBranchOperator(field?.fieldType),
+        compareValue: field?.fieldType === "CHECKBOX" ? null : field?.fieldType === "MULTI_SELECT" ? [] : "",
+      })
+    }
+    else if (source === "CONTACT_STATUS") onChange({ ...base, statusConfigId: catalog.statuses[0]?.id ?? null })
+    else if (source === "CONTACT_ASSIGNEE") onChange({ ...base, assignedUserId: catalog.users[0]?.id ?? null })
+    else if (source === "CONTACT_TAGS") onChange({ ...base, operator: "INCLUDES_ANY", tagId: catalog.tags[0]?.id ?? null })
+    else if (source === "AUTOMATION_VALUE") onChange({ ...base, key: automationOutputs[0]?.key ?? "" })
+    else onChange({ ...base, operator: "EQUALS", compareValue: new Date().toISOString() })
+  }
+  const sourceValue = condition.source === "OPPORTUNITY_FIELD"
+    ? `OPPORTUNITY_${condition.field ?? "VALUE"}`
+    : condition.source
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-2.5">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs font-semibold text-slate-600">Condition {index + 1}</span>
+        <Button type="button" size="icon" variant="ghost" className="h-7 w-7 text-rose-600" onClick={onDelete} aria-label={`Delete condition ${index + 1}`}>
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+      <div className="flex flex-col gap-2">
+        <Select value={sourceValue} onValueChange={updateSource}>
+          <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="CONTACT_FIELD">Contact field</SelectItem>
+            <SelectItem value="CONTACT_CUSTOM_FIELD" disabled={catalog.customFields.length === 0}>Custom field</SelectItem>
+            <SelectItem value="CONTACT_STATUS">Contact status</SelectItem>
+            <SelectItem value="CONTACT_ASSIGNEE">Contact assignee</SelectItem>
+            <SelectItem value="CONTACT_TAGS">Contact tags</SelectItem>
+            <SelectItem value="AUTOMATION_VALUE" disabled={automationOutputs.length === 0}>Automation value</SelectItem>
+            <SelectItem value="CURRENT_DATE_TIME">Current date/time</SelectItem>
+            <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem>
+            <SelectItem value="OPPORTUNITY_PIPELINE">Opportunity pipeline</SelectItem>
+            <SelectItem value="OPPORTUNITY_PREVIOUS_STAGE">Previous stage</SelectItem>
+            <SelectItem value="OPPORTUNITY_CURRENT_STAGE">Current stage</SelectItem>
+          </SelectContent>
+        </Select>
+
+        {condition.source === "CONTACT_FIELD" ? (
+          <Select value={condition.fieldKey ?? ""} onValueChange={(fieldKey) => {
+            const fieldType = catalog.templateFields.contact.find((field) => field.key === fieldKey)?.fieldType
+            onChange({ ...condition, fieldKey, operator: defaultBranchOperator(fieldType), compareValue: fieldType === "CHECKBOX" ? null : fieldType === "MULTI_SELECT" ? [] : "" })
+          }}>
+            <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select field" /></SelectTrigger>
+            <SelectContent>{catalog.templateFields.contact.map((field) => <SelectItem key={field.key} value={field.key}>{field.label}</SelectItem>)}</SelectContent>
+          </Select>
+        ) : condition.source === "CONTACT_CUSTOM_FIELD" ? (
+          <Select value={condition.customFieldId ?? ""} onValueChange={(customFieldId) => {
+            const fieldType = catalog.customFields.find((field) => field.id === customFieldId)?.fieldType
+            onChange({ ...condition, customFieldId, operator: defaultBranchOperator(fieldType), compareValue: fieldType === "CHECKBOX" ? null : fieldType === "MULTI_SELECT" ? [] : "" })
+          }}>
+            <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select field" /></SelectTrigger>
+            <SelectContent>{catalog.customFields.map((field) => <SelectItem key={field.id} value={field.id}>{field.label}</SelectItem>)}</SelectContent>
+          </Select>
+        ) : condition.source === "AUTOMATION_VALUE" ? (
+          <Select value={condition.key ?? ""} onValueChange={(key) => onChange({ ...condition, key, operator: "EQUALS", compareValue: "" })}>
+            <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select value" /></SelectTrigger>
+            <SelectContent>{automationOutputs.map((output) => <SelectItem key={output.key} value={output.key}>{output.label}</SelectItem>)}</SelectContent>
+          </Select>
+        ) : null}
+
+        <Select value={condition.operator} onValueChange={(operator: AutomationOperator) => onChange({ ...condition, operator, compareValue: VALUELESS_OPERATORS.has(operator) ? null : condition.compareValue })}>
+          <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+          <SelectContent>{operators.map((operator) => <SelectItem key={operator} value={operator}>{OPERATOR_LABELS[operator]}</SelectItem>)}</SelectContent>
+        </Select>
+
+        <BranchConditionValueInput condition={condition} catalog={catalog} automationOutputs={automationOutputs} timezone={timezone} onChange={onChange} />
+      </div>
+    </div>
+  )
+}
+
+function BranchConditionValueInput({
+  condition,
+  catalog,
+  automationOutputs,
+  timezone,
+  onChange,
+}: {
+  condition: AutomationBranchCondition
+  catalog: AutomationCatalog
+  automationOutputs: AutomationValueDefinition[]
+  timezone?: string | null
+  onChange: (condition: AutomationBranchCondition) => void
+}) {
+  if (VALUELESS_OPERATORS.has(condition.operator)) return null
+  if (condition.source === "CURRENT_DATE_TIME") {
+    const dateTimeDraft = typeof condition.compareValue === "string" && !Number.isNaN(new Date(condition.compareValue).getTime())
+      ? formatUtcIsoToDateTimeDraft(condition.compareValue, timezone)
+      : { date: "", time: "" }
+    return (
+      <div className="flex flex-col gap-1">
+        <DateTimeInput
+          value={dateTimeDraft}
+          onValueChange={(value) => onChange({ ...condition, compareValue: dateTimeDraftToUtcIso(value, timezone) ?? "" })}
+          timezone={timezone}
+          layout="joined"
+        />
+        <p className="text-xs text-slate-500">{timezone?.trim() || "America/Chicago"}</p>
+      </div>
+    )
+  }
+  if (condition.source === "CONTACT_STATUS") {
+    return <Select value={condition.statusConfigId ?? ""} onValueChange={(statusConfigId) => onChange({ ...condition, statusConfigId })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.statuses.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select>
+  }
+  if (condition.source === "CONTACT_ASSIGNEE") {
+    return <Select value={condition.assignedUserId ?? ""} onValueChange={(assignedUserId) => onChange({ ...condition, assignedUserId })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select teammate" /></SelectTrigger><SelectContent>{catalog.users.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select>
+  }
+  if (condition.source === "CONTACT_TAGS") {
+    return <Select value={condition.tagId ?? ""} onValueChange={(tagId) => onChange({ ...condition, tagId })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select tag" /></SelectTrigger><SelectContent>{catalog.tags.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select>
+  }
+  if (condition.source === "OPPORTUNITY_FIELD" && condition.field === "PIPELINE") {
+    return <Select value={String(condition.compareValue ?? "")} onValueChange={(compareValue) => onChange({ ...condition, compareValue })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select pipeline" /></SelectTrigger><SelectContent>{catalog.pipelines.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select>
+  }
+  if (condition.source === "OPPORTUNITY_FIELD" && (condition.field === "PREVIOUS_STAGE" || condition.field === "CURRENT_STAGE")) {
+    const stages = catalog.pipelines.flatMap((pipeline) => pipeline.stages.map((stage) => ({ ...stage, pipelineName: pipeline.name })))
+    return <Select value={String(condition.compareValue ?? "")} onValueChange={(compareValue) => onChange({ ...condition, compareValue })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select stage" /></SelectTrigger><SelectContent>{stages.map((stage) => <SelectItem key={stage.id} value={stage.id}>{stage.pipelineName} · {stage.name}</SelectItem>)}</SelectContent></Select>
+  }
+  const customField = condition.source === "CONTACT_CUSTOM_FIELD"
+    ? catalog.customFields.find((field) => field.id === condition.customFieldId)
+    : null
+  if (customField && (customField.fieldType === "SELECT" || customField.fieldType === "RADIO")) {
+    return (
+      <Select value={String(condition.compareValue ?? "")} onValueChange={(compareValue) => onChange({ ...condition, compareValue })}>
+        <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select option" /></SelectTrigger>
+        <SelectContent>{customField.options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent>
+      </Select>
+    )
+  }
+  if (customField?.fieldType === "MULTI_SELECT") {
+    const selected = Array.isArray(condition.compareValue) ? condition.compareValue.map(String) : []
+    return (
+      <div className="flex max-h-40 flex-col gap-1 overflow-y-auto rounded-lg border border-slate-200 bg-white p-2">
+        {customField.options.map((option) => (
+          <Label key={option} className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-xs font-normal hover:bg-slate-50">
+            <Checkbox
+              checked={selected.includes(option)}
+              onCheckedChange={(checked) => onChange({
+                ...condition,
+                compareValue: checked
+                  ? [...selected, option]
+                  : selected.filter((value) => value !== option),
+              })}
+            />
+            <span>{option}</span>
+          </Label>
+        ))}
+      </div>
+    )
+  }
+  const fieldType = condition.source === "CONTACT_FIELD"
+    ? catalog.templateFields.contact.find((field) => field.key === condition.fieldKey)?.fieldType
+    : condition.source === "CONTACT_CUSTOM_FIELD"
+      ? catalog.customFields.find((field) => field.id === condition.customFieldId)?.fieldType
+      : condition.source === "AUTOMATION_VALUE"
+        ? automationOutputs.find((output) => output.key === condition.key)?.valueKind === "NUMBER"
+          ? "NUMBER"
+          : automationOutputs.find((output) => output.key === condition.key)?.valueKind === "DATE"
+            ? "DATE"
+            : "TEXT"
+        : condition.source === "OPPORTUNITY_FIELD" && condition.field === "VALUE" ? "NUMBER" : "TEXT"
+  if (condition.operator === "BETWEEN") {
+    const range = (condition.compareValue ?? {}) as { min?: unknown; max?: unknown }
+    const inputType = fieldType === "DATE" ? "date" : "number"
+    return <div className="grid grid-cols-2 gap-2"><Input aria-label="Minimum" type={inputType} value={String(range.min ?? "")} onChange={(event) => onChange({ ...condition, compareValue: { ...range, min: event.target.value } })} /><Input aria-label="Maximum" type={inputType} value={String(range.max ?? "")} onChange={(event) => onChange({ ...condition, compareValue: { ...range, max: event.target.value } })} /></div>
+  }
+  return (
+    <Input
+      aria-label="Comparison value"
+      type={fieldType === "DATE" ? "date" : fieldType === "NUMBER" || fieldType === "CURRENCY" ? "number" : "text"}
+      value={String(condition.compareValue ?? "")}
+      onChange={(event) => onChange({ ...condition, compareValue: event.target.value })}
+      placeholder="Value"
+    />
+  )
+}
+
 function FormatterIntegerInput({
   id,
   label,
   value,
+  invalid = false,
   onChange,
 }: {
   id: string
   label: string
   value: number
+  invalid?: boolean
   onChange: (value: number) => void
 }) {
   const [draftValue, setDraftValue] = useState(Number.isFinite(value) ? String(value) : "")
+  const inputInvalid = invalid || !Number.isSafeInteger(value)
   return (
-    <Field className="gap-1.5" data-invalid={!Number.isSafeInteger(value)}>
+    <Field className="gap-1.5" data-invalid={inputInvalid}>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
       <Input
         id={id}
@@ -2499,7 +3402,7 @@ function FormatterIntegerInput({
         inputMode="numeric"
         value={draftValue}
         className="h-8 rounded-full"
-        aria-invalid={!Number.isSafeInteger(value)}
+        aria-invalid={inputInvalid}
         onChange={(event) => {
           const next = event.target.value
           if (!/^-?\d*$/.test(next)) return
@@ -2778,6 +3681,267 @@ function NumberFormatterActionEditor({
             </Select>
           </Field>
         </>
+      ) : null}
+    </div>
+  )
+}
+
+const TEXT_FORMATTER_MODE_OPTIONS: Array<{
+  value: AutomationTextFormatterConfig["mode"]
+  label: string
+  description: string
+}> = [
+  { value: "UPPER_CASE", label: "Upper case", description: "Converts all letters to uppercase." },
+  { value: "LOWER_CASE", label: "Lower case", description: "Converts all letters to lowercase." },
+  { value: "TITLE_CASE", label: "Title case", description: "Lowercases the text, then capitalizes each word." },
+  { value: "CAPITALIZE", label: "Capitalize", description: "Lowercases the text, then capitalizes its first letter." },
+  { value: "DEFAULT_VALUE", label: "Default value", description: "Uses the fallback when the source is empty or only whitespace." },
+  { value: "TRIM", label: "Trim to length", description: "Keeps only the first specified number of characters." },
+  { value: "TRIM_WHITESPACE", label: "Trim whitespace", description: "Removes whitespace from the beginning and end." },
+  { value: "REPLACE_TEXT", label: "Replace text", description: "Replaces every exact, case-sensitive match." },
+  { value: "FIND", label: "Find", description: "Returns the zero-based position of the first exact match, or -1." },
+  { value: "WORD_COUNT", label: "Word count", description: "Returns the number of words in the text." },
+  { value: "LENGTH", label: "Length", description: "Returns the number of visible characters." },
+  { value: "SPLIT_TEXT", label: "Split text", description: "Splits the text by a separator and returns the selected segment." },
+  { value: "EXTRACT_EMAIL", label: "Extract email", description: "Returns the first valid email address found." },
+  { value: "EXTRACT_URL", label: "Extract URL", description: "Returns the first http, https, or www URL found." },
+]
+
+function TextFormatterActionEditor({
+  actionKey,
+  config,
+  catalog,
+  automationOutputs,
+  onChange,
+}: {
+  actionKey: string
+  config: AutomationTextFormatterConfig
+  catalog: AutomationCatalog
+  automationOutputs: AutomationValueDefinition[]
+  onChange: (config: AutomationTextFormatterConfig) => void
+}) {
+  const actionNameValid = config.actionName.trim().length > 0 && config.actionName.trim().length <= 120
+  const outputKeyValid = /^[a-z][a-z0-9_]{0,63}$/.test(config.outputKey)
+  const duplicateOutputKey = automationOutputs.some((output) => output.key === config.outputKey)
+  const sourceReady = isTextFormatterSourceReady(config.source, catalog, automationOutputs)
+  const contactFields = catalog.templateFields.contact
+    .filter((field) => textFormatterAcceptsFieldType(field.fieldType))
+    .map((field) => ({ value: `contact:${field.key}`, label: field.label, searchText: field.key }))
+  const customFields = catalog.customFields
+    .filter((field) => textFormatterAcceptsFieldType(field.fieldType))
+    .map((field) => ({ value: `custom:${field.key}`, label: field.label, searchText: field.key }))
+  const compatibleAutomationOutputs = automationOutputs
+    .filter((output) => textFormatterAcceptsValueKind(output.valueKind))
+    .map((output) => ({ value: `automation:${output.key}`, label: output.label, searchText: output.key }))
+  const sourceValue = `${config.source.type === "CONTACT_FIELD" ? "contact" : config.source.type === "CUSTOM_FIELD" ? "custom" : "automation"}:${config.source.key}`
+  const selectedMode = TEXT_FORMATTER_MODE_OPTIONS.find((option) => option.value === config.mode)
+
+  const changeSource = (value: string) => {
+    const separatorIndex = value.indexOf(":")
+    const category = value.slice(0, separatorIndex)
+    const key = value.slice(separatorIndex + 1)
+    const source: AutomationTextSource = category === "contact"
+      ? { type: "CONTACT_FIELD", key }
+      : category === "custom"
+        ? { type: "CUSTOM_FIELD", key }
+        : { type: "AUTOMATION_VALUE", key }
+    onChange({ ...config, source })
+  }
+
+  const setMode = (mode: AutomationTextFormatterConfig["mode"]) => {
+    const base = {
+      actionName: config.actionName,
+      source: config.source,
+      outputKey: config.outputKey,
+    }
+    if (mode === "DEFAULT_VALUE") {
+      onChange({ ...base, mode, defaultValue: "Unknown" })
+      return
+    }
+    if (mode === "TRIM") {
+      onChange({ ...base, mode, maxLength: 100 })
+      return
+    }
+    if (mode === "REPLACE_TEXT") {
+      onChange({ ...base, mode, searchText: "", replacementText: "" })
+      return
+    }
+    if (mode === "FIND") {
+      onChange({ ...base, mode, searchText: "" })
+      return
+    }
+    if (mode === "SPLIT_TEXT") {
+      onChange({ ...base, mode, separator: " ", segment: 1 })
+      return
+    }
+    onChange({ ...base, mode })
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+        <p className="text-sm font-semibold text-slate-800">Action details</p>
+        <Field className="gap-1.5" data-invalid={!actionNameValid}>
+          <FieldLabel htmlFor="text-formatter-action-name">Action name</FieldLabel>
+          <Input
+            id="text-formatter-action-name"
+            value={config.actionName}
+            maxLength={120}
+            className="h-8 rounded-full bg-white"
+            aria-invalid={!actionNameValid}
+            onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+            placeholder="Normalize lead name"
+          />
+          {!actionNameValid ? <p className="text-xs text-rose-600">Enter an action name.</p> : null}
+        </Field>
+        <Field className="gap-1.5">
+          <FieldLabel htmlFor="text-formatter-mode">Action type</FieldLabel>
+          <Select value={config.mode} onValueChange={(value) => setMode(value as AutomationTextFormatterConfig["mode"])}>
+            <SelectTrigger
+              id="text-formatter-mode"
+              aria-describedby="text-formatter-mode-description"
+              className={cn(COMPACT_SELECT_TRIGGER_CLASS, "bg-white")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TEXT_FORMATTER_MODE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p id="text-formatter-mode-description" className="text-xs leading-5 text-slate-500">
+            {selectedMode?.description}
+          </p>
+        </Field>
+      </div>
+
+      <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/45 p-3">
+        <p className="text-sm font-semibold text-slate-800">Input and result</p>
+        <Field className="gap-1.5" data-invalid={!sourceReady}>
+          <FieldLabel>Source</FieldLabel>
+          <AutomationFieldPicker
+            value={sourceValue}
+            contactFields={contactFields}
+            customFields={customFields}
+            automationValues={compatibleAutomationOutputs}
+            onValueChange={changeSource}
+            ariaLabel="Text formatter source"
+          />
+          {!sourceReady ? <p className="text-xs text-rose-600">Select a compatible text source.</p> : null}
+        </Field>
+        <Field className="gap-1.5" data-invalid={!outputKeyValid || duplicateOutputKey}>
+          <FieldLabel htmlFor="text-formatter-result-name">Result name</FieldLabel>
+          <Input
+            id="text-formatter-result-name"
+            value={config.outputKey}
+            maxLength={64}
+            className="h-8 rounded-full bg-white"
+            aria-invalid={!outputKeyValid || duplicateOutputKey}
+            onChange={(event) => onChange({ ...config, outputKey: event.target.value.toLowerCase() })}
+            placeholder="formatted_text"
+          />
+          {!outputKeyValid ? (
+            <p className="text-xs text-rose-600">Start with a letter and use lowercase letters, numbers, or underscores.</p>
+          ) : duplicateOutputKey ? (
+            <p className="text-xs text-rose-600">This result name is already used by an earlier action.</p>
+          ) : null}
+        </Field>
+      </div>
+
+      {config.mode === "DEFAULT_VALUE" ||
+      config.mode === "TRIM" ||
+      config.mode === "REPLACE_TEXT" ||
+      config.mode === "FIND" ||
+      config.mode === "SPLIT_TEXT" ? (
+        <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+          <p className="text-sm font-semibold text-slate-800">Formatter settings</p>
+          {config.mode === "DEFAULT_VALUE" ? (
+            <Field className="gap-1.5" data-invalid={!config.defaultValue.trim() || config.defaultValue.length > 5_000}>
+              <FieldLabel htmlFor="text-formatter-default">Default value</FieldLabel>
+              <Textarea
+                id="text-formatter-default"
+                value={config.defaultValue}
+                maxLength={5_000}
+                rows={3}
+                className="resize-none rounded-xl bg-white"
+                aria-invalid={!config.defaultValue.trim() || config.defaultValue.length > 5_000}
+                onChange={(event) => onChange({ ...config, defaultValue: event.target.value })}
+              />
+            </Field>
+          ) : null}
+          {config.mode === "TRIM" ? (
+            <FormatterIntegerInput
+              key={`${actionKey}-trim`}
+              id="text-formatter-max-length"
+              label="Maximum characters"
+              value={config.maxLength}
+              invalid={!Number.isInteger(config.maxLength) || config.maxLength < 1 || config.maxLength > 10_000}
+              onChange={(maxLength) => onChange({ ...config, maxLength })}
+            />
+          ) : null}
+          {config.mode === "REPLACE_TEXT" ? (
+            <>
+              <Field className="gap-1.5" data-invalid={!config.searchText.length}>
+                <FieldLabel htmlFor="text-formatter-search">Find</FieldLabel>
+                <Input
+                  id="text-formatter-search"
+                  value={config.searchText}
+                  maxLength={5_000}
+                  className="h-8 rounded-full bg-white"
+                  aria-invalid={!config.searchText.length}
+                  onChange={(event) => onChange({ ...config, searchText: event.target.value })}
+                />
+              </Field>
+              <Field className="gap-1.5">
+                <FieldLabel htmlFor="text-formatter-replacement">Replace with</FieldLabel>
+                <Input
+                  id="text-formatter-replacement"
+                  value={config.replacementText}
+                  maxLength={5_000}
+                  className="h-8 rounded-full bg-white"
+                  onChange={(event) => onChange({ ...config, replacementText: event.target.value })}
+                />
+              </Field>
+            </>
+          ) : null}
+          {config.mode === "FIND" ? (
+            <Field className="gap-1.5" data-invalid={!config.searchText.length}>
+              <FieldLabel htmlFor="text-formatter-find">Value to find</FieldLabel>
+              <Input
+                id="text-formatter-find"
+                value={config.searchText}
+                maxLength={5_000}
+                className="h-8 rounded-full bg-white"
+                aria-invalid={!config.searchText.length}
+                onChange={(event) => onChange({ ...config, searchText: event.target.value })}
+              />
+            </Field>
+          ) : null}
+          {config.mode === "SPLIT_TEXT" ? (
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.7fr)] gap-2">
+              <Field className="gap-1.5" data-invalid={!config.separator.length}>
+                <FieldLabel htmlFor="text-formatter-separator">Separator</FieldLabel>
+                <Input
+                  id="text-formatter-separator"
+                  value={config.separator}
+                  maxLength={100}
+                  className="h-8 rounded-full bg-white"
+                  aria-invalid={!config.separator.length}
+                  onChange={(event) => onChange({ ...config, separator: event.target.value })}
+                />
+              </Field>
+              <FormatterIntegerInput
+                key={`${actionKey}-split`}
+                id="text-formatter-segment"
+                label="Segment"
+                value={config.segment}
+                invalid={!Number.isInteger(config.segment) || config.segment < 1 || config.segment > 10_000}
+                onChange={(segment) => onChange({ ...config, segment })}
+              />
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )

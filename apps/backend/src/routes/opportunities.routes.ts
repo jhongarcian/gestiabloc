@@ -11,6 +11,11 @@ import {
 } from "../lib/opportunity-automations.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { emitStoredTaskNotifications } from "../lib/task-notifications.js"
+import {
+  getAutomationEventStatus,
+  queueOpportunityAutomationEvent,
+} from "../lib/automation-event-queue.js"
+import { kickAutomationEventWorker } from "../lib/automation-event-worker.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 import { requireTenantSecurityLevel } from "../middleware/requireTenantSecurityLevel.js"
 
@@ -34,6 +39,13 @@ const TenantStagePathSchema = TenantPipelinePathSchema.extend({
 const TenantOpportunityPathSchema = TenantPathSchema.extend({
   opportunityId: z.string().trim().min(1),
 })
+
+const TenantAutomationEventPathSchema = TenantPathSchema.extend({
+  eventId: z.string().uuid(),
+})
+
+const asynchronousAutomationEventsEnabled =
+  process.env.AUTOMATION_ASYNC_EVENTS_ENABLED?.trim().toLowerCase() === "true"
 
 const TenantContactPathSchema = TenantPathSchema.extend({
   contactId: z.string().trim().min(1),
@@ -1149,7 +1161,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
           },
           select: { id: true },
         })
-        const automation = await executeOpportunityAutomations(prismaTx, {
+        const automationEvent = {
           tenantId,
           actorUserId: authed.user.id,
           triggerType: "OPPORTUNITY_CREATED",
@@ -1159,7 +1171,10 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
           valueCents: payload.valueCents,
           sourceStageId: null,
           targetStageId: firstStage.id,
-        })
+        } as const
+        const automation = asynchronousAutomationEventsEnabled
+          ? await queueOpportunityAutomationEvent(prismaTx, automationEvent)
+          : await executeOpportunityAutomations(prismaTx, automationEvent)
         const opportunity = await prismaTx.contactOpportunity.findUnique({
           where: { tenantId_id: { tenantId, id: created.id } },
           select: opportunityCardSelect,
@@ -1194,17 +1209,26 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
       throw new Error("Opportunity creation did not return a record.")
     }
 
-    await emitStoredTaskNotifications(createdResult.automation.notificationIds).catch((error) => {
+    const createdNotificationIds = "notificationIds" in createdResult.automation
+      ? createdResult.automation.notificationIds
+      : []
+    const createdFileCleanupCandidates = "fileCleanupCandidates" in createdResult.automation
+      ? createdResult.automation.fileCleanupCandidates
+      : []
+    await emitStoredTaskNotifications(createdNotificationIds).catch((error) => {
       console.error("Could not emit automation task notification", error)
     })
     await deleteAutomationContactFileObjects(
-      createdResult.automation.fileCleanupCandidates,
+      createdFileCleanupCandidates,
     )
     const {
-      notificationIds: _notificationIds,
-      fileCleanupCandidates: _fileCleanupCandidates,
       ...automationResult
     } = createdResult.automation
+    delete (automationResult as any).notificationIds
+    delete (automationResult as any).fileCleanupCandidates
+    if ("automationEventId" in createdResult.automation && createdResult.automation.automationEventId) {
+      kickAutomationEventWorker()
+    }
 
     return res.status(201).json({
       ok: true,
@@ -1215,6 +1239,20 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
       stage: firstStage,
       automation: automationResult,
     })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/automation-events/:eventId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, eventId } = TenantAutomationEventPathSchema.parse(req.params)
+    if (!(await requireActiveMembership(authed, res, tenantId))) return
+
+    const event = await getAutomationEventStatus(prisma as any, tenantId, eventId)
+    if (!event) return res.status(404).json({ error: "AUTOMATION_EVENT_NOT_FOUND" })
+    return res.json({ event })
   } catch (error) {
     return next(error)
   }
@@ -1321,7 +1359,9 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
               },
             }
           }
-          const automation = await executeOpportunityAutomations(prismaTx, event)
+          const automation = asynchronousAutomationEventsEnabled
+            ? await queueOpportunityAutomationEvent(prismaTx, event)
+            : await executeOpportunityAutomations(prismaTx, event)
           const current = await prismaTx.contactOpportunity.findUnique({
             where: { tenantId_id: { tenantId, id: opportunityId } },
             select: opportunityCardSelect,
@@ -1349,17 +1389,26 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
         return res.status(404).json({ error: "OPPORTUNITY_NOT_FOUND" })
       }
 
-      await emitStoredTaskNotifications(moveResult.automation.notificationIds ?? []).catch((error) => {
+      const moveNotificationIds = "notificationIds" in moveResult.automation
+        ? moveResult.automation.notificationIds
+        : []
+      const moveFileCleanupCandidates = "fileCleanupCandidates" in moveResult.automation
+        ? moveResult.automation.fileCleanupCandidates
+        : []
+      await emitStoredTaskNotifications(moveNotificationIds).catch((error) => {
         console.error("Could not emit automation task notification", error)
       })
       await deleteAutomationContactFileObjects(
-        moveResult.automation.fileCleanupCandidates,
+        moveFileCleanupCandidates,
       )
       const {
-        notificationIds: _notificationIds,
-        fileCleanupCandidates: _fileCleanupCandidates,
         ...automationResult
       } = moveResult.automation
+      delete (automationResult as any).notificationIds
+      delete (automationResult as any).fileCleanupCandidates
+      if ("automationEventId" in moveResult.automation && moveResult.automation.automationEventId) {
+        kickAutomationEventWorker()
+      }
 
       return res.json({
         ok: true,

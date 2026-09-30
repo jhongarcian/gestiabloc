@@ -5,6 +5,7 @@ import { Prisma } from "../generated/prisma/index.js"
 
 import {
   AUTOMATION_CONTACT_UPDATE_FIELDS,
+  AUTOMATION_OPERATORS,
   AutomationConfigurationError,
   AutomationUpsertSchema,
   getAutomationOperatorsForFieldType,
@@ -61,7 +62,7 @@ const AutomationExecutionLogsQuerySchema = z.object({
     { message: "pageSize must be 10, 25, or 50" },
   ).default(10),
   search: z.string().trim().max(120).default(""),
-  status: z.enum(["EXECUTED", "SKIPPED", "FAILED", "WAITING"]).optional(),
+  status: z.enum(["QUEUED", "EXECUTED", "SKIPPED", "FAILED", "WAITING"]).optional(),
 })
 const ReorderSchema = z.object({
   automationIds: z.array(z.string().trim().min(1)).min(1).max(200),
@@ -133,7 +134,9 @@ function serializeAutomation(record: any) {
         taskConfig: action.taskConfig,
         dateTimeFormatterConfig: action.dateTimeFormatterConfig,
         numberFormatterConfig: action.numberFormatterConfig,
+        textFormatterConfig: action.textFormatterConfig,
         mathOperationConfig: action.mathOperationConfig,
+        ifElseConfig: action.ifElseConfig,
       }
     }),
     lastExecution: record.executions?.[0]
@@ -233,6 +236,19 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
           dateFormats: CONTACT_TEMPLATE_DATE_FORMATS,
           phoneFormats: CONTACT_TEMPLATE_PHONE_FORMATS,
         },
+        branchConditions: {
+          sources: [
+            "CONTACT_FIELD",
+            "CONTACT_CUSTOM_FIELD",
+            "CONTACT_STATUS",
+            "CONTACT_ASSIGNEE",
+            "CONTACT_TAGS",
+            "AUTOMATION_VALUE",
+            "CURRENT_DATE_TIME",
+            "OPPORTUNITY_FIELD",
+          ],
+          operators: AUTOMATION_OPERATORS,
+        },
         statuses,
         taskStatuses,
         tags,
@@ -320,6 +336,7 @@ router.get("/:tenantId/automations/:automationId/execution-logs", ...readMiddlew
           nodeLabel: true,
           status: true,
           details: true,
+          branchPath: true,
           occurredAt: true,
         },
       }),
@@ -340,6 +357,7 @@ router.get("/:tenantId/automations/:automationId/execution-logs", ...readMiddlew
           key: record.nodeKey,
           label: record.nodeLabel,
           index: record.nodeKind === "ACTION" ? record.nodeOrder : null,
+          branchPath: Array.isArray(record.branchPath) ? record.branchPath : [],
         },
         status: record.status,
         details: record.details,

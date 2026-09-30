@@ -4,8 +4,9 @@ import { notFound, redirect } from "next/navigation"
 import { api, type MeResponse } from "@/lib/api"
 
 import { ContactStatusConfigPanel } from "../../_components/status-config-panel"
+import { LeadSourceConfigPanel } from "../../_components/lead-source-config-panel"
 
-const SUPPORTED_CONFIG_KEYS = new Set(["contacts", "tasks"])
+const SUPPORTED_CONFIG_KEYS = new Set(["contacts", "tasks", "lead-sources"])
 
 export default async function AccountSettingsStatusConfigDetailPage({
   params,
@@ -59,6 +60,10 @@ export default async function AccountSettingsStatusConfigDetailPage({
         configKey="tasks"
       />
     )
+  }
+
+  if (configKey === "lead-sources") {
+    return <LeadSourceConfigPanel tenantId={membership.tenant.id} />
   }
 
   notFound()

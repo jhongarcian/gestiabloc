@@ -1,4 +1,4 @@
-export type AutomationNodeLogStatus = "EXECUTED" | "SKIPPED" | "FAILED" | "WAITING"
+export type AutomationNodeLogStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | "FAILED" | "WAITING"
 export type AutomationNodeEventSource =
   | "MANUAL_ENROLLMENT"
   | "OPPORTUNITY_CREATED"
@@ -23,6 +23,7 @@ export type AutomationNodeLogData = {
   status: AutomationNodeLogStatus
   reasonCode: string | null
   details: string | null
+  branchPath?: Array<{ nodeKey: string; branchKey: string; branchName: string }> | null
   occurredAt: Date
 }
 
@@ -39,13 +40,37 @@ const ACTION_LABELS: Record<string, string> = {
   CREATE_TASK: "Create task",
   FORMAT_DATE_TIME: "Date/Time formatter",
   FORMAT_NUMBER: "Number formatter",
+  FORMAT_TEXT: "Text formatter",
   MATH_OPERATION: "Math operation",
+  IF_ELSE: "If/Else",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 }
 
 export function getAutomationActionLabel(actionType: string) {
   return ACTION_LABELS[actionType] ?? "Automation action"
+}
+
+export function getAutomationActionNodeLabel(action: {
+  type?: string | null
+  textFormatterConfig?: unknown
+  ifElseConfig?: unknown
+}) {
+  if (action.type === "FORMAT_TEXT") {
+    const config = action.textFormatterConfig && typeof action.textFormatterConfig === "object"
+      ? action.textFormatterConfig as Record<string, unknown>
+      : null
+    const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
+    if (actionName) return actionName.slice(0, 120)
+  }
+  if (action.type === "IF_ELSE") {
+    const config = action.ifElseConfig && typeof action.ifElseConfig === "object"
+      ? action.ifElseConfig as Record<string, unknown>
+      : null
+    const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
+    if (actionName) return actionName.slice(0, 120)
+  }
+  return getAutomationActionLabel(action.type ?? "")
 }
 
 export function getAutomationTriggerLabel(triggerType: string) {

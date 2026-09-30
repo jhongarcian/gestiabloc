@@ -5,6 +5,7 @@ import {
   isValidTemplateDate,
   resolveContactDateValue,
   resolveSafeContactTemplateFieldValue,
+  type ContactTemplateExecutionContext,
   type ContactTemplateFieldType,
 } from "./contact-templates.js"
 import {
@@ -89,6 +90,7 @@ async function resolveNumberSource(
     contactId: string
     source: AutomationNumberSource
     automationValues: Record<string, unknown>
+    executionContext?: ContactTemplateExecutionContext
   },
 ) {
   if (params.source.type === "AUTOMATION_VALUE") {
@@ -107,6 +109,7 @@ async function resolveNumberSource(
     contactId: params.contactId,
     source: params.source.type,
     key: params.source.key,
+    executionContext: params.executionContext,
   })
   if (!resolved || !mathOperationAcceptsFieldType("NUMBER", resolved.fieldType)) {
     throw new Error("The configured Math source is unavailable or is not a number field.")
@@ -136,6 +139,7 @@ async function resolveDateSource(
     tenantTimezone: string
     occurredAt: Date
     automationValues: Record<string, unknown>
+    executionContext?: ContactTemplateExecutionContext
   },
 ) {
   if (params.source.type === "AUTOMATION_VALUE") {
@@ -155,6 +159,7 @@ async function resolveDateSource(
     source: params.source,
     timezone: params.tenantTimezone,
     occurredAt: params.occurredAt,
+    executionContext: params.executionContext,
   })
   if (!value) {
     throw new Error("The configured Math source is empty, unavailable, or is not a date field.")
@@ -171,6 +176,7 @@ export async function resolveAutomationMathOperation(
     tenantTimezone: string
     occurredAt: Date
     automationValues: Record<string, unknown>
+    executionContext?: ContactTemplateExecutionContext
   },
 ) {
   const { config } = params
