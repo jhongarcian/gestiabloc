@@ -22,6 +22,7 @@ import {
   getAutomationWaitingRuns,
   getAutomationWaitNodeCounts,
 } from "../lib/automation-waiting-runs.js"
+import { AutomationNodeKeySchema } from "../lib/automation-node-key.js"
 import { prisma } from "../lib/prisma.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { ensureDefaultTaskStatuses } from "../lib/tenant-defaults.js"
@@ -36,7 +37,7 @@ const AutomationPathSchema = TenantPathSchema.extend({
   automationId: z.string().trim().min(1),
 })
 const AutomationWaitNodePathSchema = AutomationPathSchema.extend({
-  nodeKey: z.string().uuid(),
+  nodeKey: AutomationNodeKeySchema,
 })
 const AutomationWaitingRunPathSchema = AutomationWaitNodePathSchema.extend({
   runId: z.string().uuid(),

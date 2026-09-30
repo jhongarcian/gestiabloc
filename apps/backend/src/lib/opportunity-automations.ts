@@ -9,6 +9,7 @@ import {
   type AutomationNodeEventSource,
   type AutomationNodeLogData,
 } from "./automation-node-executions.js"
+import { AutomationNodeKeySchema } from "./automation-node-key.js"
 import { normalizeCustomFieldValue } from "./contact-custom-field-values.js"
 import {
   parseContactTemplate,
@@ -167,7 +168,7 @@ const waitFixedDateConfigSchema = z.object({
   offsetAmount: z.number().int().positive().optional(),
   offsetUnit: z.enum(AUTOMATION_WAIT_UNITS).optional(),
   pastBehavior: z.enum(["CONTINUE", "EXIT", "GO_TO_STEP"]),
-  targetNodeKey: z.string().uuid().optional(),
+  targetNodeKey: AutomationNodeKeySchema.optional(),
 })
 
 export const AutomationWaitConfigSchema = z
@@ -193,7 +194,7 @@ export const AutomationWaitConfigSchema = z
 export type AutomationWaitConfig = z.infer<typeof AutomationWaitConfigSchema>
 
 const idSchema = z.string().trim().min(1).max(100)
-const actionNodeKeySchema = z.string().uuid().optional()
+const actionNodeKeySchema = AutomationNodeKeySchema.optional()
 const operatorSchema = z.enum(AUTOMATION_OPERATORS)
 
 const AutomationNoteTitleSchema = NoteTitleInputSchema.superRefine((value, context) => {
@@ -1892,25 +1893,32 @@ export async function deleteAutomationContactFileObjects(
 }
 
 export function automationActionSnapshot(action: any): RuntimeAutomationAction {
-  const parsed = AutomationActionInputSchema.parse({
-    nodeKey: action.nodeKey ?? action.id ?? randomUUID(),
-    type: action.type,
-    customFieldId: action.customFieldId,
-    statusConfigId: action.statusConfigId,
-    assignedUserId: action.assignedUserId,
-    tagId: action.tagId,
-    value: action.value,
-    customFieldUpdates: action.customFieldUpdates,
-    waitConfig: action.waitConfig,
-    noteTitle: action.noteTitle,
-    noteBody: action.noteBody,
-    taskConfig: action.taskConfig,
-    dateTimeFormatterConfig: action.dateTimeFormatterConfig,
-    numberFormatterConfig: action.numberFormatterConfig,
-    textFormatterConfig: action.textFormatterConfig,
-    mathOperationConfig: action.mathOperationConfig,
-    ifElseConfig: action.ifElseConfig,
-  })
+  const nodeKey = action.nodeKey ?? action.id ?? randomUUID()
+  const snapshot = action.type === "IF_ELSE"
+    ? {
+        nodeKey,
+        type: action.type,
+        ifElseConfig: action.ifElseConfig,
+      }
+    : {
+        nodeKey,
+        type: action.type,
+        customFieldId: action.customFieldId,
+        statusConfigId: action.statusConfigId,
+        assignedUserId: action.assignedUserId,
+        tagId: action.tagId,
+        value: action.value,
+        customFieldUpdates: action.customFieldUpdates,
+        waitConfig: action.waitConfig,
+        noteTitle: action.noteTitle,
+        noteBody: action.noteBody,
+        taskConfig: action.taskConfig,
+        dateTimeFormatterConfig: action.dateTimeFormatterConfig,
+        numberFormatterConfig: action.numberFormatterConfig,
+        textFormatterConfig: action.textFormatterConfig,
+        mathOperationConfig: action.mathOperationConfig,
+      }
+  const parsed = AutomationActionInputSchema.parse(snapshot)
   return ensureRuntimeAutomationAction(parsed)
 }
 
