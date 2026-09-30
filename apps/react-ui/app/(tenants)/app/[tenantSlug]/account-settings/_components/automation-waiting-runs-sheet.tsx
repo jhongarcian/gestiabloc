@@ -51,6 +51,10 @@ import type { AutomationWaitingRun } from "./automation-types"
 
 const PAGE_SIZE = 10
 
+function encodePathSegment(value: string) {
+  return encodeURIComponent(value)
+}
+
 const COMPACT_SECONDARY_BUTTON_CLASS =
   "h-8 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
 
@@ -109,7 +113,7 @@ export function AutomationWaitingRunsSheet({
     setLoadFailed(false)
     try {
       const { data } = await api.get<WaitingRunsResponse>(
-        `/api/account-settings/${tenantId}/automations/${automationId}/wait-nodes/${nodeKey}/waiting-runs`,
+        `/api/account-settings/${encodePathSegment(tenantId)}/automations/${encodePathSegment(automationId)}/wait-nodes/${encodePathSegment(nodeKey)}/waiting-runs`,
         { params: { page } },
       )
       setItems(data.items)
@@ -157,7 +161,7 @@ export function AutomationWaitingRunsSheet({
     setRemovingRunId(removeTarget.runId)
     try {
       await api.delete(
-        `/api/account-settings/${tenantId}/automations/${automationId}/wait-nodes/${nodeKey}/waiting-runs/${removeTarget.runId}`,
+        `/api/account-settings/${encodePathSegment(tenantId)}/automations/${encodePathSegment(automationId)}/wait-nodes/${encodePathSegment(nodeKey)}/waiting-runs/${encodePathSegment(removeTarget.runId)}`,
       )
       toast.success(`${removeTarget.contact.name} was removed from this automation run.`)
       setRemoveTarget(null)

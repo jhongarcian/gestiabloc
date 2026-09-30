@@ -7,10 +7,69 @@ import {
   getAutomationWaitingRuns,
   getAutomationWaitNodeCounts,
 } from "./automation-waiting-runs.js"
+import { AutomationNodeKeySchema } from "./automation-node-key.js"
 
 const tenantId = "tenant-1"
 const automationId = "automation-1"
 const waitNodeKey = "00000000-0000-4000-8000-000000000001"
+const secondWaitNodeKey = "legacy-wait-node-2"
+
+function savedIfElseWithBranchWaits() {
+  return {
+    id: "00000000-0000-4000-8000-000000000010",
+    nodeKey: "00000000-0000-4000-8000-000000000010",
+    type: "IF_ELSE",
+    ifElseConfig: {
+      actionName: "Route by contact",
+      branches: [
+        {
+          branchKey: "00000000-0000-4000-8000-000000000011",
+          name: "Branch 1",
+          isDefault: false,
+          matchMode: "ALL",
+          conditions: [{
+            conditionKey: "00000000-0000-4000-8000-000000000012",
+            source: "CONTACT_FIELD",
+            fieldKey: "name",
+            operator: "EQUALS",
+            compareValue: "John",
+          }],
+          actions: [{
+            nodeKey: waitNodeKey,
+            type: "WAIT",
+            waitConfig: { mode: "DURATION", amount: 1, unit: "DAYS" },
+          }],
+        },
+        {
+          branchKey: "00000000-0000-4000-8000-000000000013",
+          name: "Branch 2",
+          isDefault: false,
+          matchMode: "ALL",
+          conditions: [{
+            conditionKey: "00000000-0000-4000-8000-000000000014",
+            source: "CONTACT_FIELD",
+            fieldKey: "name",
+            operator: "EQUALS",
+            compareValue: "Mary",
+          }],
+          actions: [{
+            nodeKey: secondWaitNodeKey,
+            type: "WAIT",
+            waitConfig: { mode: "DURATION", amount: 2, unit: "DAYS" },
+          }],
+        },
+        {
+          branchKey: "00000000-0000-4000-8000-000000000015",
+          name: "Default",
+          isDefault: true,
+          matchMode: "ALL",
+          conditions: [],
+          actions: [],
+        },
+      ],
+    },
+  }
+}
 
 function savedAutomationMocks() {
   return {
@@ -24,6 +83,14 @@ function savedAutomationMocks() {
 }
 
 describe("automation Wait monitoring", () => {
+  test("accepts saved non-UUID Wait node keys", () => {
+    assert.equal(
+      AutomationNodeKeySchema.parse("legacy-wait-node-2"),
+      "legacy-wait-node-2",
+    )
+    assert.throws(() => AutomationNodeKeySchema.parse("   "))
+  })
+
   test("returns a zero-inclusive count for every saved Wait node", async () => {
     let countWhere: any = null
     const prismaClient = {
@@ -53,6 +120,31 @@ describe("automation Wait monitoring", () => {
     assert.equal(countWhere.tenantId, tenantId)
     assert.equal(countWhere.automationId, automationId)
     assert.equal(countWhere.status, "WAITING")
+  })
+
+  test("returns counts for Wait nodes in separate If/Else branches", async () => {
+    const prismaClient = {
+      automation: {
+        findUnique: async () => ({
+          id: automationId,
+          actions: [savedIfElseWithBranchWaits()],
+        }),
+      },
+      automationRun: {
+        groupBy: async () => [{
+          waitingNodeKey: secondWaitNodeKey,
+          _count: { _all: 1 },
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await getAutomationWaitNodeCounts(prismaClient, { tenantId, automationId }),
+      [
+        { nodeKey: waitNodeKey, count: 0 },
+        { nodeKey: secondWaitNodeKey, count: 1 },
+      ],
+    )
   })
 
   test("returns ten waiting runs per page and uses the Wait log entry time", async () => {
@@ -110,6 +202,40 @@ describe("automation Wait monitoring", () => {
     assert.equal(result.pagination.pageSize, 10)
     assert.equal(result.items[0]?.contact.name, "Taylor Reed")
     assert.equal(result.items[0]?.enteredAt, enteredAt)
+  })
+
+  test("loads the selected non-UUID Wait node when an automation has multiple Wait nodes", async () => {
+    const selectedNodeKey = secondWaitNodeKey
+    let selectedWhere: any = null
+    const prismaClient = {
+      automation: {
+        findUnique: async () => ({
+          id: automationId,
+          actions: [savedIfElseWithBranchWaits()],
+        }),
+      },
+      automationRun: {
+        count: async ({ where }: any) => {
+          selectedWhere = where
+          return 0
+        },
+        findMany: async () => [],
+      },
+      automationNodeExecution: {
+        findMany: async () => [],
+      },
+    }
+
+    const result = await getAutomationWaitingRuns(prismaClient, {
+      tenantId,
+      automationId,
+      nodeKey: selectedNodeKey,
+      page: 1,
+    })
+
+    assert.equal(selectedWhere.waitingNodeKey, selectedNodeKey)
+    assert.deepEqual(result.items, [])
+    assert.equal(result.pagination.total, 0)
   })
 
   test("exits only the selected run and writes terminal node logs", async () => {
