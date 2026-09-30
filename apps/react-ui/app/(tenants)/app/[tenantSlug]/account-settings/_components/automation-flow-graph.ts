@@ -9,6 +9,8 @@ export type AutomationFlowNodeData = {
   label: string
   subtitle?: string
   configured?: boolean
+  actionType?: AutomationAction["type"]
+  actionGroup?: "INTERNAL" | "CONTACT" | "COMMUNICATION"
   index?: number
   insertionIndex?: number
   actionNodeKey?: string
@@ -21,7 +23,7 @@ export type AutomationFlowNodeData = {
   }
 }
 
-export type AutomationGraphBranchPath = Array<{ ifElseNodeKey: string; branchKey: string }>
+export type AutomationGraphBranchPath = Array<{ routingNodeKey: string; branchKey: string }>
 
 export type AutomationWaitNodeBadge = NonNullable<AutomationFlowNodeData["waitBadge"]>
 
@@ -37,6 +39,20 @@ const FLOW_CENTER_X = 308
 const CARD_WIDTH = 256
 const ADD_NODE_WIDTH = 40
 const CARD_X = FLOW_CENTER_X - CARD_WIDTH / 2
+
+const CONTACT_ACTION_TYPES = new Set<AutomationAction["type"]>([
+  "UPDATE_CONTACT_CUSTOM_FIELDS",
+  "SET_CONTACT_STATUS",
+  "SET_CONTACT_ASSIGNEE",
+  "CLEAR_CONTACT_ASSIGNEE",
+  "ADD_CONTACT_TAG",
+  "REMOVE_CONTACT_TAG",
+  "DELETE_CONTACT",
+])
+
+function actionVisualGroup(type: AutomationAction["type"]): NonNullable<AutomationFlowNodeData["actionGroup"]> {
+  return CONTACT_ACTION_TYPES.has(type) ? "CONTACT" : "INTERNAL"
+}
 
 function waitUnitLabel(amount: number, unit: string) {
   const label = unit.toLocaleLowerCase()
@@ -163,12 +179,16 @@ export function buildAutomationFlowGraph(
             ? "Remove from this account"
           : action.type === "IF_ELSE"
             ? `First match · ${Math.max(0, (action.ifElseConfig?.branches.length ?? 1) - 1)} branches`
+          : action.type === "SPLIT"
+            ? `Random · ${action.splitConfig?.routes.length ?? 0} routes`
             : waitSubtitle ?? `Action ${actionNumber}`
     return {
       label: action.type === "FORMAT_TEXT"
         ? action.textFormatterConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "IF_ELSE"
           ? action.ifElseConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "SPLIT"
+          ? action.splitConfig?.actionName.trim() || actionLabels[action.type]
           : actionLabels[action.type],
       subtitle: actionSubtitle,
     }
@@ -183,11 +203,13 @@ export function buildAutomationFlowGraph(
   ) => {
     let previousId = sourceId
     let y = startY
-    const endsWithTerminal = actions.at(-1)?.type === "DELETE_CONTACT" || actions.at(-1)?.type === "IF_ELSE"
+    const endsWithTerminal = actions.at(-1)?.type === "DELETE_CONTACT" ||
+      actions.at(-1)?.type === "IF_ELSE" ||
+      actions.at(-1)?.type === "SPLIT"
 
     for (let index = 0; index <= actions.length; index += 1) {
       if (index === actions.length && endsWithTerminal) break
-      const pathKey = path.map((part) => `${part.ifElseNodeKey}-${part.branchKey}`).join("-") || "root"
+      const pathKey = path.map((part) => `${part.routingNodeKey}-${part.branchKey}`).join("-") || "root"
       const addId = path.length === 0 ? `add-${index}` : `add-${pathKey}-${index}`
       nodes.push({
         id: addId,
@@ -211,6 +233,8 @@ export function buildAutomationFlowGraph(
         data: {
           kind: "action",
           ...presentation,
+          actionType: action.type,
+          actionGroup: actionVisualGroup(action.type),
           index: path.length === 0 ? index : undefined,
           actionNodeKey: action.nodeKey,
           actionPath: path,
@@ -224,8 +248,27 @@ export function buildAutomationFlowGraph(
       maximumY = Math.max(maximumY, y)
       y += 145
 
-      if (action.type !== "IF_ELSE" || !action.ifElseConfig) continue
-      const branches = action.ifElseConfig.branches
+      if (
+        (action.type !== "IF_ELSE" || !action.ifElseConfig) &&
+        (action.type !== "SPLIT" || !action.splitConfig)
+      ) continue
+      const branches = action.type === "IF_ELSE"
+        ? action.ifElseConfig!.branches.map((branch) => ({
+            branchKey: branch.branchKey,
+            name: branch.name,
+            actions: branch.actions,
+            isTerminal: branch.isDefault,
+            subtitle: branch.isDefault
+              ? "Default · no actions"
+              : branch.matchMode === "ALL" ? "All conditions" : "Any condition",
+          }))
+        : action.splitConfig!.routes.map((route) => ({
+            branchKey: route.branchKey,
+            name: route.name,
+            actions: route.actions,
+            isTerminal: false,
+            subtitle: `${route.percentage}% of runs`,
+          }))
       const gap = branches.length <= 2 ? 360 : 320
       const firstX = centerX - ((branches.length - 1) * gap) / 2
       branches.forEach((branch, branchIndex) => {
@@ -233,7 +276,7 @@ export function buildAutomationFlowGraph(
         const branchId = `branch-${action.nodeKey}-${branch.branchKey ?? branchIndex}`
         const branchPath = [
           ...path,
-          { ifElseNodeKey: action.nodeKey ?? actionId, branchKey: branch.branchKey ?? String(branchIndex) },
+          { routingNodeKey: action.nodeKey ?? actionId, branchKey: branch.branchKey ?? String(branchIndex) },
         ]
         nodes.push({
           id: branchId,
@@ -242,9 +285,7 @@ export function buildAutomationFlowGraph(
           data: {
             kind: "branch",
             label: branch.name,
-            subtitle: branch.isDefault
-              ? "Default · no actions"
-              : branch.matchMode === "ALL" ? "All conditions" : "Any condition",
+            subtitle: branch.subtitle,
           },
         })
         edges.push({
@@ -254,7 +295,7 @@ export function buildAutomationFlowGraph(
           type: "step",
         })
         maximumY = Math.max(maximumY, y)
-        if (branch.isDefault) {
+        if (branch.isTerminal) {
           endpoints.push({ id: branchId, x: branchX, y })
         } else {
           renderPath(branch.actions, branchId, branchX, y + 105, branchPath)

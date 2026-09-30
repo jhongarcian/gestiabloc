@@ -40,19 +40,35 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowUp,
+  BadgeCheck,
+  Calculator,
+  CalendarClock,
+  Clock3,
   CheckCircle2,
+  ContactRound,
+  GitBranch,
   GripVertical,
+  Hash,
   ListChecks,
+  ListTodo,
   Loader2,
+  MessageSquareText,
   MousePointerClick,
   Plus,
   Save,
-  Settings2,
+  Shuffle,
+  StickyNote,
+  Tag,
   Tags,
   Trash2,
+  Type,
+  UserMinus,
+  UserPlus,
   UserRound,
+  Workflow,
   X,
   Zap,
+  type LucideIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -87,6 +103,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import {
   ifElseWrapIssue,
+  MAX_AUTOMATION_ACTION_NODES,
   wrapFollowingActionsInFirstBranch,
 } from "@/lib/automation-if-else-insertion"
 import { parseAutomationWaitIntegerDraft } from "@/lib/automation-wait-input"
@@ -117,6 +134,7 @@ import type {
   AutomationNumberSource,
   AutomationOperator,
   AutomationRecord,
+  AutomationSplitRoute,
   AutomationTaskConfig,
   AutomationTaskDateTime,
   AutomationTextFormatterConfig,
@@ -173,8 +191,12 @@ function cloneDraft(draft: Draft): Draft {
 function actionsAtPath(actions: AutomationAction[], path: AutomationGraphBranchPath) {
   let current = actions
   for (const part of path) {
-    const ifElse = current.find((action) => action.nodeKey === part.ifElseNodeKey && action.type === "IF_ELSE")
-    const branch = ifElse?.ifElseConfig?.branches.find((candidate) => candidate.branchKey === part.branchKey)
+    const routingAction = current.find((action) =>
+      action.nodeKey === part.routingNodeKey && (action.type === "IF_ELSE" || action.type === "SPLIT")
+    )
+    const branch = routingAction?.type === "IF_ELSE"
+      ? routingAction.ifElseConfig?.branches.find((candidate) => candidate.branchKey === part.branchKey)
+      : routingAction?.splitConfig?.routes.find((candidate) => candidate.branchKey === part.branchKey)
     if (!branch) return null
     current = branch.actions
   }
@@ -185,10 +207,15 @@ function ancestorActionsForPath(actions: AutomationAction[], path: AutomationGra
   const ancestors: AutomationAction[] = []
   let current = actions
   for (const part of path) {
-    const ifElseIndex = current.findIndex((action) => action.nodeKey === part.ifElseNodeKey && action.type === "IF_ELSE")
-    if (ifElseIndex < 0) return ancestors
-    ancestors.push(...current.slice(0, ifElseIndex))
-    const branch = current[ifElseIndex]?.ifElseConfig?.branches.find((candidate) => candidate.branchKey === part.branchKey)
+    const routingIndex = current.findIndex((action) =>
+      action.nodeKey === part.routingNodeKey && (action.type === "IF_ELSE" || action.type === "SPLIT")
+    )
+    if (routingIndex < 0) return ancestors
+    ancestors.push(...current.slice(0, routingIndex))
+    const routingAction = current[routingIndex]
+    const branch = routingAction?.type === "IF_ELSE"
+      ? routingAction.ifElseConfig?.branches.find((candidate) => candidate.branchKey === part.branchKey)
+      : routingAction?.splitConfig?.routes.find((candidate) => candidate.branchKey === part.branchKey)
     if (!branch) return ancestors
     current = branch.actions
   }
@@ -212,8 +239,11 @@ function flattenDraftActions(actions: AutomationAction[]) {
   const visit = (pathActions: AutomationAction[]) => {
     for (const action of pathActions) {
       flattened.push(action)
-      if (action.type !== "IF_ELSE") continue
-      for (const branch of action.ifElseConfig?.branches ?? []) visit(branch.actions)
+      if (action.type === "IF_ELSE") {
+        for (const branch of action.ifElseConfig?.branches ?? []) visit(branch.actions)
+      } else if (action.type === "SPLIT") {
+        for (const route of action.splitConfig?.routes ?? []) visit(route.actions)
+      }
     }
   }
   visit(actions)
@@ -242,6 +272,15 @@ function serializeAutomationAction(action: AutomationAction): AutomationAction {
           branches: action.ifElseConfig.branches.map((branch) => ({
             ...branch,
             actions: branch.actions.map(serializeAutomationAction),
+          })),
+        }
+      : null,
+    splitConfig: action.splitConfig
+      ? {
+          ...action.splitConfig,
+          routes: action.splitConfig.routes.map((route) => ({
+            ...route,
+            actions: route.actions.map(serializeAutomationAction),
           })),
         }
       : null,
@@ -313,23 +352,53 @@ const ACTION_GROUPS: ReadonlyArray<{
   id: AutomationActionGroupId
   label: string
   description: string
+  icon: LucideIcon
 }> = [
   {
     id: "INTERNAL",
     label: "Internal actions",
     description: "Control timing, create work, and prepare values for later steps.",
+    icon: Workflow,
   },
   {
     id: "CONTACT",
     label: "Contact actions",
     description: "Update the contact record or remove it from the account.",
+    icon: ContactRound,
   },
   {
     id: "COMMUNICATION",
     label: "Communication actions",
     description: "Send information to the contact through connected channels.",
+    icon: MessageSquareText,
   },
 ]
+
+const ACTION_GROUP_STYLES: Record<AutomationActionGroupId, {
+  section: string
+  icon: string
+  actionIcon: string
+  actionHover: string
+}> = {
+  INTERNAL: {
+    section: "border-violet-200 bg-violet-50/75",
+    icon: "bg-violet-100 text-violet-700 ring-violet-200",
+    actionIcon: "bg-violet-100 text-violet-700",
+    actionHover: "hover:border-violet-300 hover:bg-violet-50",
+  },
+  CONTACT: {
+    section: "border-blue-200 bg-blue-50/75",
+    icon: "bg-blue-100 text-blue-700 ring-blue-200",
+    actionIcon: "bg-blue-100 text-blue-700",
+    actionHover: "hover:border-blue-300 hover:bg-blue-50",
+  },
+  COMMUNICATION: {
+    section: "border-emerald-200 bg-emerald-50/75",
+    icon: "bg-emerald-100 text-emerald-700 ring-emerald-200",
+    actionIcon: "bg-emerald-100 text-emerald-700",
+    actionHover: "hover:border-emerald-300 hover:bg-emerald-50",
+  },
+}
 
 const ACTION_DEFINITIONS = {
   WAIT: {
@@ -337,96 +406,119 @@ const ACTION_DEFINITIONS = {
     description: "Pause the contact before the next action.",
     group: "INTERNAL",
     order: 0,
+    icon: Clock3,
   },
   FORMAT_DATE_TIME: {
     label: "Date/Time formatter",
     description: "Format or compare dates for later actions.",
     group: "INTERNAL",
     order: 1,
+    icon: CalendarClock,
   },
   FORMAT_NUMBER: {
     label: "Number formatter",
     description: "Convert or format a number for later actions.",
     group: "INTERNAL",
     order: 2,
+    icon: Hash,
   },
   FORMAT_TEXT: {
     label: "Text formatter",
     description: "Transform text for later actions.",
     group: "INTERNAL",
     order: 3,
+    icon: Type,
   },
   MATH_OPERATION: {
     label: "Math operation",
     description: "Calculate a number or adjust a date.",
     group: "INTERNAL",
     order: 4,
+    icon: Calculator,
   },
   IF_ELSE: {
     label: "If/Else",
     description: "Route the contact through the first matching branch.",
     group: "INTERNAL",
     order: 5,
+    icon: GitBranch,
+  },
+  SPLIT: {
+    label: "Split",
+    description: "Randomly route each run by percentage.",
+    group: "INTERNAL",
+    order: 6,
+    icon: Shuffle,
   },
   CREATE_TASK: {
     label: "Create task",
     description: "Create a task linked to this contact.",
     group: "INTERNAL",
-    order: 6,
+    order: 7,
+    icon: ListTodo,
   },
   ADD_CONTACT_NOTE: {
     label: "Add contact note",
     description: "Add a note using live contact information.",
     group: "INTERNAL",
-    order: 7,
+    order: 8,
+    icon: StickyNote,
   },
   UPDATE_CONTACT_CUSTOM_FIELDS: {
     label: "Update contact fields",
     description: "Set or clear multiple contact and custom fields.",
     group: "CONTACT",
     order: 0,
+    icon: ContactRound,
   },
   SET_CONTACT_STATUS: {
     label: "Set contact status",
     description: "Change the contact's current status.",
     group: "CONTACT",
     order: 1,
+    icon: BadgeCheck,
   },
   SET_CONTACT_ASSIGNEE: {
     label: "Assign contact",
     description: "Assign the contact to a teammate.",
     group: "CONTACT",
     order: 2,
+    icon: UserPlus,
   },
   CLEAR_CONTACT_ASSIGNEE: {
     label: "Clear contact assignee",
     description: "Remove the contact's current assignee.",
     group: "CONTACT",
     order: 3,
+    icon: UserMinus,
   },
   ADD_CONTACT_TAG: {
     label: "Add contact tag",
     description: "Add an existing tag to the contact.",
     group: "CONTACT",
     order: 4,
+    icon: Tag,
   },
   REMOVE_CONTACT_TAG: {
     label: "Remove contact tag",
     description: "Remove an existing tag from the contact.",
     group: "CONTACT",
     order: 5,
+    icon: Tags,
   },
   DELETE_CONTACT: {
     label: "Delete contact",
     description: "Permanently delete the contact as the final action.",
     group: "CONTACT",
     order: 6,
+    icon: Trash2,
   },
 } satisfies Record<AutomationAction["type"], {
   label: string
   description: string
   group: AutomationActionGroupId
   order: number
+  icon: LucideIcon
 }>
 
 const ACTION_LABELS = Object.fromEntries(
@@ -440,6 +532,17 @@ function actionsForGroup(groupId: AutomationActionGroupId) {
   ]>)
     .filter(([, definition]) => definition.group === groupId)
     .sort((left, right) => left[1].order - right[1].order)
+}
+
+function ActionTypeIcon({
+  type,
+  className = "size-4",
+}: {
+  type: AutomationAction["type"]
+  className?: string
+}) {
+  const Icon = ACTION_DEFINITIONS[type].icon
+  return <Icon aria-hidden="true" className={className} />
 }
 
 const WAIT_UNIT_LABELS: Record<AutomationWaitUnit, string> = {
@@ -545,18 +648,36 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
     ) : data.kind === "trigger" ? (
       <Zap className="h-5 w-5" />
     ) : data.kind === "action" ? (
-      <Settings2 className="h-5 w-5" />
+      data.actionType ? <ActionTypeIcon type={data.actionType} className="size-5" /> : <Workflow className="size-5" />
+    ) : data.kind === "branch" ? (
+      <GitBranch className="size-5" />
     ) : (
-      <CheckCircle2 className="h-5 w-5" />
+      <CheckCircle2 className="size-5" />
     )
   const tone =
     data.kind === "trigger"
       ? data.configured
         ? "border-primary bg-primary text-primary-foreground"
         : "cursor-pointer border-dashed border-primary/40 bg-card text-card-foreground hover:border-primary hover:bg-accent/40"
+      : data.kind === "action" && data.actionGroup === "CONTACT"
+        ? "border-blue-200 bg-blue-50/90 text-slate-950 hover:border-blue-300"
+      : data.kind === "action" && data.actionGroup === "COMMUNICATION"
+        ? "border-emerald-200 bg-emerald-50/90 text-slate-950 hover:border-emerald-300"
+      : data.kind === "action"
+        ? "border-violet-200 bg-violet-50/90 text-slate-950 hover:border-violet-300"
       : data.kind === "complete"
         ? "border-border bg-muted text-foreground"
         : "border-border bg-card text-card-foreground"
+  const iconTone =
+    data.kind === "trigger" && data.configured
+      ? "bg-primary-foreground/90 text-primary"
+      : data.kind === "action" && data.actionGroup === "CONTACT"
+        ? "bg-white/90 text-blue-700 ring-1 ring-blue-200"
+      : data.kind === "action" && data.actionGroup === "COMMUNICATION"
+        ? "bg-white/90 text-emerald-700 ring-1 ring-emerald-200"
+      : data.kind === "action"
+        ? "bg-white/90 text-violet-700 ring-1 ring-violet-200"
+      : "bg-background text-foreground"
 
   const waitBadgeLabel = data.waitBadge
     ? data.waitBadge.state === "loading"
@@ -611,9 +732,7 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
       <div className="flex items-center gap-3">
         <div className={cn(
           "flex size-9 shrink-0 items-center justify-center rounded-xl shadow-sm",
-          data.kind === "trigger" && data.configured
-            ? "bg-primary-foreground/90 text-primary"
-            : "bg-background text-foreground",
+          iconTone,
         )}>
           {icon}
         </div>
@@ -876,6 +995,29 @@ function actionDefaults(
             isDefault: true,
             matchMode: "ALL",
             conditions: [],
+            actions: [],
+          },
+        ],
+      },
+    }
+  }
+  if (type === "SPLIT") {
+    return {
+      nodeKey,
+      type,
+      splitConfig: {
+        actionName: "Split",
+        routes: [
+          {
+            branchKey: crypto.randomUUID(),
+            name: "Route 1",
+            percentage: 50,
+            actions: [],
+          },
+          {
+            branchKey: crypto.randomUUID(),
+            name: "Route 2",
+            percentage: 50,
             actions: [],
           },
         ],
@@ -1148,10 +1290,12 @@ function isIfElseReady(
     if (!requireBranchActions && branch.actions.length === 0) return true
     if (branch.actions.length === 0) return false
     return branch.actions.every((branchAction, index) => {
-      if (branchAction.type === "IF_ELSE" && index !== branch.actions.length - 1) return false
+      if ((branchAction.type === "IF_ELSE" || branchAction.type === "SPLIT") && index !== branch.actions.length - 1) return false
       if (branchAction.type === "DELETE_CONTACT" && index !== branch.actions.length - 1) return false
       return branchAction.type === "IF_ELSE"
         ? isIfElseReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1, requireBranchActions)
+        : branchAction.type === "SPLIT"
+          ? isSplitReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1)
         : isActionReady(
             branchAction,
             catalog,
@@ -1160,6 +1304,40 @@ function isIfElseReady(
           )
     })
   })
+}
+
+function isSplitReady(
+  action: AutomationAction,
+  catalog: AutomationCatalog,
+  previousActions: AutomationAction[],
+  depth = 1,
+): boolean {
+  const config = action.splitConfig
+  if (!config || !config.actionName.trim() || config.actionName.trim().length > 120 || depth > 3) return false
+  if (config.routes.length < 2 || config.routes.length > 20) return false
+  const names = config.routes.map((route) => route.name.trim().toLocaleLowerCase())
+  if (names.some((name) => !name) || new Set(names).size !== names.length) return false
+  const keys = config.routes.map((route) => route.branchKey)
+  if (keys.some((key) => !key) || new Set(keys).size !== keys.length) return false
+  if (config.routes.some((route) => !Number.isInteger(route.percentage) || route.percentage < 1 || route.percentage > 99)) return false
+  if (config.routes.reduce((total, route) => total + route.percentage, 0) !== 100) return false
+
+  return config.routes.every((route) => route.actions.every((routeAction, index) => {
+    if (
+      (routeAction.type === "IF_ELSE" || routeAction.type === "SPLIT" || routeAction.type === "DELETE_CONTACT") &&
+      index !== route.actions.length - 1
+    ) return false
+    return routeAction.type === "IF_ELSE"
+      ? isIfElseReady(routeAction, catalog, [...previousActions, ...route.actions.slice(0, index)], depth + 1)
+      : routeAction.type === "SPLIT"
+        ? isSplitReady(routeAction, catalog, [...previousActions, ...route.actions.slice(0, index)], depth + 1)
+        : isActionReady(
+            routeAction,
+            catalog,
+            route.actions.slice(index + 1),
+            [...previousActions, ...route.actions.slice(0, index)],
+          )
+  }))
 }
 
 function isActionReady(
@@ -1283,6 +1461,9 @@ function isActionReady(
   if (action.type === "IF_ELSE") {
     return targetActions.length === 0 && isIfElseReady(action, catalog, previousActions)
   }
+  if (action.type === "SPLIT") {
+    return targetActions.length === 0 && isSplitReady(action, catalog, previousActions)
+  }
   if (action.type === "WAIT") {
     const config = action.waitConfig
     if (!config) return false
@@ -1364,7 +1545,9 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   if (draft.triggerType === "OPPORTUNITY_STAGE_CHANGED" && !draft.targetStageId) return "Select a stage."
   if (draft.actions.length === 0) return "Add at least one action."
   const allActions = flattenDraftActions(draft.actions)
-  if (allActions.length > 20) return "An automation can contain at most 20 action nodes across all branches."
+  if (allActions.length > MAX_AUTOMATION_ACTION_NODES) {
+    return `An automation can contain at most ${MAX_AUTOMATION_ACTION_NODES} action nodes across all branches.`
+  }
   const nodeKeys = allActions.map((action) => action.nodeKey).filter(Boolean)
   if (nodeKeys.length !== allActions.length || new Set(nodeKeys).size !== nodeKeys.length) {
     return "Every action needs a unique step identifier."
@@ -1372,7 +1555,7 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   const validatePath = (actions: AutomationAction[], inherited: AutomationAction[]): string | null => {
     for (let index = 0; index < actions.length; index += 1) {
       const action = actions[index]!
-      if ((action.type === "DELETE_CONTACT" || action.type === "IF_ELSE") && index !== actions.length - 1) {
+      if ((action.type === "DELETE_CONTACT" || action.type === "IF_ELSE" || action.type === "SPLIT") && index !== actions.length - 1) {
         return `${ACTION_LABELS[action.type]} can only be the final action in its path.`
       }
       if (!isActionReady(action, catalog, actions.slice(index + 1), [...inherited, ...actions.slice(0, index)])) {
@@ -1382,6 +1565,11 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
         for (const branch of action.ifElseConfig?.branches ?? []) {
           if (branch.isDefault) continue
           const nestedIssue = validatePath(branch.actions, [...inherited, ...actions.slice(0, index)])
+          if (nestedIssue) return nestedIssue
+        }
+      } else if (action.type === "SPLIT") {
+        for (const route of action.splitConfig?.routes ?? []) {
+          const nestedIssue = validatePath(route.actions, [...inherited, ...actions.slice(0, index)])
           if (nestedIssue) return nestedIssue
         }
       }
@@ -1568,17 +1756,19 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
   const hasUncommittedPanelChanges =
     triggerPanelHasChanges || actionPanelHasChanges || (selected?.kind === "new-action" && pendingAction !== null)
   const actionCount = flattenDraftActions(draft.actions).length
+  const isRoutingAction = (action: AutomationAction | null | undefined) =>
+    action?.type === "IF_ELSE" || action?.type === "SPLIT"
   const editingWillWrapFollowingActions = Boolean(
     selected?.kind === "action" &&
-      editingAction?.type === "IF_ELSE" &&
-      selectedStoredAction?.type !== "IF_ELSE",
+      isRoutingAction(editingAction) &&
+      editingAction?.type !== selectedStoredAction?.type,
   )
   const editingFollowingActions = selected?.kind === "action" && editingWillWrapFollowingActions
     ? selectedPathActions.slice(selected.index + 1)
     : []
-  const editingIfElseWrapIssue = selected?.kind === "action" && editingAction?.type === "IF_ELSE" && editingWillWrapFollowingActions
+  const editingIfElseWrapIssue = selected?.kind === "action" && isRoutingAction(editingAction) && editingWillWrapFollowingActions
     ? ifElseWrapIssue({
-        action: editingAction,
+        action: editingAction!,
         followingActions: editingFollowingActions,
         precedingPathActions: selectedPathActions.slice(0, selected.index),
         pathDepth: selected.path.length,
@@ -1589,9 +1779,9 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
   const pendingFollowingActions = selected?.kind === "new-action"
     ? selectedPathActions.slice(selected.insertionIndex)
     : []
-  const pendingIfElseWrapIssue = selected?.kind === "new-action" && pendingAction?.type === "IF_ELSE"
+  const pendingIfElseWrapIssue = selected?.kind === "new-action" && isRoutingAction(pendingAction)
     ? ifElseWrapIssue({
-        action: pendingAction,
+        action: pendingAction!,
         followingActions: pendingFollowingActions,
         precedingPathActions: selectedPathActions.slice(0, selected.insertionIndex),
         pathDepth: selected.path.length,
@@ -1612,7 +1802,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     }))
   }
 
-  const wrapFollowingActionsWithIfElse = (
+  const wrapFollowingActionsWithRoutingAction = (
     path: AutomationGraphBranchPath,
     index: number,
     action: AutomationAction,
@@ -1676,7 +1866,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     const nextActions = [...pathActions]
     ;[nextActions[index], nextActions[target]] = [nextActions[target]!, nextActions[index]!]
     if (nextActions.some((action, actionIndex) =>
-      (action.type === "DELETE_CONTACT" || action.type === "IF_ELSE") && actionIndex !== nextActions.length - 1
+      (action.type === "DELETE_CONTACT" || action.type === "IF_ELSE" || action.type === "SPLIT") && actionIndex !== nextActions.length - 1
     )) return
     setDraft((current) => mutateActionsAtPath(current, path, (actions) => {
       ;[actions[index], actions[target]] = [actions[target]!, actions[index]!]
@@ -1983,10 +2173,18 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       total: selectedPathActions.length,
                       onMove: (direction) => moveAction(selected.path, selected.index, direction),
                       onDelete: () => {
+                        const hasNestedActions = editingAction?.type === "IF_ELSE"
+                          ? editingAction.ifElseConfig?.branches.some((branch) => branch.actions.length > 0)
+                          : editingAction?.type === "SPLIT"
+                            ? editingAction.splitConfig?.routes.some((route) => route.actions.length > 0)
+                            : false
                         if (
-                          editingAction?.type === "IF_ELSE" &&
-                          editingAction.ifElseConfig?.branches.some((branch) => branch.actions.length > 0) &&
-                          !window.confirm("Delete this If/Else action and every action inside its branches?")
+                          hasNestedActions &&
+                          !window.confirm(
+                            editingAction?.type === "SPLIT"
+                              ? "Delete this Split action and every action inside its routes?"
+                              : "Delete this If/Else action and every action inside its branches?",
+                          )
                         ) return
                         setDraft((current) => mutateActionsAtPath(current, selected.path, (actions) => {
                           actions.splice(selected.index, 1)
@@ -2042,6 +2240,18 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                             selected.path.length + 1,
                             false,
                           )
+                        : editingAction?.type === "SPLIT"
+                          ? !editingIfElseWrapIssue && isSplitReady(
+                              editingWillWrapFollowingActions
+                                ? wrapFollowingActionsInFirstBranch(editingAction, editingFollowingActions)
+                                : editingAction,
+                              catalog,
+                              [
+                                ...ancestorActionsForPath(draft.actions, selected.path),
+                                ...selectedPathActions.slice(0, selected.index),
+                              ],
+                              selected.path.length + 1,
+                            )
                         : isActionReady(
                             editingAction,
                             catalog,
@@ -2054,7 +2264,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       onClick={() => {
                         if (!editingAction) return
                         if (editingWillWrapFollowingActions) {
-                          wrapFollowingActionsWithIfElse(selected.path, selected.index, editingAction, true)
+                          wrapFollowingActionsWithRoutingAction(selected.path, selected.index, editingAction, true)
                         } else {
                           updateAction(selected.path, selected.index, structuredClone(editingAction))
                         }
@@ -2098,7 +2308,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       type="button"
                       variant="ghost"
                       className={COMPACT_PRIMARY_BUTTON_CLASS}
-                      disabled={actionCount >= 20 || !(pendingAction?.type === "IF_ELSE"
+                      disabled={actionCount >= MAX_AUTOMATION_ACTION_NODES || !(pendingAction?.type === "IF_ELSE"
                         ? !pendingIfElseWrapIssue && isIfElseReady(
                             wrapFollowingActionsInFirstBranch(pendingAction, pendingFollowingActions),
                             catalog,
@@ -2109,6 +2319,16 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                             selected.path.length + 1,
                             false,
                           )
+                        : pendingAction?.type === "SPLIT"
+                          ? !pendingIfElseWrapIssue && isSplitReady(
+                              wrapFollowingActionsInFirstBranch(pendingAction, pendingFollowingActions),
+                              catalog,
+                              [
+                                ...ancestorActionsForPath(draft.actions, selected.path),
+                                ...selectedPathActions.slice(0, selected.insertionIndex),
+                              ],
+                              selected.path.length + 1,
+                            )
                         : isActionReady(
                             pendingAction,
                             catalog,
@@ -2120,8 +2340,8 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                           ))}
                       onClick={() => {
                         if (!pendingAction) return
-                        if (pendingAction.type === "IF_ELSE") {
-                          wrapFollowingActionsWithIfElse(selected.path, selected.insertionIndex, pendingAction, false)
+                        if (pendingAction.type === "IF_ELSE" || pendingAction.type === "SPLIT") {
+                          wrapFollowingActionsWithRoutingAction(selected.path, selected.insertionIndex, pendingAction, false)
                         } else {
                           insertAction(selected.path, selected.insertionIndex, pendingAction)
                         }
@@ -2569,15 +2789,22 @@ function NewActionEditor({
   ifElseWrapIssue?: string | null
 }) {
   if (action) {
+    const definition = ACTION_DEFINITIONS[action.type]
+    const groupStyle = ACTION_GROUP_STYLES[definition.group]
     return (
       <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-2.5">
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <p className="text-xs text-slate-500">Action</p>
-            <p className="truncate text-sm font-semibold text-slate-950">{ACTION_LABELS[action.type]}</p>
-            <p className="text-xs leading-4 text-slate-500">
-              {ACTION_DEFINITIONS[action.type].description}
-            </p>
+        <div className={cn("flex items-center justify-between gap-3 rounded-xl border p-2.5", groupStyle.section)}>
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-xl", groupStyle.actionIcon)}>
+              <ActionTypeIcon type={action.type} className="size-4.5" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-xs text-slate-500">Action</p>
+              <p className="truncate text-sm font-semibold text-slate-950">{definition.label}</p>
+              <p className="text-xs leading-4 text-slate-500">
+                {definition.description}
+              </p>
+            </div>
           </div>
           <Button
             type="button"
@@ -2613,14 +2840,24 @@ function NewActionEditor({
         {ACTION_GROUPS.map((group) => {
           const actions = actionsForGroup(group.id)
           if (actions.length === 0) return null
+          const GroupIcon = group.icon
+          const groupStyle = ACTION_GROUP_STYLES[group.id]
           return (
             <section
               key={group.id}
-              className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3"
+              className={cn("flex flex-col gap-2 rounded-xl border p-3", groupStyle.section)}
             >
-              <div className="flex flex-col gap-0.5">
-                <p className="text-xs font-semibold text-slate-700">{group.label}</p>
-                <p className="text-xs leading-4 text-slate-500">{group.description}</p>
+              <div className="flex items-start gap-2.5">
+                <span className={cn(
+                  "flex size-8 shrink-0 items-center justify-center rounded-lg ring-1",
+                  groupStyle.icon,
+                )}>
+                  <GroupIcon aria-hidden="true" className="size-4" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-slate-800">{group.label}</p>
+                  <p className="text-xs leading-4 text-slate-500">{group.description}</p>
+                </div>
               </div>
               <Separator />
               <div className="flex flex-col gap-2">
@@ -2629,7 +2866,10 @@ function NewActionEditor({
                     key={value}
                     type="button"
                     variant="outline"
-                    className="h-auto w-full cursor-pointer flex-col items-start gap-0.5 whitespace-normal rounded-lg border-slate-200 bg-white px-3 py-2.5 text-left shadow-none transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-100"
+                    className={cn(
+                      "h-auto w-full cursor-pointer items-start justify-start gap-3 whitespace-normal rounded-lg border-slate-200 bg-white px-3 py-2.5 text-left shadow-none transition disabled:cursor-not-allowed disabled:bg-slate-100",
+                      groupStyle.actionHover,
+                    )}
                     disabled={
                       (value === "UPDATE_CONTACT_CUSTOM_FIELDS" &&
                         catalog.contactUpdateFields.length === 0 &&
@@ -2638,9 +2878,17 @@ function NewActionEditor({
                     }
                     onClick={() => onChange(actionDefaults(value, catalog))}
                   >
-                    <span className="text-sm font-medium text-slate-900">{definition.label}</span>
-                    <span className="text-xs font-normal leading-4 text-slate-500">
-                      {definition.description}
+                    <span className={cn(
+                      "flex size-8 shrink-0 items-center justify-center rounded-lg",
+                      groupStyle.actionIcon,
+                    )}>
+                      <ActionTypeIcon type={value} className="size-4" />
+                    </span>
+                    <span className="min-w-0 text-left">
+                      <span className="block text-sm font-medium text-slate-900">{definition.label}</span>
+                      <span className="mt-0.5 block text-xs font-normal leading-4 text-slate-500">
+                        {definition.description}
+                      </span>
                     </span>
                   </Button>
                 ))}
@@ -2713,7 +2961,15 @@ function ActionEditor({
                           value={value}
                           disabled={value === "DELETE_CONTACT" && targetActions.length > 0}
                         >
-                          {definition.label}
+                          <span className="flex items-center gap-2">
+                            <span className={cn(
+                              "flex size-6 shrink-0 items-center justify-center rounded-md",
+                              ACTION_GROUP_STYLES[group.id].actionIcon,
+                            )}>
+                              <ActionTypeIcon type={value} className="size-3.5" />
+                            </span>
+                            {definition.label}
+                          </span>
                         </SelectItem>
                       ))}
                     </SelectGroup>
@@ -2871,6 +3127,22 @@ function ActionEditor({
           </>
         ) : null}
 
+        {action.type === "SPLIT" && action.splitConfig ? (
+          <>
+            {targetActions.length > 0 || ifElseWrapIssue ? (
+              <div className={cn(
+                "rounded-xl border px-3 py-2.5 text-xs leading-5",
+                ifElseWrapIssue
+                  ? "border-amber-200 bg-amber-50 text-amber-900"
+                  : "border-sky-200 bg-sky-50 text-sky-900",
+              )}>
+                {ifElseWrapIssue ?? `${targetActions.length} following action${targetActions.length === 1 ? "" : "s"} will move to Route 1.`}
+              </div>
+            ) : null}
+            <SplitActionEditor action={action} onChange={onChange} />
+          </>
+        ) : null}
+
         {action.type === "WAIT" && action.waitConfig ? (
           <WaitActionEditor
             config={action.waitConfig}
@@ -2892,10 +3164,10 @@ function ActionEditor({
         <>
           <Separator />
           <div className="flex gap-2">
-            <Button type="button" size="icon" variant="outline" disabled={management.index === 0 || action.type === "DELETE_CONTACT"} onClick={() => management.onMove(-1)} aria-label="Move action up">
+            <Button type="button" size="icon" variant="outline" disabled={management.index === 0 || ["DELETE_CONTACT", "IF_ELSE", "SPLIT"].includes(action.type)} onClick={() => management.onMove(-1)} aria-label="Move action up">
               <ArrowUp data-icon="inline-start" />
             </Button>
-            <Button type="button" size="icon" variant="outline" disabled={management.index === management.total - 1 || targetActions[0]?.type === "DELETE_CONTACT"} onClick={() => management.onMove(1)} aria-label="Move action down">
+            <Button type="button" size="icon" variant="outline" disabled={management.index === management.total - 1 || ["DELETE_CONTACT", "IF_ELSE", "SPLIT"].includes(targetActions[0]?.type ?? "")} onClick={() => management.onMove(1)} aria-label="Move action down">
               <ArrowDown data-icon="inline-start" />
             </Button>
             <Button type="button" variant="outline" className="ml-auto text-rose-600" onClick={management.onDelete}>
@@ -3158,6 +3430,228 @@ function IfElseActionEditor({
           })}
         />
       </section>
+    </div>
+  )
+}
+
+function SortableSplitRouteCard({
+  route,
+  children,
+}: {
+  route: AutomationSplitRoute
+  children: React.ReactNode
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: route.branchKey })
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={cn(
+        "rounded-xl border border-slate-200 bg-white p-3 shadow-sm",
+        isDragging && "z-20 opacity-70 shadow-lg",
+      )}
+    >
+      <div className="mb-3 flex items-center gap-2">
+        <button
+          type="button"
+          className="cursor-grab touch-none rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 active:cursor-grabbing"
+          aria-label={`Move ${route.name}`}
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical className="h-4 w-4" />
+        </button>
+        <span className="text-xs font-semibold text-slate-600">Random route</span>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function SplitPercentageInput({
+  route,
+  onChange,
+}: {
+  route: AutomationSplitRoute
+  onChange: (percentage: number) => void
+}) {
+  const [draft, setDraft] = useState(route.percentage > 0 ? String(route.percentage) : "")
+
+  return (
+    <Input
+      aria-label={`${route.name} percentage`}
+      inputMode="numeric"
+      className="pr-8"
+      value={draft}
+      placeholder="Percentage"
+      onChange={(event) => {
+        const next = event.target.value
+        if (next !== "" && !/^\d{1,3}$/.test(next)) return
+        setDraft(next)
+        onChange(next === "" ? 0 : Number(next))
+      }}
+    />
+  )
+}
+
+function SplitActionEditor({
+  action,
+  onChange,
+}: {
+  action: AutomationAction
+  onChange: (action: AutomationAction) => void
+}) {
+  const config = action.splitConfig!
+  const total = config.routes.reduce((sum, route) => sum + route.percentage, 0)
+  const normalizedRouteNames = config.routes.map((route) => route.name.trim().toLocaleLowerCase())
+  const hasEmptyRouteName = normalizedRouteNames.some((name) => !name)
+  const hasDuplicateRouteNames = new Set(normalizedRouteNames).size !== normalizedRouteNames.length
+  const hasInvalidPercentage = config.routes.some(
+    (route) => !Number.isInteger(route.percentage) || route.percentage < 1 || route.percentage > 99,
+  )
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+  const updateRoutes = (routes: AutomationSplitRoute[]) => onChange({
+    ...action,
+    splitConfig: { ...config, routes },
+  })
+  const updateRoute = (branchKey: string, patch: Partial<AutomationSplitRoute>) => {
+    updateRoutes(config.routes.map((route) => route.branchKey === branchKey ? { ...route, ...patch } : route))
+  }
+  const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return
+    const oldIndex = config.routes.findIndex((route) => route.branchKey === active.id)
+    const newIndex = config.routes.findIndex((route) => route.branchKey === over.id)
+    if (oldIndex >= 0 && newIndex >= 0) updateRoutes(arrayMove(config.routes, oldIndex, newIndex))
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <section className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+        <Field className="gap-1.5">
+          <FieldLabel htmlFor={`split-name-${action.nodeKey}`}>Action name</FieldLabel>
+          <Input
+            id={`split-name-${action.nodeKey}`}
+            value={config.actionName}
+            maxLength={120}
+            onChange={(event) => onChange({
+              ...action,
+              splitConfig: { ...config, actionName: event.target.value },
+            })}
+            placeholder="Split"
+          />
+          <p className="text-xs leading-4 text-slate-500">
+            Each run follows one route based on the percentages below.
+          </p>
+        </Field>
+      </section>
+
+      <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2">
+        <span className="text-xs font-medium text-slate-600">Route distribution</span>
+        <Badge
+          variant="outline"
+          className={cn(
+            "rounded-full font-semibold",
+            total === 100
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+              : "border-amber-200 bg-amber-50 text-amber-800",
+          )}
+        >
+          Total: {total}%
+        </Badge>
+      </div>
+      {hasEmptyRouteName || hasDuplicateRouteNames || hasInvalidPercentage ? (
+        <p className="text-xs leading-4 text-amber-700">
+          {hasEmptyRouteName
+            ? "Every route needs a name."
+            : hasDuplicateRouteNames
+              ? "Route names must be unique."
+              : "Each route percentage must be a whole number from 1 to 99."}
+        </p>
+      ) : null}
+
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext
+          items={config.routes.map((route) => route.branchKey)}
+          strategy={verticalListSortingStrategy}
+        >
+          <div className="flex flex-col gap-3">
+            {config.routes.map((route, routeIndex) => (
+              <SortableSplitRouteCard key={route.branchKey} route={route}>
+                <div className="flex flex-col gap-3">
+                  <div className="grid grid-cols-[minmax(0,1fr)_6.5rem_auto] gap-2">
+                    <Input
+                      aria-label={`Route ${routeIndex + 1} name`}
+                      value={route.name}
+                      maxLength={120}
+                      onChange={(event) => updateRoute(route.branchKey, { name: event.target.value })}
+                    />
+                    <div className="relative">
+                      <SplitPercentageInput
+                        route={route}
+                        onChange={(percentage) => updateRoute(route.branchKey, { percentage })}
+                      />
+                      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-slate-400">%</span>
+                    </div>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="text-rose-600"
+                      aria-label={`Delete ${route.name}`}
+                      disabled={config.routes.length <= 2}
+                      onClick={() => {
+                        if (route.actions.length > 0 && !window.confirm(`Delete “${route.name}” and all actions inside it?`)) return
+                        updateRoutes(config.routes.filter((candidate) => candidate.branchKey !== route.branchKey))
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="rounded-lg bg-slate-50 px-2.5 py-2 text-xs text-slate-600">
+                    {route.actions.length === 0
+                      ? "Control route with no actions. Add actions from the canvas when needed."
+                      : `${route.actions.length} ${route.actions.length === 1 ? "action" : "actions"} in this route. Add and edit them on the canvas.`}
+                  </div>
+                </div>
+              </SortableSplitRouteCard>
+            ))}
+          </div>
+        </SortableContext>
+      </DndContext>
+
+      <Button
+        type="button"
+        variant="outline"
+        className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full")}
+        disabled={config.routes.length >= 20}
+        onClick={() => {
+          const existingNames = new Set(config.routes.map((route) => route.name.trim().toLocaleLowerCase()))
+          let routeNumber = config.routes.length + 1
+          while (existingNames.has(`route ${routeNumber}`)) routeNumber += 1
+          updateRoutes([
+            ...config.routes,
+            {
+              branchKey: crypto.randomUUID(),
+              name: `Route ${routeNumber}`,
+              percentage: 0,
+              actions: [],
+            },
+          ])
+        }}
+      >
+        <Plus className="h-3.5 w-3.5" /> Add route
+      </Button>
     </div>
   )
 }

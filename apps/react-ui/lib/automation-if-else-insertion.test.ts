@@ -35,6 +35,20 @@ function ifElseAction(branchActions: AutomationAction[] = []): AutomationAction 
   }
 }
 
+function splitAction(routeActions: AutomationAction[] = []): AutomationAction {
+  return {
+    nodeKey: "split-1",
+    type: "SPLIT",
+    splitConfig: {
+      actionName: "Split",
+      routes: [
+        { branchKey: "route-1", name: "Route 1", percentage: 50, actions: routeActions },
+        { branchKey: "route-2", name: "Route 2", percentage: 50, actions: [] },
+      ],
+    },
+  }
+}
+
 describe("If/Else insertion", () => {
   test("moves every following action into the first branch without changing order or node keys", () => {
     const existingBranchAction: AutomationAction = { nodeKey: "branch-action", type: "ADD_CONTACT_TAG", tagId: "tag-1" }
@@ -113,10 +127,60 @@ describe("If/Else insertion", () => {
       followingActions: [] as AutomationAction[],
       precedingPathActions: [] as AutomationAction[],
       pathDepth: 0,
-      currentActionCount: 20,
+      currentActionCount: 100,
     }
 
     assert.equal(ifElseWrapIssue({ ...common, replacesExistingAction: true }), null)
-    assert.match(ifElseWrapIssue({ ...common, replacesExistingAction: false }) ?? "", /at most 20/)
+    assert.match(ifElseWrapIssue({ ...common, replacesExistingAction: false }) ?? "", /at most 100/)
+  })
+
+  test("moves following actions into Split Route 1 without copying them", () => {
+    const followingActions: AutomationAction[] = [
+      { nodeKey: "status", type: "SET_CONTACT_STATUS", statusConfigId: "active" },
+      { nodeKey: "tag", type: "ADD_CONTACT_TAG", tagId: "tag-1" },
+    ]
+    const original = splitAction()
+    const wrapped = wrapFollowingActionsInFirstBranch(original, followingActions)
+
+    assert.deepEqual(wrapped.splitConfig?.routes[0]?.actions.map((action) => action.nodeKey), ["status", "tag"])
+    assert.equal(wrapped.splitConfig?.routes[1]?.actions.length, 0)
+    assert.equal(original.splitConfig?.routes[0]?.actions.length, 0)
+  })
+
+  test("applies one combined nesting limit across Split and If/Else", () => {
+    const nestedIf = ifElseAction([splitAction()])
+    const issue = ifElseWrapIssue({
+      action: splitAction(),
+      followingActions: [nestedIf],
+      precedingPathActions: [],
+      pathDepth: 1,
+      currentActionCount: 3,
+      replacesExistingAction: false,
+    })
+
+    assert.match(issue ?? "", /three levels/)
+  })
+
+  test("names Route 1 when a prior Wait target would cross into Split", () => {
+    const issue = ifElseWrapIssue({
+      action: splitAction(),
+      followingActions: [{ nodeKey: "later", type: "ADD_CONTACT_TAG", tagId: "tag-1" }],
+      precedingPathActions: [{
+        nodeKey: "wait",
+        type: "WAIT",
+        waitConfig: {
+          mode: "FIXED_DATE",
+          dateTime: "2026-10-01T12:00:00.000Z",
+          timing: "ON",
+          pastBehavior: "GO_TO_STEP",
+          targetNodeKey: "later",
+        },
+      }],
+      pathDepth: 0,
+      currentActionCount: 2,
+      replacesExistingAction: false,
+    })
+
+    assert.match(issue ?? "", /Route 1/)
   })
 })

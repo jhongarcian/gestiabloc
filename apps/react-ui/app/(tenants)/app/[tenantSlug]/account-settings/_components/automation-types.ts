@@ -288,6 +288,18 @@ export type AutomationIfElseConfig = {
   branches: AutomationIfElseBranch[]
 }
 
+export type AutomationSplitRoute = {
+  branchKey: string
+  name: string
+  percentage: number
+  actions: AutomationAction[]
+}
+
+export type AutomationSplitConfig = {
+  actionName: string
+  routes: AutomationSplitRoute[]
+}
+
 export type AutomationAction = {
   id?: string
   nodeKey?: string
@@ -305,6 +317,7 @@ export type AutomationAction = {
     | "FORMAT_TEXT"
     | "MATH_OPERATION"
     | "IF_ELSE"
+    | "SPLIT"
     | "WAIT"
     | "DELETE_CONTACT"
   customFieldUpdates?: AutomationFieldUpdate[] | null
@@ -320,6 +333,7 @@ export type AutomationAction = {
   textFormatterConfig?: AutomationTextFormatterConfig | null
   mathOperationConfig?: AutomationMathOperationConfig | null
   ifElseConfig?: AutomationIfElseConfig | null
+  splitConfig?: AutomationSplitConfig | null
 }
 
 export type AutomationRecord = {

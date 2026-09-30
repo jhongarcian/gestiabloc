@@ -17,6 +17,7 @@ const labels = {
   FORMAT_TEXT: "Text formatter",
   MATH_OPERATION: "Math operation",
   IF_ELSE: "If/Else",
+  SPLIT: "Split",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 } as const
@@ -39,6 +40,10 @@ describe("buildAutomationFlowGraph", () => {
       ["trigger", "add-0", "action-0", "add-1", "complete"],
     )
     assert.ok(graph.edges.every((edge) => edge.type === "straight"))
+
+    const actionNode = graph.nodes.find((node) => node.data.kind === "action")
+    assert.equal(actionNode?.data.actionType, "SET_CONTACT_STATUS")
+    assert.equal(actionNode?.data.actionGroup, "CONTACT")
 
     const centerXs = graph.nodes.map((node) =>
       node.position.x + (node.data.kind === "add" ? 40 : 256) / 2,
@@ -116,6 +121,8 @@ describe("buildAutomationFlowGraph", () => {
     const waitNode = graph.nodes.find((node) => node.id.includes("00000000"))
     assert.equal(waitNode?.data.label, "Wait")
     assert.equal(waitNode?.data.subtitle, "Wait 2 hours")
+    assert.equal(waitNode?.data.actionType, "WAIT")
+    assert.equal(waitNode?.data.actionGroup, "INTERNAL")
     assert.equal(waitNode?.data.waitBadge?.count, 12)
     assert.equal(waitNode?.data.waitBadge?.state, "ready")
     assert.equal(waitNode?.data.waitBadge?.onClick, openWaitingRuns)
@@ -421,5 +428,56 @@ describe("buildAutomationFlowGraph", () => {
     assert.ok(graph.nodes.some((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000102"))
     assert.equal(graph.nodes.some((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000104"), false)
     assert.ok(graph.edges.some((edge) => edge.source === "action-00000000-0000-4000-8000-000000000101" && edge.type === "step"))
+  })
+
+  test("renders percentage Split routes and keeps empty control routes editable", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          type: "SPLIT",
+          nodeKey: "00000000-0000-4000-8000-000000000201",
+          splitConfig: {
+            actionName: "A/B assignment",
+            routes: [
+              {
+                branchKey: "00000000-0000-4000-8000-000000000202",
+                name: "Treatment",
+                percentage: 75,
+                actions: [{
+                  type: "ADD_CONTACT_TAG",
+                  nodeKey: "00000000-0000-4000-8000-000000000203",
+                  tagId: "tag-1",
+                }],
+              },
+              {
+                branchKey: "00000000-0000-4000-8000-000000000204",
+                name: "Control",
+                percentage: 25,
+                actions: [],
+              },
+            ],
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const splitNode = graph.nodes.find((node) => node.id === "action-00000000-0000-4000-8000-000000000201")
+    assert.equal(splitNode?.data.label, "A/B assignment")
+    assert.equal(splitNode?.data.subtitle, "Random · 2 routes")
+    assert.equal(graph.nodes.find((node) => node.data.kind === "branch" && node.data.label === "Treatment")?.data.subtitle, "75% of runs")
+    assert.equal(graph.nodes.find((node) => node.data.kind === "branch" && node.data.label === "Control")?.data.subtitle, "25% of runs")
+    assert.ok(graph.nodes.some((node) =>
+      node.data.kind === "add" &&
+      node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000204"
+    ))
+    assert.ok(graph.edges.some((edge) =>
+      edge.source === "action-00000000-0000-4000-8000-000000000201" && edge.type === "step"
+    ))
   })
 })
