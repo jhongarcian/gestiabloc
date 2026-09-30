@@ -43,6 +43,7 @@ const ACTION_LABELS: Record<string, string> = {
   FORMAT_TEXT: "Text formatter",
   MATH_OPERATION: "Math operation",
   IF_ELSE: "If/Else",
+  SPLIT: "Split",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 }
@@ -55,6 +56,7 @@ export function getAutomationActionNodeLabel(action: {
   type?: string | null
   textFormatterConfig?: unknown
   ifElseConfig?: unknown
+  splitConfig?: unknown
 }) {
   if (action.type === "FORMAT_TEXT") {
     const config = action.textFormatterConfig && typeof action.textFormatterConfig === "object"
@@ -66,6 +68,13 @@ export function getAutomationActionNodeLabel(action: {
   if (action.type === "IF_ELSE") {
     const config = action.ifElseConfig && typeof action.ifElseConfig === "object"
       ? action.ifElseConfig as Record<string, unknown>
+      : null
+    const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
+    if (actionName) return actionName.slice(0, 120)
+  }
+  if (action.type === "SPLIT") {
+    const config = action.splitConfig && typeof action.splitConfig === "object"
+      ? action.splitConfig as Record<string, unknown>
       : null
     const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
     if (actionName) return actionName.slice(0, 120)

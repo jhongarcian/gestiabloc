@@ -249,4 +249,34 @@ describe("findEnabledAutomationReference", () => {
       { id: "automation-1", name: "Risk routing" },
     )
   })
+
+  test("finds references inside nested Split route actions", async () => {
+    const prismaClient = {
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Random status test",
+          actions: [{
+            type: "SPLIT",
+            splitConfig: {
+              actionName: "Random split",
+              routes: [{
+                actions: [{ type: "SET_CONTACT_STATUS", statusConfigId: "inactive" }],
+              }],
+            },
+          }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "status", id: "inactive" },
+      ),
+      { id: "automation-1", name: "Random status test" },
+    )
+  })
 })

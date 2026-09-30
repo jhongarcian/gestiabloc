@@ -125,6 +125,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
             textFormatterConfig: true,
             mathOperationConfig: true,
             ifElseConfig: true,
+            splitConfig: true,
           },
         },
       },

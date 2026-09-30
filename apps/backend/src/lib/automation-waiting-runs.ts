@@ -354,7 +354,10 @@ export async function exitAutomationWaitingRun(
     const allSteps = flattenAutomationActionTree(actions)
     const remainingByKey = new Map(selectedRemainingSteps.map((step) => [step.action.nodeKey, step]))
     for (const step of selectedRemainingSteps) {
-      if (step.action.type !== "IF_ELSE" || branchDecisions[step.action.nodeKey]) continue
+      if (
+        (step.action.type !== "IF_ELSE" && step.action.type !== "SPLIT") ||
+        branchDecisions[step.action.nodeKey]
+      ) continue
       for (const descendant of allSteps) {
         if (descendant.branchPath.some((entry) => entry.nodeKey === step.action.nodeKey)) {
           remainingByKey.set(descendant.action.nodeKey, descendant)

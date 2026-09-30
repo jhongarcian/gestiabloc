@@ -64,6 +64,25 @@ describe("deleteAutomationContactFileObjects", () => {
 })
 
 describe("AutomationUpsertSchema", () => {
+  test("accepts up to 100 action nodes in one path", () => {
+    const base = {
+      name: "Long automation",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED" as const, pipelineId: "pipeline-1" },
+      conditions: [],
+    }
+    const actions = Array.from({ length: 100 }, () => ({ type: "CLEAR_CONTACT_ASSIGNEE" as const }))
+
+    assert.equal(AutomationUpsertSchema.safeParse({ ...base, actions }).success, true)
+    assert.equal(
+      AutomationUpsertSchema.safeParse({
+        ...base,
+        actions: [...actions, { type: "CLEAR_CONTACT_ASSIGNEE" as const }],
+      }).success,
+      false,
+    )
+  })
+
   test("accepts creation and stage-change trigger shapes", () => {
     const base = {
       name: "Qualified opportunity",
@@ -905,6 +924,66 @@ describe("AutomationUpsertSchema", () => {
     })
     await assert.rejects(
       validateAutomationConfiguration(prismaClient, "tenant-1", invalid),
+      /only be the final action in its path/,
+    )
+  })
+
+  test("normalizes Split routes, permits empty controls, and requires a 100% total", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const split = {
+      type: "SPLIT" as const,
+      splitConfig: {
+        actionName: "Random experiment",
+        routes: [
+          {
+            name: "Treatment",
+            percentage: 60,
+            actions: [{ type: "SET_CONTACT_STATUS" as const, statusConfigId: "active" }],
+          },
+          { name: "Control", percentage: 40, actions: [] },
+        ],
+      },
+    }
+    const base = {
+      name: "Split contacts",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED" as const, pipelineId: "pipeline-1" },
+      conditions: [],
+    }
+    const valid = AutomationUpsertSchema.parse({ ...base, actions: [split] })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", valid)
+    assert.equal(normalized.actions[0]?.type, "SPLIT")
+    assert.equal(typeof normalized.actions[0]?.nodeKey, "string")
+    assert.equal(typeof normalized.actions[0]?.splitConfig?.routes[0]?.branchKey, "string")
+    assert.equal(normalized.actions[0]?.splitConfig?.routes[1]?.actions.length, 0)
+
+    const invalidPercentages = AutomationUpsertSchema.parse({
+      ...base,
+      actions: [{
+        ...split,
+        splitConfig: {
+          ...split.splitConfig,
+          routes: split.splitConfig.routes.map((route) => ({ ...route, percentage: 30 })),
+        },
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalidPercentages),
+      /must total 100%/,
+    )
+
+    const invalidPlacement = AutomationUpsertSchema.parse({
+      ...base,
+      actions: [split, { type: "SET_CONTACT_STATUS", statusConfigId: "active" }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalidPlacement),
       /only be the final action in its path/,
     )
   })

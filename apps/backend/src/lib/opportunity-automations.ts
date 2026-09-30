@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 
 import { z } from "zod"
 
@@ -103,9 +103,12 @@ export const AUTOMATION_ACTION_TYPES = [
   "FORMAT_TEXT",
   "MATH_OPERATION",
   "IF_ELSE",
+  "SPLIT",
   "WAIT",
   "DELETE_CONTACT",
 ] as const
+
+export const MAX_AUTOMATION_ACTION_NODES = 100
 
 export const AUTOMATION_WAIT_UNITS = ["SECONDS", "MINUTES", "HOURS", "DAYS"] as const
 
@@ -421,7 +424,28 @@ export type AutomationIfElseActionInput = {
   ifElseConfig: AutomationIfElseConfigInput
 }
 
-export type AutomationActionInput = NonBranchAutomationActionInput | AutomationIfElseActionInput
+export type AutomationSplitRouteInput = {
+  branchKey?: string
+  name: string
+  percentage: number
+  actions: AutomationActionInput[]
+}
+
+export type AutomationSplitConfigInput = {
+  actionName: string
+  routes: AutomationSplitRouteInput[]
+}
+
+export type AutomationSplitActionInput = {
+  type: "SPLIT"
+  nodeKey?: string
+  splitConfig: AutomationSplitConfigInput
+}
+
+export type AutomationActionInput =
+  | NonBranchAutomationActionInput
+  | AutomationIfElseActionInput
+  | AutomationSplitActionInput
 
 const AutomationIfElseBranchSchema: z.ZodType<AutomationIfElseBranchInput> = z.lazy(() => z.object({
   branchKey: z.string().uuid().optional(),
@@ -429,7 +453,14 @@ const AutomationIfElseBranchSchema: z.ZodType<AutomationIfElseBranchInput> = z.l
   isDefault: z.boolean(),
   matchMode: z.enum(["ALL", "ANY"]),
   conditions: z.array(AutomationBranchConditionSchema).max(20),
-  actions: z.array(AutomationActionInputSchema).max(20),
+  actions: z.array(AutomationActionInputSchema).max(MAX_AUTOMATION_ACTION_NODES),
+}).strict())
+
+const AutomationSplitRouteSchema: z.ZodType<AutomationSplitRouteInput> = z.lazy(() => z.object({
+  branchKey: z.string().uuid().optional(),
+  name: z.string().trim().min(1).max(120),
+  percentage: z.number().int().min(1).max(99),
+  actions: z.array(AutomationActionInputSchema).max(MAX_AUTOMATION_ACTION_NODES),
 }).strict())
 
 export const AutomationActionInputSchema: z.ZodType<AutomationActionInput> = z.lazy(() => z.union([
@@ -440,6 +471,14 @@ export const AutomationActionInputSchema: z.ZodType<AutomationActionInput> = z.l
     ifElseConfig: z.object({
       actionName: z.string().trim().min(1).max(120),
       branches: z.array(AutomationIfElseBranchSchema).min(2).max(20),
+    }).strict(),
+  }).strict(),
+  z.object({
+    type: z.literal("SPLIT"),
+    nodeKey: actionNodeKeySchema,
+    splitConfig: z.object({
+      actionName: z.string().trim().min(1).max(120),
+      routes: z.array(AutomationSplitRouteSchema).min(2).max(20),
     }).strict(),
   }).strict(),
 ]))
@@ -460,7 +499,7 @@ export const AutomationUpsertSchema = z
       }),
     ]),
     conditions: z.array(AutomationConditionInputSchema).max(20).default([]),
-    actions: z.array(AutomationActionInputSchema).min(1).max(20),
+    actions: z.array(AutomationActionInputSchema).min(1).max(MAX_AUTOMATION_ACTION_NODES),
   })
   .strict()
 
@@ -1214,8 +1253,11 @@ export async function validateAutomationConfiguration(
       }
       actionNodeKeys.add(nodeKey)
       totalActionCount += 1
-      if (totalActionCount > 20) {
-        throw new AutomationConfigurationError("TOO_MANY_ACTIONS", "An automation can contain at most 20 action nodes across all branches.")
+      if (totalActionCount > MAX_AUTOMATION_ACTION_NODES) {
+        throw new AutomationConfigurationError(
+          "TOO_MANY_ACTIONS",
+          `An automation can contain at most ${MAX_AUTOMATION_ACTION_NODES} action nodes across all branches.`,
+        )
       }
     }
 
@@ -1272,6 +1314,47 @@ export async function validateAutomationConfiguration(
         ifElseConfig: {
           actionName: action.ifElseConfig.actionName.trim(),
           branches,
+        },
+      }
+    }
+    if (action.type === "SPLIT") {
+      if (index !== actionInputs.length - 1) {
+        throw new AutomationConfigurationError("SPLIT_MUST_BE_LAST", "Split can only be the final action in its path.")
+      }
+      if (depth >= 3) {
+        throw new AutomationConfigurationError(
+          "SPLIT_MAX_DEPTH",
+          "Split and If/Else can be nested up to three levels.",
+        )
+      }
+      const routeNames = new Set<string>()
+      const routeKeys = new Set<string>()
+      const routes = action.splitConfig.routes.map((route) => {
+        const branchKey = route.branchKey ?? randomUUID()
+        const normalizedName = route.name.trim().toLocaleLowerCase()
+        if (routeKeys.has(branchKey)) {
+          throw new AutomationConfigurationError("DUPLICATE_SPLIT_ROUTE_KEY", "Every Split route must have a unique key.")
+        }
+        if (routeNames.has(normalizedName)) {
+          throw new AutomationConfigurationError("DUPLICATE_SPLIT_ROUTE_NAME", "Split route names must be unique.")
+        }
+        routeKeys.add(branchKey)
+        routeNames.add(normalizedName)
+        return {
+          ...route,
+          branchKey,
+          name: route.name.trim(),
+          actions: normalizeActionPath(route.actions, new Map(automationOutputs), depth + 1),
+        }
+      })
+      if (routes.reduce((total, route) => total + route.percentage, 0) !== 100) {
+        throw new AutomationConfigurationError("INVALID_SPLIT_PERCENTAGE", "Split route percentages must total 100%.")
+      }
+      return {
+        ...base,
+        splitConfig: {
+          actionName: action.splitConfig.actionName.trim(),
+          routes,
         },
       }
     }
@@ -1791,6 +1874,11 @@ export type RuntimeAutomationIfElseBranch = Omit<AutomationIfElseBranchInput, "b
   actions: RuntimeAutomationAction[]
 }
 
+export type RuntimeAutomationSplitRoute = Omit<AutomationSplitRouteInput, "branchKey" | "actions"> & {
+  branchKey: string
+  actions: RuntimeAutomationAction[]
+}
+
 export type RuntimeAutomationAction =
   | WithRequiredNodeKey<NonBranchAutomationActionInput>
   | {
@@ -1799,6 +1887,14 @@ export type RuntimeAutomationAction =
       ifElseConfig: {
         actionName: string
         branches: RuntimeAutomationIfElseBranch[]
+      }
+    }
+  | {
+      type: "SPLIT"
+      nodeKey: string
+      splitConfig: {
+        actionName: string
+        routes: RuntimeAutomationSplitRoute[]
       }
     }
 
@@ -1819,13 +1915,21 @@ export function flattenAutomationActionTree(actions: RuntimeAutomationAction[]) 
   const visit = (pathActions: RuntimeAutomationAction[], branchPath: AutomationBranchPathEntry[]) => {
     for (const action of pathActions) {
       flattened.push({ action, nodeOrder: flattened.length + 1, branchPath })
-      if (action.type !== "IF_ELSE") continue
-      for (const branch of action.ifElseConfig.branches) {
-        if (branch.isDefault) continue
-        visit(branch.actions, [
-          ...branchPath,
-          { nodeKey: action.nodeKey, branchKey: branch.branchKey, branchName: branch.name },
-        ])
+      if (action.type === "IF_ELSE") {
+        for (const branch of action.ifElseConfig.branches) {
+          if (branch.isDefault) continue
+          visit(branch.actions, [
+            ...branchPath,
+            { nodeKey: action.nodeKey, branchKey: branch.branchKey, branchName: branch.name },
+          ])
+        }
+      } else if (action.type === "SPLIT") {
+        for (const route of action.splitConfig.routes) {
+          visit(route.actions, [
+            ...branchPath,
+            { nodeKey: action.nodeKey, branchKey: route.branchKey, branchName: route.name },
+          ])
+        }
       }
     }
   }
@@ -1835,7 +1939,23 @@ export function flattenAutomationActionTree(actions: RuntimeAutomationAction[]) 
 
 function ensureRuntimeAutomationAction(action: AutomationActionInput): RuntimeAutomationAction {
   const nodeKey = action.nodeKey ?? randomUUID()
-  if (action.type !== "IF_ELSE") return { ...action, nodeKey } as RuntimeAutomationAction
+  if (action.type !== "IF_ELSE" && action.type !== "SPLIT") {
+    return { ...action, nodeKey } as RuntimeAutomationAction
+  }
+  if (action.type === "SPLIT") {
+    return {
+      ...action,
+      nodeKey,
+      splitConfig: {
+        ...action.splitConfig,
+        routes: action.splitConfig.routes.map((route) => ({
+          ...route,
+          branchKey: route.branchKey ?? randomUUID(),
+          actions: route.actions.map(ensureRuntimeAutomationAction),
+        })),
+      },
+    }
+  }
   return {
     ...action,
     nodeKey,
@@ -1900,6 +2020,12 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
         type: action.type,
         ifElseConfig: action.ifElseConfig,
       }
+    : action.type === "SPLIT"
+      ? {
+          nodeKey,
+          type: action.type,
+          splitConfig: action.splitConfig,
+        }
     : {
         nodeKey,
         type: action.type,
@@ -1923,13 +2049,36 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
 }
 
 export function parseActionSnapshot(value: unknown): RuntimeAutomationAction[] {
-  const parsed = AutomationActionInputSchema.array().max(20).parse(value)
+  const parsed = AutomationActionInputSchema.array().max(MAX_AUTOMATION_ACTION_NODES).parse(value)
   const runtimeActions = parsed.map(ensureRuntimeAutomationAction)
   const flattened = flattenAutomationActionTree(runtimeActions)
-  if (flattened.length > 20) throw new Error("Automation run contains more than 20 action nodes.")
+  if (flattened.length > MAX_AUTOMATION_ACTION_NODES) {
+    throw new Error(`Automation run contains more than ${MAX_AUTOMATION_ACTION_NODES} action nodes.`)
+  }
   if (new Set(flattened.map((item) => item.action.nodeKey)).size !== flattened.length) {
     throw new Error("Automation run contains duplicate action node keys.")
   }
+  const validatePaths = (pathActions: RuntimeAutomationAction[], depth: number) => {
+    for (const [index, action] of pathActions.entries()) {
+      if ((action.type === "IF_ELSE" || action.type === "SPLIT") && index !== pathActions.length - 1) {
+        throw new Error(`${action.type === "SPLIT" ? "Split" : "If/Else"} must be the final action in its saved path.`)
+      }
+      if (action.type !== "IF_ELSE" && action.type !== "SPLIT") continue
+      if (depth >= 3) throw new Error("Split and If/Else can be nested up to three levels.")
+      const paths = action.type === "IF_ELSE" ? action.ifElseConfig.branches : action.splitConfig.routes
+      const routeKeys = paths.map((path) => path.branchKey)
+      const routeNames = paths.map((path) => path.name.trim().toLocaleLowerCase())
+      if (new Set(routeKeys).size !== routeKeys.length || new Set(routeNames).size !== routeNames.length) {
+        throw new Error("Saved automation routes must have unique keys and names.")
+      }
+      if (action.type === "SPLIT") {
+        const total = action.splitConfig.routes.reduce((sum, route) => sum + route.percentage, 0)
+        if (total !== 100) throw new Error("Saved Split route percentages must total 100%.")
+      }
+      for (const path of paths) validatePaths(path.actions, depth + 1)
+    }
+  }
+  validatePaths(runtimeActions, 0)
   return runtimeActions
 }
 
@@ -2640,17 +2789,48 @@ export function selectedAutomationActionSteps(
       const step = flatByKey.get(action.nodeKey)
       if (!step) continue
       selected.push(step)
-      if (action.type !== "IF_ELSE") continue
+      if (action.type !== "IF_ELSE" && action.type !== "SPLIT") continue
       const decision = decisions[action.nodeKey]
       if (!decision) return
-      const branch = action.ifElseConfig.branches.find((candidate) => candidate.branchKey === decision.branchKey)
-      if (!branch || branch.isDefault) return
-      visit(branch.actions)
+      if (action.type === "IF_ELSE") {
+        const branch = action.ifElseConfig.branches.find((candidate) => candidate.branchKey === decision.branchKey)
+        if (!branch || branch.isDefault) return
+        visit(branch.actions)
+      } else {
+        const route = action.splitConfig.routes.find((candidate) => candidate.branchKey === decision.branchKey)
+        if (!route) return
+        visit(route.actions)
+      }
       return
     }
   }
   visit(actions)
   return selected
+}
+
+export function automationSplitBucket(runId: string, nodeKey: string) {
+  const digest = createHash("sha256").update(`${runId}:${nodeKey}`).digest()
+  return digest.readUInt32BE(0) % 100 + 1
+}
+
+export function selectAutomationSplitRoute(
+  action: Extract<RuntimeAutomationAction, { type: "SPLIT" }>,
+  runId: string,
+) {
+  const total = action.splitConfig.routes.reduce((sum, route) => sum + route.percentage, 0)
+  if (total !== 100 || action.splitConfig.routes.length < 2) {
+    throw new Error("The saved Split routes are invalid and must total 100%.")
+  }
+  const bucket = automationSplitBucket(runId, action.nodeKey)
+  let boundary = 0
+  for (const route of action.splitConfig.routes) {
+    if (!Number.isInteger(route.percentage) || route.percentage < 1 || route.percentage > 99) {
+      throw new Error("The saved Split route percentages are invalid.")
+    }
+    boundary += route.percentage
+    if (bucket <= boundary) return route
+  }
+  throw new Error("The saved Split routes could not select a destination.")
 }
 
 type AutomationOpportunityEventContext = {
@@ -3082,6 +3262,93 @@ async function executeBranchedAutomationSegmentTx(
       }
     }
 
+    if (action.type === "SPLIT") {
+      try {
+        const savedDecision = branchDecisions[action.nodeKey]
+        const selectedRoute = savedDecision
+          ? action.splitConfig.routes.find((route) => route.branchKey === savedDecision.branchKey)
+          : selectAutomationSplitRoute(action, run.id)
+        if (!selectedRoute) {
+          throw new Error("The saved Split route decision is no longer available in this pinned run.")
+        }
+        branchDecisions[action.nodeKey] = {
+          branchKey: selectedRoute.branchKey,
+          branchName: selectedRoute.name,
+          decidedAt: now.toISOString(),
+        }
+        logs.push(actionLog(
+          base,
+          action,
+          step.nodeOrder - 1,
+          "EXECUTED",
+          "ROUTE_SELECTED",
+          `Selected route “${selectedRoute.name}” (${selectedRoute.percentage}%).`,
+          undefined,
+          step,
+        ))
+
+        const flattenedActions = flattenAutomationActionTree(actions)
+        for (const route of action.splitConfig.routes) {
+          if (route.branchKey === selectedRoute.branchKey) continue
+          const skippedPath = [
+            ...step.branchPath,
+            { nodeKey: action.nodeKey, branchKey: route.branchKey, branchName: route.name },
+          ]
+          for (const skipped of flattenAutomationActionTree(route.actions)) {
+            logs.push(actionLog(
+              base,
+              skipped.action,
+              skipped.nodeOrder - 1,
+              "SKIPPED",
+              "ROUTE_NOT_SELECTED",
+              `Skipped because route “${route.name}” was not selected.`,
+              undefined,
+              {
+                nodeOrder: flattenedActions.find((item) => item.action.nodeKey === skipped.action.nodeKey)?.nodeOrder ?? skipped.nodeOrder,
+                branchPath: [...skippedPath, ...skipped.branchPath],
+              },
+            ))
+          }
+        }
+
+        steps = selectedAutomationActionSteps(actions, branchDecisions)
+        index = steps.findIndex((candidate) => candidate.action.nodeKey === action.nodeKey) + 1
+        continue
+      } catch (error) {
+        const executionError = error instanceof AutomationExecutionError
+          ? error
+          : new AutomationExecutionError({
+              automationId: run.automationId,
+              automationName: run.automationName,
+              actionIndex: step.nodeOrder - 1,
+              contactId: run.contactId,
+              message: error instanceof Error ? error.message : "The Split route could not be selected.",
+            })
+        const failureLogs = branchFailureLogs(base, steps, segmentStartIndex, index, logs, executionError.message)
+        const loggedKeys = new Set(failureLogs.map((log) => log.nodeKey))
+        for (const descendant of flattenAutomationActionTree(actions)) {
+          if (
+            loggedKeys.has(descendant.action.nodeKey) ||
+            !descendant.branchPath.some((entry) => entry.nodeKey === action.nodeKey)
+          ) continue
+          failureLogs.push(actionLog(
+            base,
+            descendant.action,
+            descendant.nodeOrder - 1,
+            "SKIPPED",
+            "PREVIOUS_ACTION_FAILED",
+            "Skipped because the Split route could not be selected.",
+            undefined,
+            descendant,
+          ))
+        }
+        executionError.nodeExecutions = failureLogs.sort((left, right) => left.nodeOrder - right.nodeOrder)
+        executionError.branchDecisions = { ...branchDecisions }
+        executionError.cursorPath = { nextNodeKey: action.nodeKey }
+        throw executionError
+      }
+    }
+
     if (action.type === "WAIT") {
       const resumeAt = calculateWaitAt(action.waitConfig, now)
       if (resumeAt.getTime() > now.getTime()) {
@@ -3274,7 +3541,11 @@ export async function executeAutomationSegmentTx(
     occurredAt?: Date
   },
 ) {
-  if (params.actions.some((action) => action.type === "IF_ELSE") || params.run.cursorPath) {
+  if (
+    flattenAutomationActionTree(params.actions).some((step) =>
+      step.action.type === "IF_ELSE" || step.action.type === "SPLIT"
+    ) || params.run.cursorPath
+  ) {
     return executeBranchedAutomationSegmentTx(prismaTx, params)
   }
   const { run, actions, catalog, startIndex } = params
@@ -3882,7 +4153,9 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
     eventSource: run.eventSource,
     occurredAt: now,
   } satisfies Omit<AutomationNodeLogData, "id" | "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
-  const branchedSteps = actions.some((action) => action.type === "IF_ELSE")
+  const branchedSteps = flattenAutomationActionTree(actions).some((step) =>
+    step.action.type === "IF_ELSE" || step.action.type === "SPLIT"
+  )
     ? selectedAutomationActionSteps(actions, normalizeBranchDecisions(run.branchDecisions))
     : []
   const cursorRecord = run.cursorPath && typeof run.cursorPath === "object" && !Array.isArray(run.cursorPath)

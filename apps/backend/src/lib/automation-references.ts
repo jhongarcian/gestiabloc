@@ -125,7 +125,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "IF_ELSE"] },
+          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "IF_ELSE", "SPLIT"] },
         },
       },
     },
@@ -148,19 +148,24 @@ export async function findEnabledAutomationReference(
           textFormatterConfig: true,
           mathOperationConfig: true,
           ifElseConfig: true,
+          splitConfig: true,
         },
       },
     },
   })
 
   const nestedActions = (actions: any[]): any[] => actions.flatMap((action) => {
-    if (action.type !== "IF_ELSE") return [action]
-    const config = action.ifElseConfig && typeof action.ifElseConfig === "object"
-      ? action.ifElseConfig as { branches?: Array<{ conditions?: any[]; actions?: any[] }> }
-      : null
+    if (action.type !== "IF_ELSE" && action.type !== "SPLIT") return [action]
+    const paths: Array<{ actions?: any[] }> = action.type === "IF_ELSE"
+      ? action.ifElseConfig && typeof action.ifElseConfig === "object"
+        ? (action.ifElseConfig as { branches?: Array<{ actions?: any[] }> }).branches ?? []
+        : []
+      : action.splitConfig && typeof action.splitConfig === "object"
+        ? (action.splitConfig as { routes?: Array<{ actions?: any[] }> }).routes ?? []
+        : []
     return [
       action,
-      ...(config?.branches ?? []).flatMap((branch) => nestedActions(Array.isArray(branch.actions) ? branch.actions : [])),
+      ...paths.flatMap((branch) => nestedActions(Array.isArray(branch.actions) ? branch.actions : [])),
     ]
   })
 

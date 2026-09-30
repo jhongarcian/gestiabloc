@@ -138,6 +138,7 @@ function serializeAutomation(record: any) {
         textFormatterConfig: action.textFormatterConfig,
         mathOperationConfig: action.mathOperationConfig,
         ifElseConfig: action.ifElseConfig,
+        splitConfig: action.splitConfig,
       }
     }),
     lastExecution: record.executions?.[0]
