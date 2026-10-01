@@ -101,6 +101,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
+import { serializeAutomationAction } from "@/lib/automation-action-payload"
 import {
   ifElseWrapIssue,
   MAX_AUTOMATION_ACTION_NODES,
@@ -248,43 +249,6 @@ function flattenDraftActions(actions: AutomationAction[]) {
   }
   visit(actions)
   return flattened
-}
-
-function serializeAutomationAction(action: AutomationAction): AutomationAction {
-  return {
-    nodeKey: action.nodeKey,
-    type: action.type,
-    customFieldUpdates: action.customFieldUpdates,
-    statusConfigId: action.statusConfigId,
-    assignedUserId: action.assignedUserId,
-    tagId: action.tagId,
-    waitConfig: action.waitConfig,
-    noteTitle: action.noteTitle,
-    noteBody: action.noteBody,
-    taskConfig: action.taskConfig,
-    dateTimeFormatterConfig: action.dateTimeFormatterConfig,
-    numberFormatterConfig: action.numberFormatterConfig,
-    textFormatterConfig: action.textFormatterConfig,
-    mathOperationConfig: action.mathOperationConfig,
-    ifElseConfig: action.ifElseConfig
-      ? {
-          ...action.ifElseConfig,
-          branches: action.ifElseConfig.branches.map((branch) => ({
-            ...branch,
-            actions: branch.actions.map(serializeAutomationAction),
-          })),
-        }
-      : null,
-    splitConfig: action.splitConfig
-      ? {
-          ...action.splitConfig,
-          routes: action.splitConfig.routes.map((route) => ({
-            ...route,
-            actions: route.actions.map(serializeAutomationAction),
-          })),
-        }
-      : null,
-  }
 }
 
 function draftSnapshot(draft: Draft) {

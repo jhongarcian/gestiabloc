@@ -36,9 +36,13 @@ export type AutomationFlowDraft = {
 }
 
 const FLOW_CENTER_X = 308
+const FLOW_SIDE_PADDING = 80
 const CARD_WIDTH = 256
 const ADD_NODE_WIDTH = 40
-const CARD_X = FLOW_CENTER_X - CARD_WIDTH / 2
+const BRANCH_HORIZONTAL_GAP = 80
+const BRANCH_TO_PATH_STEP = 105
+const COMPLETE_AFTER_ADD_STEP = 105
+const COMPLETE_AFTER_CARD_STEP = 125
 
 const CONTACT_ACTION_TYPES = new Set<AutomationAction["type"]>([
   "UPDATE_CONTACT_CUSTOM_FIELDS",
@@ -52,6 +56,55 @@ const CONTACT_ACTION_TYPES = new Set<AutomationAction["type"]>([
 
 function actionVisualGroup(type: AutomationAction["type"]): NonNullable<AutomationFlowNodeData["actionGroup"]> {
   return CONTACT_ACTION_TYPES.has(type) ? "CONTACT" : "INTERNAL"
+}
+
+type AutomationGraphRoutingBranch = {
+  branchKey: string
+  name: string
+  actions: AutomationAction[]
+  isTerminal: boolean
+  subtitle: string
+}
+
+function routingBranchesForAction(action: AutomationAction): AutomationGraphRoutingBranch[] | null {
+  if (action.type === "IF_ELSE" && action.ifElseConfig) {
+    return action.ifElseConfig.branches.map((branch, index) => ({
+      branchKey: branch.branchKey ?? `branch-${index}`,
+      name: branch.name,
+      actions: branch.actions,
+      isTerminal: branch.isDefault,
+      subtitle: branch.isDefault
+        ? "Default · no actions"
+        : branch.matchMode === "ALL" ? "All conditions" : "Any condition",
+    }))
+  }
+  if (action.type === "SPLIT" && action.splitConfig) {
+    return action.splitConfig.routes.map((route, index) => ({
+      branchKey: route.branchKey ?? `route-${index}`,
+      name: route.name,
+      actions: route.actions,
+      isTerminal: false,
+      subtitle: `${route.percentage}% of runs`,
+    }))
+  }
+  return null
+}
+
+function automationPathWidth(actions: AutomationAction[]): number {
+  for (const action of actions) {
+    const branches = routingBranchesForAction(action)
+    if (!branches || branches.length === 0) continue
+    const branchWidths = branches.map((branch) =>
+      Math.max(CARD_WIDTH, branch.isTerminal ? CARD_WIDTH : automationPathWidth(branch.actions))
+    )
+    return branchWidths.reduce((total, width) => total + width, 0) +
+      BRANCH_HORIZONTAL_GAP * Math.max(0, branchWidths.length - 1)
+  }
+  return CARD_WIDTH
+}
+
+function graphPathKey(path: AutomationGraphBranchPath) {
+  return path.map((part) => `${part.routingNodeKey}-${part.branchKey}`).join("-") || "root"
 }
 
 function waitUnitLabel(amount: number, unit: string) {
@@ -110,6 +163,8 @@ export function buildAutomationFlowGraph(
 ) {
   const pipeline = catalog?.pipelines.find((item) => item.id === draft.pipelineId)
   const target = pipeline?.stages.find((item) => item.id === draft.targetStageId)
+  const rootWidth = automationPathWidth(draft.actions)
+  const rootCenterX = Math.max(FLOW_CENTER_X, FLOW_SIDE_PADDING + rootWidth / 2)
   const triggerSubtitle =
     draft.triggerType === null
       ? "Click to choose what starts this automation"
@@ -120,7 +175,7 @@ export function buildAutomationFlowGraph(
     {
       id: "trigger",
       type: "automationNode",
-      position: { x: CARD_X, y: 30 },
+      position: { x: rootCenterX - CARD_WIDTH / 2, y: 30 },
       data: {
         kind: "trigger",
         label:
@@ -135,8 +190,6 @@ export function buildAutomationFlowGraph(
     },
   ]
   const edges: Edge[] = []
-  const endpoints: Array<{ id: string; x: number; y: number }> = []
-  let maximumY = 30
 
   const actionPresentation = (action: AutomationAction, actionNumber: number) => {
     const waitConfig = action.type === "WAIT" ? action.waitConfig : null
@@ -202,6 +255,8 @@ export function buildAutomationFlowGraph(
     path: AutomationGraphBranchPath,
   ) => {
     let previousId = sourceId
+    let previousNodeY = startY
+    let previousNodeKind: "add" | "action" = "add"
     let y = startY
     const endsWithTerminal = actions.at(-1)?.type === "DELETE_CONTACT" ||
       actions.at(-1)?.type === "IF_ELSE" ||
@@ -209,7 +264,7 @@ export function buildAutomationFlowGraph(
 
     for (let index = 0; index <= actions.length; index += 1) {
       if (index === actions.length && endsWithTerminal) break
-      const pathKey = path.map((part) => `${part.routingNodeKey}-${part.branchKey}`).join("-") || "root"
+      const pathKey = graphPathKey(path)
       const addId = path.length === 0 ? `add-${index}` : `add-${pathKey}-${index}`
       nodes.push({
         id: addId,
@@ -219,7 +274,8 @@ export function buildAutomationFlowGraph(
       })
       edges.push({ id: `${previousId}-${addId}`, source: previousId, target: addId, type: "straight" })
       previousId = addId
-      maximumY = Math.max(maximumY, y)
+      previousNodeY = y
+      previousNodeKind = "add"
       y += 85
 
       const action = actions[index]
@@ -245,38 +301,27 @@ export function buildAutomationFlowGraph(
       })
       edges.push({ id: `${previousId}-${actionId}`, source: previousId, target: actionId, type: "straight" })
       previousId = actionId
-      maximumY = Math.max(maximumY, y)
+      previousNodeY = y
+      previousNodeKind = "action"
       y += 145
 
-      if (
-        (action.type !== "IF_ELSE" || !action.ifElseConfig) &&
-        (action.type !== "SPLIT" || !action.splitConfig)
-      ) continue
-      const branches = action.type === "IF_ELSE"
-        ? action.ifElseConfig!.branches.map((branch) => ({
-            branchKey: branch.branchKey,
-            name: branch.name,
-            actions: branch.actions,
-            isTerminal: branch.isDefault,
-            subtitle: branch.isDefault
-              ? "Default · no actions"
-              : branch.matchMode === "ALL" ? "All conditions" : "Any condition",
-          }))
-        : action.splitConfig!.routes.map((route) => ({
-            branchKey: route.branchKey,
-            name: route.name,
-            actions: route.actions,
-            isTerminal: false,
-            subtitle: `${route.percentage}% of runs`,
-          }))
-      const gap = branches.length <= 2 ? 360 : 320
-      const firstX = centerX - ((branches.length - 1) * gap) / 2
+      const branches = routingBranchesForAction(action)
+      if (!branches || branches.length === 0) continue
+      const branchWidths = branches.map((branch) =>
+        Math.max(CARD_WIDTH, branch.isTerminal ? CARD_WIDTH : automationPathWidth(branch.actions))
+      )
+      const combinedWidth = branchWidths.reduce((total, width) => total + width, 0) +
+        BRANCH_HORIZONTAL_GAP * Math.max(0, branchWidths.length - 1)
+      let branchLeft = centerX - combinedWidth / 2
       branches.forEach((branch, branchIndex) => {
-        const branchX = firstX + branchIndex * gap
-        const branchId = `branch-${action.nodeKey}-${branch.branchKey ?? branchIndex}`
+        const branchWidth = branchWidths[branchIndex] ?? CARD_WIDTH
+        const branchX = branchLeft + branchWidth / 2
+        branchLeft += branchWidth + BRANCH_HORIZONTAL_GAP
+        const routingNodeKey = action.nodeKey ?? actionId
+        const branchId = `branch-${routingNodeKey}-${branch.branchKey}`
         const branchPath = [
           ...path,
-          { routingNodeKey: action.nodeKey ?? actionId, branchKey: branch.branchKey ?? String(branchIndex) },
+          { routingNodeKey, branchKey: branch.branchKey },
         ]
         nodes.push({
           id: branchId,
@@ -294,39 +339,56 @@ export function buildAutomationFlowGraph(
           target: branchId,
           type: "step",
         })
-        maximumY = Math.max(maximumY, y)
         if (branch.isTerminal) {
-          endpoints.push({ id: branchId, x: branchX, y })
+          const completeId = `complete-${graphPathKey(branchPath)}`
+          const completeY = y + COMPLETE_AFTER_CARD_STEP
+          nodes.push({
+            id: completeId,
+            type: "automationNode",
+            position: { x: branchX - CARD_WIDTH / 2, y: completeY },
+            data: {
+              kind: "complete",
+              label: "Complete",
+              subtitle: "All actions completed",
+            },
+          })
+          edges.push({
+            id: `${branchId}-${completeId}`,
+            source: branchId,
+            target: completeId,
+            type: "straight",
+          })
         } else {
-          renderPath(branch.actions, branchId, branchX, y + 105, branchPath)
+          renderPath(branch.actions, branchId, branchX, y + BRANCH_TO_PATH_STEP, branchPath)
         }
       })
       return
     }
 
-    endpoints.push({ id: previousId, x: centerX, y: Math.max(startY, y - 85) })
-  }
-
-  renderPath(draft.actions, "trigger", FLOW_CENTER_X, 180, [])
-  const endsWithDelete = draft.actions.at(-1)?.type === "DELETE_CONTACT"
-  const completeY = Math.max(maximumY + 165, ...endpoints.map((endpoint) => endpoint.y + 165))
-  nodes.push({
-    id: "complete",
-    type: "automationNode",
-    position: { x: CARD_X, y: completeY },
-    data: {
-      kind: "complete",
-      label: "Complete",
-      subtitle: endsWithDelete ? "Contact deleted" : "All actions completed",
-    },
-  })
-  for (const endpoint of endpoints) {
+    const completeId = path.length === 0 ? "complete" : `complete-${graphPathKey(path)}`
+    const completeY = previousNodeY + (
+      previousNodeKind === "action" ? COMPLETE_AFTER_CARD_STEP : COMPLETE_AFTER_ADD_STEP
+    )
+    nodes.push({
+      id: completeId,
+      type: "automationNode",
+      position: { x: centerX - CARD_WIDTH / 2, y: completeY },
+      data: {
+        kind: "complete",
+        label: "Complete",
+        subtitle: actions.at(-1)?.type === "DELETE_CONTACT"
+          ? "Contact deleted"
+          : "All actions completed",
+      },
+    })
     edges.push({
-      id: `${endpoint.id}-complete`,
-      source: endpoint.id,
-      target: "complete",
-      type: endpoints.length > 1 ? "step" : "straight",
+      id: `${previousId}-${completeId}`,
+      source: previousId,
+      target: completeId,
+      type: "straight",
     })
   }
+
+  renderPath(draft.actions, "trigger", rootCenterX, 180, [])
   return { nodes, edges }
 }

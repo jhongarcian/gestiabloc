@@ -447,6 +447,23 @@ export type AutomationActionInput =
   | AutomationIfElseActionInput
   | AutomationSplitActionInput
 
+const legacyRoutingActionNullFields = {
+  customFieldId: z.null().optional(),
+  customFieldUpdates: z.null().optional(),
+  statusConfigId: z.null().optional(),
+  assignedUserId: z.null().optional(),
+  tagId: z.null().optional(),
+  value: z.null().optional(),
+  waitConfig: z.null().optional(),
+  noteTitle: z.null().optional(),
+  noteBody: z.null().optional(),
+  taskConfig: z.null().optional(),
+  dateTimeFormatterConfig: z.null().optional(),
+  numberFormatterConfig: z.null().optional(),
+  textFormatterConfig: z.null().optional(),
+  mathOperationConfig: z.null().optional(),
+}
+
 const AutomationIfElseBranchSchema: z.ZodType<AutomationIfElseBranchInput> = z.lazy(() => z.object({
   branchKey: z.string().uuid().optional(),
   name: z.string().trim().min(1).max(120),
@@ -466,16 +483,20 @@ const AutomationSplitRouteSchema: z.ZodType<AutomationSplitRouteInput> = z.lazy(
 export const AutomationActionInputSchema: z.ZodType<AutomationActionInput> = z.lazy(() => z.union([
   NonBranchAutomationActionInputSchema,
   z.object({
+    ...legacyRoutingActionNullFields,
     type: z.literal("IF_ELSE"),
     nodeKey: actionNodeKeySchema,
+    splitConfig: z.null().optional(),
     ifElseConfig: z.object({
       actionName: z.string().trim().min(1).max(120),
       branches: z.array(AutomationIfElseBranchSchema).min(2).max(20),
     }).strict(),
   }).strict(),
   z.object({
+    ...legacyRoutingActionNullFields,
     type: z.literal("SPLIT"),
     nodeKey: actionNodeKeySchema,
+    ifElseConfig: z.null().optional(),
     splitConfig: z.object({
       actionName: z.string().trim().min(1).max(120),
       routes: z.array(AutomationSplitRouteSchema).min(2).max(20),

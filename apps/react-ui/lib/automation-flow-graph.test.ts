@@ -428,6 +428,13 @@ describe("buildAutomationFlowGraph", () => {
     assert.ok(graph.nodes.some((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000102"))
     assert.equal(graph.nodes.some((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000104"), false)
     assert.ok(graph.edges.some((edge) => edge.source === "action-00000000-0000-4000-8000-000000000101" && edge.type === "step"))
+    const defaultNode = graph.nodes.find((node) => node.data.kind === "branch" && node.data.label === "Default")
+    assert.ok(graph.edges.some((edge) =>
+      edge.source === defaultNode?.id &&
+      graph.nodes.find((node) => node.id === edge.target)?.data.kind === "complete"
+    ))
+    assert.equal(graph.nodes.filter((node) => node.data.kind === "complete").length, 2)
+    assert.equal(graph.nodes.some((node) => node.id === "complete"), false)
   })
 
   test("renders percentage Split routes and keeps empty control routes editable", () => {
@@ -479,5 +486,132 @@ describe("buildAutomationFlowGraph", () => {
     assert.ok(graph.edges.some((edge) =>
       edge.source === "action-00000000-0000-4000-8000-000000000201" && edge.type === "step"
     ))
+    const controlAdd = graph.nodes.find((node) =>
+      node.data.kind === "add" &&
+      node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000204"
+    )
+    assert.ok(graph.edges.some((edge) =>
+      edge.source === controlAdd?.id &&
+      graph.nodes.find((node) => node.id === edge.target)?.data.kind === "complete"
+    ))
+    assert.equal(graph.nodes.filter((node) => node.data.kind === "complete").length, 2)
+  })
+
+  test("reserves nested subtree width and completes every terminal Split and If/Else leaf locally", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          type: "SPLIT",
+          nodeKey: "split-root",
+          splitConfig: {
+            actionName: "Split",
+            routes: [
+              {
+                branchKey: "route-1",
+                name: "Route 1",
+                percentage: 50,
+                actions: [
+                  { type: "WAIT", nodeKey: "wait-1", waitConfig: { mode: "DURATION", amount: 1, unit: "MINUTES" } },
+                  { type: "ADD_CONTACT_NOTE", nodeKey: "note-1", noteTitle: "Route 1", noteBody: "Route 1" },
+                ],
+              },
+              {
+                branchKey: "route-2",
+                name: "Route 2",
+                percentage: 50,
+                actions: [
+                  { type: "WAIT", nodeKey: "wait-2", waitConfig: { mode: "DURATION", amount: 1, unit: "MINUTES" } },
+                  { type: "ADD_CONTACT_NOTE", nodeKey: "note-2", noteTitle: "Route 2", noteBody: "Route 2" },
+                  {
+                    type: "IF_ELSE",
+                    nodeKey: "if-route-2",
+                    ifElseConfig: {
+                      actionName: "If/Else",
+                      branches: [
+                        {
+                          branchKey: "branch-1",
+                          name: "Branch 1",
+                          isDefault: false,
+                          matchMode: "ALL",
+                          conditions: [],
+                          actions: [{ type: "SET_CONTACT_STATUS", nodeKey: "status-1", statusConfigId: "active" }],
+                        },
+                        {
+                          branchKey: "branch-2",
+                          name: "Branch 2",
+                          isDefault: false,
+                          matchMode: "ALL",
+                          conditions: [],
+                          actions: [{ type: "DELETE_CONTACT", nodeKey: "delete-2" }],
+                        },
+                        {
+                          branchKey: "default",
+                          name: "Default",
+                          isDefault: true,
+                          matchMode: "ALL",
+                          conditions: [],
+                          actions: [],
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const completeNodes = graph.nodes.filter((node) => node.data.kind === "complete")
+    assert.equal(completeNodes.length, 4)
+    assert.equal(graph.nodes.some((node) => node.id === "complete"), false)
+    assert.equal(new Set(completeNodes.map((node) => node.id)).size, completeNodes.length)
+    for (const completeNode of completeNodes) {
+      assert.equal(graph.edges.filter((edge) => edge.target === completeNode.id).length, 1)
+    }
+    const deleteCompleteEdge = graph.edges.find((edge) => edge.source === "action-delete-2")
+    assert.equal(
+      graph.nodes.find((node) => node.id === deleteCompleteEdge?.target)?.data.subtitle,
+      "Contact deleted",
+    )
+
+    const route1 = graph.nodes.find((node) => node.id === "branch-split-root-route-1")
+    const route2 = graph.nodes.find((node) => node.id === "branch-split-root-route-2")
+    const nestedIf = graph.nodes.find((node) => node.id === "action-if-route-2")
+    const nestedBranch1 = graph.nodes.find((node) => node.id === "branch-if-route-2-branch-1")
+    assert.ok(route1)
+    assert.ok(route2)
+    assert.ok(nestedIf)
+    assert.ok(nestedBranch1)
+    assert.equal(route2.position.x, nestedIf.position.x)
+    assert.ok(route1.position.x + 256 + 80 <= nestedBranch1.position.x)
+
+    const boxes = graph.nodes.map((node) => ({
+      id: node.id,
+      x: node.position.x,
+      y: node.position.y,
+      width: node.data.kind === "add" ? 40 : 256,
+      height: node.data.kind === "add" ? 40 : 70,
+    }))
+    for (let leftIndex = 0; leftIndex < boxes.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < boxes.length; rightIndex += 1) {
+        const left = boxes[leftIndex]!
+        const right = boxes[rightIndex]!
+        const overlapsHorizontally = left.x < right.x + right.width && left.x + left.width > right.x
+        const overlapsVertically = left.y < right.y + right.height && left.y + left.height > right.y
+        assert.equal(
+          overlapsHorizontally && overlapsVertically,
+          false,
+          `${left.id} overlaps ${right.id}`,
+        )
+      }
+    }
   })
 })

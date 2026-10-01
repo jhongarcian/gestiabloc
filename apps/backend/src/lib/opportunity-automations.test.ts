@@ -83,6 +83,80 @@ describe("AutomationUpsertSchema", () => {
     )
   })
 
+  test("accepts legacy null routing fields on Split and If/Else actions", () => {
+    const result = AutomationUpsertSchema.safeParse({
+      name: "Nested routing",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{
+        type: "SPLIT",
+        nodeKey: "00000000-0000-4000-8000-000000000001",
+        customFieldUpdates: null,
+        statusConfigId: null,
+        assignedUserId: null,
+        tagId: null,
+        waitConfig: null,
+        noteTitle: null,
+        noteBody: null,
+        taskConfig: null,
+        dateTimeFormatterConfig: null,
+        numberFormatterConfig: null,
+        textFormatterConfig: null,
+        mathOperationConfig: null,
+        ifElseConfig: null,
+        splitConfig: {
+          actionName: "Split",
+          routes: [
+            {
+              branchKey: "00000000-0000-4000-8000-000000000002",
+              name: "Route 1",
+              percentage: 50,
+              actions: [{
+                type: "IF_ELSE",
+                nodeKey: "00000000-0000-4000-8000-000000000003",
+                splitConfig: null,
+                ifElseConfig: {
+                  actionName: "If/Else",
+                  branches: [
+                    {
+                      branchKey: "00000000-0000-4000-8000-000000000004",
+                      name: "Branch 1",
+                      isDefault: false,
+                      matchMode: "ALL",
+                      conditions: [{
+                        source: "CONTACT_FIELD",
+                        fieldKey: "name",
+                        operator: "IS_NOT_EMPTY",
+                      }],
+                      actions: [{ type: "SET_CONTACT_STATUS", statusConfigId: "active" }],
+                    },
+                    {
+                      branchKey: "00000000-0000-4000-8000-000000000005",
+                      name: "Default",
+                      isDefault: true,
+                      matchMode: "ALL",
+                      conditions: [],
+                      actions: [],
+                    },
+                  ],
+                },
+              }],
+            },
+            {
+              branchKey: "00000000-0000-4000-8000-000000000006",
+              name: "Route 2",
+              percentage: 50,
+              actions: [],
+            },
+          ],
+        },
+      }],
+    })
+
+    assert.equal(result.success, true)
+  })
+
   test("accepts creation and stage-change trigger shapes", () => {
     const base = {
       name: "Qualified opportunity",
