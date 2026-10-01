@@ -1174,7 +1174,9 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
         } as const
         const automation = asynchronousAutomationEventsEnabled
           ? await queueOpportunityAutomationEvent(prismaTx, automationEvent)
-          : await executeOpportunityAutomations(prismaTx, automationEvent)
+          : await executeOpportunityAutomations(prismaTx, automationEvent, {
+              queueOpportunityEvent: queueOpportunityAutomationEvent,
+            })
         const opportunity = await prismaTx.contactOpportunity.findUnique({
           where: { tenantId_id: { tenantId, id: created.id } },
           select: opportunityCardSelect,
@@ -1361,7 +1363,9 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
           }
           const automation = asynchronousAutomationEventsEnabled
             ? await queueOpportunityAutomationEvent(prismaTx, event)
-            : await executeOpportunityAutomations(prismaTx, event)
+            : await executeOpportunityAutomations(prismaTx, event, {
+                queueOpportunityEvent: queueOpportunityAutomationEvent,
+              })
           const current = await prismaTx.contactOpportunity.findUnique({
             where: { tenantId_id: { tenantId, id: opportunityId } },
             select: opportunityCardSelect,

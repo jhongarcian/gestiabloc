@@ -5,10 +5,12 @@ import { formatDateTimeForDisplay } from "@/lib/date-time"
 import type { AutomationAction, AutomationCatalog, AutomationCondition, AutomationTriggerType } from "./automation-types"
 
 export type AutomationFlowNodeData = {
-  kind: "trigger" | "action" | "add" | "branch" | "complete"
+  kind: "trigger" | "action" | "add" | "branch" | "complete" | "route-bound"
   label: string
   subtitle?: string
   configured?: boolean
+  actionType?: AutomationAction["type"]
+  actionGroup?: "INTERNAL" | "OPPORTUNITY" | "CONTACT" | "COMMUNICATION"
   index?: number
   insertionIndex?: number
   actionNodeKey?: string
@@ -19,9 +21,18 @@ export type AutomationFlowNodeData = {
     state: "loading" | "ready" | "error" | "unsaved"
     onClick?: () => void
   }
+  goToSelection?: "source" | "eligible" | "hovered" | "invalid"
+  goToIssue?: string | null
+  onGoToUnlink?: () => void
 }
 
-export type AutomationGraphBranchPath = Array<{ ifElseNodeKey: string; branchKey: string }>
+export type AutomationGoToEdgeData = {
+  kind: "go-to"
+  laneX: number
+  highlighted?: boolean
+}
+
+export type AutomationGraphBranchPath = Array<{ routingNodeKey: string; branchKey: string }>
 
 export type AutomationWaitNodeBadge = NonNullable<AutomationFlowNodeData["waitBadge"]>
 
@@ -34,9 +45,82 @@ export type AutomationFlowDraft = {
 }
 
 const FLOW_CENTER_X = 308
+const FLOW_SIDE_PADDING = 80
 const CARD_WIDTH = 256
 const ADD_NODE_WIDTH = 40
-const CARD_X = FLOW_CENTER_X - CARD_WIDTH / 2
+const BRANCH_HORIZONTAL_GAP = 80
+const BRANCH_TO_PATH_STEP = 105
+const COMPLETE_AFTER_ADD_STEP = 105
+const COMPLETE_AFTER_CARD_STEP = 125
+
+const CONTACT_ACTION_TYPES = new Set<AutomationAction["type"]>([
+  "UPDATE_CONTACT_CUSTOM_FIELDS",
+  "SET_CONTACT_STATUS",
+  "SET_CONTACT_ASSIGNEE",
+  "CLEAR_CONTACT_ASSIGNEE",
+  "ADD_CONTACT_TAG",
+  "REMOVE_CONTACT_TAG",
+  "DELETE_CONTACT",
+])
+
+const OPPORTUNITY_ACTION_TYPES = new Set<AutomationAction["type"]>([
+  "UPDATE_OPPORTUNITY",
+])
+
+function actionVisualGroup(type: AutomationAction["type"]): NonNullable<AutomationFlowNodeData["actionGroup"]> {
+  if (CONTACT_ACTION_TYPES.has(type)) return "CONTACT"
+  if (OPPORTUNITY_ACTION_TYPES.has(type)) return "OPPORTUNITY"
+  return "INTERNAL"
+}
+
+type AutomationGraphRoutingBranch = {
+  branchKey: string
+  name: string
+  actions: AutomationAction[]
+  isTerminal: boolean
+  subtitle: string
+}
+
+function routingBranchesForAction(action: AutomationAction): AutomationGraphRoutingBranch[] | null {
+  if (action.type === "IF_ELSE" && action.ifElseConfig) {
+    return action.ifElseConfig.branches.map((branch, index) => ({
+      branchKey: branch.branchKey ?? `branch-${index}`,
+      name: branch.name,
+      actions: branch.actions,
+      isTerminal: branch.isDefault,
+      subtitle: branch.isDefault
+        ? "Default · no actions"
+        : branch.matchMode === "ALL" ? "All conditions" : "Any condition",
+    }))
+  }
+  if (action.type === "SPLIT" && action.splitConfig) {
+    return action.splitConfig.routes.map((route, index) => ({
+      branchKey: route.branchKey ?? `route-${index}`,
+      name: route.name,
+      actions: route.actions,
+      isTerminal: false,
+      subtitle: `${route.percentage}% of runs`,
+    }))
+  }
+  return null
+}
+
+function automationPathWidth(actions: AutomationAction[]): number {
+  for (const action of actions) {
+    const branches = routingBranchesForAction(action)
+    if (!branches || branches.length === 0) continue
+    const branchWidths = branches.map((branch) =>
+      Math.max(CARD_WIDTH, branch.isTerminal ? CARD_WIDTH : automationPathWidth(branch.actions))
+    )
+    return branchWidths.reduce((total, width) => total + width, 0) +
+      BRANCH_HORIZONTAL_GAP * Math.max(0, branchWidths.length - 1)
+  }
+  return CARD_WIDTH
+}
+
+function graphPathKey(path: AutomationGraphBranchPath) {
+  return path.map((part) => `${part.routingNodeKey}-${part.branchKey}`).join("-") || "root"
+}
 
 function waitUnitLabel(amount: number, unit: string) {
   const label = unit.toLocaleLowerCase()
@@ -94,6 +178,8 @@ export function buildAutomationFlowGraph(
 ) {
   const pipeline = catalog?.pipelines.find((item) => item.id === draft.pipelineId)
   const target = pipeline?.stages.find((item) => item.id === draft.targetStageId)
+  const rootWidth = automationPathWidth(draft.actions)
+  const rootCenterX = Math.max(FLOW_CENTER_X, FLOW_SIDE_PADDING + rootWidth / 2)
   const triggerSubtitle =
     draft.triggerType === null
       ? "Click to choose what starts this automation"
@@ -104,7 +190,7 @@ export function buildAutomationFlowGraph(
     {
       id: "trigger",
       type: "automationNode",
-      position: { x: CARD_X, y: 30 },
+      position: { x: rootCenterX - CARD_WIDTH / 2, y: 30 },
       data: {
         kind: "trigger",
         label:
@@ -119,8 +205,6 @@ export function buildAutomationFlowGraph(
     },
   ]
   const edges: Edge[] = []
-  const endpoints: Array<{ id: string; x: number; y: number }> = []
-  let maximumY = 30
 
   const actionPresentation = (action: AutomationAction, actionNumber: number) => {
     const waitConfig = action.type === "WAIT" ? action.waitConfig : null
@@ -157,18 +241,38 @@ export function buildAutomationFlowGraph(
           ? action.mathOperationConfig?.mode === "DATE"
             ? `${action.mathOperationConfig.operation === "ADD" ? "Add" : "Subtract"} ${action.mathOperationConfig.amount} ${action.mathOperationConfig.unit.toLocaleLowerCase()} → ${action.mathOperationConfig.outputKey}`
             : `${action.mathOperationConfig?.operation === "SUBTRACT" ? "Subtract" : action.mathOperationConfig?.operation === "MULTIPLY" ? "Multiply" : action.mathOperationConfig?.operation === "DIVIDE" ? "Divide" : "Add"} ${action.mathOperationConfig?.operand ?? ""} → ${action.mathOperationConfig?.outputKey || "value"}`
+        : action.type === "UPDATE_OPPORTUNITY"
+          ? `${action.opportunityConfig?.pipelineNameSnapshot || "Pipeline"} → ${action.opportunityConfig?.stageNameSnapshot || "Stage"} · ${
+              action.opportunityConfig?.resultMode === "KEEP_CURRENT"
+                ? "Keep current"
+                : action.opportunityConfig?.resultMode === "WON"
+                  ? "Won"
+                  : action.opportunityConfig?.resultMode === "LOST"
+                    ? "Lost"
+                    : "Open"
+            }`
         : action.type === "UPDATE_CONTACT_CUSTOM_FIELDS"
           ? `Update ${action.customFieldUpdates?.length ?? 0} field${action.customFieldUpdates?.length === 1 ? "" : "s"}`
           : action.type === "DELETE_CONTACT"
             ? "Remove from this account"
           : action.type === "IF_ELSE"
             ? `First match · ${Math.max(0, (action.ifElseConfig?.branches.length ?? 1) - 1)} branches`
+        : action.type === "SPLIT"
+            ? `Random · ${action.splitConfig?.routes.length ?? 0} routes`
+          : action.type === "GO_TO"
+            ? action.goToConfig?.targetNodeKey
+              ? "Route to selected action"
+              : "Choose a destination"
             : waitSubtitle ?? `Action ${actionNumber}`
     return {
       label: action.type === "FORMAT_TEXT"
         ? action.textFormatterConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "UPDATE_OPPORTUNITY"
+          ? action.opportunityConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "IF_ELSE"
           ? action.ifElseConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "SPLIT"
+          ? action.splitConfig?.actionName.trim() || actionLabels[action.type]
           : actionLabels[action.type],
       subtitle: actionSubtitle,
     }
@@ -182,12 +286,17 @@ export function buildAutomationFlowGraph(
     path: AutomationGraphBranchPath,
   ) => {
     let previousId = sourceId
+    let previousNodeY = startY
+    let previousNodeKind: "add" | "action" = "add"
     let y = startY
-    const endsWithTerminal = actions.at(-1)?.type === "DELETE_CONTACT" || actions.at(-1)?.type === "IF_ELSE"
+    const endsWithTerminal = actions.at(-1)?.type === "DELETE_CONTACT" ||
+      actions.at(-1)?.type === "IF_ELSE" ||
+      actions.at(-1)?.type === "SPLIT" ||
+      actions.at(-1)?.type === "GO_TO"
 
     for (let index = 0; index <= actions.length; index += 1) {
       if (index === actions.length && endsWithTerminal) break
-      const pathKey = path.map((part) => `${part.ifElseNodeKey}-${part.branchKey}`).join("-") || "root"
+      const pathKey = graphPathKey(path)
       const addId = path.length === 0 ? `add-${index}` : `add-${pathKey}-${index}`
       nodes.push({
         id: addId,
@@ -195,9 +304,10 @@ export function buildAutomationFlowGraph(
         position: { x: centerX - ADD_NODE_WIDTH / 2, y },
         data: { kind: "add", label: "Add action", insertionIndex: index, insertionPath: path },
       })
-      edges.push({ id: `${previousId}-${addId}`, source: previousId, target: addId, type: "straight" })
+      edges.push({ id: `${previousId}-${addId}`, source: previousId, target: addId, sourceHandle: "flow-source", targetHandle: "flow-target", type: "straight" })
       previousId = addId
-      maximumY = Math.max(maximumY, y)
+      previousNodeY = y
+      previousNodeKind = "add"
       y += 85
 
       const action = actions[index]
@@ -211,6 +321,8 @@ export function buildAutomationFlowGraph(
         data: {
           kind: "action",
           ...presentation,
+          actionType: action.type,
+          actionGroup: actionVisualGroup(action.type),
           index: path.length === 0 ? index : undefined,
           actionNodeKey: action.nodeKey,
           actionPath: path,
@@ -219,21 +331,29 @@ export function buildAutomationFlowGraph(
             : {}),
         },
       })
-      edges.push({ id: `${previousId}-${actionId}`, source: previousId, target: actionId, type: "straight" })
+      edges.push({ id: `${previousId}-${actionId}`, source: previousId, target: actionId, sourceHandle: "flow-source", targetHandle: "flow-target", type: "straight" })
       previousId = actionId
-      maximumY = Math.max(maximumY, y)
+      previousNodeY = y
+      previousNodeKind = "action"
       y += 145
 
-      if (action.type !== "IF_ELSE" || !action.ifElseConfig) continue
-      const branches = action.ifElseConfig.branches
-      const gap = branches.length <= 2 ? 360 : 320
-      const firstX = centerX - ((branches.length - 1) * gap) / 2
+      const branches = routingBranchesForAction(action)
+      if (!branches || branches.length === 0) continue
+      const branchWidths = branches.map((branch) =>
+        Math.max(CARD_WIDTH, branch.isTerminal ? CARD_WIDTH : automationPathWidth(branch.actions))
+      )
+      const combinedWidth = branchWidths.reduce((total, width) => total + width, 0) +
+        BRANCH_HORIZONTAL_GAP * Math.max(0, branchWidths.length - 1)
+      let branchLeft = centerX - combinedWidth / 2
       branches.forEach((branch, branchIndex) => {
-        const branchX = firstX + branchIndex * gap
-        const branchId = `branch-${action.nodeKey}-${branch.branchKey ?? branchIndex}`
+        const branchWidth = branchWidths[branchIndex] ?? CARD_WIDTH
+        const branchX = branchLeft + branchWidth / 2
+        branchLeft += branchWidth + BRANCH_HORIZONTAL_GAP
+        const routingNodeKey = action.nodeKey ?? actionId
+        const branchId = `branch-${routingNodeKey}-${branch.branchKey}`
         const branchPath = [
           ...path,
-          { ifElseNodeKey: action.nodeKey ?? actionId, branchKey: branch.branchKey ?? String(branchIndex) },
+          { routingNodeKey, branchKey: branch.branchKey },
         ]
         nodes.push({
           id: branchId,
@@ -242,49 +362,115 @@ export function buildAutomationFlowGraph(
           data: {
             kind: "branch",
             label: branch.name,
-            subtitle: branch.isDefault
-              ? "Default · no actions"
-              : branch.matchMode === "ALL" ? "All conditions" : "Any condition",
+            subtitle: branch.subtitle,
           },
         })
         edges.push({
           id: `${actionId}-${branchId}`,
           source: actionId,
           target: branchId,
+          sourceHandle: "flow-source",
+          targetHandle: "flow-target",
           type: "step",
         })
-        maximumY = Math.max(maximumY, y)
-        if (branch.isDefault) {
-          endpoints.push({ id: branchId, x: branchX, y })
+        if (branch.isTerminal) {
+          const completeId = `complete-${graphPathKey(branchPath)}`
+          const completeY = y + COMPLETE_AFTER_CARD_STEP
+          nodes.push({
+            id: completeId,
+            type: "automationNode",
+            position: { x: branchX - CARD_WIDTH / 2, y: completeY },
+            data: {
+              kind: "complete",
+              label: "Complete",
+              subtitle: "All actions completed",
+            },
+          })
+          edges.push({
+            id: `${branchId}-${completeId}`,
+            source: branchId,
+            target: completeId,
+            sourceHandle: "flow-source",
+            targetHandle: "flow-target",
+            type: "straight",
+          })
         } else {
-          renderPath(branch.actions, branchId, branchX, y + 105, branchPath)
+          renderPath(branch.actions, branchId, branchX, y + BRANCH_TO_PATH_STEP, branchPath)
         }
       })
       return
     }
 
-    endpoints.push({ id: previousId, x: centerX, y: Math.max(startY, y - 85) })
+    if (actions.at(-1)?.type === "GO_TO") return
+    const completeId = path.length === 0 ? "complete" : `complete-${graphPathKey(path)}`
+    const completeY = previousNodeY + (
+      previousNodeKind === "action" ? COMPLETE_AFTER_CARD_STEP : COMPLETE_AFTER_ADD_STEP
+    )
+    nodes.push({
+      id: completeId,
+      type: "automationNode",
+      position: { x: centerX - CARD_WIDTH / 2, y: completeY },
+      data: {
+        kind: "complete",
+        label: "Complete",
+        subtitle: actions.at(-1)?.type === "DELETE_CONTACT"
+          ? "Contact deleted"
+          : "All actions completed",
+      },
+    })
+    edges.push({
+      id: `${previousId}-${completeId}`,
+      source: previousId,
+      target: completeId,
+      sourceHandle: "flow-source",
+      targetHandle: "flow-target",
+      type: "straight",
+    })
   }
 
-  renderPath(draft.actions, "trigger", FLOW_CENTER_X, 180, [])
-  const endsWithDelete = draft.actions.at(-1)?.type === "DELETE_CONTACT"
-  const completeY = Math.max(maximumY + 165, ...endpoints.map((endpoint) => endpoint.y + 165))
-  nodes.push({
-    id: "complete",
-    type: "automationNode",
-    position: { x: CARD_X, y: completeY },
-    data: {
-      kind: "complete",
-      label: "Complete",
-      subtitle: endsWithDelete ? "Contact deleted" : "All actions completed",
-    },
-  })
-  for (const endpoint of endpoints) {
+  renderPath(draft.actions, "trigger", rootCenterX, 180, [])
+  const nodeByActionKey = new Map(
+    nodes.flatMap((node) => node.data.actionNodeKey ? [[node.data.actionNodeKey, node] as const] : []),
+  )
+  const minX = Math.min(...nodes.map((node) => node.position.x))
+  const maxX = Math.max(...nodes.map((node) => node.position.x + (node.data.kind === "add" ? ADD_NODE_WIDTH : CARD_WIDTH)))
+  let leftLane = minX - 90
+  let rightLane = maxX + 90
+  for (const action of draft.actions.flatMap(function flatten(action: AutomationAction): AutomationAction[] {
+    if (action.type === "IF_ELSE") {
+      return [action, ...(action.ifElseConfig?.branches.flatMap((branch) => branch.actions.flatMap(flatten)) ?? [])]
+    }
+    if (action.type === "SPLIT") {
+      return [action, ...(action.splitConfig?.routes.flatMap((route) => route.actions.flatMap(flatten)) ?? [])]
+    }
+    return [action]
+  })) {
+    if (action.type !== "GO_TO" || !action.nodeKey || !action.goToConfig?.targetNodeKey) continue
+    const sourceNode = nodeByActionKey.get(action.nodeKey)
+    const targetNode = nodeByActionKey.get(action.goToConfig.targetNodeKey)
+    if (!sourceNode || !targetNode) continue
+    const sourceCenterX = sourceNode.position.x + CARD_WIDTH / 2
+    const useLeftLane = sourceCenterX - minX <= maxX - sourceCenterX
+    const laneX = useLeftLane ? leftLane : rightLane
+    if (useLeftLane) leftLane -= 32
+    else rightLane += 32
     edges.push({
-      id: `${endpoint.id}-complete`,
-      source: endpoint.id,
-      target: "complete",
-      type: endpoints.length > 1 ? "step" : "straight",
+      id: `go-to-${action.nodeKey}-${action.goToConfig.targetNodeKey}`,
+      source: sourceNode.id,
+      target: targetNode.id,
+      sourceHandle: "go-to-source-bottom",
+      targetHandle: "go-to-target-top",
+      type: "goTo",
+      data: { kind: "go-to", laneX } satisfies AutomationGoToEdgeData,
+    })
+    nodes.push({
+      id: `go-to-bound-${action.nodeKey}`,
+      type: "automationNode",
+      position: { x: laneX, y: Math.min(sourceNode.position.y, targetNode.position.y) },
+      selectable: false,
+      focusable: false,
+      data: { kind: "route-bound", label: "" },
+      style: { width: 1, height: 1, opacity: 0, pointerEvents: "none" },
     })
   }
   return { nodes, edges }

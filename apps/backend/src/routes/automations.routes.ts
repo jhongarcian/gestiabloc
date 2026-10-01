@@ -7,6 +7,7 @@ import {
   AUTOMATION_CONTACT_UPDATE_FIELDS,
   AUTOMATION_OPERATORS,
   AutomationConfigurationError,
+  AutomationOpportunityConfigSchema,
   AutomationUpsertSchema,
   getAutomationOperatorsForFieldType,
   validateAutomationConfiguration,
@@ -89,6 +90,38 @@ const automationInclude = {
   executions: { orderBy: { createdAt: "desc" }, take: 1 },
 } as const
 
+function serializeOpportunityConfig(value: unknown) {
+  const parsed = AutomationOpportunityConfigSchema.safeParse(value)
+  return parsed.success ? parsed.data : value
+}
+
+function serializeEmbeddedAutomationAction(action: any): any {
+  return {
+    ...action,
+    opportunityConfig: action.type === "UPDATE_OPPORTUNITY"
+      ? serializeOpportunityConfig(action.opportunityConfig)
+      : action.opportunityConfig,
+    ifElseConfig: action.ifElseConfig
+      ? {
+          ...action.ifElseConfig,
+          branches: action.ifElseConfig.branches.map((branch: any) => ({
+            ...branch,
+            actions: branch.actions.map(serializeEmbeddedAutomationAction),
+          })),
+        }
+      : action.ifElseConfig,
+    splitConfig: action.splitConfig
+      ? {
+          ...action.splitConfig,
+          routes: action.splitConfig.routes.map((route: any) => ({
+            ...route,
+            actions: route.actions.map(serializeEmbeddedAutomationAction),
+          })),
+        }
+      : action.splitConfig,
+  }
+}
+
 function serializeAutomation(record: any) {
   return {
     id: record.id,
@@ -137,7 +170,16 @@ function serializeAutomation(record: any) {
         numberFormatterConfig: action.numberFormatterConfig,
         textFormatterConfig: action.textFormatterConfig,
         mathOperationConfig: action.mathOperationConfig,
-        ifElseConfig: action.ifElseConfig,
+        ifElseConfig: action.ifElseConfig
+          ? serializeEmbeddedAutomationAction({ ifElseConfig: action.ifElseConfig }).ifElseConfig
+          : action.ifElseConfig,
+        splitConfig: action.splitConfig
+          ? serializeEmbeddedAutomationAction({ splitConfig: action.splitConfig }).splitConfig
+          : action.splitConfig,
+        goToConfig: action.goToConfig,
+        opportunityConfig: action.type === "UPDATE_OPPORTUNITY"
+          ? serializeOpportunityConfig(action.opportunityConfig)
+          : action.opportunityConfig,
       }
     }),
     lastExecution: record.executions?.[0]

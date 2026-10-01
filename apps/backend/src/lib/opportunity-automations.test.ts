@@ -3,15 +3,368 @@ import { describe, test } from "node:test"
 
 import {
   AutomationUpsertSchema,
+  AutomationOpportunityConfigSchema,
   AutomationExecutionError,
+  automationSplitBucket,
   evaluateAutomationOperator,
+  executeAutomationSegmentTx,
   executeOpportunityAutomations,
   getAutomationOperatorsForFieldType,
   recordAutomationFailure,
   resumeDueAutomationRuns,
   deleteAutomationContactFileObjects,
+  validateAutomationGoToControlFlow,
   validateAutomationConfiguration,
 } from "./opportunity-automations.js"
+
+describe("validateAutomationGoToControlFlow", () => {
+  const split = (routes: Array<{ branchKey: string; name: string; actions: any[] }>) => ({
+    nodeKey: "split-root",
+    type: "SPLIT",
+    splitConfig: { actionName: "Split", routes: routes.map((route) => ({ ...route, percentage: 50 })) },
+  })
+
+  test("allows a terminal cross-route jump into the middle of another route", () => {
+    assert.doesNotThrow(() => validateAutomationGoToControlFlow([
+      split([
+        {
+          branchKey: "route-a",
+          name: "Route A",
+          actions: [{ nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "target" } }],
+        },
+        {
+          branchKey: "route-b",
+          name: "Route B",
+          actions: [
+            { nodeKey: "bypassed", type: "CLEAR_CONTACT_ASSIGNEE" },
+            { nodeKey: "target", type: "SET_CONTACT_STATUS" },
+          ],
+        },
+      ]),
+    ]))
+  })
+
+  test("rejects same-path backward jumps and multi-node cycles", () => {
+    assert.throws(
+      () => validateAutomationGoToControlFlow([
+        { nodeKey: "first", type: "CLEAR_CONTACT_ASSIGNEE" },
+        { nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "first" } },
+      ]),
+      (error: any) => error?.code === "AUTOMATION_FLOW_CYCLE",
+    )
+    assert.throws(
+      () => validateAutomationGoToControlFlow([
+        split([
+          { branchKey: "route-a", name: "Route A", actions: [{ nodeKey: "go-a", type: "GO_TO", goToConfig: { targetNodeKey: "go-b" } }] },
+          { branchKey: "route-b", name: "Route B", actions: [{ nodeKey: "go-b", type: "GO_TO", goToConfig: { targetNodeKey: "go-a" } }] },
+        ]),
+      ]),
+      (error: any) => error?.code === "AUTOMATION_FLOW_CYCLE",
+    )
+  })
+
+  test("rejects a jump that bypasses a required automation value", () => {
+    assert.throws(
+      () => validateAutomationGoToControlFlow([
+        split([
+          {
+            branchKey: "route-a",
+            name: "Route A",
+            actions: [{ nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "note" } }],
+          },
+          {
+            branchKey: "route-b",
+            name: "Route B",
+            actions: [
+              { nodeKey: "formatter", type: "FORMAT_TEXT", textFormatterConfig: { outputKey: "lead_name" } },
+              { nodeKey: "note", type: "ADD_CONTACT_NOTE", noteTitle: "Lead", noteBody: "{automation.lead_name}" },
+            ],
+          },
+        ]),
+      ]),
+      (error: any) => error?.code === "GO_TO_VALUE_UNAVAILABLE",
+    )
+  })
+})
+
+describe("Go To runtime", () => {
+  test("enters the exact destination and continues without executing earlier destination actions", async () => {
+    const runId = "run-go-to"
+    const splitNodeKey = "split-node"
+    const sourceRoute = {
+      branchKey: "source-route",
+      name: "Source route",
+      percentage: 50,
+      actions: [{ nodeKey: "go-node", type: "GO_TO" as const, goToConfig: { targetNodeKey: "target-node" } }],
+    }
+    const destinationRoute = {
+      branchKey: "destination-route",
+      name: "Destination route",
+      percentage: 50,
+      actions: [
+        { nodeKey: "bypassed-node", type: "CLEAR_CONTACT_ASSIGNEE" as const },
+        { nodeKey: "target-node", type: "CLEAR_CONTACT_ASSIGNEE" as const },
+        { nodeKey: "after-target-node", type: "CLEAR_CONTACT_ASSIGNEE" as const },
+      ],
+    }
+    const sourceFirst = automationSplitBucket(runId, splitNodeKey) <= 50
+    const actions = [{
+      nodeKey: splitNodeKey,
+      type: "SPLIT" as const,
+      splitConfig: {
+        actionName: "Split",
+        routes: sourceFirst ? [sourceRoute, destinationRoute] : [destinationRoute, sourceRoute],
+      },
+    }]
+    let contactUpdates = 0
+    let savedRun: Record<string, unknown> | null = null
+    const prismaTx = {
+      contact: { update: async () => { contactUpdates += 1 } },
+      automationRun: { update: async ({ data }: { data: Record<string, unknown> }) => { savedRun = data } },
+      automationExecution: { create: async () => undefined },
+    }
+    const emptyMap = new Map()
+    const result = await executeAutomationSegmentTx(prismaTx, {
+      run: {
+        id: runId,
+        tenantId: "tenant-1",
+        automationId: "automation-1",
+        automationName: "Go To test",
+        contactId: "contact-1",
+        contactName: "Taylor Reed",
+        actorUserId: "user-1",
+        opportunityId: "opportunity-1",
+        attemptId: "attempt-1",
+        eventSource: "OPPORTUNITY_CREATED",
+        triggerType: "OPPORTUNITY_CREATED",
+        sourceStageId: null,
+        targetStageId: null,
+        cursorIndex: 0,
+        cursorPath: null,
+        branchDecisions: {},
+        variables: {},
+      },
+      actions: actions as any,
+      startIndex: 0,
+      catalog: {
+        fieldMap: emptyMap,
+        fieldKeyMap: emptyMap,
+        activeStatusIds: new Set(),
+        activeTaskStatusIds: new Set(),
+        taskStatusMap: emptyMap,
+        activeUserIds: new Set(),
+        tagIds: new Set(),
+        statusMap: emptyMap,
+        userMap: emptyMap,
+        tagMap: emptyMap,
+        pipelineMap: emptyMap,
+        stageMap: emptyMap,
+        stagePipelineMap: emptyMap,
+        timezone: "America/Chicago",
+      },
+    })
+
+    assert.equal(result.status, "SUCCEEDED")
+    assert.equal(contactUpdates, 2)
+    assert.equal(result.logs.find((log) => log.nodeKey === "go-node")?.reasonCode, "GO_TO_ROUTED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "bypassed-node")?.reasonCode, "GO_TO_BYPASSED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "target-node")?.status, "EXECUTED")
+    assert.equal((savedRun as Record<string, unknown> | null)?.status, "SUCCEEDED")
+  })
+})
+
+describe("Update/create opportunity runtime", () => {
+  const emptyMap = new Map()
+  const catalog = {
+    fieldMap: emptyMap,
+    fieldKeyMap: emptyMap,
+    activeStatusIds: new Set<string>(),
+    activeTaskStatusIds: new Set<string>(),
+    taskStatusMap: emptyMap,
+    activeUserIds: new Set<string>(),
+    tagIds: new Set<string>(),
+    statusMap: emptyMap,
+    userMap: emptyMap,
+    tagMap: emptyMap,
+    pipelineMap: new Map([["pipeline-1", "Work"]]),
+    stageMap: new Map([["stage-1", "New"], ["stage-2", "Follow-up"]]),
+    stagePipelineMap: new Map([["stage-1", "pipeline-1"], ["stage-2", "pipeline-1"]]),
+    timezone: "America/Chicago",
+  }
+  const action = (
+    resultMode: "KEEP_CURRENT" | "OPEN" | "WON" | "LOST" = "KEEP_CURRENT",
+    valueCents = 25_000,
+  ) => ({
+    nodeKey: "update-opportunity-1",
+    type: "UPDATE_OPPORTUNITY" as const,
+    opportunityConfig: {
+      actionName: "Move opportunity",
+      pipelineId: "pipeline-1",
+      pipelineNameSnapshot: "Work",
+      stageId: "stage-2",
+      stageNameSnapshot: "Follow-up",
+      resultMode,
+      valueCents,
+    },
+  })
+  const run = (eventContext: Record<string, unknown> = {}) => ({
+    id: "run-1",
+    tenantId: "tenant-1",
+    automationId: "automation-1",
+    automationName: "Opportunity flow",
+    contactId: "contact-1",
+    contactName: "Taylor Reed",
+    actorUserId: "user-1",
+    opportunityId: "trigger-opportunity",
+    attemptId: "attempt-1",
+    eventSource: "OPPORTUNITY_CREATED" as const,
+    triggerType: "OPPORTUNITY_CREATED" as const,
+    sourceStageId: null,
+    targetStageId: "stage-1",
+    cursorIndex: 0,
+    eventContext,
+    variables: {},
+  })
+
+  test("creates a missing opportunity and queues a causal created event", async () => {
+    let createdData: Record<string, unknown> | null = null
+    let childEvent: Record<string, unknown> | null = null
+    const prismaTx = {
+      contactOpportunity: {
+        findUnique: async () => null,
+        create: async ({ data }: any) => {
+          createdData = data
+          return { id: "created-opportunity", valueCents: data.valueCents }
+        },
+      },
+      automationRun: { update: async () => undefined },
+      automationExecution: { create: async () => undefined },
+    }
+    const result = await executeAutomationSegmentTx(prismaTx, {
+      run: run({ chainId: "chain-1", chainDepth: 0, transitionHistory: [] }),
+      actions: [action("WON")],
+      catalog,
+      startIndex: 0,
+      occurredAt: new Date("2026-10-01T15:00:00.000Z"),
+      queueOpportunityEvent: async (_tx, event) => { childEvent = event as unknown as Record<string, unknown> },
+    })
+
+    assert.equal((createdData as Record<string, unknown> | null)?.valueCents, 25_000)
+    assert.equal((createdData as Record<string, unknown> | null)?.result, "WON")
+    assert.equal((childEvent as Record<string, unknown> | null)?.triggerType, "OPPORTUNITY_CREATED")
+    assert.equal((childEvent as Record<string, unknown> | null)?.chainId, "chain-1")
+    assert.equal((childEvent as Record<string, unknown> | null)?.chainDepth, 1)
+    assert.equal((childEvent as Record<string, unknown> | null)?.causationKey, "automation-run:run-1:node:update-opportunity-1")
+    assert.match(result.logs[0]?.details ?? "", /Created opportunity in Work/)
+  })
+
+  test("moves an existing opportunity backward or forward and emits only stage changes", async () => {
+    const updatedAt = new Date("2026-10-01T14:00:00.000Z")
+    let updateData: Record<string, unknown> | null = null
+    const childEvents: Record<string, unknown>[] = []
+    const prismaTx = {
+      contactOpportunity: {
+        findUnique: async () => ({
+          id: "opportunity-1",
+          stageId: "stage-1",
+          valueCents: 10_000,
+          result: "OPEN",
+          closedAt: null,
+          updatedAt,
+        }),
+        updateMany: async ({ data }: any) => { updateData = data; return { count: 1 } },
+      },
+      automationRun: { update: async () => undefined },
+      automationExecution: { create: async () => undefined },
+    }
+    await executeAutomationSegmentTx(prismaTx, {
+      run: run({ chainId: "chain-1", chainDepth: 2, transitionHistory: [] }),
+      actions: [action("LOST")],
+      catalog,
+      startIndex: 0,
+      occurredAt: new Date("2026-10-01T15:00:00.000Z"),
+      queueOpportunityEvent: async (_tx, event) => { childEvents.push(event as unknown as Record<string, unknown>) },
+    })
+
+    assert.equal((updateData as Record<string, unknown> | null)?.stageId, "stage-2")
+    assert.equal((updateData as Record<string, unknown> | null)?.valueCents, 25_000)
+    assert.equal((updateData as Record<string, unknown> | null)?.result, "LOST")
+    assert.equal(childEvents.length, 1)
+    assert.equal(childEvents[0]?.triggerType, "OPPORTUNITY_STAGE_CHANGED")
+    assert.equal(childEvents[0]?.valueCents, 25_000)
+  })
+
+  test("updates value and result without creating a stage event and rejects repeated transitions", async () => {
+    let queueCalls = 0
+    let updateCalls = 0
+    const updatePayloads: Record<string, unknown>[] = []
+    const existing = {
+      id: "opportunity-1",
+      stageId: "stage-2",
+      valueCents: 10_000,
+      result: "OPEN",
+      closedAt: null,
+      updatedAt: new Date("2026-10-01T14:00:00.000Z"),
+    }
+    const prismaTx = {
+      contactOpportunity: {
+        findUnique: async () => existing,
+        updateMany: async ({ data }: any) => {
+          updateCalls += 1
+          updatePayloads.push(data)
+          return { count: 1 }
+        },
+      },
+      automationRun: { update: async () => undefined },
+      automationExecution: { create: async () => undefined },
+    }
+    const noOp = await executeAutomationSegmentTx(prismaTx, {
+      run: run(),
+      actions: [action("KEEP_CURRENT", 10_000)],
+      catalog,
+      startIndex: 0,
+      queueOpportunityEvent: async () => { queueCalls += 1 },
+    })
+    assert.equal(updateCalls, 0)
+    assert.equal(queueCalls, 0)
+    assert.match(noOp.logs[0]?.details ?? "", /No changes were needed/)
+
+    await executeAutomationSegmentTx(prismaTx, {
+      run: run(),
+      actions: [action("WON")],
+      catalog,
+      startIndex: 0,
+      queueOpportunityEvent: async () => { queueCalls += 1 },
+    })
+    assert.equal(updateCalls, 1)
+    assert.equal(queueCalls, 0)
+    assert.equal(updatePayloads[0]?.valueCents, 25_000)
+
+    existing.stageId = "stage-1"
+    await assert.rejects(
+      executeAutomationSegmentTx(prismaTx, {
+        run: run({
+          chainDepth: 3,
+          transitionHistory: [{
+            kind: "STAGE_CHANGED",
+            opportunityKey: "opportunity-1",
+            pipelineId: "pipeline-1",
+            sourceStageId: "stage-1",
+            targetStageId: "stage-2",
+          }],
+        }),
+        actions: [action()],
+        catalog,
+        startIndex: 0,
+        queueOpportunityEvent: async () => { queueCalls += 1 },
+      }),
+      (error: any) =>
+        error?.code === "OPPORTUNITY_AUTOMATION_LOOP" &&
+        error?.nodeExecutions?.[0]?.reasonCode === "OPPORTUNITY_AUTOMATION_LOOP",
+    )
+    assert.equal(updateCalls, 1)
+  })
+})
 
 describe("evaluateAutomationOperator", () => {
   test("evaluates numeric comparisons and ranges", () => {
@@ -64,6 +417,99 @@ describe("deleteAutomationContactFileObjects", () => {
 })
 
 describe("AutomationUpsertSchema", () => {
+  test("accepts up to 100 action nodes in one path", () => {
+    const base = {
+      name: "Long automation",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED" as const, pipelineId: "pipeline-1" },
+      conditions: [],
+    }
+    const actions = Array.from({ length: 100 }, () => ({ type: "CLEAR_CONTACT_ASSIGNEE" as const }))
+
+    assert.equal(AutomationUpsertSchema.safeParse({ ...base, actions }).success, true)
+    assert.equal(
+      AutomationUpsertSchema.safeParse({
+        ...base,
+        actions: [...actions, { type: "CLEAR_CONTACT_ASSIGNEE" as const }],
+      }).success,
+      false,
+    )
+  })
+
+  test("accepts legacy null routing fields on Split and If/Else actions", () => {
+    const result = AutomationUpsertSchema.safeParse({
+      name: "Nested routing",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{
+        type: "SPLIT",
+        nodeKey: "00000000-0000-4000-8000-000000000001",
+        customFieldUpdates: null,
+        statusConfigId: null,
+        assignedUserId: null,
+        tagId: null,
+        waitConfig: null,
+        noteTitle: null,
+        noteBody: null,
+        taskConfig: null,
+        dateTimeFormatterConfig: null,
+        numberFormatterConfig: null,
+        textFormatterConfig: null,
+        mathOperationConfig: null,
+        ifElseConfig: null,
+        splitConfig: {
+          actionName: "Split",
+          routes: [
+            {
+              branchKey: "00000000-0000-4000-8000-000000000002",
+              name: "Route 1",
+              percentage: 50,
+              actions: [{
+                type: "IF_ELSE",
+                nodeKey: "00000000-0000-4000-8000-000000000003",
+                splitConfig: null,
+                ifElseConfig: {
+                  actionName: "If/Else",
+                  branches: [
+                    {
+                      branchKey: "00000000-0000-4000-8000-000000000004",
+                      name: "Branch 1",
+                      isDefault: false,
+                      matchMode: "ALL",
+                      conditions: [{
+                        source: "CONTACT_FIELD",
+                        fieldKey: "name",
+                        operator: "IS_NOT_EMPTY",
+                      }],
+                      actions: [{ type: "SET_CONTACT_STATUS", statusConfigId: "active" }],
+                    },
+                    {
+                      branchKey: "00000000-0000-4000-8000-000000000005",
+                      name: "Default",
+                      isDefault: true,
+                      matchMode: "ALL",
+                      conditions: [],
+                      actions: [],
+                    },
+                  ],
+                },
+              }],
+            },
+            {
+              branchKey: "00000000-0000-4000-8000-000000000006",
+              name: "Route 2",
+              percentage: 50,
+              actions: [],
+            },
+          ],
+        },
+      }],
+    })
+
+    assert.equal(result.success, true)
+  })
+
   test("accepts creation and stage-change trigger shapes", () => {
     const base = {
       name: "Qualified opportunity",
@@ -906,6 +1352,131 @@ describe("AutomationUpsertSchema", () => {
     await assert.rejects(
       validateAutomationConfiguration(prismaClient, "tenant-1", invalid),
       /only be the final action in its path/,
+    )
+  })
+
+  test("normalizes Split routes, permits empty controls, and requires a 100% total", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const split = {
+      type: "SPLIT" as const,
+      splitConfig: {
+        actionName: "Random experiment",
+        routes: [
+          {
+            name: "Treatment",
+            percentage: 60,
+            actions: [{ type: "SET_CONTACT_STATUS" as const, statusConfigId: "active" }],
+          },
+          { name: "Control", percentage: 40, actions: [] },
+        ],
+      },
+    }
+    const base = {
+      name: "Split contacts",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED" as const, pipelineId: "pipeline-1" },
+      conditions: [],
+    }
+    const valid = AutomationUpsertSchema.parse({ ...base, actions: [split] })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", valid)
+    assert.equal(normalized.actions[0]?.type, "SPLIT")
+    assert.equal(typeof normalized.actions[0]?.nodeKey, "string")
+    assert.equal(typeof normalized.actions[0]?.splitConfig?.routes[0]?.branchKey, "string")
+    assert.equal(normalized.actions[0]?.splitConfig?.routes[1]?.actions.length, 0)
+
+    const invalidPercentages = AutomationUpsertSchema.parse({
+      ...base,
+      actions: [{
+        ...split,
+        splitConfig: {
+          ...split.splitConfig,
+          routes: split.splitConfig.routes.map((route) => ({ ...route, percentage: 30 })),
+        },
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalidPercentages),
+      /must total 100%/,
+    )
+
+    const invalidPlacement = AutomationUpsertSchema.parse({
+      ...base,
+      actions: [split, { type: "SET_CONTACT_STATUS", statusConfigId: "active" }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalidPlacement),
+      /only be the final action in its path/,
+    )
+  })
+
+  test("validates Update/create opportunity targets and refreshes saved name snapshots", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [
+        { id: "pipeline-1", name: "Work", stages: [{ id: "stage-1", name: "New" }] },
+        { id: "pipeline-2", name: "Renewals", stages: [{ id: "stage-2", name: "Follow-up" }] },
+      ] },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const valid = AutomationUpsertSchema.parse({
+      name: "Move opportunity",
+      isEnabled: true,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{
+        type: "UPDATE_OPPORTUNITY",
+        opportunityConfig: {
+          actionName: "  Move renewal  ",
+          pipelineId: "pipeline-2",
+          pipelineNameSnapshot: "Old pipeline name",
+          stageId: "stage-2",
+          stageNameSnapshot: "Old stage name",
+          resultMode: "OPEN",
+          valueCents: 5_000,
+        },
+      }],
+    })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", valid)
+    assert.deepEqual(normalized.actions[0]?.opportunityConfig, {
+      actionName: "Move renewal",
+      pipelineId: "pipeline-2",
+      pipelineNameSnapshot: "Renewals",
+      stageId: "stage-2",
+      stageNameSnapshot: "Follow-up",
+      resultMode: "OPEN",
+      valueCents: 5_000,
+    })
+
+    const legacyConfig = AutomationOpportunityConfigSchema.parse({
+      actionName: "Legacy opportunity action",
+      pipelineId: "pipeline-2",
+      pipelineNameSnapshot: "Renewals",
+      stageId: "stage-2",
+      stageNameSnapshot: "Follow-up",
+      resultMode: "KEEP_CURRENT",
+      createValueCents: 7_500,
+    })
+    assert.equal(legacyConfig.valueCents, 7_500)
+    assert.equal("createValueCents" in legacyConfig, false)
+
+    const invalid = AutomationUpsertSchema.parse({
+      ...valid,
+      actions: [{
+        ...valid.actions[0],
+        opportunityConfig: { ...(valid.actions[0] as any).opportunityConfig, stageId: "stage-1" },
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalid),
+      /belongs to the selected opportunity pipeline/,
     )
   })
 })

@@ -17,11 +17,54 @@ const labels = {
   FORMAT_TEXT: "Text formatter",
   MATH_OPERATION: "Math operation",
   IF_ELSE: "If/Else",
+  SPLIT: "Split",
+  GO_TO: "Go to",
+  UPDATE_OPPORTUNITY: "Update/create opportunity",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 } as const
 
 describe("buildAutomationFlowGraph", () => {
+  test("renders Go To as a dotted outer-gutter route without a local completion", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "split",
+          type: "SPLIT",
+          splitConfig: {
+            actionName: "Split",
+            routes: [
+              {
+                branchKey: "route-a",
+                name: "Route A",
+                percentage: 50,
+                actions: [{ nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "target" } }],
+              },
+              {
+                branchKey: "route-b",
+                name: "Route B",
+                percentage: 50,
+                actions: [{ nodeKey: "target", type: "SET_CONTACT_STATUS", statusConfigId: "active" }],
+              },
+            ],
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const goToEdge = graph.edges.find((edge) => edge.type === "goTo")
+    assert.equal(goToEdge?.source, "action-go")
+    assert.equal(goToEdge?.target, "action-target")
+    assert.ok(graph.nodes.some((node) => node.id === "go-to-bound-go"))
+    assert.equal(graph.nodes.some((node) => node.id === "complete-split-route-a"), false)
+  })
+
   test("creates a trigger, insertion point, action, and completion path", () => {
     const graph = buildAutomationFlowGraph(
       {
@@ -39,6 +82,10 @@ describe("buildAutomationFlowGraph", () => {
       ["trigger", "add-0", "action-0", "add-1", "complete"],
     )
     assert.ok(graph.edges.every((edge) => edge.type === "straight"))
+
+    const actionNode = graph.nodes.find((node) => node.data.kind === "action")
+    assert.equal(actionNode?.data.actionType, "SET_CONTACT_STATUS")
+    assert.equal(actionNode?.data.actionGroup, "CONTACT")
 
     const centerXs = graph.nodes.map((node) =>
       node.position.x + (node.data.kind === "add" ? 40 : 256) / 2,
@@ -116,6 +163,8 @@ describe("buildAutomationFlowGraph", () => {
     const waitNode = graph.nodes.find((node) => node.id.includes("00000000"))
     assert.equal(waitNode?.data.label, "Wait")
     assert.equal(waitNode?.data.subtitle, "Wait 2 hours")
+    assert.equal(waitNode?.data.actionType, "WAIT")
+    assert.equal(waitNode?.data.actionGroup, "INTERNAL")
     assert.equal(waitNode?.data.waitBadge?.count, 12)
     assert.equal(waitNode?.data.waitBadge?.state, "ready")
     assert.equal(waitNode?.data.waitBadge?.onClick, openWaitingRuns)
@@ -346,6 +395,36 @@ describe("buildAutomationFlowGraph", () => {
     assert.equal(graph.nodes.find((node) => node.id.endsWith("0002"))?.data.subtitle, "Subtract 2 months → notice_date")
   })
 
+  test("uses the custom Update/create opportunity name and amber opportunity group", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "opportunity-action",
+          type: "UPDATE_OPPORTUNITY",
+          opportunityConfig: {
+            actionName: "Move renewal",
+            pipelineId: "pipeline-2",
+            pipelineNameSnapshot: "Renewals",
+            stageId: "stage-2",
+            stageNameSnapshot: "Follow-up",
+            resultMode: "WON",
+            valueCents: 25_000,
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+    const node = graph.nodes.find((candidate) => candidate.id === "action-opportunity-action")
+    assert.equal(node?.data.label, "Move renewal")
+    assert.equal(node?.data.subtitle, "Renewals → Follow-up · Won")
+    assert.equal(node?.data.actionGroup, "OPPORTUNITY")
+  })
+
   test("places delete contact directly before completion", () => {
     const graph = buildAutomationFlowGraph(
       {
@@ -421,5 +500,190 @@ describe("buildAutomationFlowGraph", () => {
     assert.ok(graph.nodes.some((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000102"))
     assert.equal(graph.nodes.some((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000104"), false)
     assert.ok(graph.edges.some((edge) => edge.source === "action-00000000-0000-4000-8000-000000000101" && edge.type === "step"))
+    const defaultNode = graph.nodes.find((node) => node.data.kind === "branch" && node.data.label === "Default")
+    assert.ok(graph.edges.some((edge) =>
+      edge.source === defaultNode?.id &&
+      graph.nodes.find((node) => node.id === edge.target)?.data.kind === "complete"
+    ))
+    assert.equal(graph.nodes.filter((node) => node.data.kind === "complete").length, 2)
+    assert.equal(graph.nodes.some((node) => node.id === "complete"), false)
+  })
+
+  test("renders percentage Split routes and keeps empty control routes editable", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          type: "SPLIT",
+          nodeKey: "00000000-0000-4000-8000-000000000201",
+          splitConfig: {
+            actionName: "A/B assignment",
+            routes: [
+              {
+                branchKey: "00000000-0000-4000-8000-000000000202",
+                name: "Treatment",
+                percentage: 75,
+                actions: [{
+                  type: "ADD_CONTACT_TAG",
+                  nodeKey: "00000000-0000-4000-8000-000000000203",
+                  tagId: "tag-1",
+                }],
+              },
+              {
+                branchKey: "00000000-0000-4000-8000-000000000204",
+                name: "Control",
+                percentage: 25,
+                actions: [],
+              },
+            ],
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const splitNode = graph.nodes.find((node) => node.id === "action-00000000-0000-4000-8000-000000000201")
+    assert.equal(splitNode?.data.label, "A/B assignment")
+    assert.equal(splitNode?.data.subtitle, "Random · 2 routes")
+    assert.equal(graph.nodes.find((node) => node.data.kind === "branch" && node.data.label === "Treatment")?.data.subtitle, "75% of runs")
+    assert.equal(graph.nodes.find((node) => node.data.kind === "branch" && node.data.label === "Control")?.data.subtitle, "25% of runs")
+    assert.ok(graph.nodes.some((node) =>
+      node.data.kind === "add" &&
+      node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000204"
+    ))
+    assert.ok(graph.edges.some((edge) =>
+      edge.source === "action-00000000-0000-4000-8000-000000000201" && edge.type === "step"
+    ))
+    const controlAdd = graph.nodes.find((node) =>
+      node.data.kind === "add" &&
+      node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000204"
+    )
+    assert.ok(graph.edges.some((edge) =>
+      edge.source === controlAdd?.id &&
+      graph.nodes.find((node) => node.id === edge.target)?.data.kind === "complete"
+    ))
+    assert.equal(graph.nodes.filter((node) => node.data.kind === "complete").length, 2)
+  })
+
+  test("reserves nested subtree width and completes every terminal Split and If/Else leaf locally", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          type: "SPLIT",
+          nodeKey: "split-root",
+          splitConfig: {
+            actionName: "Split",
+            routes: [
+              {
+                branchKey: "route-1",
+                name: "Route 1",
+                percentage: 50,
+                actions: [
+                  { type: "WAIT", nodeKey: "wait-1", waitConfig: { mode: "DURATION", amount: 1, unit: "MINUTES" } },
+                  { type: "ADD_CONTACT_NOTE", nodeKey: "note-1", noteTitle: "Route 1", noteBody: "Route 1" },
+                ],
+              },
+              {
+                branchKey: "route-2",
+                name: "Route 2",
+                percentage: 50,
+                actions: [
+                  { type: "WAIT", nodeKey: "wait-2", waitConfig: { mode: "DURATION", amount: 1, unit: "MINUTES" } },
+                  { type: "ADD_CONTACT_NOTE", nodeKey: "note-2", noteTitle: "Route 2", noteBody: "Route 2" },
+                  {
+                    type: "IF_ELSE",
+                    nodeKey: "if-route-2",
+                    ifElseConfig: {
+                      actionName: "If/Else",
+                      branches: [
+                        {
+                          branchKey: "branch-1",
+                          name: "Branch 1",
+                          isDefault: false,
+                          matchMode: "ALL",
+                          conditions: [],
+                          actions: [{ type: "SET_CONTACT_STATUS", nodeKey: "status-1", statusConfigId: "active" }],
+                        },
+                        {
+                          branchKey: "branch-2",
+                          name: "Branch 2",
+                          isDefault: false,
+                          matchMode: "ALL",
+                          conditions: [],
+                          actions: [{ type: "DELETE_CONTACT", nodeKey: "delete-2" }],
+                        },
+                        {
+                          branchKey: "default",
+                          name: "Default",
+                          isDefault: true,
+                          matchMode: "ALL",
+                          conditions: [],
+                          actions: [],
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const completeNodes = graph.nodes.filter((node) => node.data.kind === "complete")
+    assert.equal(completeNodes.length, 4)
+    assert.equal(graph.nodes.some((node) => node.id === "complete"), false)
+    assert.equal(new Set(completeNodes.map((node) => node.id)).size, completeNodes.length)
+    for (const completeNode of completeNodes) {
+      assert.equal(graph.edges.filter((edge) => edge.target === completeNode.id).length, 1)
+    }
+    const deleteCompleteEdge = graph.edges.find((edge) => edge.source === "action-delete-2")
+    assert.equal(
+      graph.nodes.find((node) => node.id === deleteCompleteEdge?.target)?.data.subtitle,
+      "Contact deleted",
+    )
+
+    const route1 = graph.nodes.find((node) => node.id === "branch-split-root-route-1")
+    const route2 = graph.nodes.find((node) => node.id === "branch-split-root-route-2")
+    const nestedIf = graph.nodes.find((node) => node.id === "action-if-route-2")
+    const nestedBranch1 = graph.nodes.find((node) => node.id === "branch-if-route-2-branch-1")
+    assert.ok(route1)
+    assert.ok(route2)
+    assert.ok(nestedIf)
+    assert.ok(nestedBranch1)
+    assert.equal(route2.position.x, nestedIf.position.x)
+    assert.ok(route1.position.x + 256 + 80 <= nestedBranch1.position.x)
+
+    const boxes = graph.nodes.map((node) => ({
+      id: node.id,
+      x: node.position.x,
+      y: node.position.y,
+      width: node.data.kind === "add" ? 40 : 256,
+      height: node.data.kind === "add" ? 40 : 70,
+    }))
+    for (let leftIndex = 0; leftIndex < boxes.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < boxes.length; rightIndex += 1) {
+        const left = boxes[leftIndex]!
+        const right = boxes[rightIndex]!
+        const overlapsHorizontally = left.x < right.x + right.width && left.x + left.width > right.x
+        const overlapsVertically = left.y < right.y + right.height && left.y + left.height > right.y
+        assert.equal(
+          overlapsHorizontally && overlapsVertically,
+          false,
+          `${left.id} overlaps ${right.id}`,
+        )
+      }
+    }
   })
 })

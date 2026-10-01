@@ -71,6 +71,39 @@ function savedIfElseWithBranchWaits() {
   }
 }
 
+function savedSplitWithRouteWaits() {
+  return {
+    id: "00000000-0000-4000-8000-000000000020",
+    nodeKey: "00000000-0000-4000-8000-000000000020",
+    type: "SPLIT",
+    splitConfig: {
+      actionName: "Random wait",
+      routes: [
+        {
+          branchKey: "00000000-0000-4000-8000-000000000021",
+          name: "Short wait",
+          percentage: 50,
+          actions: [{
+            nodeKey: waitNodeKey,
+            type: "WAIT",
+            waitConfig: { mode: "DURATION", amount: 1, unit: "DAYS" },
+          }],
+        },
+        {
+          branchKey: "00000000-0000-4000-8000-000000000022",
+          name: "Long wait",
+          percentage: 50,
+          actions: [{
+            nodeKey: secondWaitNodeKey,
+            type: "WAIT",
+            waitConfig: { mode: "DURATION", amount: 2, unit: "DAYS" },
+          }],
+        },
+      ],
+    },
+  }
+}
+
 function savedAutomationMocks() {
   return {
     automation: {
@@ -143,6 +176,28 @@ describe("automation Wait monitoring", () => {
       [
         { nodeKey: waitNodeKey, count: 0 },
         { nodeKey: secondWaitNodeKey, count: 1 },
+      ],
+    )
+  })
+
+  test("returns counts for Wait nodes in separate Split routes", async () => {
+    const prismaClient = {
+      automation: {
+        findUnique: async () => ({
+          id: automationId,
+          actions: [savedSplitWithRouteWaits()],
+        }),
+      },
+      automationRun: {
+        groupBy: async () => [{ waitingNodeKey: waitNodeKey, _count: { _all: 3 } }],
+      },
+    }
+
+    assert.deepEqual(
+      await getAutomationWaitNodeCounts(prismaClient, { tenantId, automationId }),
+      [
+        { nodeKey: waitNodeKey, count: 3 },
+        { nodeKey: secondWaitNodeKey, count: 0 },
       ],
     )
   })
@@ -287,6 +342,7 @@ describe("automation Wait monitoring", () => {
         },
       },
       automationNodeExecution: {
+        findMany: async () => [{ nodeKey: waitNodeKey }],
         updateMany: async (args: any) => {
           waitLogUpdate = args
           return { count: 1 }

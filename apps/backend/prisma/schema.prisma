@@ -322,6 +322,9 @@ enum AutomationActionType {
   FORMAT_TEXT
   MATH_OPERATION
   IF_ELSE
+  SPLIT
+  GO_TO
+  UPDATE_OPPORTUNITY
   WAIT
   DELETE_CONTACT
 }
@@ -1504,6 +1507,9 @@ model AutomationAction {
   textFormatterConfig     Json?
   mathOperationConfig     Json?
   ifElseConfig            Json?
+  splitConfig             Json?
+  goToConfig              Json?
+  opportunityConfig       Json?
   sortOrder               Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
@@ -1670,6 +1676,14 @@ model AutomationEvent {
   processingStartedAt   DateTime?
   completedAt           DateTime?
   lastError             String?
+  chainId               String                @default(uuid())
+  parentEventId         String?
+  chainDepth            Int                   @default(0)
+  transitionHistory     Json                  @default("[]")
+  sourceAutomationId    String?
+  sourceAutomationName  String?
+  sourceNodeKey         String?
+  causationKey          String?               @unique
 
   tenant      Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact     Contact?             @relation(fields: [contactId], references: [id], onDelete: SetNull)
@@ -1682,6 +1696,7 @@ model AutomationEvent {
 
   @@unique([tenantId, id])
   @@index([tenantId, contactId, createdAt])
+  @@index([tenantId, chainId, chainDepth])
   @@index([tenantId, status, availableAt, createdAt])
   @@index([status, leaseExpiresAt])
 }

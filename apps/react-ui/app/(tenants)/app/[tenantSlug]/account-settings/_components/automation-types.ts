@@ -288,6 +288,32 @@ export type AutomationIfElseConfig = {
   branches: AutomationIfElseBranch[]
 }
 
+export type AutomationSplitRoute = {
+  branchKey: string
+  name: string
+  percentage: number
+  actions: AutomationAction[]
+}
+
+export type AutomationSplitConfig = {
+  actionName: string
+  routes: AutomationSplitRoute[]
+}
+
+export type AutomationGoToConfig = {
+  targetNodeKey: string
+}
+
+export type AutomationOpportunityConfig = {
+  actionName: string
+  pipelineId: string
+  pipelineNameSnapshot: string
+  stageId: string
+  stageNameSnapshot: string
+  resultMode: "KEEP_CURRENT" | "OPEN" | "WON" | "LOST"
+  valueCents: number | null
+}
+
 export type AutomationAction = {
   id?: string
   nodeKey?: string
@@ -305,6 +331,9 @@ export type AutomationAction = {
     | "FORMAT_TEXT"
     | "MATH_OPERATION"
     | "IF_ELSE"
+    | "SPLIT"
+    | "GO_TO"
+    | "UPDATE_OPPORTUNITY"
     | "WAIT"
     | "DELETE_CONTACT"
   customFieldUpdates?: AutomationFieldUpdate[] | null
@@ -320,6 +349,9 @@ export type AutomationAction = {
   textFormatterConfig?: AutomationTextFormatterConfig | null
   mathOperationConfig?: AutomationMathOperationConfig | null
   ifElseConfig?: AutomationIfElseConfig | null
+  splitConfig?: AutomationSplitConfig | null
+  goToConfig?: AutomationGoToConfig | null
+  opportunityConfig?: AutomationOpportunityConfig | null
 }
 
 export type AutomationRecord = {
