@@ -323,6 +323,7 @@ enum AutomationActionType {
   MATH_OPERATION
   IF_ELSE
   SPLIT
+  GO_TO
   WAIT
   DELETE_CONTACT
 }
@@ -1506,6 +1507,7 @@ model AutomationAction {
   mathOperationConfig     Json?
   ifElseConfig            Json?
   splitConfig             Json?
+  goToConfig              Json?
   sortOrder               Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)

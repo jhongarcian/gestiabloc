@@ -5,7 +5,7 @@ import { formatDateTimeForDisplay } from "@/lib/date-time"
 import type { AutomationAction, AutomationCatalog, AutomationCondition, AutomationTriggerType } from "./automation-types"
 
 export type AutomationFlowNodeData = {
-  kind: "trigger" | "action" | "add" | "branch" | "complete"
+  kind: "trigger" | "action" | "add" | "branch" | "complete" | "route-bound"
   label: string
   subtitle?: string
   configured?: boolean
@@ -21,6 +21,15 @@ export type AutomationFlowNodeData = {
     state: "loading" | "ready" | "error" | "unsaved"
     onClick?: () => void
   }
+  goToSelection?: "source" | "eligible" | "hovered" | "invalid"
+  goToIssue?: string | null
+  onGoToUnlink?: () => void
+}
+
+export type AutomationGoToEdgeData = {
+  kind: "go-to"
+  laneX: number
+  highlighted?: boolean
 }
 
 export type AutomationGraphBranchPath = Array<{ routingNodeKey: string; branchKey: string }>
@@ -232,8 +241,12 @@ export function buildAutomationFlowGraph(
             ? "Remove from this account"
           : action.type === "IF_ELSE"
             ? `First match · ${Math.max(0, (action.ifElseConfig?.branches.length ?? 1) - 1)} branches`
-          : action.type === "SPLIT"
+        : action.type === "SPLIT"
             ? `Random · ${action.splitConfig?.routes.length ?? 0} routes`
+          : action.type === "GO_TO"
+            ? action.goToConfig?.targetNodeKey
+              ? "Route to selected action"
+              : "Choose a destination"
             : waitSubtitle ?? `Action ${actionNumber}`
     return {
       label: action.type === "FORMAT_TEXT"
@@ -260,7 +273,8 @@ export function buildAutomationFlowGraph(
     let y = startY
     const endsWithTerminal = actions.at(-1)?.type === "DELETE_CONTACT" ||
       actions.at(-1)?.type === "IF_ELSE" ||
-      actions.at(-1)?.type === "SPLIT"
+      actions.at(-1)?.type === "SPLIT" ||
+      actions.at(-1)?.type === "GO_TO"
 
     for (let index = 0; index <= actions.length; index += 1) {
       if (index === actions.length && endsWithTerminal) break
@@ -272,7 +286,7 @@ export function buildAutomationFlowGraph(
         position: { x: centerX - ADD_NODE_WIDTH / 2, y },
         data: { kind: "add", label: "Add action", insertionIndex: index, insertionPath: path },
       })
-      edges.push({ id: `${previousId}-${addId}`, source: previousId, target: addId, type: "straight" })
+      edges.push({ id: `${previousId}-${addId}`, source: previousId, target: addId, sourceHandle: "flow-source", targetHandle: "flow-target", type: "straight" })
       previousId = addId
       previousNodeY = y
       previousNodeKind = "add"
@@ -299,7 +313,7 @@ export function buildAutomationFlowGraph(
             : {}),
         },
       })
-      edges.push({ id: `${previousId}-${actionId}`, source: previousId, target: actionId, type: "straight" })
+      edges.push({ id: `${previousId}-${actionId}`, source: previousId, target: actionId, sourceHandle: "flow-source", targetHandle: "flow-target", type: "straight" })
       previousId = actionId
       previousNodeY = y
       previousNodeKind = "action"
@@ -337,6 +351,8 @@ export function buildAutomationFlowGraph(
           id: `${actionId}-${branchId}`,
           source: actionId,
           target: branchId,
+          sourceHandle: "flow-source",
+          targetHandle: "flow-target",
           type: "step",
         })
         if (branch.isTerminal) {
@@ -356,6 +372,8 @@ export function buildAutomationFlowGraph(
             id: `${branchId}-${completeId}`,
             source: branchId,
             target: completeId,
+            sourceHandle: "flow-source",
+            targetHandle: "flow-target",
             type: "straight",
           })
         } else {
@@ -365,6 +383,7 @@ export function buildAutomationFlowGraph(
       return
     }
 
+    if (actions.at(-1)?.type === "GO_TO") return
     const completeId = path.length === 0 ? "complete" : `complete-${graphPathKey(path)}`
     const completeY = previousNodeY + (
       previousNodeKind === "action" ? COMPLETE_AFTER_CARD_STEP : COMPLETE_AFTER_ADD_STEP
@@ -385,10 +404,56 @@ export function buildAutomationFlowGraph(
       id: `${previousId}-${completeId}`,
       source: previousId,
       target: completeId,
+      sourceHandle: "flow-source",
+      targetHandle: "flow-target",
       type: "straight",
     })
   }
 
   renderPath(draft.actions, "trigger", rootCenterX, 180, [])
+  const nodeByActionKey = new Map(
+    nodes.flatMap((node) => node.data.actionNodeKey ? [[node.data.actionNodeKey, node] as const] : []),
+  )
+  const minX = Math.min(...nodes.map((node) => node.position.x))
+  const maxX = Math.max(...nodes.map((node) => node.position.x + (node.data.kind === "add" ? ADD_NODE_WIDTH : CARD_WIDTH)))
+  let leftLane = minX - 90
+  let rightLane = maxX + 90
+  for (const action of draft.actions.flatMap(function flatten(action: AutomationAction): AutomationAction[] {
+    if (action.type === "IF_ELSE") {
+      return [action, ...(action.ifElseConfig?.branches.flatMap((branch) => branch.actions.flatMap(flatten)) ?? [])]
+    }
+    if (action.type === "SPLIT") {
+      return [action, ...(action.splitConfig?.routes.flatMap((route) => route.actions.flatMap(flatten)) ?? [])]
+    }
+    return [action]
+  })) {
+    if (action.type !== "GO_TO" || !action.nodeKey || !action.goToConfig?.targetNodeKey) continue
+    const sourceNode = nodeByActionKey.get(action.nodeKey)
+    const targetNode = nodeByActionKey.get(action.goToConfig.targetNodeKey)
+    if (!sourceNode || !targetNode) continue
+    const sourceCenterX = sourceNode.position.x + CARD_WIDTH / 2
+    const useLeftLane = sourceCenterX - minX <= maxX - sourceCenterX
+    const laneX = useLeftLane ? leftLane : rightLane
+    if (useLeftLane) leftLane -= 32
+    else rightLane += 32
+    edges.push({
+      id: `go-to-${action.nodeKey}-${action.goToConfig.targetNodeKey}`,
+      source: sourceNode.id,
+      target: targetNode.id,
+      sourceHandle: "go-to-source-bottom",
+      targetHandle: "go-to-target-top",
+      type: "goTo",
+      data: { kind: "go-to", laneX } satisfies AutomationGoToEdgeData,
+    })
+    nodes.push({
+      id: `go-to-bound-${action.nodeKey}`,
+      type: "automationNode",
+      position: { x: laneX, y: Math.min(sourceNode.position.y, targetNode.position.y) },
+      selectable: false,
+      focusable: false,
+      data: { kind: "route-bound", label: "" },
+      style: { width: 1, height: 1, opacity: 0, pointerEvents: "none" },
+    })
+  }
   return { nodes, edges }
 }

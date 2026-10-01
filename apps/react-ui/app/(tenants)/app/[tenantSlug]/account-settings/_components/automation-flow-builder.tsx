@@ -25,12 +25,15 @@ import { useRouter } from "next/navigation"
 import {
   Background,
   BackgroundVariant,
+  BaseEdge,
   Controls,
   Handle,
   Position,
   ReactFlow,
   ReactFlowProvider,
   type Edge,
+  type EdgeProps,
+  type EdgeTypes,
   type Node,
   type NodeProps,
   type NodeTypes,
@@ -43,6 +46,8 @@ import {
   BadgeCheck,
   Calculator,
   CalendarClock,
+  Check,
+  ChevronsUpDown,
   Clock3,
   CheckCircle2,
   ContactRound,
@@ -55,6 +60,7 @@ import {
   MessageSquareText,
   MousePointerClick,
   Plus,
+  Route as RouteIcon,
   Save,
   Shuffle,
   StickyNote,
@@ -62,6 +68,7 @@ import {
   Tags,
   Trash2,
   Type,
+  Unlink2,
   UserMinus,
   UserPlus,
   UserRound,
@@ -76,6 +83,14 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import {
   ContactDateValueInput,
   type ContactDateValue,
 } from "@/components/contact-date-value-input"
@@ -88,6 +103,7 @@ import {
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -102,6 +118,11 @@ import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { serializeAutomationAction } from "@/lib/automation-action-payload"
+import {
+  automationGoToDestinations,
+  automationGoToTargetIssue,
+  validateAutomationGoToGraph,
+} from "@/lib/automation-go-to"
 import {
   ifElseWrapIssue,
   MAX_AUTOMATION_ACTION_NODES,
@@ -150,6 +171,7 @@ import {
   buildAutomationFlowGraph,
   type AutomationGraphBranchPath,
   type AutomationFlowNodeData as CanvasNodeData,
+  type AutomationGoToEdgeData,
 } from "./automation-flow-graph"
 
 type AutomationFlowBuilderProps = {
@@ -414,18 +436,25 @@ const ACTION_DEFINITIONS = {
     order: 6,
     icon: Shuffle,
   },
+  GO_TO: {
+    label: "Go to",
+    description: "Continue this run at an action in another path.",
+    group: "INTERNAL",
+    order: 7,
+    icon: RouteIcon,
+  },
   CREATE_TASK: {
     label: "Create task",
     description: "Create a task linked to this contact.",
     group: "INTERNAL",
-    order: 7,
+    order: 8,
     icon: ListTodo,
   },
   ADD_CONTACT_NOTE: {
     label: "Add contact note",
     description: "Add a note using live contact information.",
     group: "INTERNAL",
-    order: 8,
+    order: 9,
     icon: StickyNote,
   },
   UPDATE_CONTACT_CUSTOM_FIELDS: {
@@ -596,12 +625,13 @@ const COMPACT_SELECT_TRIGGER_CLASS =
   "h-8 w-full cursor-pointer rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
 
 function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
+  if (data.kind === "route-bound") return <div aria-hidden="true" className="size-px" />
   if (data.kind === "add") {
     return (
       <div className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-dashed border-cyan-400 bg-white text-cyan-700 shadow-sm transition hover:scale-105 hover:bg-cyan-50">
-        <Handle type="target" position={Position.Top} className="opacity-0" />
+        <Handle id="flow-target" type="target" position={Position.Top} className="opacity-0" />
         <Plus className="h-4 w-4" />
-        <Handle type="source" position={Position.Bottom} className="opacity-0" />
+        <Handle id="flow-source" type="source" position={Position.Bottom} className="opacity-0" />
       </div>
     )
   }
@@ -652,10 +682,24 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
           ? "Save the automation before viewing waiting contacts"
           : `View ${data.waitBadge.count} waiting ${data.waitBadge.count === 1 ? "run" : "runs"}`
     : null
+  const isGoToDestination = data.goToSelection === "eligible"
 
   return (
-    <div className={cn("relative w-64 rounded-2xl border-2 px-4 py-3 shadow-sm transition-colors", tone)}>
-      <Handle type="target" position={Position.Top} className="opacity-0" />
+    <div
+      className={cn(
+        "relative w-64 rounded-2xl border-2 px-4 py-3 shadow-sm transition-colors",
+        tone,
+        isGoToDestination && "cursor-crosshair hover:border-emerald-500 hover:bg-emerald-50",
+      )}
+      title={data.goToIssue ?? undefined}
+    >
+      <Handle id="flow-target" type="target" position={Position.Top} className="opacity-0" />
+      {data.kind === "action" ? (
+        <>
+          <Handle id="go-to-target-top" type="target" position={Position.Top} className="opacity-0" />
+          <Handle id="go-to-source-bottom" type="source" position={Position.Bottom} className="opacity-0" />
+        </>
+      ) : null}
       {data.waitBadge ? (
         <Badge
           asChild
@@ -693,6 +737,21 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
           </button>
         </Badge>
       ) : null}
+      {data.actionType === "GO_TO" && data.onGoToUnlink ? (
+        <button
+          type="button"
+          className="nodrag nopan absolute -right-2.5 -bottom-3 z-10 flex size-7 cursor-pointer items-center justify-center rounded-full border border-violet-200 bg-white text-violet-700 shadow-sm transition hover:border-violet-400 hover:bg-violet-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
+          aria-label="Change Go To destination"
+          title="Change destination"
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            data.onGoToUnlink?.()
+          }}
+        >
+          <Unlink2 className="size-3.5" aria-hidden="true" />
+        </button>
+      ) : null}
       <div className="flex items-center gap-3">
         <div className={cn(
           "flex size-9 shrink-0 items-center justify-center rounded-xl shadow-sm",
@@ -706,13 +765,38 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
         </div>
       </div>
       {data.kind === "complete" ? null : (
-        <Handle type="source" position={Position.Bottom} className="opacity-0" />
+        <Handle id="flow-source" type="source" position={Position.Bottom} className="opacity-0" />
       )}
     </div>
   )
 }
 
 const NODE_TYPES: NodeTypes = { automationNode: AutomationFlowNode }
+
+type GoToCanvasEdge = Edge<AutomationGoToEdgeData, "goTo">
+
+function GoToEdge({ id, sourceX, sourceY, targetX, targetY, data, markerEnd }: EdgeProps<GoToCanvasEdge>) {
+  const laneX = data?.laneX ?? Math.max(sourceX, targetX) + 90
+  const sourceLaneY = sourceY + 36
+  const targetLaneY = targetY - 36
+  const path = `M ${sourceX} ${sourceY} L ${sourceX} ${sourceLaneY} L ${laneX} ${sourceLaneY} L ${laneX} ${targetLaneY} L ${targetX} ${targetLaneY} L ${targetX} ${targetY}`
+  return (
+    <BaseEdge
+      id={id}
+      path={path}
+      markerEnd={markerEnd}
+      interactionWidth={18}
+      className={cn(
+        "[stroke-dasharray:8_7] [stroke-linecap:round] [stroke-width:2.5px]",
+        data?.highlighted
+          ? "stroke-emerald-500"
+          : "stroke-violet-500",
+      )}
+    />
+  )
+}
+
+const EDGE_TYPES: EdgeTypes = { goTo: GoToEdge }
 
 type AutomationCustomField = AutomationCatalog["customFields"][number]
 type AutomationContactUpdateField = AutomationCatalog["contactUpdateFields"][number]
@@ -988,6 +1072,7 @@ function actionDefaults(
       },
     }
   }
+  if (type === "GO_TO") return { nodeKey, type, goToConfig: { targetNodeKey: "" } }
   if (type === "WAIT") return { nodeKey, type, waitConfig: { mode: "DURATION", amount: 1, unit: "HOURS" } }
   return { nodeKey, type }
 }
@@ -1254,7 +1339,7 @@ function isIfElseReady(
     if (!requireBranchActions && branch.actions.length === 0) return true
     if (branch.actions.length === 0) return false
     return branch.actions.every((branchAction, index) => {
-      if ((branchAction.type === "IF_ELSE" || branchAction.type === "SPLIT") && index !== branch.actions.length - 1) return false
+      if ((branchAction.type === "IF_ELSE" || branchAction.type === "SPLIT" || branchAction.type === "GO_TO") && index !== branch.actions.length - 1) return false
       if (branchAction.type === "DELETE_CONTACT" && index !== branch.actions.length - 1) return false
       return branchAction.type === "IF_ELSE"
         ? isIfElseReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1, requireBranchActions)
@@ -1288,7 +1373,7 @@ function isSplitReady(
 
   return config.routes.every((route) => route.actions.every((routeAction, index) => {
     if (
-      (routeAction.type === "IF_ELSE" || routeAction.type === "SPLIT" || routeAction.type === "DELETE_CONTACT") &&
+      (routeAction.type === "IF_ELSE" || routeAction.type === "SPLIT" || routeAction.type === "GO_TO" || routeAction.type === "DELETE_CONTACT") &&
       index !== route.actions.length - 1
     ) return false
     return routeAction.type === "IF_ELSE"
@@ -1428,6 +1513,9 @@ function isActionReady(
   if (action.type === "SPLIT") {
     return targetActions.length === 0 && isSplitReady(action, catalog, previousActions)
   }
+  if (action.type === "GO_TO") {
+    return targetActions.length === 0 && Boolean(action.goToConfig?.targetNodeKey)
+  }
   if (action.type === "WAIT") {
     const config = action.waitConfig
     if (!config) return false
@@ -1519,7 +1607,7 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   const validatePath = (actions: AutomationAction[], inherited: AutomationAction[]): string | null => {
     for (let index = 0; index < actions.length; index += 1) {
       const action = actions[index]!
-      if ((action.type === "DELETE_CONTACT" || action.type === "IF_ELSE" || action.type === "SPLIT") && index !== actions.length - 1) {
+      if ((action.type === "DELETE_CONTACT" || action.type === "IF_ELSE" || action.type === "SPLIT" || action.type === "GO_TO") && index !== actions.length - 1) {
         return `${ACTION_LABELS[action.type]} can only be the final action in its path.`
       }
       if (!isActionReady(action, catalog, actions.slice(index + 1), [...inherited, ...actions.slice(0, index)])) {
@@ -1540,7 +1628,7 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
     }
     return null
   }
-  return validatePath(draft.actions, [])
+  return validatePath(draft.actions, []) ?? validateAutomationGoToGraph(draft.actions)
 }
 
 function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
@@ -1591,6 +1679,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     automationId ? "loading" : "ready",
   )
   const [waitingNodeKey, setWaitingNodeKey] = useState<string | null>(null)
+  const [goToPicking, setGoToPicking] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -1689,10 +1778,89 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
       }),
   ), [automationId, draft.actions, savedWaitNodeKeys, waitNodeCountState, waitNodeCounts])
 
-  const graph = useMemo(
-    () => buildAutomationFlowGraph(draft, catalog, ACTION_LABELS, timezone, waitNodeBadges),
-    [catalog, draft, timezone, waitNodeBadges],
+  const goToPreviewDraft = useMemo(() => {
+    if (selected?.kind === "action" && editingAction?.type === "GO_TO") {
+      return mutateActionsAtPath(draft, selected.path, (actions) => {
+        actions[selected.index] = structuredClone(editingAction)
+      })
+    }
+    if (selected?.kind === "new-action" && pendingAction?.type === "GO_TO") {
+      return mutateActionsAtPath(draft, selected.path, (actions) => {
+        actions.splice(selected.insertionIndex, 0, structuredClone(pendingAction))
+      })
+    }
+    return draft
+  }, [draft, editingAction, pendingAction, selected])
+  const goToSourceKey = selected?.kind === "action" && editingAction?.type === "GO_TO"
+    ? editingAction.nodeKey ?? null
+    : selected?.kind === "new-action" && pendingAction?.type === "GO_TO"
+      ? pendingAction.nodeKey ?? null
+      : null
+  const goToDestinations = useMemo(
+    () => goToSourceKey
+      ? automationGoToDestinations(goToPreviewDraft.actions, goToSourceKey)
+      : [],
+    [goToPreviewDraft.actions, goToSourceKey],
   )
+  const baseGraph = useMemo(
+    () => buildAutomationFlowGraph(goToPreviewDraft, catalog, ACTION_LABELS, timezone, waitNodeBadges),
+    [catalog, goToPreviewDraft, timezone, waitNodeBadges],
+  )
+  const graph = useMemo(() => {
+    const destinationByKey = new Map(goToDestinations.map((destination) => [destination.nodeKey, destination]))
+    const actionByNodeKey = new Map(
+      flattenDraftActions(goToPreviewDraft.actions)
+        .filter((action): action is AutomationAction & { nodeKey: string } => Boolean(action.nodeKey))
+        .map((action) => [action.nodeKey, action]),
+    )
+    const nodes = baseGraph.nodes.map((node) => {
+      const nodeKey = node.data.actionNodeKey
+      if (!nodeKey) return node
+      const destination = destinationByKey.get(nodeKey)
+      const canSelect = Boolean(goToPicking && destination && !destination.issue)
+      const goToAction = actionByNodeKey.get(nodeKey)
+      const canUnlink = goToAction?.type === "GO_TO" && Boolean(goToAction.goToConfig?.targetNodeKey)
+      if (!canSelect && !canUnlink) return node
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          goToSelection: canSelect ? "eligible" as const : undefined,
+          ...(canUnlink
+            ? {
+                onGoToUnlink: () => {
+                  const path = node.data.actionPath ?? []
+                  const pathActions = actionsAtPath(draft.actions, path) ?? []
+                  const index = pathActions.findIndex((action) => action.nodeKey === nodeKey)
+                  if (index < 0) return
+                  const action = pathActions[index]
+                  if (action?.type !== "GO_TO") return
+                  setPendingAction(null)
+                  setTriggerEditorDraft(null)
+                  setPanelOriginalDraft(cloneDraft(draft))
+                  setEditingAction({ ...structuredClone(action), goToConfig: { targetNodeKey: "" } })
+                  setSelected({ kind: "action", nodeKey, path, index })
+                  setGoToPicking(true)
+                },
+              }
+            : {}),
+        },
+      }
+    })
+    return { nodes, edges: baseGraph.edges }
+  }, [baseGraph, draft, goToDestinations, goToPicking, goToPreviewDraft.actions])
+  useEffect(() => {
+    if (!goToSourceKey) {
+      setGoToPicking(false)
+      return
+    }
+    const action = editingAction?.type === "GO_TO"
+      ? editingAction
+      : pendingAction?.type === "GO_TO"
+        ? pendingAction
+        : null
+    setGoToPicking(!action?.goToConfig?.targetNodeKey)
+  }, [editingAction, goToSourceKey, pendingAction])
   const triggerPipeline = catalog?.pipelines.find(
     (item) => item.id === triggerEditorDraft?.pipelineId,
   )
@@ -1753,6 +1921,32 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
         replacesExistingAction: false,
       })
     : null
+  const activeGoToAction = editingAction?.type === "GO_TO"
+    ? editingAction
+    : pendingAction?.type === "GO_TO"
+      ? pendingAction
+      : null
+  const activeGoToTarget = activeGoToAction?.goToConfig?.targetNodeKey ?? ""
+  const goToPanelIssue = goToSourceKey
+    ? activeGoToTarget
+      ? automationGoToTargetIssue(goToPreviewDraft.actions, goToSourceKey, activeGoToTarget)
+      : "Choose a destination for Go To."
+    : null
+
+  const selectGoToTarget = (targetNodeKey: string) => {
+    if (!goToSourceKey) return
+    const issue = automationGoToTargetIssue(goToPreviewDraft.actions, goToSourceKey, targetNodeKey)
+    if (issue) {
+      toast.error(issue)
+      return
+    }
+    if (editingAction?.type === "GO_TO") {
+      setEditingAction({ ...editingAction, goToConfig: { targetNodeKey } })
+    } else if (pendingAction?.type === "GO_TO") {
+      setPendingAction({ ...pendingAction, goToConfig: { targetNodeKey } })
+    }
+    setGoToPicking(false)
+  }
 
   const updateAction = (path: AutomationGraphBranchPath, index: number, action: AutomationAction) => {
     setDraft((current) => mutateActionsAtPath(current, path, (actions) => {
@@ -1787,6 +1981,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     setEditingAction(null)
     setTriggerEditorDraft(null)
     setPanelOriginalDraft(null)
+    setGoToPicking(false)
   }
 
   const cancelPanelChanges = () => {
@@ -1830,7 +2025,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     const nextActions = [...pathActions]
     ;[nextActions[index], nextActions[target]] = [nextActions[target]!, nextActions[index]!]
     if (nextActions.some((action, actionIndex) =>
-      (action.type === "DELETE_CONTACT" || action.type === "IF_ELSE" || action.type === "SPLIT") && actionIndex !== nextActions.length - 1
+      (action.type === "DELETE_CONTACT" || action.type === "IF_ELSE" || action.type === "SPLIT" || action.type === "GO_TO") && actionIndex !== nextActions.length - 1
     )) return
     setDraft((current) => mutateActionsAtPath(current, path, (actions) => {
       ;[actions[index], actions[target]] = [actions[target]!, actions[index]!]
@@ -2061,12 +2256,18 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                 nodes={graph.nodes}
                 edges={graph.edges}
                 nodeTypes={NODE_TYPES}
+                edgeTypes={EDGE_TYPES}
                 fitView
                 fitViewOptions={{ padding: 0.2 }}
                 nodesDraggable={false}
                 nodesConnectable={false}
                 elementsSelectable
                 onNodeClick={(_, node) => {
+                  if (goToPicking && goToSourceKey) {
+                    const targetNodeKey = node.data.actionNodeKey
+                    if (targetNodeKey) selectGoToTarget(targetNodeKey)
+                    return
+                  }
                   if (node.data.kind === "trigger") {
                     openTriggerPanel()
                     return
@@ -2132,6 +2333,10 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     actionIndex={selected.index}
                     timezone={timezone}
                     ifElseWrapIssue={editingIfElseWrapIssue}
+                    goToDestinations={goToDestinations}
+                    goToIssue={goToPanelIssue}
+                    isPickingGoTo={goToPicking}
+                    onPickGoToOnCanvas={() => setGoToPicking(true)}
                     management={{
                       index: selected.index,
                       total: selectedPathActions.length,
@@ -2170,6 +2375,10 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     actionIndex={selected.insertionIndex}
                     timezone={timezone}
                     ifElseWrapIssue={pendingIfElseWrapIssue}
+                    goToDestinations={goToDestinations}
+                    goToIssue={goToPanelIssue}
+                    isPickingGoTo={goToPicking}
+                    onPickGoToOnCanvas={() => setGoToPicking(true)}
                   />
                 ) : selected.kind === "trigger" && triggerEditorDraft ? (
                   <TriggerEditor
@@ -2191,7 +2400,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       type="button"
                       variant="ghost"
                       className={COMPACT_PRIMARY_BUTTON_CLASS}
-                      disabled={!(editingAction?.type === "IF_ELSE"
+                      disabled={Boolean(editingAction?.type === "GO_TO" && goToPanelIssue) || !(editingAction?.type === "IF_ELSE"
                         ? !editingIfElseWrapIssue && isIfElseReady(
                             editingWillWrapFollowingActions
                               ? wrapFollowingActionsInFirstBranch(editingAction, editingFollowingActions)
@@ -2272,7 +2481,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                       type="button"
                       variant="ghost"
                       className={COMPACT_PRIMARY_BUTTON_CLASS}
-                      disabled={actionCount >= MAX_AUTOMATION_ACTION_NODES || !(pendingAction?.type === "IF_ELSE"
+                      disabled={actionCount >= MAX_AUTOMATION_ACTION_NODES || Boolean(pendingAction?.type === "GO_TO" && goToPanelIssue) || !(pendingAction?.type === "IF_ELSE"
                         ? !pendingIfElseWrapIssue && isIfElseReady(
                             wrapFollowingActionsInFirstBranch(pendingAction, pendingFollowingActions),
                             catalog,
@@ -2742,6 +2951,10 @@ function NewActionEditor({
   actionIndex,
   timezone,
   ifElseWrapIssue,
+  goToDestinations,
+  goToIssue,
+  isPickingGoTo,
+  onPickGoToOnCanvas,
 }: {
   action: AutomationAction | null
   catalog: AutomationCatalog
@@ -2751,6 +2964,10 @@ function NewActionEditor({
   actionIndex: number
   timezone?: string | null
   ifElseWrapIssue?: string | null
+  goToDestinations: ReturnType<typeof automationGoToDestinations>
+  goToIssue?: string | null
+  isPickingGoTo: boolean
+  onPickGoToOnCanvas: () => void
 }) {
   if (action) {
     const definition = ACTION_DEFINITIONS[action.type]
@@ -2789,6 +3006,10 @@ function NewActionEditor({
           actionIndex={actionIndex}
           timezone={timezone}
           ifElseWrapIssue={ifElseWrapIssue}
+          goToDestinations={goToDestinations}
+          goToIssue={goToIssue}
+          isPickingGoTo={isPickingGoTo}
+          onPickGoToOnCanvas={onPickGoToOnCanvas}
         />
       </div>
     )
@@ -2838,7 +3059,7 @@ function NewActionEditor({
                       (value === "UPDATE_CONTACT_CUSTOM_FIELDS" &&
                         catalog.contactUpdateFields.length === 0 &&
                         catalog.customFields.length === 0) ||
-                      (value === "DELETE_CONTACT" && targetActions.length > 0)
+                      ((value === "DELETE_CONTACT" || value === "GO_TO") && targetActions.length > 0)
                     }
                     onClick={() => onChange(actionDefaults(value, catalog))}
                   >
@@ -2876,6 +3097,10 @@ function ActionEditor({
   actionIndex = 0,
   timezone,
   ifElseWrapIssue,
+  goToDestinations = [],
+  goToIssue,
+  isPickingGoTo = false,
+  onPickGoToOnCanvas,
 }: {
   action: AutomationAction
   catalog: AutomationCatalog
@@ -2886,6 +3111,10 @@ function ActionEditor({
   actionIndex?: number
   timezone?: string | null
   ifElseWrapIssue?: string | null
+  goToDestinations?: ReturnType<typeof automationGoToDestinations>
+  goToIssue?: string | null
+  isPickingGoTo?: boolean
+  onPickGoToOnCanvas?: () => void
   management?: {
     index: number
     total: number
@@ -2923,7 +3152,7 @@ function ActionEditor({
                         <SelectItem
                           key={value}
                           value={value}
-                          disabled={value === "DELETE_CONTACT" && targetActions.length > 0}
+                          disabled={(value === "DELETE_CONTACT" || value === "GO_TO") && targetActions.length > 0}
                         >
                           <span className="flex items-center gap-2">
                             <span className={cn(
@@ -3107,6 +3336,17 @@ function ActionEditor({
           </>
         ) : null}
 
+        {action.type === "GO_TO" && action.goToConfig ? (
+          <GoToActionEditor
+            config={action.goToConfig}
+            destinations={goToDestinations}
+            issue={goToIssue}
+            isPickingOnCanvas={isPickingGoTo}
+            onChange={(goToConfig) => onChange({ ...action, goToConfig })}
+            onPickOnCanvas={() => onPickGoToOnCanvas?.()}
+          />
+        ) : null}
+
         {action.type === "WAIT" && action.waitConfig ? (
           <WaitActionEditor
             config={action.waitConfig}
@@ -3128,10 +3368,10 @@ function ActionEditor({
         <>
           <Separator />
           <div className="flex gap-2">
-            <Button type="button" size="icon" variant="outline" disabled={management.index === 0 || ["DELETE_CONTACT", "IF_ELSE", "SPLIT"].includes(action.type)} onClick={() => management.onMove(-1)} aria-label="Move action up">
+            <Button type="button" size="icon" variant="outline" disabled={management.index === 0 || ["DELETE_CONTACT", "IF_ELSE", "SPLIT", "GO_TO"].includes(action.type)} onClick={() => management.onMove(-1)} aria-label="Move action up">
               <ArrowUp data-icon="inline-start" />
             </Button>
-            <Button type="button" size="icon" variant="outline" disabled={management.index === management.total - 1 || ["DELETE_CONTACT", "IF_ELSE", "SPLIT"].includes(targetActions[0]?.type ?? "")} onClick={() => management.onMove(1)} aria-label="Move action down">
+            <Button type="button" size="icon" variant="outline" disabled={management.index === management.total - 1 || ["DELETE_CONTACT", "IF_ELSE", "SPLIT", "GO_TO"].includes(targetActions[0]?.type ?? "")} onClick={() => management.onMove(1)} aria-label="Move action down">
               <ArrowDown data-icon="inline-start" />
             </Button>
             <Button type="button" variant="outline" className="ml-auto text-rose-600" onClick={management.onDelete}>
@@ -5031,6 +5271,111 @@ function TaskActionEditor({
         </>
       ) : null}
     </div>
+  )
+}
+
+function goToDestinationLabel(action: AutomationAction) {
+  if (action.type === "FORMAT_TEXT") return action.textFormatterConfig?.actionName.trim() || "Text formatter"
+  if (action.type === "IF_ELSE") return action.ifElseConfig?.actionName.trim() || "If/Else"
+  if (action.type === "SPLIT") return action.splitConfig?.actionName.trim() || "Split"
+  return ACTION_LABELS[action.type]
+}
+
+function GoToActionEditor({
+  config,
+  destinations,
+  issue,
+  isPickingOnCanvas,
+  onChange,
+  onPickOnCanvas,
+}: {
+  config: NonNullable<AutomationAction["goToConfig"]>
+  destinations: ReturnType<typeof automationGoToDestinations>
+  issue?: string | null
+  isPickingOnCanvas: boolean
+  onChange: (config: NonNullable<AutomationAction["goToConfig"]>) => void
+  onPickOnCanvas: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const selectedDestination = destinations.find((destination) => destination.nodeKey === config.targetNodeKey)
+  const grouped = destinations.reduce((groups, destination) => {
+    const label = destination.breadcrumb.join(" › ")
+    const group = groups.get(label) ?? []
+    group.push(destination)
+    groups.set(label, group)
+    return groups
+  }, new Map<string, typeof destinations>())
+
+  return (
+    <section className="space-y-3 rounded-xl border border-violet-200 bg-violet-50/70 p-3">
+      <div className="space-y-1">
+        <p className="text-sm font-semibold text-slate-950">Destination</p>
+        <p className="text-xs leading-4 text-slate-600">
+          The run continues at this action and does not return to the current path.
+        </p>
+      </div>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="h-9 w-full justify-between rounded-full border-slate-200 bg-white px-3 text-sm font-normal"
+          >
+            <span className="min-w-0 truncate">
+              {selectedDestination
+                ? goToDestinationLabel(selectedDestination.action)
+                : "Select destination"}
+            </span>
+            <ChevronsUpDown className="size-4 shrink-0 opacity-50" aria-hidden="true" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-72 overflow-hidden rounded-xl p-0">
+          <Command>
+            <CommandInput placeholder="Search actions" />
+            <CommandList className="max-h-72">
+              <CommandEmpty>No available actions found.</CommandEmpty>
+              {[...grouped.entries()].map(([breadcrumb, options]) => (
+                <CommandGroup key={breadcrumb} heading={breadcrumb}>
+                  {options.map((destination) => (
+                    <CommandItem
+                      key={destination.nodeKey}
+                      value={`${breadcrumb} ${goToDestinationLabel(destination.action)} ${destination.nodeKey}`}
+                      disabled={Boolean(destination.issue)}
+                      title={destination.issue ?? undefined}
+                      onSelect={() => {
+                        if (destination.issue) return
+                        onChange({ targetNodeKey: destination.nodeKey })
+                        setOpen(false)
+                      }}
+                    >
+                      <RouteIcon className="size-4 text-violet-600" aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate">{goToDestinationLabel(destination.action)}</span>
+                      {config.targetNodeKey === destination.nodeKey ? <Check className="size-4" aria-hidden="true" /> : null}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              ))}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+      <Button
+        type="button"
+        variant="outline"
+        className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full", isPickingOnCanvas && "border-emerald-300 bg-emerald-50 text-emerald-800")}
+        onClick={onPickOnCanvas}
+      >
+        <MousePointerClick data-icon="inline-start" aria-hidden="true" />
+        {isPickingOnCanvas ? "Select an action on the canvas" : "Pick on canvas"}
+      </Button>
+      {destinations.every((destination) => destination.issue) ? (
+        <p className="text-xs leading-4 text-amber-700">No cycle-safe destination is available yet.</p>
+      ) : issue ? (
+        <p className="text-xs leading-4 text-rose-700">{issue}</p>
+      ) : null}
+    </section>
   )
 }
 

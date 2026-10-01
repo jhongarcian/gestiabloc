@@ -6481,11 +6481,13 @@ components:
             - MATH_OPERATION
             - IF_ELSE
             - SPLIT
+            - GO_TO
             - WAIT
             - DELETE_CONTACT
           description: >-
             DELETE_CONTACT permanently removes the contact from the tenant account and
-            must be the final action in the automation.
+            must be the final action in the automation. GO_TO must be final in its source
+            path and may only reference a destination that keeps the workflow acyclic.
         customFieldId:
           type: string
         customFieldUpdates:
@@ -6537,6 +6539,8 @@ components:
           $ref: "#/components/schemas/AutomationIfElseConfig"
         splitConfig:
           $ref: "#/components/schemas/AutomationSplitConfig"
+        goToConfig:
+          $ref: "#/components/schemas/AutomationGoToConfig"
         waitConfig:
           oneOf:
             - type: object
@@ -6576,6 +6580,19 @@ components:
                   type: string
                   minLength: 1
                   maxLength: 200
+    AutomationGoToConfig:
+      type: object
+      required: [targetNodeKey]
+      description: >-
+        Routes execution to the exact saved action and continues through that destination
+        path. Go To must be terminal in its source path, and the complete workflow graph
+        must remain acyclic.
+      properties:
+        targetNodeKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Stable node key of an executable action in the same automation.
     AutomationIfElseConfig:
       type: object
       required: [actionName, branches]

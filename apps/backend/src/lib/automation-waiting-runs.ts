@@ -4,7 +4,6 @@ import {
   automationActionSnapshot,
   flattenAutomationActionTree,
   parseActionSnapshot,
-  selectedAutomationActionSteps,
 } from "./opportunity-automations.js"
 import {
   getAutomationActionLabel,
@@ -267,6 +266,14 @@ export async function exitAutomationWaitingRun(
     }
 
     const occurredAt = params.occurredAt ?? new Date()
+    const cursorPath = run.cursorPath && typeof run.cursorPath === "object" && !Array.isArray(run.cursorPath)
+      ? run.cursorPath as Record<string, unknown>
+      : {}
+    const visitedNodeKeys = new Set(
+      Array.isArray(cursorPath.visitedNodeKeys)
+        ? cursorPath.visitedNodeKeys.filter((value): value is string => typeof value === "string")
+        : [],
+    )
     const claimed = await transaction.automationRun.updateMany({
       where: {
         id: run.id,
@@ -283,6 +290,12 @@ export async function exitAutomationWaitingRun(
         leaseToken: null,
         leaseExpiresAt: null,
         exitedAt: occurredAt,
+        cursorPath: {
+          ...cursorPath,
+          nextNodeKey: null,
+          visitedNodeKeys: [...visitedNodeKeys],
+          goToHistory: Array.isArray(cursorPath.goToHistory) ? cursorPath.goToHistory : [],
+        },
       },
     })
     if (claimed.count !== 1) {
@@ -342,29 +355,17 @@ export async function exitAutomationWaitingRun(
       })
     }
 
-    const branchDecisions = (run.branchDecisions ?? {}) as Record<string, unknown>
-    const selectedSteps = selectedAutomationActionSteps(actions, branchDecisions as any)
-    const cursorPath = run.cursorPath && typeof run.cursorPath === "object" && !Array.isArray(run.cursorPath)
-      ? run.cursorPath as Record<string, unknown>
-      : null
-    const nextNodeKey = typeof cursorPath?.nextNodeKey === "string" ? cursorPath.nextNodeKey : null
-    const selectedRemainingSteps = nextNodeKey
-      ? selectedSteps.slice(Math.max(0, selectedSteps.findIndex((step) => step.action.nodeKey === nextNodeKey)))
-      : selectedSteps.slice(run.cursorIndex)
     const allSteps = flattenAutomationActionTree(actions)
-    const remainingByKey = new Map(selectedRemainingSteps.map((step) => [step.action.nodeKey, step]))
-    for (const step of selectedRemainingSteps) {
-      if (
-        (step.action.type !== "IF_ELSE" && step.action.type !== "SPLIT") ||
-        branchDecisions[step.action.nodeKey]
-      ) continue
-      for (const descendant of allSteps) {
-        if (descendant.branchPath.some((entry) => entry.nodeKey === step.action.nodeKey)) {
-          remainingByKey.set(descendant.action.nodeKey, descendant)
-        }
-      }
-    }
-    const remainingSteps = [...remainingByKey.values()].sort((left, right) => left.nodeOrder - right.nodeOrder)
+    const priorLogs = await transaction.automationNodeExecution.findMany({
+      where: { tenantId: params.tenantId, attemptId: run.attemptId },
+      select: { nodeKey: true },
+    })
+    const loggedNodeKeys = new Set(priorLogs.map((log: { nodeKey: string | null }) => log.nodeKey).filter(Boolean))
+    const remainingSteps = allSteps.filter((step) =>
+      step.action.nodeKey !== params.nodeKey &&
+      !visitedNodeKeys.has(step.action.nodeKey) &&
+      !loggedNodeKeys.has(step.action.nodeKey)
+    )
     const remainingLogs = remainingSteps.map(({ action, nodeOrder, branchPath }) => ({
       tenantId: params.tenantId,
       automationId: params.automationId,
@@ -402,7 +403,7 @@ export async function exitAutomationWaitingRun(
         sourceStageId: run.sourceStageId,
         targetStageId: run.targetStageId,
         actorUserId: params.actorUserId,
-        actionCount: run.cursorIndex,
+        actionCount: Math.max(run.cursorIndex, visitedNodeKeys.size),
       },
     })
 

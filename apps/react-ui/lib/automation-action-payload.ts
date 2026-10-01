@@ -59,5 +59,7 @@ export function serializeAutomationAction(action: AutomationAction): AutomationA
             }
           : action.splitConfig,
       }
+    case "GO_TO":
+      return { ...base, goToConfig: action.goToConfig }
   }
 }

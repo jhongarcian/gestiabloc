@@ -212,7 +212,10 @@ describe("Split automation actions", () => {
     assert.equal(waitingResult.status, "WAITING")
     const persisted = firstTx.updates[0]!.data
     assert.equal(persisted.branchDecisions[IDS.split].branchKey, IDS.routeOne)
-    assert.deepEqual(persisted.cursorPath, { nextNodeKey: IDS.actionOne })
+    assert.equal(persisted.cursorPath.nextNodeKey, IDS.actionOne)
+    assert.deepEqual(persisted.cursorPath.goToHistory, [])
+    assert.ok(persisted.cursorPath.visitedNodeKeys.includes(IDS.split))
+    assert.ok(persisted.cursorPath.visitedNodeKeys.includes(IDS.wait))
 
     const secondTx = prismaTx()
     const resumedResult = await executeAutomationSegmentTx(secondTx.client, {

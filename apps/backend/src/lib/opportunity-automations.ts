@@ -104,6 +104,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "MATH_OPERATION",
   "IF_ELSE",
   "SPLIT",
+  "GO_TO",
   "WAIT",
   "DELETE_CONTACT",
 ] as const
@@ -350,6 +351,11 @@ const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
     mathOperationConfig: AutomationMathOperationConfigSchema,
   }),
   z.object({ type: z.literal("WAIT"), nodeKey: actionNodeKeySchema, waitConfig: AutomationWaitConfigSchema }),
+  z.object({
+    type: z.literal("GO_TO"),
+    nodeKey: actionNodeKeySchema,
+    goToConfig: z.object({ targetNodeKey: AutomationNodeKeySchema }).strict(),
+  }),
   z.object({ type: z.literal("DELETE_CONTACT"), nodeKey: actionNodeKeySchema }),
 ])
 
@@ -462,6 +468,7 @@ const legacyRoutingActionNullFields = {
   numberFormatterConfig: z.null().optional(),
   textFormatterConfig: z.null().optional(),
   mathOperationConfig: z.null().optional(),
+  goToConfig: z.null().optional(),
 }
 
 const AutomationIfElseBranchSchema: z.ZodType<AutomationIfElseBranchInput> = z.lazy(() => z.object({
@@ -599,6 +606,207 @@ export class AutomationConfigurationError extends Error {
   }
 }
 
+type AutomationControlFlowAction = {
+  nodeKey: string
+  type: string
+  goToConfig?: { targetNodeKey?: string | null } | null
+  ifElseConfig?: { branches?: Array<{ isDefault?: boolean; actions?: AutomationControlFlowAction[] }> } | null
+  splitConfig?: { routes?: Array<{ actions?: AutomationControlFlowAction[] }> } | null
+}
+
+type AutomationControlFlowLocation = {
+  action: AutomationControlFlowAction
+  pathActions: AutomationControlFlowAction[]
+  index: number
+}
+
+function automationValueRequirements(action: AutomationControlFlowAction) {
+  const record = action as any
+  const required = new Set<string>()
+  const addSource = (source: unknown) => {
+    if (!source || typeof source !== "object" || Array.isArray(source)) return
+    const candidate = source as Record<string, unknown>
+    if (candidate.type === "AUTOMATION_VALUE" && typeof candidate.key === "string") {
+      required.add(candidate.key)
+    }
+  }
+  const addTemplate = (template: unknown) => {
+    if (typeof template !== "string") return
+    for (const match of template.matchAll(/\{automation\.([a-z][a-z0-9_]{0,63})\}/g)) {
+      if (match[1]) required.add(match[1])
+    }
+  }
+
+  if (record.type === "FORMAT_DATE_TIME") {
+    const config = record.dateTimeFormatterConfig
+    if (config?.mode === "COMPARE_DATES") {
+      addSource(config.from)
+      addSource(config.to)
+    } else addSource(config?.source)
+  } else if (record.type === "FORMAT_NUMBER") {
+    if (record.numberFormatterConfig?.mode !== "RANDOM_NUMBER") addSource(record.numberFormatterConfig?.source)
+  } else if (record.type === "FORMAT_TEXT") {
+    addSource(record.textFormatterConfig?.source)
+  } else if (record.type === "MATH_OPERATION") {
+    addSource(record.mathOperationConfig?.source)
+  } else if (record.type === "ADD_CONTACT_NOTE") {
+    addTemplate(record.noteTitle)
+    addTemplate(record.noteBody)
+  } else if (record.type === "CREATE_TASK") {
+    addTemplate(record.taskConfig?.nameTemplate)
+    addTemplate(record.taskConfig?.descriptionTemplate)
+    addTemplate(record.taskConfig?.reminder?.messageTemplate)
+  } else if (record.type === "IF_ELSE") {
+    for (const branch of record.ifElseConfig?.branches ?? []) {
+      for (const condition of branch.conditions ?? []) addSource(condition)
+    }
+  }
+  return required
+}
+
+function automationValueProduced(action: AutomationControlFlowAction) {
+  const record = action as any
+  if (record.type === "FORMAT_DATE_TIME") return record.dateTimeFormatterConfig?.outputKey as string | undefined
+  if (record.type === "FORMAT_NUMBER") return record.numberFormatterConfig?.outputKey as string | undefined
+  if (record.type === "FORMAT_TEXT") return record.textFormatterConfig?.outputKey as string | undefined
+  if (record.type === "MATH_OPERATION") return record.mathOperationConfig?.outputKey as string | undefined
+  return undefined
+}
+
+function validateAutomationValueControlFlow(
+  locations: Map<string, AutomationControlFlowLocation>,
+  edges: Map<string, Set<string>>,
+) {
+  const predecessors = new Map<string, Set<string>>()
+  for (const nodeKey of locations.keys()) predecessors.set(nodeKey, new Set())
+  for (const [source, targets] of edges) {
+    for (const target of targets) predecessors.get(target)?.add(source)
+  }
+  const inDegree = new Map([...predecessors].map(([nodeKey, sources]) => [nodeKey, sources.size]))
+  const queue = [...inDegree].filter(([, degree]) => degree === 0).map(([nodeKey]) => nodeKey)
+  const definitelyAvailable = new Map<string, Set<string>>()
+
+  while (queue.length > 0) {
+    const nodeKey = queue.shift()!
+    const incoming = [...(predecessors.get(nodeKey) ?? [])]
+    const available = incoming.length === 0
+      ? new Set<string>()
+      : incoming.slice(1).reduce(
+          (intersection, predecessor) => new Set(
+            [...intersection].filter((key) => definitelyAvailable.get(predecessor)?.has(key)),
+          ),
+          new Set(definitelyAvailable.get(incoming[0]!) ?? []),
+        )
+    const action = locations.get(nodeKey)!.action
+    for (const requiredKey of automationValueRequirements(action)) {
+      if (!available.has(requiredKey)) {
+        throw new AutomationConfigurationError(
+          "GO_TO_VALUE_UNAVAILABLE",
+          `The automation value “${requiredKey}” is not guaranteed to exist on every route to this action.`,
+        )
+      }
+    }
+    const produced = automationValueProduced(action)
+    if (produced) available.add(produced)
+    definitelyAvailable.set(nodeKey, available)
+    for (const target of edges.get(nodeKey) ?? []) {
+      const remaining = (inDegree.get(target) ?? 1) - 1
+      inDegree.set(target, remaining)
+      if (remaining === 0) queue.push(target)
+    }
+  }
+}
+
+function collectAutomationControlFlowLocations(actions: AutomationControlFlowAction[]) {
+  const locations = new Map<string, AutomationControlFlowLocation>()
+  const visit = (pathActions: AutomationControlFlowAction[]) => {
+    pathActions.forEach((action, index) => {
+      locations.set(action.nodeKey, { action, pathActions, index })
+      if (action.type === "IF_ELSE") {
+        for (const branch of action.ifElseConfig?.branches ?? []) {
+          if (!branch.isDefault) visit(branch.actions ?? [])
+        }
+      } else if (action.type === "SPLIT") {
+        for (const route of action.splitConfig?.routes ?? []) visit(route.actions ?? [])
+      }
+    })
+  }
+  visit(actions)
+  return locations
+}
+
+export function validateAutomationGoToControlFlow(actions: AutomationControlFlowAction[]) {
+  const locations = collectAutomationControlFlowLocations(actions)
+  const edges = new Map<string, Set<string>>()
+  const addEdge = (source: string, target?: string | null) => {
+    if (!target) return
+    const targets = edges.get(source) ?? new Set<string>()
+    targets.add(target)
+    edges.set(source, targets)
+  }
+
+  for (const { action, pathActions, index } of locations.values()) {
+    if (action.type === "GO_TO") {
+      if (index !== pathActions.length - 1) {
+        throw new AutomationConfigurationError(
+          "GO_TO_MUST_BE_LAST",
+          "Go To can only be the final action in its path.",
+        )
+      }
+      const targetNodeKey = action.goToConfig?.targetNodeKey
+      if (!targetNodeKey || !locations.has(targetNodeKey)) {
+        throw new AutomationConfigurationError(
+          "GO_TO_TARGET_NOT_FOUND",
+          "Select an available Go To destination.",
+        )
+      }
+      if (targetNodeKey === action.nodeKey) {
+        throw new AutomationConfigurationError(
+          "GO_TO_SELF_TARGET",
+          "Go To cannot target itself.",
+        )
+      }
+      addEdge(action.nodeKey, targetNodeKey)
+      continue
+    }
+    if (action.type === "IF_ELSE") {
+      for (const branch of action.ifElseConfig?.branches ?? []) {
+        if (!branch.isDefault) addEdge(action.nodeKey, branch.actions?.[0]?.nodeKey)
+      }
+      continue
+    }
+    if (action.type === "SPLIT") {
+      for (const route of action.splitConfig?.routes ?? []) {
+        addEdge(action.nodeKey, route.actions?.[0]?.nodeKey)
+      }
+      continue
+    }
+    addEdge(action.nodeKey, pathActions[index + 1]?.nodeKey)
+  }
+
+  const states = new Map<string, 0 | 1 | 2>()
+  const visit = (nodeKey: string): boolean => {
+    const state = states.get(nodeKey) ?? 0
+    if (state === 1) return true
+    if (state === 2) return false
+    states.set(nodeKey, 1)
+    for (const target of edges.get(nodeKey) ?? []) {
+      if (visit(target)) return true
+    }
+    states.set(nodeKey, 2)
+    return false
+  }
+  if ([...locations.keys()].some((nodeKey) => visit(nodeKey))) {
+    throw new AutomationConfigurationError(
+      "AUTOMATION_FLOW_CYCLE",
+      "Go To connections cannot create a workflow loop.",
+    )
+  }
+  if ([...locations.values()].some(({ action }) => action.type === "GO_TO")) {
+    validateAutomationValueControlFlow(locations, edges)
+  }
+}
+
 export class AutomationExecutionError extends Error {
   status = 409
   code = "AUTOMATION_EXECUTION_FAILED"
@@ -612,7 +820,7 @@ export class AutomationExecutionError extends Error {
   eventSource: AutomationNodeEventSource | null
   contactName: string | null
   branchDecisions: AutomationBranchDecisions | null
-  cursorPath: { nextNodeKey: string | null } | null
+  cursorPath: AutomationCursorPathState | null
 
   constructor(params: {
     automationId: string | null
@@ -635,6 +843,17 @@ export class AutomationExecutionError extends Error {
     this.branchDecisions = null
     this.cursorPath = null
   }
+}
+
+export type AutomationGoToHistoryEntry = {
+  sourceNodeKey: string
+  targetNodeKey: string
+}
+
+export type AutomationCursorPathState = {
+  nextNodeKey: string | null
+  visitedNodeKeys?: string[]
+  goToHistory?: AutomationGoToHistoryEntry[]
 }
 
 function valueTypeForCustomField(fieldType: CustomFieldType): ValueType {
@@ -1379,6 +1598,18 @@ export async function validateAutomationConfiguration(
         },
       }
     }
+    if (action.type === "GO_TO") {
+      if (index !== actionInputs.length - 1) {
+        throw new AutomationConfigurationError(
+          "GO_TO_MUST_BE_LAST",
+          "Go To can only be the final action in its path.",
+        )
+      }
+      return {
+        ...base,
+        goToConfig: { targetNodeKey: action.goToConfig.targetNodeKey },
+      }
+    }
     if (action.type === "DELETE_CONTACT") {
       if (index !== actionInputs.length - 1) {
         throw new AutomationConfigurationError(
@@ -1652,6 +1883,7 @@ export async function validateAutomationConfiguration(
   }
 
   const actions = normalizeActionPath(input.actions, new Map(), 0)
+  validateAutomationGoToControlFlow(actions)
 
   return {
     name: input.name,
@@ -2064,6 +2296,7 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
         numberFormatterConfig: action.numberFormatterConfig,
         textFormatterConfig: action.textFormatterConfig,
         mathOperationConfig: action.mathOperationConfig,
+        goToConfig: action.goToConfig,
       }
   const parsed = AutomationActionInputSchema.parse(snapshot)
   return ensureRuntimeAutomationAction(parsed)
@@ -2081,8 +2314,8 @@ export function parseActionSnapshot(value: unknown): RuntimeAutomationAction[] {
   }
   const validatePaths = (pathActions: RuntimeAutomationAction[], depth: number) => {
     for (const [index, action] of pathActions.entries()) {
-      if ((action.type === "IF_ELSE" || action.type === "SPLIT") && index !== pathActions.length - 1) {
-        throw new Error(`${action.type === "SPLIT" ? "Split" : "If/Else"} must be the final action in its saved path.`)
+      if ((action.type === "IF_ELSE" || action.type === "SPLIT" || action.type === "GO_TO") && index !== pathActions.length - 1) {
+        throw new Error(`${action.type === "SPLIT" ? "Split" : action.type === "IF_ELSE" ? "If/Else" : "Go To"} must be the final action in its saved path.`)
       }
       if (action.type !== "IF_ELSE" && action.type !== "SPLIT") continue
       if (depth >= 3) throw new Error("Split and If/Else can be nested up to three levels.")
@@ -2100,6 +2333,7 @@ export function parseActionSnapshot(value: unknown): RuntimeAutomationAction[] {
     }
   }
   validatePaths(runtimeActions, 0)
+  validateAutomationGoToControlFlow(runtimeActions)
   return runtimeActions
 }
 
@@ -2803,10 +3037,19 @@ export function selectedAutomationActionSteps(
   actions: RuntimeAutomationAction[],
   decisions: AutomationBranchDecisions,
 ) {
+  return automationActionContinuation(actions, decisions)
+}
+
+export function automationActionContinuation(
+  actions: RuntimeAutomationAction[],
+  decisions: AutomationBranchDecisions,
+  startNodeKey?: string | null,
+) {
   const flatByKey = new Map(flattenAutomationActionTree(actions).map((item) => [item.action.nodeKey, item]))
   const selected: FlattenedAutomationAction[] = []
-  const visit = (pathActions: RuntimeAutomationAction[]) => {
-    for (const action of pathActions) {
+  const visit = (pathActions: RuntimeAutomationAction[], startIndex = 0) => {
+    for (let index = startIndex; index < pathActions.length; index += 1) {
+      const action = pathActions[index]!
       const step = flatByKey.get(action.nodeKey)
       if (!step) continue
       selected.push(step)
@@ -2825,7 +3068,13 @@ export function selectedAutomationActionSteps(
       return
     }
   }
-  visit(actions)
+  if (startNodeKey) {
+    const location = collectAutomationControlFlowLocations(actions).get(startNodeKey)
+    if (!location) return []
+    visit(location.pathActions as RuntimeAutomationAction[], location.index)
+  } else {
+    visit(actions)
+  }
   return selected
 }
 
@@ -3057,6 +3306,100 @@ function normalizeAutomationVariables(value: unknown) {
   return { ...(value as Record<string, unknown>) }
 }
 
+function normalizeAutomationCursorState(value: unknown): AutomationCursorPathState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { nextNodeKey: null, visitedNodeKeys: [], goToHistory: [] }
+  }
+  const record = value as Record<string, unknown>
+  const visitedNodeKeys = Array.isArray(record.visitedNodeKeys)
+    ? record.visitedNodeKeys.filter((item): item is string => typeof item === "string")
+    : []
+  const goToHistory = Array.isArray(record.goToHistory)
+    ? record.goToHistory.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return []
+        const entry = item as Record<string, unknown>
+        return typeof entry.sourceNodeKey === "string" && typeof entry.targetNodeKey === "string"
+          ? [{ sourceNodeKey: entry.sourceNodeKey, targetNodeKey: entry.targetNodeKey }]
+          : []
+      })
+    : []
+  return {
+    nextNodeKey: typeof record.nextNodeKey === "string" ? record.nextNodeKey : null,
+    visitedNodeKeys: [...new Set(visitedNodeKeys)],
+    goToHistory,
+  }
+}
+
+function automationCursorState(
+  nextNodeKey: string | null,
+  visitedNodeKeys: Set<string>,
+  goToHistory: AutomationGoToHistoryEntry[],
+): AutomationCursorPathState {
+  return {
+    nextNodeKey,
+    visitedNodeKeys: [...visitedNodeKeys],
+    goToHistory,
+  }
+}
+
+function appendUnvisitedAutomationLogs(params: {
+  base: Omit<AutomationNodeLogData, "id" | "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
+  actions: RuntimeAutomationAction[]
+  logs: AutomationNodeLogData[]
+  visitedNodeKeys: Set<string>
+  branchDecisions: AutomationBranchDecisions
+  goToHistory: AutomationGoToHistoryEntry[]
+  fallbackReasonCode?: string
+  fallbackDetails?: string
+}) {
+  const flattened = flattenAutomationActionTree(params.actions)
+  const loggedKeys = new Set(params.logs.map((log) => log.nodeKey))
+  const locations = collectAutomationControlFlowLocations(params.actions)
+  const bypassedKeys = new Set<string>()
+  for (const jump of params.goToHistory) {
+    const target = locations.get(jump.targetNodeKey)
+    if (!target) continue
+    for (let index = 0; index < target.index; index += 1) {
+      bypassedKeys.add(target.pathActions[index]!.nodeKey)
+    }
+  }
+
+  for (const step of flattened) {
+    const nodeKey = step.action.nodeKey
+    if (params.visitedNodeKeys.has(nodeKey) || loggedKeys.has(nodeKey)) continue
+    let reasonCode = params.fallbackReasonCode ?? "GO_TO_BYPASSED"
+    let details = params.fallbackDetails ?? "Skipped because execution continued through another automation path."
+    if (bypassedKeys.has(nodeKey)) {
+      reasonCode = "GO_TO_BYPASSED"
+      details = "Skipped because Go To entered this path at a later action."
+    } else {
+      const unselectedEntry = [...step.branchPath].reverse().find((entry) => {
+        const decision = params.branchDecisions[entry.nodeKey]
+        return decision && decision.branchKey !== entry.branchKey
+      })
+      if (unselectedEntry) {
+        const routingAction = locations.get(unselectedEntry.nodeKey)?.action
+        reasonCode = routingAction?.type === "SPLIT" ? "ROUTE_NOT_SELECTED" : "BRANCH_NOT_SELECTED"
+        details = routingAction?.type === "SPLIT"
+          ? `Skipped because route “${unselectedEntry.branchName}” was not selected.`
+          : `Skipped because branch “${unselectedEntry.branchName}” was not selected.`
+      }
+    }
+    params.logs.push(actionLog(
+      params.base,
+      step.action,
+      step.nodeOrder - 1,
+      "SKIPPED",
+      reasonCode,
+      details,
+      undefined,
+      step,
+    ))
+    loggedKeys.add(nodeKey)
+  }
+  params.logs.sort((left, right) => left.nodeOrder - right.nodeOrder)
+}
+
 function branchFailureLogs(
   base: Omit<AutomationNodeLogData, "id" | "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">,
   steps: FlattenedAutomationAction[],
@@ -3106,7 +3449,17 @@ function branchFailureLogs(
     return prior
   })
   for (const prior of completedLogs) {
-    if (prior.status === "SKIPPED" && !selectedPathKeys.has(prior.nodeKey)) logs.push(prior)
+    if (selectedPathKeys.has(prior.nodeKey)) continue
+    if (prior.status === "SKIPPED") {
+      logs.push(prior)
+    } else if (prior.status === "EXECUTED") {
+      logs.push({
+        ...prior,
+        status: "FAILED",
+        reasonCode: "TRANSACTION_ROLLED_BACK",
+        details: "This action ran, but its changes were rolled back because a later action failed.",
+      })
+    }
   }
   return logs.sort((left, right) => left.nodeOrder - right.nodeOrder)
 }
@@ -3169,13 +3522,33 @@ async function executeBranchedAutomationSegmentTx(
     directContactPromise = null
   }
 
-  let steps = selectedAutomationActionSteps(actions, branchDecisions)
-  const cursorRecord = run.cursorPath && typeof run.cursorPath === "object" && !Array.isArray(run.cursorPath)
+  const cursorState = normalizeAutomationCursorState(run.cursorPath)
+  const visitedNodeKeys = new Set(cursorState.visitedNodeKeys ?? [])
+  const goToHistory = [...(cursorState.goToHistory ?? [])]
+  const flattenedByKey = new Map(
+    flattenAutomationActionTree(actions).map((candidate) => [candidate.action.nodeKey, candidate]),
+  )
+  const nextNodeKey = cursorState.nextNodeKey
+  // Waiting runs created before graph-aware cursors only persisted the next
+  // node. Preserve their completed prefix so the final audit pass cannot add
+  // contradictory Skipped rows for actions that ran before the Wait.
+  const rawCursorPath = run.cursorPath && typeof run.cursorPath === "object" && !Array.isArray(run.cursorPath)
     ? run.cursorPath as Record<string, unknown>
     : null
-  const nextNodeKey = typeof cursorRecord?.nextNodeKey === "string" ? cursorRecord.nextNodeKey : null
-  let index = nextNodeKey ? steps.findIndex((step) => step.action.nodeKey === nextNodeKey) : 0
-  if (nextNodeKey && index < 0) {
+  if (nextNodeKey && !Array.isArray(rawCursorPath?.visitedNodeKeys)) {
+    const legacySelectedSteps = selectedAutomationActionSteps(actions, branchDecisions)
+    const legacyNextIndex = legacySelectedSteps.findIndex((step) => step.action.nodeKey === nextNodeKey)
+    if (legacyNextIndex > 0) {
+      for (const step of legacySelectedSteps.slice(0, legacyNextIndex)) {
+        visitedNodeKeys.add(step.action.nodeKey)
+      }
+    }
+  }
+  let steps = nextNodeKey
+    ? automationActionContinuation(actions, branchDecisions, nextNodeKey)
+    : selectedAutomationActionSteps(actions, branchDecisions)
+  let index = 0
+  if (nextNodeKey && steps[0]?.action.nodeKey !== nextNodeKey) {
     throw new AutomationExecutionError({
       automationId: run.automationId,
       automationName: run.automationName,
@@ -3186,10 +3559,35 @@ async function executeBranchedAutomationSegmentTx(
   }
   const segmentStartIndex = Math.max(0, index)
   let contactDeleted = false
+  let transitionCount = 0
 
   while (index < steps.length) {
     const step = steps[index]!
     const action = step.action
+    transitionCount += 1
+    if (transitionCount > MAX_AUTOMATION_ACTION_NODES || visitedNodeKeys.has(action.nodeKey)) {
+      const executionError = new AutomationExecutionError({
+        automationId: run.automationId,
+        automationName: run.automationName,
+        actionIndex: step.nodeOrder - 1,
+        contactId: run.contactId,
+        message: "Go To encountered a workflow loop and stopped this run safely.",
+      })
+      executionError.code = "GO_TO_CYCLE_DETECTED"
+      executionError.nodeExecutions = [actionLog(
+        base,
+        action,
+        step.nodeOrder - 1,
+        "FAILED",
+        "GO_TO_CYCLE_DETECTED",
+        executionError.message,
+        undefined,
+        step,
+      )]
+      executionError.branchDecisions = { ...branchDecisions }
+      executionError.cursorPath = automationCursorState(action.nodeKey, visitedNodeKeys, goToHistory)
+      throw executionError
+    }
 
     if (action.type === "IF_ELSE") {
       try {
@@ -3220,33 +3618,12 @@ async function executeBranchedAutomationSegmentTx(
           undefined,
           step,
         ))
-
-        for (const branch of action.ifElseConfig.branches) {
-          if (branch.isDefault || branch.branchKey === selectedBranch.branchKey) continue
-          const skippedPath = [
-            ...step.branchPath,
-            { nodeKey: action.nodeKey, branchKey: branch.branchKey, branchName: branch.name },
-          ]
-          for (const skipped of flattenAutomationActionTree(branch.actions)) {
-            logs.push(actionLog(
-              base,
-              skipped.action,
-              skipped.nodeOrder - 1,
-              "SKIPPED",
-              "BRANCH_NOT_SELECTED",
-              `Skipped because branch “${branch.name}” was not selected.`,
-              undefined,
-              {
-                nodeOrder: flattenAutomationActionTree(actions).find((item) => item.action.nodeKey === skipped.action.nodeKey)?.nodeOrder ?? skipped.nodeOrder,
-                branchPath: [...skippedPath, ...skipped.branchPath],
-              },
-            ))
-          }
-        }
-
-        steps = selectedAutomationActionSteps(actions, branchDecisions)
-        index = steps.findIndex((candidate) => candidate.action.nodeKey === action.nodeKey) + 1
-        if (selectedBranch.isDefault) index = steps.length
+        visitedNodeKeys.add(action.nodeKey)
+        const continuation = selectedBranch.isDefault
+          ? []
+          : automationActionContinuation(actions, branchDecisions, selectedBranch.actions[0]?.nodeKey)
+        steps = continuation
+        index = 0
         continue
       } catch (error) {
         const executionError = error instanceof AutomationExecutionError
@@ -3278,7 +3655,7 @@ async function executeBranchedAutomationSegmentTx(
         }
         executionError.nodeExecutions = failureLogs.sort((left, right) => left.nodeOrder - right.nodeOrder)
         executionError.branchDecisions = { ...branchDecisions }
-        executionError.cursorPath = { nextNodeKey: action.nodeKey }
+        executionError.cursorPath = automationCursorState(action.nodeKey, visitedNodeKeys, goToHistory)
         throw executionError
       }
     }
@@ -3307,33 +3684,11 @@ async function executeBranchedAutomationSegmentTx(
           undefined,
           step,
         ))
-
-        const flattenedActions = flattenAutomationActionTree(actions)
-        for (const route of action.splitConfig.routes) {
-          if (route.branchKey === selectedRoute.branchKey) continue
-          const skippedPath = [
-            ...step.branchPath,
-            { nodeKey: action.nodeKey, branchKey: route.branchKey, branchName: route.name },
-          ]
-          for (const skipped of flattenAutomationActionTree(route.actions)) {
-            logs.push(actionLog(
-              base,
-              skipped.action,
-              skipped.nodeOrder - 1,
-              "SKIPPED",
-              "ROUTE_NOT_SELECTED",
-              `Skipped because route “${route.name}” was not selected.`,
-              undefined,
-              {
-                nodeOrder: flattenedActions.find((item) => item.action.nodeKey === skipped.action.nodeKey)?.nodeOrder ?? skipped.nodeOrder,
-                branchPath: [...skippedPath, ...skipped.branchPath],
-              },
-            ))
-          }
-        }
-
-        steps = selectedAutomationActionSteps(actions, branchDecisions)
-        index = steps.findIndex((candidate) => candidate.action.nodeKey === action.nodeKey) + 1
+        visitedNodeKeys.add(action.nodeKey)
+        steps = selectedRoute.actions[0]
+          ? automationActionContinuation(actions, branchDecisions, selectedRoute.actions[0].nodeKey)
+          : []
+        index = 0
         continue
       } catch (error) {
         const executionError = error instanceof AutomationExecutionError
@@ -3365,9 +3720,60 @@ async function executeBranchedAutomationSegmentTx(
         }
         executionError.nodeExecutions = failureLogs.sort((left, right) => left.nodeOrder - right.nodeOrder)
         executionError.branchDecisions = { ...branchDecisions }
-        executionError.cursorPath = { nextNodeKey: action.nodeKey }
+        executionError.cursorPath = automationCursorState(action.nodeKey, visitedNodeKeys, goToHistory)
         throw executionError
       }
+    }
+
+    if (action.type === "GO_TO") {
+      const targetNodeKey = action.goToConfig.targetNodeKey
+      const targetStep = flattenedByKey.get(targetNodeKey)
+      if (!targetStep) {
+        const executionError = new AutomationExecutionError({
+          automationId: run.automationId,
+          automationName: run.automationName,
+          actionIndex: step.nodeOrder - 1,
+          contactId: run.contactId,
+          message: "The configured Go To destination is no longer available in this pinned run.",
+        })
+        executionError.code = "GO_TO_TARGET_NOT_FOUND"
+        executionError.nodeExecutions = [actionLog(
+          base,
+          action,
+          step.nodeOrder - 1,
+          "FAILED",
+          "GO_TO_TARGET_NOT_FOUND",
+          executionError.message,
+          undefined,
+          step,
+        )]
+        executionError.branchDecisions = { ...branchDecisions }
+        executionError.cursorPath = automationCursorState(action.nodeKey, visitedNodeKeys, goToHistory)
+        throw executionError
+      }
+      const breadcrumb = targetStep.branchPath.map((entry) => entry.branchName).join(" › ")
+      logs.push(actionLog(
+        base,
+        action,
+        step.nodeOrder - 1,
+        "EXECUTED",
+        "GO_TO_ROUTED",
+        `Routed to “${getAutomationActionNodeLabel(targetStep.action)}”${breadcrumb ? ` in ${breadcrumb}` : ""}.`,
+        undefined,
+        step,
+      ))
+      visitedNodeKeys.add(action.nodeKey)
+      goToHistory.push({ sourceNodeKey: action.nodeKey, targetNodeKey })
+      for (const branchEntry of targetStep.branchPath) {
+        branchDecisions[branchEntry.nodeKey] = {
+          branchKey: branchEntry.branchKey,
+          branchName: branchEntry.branchName,
+          decidedAt: now.toISOString(),
+        }
+      }
+      steps = automationActionContinuation(actions, branchDecisions, targetNodeKey)
+      index = 0
+      continue
     }
 
     if (action.type === "WAIT") {
@@ -3384,13 +3790,14 @@ async function executeBranchedAutomationSegmentTx(
           logId,
           step,
         ))
+        visitedNodeKeys.add(action.nodeKey)
         const nextStep = steps[index + 1]
         await prismaTx.automationRun.update({
           where: { id: run.id },
           data: {
             status: "WAITING",
             cursorIndex: index + 1,
-            cursorPath: { nextNodeKey: nextStep?.action.nodeKey ?? null },
+            cursorPath: automationCursorState(nextStep?.action.nodeKey ?? null, visitedNodeKeys, goToHistory),
             branchDecisions,
             resumeAt,
             waitingNodeKey: action.nodeKey,
@@ -3413,16 +3820,24 @@ async function executeBranchedAutomationSegmentTx(
         undefined,
         step,
       ))
+      visitedNodeKeys.add(action.nodeKey)
       if (action.waitConfig.mode === "FIXED_DATE" && action.waitConfig.pastBehavior === "EXIT") {
-        for (const skipped of steps.slice(index + 1)) {
-          logs.push(actionLog(base, skipped.action, skipped.nodeOrder - 1, "SKIPPED", "WAIT_EXITED", "Skipped because the wait action exited this run.", undefined, skipped))
-        }
+        appendUnvisitedAutomationLogs({
+          base,
+          actions,
+          logs,
+          visitedNodeKeys,
+          branchDecisions,
+          goToHistory,
+          fallbackReasonCode: "WAIT_EXITED",
+          fallbackDetails: "Skipped because the wait action exited this run.",
+        })
         await prismaTx.automationRun.update({
           where: { id: run.id },
           data: {
             status: "EXITED",
             cursorIndex: index + 1,
-            cursorPath: { nextNodeKey: null },
+            cursorPath: automationCursorState(null, visitedNodeKeys, goToHistory),
             branchDecisions,
             resumeAt: null,
             waitingNodeKey: null,
@@ -3464,6 +3879,7 @@ async function executeBranchedAutomationSegmentTx(
         }
         for (const skipped of steps.slice(index + 1, targetIndex)) {
           logs.push(actionLog(base, skipped.action, skipped.nodeOrder - 1, "SKIPPED", "WAIT_JUMPED", "Skipped because the wait action continued at a later step.", undefined, skipped))
+          visitedNodeKeys.add(skipped.action.nodeKey)
         }
         index = targetIndex
         continue
@@ -3494,6 +3910,7 @@ async function executeBranchedAutomationSegmentTx(
         fileCleanupCandidates.push(...successDetails.fileCleanupCandidates)
       }
       logs.push(actionLog(base, action, step.nodeOrder - 1, "EXECUTED", null, details ?? "Action completed successfully.", undefined, step))
+      visitedNodeKeys.add(action.nodeKey)
     } catch (error) {
       const executionError = error instanceof AutomationExecutionError
         ? error
@@ -3504,20 +3921,40 @@ async function executeBranchedAutomationSegmentTx(
             contactId: run.contactId,
             message: error instanceof Error ? error.message : "The automation action failed.",
           })
-      executionError.nodeExecutions = branchFailureLogs(base, steps, segmentStartIndex, index, logs, executionError.message)
+      const failureLogs = branchFailureLogs(base, steps, segmentStartIndex, index, logs, executionError.message)
+      appendUnvisitedAutomationLogs({
+        base,
+        actions,
+        logs: failureLogs,
+        visitedNodeKeys,
+        branchDecisions,
+        goToHistory,
+        fallbackReasonCode: "PREVIOUS_ACTION_FAILED",
+        fallbackDetails: "Skipped because an earlier action failed.",
+      })
+      executionError.nodeExecutions = failureLogs
       executionError.branchDecisions = { ...branchDecisions }
-      executionError.cursorPath = { nextNodeKey: action.nodeKey }
+      executionError.cursorPath = automationCursorState(action.nodeKey, visitedNodeKeys, goToHistory)
       throw executionError
     }
     index += 1
   }
 
+  appendUnvisitedAutomationLogs({
+    base,
+    actions,
+    logs,
+    visitedNodeKeys,
+    branchDecisions,
+    goToHistory,
+  })
+
   await prismaTx.automationRun.update({
     where: { id: run.id },
     data: {
       status: "SUCCEEDED",
-      cursorIndex: steps.length,
-      cursorPath: { nextNodeKey: null },
+      cursorIndex: visitedNodeKeys.size,
+      cursorPath: automationCursorState(null, visitedNodeKeys, goToHistory),
       branchDecisions,
       resumeAt: null,
       waitingNodeKey: null,
@@ -3540,7 +3977,7 @@ async function executeBranchedAutomationSegmentTx(
       sourceStageId: run.sourceStageId,
       targetStageId: run.targetStageId,
       actorUserId: run.actorUserId,
-      actionCount: steps.length,
+      actionCount: visitedNodeKeys.size,
     },
   })
   return {
@@ -3564,7 +4001,7 @@ export async function executeAutomationSegmentTx(
 ) {
   if (
     flattenAutomationActionTree(params.actions).some((step) =>
-      step.action.type === "IF_ELSE" || step.action.type === "SPLIT"
+      step.action.type === "IF_ELSE" || step.action.type === "SPLIT" || step.action.type === "GO_TO"
     ) || params.run.cursorPath
   ) {
     return executeBranchedAutomationSegmentTx(prismaTx, params)
@@ -4175,9 +4612,14 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
     occurredAt: now,
   } satisfies Omit<AutomationNodeLogData, "id" | "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
   const branchedSteps = flattenAutomationActionTree(actions).some((step) =>
-    step.action.type === "IF_ELSE" || step.action.type === "SPLIT"
+    step.action.type === "IF_ELSE" || step.action.type === "SPLIT" || step.action.type === "GO_TO"
   )
-    ? selectedAutomationActionSteps(actions, normalizeBranchDecisions(run.branchDecisions))
+    ? (() => {
+        const cursor = normalizeAutomationCursorState(run.cursorPath)
+        return cursor.nextNodeKey
+          ? automationActionContinuation(actions, normalizeBranchDecisions(run.branchDecisions), cursor.nextNodeKey)
+          : selectedAutomationActionSteps(actions, normalizeBranchDecisions(run.branchDecisions))
+      })()
     : []
   const cursorRecord = run.cursorPath && typeof run.cursorPath === "object" && !Array.isArray(run.cursorPath)
     ? run.cursorPath as Record<string, unknown>

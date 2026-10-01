@@ -4,14 +4,172 @@ import { describe, test } from "node:test"
 import {
   AutomationUpsertSchema,
   AutomationExecutionError,
+  automationSplitBucket,
   evaluateAutomationOperator,
+  executeAutomationSegmentTx,
   executeOpportunityAutomations,
   getAutomationOperatorsForFieldType,
   recordAutomationFailure,
   resumeDueAutomationRuns,
   deleteAutomationContactFileObjects,
+  validateAutomationGoToControlFlow,
   validateAutomationConfiguration,
 } from "./opportunity-automations.js"
+
+describe("validateAutomationGoToControlFlow", () => {
+  const split = (routes: Array<{ branchKey: string; name: string; actions: any[] }>) => ({
+    nodeKey: "split-root",
+    type: "SPLIT",
+    splitConfig: { actionName: "Split", routes: routes.map((route) => ({ ...route, percentage: 50 })) },
+  })
+
+  test("allows a terminal cross-route jump into the middle of another route", () => {
+    assert.doesNotThrow(() => validateAutomationGoToControlFlow([
+      split([
+        {
+          branchKey: "route-a",
+          name: "Route A",
+          actions: [{ nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "target" } }],
+        },
+        {
+          branchKey: "route-b",
+          name: "Route B",
+          actions: [
+            { nodeKey: "bypassed", type: "CLEAR_CONTACT_ASSIGNEE" },
+            { nodeKey: "target", type: "SET_CONTACT_STATUS" },
+          ],
+        },
+      ]),
+    ]))
+  })
+
+  test("rejects same-path backward jumps and multi-node cycles", () => {
+    assert.throws(
+      () => validateAutomationGoToControlFlow([
+        { nodeKey: "first", type: "CLEAR_CONTACT_ASSIGNEE" },
+        { nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "first" } },
+      ]),
+      (error: any) => error?.code === "AUTOMATION_FLOW_CYCLE",
+    )
+    assert.throws(
+      () => validateAutomationGoToControlFlow([
+        split([
+          { branchKey: "route-a", name: "Route A", actions: [{ nodeKey: "go-a", type: "GO_TO", goToConfig: { targetNodeKey: "go-b" } }] },
+          { branchKey: "route-b", name: "Route B", actions: [{ nodeKey: "go-b", type: "GO_TO", goToConfig: { targetNodeKey: "go-a" } }] },
+        ]),
+      ]),
+      (error: any) => error?.code === "AUTOMATION_FLOW_CYCLE",
+    )
+  })
+
+  test("rejects a jump that bypasses a required automation value", () => {
+    assert.throws(
+      () => validateAutomationGoToControlFlow([
+        split([
+          {
+            branchKey: "route-a",
+            name: "Route A",
+            actions: [{ nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "note" } }],
+          },
+          {
+            branchKey: "route-b",
+            name: "Route B",
+            actions: [
+              { nodeKey: "formatter", type: "FORMAT_TEXT", textFormatterConfig: { outputKey: "lead_name" } },
+              { nodeKey: "note", type: "ADD_CONTACT_NOTE", noteTitle: "Lead", noteBody: "{automation.lead_name}" },
+            ],
+          },
+        ]),
+      ]),
+      (error: any) => error?.code === "GO_TO_VALUE_UNAVAILABLE",
+    )
+  })
+})
+
+describe("Go To runtime", () => {
+  test("enters the exact destination and continues without executing earlier destination actions", async () => {
+    const runId = "run-go-to"
+    const splitNodeKey = "split-node"
+    const sourceRoute = {
+      branchKey: "source-route",
+      name: "Source route",
+      percentage: 50,
+      actions: [{ nodeKey: "go-node", type: "GO_TO" as const, goToConfig: { targetNodeKey: "target-node" } }],
+    }
+    const destinationRoute = {
+      branchKey: "destination-route",
+      name: "Destination route",
+      percentage: 50,
+      actions: [
+        { nodeKey: "bypassed-node", type: "CLEAR_CONTACT_ASSIGNEE" as const },
+        { nodeKey: "target-node", type: "CLEAR_CONTACT_ASSIGNEE" as const },
+        { nodeKey: "after-target-node", type: "CLEAR_CONTACT_ASSIGNEE" as const },
+      ],
+    }
+    const sourceFirst = automationSplitBucket(runId, splitNodeKey) <= 50
+    const actions = [{
+      nodeKey: splitNodeKey,
+      type: "SPLIT" as const,
+      splitConfig: {
+        actionName: "Split",
+        routes: sourceFirst ? [sourceRoute, destinationRoute] : [destinationRoute, sourceRoute],
+      },
+    }]
+    let contactUpdates = 0
+    let savedRun: Record<string, unknown> | null = null
+    const prismaTx = {
+      contact: { update: async () => { contactUpdates += 1 } },
+      automationRun: { update: async ({ data }: { data: Record<string, unknown> }) => { savedRun = data } },
+      automationExecution: { create: async () => undefined },
+    }
+    const emptyMap = new Map()
+    const result = await executeAutomationSegmentTx(prismaTx, {
+      run: {
+        id: runId,
+        tenantId: "tenant-1",
+        automationId: "automation-1",
+        automationName: "Go To test",
+        contactId: "contact-1",
+        contactName: "Taylor Reed",
+        actorUserId: "user-1",
+        opportunityId: "opportunity-1",
+        attemptId: "attempt-1",
+        eventSource: "OPPORTUNITY_CREATED",
+        triggerType: "OPPORTUNITY_CREATED",
+        sourceStageId: null,
+        targetStageId: null,
+        cursorIndex: 0,
+        cursorPath: null,
+        branchDecisions: {},
+        variables: {},
+      },
+      actions: actions as any,
+      startIndex: 0,
+      catalog: {
+        fieldMap: emptyMap,
+        fieldKeyMap: emptyMap,
+        activeStatusIds: new Set(),
+        activeTaskStatusIds: new Set(),
+        taskStatusMap: emptyMap,
+        activeUserIds: new Set(),
+        tagIds: new Set(),
+        statusMap: emptyMap,
+        userMap: emptyMap,
+        tagMap: emptyMap,
+        pipelineMap: emptyMap,
+        stageMap: emptyMap,
+        timezone: "America/Chicago",
+      },
+    })
+
+    assert.equal(result.status, "SUCCEEDED")
+    assert.equal(contactUpdates, 2)
+    assert.equal(result.logs.find((log) => log.nodeKey === "go-node")?.reasonCode, "GO_TO_ROUTED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "bypassed-node")?.reasonCode, "GO_TO_BYPASSED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "target-node")?.status, "EXECUTED")
+    assert.equal((savedRun as Record<string, unknown> | null)?.status, "SUCCEEDED")
+  })
+})
 
 describe("evaluateAutomationOperator", () => {
   test("evaluates numeric comparisons and ranges", () => {

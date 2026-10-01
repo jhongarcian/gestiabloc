@@ -342,6 +342,7 @@ describe("automation Wait monitoring", () => {
         },
       },
       automationNodeExecution: {
+        findMany: async () => [{ nodeKey: waitNodeKey }],
         updateMany: async (args: any) => {
           waitLogUpdate = args
           return { count: 1 }

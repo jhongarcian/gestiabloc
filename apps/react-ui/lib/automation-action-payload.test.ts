@@ -5,6 +5,22 @@ import { serializeAutomationAction } from "./automation-action-payload.js"
 import type { AutomationAction } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types.js"
 
 describe("serializeAutomationAction", () => {
+  test("serializes only the stable Go To destination", () => {
+    assert.deepEqual(
+      serializeAutomationAction({
+        nodeKey: "go-to-1",
+        type: "GO_TO",
+        goToConfig: { targetNodeKey: "destination-1" },
+        statusConfigId: null,
+      }),
+      {
+        nodeKey: "go-to-1",
+        type: "GO_TO",
+        goToConfig: { targetNodeKey: "destination-1" },
+      },
+    )
+  })
+
   test("omits unrelated routing configs and preserves a nested If/Else inside Split", () => {
     const action: AutomationAction = {
       nodeKey: "split-1",

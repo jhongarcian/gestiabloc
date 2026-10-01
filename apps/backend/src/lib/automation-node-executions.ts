@@ -44,6 +44,7 @@ const ACTION_LABELS: Record<string, string> = {
   MATH_OPERATION: "Math operation",
   IF_ELSE: "If/Else",
   SPLIT: "Split",
+  GO_TO: "Go to",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 }

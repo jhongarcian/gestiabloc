@@ -300,6 +300,10 @@ export type AutomationSplitConfig = {
   routes: AutomationSplitRoute[]
 }
 
+export type AutomationGoToConfig = {
+  targetNodeKey: string
+}
+
 export type AutomationAction = {
   id?: string
   nodeKey?: string
@@ -318,6 +322,7 @@ export type AutomationAction = {
     | "MATH_OPERATION"
     | "IF_ELSE"
     | "SPLIT"
+    | "GO_TO"
     | "WAIT"
     | "DELETE_CONTACT"
   customFieldUpdates?: AutomationFieldUpdate[] | null
@@ -334,6 +339,7 @@ export type AutomationAction = {
   mathOperationConfig?: AutomationMathOperationConfig | null
   ifElseConfig?: AutomationIfElseConfig | null
   splitConfig?: AutomationSplitConfig | null
+  goToConfig?: AutomationGoToConfig | null
 }
 
 export type AutomationRecord = {

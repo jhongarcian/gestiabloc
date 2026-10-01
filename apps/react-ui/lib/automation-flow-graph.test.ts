@@ -18,11 +18,52 @@ const labels = {
   MATH_OPERATION: "Math operation",
   IF_ELSE: "If/Else",
   SPLIT: "Split",
+  GO_TO: "Go to",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 } as const
 
 describe("buildAutomationFlowGraph", () => {
+  test("renders Go To as a dotted outer-gutter route without a local completion", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "split",
+          type: "SPLIT",
+          splitConfig: {
+            actionName: "Split",
+            routes: [
+              {
+                branchKey: "route-a",
+                name: "Route A",
+                percentage: 50,
+                actions: [{ nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "target" } }],
+              },
+              {
+                branchKey: "route-b",
+                name: "Route B",
+                percentage: 50,
+                actions: [{ nodeKey: "target", type: "SET_CONTACT_STATUS", statusConfigId: "active" }],
+              },
+            ],
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+
+    const goToEdge = graph.edges.find((edge) => edge.type === "goTo")
+    assert.equal(goToEdge?.source, "action-go")
+    assert.equal(goToEdge?.target, "action-target")
+    assert.ok(graph.nodes.some((node) => node.id === "go-to-bound-go"))
+    assert.equal(graph.nodes.some((node) => node.id === "complete-split-route-a"), false)
+  })
+
   test("creates a trigger, insertion point, action, and completion path", () => {
     const graph = buildAutomationFlowGraph(
       {
