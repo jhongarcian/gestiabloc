@@ -279,4 +279,45 @@ describe("findEnabledAutomationReference", () => {
       { id: "automation-1", name: "Random status test" },
     )
   })
+
+  test("finds pipeline and stage references inside nested Update/create opportunity actions", async () => {
+    const prismaClient = {
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Move renewal",
+          actions: [{
+            type: "SPLIT",
+            splitConfig: {
+              actionName: "Route",
+              routes: [{
+                actions: [{
+                  type: "UPDATE_OPPORTUNITY",
+                  opportunityConfig: {
+                    actionName: "Move renewal",
+                    pipelineId: "pipeline-2",
+                    pipelineNameSnapshot: "Renewals",
+                    stageId: "stage-2",
+                    stageNameSnapshot: "Follow-up",
+                    resultMode: "KEEP_CURRENT",
+                    valueCents: 0,
+                  },
+                }],
+              }],
+            },
+          }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(prismaClient, "tenant-1", { kind: "pipeline", id: "pipeline-2" }),
+      { id: "automation-1", name: "Move renewal" },
+    )
+    assert.deepEqual(
+      await findEnabledAutomationReference(prismaClient, "tenant-1", { kind: "stage", ids: ["stage-2"] }),
+      { id: "automation-1", name: "Move renewal" },
+    )
+  })
 })

@@ -2,7 +2,10 @@ import {
   AutomationTaskConfigSchema,
   taskConfigCustomFieldKeys,
 } from "./automation-task.js"
-import { AutomationCustomFieldUpdatesSchema } from "./opportunity-automations.js"
+import {
+  AutomationCustomFieldUpdatesSchema,
+  AutomationOpportunityConfigSchema,
+} from "./opportunity-automations.js"
 import {
   AutomationDateTimeFormatterConfigSchema,
   dateTimeFormatterCustomFieldKeys,
@@ -108,7 +111,9 @@ export async function findEnabledAutomationReference(
     reference.kind !== "status" &&
     reference.kind !== "taskStatus" &&
     reference.kind !== "tag" &&
-    reference.kind !== "user"
+    reference.kind !== "user" &&
+    reference.kind !== "pipeline" &&
+    reference.kind !== "stage"
   ) {
     return null
   }
@@ -125,7 +130,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "IF_ELSE", "SPLIT"] },
+          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
         },
       },
     },
@@ -147,6 +152,7 @@ export async function findEnabledAutomationReference(
           numberFormatterConfig: true,
           textFormatterConfig: true,
           mathOperationConfig: true,
+          opportunityConfig: true,
           ifElseConfig: true,
           splitConfig: true,
         },
@@ -205,6 +211,17 @@ export async function findEnabledAutomationReference(
       }
       if (reference.kind === "user" && action.assignedUserId === reference.id) {
         return { id: automation.id, name: automation.name }
+      }
+      if (action.type === "UPDATE_OPPORTUNITY") {
+        const opportunity = AutomationOpportunityConfigSchema.safeParse(action.opportunityConfig)
+        if (
+          opportunity.success &&
+          (reference.kind === "pipeline" && opportunity.data.pipelineId === reference.id ||
+            reference.kind === "stage" && reference.ids.includes(opportunity.data.stageId))
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
       }
       if (
         reference.kind === "customField" &&

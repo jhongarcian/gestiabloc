@@ -6482,6 +6482,7 @@ components:
             - IF_ELSE
             - SPLIT
             - GO_TO
+            - UPDATE_OPPORTUNITY
             - WAIT
             - DELETE_CONTACT
           description: >-
@@ -6541,6 +6542,8 @@ components:
           $ref: "#/components/schemas/AutomationSplitConfig"
         goToConfig:
           $ref: "#/components/schemas/AutomationGoToConfig"
+        opportunityConfig:
+          $ref: "#/components/schemas/AutomationOpportunityConfig"
         waitConfig:
           oneOf:
             - type: object
@@ -7450,6 +7453,38 @@ components:
           type: string
           enum: [DEFERRED]
           description: Return the challenge before sending email so the client can show the OTP view immediately.
+    AutomationOpportunityConfig:
+      description: Creates a missing opportunity or updates the selected opportunity's stage, value, and outcome.
+      type: object
+      required: [actionName, pipelineId, pipelineNameSnapshot, stageId, stageNameSnapshot, resultMode, valueCents]
+      additionalProperties: false
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        pipelineId:
+          type: string
+          format: uuid
+        pipelineNameSnapshot:
+          type: string
+          minLength: 1
+          maxLength: 120
+        stageId:
+          type: string
+          format: uuid
+        stageNameSnapshot:
+          type: string
+          minLength: 1
+          maxLength: 120
+        resultMode:
+          type: string
+          enum: [KEEP_CURRENT, OPEN, WON, LOST]
+        valueCents:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+          description: Fixed USD value in cents applied when the opportunity is created or updated.
     LoginResponse:
       type: object
       properties:

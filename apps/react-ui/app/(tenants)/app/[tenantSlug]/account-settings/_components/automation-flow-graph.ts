@@ -10,7 +10,7 @@ export type AutomationFlowNodeData = {
   subtitle?: string
   configured?: boolean
   actionType?: AutomationAction["type"]
-  actionGroup?: "INTERNAL" | "CONTACT" | "COMMUNICATION"
+  actionGroup?: "INTERNAL" | "OPPORTUNITY" | "CONTACT" | "COMMUNICATION"
   index?: number
   insertionIndex?: number
   actionNodeKey?: string
@@ -63,8 +63,14 @@ const CONTACT_ACTION_TYPES = new Set<AutomationAction["type"]>([
   "DELETE_CONTACT",
 ])
 
+const OPPORTUNITY_ACTION_TYPES = new Set<AutomationAction["type"]>([
+  "UPDATE_OPPORTUNITY",
+])
+
 function actionVisualGroup(type: AutomationAction["type"]): NonNullable<AutomationFlowNodeData["actionGroup"]> {
-  return CONTACT_ACTION_TYPES.has(type) ? "CONTACT" : "INTERNAL"
+  if (CONTACT_ACTION_TYPES.has(type)) return "CONTACT"
+  if (OPPORTUNITY_ACTION_TYPES.has(type)) return "OPPORTUNITY"
+  return "INTERNAL"
 }
 
 type AutomationGraphRoutingBranch = {
@@ -235,6 +241,16 @@ export function buildAutomationFlowGraph(
           ? action.mathOperationConfig?.mode === "DATE"
             ? `${action.mathOperationConfig.operation === "ADD" ? "Add" : "Subtract"} ${action.mathOperationConfig.amount} ${action.mathOperationConfig.unit.toLocaleLowerCase()} → ${action.mathOperationConfig.outputKey}`
             : `${action.mathOperationConfig?.operation === "SUBTRACT" ? "Subtract" : action.mathOperationConfig?.operation === "MULTIPLY" ? "Multiply" : action.mathOperationConfig?.operation === "DIVIDE" ? "Divide" : "Add"} ${action.mathOperationConfig?.operand ?? ""} → ${action.mathOperationConfig?.outputKey || "value"}`
+        : action.type === "UPDATE_OPPORTUNITY"
+          ? `${action.opportunityConfig?.pipelineNameSnapshot || "Pipeline"} → ${action.opportunityConfig?.stageNameSnapshot || "Stage"} · ${
+              action.opportunityConfig?.resultMode === "KEEP_CURRENT"
+                ? "Keep current"
+                : action.opportunityConfig?.resultMode === "WON"
+                  ? "Won"
+                  : action.opportunityConfig?.resultMode === "LOST"
+                    ? "Lost"
+                    : "Open"
+            }`
         : action.type === "UPDATE_CONTACT_CUSTOM_FIELDS"
           ? `Update ${action.customFieldUpdates?.length ?? 0} field${action.customFieldUpdates?.length === 1 ? "" : "s"}`
           : action.type === "DELETE_CONTACT"
@@ -251,6 +267,8 @@ export function buildAutomationFlowGraph(
     return {
       label: action.type === "FORMAT_TEXT"
         ? action.textFormatterConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "UPDATE_OPPORTUNITY"
+          ? action.opportunityConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "IF_ELSE"
           ? action.ifElseConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "SPLIT"

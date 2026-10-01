@@ -66,6 +66,22 @@ export async function queueOpportunityAutomationEvent(
   if (!event.targetStageId) {
     throw new Error("An opportunity automation event requires a target stage.")
   }
+  if (event.causationKey) {
+    const existingEvent = await prismaTx.automationEvent.findUnique({
+      where: { causationKey: event.causationKey },
+      include: { dispatches: { select: { decision: true } } },
+    })
+    if (existingEvent) {
+      return {
+        automationEventId: existingEvent.id,
+        automationStatus: "QUEUED",
+        queuedAutomationCount: existingEvent.dispatches.length,
+        matchedCount: existingEvent.dispatches.filter((dispatch: any) => dispatch.decision === "RUN").length,
+        executedCount: existingEvent.completedCount,
+        contactDeleted: false,
+      }
+    }
+  }
   const automations = await prismaTx.automation.findMany({
     where: {
       tenantId: event.tenantId,
@@ -109,6 +125,15 @@ export async function queueOpportunityAutomationEvent(
 
   const contactName = getContactDisplayName(contact)
   const eventId = randomUUID()
+  const chainId = event.chainId ?? eventId
+  const chainDepth = event.chainDepth ?? 0
+  const transitionHistory = event.transitionHistory ?? [{
+    kind: event.triggerType === "OPPORTUNITY_CREATED" ? "CREATED" as const : "STAGE_CHANGED" as const,
+    opportunityKey: event.opportunityId,
+    pipelineId: event.pipelineId,
+    sourceStageId: event.sourceStageId,
+    targetStageId: event.targetStageId,
+  }]
   const occurredAt = new Date()
   const dispatches = automations.map((automation: any, automationOrder: number) => {
     const actions = automation.actions.map(automationActionSnapshot)
@@ -154,7 +179,7 @@ export async function queueOpportunityAutomationEvent(
       opportunityId: event.opportunityId,
       opportunitySnapshotId: event.opportunityId,
       actorUserId: event.actorUserId,
-      actorName: catalog.userMap.get(event.actorUserId) ?? null,
+      actorName: event.actorUserId ? catalog.userMap.get(event.actorUserId) ?? null : null,
       triggerType: event.triggerType,
       pipelineId: event.pipelineId,
       pipelineName: catalog.pipelineMap.get(event.pipelineId) ?? "Pipeline",
@@ -165,6 +190,14 @@ export async function queueOpportunityAutomationEvent(
       targetStageId: event.targetStageId,
       targetStageName: catalog.stageMap.get(event.targetStageId) ?? "Stage",
       valueCents: event.valueCents,
+      chainId,
+      parentEventId: event.parentEventId ?? null,
+      chainDepth,
+      transitionHistory,
+      sourceAutomationId: event.sourceAutomationId ?? null,
+      sourceAutomationName: event.sourceAutomationName ?? null,
+      sourceNodeKey: event.sourceNodeKey ?? null,
+      causationKey: event.causationKey ?? null,
       dispatchCount: dispatches.length,
     },
   })
@@ -373,6 +406,10 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
           sourceStageId: event.sourceStageId,
           targetStageId: event.targetStageId,
           occurredAt: event.createdAt instanceof Date ? event.createdAt.toISOString() : String(event.createdAt),
+          eventId: event.id,
+          chainId: event.chainId,
+          chainDepth: event.chainDepth,
+          transitionHistory: event.transitionHistory,
         },
         status: "RUNNING",
       },
@@ -384,6 +421,7 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
       catalog,
       startIndex: 0,
       occurredAt: now,
+      queueOpportunityEvent: queueOpportunityAutomationEvent,
     })
     if (result.logs.length > 0) {
       await prismaTx.automationNodeExecution.createMany({ data: result.logs })
@@ -413,7 +451,9 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
 }
 
 function isTransientQueueError(error: unknown) {
-  if (error instanceof AutomationExecutionError) return false
+  if (error instanceof AutomationExecutionError) {
+    return error.code === "OPPORTUNITY_CHANGED_CONCURRENTLY"
+  }
   const value = error as { code?: string; message?: string }
   if (["P1001", "P1008", "P1017", "P2028", "P2034"].includes(value?.code ?? "")) return true
   return /deadlock|serializ|connection.*(?:closed|reset|terminated)|timed? out|expired transaction/i.test(
@@ -436,6 +476,7 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
     }
     const message = error instanceof Error ? error.message : "The automation could not be completed."
     const executionError = error instanceof AutomationExecutionError ? error : null
+    const failureCode = executionError?.code ?? "AUTOMATION_EXECUTION_FAILED"
     const logs = executionError?.nodeExecutions.length
       ? executionError.nodeExecutions
       : actions.length > 0
@@ -444,7 +485,7 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
           dispatch,
           actions,
           status: "FAILED",
-          reasonCode: "AUTOMATION_EXECUTION_FAILED",
+          reasonCode: failureCode,
           details: message.slice(0, 500),
         })
         : [{
@@ -509,10 +550,14 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
           occurredAt: dispatch.event.createdAt instanceof Date
             ? dispatch.event.createdAt.toISOString()
             : String(dispatch.event.createdAt),
+          eventId: dispatch.event.id,
+          chainId: dispatch.event.chainId,
+          chainDepth: dispatch.event.chainDepth,
+          transitionHistory: dispatch.event.transitionHistory,
         },
         status: "FAILED",
         failureNodeKey: failedStep?.action.nodeKey ?? actions[executionError?.actionIndex ?? 0]?.nodeKey ?? null,
-        failureCode: "AUTOMATION_EXECUTION_FAILED",
+        failureCode,
         failureMessage: message.slice(0, 500),
         failedAt: now,
       },
@@ -520,7 +565,7 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
         status: "FAILED",
         cursorPath: executionError?.cursorPath ?? undefined,
         branchDecisions: executionError?.branchDecisions ?? undefined,
-        failureCode: "AUTOMATION_EXECUTION_FAILED",
+        failureCode,
         failureMessage: message.slice(0, 500),
         failedAt: now,
       },
@@ -538,7 +583,7 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
         targetStageId: dispatch.event.targetStageId,
         actorUserId: dispatch.event.actorUserId,
         actionCount: Math.max(0, executionError?.actionIndex ?? 0),
-        errorCode: "AUTOMATION_EXECUTION_FAILED",
+        errorCode: failureCode,
         errorMessage: message.slice(0, 500),
       },
     })

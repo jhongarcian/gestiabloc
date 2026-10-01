@@ -100,6 +100,7 @@ const catalog: AutomationRuntimeCatalog = {
   tagMap: new Map(),
   pipelineMap: new Map(),
   stageMap: new Map(),
+  stagePipelineMap: new Map(),
   timezone: "America/Chicago",
 }
 

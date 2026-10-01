@@ -5,6 +5,38 @@ import { serializeAutomationAction } from "./automation-action-payload.js"
 import type { AutomationAction } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types.js"
 
 describe("serializeAutomationAction", () => {
+  test("serializes only the Update/create opportunity configuration", () => {
+    assert.deepEqual(
+      serializeAutomationAction({
+        nodeKey: "opportunity-1",
+        type: "UPDATE_OPPORTUNITY",
+        opportunityConfig: {
+          actionName: "Move to follow-up",
+          pipelineId: "pipeline-1",
+          pipelineNameSnapshot: "Work",
+          stageId: "stage-2",
+          stageNameSnapshot: "Follow-up",
+          resultMode: "WON",
+          valueCents: 25_000,
+        },
+        statusConfigId: null,
+      }),
+      {
+        nodeKey: "opportunity-1",
+        type: "UPDATE_OPPORTUNITY",
+        opportunityConfig: {
+          actionName: "Move to follow-up",
+          pipelineId: "pipeline-1",
+          pipelineNameSnapshot: "Work",
+          stageId: "stage-2",
+          stageNameSnapshot: "Follow-up",
+          resultMode: "WON",
+          valueCents: 25_000,
+        },
+      },
+    )
+  })
+
   test("serializes only the stable Go To destination", () => {
     assert.deepEqual(
       serializeAutomationAction({

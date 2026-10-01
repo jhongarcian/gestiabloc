@@ -19,6 +19,7 @@ const labels = {
   IF_ELSE: "If/Else",
   SPLIT: "Split",
   GO_TO: "Go to",
+  UPDATE_OPPORTUNITY: "Update/create opportunity",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 } as const
@@ -392,6 +393,36 @@ describe("buildAutomationFlowGraph", () => {
 
     assert.equal(graph.nodes.find((node) => node.id.endsWith("0001"))?.data.subtitle, "Add 25 → adjusted_premium")
     assert.equal(graph.nodes.find((node) => node.id.endsWith("0002"))?.data.subtitle, "Subtract 2 months → notice_date")
+  })
+
+  test("uses the custom Update/create opportunity name and amber opportunity group", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "opportunity-action",
+          type: "UPDATE_OPPORTUNITY",
+          opportunityConfig: {
+            actionName: "Move renewal",
+            pipelineId: "pipeline-2",
+            pipelineNameSnapshot: "Renewals",
+            stageId: "stage-2",
+            stageNameSnapshot: "Follow-up",
+            resultMode: "WON",
+            valueCents: 25_000,
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+    const node = graph.nodes.find((candidate) => candidate.id === "action-opportunity-action")
+    assert.equal(node?.data.label, "Move renewal")
+    assert.equal(node?.data.subtitle, "Renewals → Follow-up · Won")
+    assert.equal(node?.data.actionGroup, "OPPORTUNITY")
   })
 
   test("places delete contact directly before completion", () => {

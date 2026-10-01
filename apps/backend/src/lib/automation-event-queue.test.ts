@@ -142,6 +142,46 @@ describe("queueOpportunityAutomationEvent", () => {
     assert.equal(result.automationStatus, "QUEUED")
     assert.equal(result.queuedAutomationCount, 3)
     assert.equal(result.matchedCount, 1)
+    assert.equal(captured.event.chainDepth, 0)
+    assert.equal(captured.event.chainId, captured.event.id)
+    assert.deepEqual(captured.event.transitionHistory, [{
+      kind: "STAGE_CHANGED",
+      opportunityKey: "opportunity-1",
+      pipelineId: "pipeline-1",
+      sourceStageId: "stage-1",
+      targetStageId: "stage-2",
+    }])
+  })
+
+  test("returns the existing child event for the same causation key", async () => {
+    let automationQueries = 0
+    const result = await queueOpportunityAutomationEvent({
+      automationEvent: {
+        findUnique: async () => ({
+          id: "existing-event",
+          completedCount: 1,
+          dispatches: [{ decision: "RUN" }, { decision: "SKIP_FILTERS" }],
+        }),
+      },
+      automation: { findMany: async () => { automationQueries += 1; return [] } },
+    }, {
+      tenantId: "tenant-1",
+      actorUserId: null,
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-1",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-1",
+      causationKey: "automation-run:run-1:node:node-1",
+    })
+
+    assert.equal(result.automationEventId, "existing-event")
+    assert.equal(result.queuedAutomationCount, 2)
+    assert.equal(result.matchedCount, 1)
+    assert.equal(result.executedCount, 1)
+    assert.equal(automationQueries, 0)
   })
 
   test("does not create a queue event when no trigger and pipeline candidate exists", async () => {

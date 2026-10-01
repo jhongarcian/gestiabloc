@@ -54,6 +54,7 @@ import {
   GitBranch,
   GripVertical,
   Hash,
+  Kanban,
   ListChecks,
   ListTodo,
   Loader2,
@@ -332,7 +333,7 @@ const NUMERIC_OPERATORS: AutomationOperator[] = [
 const STATUS_OPERATORS: AutomationOperator[] = ["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]
 const VALUELESS_OPERATORS = new Set<AutomationOperator>(["IS_EMPTY", "IS_NOT_EMPTY", "IS_TRUE", "IS_FALSE"])
 
-type AutomationActionGroupId = "INTERNAL" | "CONTACT" | "COMMUNICATION"
+type AutomationActionGroupId = "INTERNAL" | "OPPORTUNITY" | "CONTACT" | "COMMUNICATION"
 
 const ACTION_GROUPS: ReadonlyArray<{
   id: AutomationActionGroupId
@@ -345,6 +346,12 @@ const ACTION_GROUPS: ReadonlyArray<{
     label: "Internal actions",
     description: "Control timing, create work, and prepare values for later steps.",
     icon: Workflow,
+  },
+  {
+    id: "OPPORTUNITY",
+    label: "Opportunity actions",
+    description: "Create or update an opportunity in a pipeline.",
+    icon: Kanban,
   },
   {
     id: "CONTACT",
@@ -371,6 +378,12 @@ const ACTION_GROUP_STYLES: Record<AutomationActionGroupId, {
     icon: "bg-violet-100 text-violet-700 ring-violet-200",
     actionIcon: "bg-violet-100 text-violet-700",
     actionHover: "hover:border-violet-300 hover:bg-violet-50",
+  },
+  OPPORTUNITY: {
+    section: "border-amber-200 bg-amber-50/75",
+    icon: "bg-amber-100 text-amber-800 ring-amber-200",
+    actionIcon: "bg-amber-100 text-amber-800",
+    actionHover: "hover:border-amber-300 hover:bg-amber-50",
   },
   CONTACT: {
     section: "border-blue-200 bg-blue-50/75",
@@ -456,6 +469,13 @@ const ACTION_DEFINITIONS = {
     group: "INTERNAL",
     order: 9,
     icon: StickyNote,
+  },
+  UPDATE_OPPORTUNITY: {
+    label: "Update/create opportunity",
+    description: "Create an opportunity or update its stage, value, and outcome.",
+    group: "OPPORTUNITY",
+    order: 0,
+    icon: Kanban,
   },
   UPDATE_CONTACT_CUSTOM_FIELDS: {
     label: "Update contact fields",
@@ -655,6 +675,8 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
         : "cursor-pointer border-dashed border-primary/40 bg-card text-card-foreground hover:border-primary hover:bg-accent/40"
       : data.kind === "action" && data.actionGroup === "CONTACT"
         ? "border-blue-200 bg-blue-50/90 text-slate-950 hover:border-blue-300"
+      : data.kind === "action" && data.actionGroup === "OPPORTUNITY"
+        ? "border-amber-200 bg-amber-50/90 text-slate-950 hover:border-amber-300"
       : data.kind === "action" && data.actionGroup === "COMMUNICATION"
         ? "border-emerald-200 bg-emerald-50/90 text-slate-950 hover:border-emerald-300"
       : data.kind === "action"
@@ -667,6 +689,8 @@ function AutomationFlowNode({ data }: NodeProps<CanvasNode>) {
       ? "bg-primary-foreground/90 text-primary"
       : data.kind === "action" && data.actionGroup === "CONTACT"
         ? "bg-white/90 text-blue-700 ring-1 ring-blue-200"
+      : data.kind === "action" && data.actionGroup === "OPPORTUNITY"
+        ? "bg-white/90 text-amber-800 ring-1 ring-amber-200"
       : data.kind === "action" && data.actionGroup === "COMMUNICATION"
         ? "bg-white/90 text-emerald-700 ring-1 ring-emerald-200"
       : data.kind === "action"
@@ -1073,6 +1097,23 @@ function actionDefaults(
     }
   }
   if (type === "GO_TO") return { nodeKey, type, goToConfig: { targetNodeKey: "" } }
+  if (type === "UPDATE_OPPORTUNITY") {
+    const pipeline = catalog.pipelines[0]
+    const stage = pipeline?.stages[0]
+    return {
+      nodeKey,
+      type,
+      opportunityConfig: {
+        actionName: "Update/create opportunity",
+        pipelineId: pipeline?.id ?? "",
+        pipelineNameSnapshot: pipeline?.name ?? "",
+        stageId: stage?.id ?? "",
+        stageNameSnapshot: stage?.name ?? "",
+        resultMode: "KEEP_CURRENT",
+        valueCents: 0,
+      },
+    }
+  }
   if (type === "WAIT") return { nodeKey, type, waitConfig: { mode: "DURATION", amount: 1, unit: "HOURS" } }
   return { nodeKey, type }
 }
@@ -1515,6 +1556,16 @@ function isActionReady(
   }
   if (action.type === "GO_TO") {
     return targetActions.length === 0 && Boolean(action.goToConfig?.targetNodeKey)
+  }
+  if (action.type === "UPDATE_OPPORTUNITY") {
+    const config = action.opportunityConfig
+    if (!config || !config.actionName.trim() || config.actionName.trim().length > 120) return false
+    const pipeline = catalog.pipelines.find((candidate) => candidate.id === config.pipelineId)
+    if (!pipeline?.stages.some((stage) => stage.id === config.stageId)) return false
+    return typeof config.valueCents === "number" &&
+      Number.isSafeInteger(config.valueCents) &&
+      config.valueCents >= 0 &&
+      config.valueCents <= 2_147_483_647
   }
   if (action.type === "WAIT") {
     const config = action.waitConfig
@@ -3177,6 +3228,14 @@ function ActionEditor({
           <ContactFieldUpdatesEditor action={action} catalog={catalog} onChange={onChange} />
         ) : null}
 
+        {action.type === "UPDATE_OPPORTUNITY" && action.opportunityConfig ? (
+          <UpdateOpportunityActionEditor
+            config={action.opportunityConfig}
+            catalog={catalog}
+            onChange={(opportunityConfig) => onChange({ ...action, opportunityConfig })}
+          />
+        ) : null}
+
         {action.type === "SET_CONTACT_STATUS" ? (
           <Field>
             <FieldLabel htmlFor="action-status">Status</FieldLabel>
@@ -3380,6 +3439,139 @@ function ActionEditor({
           </div>
         </>
       ) : null}
+    </div>
+  )
+}
+
+function UpdateOpportunityActionEditor({
+  config,
+  catalog,
+  onChange,
+}: {
+  config: NonNullable<AutomationAction["opportunityConfig"]>
+  catalog: AutomationCatalog
+  onChange: (config: NonNullable<AutomationAction["opportunityConfig"]>) => void
+}) {
+  const [valueDraft, setValueDraft] = useState(
+    config.valueCents === null ? "" : (config.valueCents / 100).toFixed(2),
+  )
+
+  const pipeline = catalog.pipelines.find((candidate) => candidate.id === config.pipelineId)
+  return (
+    <div className="flex flex-col gap-3">
+      <section className="rounded-xl border border-amber-200 bg-amber-50/70 p-3">
+        <div className="mb-3">
+          <p className="text-sm font-semibold text-slate-950">Opportunity</p>
+          <p className="text-xs leading-4 text-slate-600">Choose the pipeline, stage, value, and outcome.</p>
+        </div>
+        <FieldGroup className="gap-3">
+          <Field>
+            <FieldLabel htmlFor="opportunity-action-name">Action name</FieldLabel>
+            <Input
+              id="opportunity-action-name"
+              value={config.actionName}
+              maxLength={120}
+              onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+              placeholder="Update/create opportunity"
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="opportunity-action-pipeline">Pipeline</FieldLabel>
+            <Select
+              value={config.pipelineId}
+              onValueChange={(pipelineId) => {
+                const selectedPipeline = catalog.pipelines.find((candidate) => candidate.id === pipelineId)
+                onChange({
+                  ...config,
+                  pipelineId,
+                  pipelineNameSnapshot: selectedPipeline?.name ?? "",
+                  stageId: "",
+                  stageNameSnapshot: "",
+                })
+              }}
+            >
+              <SelectTrigger id="opportunity-action-pipeline" className={COMPACT_SELECT_TRIGGER_CLASS}>
+                <SelectValue placeholder="Select pipeline" />
+              </SelectTrigger>
+              <SelectContent>
+                {catalog.pipelines.map((candidate) => (
+                  <SelectItem key={candidate.id} value={candidate.id}>{candidate.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="opportunity-action-stage">Stage</FieldLabel>
+            <Select
+              value={config.stageId}
+              disabled={!pipeline}
+              onValueChange={(stageId) => {
+                const stage = pipeline?.stages.find((candidate) => candidate.id === stageId)
+                onChange({ ...config, stageId, stageNameSnapshot: stage?.name ?? "" })
+              }}
+            >
+              <SelectTrigger id="opportunity-action-stage" className={COMPACT_SELECT_TRIGGER_CLASS}>
+                <SelectValue placeholder="Select stage" />
+              </SelectTrigger>
+              <SelectContent>
+                {pipeline?.stages.map((stage) => (
+                  <SelectItem key={stage.id} value={stage.id}>{stage.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        </FieldGroup>
+      </section>
+
+      <section className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+        <p className="mb-3 text-sm font-semibold text-slate-950">Value and outcome</p>
+        <FieldGroup className="gap-3">
+          <Field>
+            <FieldLabel htmlFor="opportunity-action-result">Outcome</FieldLabel>
+            <Select
+              value={config.resultMode}
+              onValueChange={(resultMode: NonNullable<AutomationAction["opportunityConfig"]>["resultMode"]) =>
+                onChange({ ...config, resultMode })
+              }
+            >
+              <SelectTrigger id="opportunity-action-result" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="KEEP_CURRENT">Keep current</SelectItem>
+                <SelectItem value="OPEN">Open</SelectItem>
+                <SelectItem value="WON">Won</SelectItem>
+                <SelectItem value="LOST">Lost</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="opportunity-action-value">Opportunity value</FieldLabel>
+            <div className="relative">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-slate-500">$</span>
+              <Input
+                id="opportunity-action-value"
+                inputMode="decimal"
+                className="pl-7"
+                value={valueDraft}
+                placeholder="0.00"
+                onChange={(event) => {
+                  const next = event.target.value
+                  if (!/^\d*(?:\.\d{0,2})?$/.test(next)) return
+                  setValueDraft(next)
+                  if (!next || next === ".") {
+                    onChange({ ...config, valueCents: null })
+                    return
+                  }
+                  const cents = Math.round(Number(next) * 100)
+                  onChange({
+                    ...config,
+                    valueCents: Number.isSafeInteger(cents) && cents <= 2_147_483_647 ? cents : null,
+                  })
+                }}
+              />
+            </div>
+          </Field>
+        </FieldGroup>
+      </section>
     </div>
   )
 }
@@ -5276,6 +5468,7 @@ function TaskActionEditor({
 
 function goToDestinationLabel(action: AutomationAction) {
   if (action.type === "FORMAT_TEXT") return action.textFormatterConfig?.actionName.trim() || "Text formatter"
+  if (action.type === "UPDATE_OPPORTUNITY") return action.opportunityConfig?.actionName.trim() || "Update/create opportunity"
   if (action.type === "IF_ELSE") return action.ifElseConfig?.actionName.trim() || "If/Else"
   if (action.type === "SPLIT") return action.splitConfig?.actionName.trim() || "Split"
   return ACTION_LABELS[action.type]

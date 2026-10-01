@@ -105,6 +105,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "IF_ELSE",
   "SPLIT",
   "GO_TO",
+  "UPDATE_OPPORTUNITY",
   "WAIT",
   "DELETE_CONTACT",
 ] as const
@@ -301,6 +302,31 @@ export const AutomationConditionInputSchema = z.discriminatedUnion("source", [
   contactTagsConditionSchema,
 ])
 
+const automationOpportunityConfigBase = {
+  actionName: z.string().trim().min(1).max(120),
+  pipelineId: idSchema,
+  pipelineNameSnapshot: z.string().trim().min(1).max(120),
+  stageId: idSchema,
+  stageNameSnapshot: z.string().trim().min(1).max(120),
+  resultMode: z.enum(["KEEP_CURRENT", "OPEN", "WON", "LOST"]),
+} as const
+
+const automationOpportunityValueCentsSchema = z.number().int().min(0).max(2_147_483_647)
+
+export const AutomationOpportunityConfigSchema = z.union([
+  z.object({
+    ...automationOpportunityConfigBase,
+    valueCents: automationOpportunityValueCentsSchema,
+  }).strict(),
+  z.object({
+    ...automationOpportunityConfigBase,
+    createValueCents: automationOpportunityValueCentsSchema,
+  }).strict().transform(({ createValueCents, ...config }) => ({
+    ...config,
+    valueCents: createValueCents,
+  })),
+])
+
 const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("UPDATE_CONTACT_CUSTOM_FIELDS"),
@@ -355,6 +381,11 @@ const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("GO_TO"),
     nodeKey: actionNodeKeySchema,
     goToConfig: z.object({ targetNodeKey: AutomationNodeKeySchema }).strict(),
+  }),
+  z.object({
+    type: z.literal("UPDATE_OPPORTUNITY"),
+    nodeKey: actionNodeKeySchema,
+    opportunityConfig: AutomationOpportunityConfigSchema,
   }),
   z.object({ type: z.literal("DELETE_CONTACT"), nodeKey: actionNodeKeySchema }),
 ])
@@ -469,6 +500,7 @@ const legacyRoutingActionNullFields = {
   textFormatterConfig: z.null().optional(),
   mathOperationConfig: z.null().optional(),
   goToConfig: z.null().optional(),
+  opportunityConfig: z.null().optional(),
 }
 
 const AutomationIfElseBranchSchema: z.ZodType<AutomationIfElseBranchInput> = z.lazy(() => z.object({
@@ -1049,11 +1081,24 @@ export async function validateAutomationConfiguration(
   tenantId: string,
   input: AutomationInput,
 ) {
-  const [pipeline, fields, statuses, taskStatuses, memberships, tags, services] = await Promise.all([
-    prismaClient.opportunityPipeline.findUnique({
-      where: { tenantId_id: { tenantId, id: input.trigger.pipelineId } },
-      select: { id: true, stages: { select: { id: true } } },
-    }),
+  const [pipelines, fields, statuses, taskStatuses, memberships, tags, services] = await Promise.all([
+    prismaClient.opportunityPipeline.findMany
+      ? prismaClient.opportunityPipeline.findMany({
+          where: { tenantId },
+          select: {
+            id: true,
+            name: true,
+            stages: { select: { id: true, name: true } },
+          },
+        })
+      : prismaClient.opportunityPipeline.findUnique({
+          where: { tenantId_id: { tenantId, id: input.trigger.pipelineId } },
+          select: {
+            id: true,
+            name: true,
+            stages: { select: { id: true, name: true } },
+          },
+        }).then((pipeline: any) => pipeline ? [pipeline] : []),
     prismaClient.contactCustomField.findMany({
       where: { tenantId },
       select: {
@@ -1091,6 +1136,7 @@ export async function validateAutomationConfiguration(
       : Promise.resolve([]),
   ])
 
+  const pipeline = pipelines.find((item: any) => item.id === input.trigger.pipelineId)
   if (!pipeline) throw new AutomationConfigurationError("PIPELINE_NOT_FOUND", "The selected pipeline no longer exists.")
   const stageIds = new Set(pipeline.stages.map((stage: { id: string }) => stage.id))
   if (input.trigger.type === "OPPORTUNITY_STAGE_CHANGED") {
@@ -1106,6 +1152,7 @@ export async function validateAutomationConfiguration(
   const activeUserIds = new Set(memberships.filter((item: any) => item.status === "ACTIVE").map((item: any) => item.userId))
   const tagIds = new Set(tags.map((item: any) => item.id))
   const serviceMap = new Map<string, string>(services.map((item: any) => [item.id, item.name]))
+  const opportunityPipelineMap = new Map<string, any>(pipelines.map((item: any) => [item.id, item]))
 
   const conditions = input.conditions.map((condition, index) => {
     if (condition.source === "OPPORTUNITY_VALUE") {
@@ -1610,6 +1657,33 @@ export async function validateAutomationConfiguration(
         goToConfig: { targetNodeKey: action.goToConfig.targetNodeKey },
       }
     }
+    if (action.type === "UPDATE_OPPORTUNITY") {
+      const selectedPipeline = opportunityPipelineMap.get(action.opportunityConfig.pipelineId)
+      const selectedStage = selectedPipeline?.stages.find(
+        (stage: { id: string }) => stage.id === action.opportunityConfig.stageId,
+      )
+      if (!selectedPipeline) {
+        throw new AutomationConfigurationError(
+          "OPPORTUNITY_PIPELINE_NOT_FOUND",
+          "Select an available opportunity pipeline.",
+        )
+      }
+      if (!selectedStage) {
+        throw new AutomationConfigurationError(
+          "OPPORTUNITY_STAGE_NOT_FOUND",
+          "Select a stage that belongs to the selected opportunity pipeline.",
+        )
+      }
+      return {
+        ...base,
+        opportunityConfig: {
+          ...action.opportunityConfig,
+          actionName: action.opportunityConfig.actionName.trim(),
+          pipelineNameSnapshot: selectedPipeline.name,
+          stageNameSnapshot: selectedStage.name,
+        },
+      }
+    }
     if (action.type === "DELETE_CONTACT") {
       if (index !== actionInputs.length - 1) {
         throw new AutomationConfigurationError(
@@ -1902,7 +1976,7 @@ export async function validateAutomationConfiguration(
 
 export type OpportunityAutomationEvent = {
   tenantId: string
-  actorUserId: string
+  actorUserId: string | null
   triggerType: AutomationTriggerType
   opportunityId: string
   contactId: string
@@ -1910,7 +1984,28 @@ export type OpportunityAutomationEvent = {
   valueCents: number
   sourceStageId: string | null
   targetStageId: string | null
+  chainId?: string | null
+  parentEventId?: string | null
+  chainDepth?: number
+  transitionHistory?: OpportunityAutomationTransition[]
+  sourceAutomationId?: string | null
+  sourceAutomationName?: string | null
+  sourceNodeKey?: string | null
+  causationKey?: string | null
 }
+
+export type OpportunityAutomationTransition = {
+  kind: "CREATED" | "STAGE_CHANGED"
+  opportunityKey: string
+  pipelineId: string
+  sourceStageId: string | null
+  targetStageId: string
+}
+
+export type QueueOpportunityAutomationEvent = (
+  prismaTx: any,
+  event: OpportunityAutomationEvent,
+) => Promise<unknown>
 
 function displayValue(value: unknown) {
   if (value === null || value === undefined || value === "") return "empty"
@@ -2040,6 +2135,7 @@ export type AutomationRuntimeCatalog = {
   tagMap: Map<string, string>
   pipelineMap: Map<string, string>
   stageMap: Map<string, string>
+  stagePipelineMap: Map<string, string>
   timezone: string
 }
 
@@ -2113,6 +2209,9 @@ export async function getAutomationRuntimeCatalog(
     pipelineMap: new Map(pipelines.map((item: any) => [item.id, item.name])),
     stageMap: new Map(pipelines.flatMap((pipeline: any) =>
       pipeline.stages.map((stage: any) => [stage.id, stage.name] as const),
+    )),
+    stagePipelineMap: new Map(pipelines.flatMap((pipeline: any) =>
+      pipeline.stages.map((stage: any) => [stage.id, pipeline.id] as const),
     )),
     timezone: tenant?.timezone?.trim() || "America/Chicago",
   }
@@ -2297,6 +2396,7 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
         textFormatterConfig: action.textFormatterConfig,
         mathOperationConfig: action.mathOperationConfig,
         goToConfig: action.goToConfig,
+        opportunityConfig: action.opportunityConfig,
       }
   const parsed = AutomationActionInputSchema.parse(snapshot)
   return ensureRuntimeAutomationAction(parsed)
@@ -2346,9 +2446,12 @@ async function applyAutomationAction(
     automationName: string
     tenantId: string
     contactId: string
+    actorUserId?: string | null
     catalog: AutomationRuntimeCatalog
     occurredAt: Date
     runId?: string | null
+    eventContext?: AutomationOpportunityEventContext
+    queueOpportunityEvent?: QueueOpportunityAutomationEvent
     automationValues: Record<string, unknown>
     templateContext?: ContactTemplateExecutionContext
   },
@@ -2360,9 +2463,12 @@ async function applyAutomationAction(
     automationName,
     tenantId,
     contactId,
+    actorUserId,
     catalog,
     occurredAt,
     runId,
+    eventContext = {},
+    queueOpportunityEvent,
     automationValues,
     templateContext,
   } = params
@@ -2740,6 +2846,169 @@ async function applyAutomationAction(
       })
       automationValues[action.mathOperationConfig.outputKey] = value
       return `Created automation value “${action.mathOperationConfig.outputKey}”.`
+    } else if (action.type === "UPDATE_OPPORTUNITY") {
+      const config = action.opportunityConfig
+      const pipelineName = catalog.pipelineMap.get(config.pipelineId)
+      const stageName = catalog.stageMap.get(config.stageId)
+      if (!pipelineName || !stageName || catalog.stagePipelineMap.get(config.stageId) !== config.pipelineId) {
+        throw new Error("The configured opportunity pipeline or stage is no longer available.")
+      }
+      const pipelineLabel = config.pipelineNameSnapshot || pipelineName
+      const stageLabel = config.stageNameSnapshot || stageName
+      if (!queueOpportunityEvent) {
+        throw new Error("Opportunity event processing is unavailable for this automation run.")
+      }
+
+      const existing = await prismaTx.contactOpportunity.findUnique({
+        where: {
+          tenantId_contactId_pipelineId: {
+            tenantId,
+            contactId,
+            pipelineId: config.pipelineId,
+          },
+        },
+        select: {
+          id: true,
+          stageId: true,
+          valueCents: true,
+          result: true,
+          closedAt: true,
+          updatedAt: true,
+        },
+      })
+      const desiredResult = config.resultMode === "KEEP_CURRENT"
+        ? existing?.result ?? "OPEN"
+        : config.resultMode
+      const resultLabel = desiredResult === "OPEN" ? "Open" : desiredResult === "WON" ? "Won" : "Lost"
+      const stageChanged = Boolean(existing && existing.stageId !== config.stageId)
+      const resultChanged = Boolean(existing && existing.result !== desiredResult)
+      const valueChanged = Boolean(existing && existing.valueCents !== config.valueCents)
+      const closedAt = desiredResult === "OPEN"
+        ? null
+        : resultChanged || !existing?.closedAt
+          ? occurredAt
+          : existing.closedAt
+      const closedAtChanged = Boolean(
+        existing && (existing.closedAt?.getTime?.() ?? null) !== (closedAt?.getTime?.() ?? null),
+      )
+
+      if (existing && !stageChanged && !resultChanged && !closedAtChanged && !valueChanged) {
+        const amount = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
+          .format(config.valueCents / 100)
+        return `Opportunity already matched ${pipelineLabel} → ${stageLabel} · ${amount} · ${resultLabel}. No changes were needed.`
+      }
+
+      const transitionKind = existing ? "STAGE_CHANGED" as const : "CREATED" as const
+      const shouldQueueEvent = !existing || stageChanged
+      const transition: OpportunityAutomationTransition = {
+        kind: transitionKind,
+        opportunityKey: existing?.id ?? `${contactId}:${config.pipelineId}`,
+        pipelineId: config.pipelineId,
+        sourceStageId: existing?.stageId ?? null,
+        targetStageId: config.stageId,
+      }
+      const history = eventContext.transitionHistory ?? []
+      const nextDepth = (eventContext.chainDepth ?? 0) + 1
+      const repeatedTransition = history.some((candidate) =>
+        candidate.kind === transition.kind &&
+        candidate.pipelineId === transition.pipelineId &&
+        candidate.sourceStageId === transition.sourceStageId &&
+        candidate.targetStageId === transition.targetStageId
+      )
+      if (shouldQueueEvent && (nextDepth > 20 || repeatedTransition)) {
+        const loopError = new AutomationExecutionError({
+          automationId,
+          automationName,
+          actionIndex,
+          contactId,
+          message: repeatedTransition
+            ? "This opportunity transition already occurred in the current automation chain, so the update was stopped to prevent a loop."
+            : "This opportunity update exceeded the maximum automation chain depth and was stopped to prevent a loop.",
+        })
+        loopError.code = "OPPORTUNITY_AUTOMATION_LOOP"
+        throw loopError
+      }
+
+      let opportunityId: string
+      let valueCents: number
+      if (!existing) {
+        const created = await prismaTx.contactOpportunity.create({
+          data: {
+            tenantId,
+            contactId,
+            pipelineId: config.pipelineId,
+            stageId: config.stageId,
+            valueCents: config.valueCents,
+            result: desiredResult,
+            closedAt,
+          },
+          select: { id: true, valueCents: true },
+        })
+        opportunityId = created.id
+        valueCents = created.valueCents
+        transition.opportunityKey = created.id
+      } else {
+        const updated = await prismaTx.contactOpportunity.updateMany({
+          where: {
+            tenantId,
+            id: existing.id,
+            updatedAt: existing.updatedAt,
+          },
+          data: {
+            stageId: config.stageId,
+            valueCents: config.valueCents,
+            result: desiredResult,
+            closedAt,
+          },
+        })
+        if (updated.count !== 1) {
+          const concurrencyError = new AutomationExecutionError({
+            automationId,
+            automationName,
+            actionIndex,
+            contactId,
+            message: "The opportunity changed while this automation was updating it. The action will be retried safely.",
+          })
+          concurrencyError.code = "OPPORTUNITY_CHANGED_CONCURRENTLY"
+          throw concurrencyError
+        }
+        opportunityId = existing.id
+        valueCents = config.valueCents
+      }
+
+      if (shouldQueueEvent) {
+        await queueOpportunityEvent(prismaTx, {
+          tenantId,
+          actorUserId: actorUserId ?? null,
+          triggerType: existing ? "OPPORTUNITY_STAGE_CHANGED" : "OPPORTUNITY_CREATED",
+          opportunityId,
+          contactId,
+          pipelineId: config.pipelineId,
+          valueCents,
+          sourceStageId: existing?.stageId ?? null,
+          targetStageId: config.stageId,
+          chainId: eventContext.chainId ?? runId ?? randomUUID(),
+          parentEventId: eventContext.eventId ?? null,
+          chainDepth: nextDepth,
+          transitionHistory: [...history, transition],
+          sourceAutomationId: automationId,
+          sourceAutomationName: automationName,
+          sourceNodeKey: action.nodeKey,
+          causationKey: runId ? `automation-run:${runId}:node:${action.nodeKey}` : null,
+        })
+      }
+
+      if (!existing) {
+        const amount = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
+          .format(config.valueCents / 100)
+        return `Created opportunity in ${pipelineLabel} → ${stageLabel} · ${amount} · ${resultLabel}.`
+      }
+      const previousStage = catalog.stageMap.get(existing.stageId) ?? "Previous stage"
+      const previousResult = existing.result === "OPEN" ? "Open" : existing.result === "WON" ? "Won" : "Lost"
+      const currencyFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
+      const previousAmount = currencyFormatter.format(existing.valueCents / 100)
+      const nextAmount = currencyFormatter.format(config.valueCents / 100)
+      return `Updated opportunity from ${previousStage} · ${previousAmount} · ${previousResult} to ${stageLabel} · ${nextAmount} · ${resultLabel}.`
     } else if (action.type === "DELETE_CONTACT") {
       const currentRun = runId && prismaTx.automationRun?.findUnique
         ? await prismaTx.automationRun.findUnique({
@@ -2908,6 +3177,7 @@ async function applyAutomationAction(
       }
     }
   } catch (error) {
+    if (error instanceof AutomationExecutionError) throw error
     throw new AutomationExecutionError({
       automationId,
       automationName,
@@ -3109,17 +3379,46 @@ type AutomationOpportunityEventContext = {
   sourceStageId?: string | null
   targetStageId?: string | null
   occurredAt?: string | null
+  eventId?: string | null
+  chainId?: string | null
+  chainDepth?: number
+  transitionHistory?: OpportunityAutomationTransition[]
 }
 
 function normalizeOpportunityEventContext(value: unknown): AutomationOpportunityEventContext {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {}
   const record = value as Record<string, unknown>
+  const transitionHistory = Array.isArray(record.transitionHistory)
+    ? record.transitionHistory.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return []
+        const transition = item as Record<string, unknown>
+        if (
+          (transition.kind !== "CREATED" && transition.kind !== "STAGE_CHANGED") ||
+          typeof transition.opportunityKey !== "string" ||
+          typeof transition.pipelineId !== "string" ||
+          typeof transition.targetStageId !== "string"
+        ) return []
+        return [{
+          kind: transition.kind,
+          opportunityKey: transition.opportunityKey,
+          pipelineId: transition.pipelineId,
+          sourceStageId: typeof transition.sourceStageId === "string" ? transition.sourceStageId : null,
+          targetStageId: transition.targetStageId,
+        } satisfies OpportunityAutomationTransition]
+      })
+    : []
   return {
     pipelineId: typeof record.pipelineId === "string" ? record.pipelineId : null,
     valueCents: typeof record.valueCents === "number" && Number.isFinite(record.valueCents) ? record.valueCents : null,
     sourceStageId: typeof record.sourceStageId === "string" ? record.sourceStageId : null,
     targetStageId: typeof record.targetStageId === "string" ? record.targetStageId : null,
     occurredAt: typeof record.occurredAt === "string" ? record.occurredAt : null,
+    eventId: typeof record.eventId === "string" ? record.eventId : null,
+    chainId: typeof record.chainId === "string" ? record.chainId : null,
+    chainDepth: typeof record.chainDepth === "number" && Number.isInteger(record.chainDepth)
+      ? record.chainDepth
+      : 0,
+    transitionHistory,
   }
 }
 
@@ -3255,6 +3554,7 @@ function failureLogsForSegment(
   failedIndex: number,
   completedLogs: AutomationNodeLogData[],
   message: string,
+  reasonCode = "AUTOMATION_EXECUTION_FAILED",
 ) {
   const existing = new Map(completedLogs.map((log) => [log.nodeOrder - 1, log]))
   const logs: AutomationNodeLogData[] = []
@@ -3270,7 +3570,7 @@ function failureLogsForSegment(
         details: "This action ran, but its changes were rolled back because a later action failed.",
       })
     } else if (index === failedIndex) {
-      logs.push(actionLog(base, actions[index]!, index, "FAILED", "AUTOMATION_EXECUTION_FAILED", message.slice(0, 500)))
+      logs.push(actionLog(base, actions[index]!, index, "FAILED", reasonCode, message.slice(0, 500)))
     } else if (!prior) {
       logs.push(actionLog(base, actions[index]!, index, "SKIPPED", "PREVIOUS_ACTION_FAILED", "Skipped because an earlier action failed."))
     }
@@ -3407,6 +3707,7 @@ function branchFailureLogs(
   failedIndex: number,
   completedLogs: AutomationNodeLogData[],
   message: string,
+  reasonCode = "AUTOMATION_EXECUTION_FAILED",
 ) {
   const priorByKey = new Map(completedLogs.map((log) => [log.nodeKey, log]))
   const selectedPathKeys = new Set(steps.map((step) => step.action.nodeKey))
@@ -3428,7 +3729,7 @@ function branchFailureLogs(
         step.action,
         step.nodeOrder - 1,
         "FAILED",
-        "AUTOMATION_EXECUTION_FAILED",
+        reasonCode,
         message.slice(0, 500),
         undefined,
         step,
@@ -3471,6 +3772,7 @@ async function executeBranchedAutomationSegmentTx(
     actions: RuntimeAutomationAction[]
     catalog: AutomationRuntimeCatalog
     occurredAt?: Date
+    queueOpportunityEvent?: QueueOpportunityAutomationEvent
   },
 ) {
   const { run, actions, catalog } = params
@@ -3896,9 +4198,12 @@ async function executeBranchedAutomationSegmentTx(
         automationName: run.automationName,
         tenantId: run.tenantId,
         contactId: run.contactId,
+        actorUserId: run.actorUserId,
         catalog,
         occurredAt: now,
         runId: run.id,
+        eventContext,
+        queueOpportunityEvent: params.queueOpportunityEvent,
         automationValues,
         templateContext,
       })
@@ -3921,7 +4226,15 @@ async function executeBranchedAutomationSegmentTx(
             contactId: run.contactId,
             message: error instanceof Error ? error.message : "The automation action failed.",
           })
-      const failureLogs = branchFailureLogs(base, steps, segmentStartIndex, index, logs, executionError.message)
+      const failureLogs = branchFailureLogs(
+        base,
+        steps,
+        segmentStartIndex,
+        index,
+        logs,
+        executionError.message,
+        executionError.code,
+      )
       appendUnvisitedAutomationLogs({
         base,
         actions,
@@ -3997,6 +4310,7 @@ export async function executeAutomationSegmentTx(
     catalog: AutomationRuntimeCatalog
     startIndex: number
     occurredAt?: Date
+    queueOpportunityEvent?: QueueOpportunityAutomationEvent
   },
 ) {
   if (
@@ -4026,6 +4340,7 @@ export async function executeAutomationSegmentTx(
   const notificationIds: string[] = []
   const fileCleanupCandidates: AutomationFileCleanupCandidate[] = []
   const automationValues = normalizeAutomationVariables(run.variables)
+  const eventContext = normalizeOpportunityEventContext(run.eventContext)
   const templateContext = createContactTemplateExecutionContext()
   let contactDeleted = false
 
@@ -4154,9 +4469,12 @@ export async function executeAutomationSegmentTx(
         automationName: run.automationName,
         tenantId: run.tenantId,
         contactId: run.contactId,
+        actorUserId: run.actorUserId,
         catalog,
         occurredAt: now,
         runId: run.id,
+        eventContext,
+        queueOpportunityEvent: params.queueOpportunityEvent,
         automationValues,
         templateContext,
       })
@@ -4186,7 +4504,15 @@ export async function executeAutomationSegmentTx(
       logs.push(actionLog(base, action, index, "EXECUTED", null, details ?? "Action completed successfully."))
     } catch (error) {
       if (error instanceof AutomationExecutionError) {
-        error.nodeExecutions = failureLogsForSegment(base, actions, startIndex, index, logs, error.message)
+        error.nodeExecutions = failureLogsForSegment(
+          base,
+          actions,
+          startIndex,
+          index,
+          logs,
+          error.message,
+          error.code,
+        )
       }
       throw error
     }
@@ -4267,7 +4593,11 @@ export function evaluateAutomationTrigger(
   return { matches: true, details: "The opportunity event matched this trigger." }
 }
 
-export async function executeOpportunityAutomations(prismaTx: any, event: OpportunityAutomationEvent) {
+export async function executeOpportunityAutomations(
+  prismaTx: any,
+  event: OpportunityAutomationEvent,
+  options: { queueOpportunityEvent?: QueueOpportunityAutomationEvent } = {},
+) {
   const automations = await prismaTx.automation.findMany({
     where: {
       tenantId: event.tenantId,
@@ -4308,6 +4638,14 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Opport
   if (!contact) throw new Error("Contact not found while executing automation.")
 
   const contactName = getContactDisplayName(contact)
+  const rootChainId = event.chainId ?? randomUUID()
+  const rootTransitionHistory = event.transitionHistory ?? [{
+    kind: event.triggerType === "OPPORTUNITY_CREATED" ? "CREATED" as const : "STAGE_CHANGED" as const,
+    opportunityKey: event.opportunityId,
+    pipelineId: event.pipelineId,
+    sourceStageId: event.sourceStageId,
+    targetStageId: event.targetStageId!,
+  }]
   type AutomationPlan = {
     automation: any
     actions: RuntimeAutomationAction[]
@@ -4425,6 +4763,10 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Opport
             sourceStageId: event.sourceStageId,
             targetStageId: event.targetStageId,
             occurredAt: triggerLog.occurredAt.toISOString(),
+            eventId: event.parentEventId ?? null,
+            chainId: rootChainId,
+            chainDepth: event.chainDepth ?? 0,
+            transitionHistory: rootTransitionHistory,
           },
           status: "RUNNING",
         },
@@ -4434,6 +4776,7 @@ export async function executeOpportunityAutomations(prismaTx: any, event: Opport
         actions: plan.actions,
         catalog,
         startIndex: 0,
+        queueOpportunityEvent: options.queueOpportunityEvent,
       })
       executedCount += 1
       plan.logs.push(...result.logs)
@@ -4534,6 +4877,10 @@ export async function recordAutomationFailure(prismaClient: any, event: Opportun
             sourceStageId: event.sourceStageId,
             targetStageId: event.targetStageId,
             occurredAt: new Date().toISOString(),
+            eventId: event.parentEventId ?? null,
+            chainId: event.chainId ?? null,
+            chainDepth: event.chainDepth ?? 0,
+            transitionHistory: event.transitionHistory ?? [],
           },
           status: "FAILED",
           failureNodeKey: failedStep?.action.nodeKey ?? (error.actionSnapshot[error.actionIndex] as { nodeKey?: string } | undefined)?.nodeKey,
@@ -4635,9 +4982,9 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
   const logs = error.nodeExecutions.length > 0
     ? error.nodeExecutions
     : branchedSteps.length > 0
-      ? branchFailureLogs(base, branchedSteps, branchStartIndex, branchFailedIndex, [], error.message)
+      ? branchFailureLogs(base, branchedSteps, branchStartIndex, branchFailedIndex, [], error.message, error.code)
       : actions.length > 0
-      ? failureLogsForSegment(base, actions, run.cursorIndex, error.actionIndex, [], error.message)
+      ? failureLogsForSegment(base, actions, run.cursorIndex, error.actionIndex, [], error.message, error.code)
       : []
 
   await prismaClient.$transaction(async (transaction: any) => {
@@ -4690,7 +5037,12 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
   })
 }
 
-async function resumeAutomationRun(prismaClient: any, runId: string, leaseToken: string) {
+async function resumeAutomationRun(
+  prismaClient: any,
+  runId: string,
+  leaseToken: string,
+  queueOpportunityEvent?: QueueOpportunityAutomationEvent,
+) {
   try {
     const result = await prismaClient.$transaction(async (transaction: any) => {
       const run = await transaction.automationRun.findFirst({
@@ -4729,6 +5081,7 @@ async function resumeAutomationRun(prismaClient: any, runId: string, leaseToken:
         catalog,
         startIndex: run.cursorIndex,
         occurredAt: resumedAt,
+        queueOpportunityEvent,
       })
       if (result.logs.length > 0) {
         await transaction.automationNodeExecution.createMany({ data: result.logs })
@@ -4809,7 +5162,10 @@ async function emitAutomationTaskNotifications(prismaClient: any, notificationId
   }
 }
 
-export async function resumeDueAutomationRuns(prismaOverride?: any) {
+export async function resumeDueAutomationRuns(
+  prismaOverride?: any,
+  options: { queueOpportunityEvent?: QueueOpportunityAutomationEvent } = {},
+) {
   const prismaClient = prismaOverride ?? (await import("./prisma.js")).prisma
   const now = new Date()
   const candidates = await (prismaClient as any).automationRun.findMany({
@@ -4857,7 +5213,12 @@ export async function resumeDueAutomationRuns(prismaOverride?: any) {
       },
     })
     if (!claimed.count) continue
-    results.push(await resumeAutomationRun(prismaClient as any, candidate.id, leaseToken))
+    results.push(await resumeAutomationRun(
+      prismaClient as any,
+      candidate.id,
+      leaseToken,
+      options.queueOpportunityEvent,
+    ))
   }
   return results
 }
