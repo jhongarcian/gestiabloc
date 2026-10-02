@@ -3,6 +3,7 @@ import { describe, test } from "node:test"
 
 import {
   AutomationUpsertSchema,
+  AutomationDeleteOpportunityConfigSchema,
   AutomationOpportunityConfigSchema,
   AutomationExecutionError,
   automationSplitBucket,
@@ -363,6 +364,229 @@ describe("Update/create opportunity runtime", () => {
         error?.nodeExecutions?.[0]?.reasonCode === "OPPORTUNITY_AUTOMATION_LOOP",
     )
     assert.equal(updateCalls, 1)
+  })
+})
+
+describe("Delete opportunity runtime", () => {
+  const emptyMap = new Map()
+  const catalog = {
+    fieldMap: emptyMap,
+    fieldKeyMap: emptyMap,
+    activeStatusIds: new Set<string>(),
+    activeTaskStatusIds: new Set<string>(),
+    taskStatusMap: emptyMap,
+    activeUserIds: new Set<string>(),
+    tagIds: new Set<string>(),
+    statusMap: emptyMap,
+    userMap: emptyMap,
+    tagMap: emptyMap,
+    pipelineMap: new Map([["pipeline-1", "Work"]]),
+    stageMap: new Map([["stage-2", "Follow-up"]]),
+    stagePipelineMap: new Map([["stage-2", "pipeline-1"]]),
+    timezone: "America/Chicago",
+  }
+  const action = {
+    nodeKey: "delete-opportunity-1",
+    type: "DELETE_OPPORTUNITY" as const,
+    deleteOpportunityConfig: {
+      actionName: "Remove work opportunity",
+      pipelineId: "pipeline-1",
+      pipelineNameSnapshot: "Work",
+    },
+  }
+  const run = {
+    id: "run-delete-opportunity",
+    tenantId: "tenant-1",
+    automationId: "automation-1",
+    automationName: "Opportunity cleanup",
+    contactId: "contact-1",
+    contactName: "Taylor Reed",
+    actorUserId: "user-1",
+    opportunityId: "trigger-opportunity",
+    attemptId: "attempt-delete-opportunity",
+    eventSource: "OPPORTUNITY_CREATED" as const,
+    triggerType: "OPPORTUNITY_CREATED" as const,
+    sourceStageId: null,
+    targetStageId: "stage-1",
+    cursorIndex: 0,
+    variables: {},
+  }
+
+  test("deletes only the selected pipeline opportunity and continues to later actions", async () => {
+    const updatedAt = new Date("2026-10-01T14:00:00.000Z")
+    let deleteWhere: Record<string, unknown> | null = null
+    let laterActionCalls = 0
+    let queuedEvents = 0
+    const prismaTx = {
+      contactOpportunity: {
+        findUnique: async () => ({
+          id: "opportunity-1",
+          stageId: "stage-2",
+          valueCents: 25_000,
+          result: "LOST",
+          updatedAt,
+        }),
+        deleteMany: async ({ where }: { where: Record<string, unknown> }) => {
+          deleteWhere = where
+          return { count: 1 }
+        },
+      },
+      contact: { update: async () => { laterActionCalls += 1 } },
+      automationRun: { update: async () => undefined },
+      automationExecution: { create: async () => undefined },
+    }
+    const result = await executeAutomationSegmentTx(prismaTx, {
+      run,
+      actions: [action, { nodeKey: "next-action", type: "CLEAR_CONTACT_ASSIGNEE" }],
+      catalog,
+      startIndex: 0,
+      queueOpportunityEvent: async () => { queuedEvents += 1 },
+    })
+
+    assert.deepEqual(deleteWhere, {
+      tenantId: "tenant-1",
+      id: "opportunity-1",
+      pipelineId: "pipeline-1",
+      updatedAt,
+    })
+    assert.equal(laterActionCalls, 1)
+    assert.equal(queuedEvents, 0)
+    assert.equal(result.logs[0]?.nodeLabel, "Remove work opportunity")
+    assert.match(result.logs[0]?.details ?? "", /Deleted opportunity from Work · Follow-up · \$250\.00 · Lost/)
+    assert.equal(result.logs[1]?.status, "EXECUTED")
+  })
+
+  test("succeeds as a no-op when the selected pipeline has no opportunity", async () => {
+    let deleteCalls = 0
+    const prismaTx = {
+      contactOpportunity: {
+        findUnique: async () => null,
+        deleteMany: async () => { deleteCalls += 1; return { count: 0 } },
+      },
+      automationRun: { update: async () => undefined },
+      automationExecution: { create: async () => undefined },
+    }
+    const result = await executeAutomationSegmentTx(prismaTx, {
+      run,
+      actions: [action],
+      catalog,
+      startIndex: 0,
+    })
+
+    assert.equal(deleteCalls, 0)
+    assert.equal(result.logs[0]?.status, "EXECUTED")
+    assert.equal(result.logs[0]?.details, "No opportunity existed in Work. No changes were needed.")
+  })
+
+  test("deletes Open, Won, and Lost opportunities without outcome-specific restrictions", async () => {
+    const resultLabels: string[] = []
+    for (const result of ["OPEN", "WON", "LOST"] as const) {
+      const prismaTx = {
+        contactOpportunity: {
+          findUnique: async () => ({
+            id: `opportunity-${result.toLowerCase()}`,
+            stageId: "stage-2",
+            valueCents: 100,
+            result,
+            updatedAt: new Date("2026-10-01T14:00:00.000Z"),
+          }),
+          deleteMany: async () => ({ count: 1 }),
+        },
+        automationRun: { update: async () => undefined },
+        automationExecution: { create: async () => undefined },
+      }
+      const execution = await executeAutomationSegmentTx(prismaTx, {
+        run: { ...run, id: `run-${result.toLowerCase()}` },
+        actions: [action],
+        catalog,
+        startIndex: 0,
+      })
+      resultLabels.push(execution.logs[0]?.details ?? "")
+    }
+
+    assert.match(resultLabels[0] ?? "", /· Open\.$/)
+    assert.match(resultLabels[1] ?? "", /· Won\.$/)
+    assert.match(resultLabels[2] ?? "", /· Lost\.$/)
+  })
+
+  test("allows a later Update/create opportunity action to recreate the deleted record", async () => {
+    let lookupCount = 0
+    let createCalls = 0
+    let queuedEvents = 0
+    const prismaTx = {
+      contactOpportunity: {
+        findUnique: async () => {
+          lookupCount += 1
+          return lookupCount === 1
+            ? {
+                id: "opportunity-1",
+                stageId: "stage-2",
+                valueCents: 25_000,
+                result: "OPEN",
+                updatedAt: new Date("2026-10-01T14:00:00.000Z"),
+              }
+            : null
+        },
+        deleteMany: async () => ({ count: 1 }),
+        create: async ({ data }: { data: Record<string, any> }) => {
+          createCalls += 1
+          return { id: "recreated-opportunity", valueCents: data.valueCents }
+        },
+      },
+      automationRun: { update: async () => undefined },
+      automationExecution: { create: async () => undefined },
+    }
+    const updateAction = {
+      nodeKey: "recreate-opportunity",
+      type: "UPDATE_OPPORTUNITY" as const,
+      opportunityConfig: {
+        actionName: "Recreate opportunity",
+        pipelineId: "pipeline-1",
+        pipelineNameSnapshot: "Work",
+        stageId: "stage-2",
+        stageNameSnapshot: "Follow-up",
+        resultMode: "OPEN" as const,
+        valueCents: 50_000,
+      },
+    }
+    const execution = await executeAutomationSegmentTx(prismaTx, {
+      run: { ...run, eventContext: { chainId: "chain-1", chainDepth: 0, transitionHistory: [] } },
+      actions: [action, updateAction],
+      catalog,
+      startIndex: 0,
+      queueOpportunityEvent: async () => { queuedEvents += 1 },
+    })
+
+    assert.equal(createCalls, 1)
+    assert.equal(queuedEvents, 1)
+    assert.match(execution.logs[1]?.details ?? "", /Created opportunity in Work/)
+  })
+
+  test("reports an optimistic-concurrency conflict for safe queue retry", async () => {
+    const prismaTx = {
+      contactOpportunity: {
+        findUnique: async () => ({
+          id: "opportunity-1",
+          stageId: "stage-2",
+          valueCents: 25_000,
+          result: "OPEN",
+          updatedAt: new Date("2026-10-01T14:00:00.000Z"),
+        }),
+        deleteMany: async () => ({ count: 0 }),
+      },
+      automationRun: { update: async () => undefined },
+      automationExecution: { create: async () => undefined },
+    }
+
+    await assert.rejects(
+      executeAutomationSegmentTx(prismaTx, {
+        run,
+        actions: [action],
+        catalog,
+        startIndex: 0,
+      }),
+      (error: any) => error?.code === "OPPORTUNITY_CHANGED_CONCURRENTLY",
+    )
   })
 })
 
@@ -1477,6 +1701,58 @@ describe("AutomationUpsertSchema", () => {
     await assert.rejects(
       validateAutomationConfiguration(prismaClient, "tenant-1", invalid),
       /belongs to the selected opportunity pipeline/,
+    )
+  })
+
+  test("validates Delete opportunity pipelines and refreshes the saved name snapshot", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [
+        { id: "pipeline-1", name: "Work", stages: [{ id: "stage-1", name: "New" }] },
+        { id: "pipeline-2", name: "Renewals", stages: [] },
+      ] },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const valid = AutomationUpsertSchema.parse({
+      name: "Delete renewal opportunity",
+      isEnabled: true,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{
+        type: "DELETE_OPPORTUNITY",
+        deleteOpportunityConfig: {
+          actionName: "  Remove renewal  ",
+          pipelineId: "pipeline-2",
+          pipelineNameSnapshot: "Old pipeline name",
+        },
+      }],
+    })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", valid)
+    assert.deepEqual(normalized.actions[0]?.deleteOpportunityConfig, {
+      actionName: "Remove renewal",
+      pipelineId: "pipeline-2",
+      pipelineNameSnapshot: "Renewals",
+    })
+    assert.deepEqual(
+      AutomationDeleteOpportunityConfigSchema.parse(normalized.actions[0]?.deleteOpportunityConfig),
+      normalized.actions[0]?.deleteOpportunityConfig,
+    )
+
+    const invalid = AutomationUpsertSchema.parse({
+      ...valid,
+      actions: [{
+        ...(valid.actions[0] as any),
+        deleteOpportunityConfig: {
+          ...(valid.actions[0] as any).deleteOpportunityConfig,
+          pipelineId: "missing-pipeline",
+        },
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalid),
+      /Select an available opportunity pipeline/,
     )
   })
 })

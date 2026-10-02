@@ -37,6 +37,30 @@ describe("serializeAutomationAction", () => {
     )
   })
 
+  test("serializes only the Delete opportunity configuration", () => {
+    assert.deepEqual(
+      serializeAutomationAction({
+        nodeKey: "delete-opportunity-1",
+        type: "DELETE_OPPORTUNITY",
+        deleteOpportunityConfig: {
+          actionName: "Remove renewal",
+          pipelineId: "pipeline-2",
+          pipelineNameSnapshot: "Renewals",
+        },
+        statusConfigId: null,
+      }),
+      {
+        nodeKey: "delete-opportunity-1",
+        type: "DELETE_OPPORTUNITY",
+        deleteOpportunityConfig: {
+          actionName: "Remove renewal",
+          pipelineId: "pipeline-2",
+          pipelineNameSnapshot: "Renewals",
+        },
+      },
+    )
+  })
+
   test("serializes only the stable Go To destination", () => {
     assert.deepEqual(
       serializeAutomationAction({

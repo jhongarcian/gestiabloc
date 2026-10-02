@@ -63,5 +63,7 @@ export function serializeAutomationAction(action: AutomationAction): AutomationA
       return { ...base, goToConfig: action.goToConfig }
     case "UPDATE_OPPORTUNITY":
       return { ...base, opportunityConfig: action.opportunityConfig }
+    case "DELETE_OPPORTUNITY":
+      return { ...base, deleteOpportunityConfig: action.deleteOpportunityConfig }
   }
 }

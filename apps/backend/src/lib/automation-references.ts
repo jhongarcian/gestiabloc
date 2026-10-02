@@ -4,6 +4,7 @@ import {
 } from "./automation-task.js"
 import {
   AutomationCustomFieldUpdatesSchema,
+  AutomationDeleteOpportunityConfigSchema,
   AutomationOpportunityConfigSchema,
 } from "./opportunity-automations.js"
 import {
@@ -130,7 +131,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
+          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "DELETE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
         },
       },
     },
@@ -153,6 +154,7 @@ export async function findEnabledAutomationReference(
           textFormatterConfig: true,
           mathOperationConfig: true,
           opportunityConfig: true,
+          deleteOpportunityConfig: true,
           ifElseConfig: true,
           splitConfig: true,
         },
@@ -218,6 +220,17 @@ export async function findEnabledAutomationReference(
           opportunity.success &&
           (reference.kind === "pipeline" && opportunity.data.pipelineId === reference.id ||
             reference.kind === "stage" && reference.ids.includes(opportunity.data.stageId))
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
+      }
+      if (action.type === "DELETE_OPPORTUNITY") {
+        const opportunity = AutomationDeleteOpportunityConfigSchema.safeParse(action.deleteOpportunityConfig)
+        if (
+          opportunity.success &&
+          reference.kind === "pipeline" &&
+          opportunity.data.pipelineId === reference.id
         ) {
           return { id: automation.id, name: automation.name }
         }

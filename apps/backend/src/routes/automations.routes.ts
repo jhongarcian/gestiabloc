@@ -180,6 +180,7 @@ function serializeAutomation(record: any) {
         opportunityConfig: action.type === "UPDATE_OPPORTUNITY"
           ? serializeOpportunityConfig(action.opportunityConfig)
           : action.opportunityConfig,
+        deleteOpportunityConfig: action.deleteOpportunityConfig,
       }
     }),
     lastExecution: record.executions?.[0]

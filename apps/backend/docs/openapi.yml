@@ -6483,6 +6483,7 @@ components:
             - SPLIT
             - GO_TO
             - UPDATE_OPPORTUNITY
+            - DELETE_OPPORTUNITY
             - WAIT
             - DELETE_CONTACT
           description: >-
@@ -6544,6 +6545,8 @@ components:
           $ref: "#/components/schemas/AutomationGoToConfig"
         opportunityConfig:
           $ref: "#/components/schemas/AutomationOpportunityConfig"
+        deleteOpportunityConfig:
+          $ref: "#/components/schemas/AutomationDeleteOpportunityConfig"
         waitConfig:
           oneOf:
             - type: object
@@ -7485,6 +7488,23 @@ components:
           minimum: 0
           maximum: 2147483647
           description: Fixed USD value in cents applied when the opportunity is created or updated.
+    AutomationDeleteOpportunityConfig:
+      description: Deletes only the contact's opportunity in the selected pipeline. A missing opportunity is a successful no-op.
+      type: object
+      required: [actionName, pipelineId, pipelineNameSnapshot]
+      additionalProperties: false
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        pipelineId:
+          type: string
+          format: uuid
+        pipelineNameSnapshot:
+          type: string
+          minLength: 1
+          maxLength: 120
     LoginResponse:
       type: object
       properties:

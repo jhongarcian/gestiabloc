@@ -128,6 +128,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
             splitConfig: true,
             goToConfig: true,
             opportunityConfig: true,
+            deleteOpportunityConfig: true,
           },
         },
       },

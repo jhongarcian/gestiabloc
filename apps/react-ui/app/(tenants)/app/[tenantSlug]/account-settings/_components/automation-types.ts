@@ -314,6 +314,12 @@ export type AutomationOpportunityConfig = {
   valueCents: number | null
 }
 
+export type AutomationDeleteOpportunityConfig = {
+  actionName: string
+  pipelineId: string
+  pipelineNameSnapshot: string
+}
+
 export type AutomationAction = {
   id?: string
   nodeKey?: string
@@ -334,6 +340,7 @@ export type AutomationAction = {
     | "SPLIT"
     | "GO_TO"
     | "UPDATE_OPPORTUNITY"
+    | "DELETE_OPPORTUNITY"
     | "WAIT"
     | "DELETE_CONTACT"
   customFieldUpdates?: AutomationFieldUpdate[] | null
@@ -352,6 +359,7 @@ export type AutomationAction = {
   splitConfig?: AutomationSplitConfig | null
   goToConfig?: AutomationGoToConfig | null
   opportunityConfig?: AutomationOpportunityConfig | null
+  deleteOpportunityConfig?: AutomationDeleteOpportunityConfig | null
 }
 
 export type AutomationRecord = {

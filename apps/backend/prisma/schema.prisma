@@ -325,6 +325,7 @@ enum AutomationActionType {
   SPLIT
   GO_TO
   UPDATE_OPPORTUNITY
+  DELETE_OPPORTUNITY
   WAIT
   DELETE_CONTACT
 }
@@ -1510,6 +1511,7 @@ model AutomationAction {
   splitConfig             Json?
   goToConfig              Json?
   opportunityConfig       Json?
+  deleteOpportunityConfig Json?
   sortOrder               Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
