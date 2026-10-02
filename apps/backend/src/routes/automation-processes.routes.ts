@@ -119,6 +119,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
             waitConfig: true,
             noteTitle: true,
             noteBody: true,
+            createContactConfig: true,
             taskConfig: true,
             dateTimeFormatterConfig: true,
             numberFormatterConfig: true,

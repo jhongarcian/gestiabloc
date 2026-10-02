@@ -1,4 +1,8 @@
 import {
+  AutomationCreateContactConfigSchema,
+  createContactConfigCustomFieldKeys,
+} from "./automation-create-contact.js"
+import {
   AutomationTaskConfigSchema,
   taskConfigCustomFieldKeys,
 } from "./automation-task.js"
@@ -131,7 +135,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "DELETE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
+          type: { in: ["CREATE_CONTACT", "CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "DELETE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
         },
       },
     },
@@ -147,6 +151,7 @@ export async function findEnabledAutomationReference(
           tagId: true,
           noteTitle: true,
           noteBody: true,
+          createContactConfig: true,
           taskConfig: true,
           customFieldUpdates: true,
           dateTimeFormatterConfig: true,
@@ -213,6 +218,28 @@ export async function findEnabledAutomationReference(
       }
       if (reference.kind === "user" && action.assignedUserId === reference.id) {
         return { id: automation.id, name: automation.name }
+      }
+      if (action.type === "CREATE_CONTACT") {
+        const createContact = AutomationCreateContactConfigSchema.safeParse(action.createContactConfig)
+        if (!createContact.success) continue
+        if (
+          reference.kind === "status" &&
+          createContact.data.statusConfigId === reference.id
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        if (
+          reference.kind === "customField" &&
+          (createContact.data.customFieldValues.some(
+            (assignment) => assignment.customFieldId === reference.id,
+          ) || Boolean(
+            customField?.key &&
+            createContactConfigCustomFieldKeys(createContact.data).includes(customField.key),
+          ))
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
       }
       if (action.type === "UPDATE_OPPORTUNITY") {
         const opportunity = AutomationOpportunityConfigSchema.safeParse(action.opportunityConfig)

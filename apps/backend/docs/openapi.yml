@@ -6474,6 +6474,7 @@ components:
             - ADD_CONTACT_TAG
             - REMOVE_CONTACT_TAG
             - ADD_CONTACT_NOTE
+            - CREATE_CONTACT
             - CREATE_TASK
             - FORMAT_DATE_TIME
             - FORMAT_NUMBER
@@ -6529,6 +6530,8 @@ components:
             Contact values and current-date values are resolved when the action executes.
             Formatter outputs from earlier actions use {automation.output_key} without a
             formatting modifier.
+        createContactConfig:
+          $ref: "#/components/schemas/AutomationCreateContactConfig"
         taskConfig:
           $ref: "#/components/schemas/AutomationTaskConfig"
         dateTimeFormatterConfig:
@@ -6644,6 +6647,97 @@ components:
           minLength: 1
           maxLength: 120
           description: Refreshed from the target automation when the source is saved.
+    AutomationCreateContactTypedSource:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, value]
+          properties:
+            type:
+              type: string
+              enum: [FIXED]
+            value: {}
+        - type: object
+          additionalProperties: false
+          required: [type, key]
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_FIELD, CUSTOM_FIELD, AUTOMATION_VALUE]
+            key:
+              type: string
+              minLength: 1
+              maxLength: 100
+    AutomationCreateContactValueSource:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, template]
+          properties:
+            type:
+              type: string
+              enum: [TEMPLATE]
+            template:
+              type: string
+              maxLength: 1000
+        - $ref: "#/components/schemas/AutomationCreateContactTypedSource"
+    AutomationCreateContactConfig:
+      type: object
+      additionalProperties: false
+      required:
+        - actionName
+        - firstNameTemplate
+        - lastNameTemplate
+        - statusConfigId
+        - customFieldValues
+      description: >-
+        Creates a standalone contact while the automation continues on its original
+        contact. An existing tenant contact with the rendered email or phone makes the
+        action a successful no-op.
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        firstNameTemplate:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        middleNameTemplate:
+          type: string
+          maxLength: 1000
+          nullable: true
+        lastNameTemplate:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        emailTemplate:
+          type: string
+          maxLength: 1000
+          nullable: true
+        phoneTemplate:
+          type: string
+          maxLength: 1000
+          nullable: true
+        dateOfBirth:
+          allOf:
+            - $ref: "#/components/schemas/AutomationCreateContactTypedSource"
+          nullable: true
+        statusConfigId:
+          type: string
+          description: Active contact status belonging to the automation tenant.
+        customFieldValues:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [customFieldId, source]
+            properties:
+              customFieldId:
+                type: string
+              source:
+                $ref: "#/components/schemas/AutomationCreateContactValueSource"
     AutomationIfElseConfig:
       type: object
       required: [actionName, branches]

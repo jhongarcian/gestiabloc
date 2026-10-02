@@ -13,6 +13,7 @@ import {
   automationSplitBucket,
   evaluateAutomationOperator,
   executeAutomationSegmentTx,
+  executeCreateContactAction,
   executeOpportunityAutomations,
   getAutomationOperatorsForFieldType,
   recordAutomationFailure,
@@ -89,6 +90,251 @@ describe("validateAutomationGoToControlFlow", () => {
       ]),
       (error: any) => error?.code === "GO_TO_VALUE_UNAVAILABLE",
     )
+
+    assert.throws(
+      () => validateAutomationGoToControlFlow([
+        split([
+          {
+            branchKey: "route-a",
+            name: "Route A",
+            actions: [{ nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "create-contact" } }],
+          },
+          {
+            branchKey: "route-b",
+            name: "Route B",
+            actions: [
+              { nodeKey: "formatter", type: "FORMAT_TEXT", textFormatterConfig: { outputKey: "lead_name" } },
+              {
+                nodeKey: "create-contact",
+                type: "CREATE_CONTACT",
+                createContactConfig: {
+                  actionName: "Create contact",
+                  firstNameTemplate: "{automation.lead_name}",
+                  lastNameTemplate: "Household",
+                  statusConfigId: "active",
+                  customFieldValues: [],
+                },
+              },
+            ],
+          },
+        ]),
+      ]),
+      (error: any) => error?.code === "GO_TO_VALUE_UNAVAILABLE",
+    )
+  })
+})
+
+describe("Create contact automation action", () => {
+  const customFields = [
+    {
+      id: "field-note",
+      key: "new_contact_note",
+      label: "New contact note",
+      fieldType: "TEXT" as const,
+      isRequired: false,
+      isActive: true,
+      isEncrypted: false,
+      isSensitive: false,
+      options: [],
+    },
+    {
+      id: "field-score",
+      key: "lead_score",
+      label: "Lead score",
+      fieldType: "NUMBER" as const,
+      isRequired: false,
+      isActive: true,
+      isEncrypted: false,
+      isSensitive: false,
+      options: [],
+    },
+  ]
+
+  const config = {
+    actionName: "Create household contact",
+    firstNameTemplate: "{contact.first_name}",
+    middleNameTemplate: "",
+    lastNameTemplate: "Household",
+    emailTemplate: "new@example.com",
+    phoneTemplate: "+15551234567",
+    dateOfBirth: { type: "FIXED" as const, value: "1990-05-03" },
+    statusConfigId: "active",
+    customFieldValues: [
+      {
+        customFieldId: "field-note",
+        source: { type: "TEMPLATE" as const, template: "Created for {contact.first_name}" },
+      },
+      {
+        customFieldId: "field-score",
+        source: { type: "FIXED" as const, value: 42 },
+      },
+    ],
+  }
+
+  test("validates tenant fields, status, templates, and fixed typed values", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => customFields },
+      contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const input = AutomationUpsertSchema.parse({
+      name: "Create related record",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{ type: "CREATE_CONTACT", createContactConfig: config }],
+    })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", input)
+    assert.equal((normalized.actions[0] as any).createContactConfig.actionName, "Create household contact")
+    assert.equal((normalized.actions[0] as any).createContactConfig.customFieldValues[1].source.value, 42)
+
+    const invalid = AutomationUpsertSchema.parse({
+      ...input,
+      actions: [{
+        type: "CREATE_CONTACT",
+        createContactConfig: {
+          ...config,
+          customFieldValues: [{
+            customFieldId: "field-score",
+            source: { type: "FIXED", value: "not a number" },
+          }],
+        },
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalid),
+      /Lead score must be a number/,
+    )
+  })
+
+  test("creates the contact and typed custom values while keeping the source context", async () => {
+    const createdContacts: Array<Record<string, any>> = []
+    const customWrites: Array<Record<string, any>> = []
+    const lockKeys: string[] = []
+    const prismaTx = {
+      $queryRaw: async (_parts: TemplateStringsArray, _namespace: string, lockKey: string) => {
+        lockKeys.push(lockKey)
+        return [{ pg_advisory_xact_lock: null }]
+      },
+      contact: {
+        findFirst: async ({ where }: { where: Record<string, any> }) => {
+          if (where.OR) return null
+          return {
+            id: "source-contact",
+            firstName: "Taylor",
+            middleName: null,
+            lastName: "Reed",
+            customFieldValues: [],
+          }
+        },
+        create: async ({ data }: { data: Record<string, any> }) => {
+          createdContacts.push(data)
+          return { id: "new-contact" }
+        },
+      },
+      contactCustomField: { findMany: async () => customFields },
+      contactCustomFieldValue: {
+        createMany: async ({ data }: { data: Array<Record<string, any>> }) => {
+          customWrites.push(...data)
+        },
+      },
+    }
+    const fieldMap = new Map(customFields.map((field) => [field.id, field]))
+    const result = await executeCreateContactAction(prismaTx, {
+      config,
+      tenantId: "tenant-1",
+      sourceContactId: "source-contact",
+      catalog: {
+        fieldMap,
+        fieldKeyMap: new Map(customFields.map((field) => [field.key, field])),
+        activeStatusIds: new Set(["active"]),
+        activeTaskStatusIds: new Set(),
+        taskStatusMap: new Map(),
+        activeUserIds: new Set(),
+        tagIds: new Set(),
+        statusMap: new Map([["active", "Active"]]),
+        userMap: new Map(),
+        tagMap: new Map(),
+        pipelineMap: new Map(),
+        stageMap: new Map(),
+        stagePipelineMap: new Map(),
+        timezone: "America/Chicago",
+      },
+      occurredAt: new Date("2026-10-02T12:00:00.000Z"),
+      automationValues: {},
+    })
+
+    assert.equal(result, "Created contact “Taylor Household”.")
+    assert.equal(createdContacts.length, 1)
+    assert.equal(createdContacts[0]?.email, "new@example.com")
+    assert.equal(createdContacts[0]?.phone, "+15551234567")
+    assert.equal(createdContacts[0]?.dateOfBirth.toISOString(), "1990-05-03T12:00:00.000Z")
+    assert.deepEqual(customWrites.map((item) => [item.fieldId, item.value]), [
+      ["field-note", "Created for Taylor"],
+      ["field-score", 42],
+    ])
+    assert.deepEqual(lockKeys, [
+      "tenant-1:email:new@example.com",
+      "tenant-1:phone:+15551234567",
+    ])
+  })
+
+  test("skips successfully when the rendered email already belongs to a tenant contact", async () => {
+    let creates = 0
+    const duplicateWheres: Array<Record<string, any>> = []
+    const prismaTx = {
+      $queryRaw: async () => [],
+      contact: {
+        findFirst: async ({ where }: { where: Record<string, any> }) => {
+          if (where.OR) {
+            duplicateWheres.push(where)
+            return { email: "NEW@EXAMPLE.COM", phone: null }
+          }
+          return {
+            id: "source-contact",
+            firstName: "Taylor",
+            middleName: null,
+            lastName: "Reed",
+            customFieldValues: [],
+          }
+        },
+        create: async () => { creates += 1; return { id: "new-contact" } },
+      },
+      contactCustomField: { findMany: async () => customFields },
+      contactCustomFieldValue: { createMany: async () => undefined },
+    }
+    const fieldMap = new Map(customFields.map((field) => [field.id, field]))
+    const result = await executeCreateContactAction(prismaTx, {
+      config,
+      tenantId: "tenant-1",
+      sourceContactId: "source-contact",
+      catalog: {
+        fieldMap,
+        fieldKeyMap: new Map(customFields.map((field) => [field.key, field])),
+        activeStatusIds: new Set(["active"]),
+        activeTaskStatusIds: new Set(),
+        taskStatusMap: new Map(),
+        activeUserIds: new Set(),
+        tagIds: new Set(),
+        statusMap: new Map(),
+        userMap: new Map(),
+        tagMap: new Map(),
+        pipelineMap: new Map(),
+        stageMap: new Map(),
+        stagePipelineMap: new Map(),
+        timezone: "America/Chicago",
+      },
+      occurredAt: new Date("2026-10-02T12:00:00.000Z"),
+      automationValues: {},
+    })
+
+    assert.equal(result, "Skipped creating contact because the email already belongs to a contact.")
+    assert.equal(creates, 0)
+    assert.deepEqual(duplicateWheres[0]?.OR?.[0], {
+      email: { equals: "new@example.com", mode: "insensitive" },
+    })
   })
 })
 

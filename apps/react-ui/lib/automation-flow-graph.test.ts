@@ -4,6 +4,7 @@ import { describe, test } from "node:test"
 import { buildAutomationFlowGraph } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-flow-graph.js"
 
 const labels = {
+  CREATE_CONTACT: "Create contact",
   UPDATE_CONTACT_CUSTOM_FIELDS: "Update contact fields",
   SET_CONTACT_STATUS: "Set contact status",
   SET_CONTACT_ASSIGNEE: "Assign contact",
@@ -28,6 +29,30 @@ const labels = {
 } as const
 
 describe("buildAutomationFlowGraph", () => {
+  test("shows the custom Create contact label and subtitle", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-1",
+      targetStageId: "",
+      conditions: [],
+      actions: [{
+        nodeKey: "create-contact-node",
+        type: "CREATE_CONTACT",
+        createContactConfig: {
+          actionName: "Create household member",
+          firstNameTemplate: "Jamie",
+          lastNameTemplate: "Reed",
+          statusConfigId: "active",
+          customFieldValues: [],
+        },
+      }],
+    }, null, labels)
+
+    const node = graph.nodes.find((candidate) => candidate.id === "action-create-contact-node")
+    assert.equal(node?.data.label, "Create household member")
+    assert.equal(node?.data.subtitle, "Create contact")
+  })
+
   test("shows the custom Add to workflow label and target snapshot", () => {
     const graph = buildAutomationFlowGraph({
       triggerType: "OPPORTUNITY_CREATED",

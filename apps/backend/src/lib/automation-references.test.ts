@@ -106,6 +106,53 @@ describe("findEnabledAutomationReference", () => {
     )
   })
 
+  test("finds statuses and custom fields used by create-contact actions", async () => {
+    const createContactConfig = {
+      actionName: "Create household contact",
+      firstNameTemplate: "{contact.first_name}",
+      middleNameTemplate: null,
+      lastNameTemplate: "{contact.custom_field.household_name}",
+      emailTemplate: null,
+      phoneTemplate: null,
+      dateOfBirth: null,
+      statusConfigId: "active",
+      customFieldValues: [{
+        customFieldId: "field-2",
+        source: { type: "CUSTOM_FIELD", key: "household_name" },
+      }],
+    }
+    const prismaClient = {
+      contactCustomField: {
+        findFirst: async () => ({ key: "household_name" }),
+      },
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Create household",
+          actions: [{ type: "CREATE_CONTACT", createContactConfig }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "customField", id: "field-2" },
+      ),
+      { id: "automation-1", name: "Create household" },
+    )
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "status", id: "active" },
+      ),
+      { id: "automation-1", name: "Create household" },
+    )
+  })
+
   test("finds custom fields used by a number formatter", async () => {
     const prismaClient = {
       contactCustomField: {

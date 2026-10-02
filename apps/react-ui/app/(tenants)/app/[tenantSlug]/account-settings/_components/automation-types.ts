@@ -332,6 +332,31 @@ export type AutomationRemoveFromWorkflowConfig = {
   targetAutomationNameSnapshot: string
 }
 
+export type AutomationCreateContactTypedSource =
+  | { type: "FIXED"; value: unknown }
+  | { type: "CONTACT_FIELD"; key: string }
+  | { type: "CUSTOM_FIELD"; key: string }
+  | { type: "AUTOMATION_VALUE"; key: string }
+
+export type AutomationCreateContactValueSource =
+  | { type: "TEMPLATE"; template: string }
+  | AutomationCreateContactTypedSource
+
+export type AutomationCreateContactConfig = {
+  actionName: string
+  firstNameTemplate: string
+  middleNameTemplate?: string | null
+  lastNameTemplate: string
+  emailTemplate?: string | null
+  phoneTemplate?: string | null
+  dateOfBirth?: AutomationCreateContactTypedSource | null
+  statusConfigId: string
+  customFieldValues: Array<{
+    customFieldId: string
+    source: AutomationCreateContactValueSource
+  }>
+}
+
 export type AutomationAction = {
   id?: string
   nodeKey?: string
@@ -343,6 +368,7 @@ export type AutomationAction = {
     | "ADD_CONTACT_TAG"
     | "REMOVE_CONTACT_TAG"
     | "ADD_CONTACT_NOTE"
+    | "CREATE_CONTACT"
     | "CREATE_TASK"
     | "FORMAT_DATE_TIME"
     | "FORMAT_NUMBER"
@@ -364,6 +390,7 @@ export type AutomationAction = {
   waitConfig?: AutomationWaitConfig | null
   noteTitle?: string | null
   noteBody?: string | null
+  createContactConfig?: AutomationCreateContactConfig | null
   taskConfig?: AutomationTaskConfig | null
   dateTimeFormatterConfig?: AutomationDateTimeFormatterConfig | null
   numberFormatterConfig?: AutomationNumberFormatterConfig | null

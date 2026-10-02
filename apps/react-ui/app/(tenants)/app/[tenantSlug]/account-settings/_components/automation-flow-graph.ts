@@ -54,6 +54,7 @@ const COMPLETE_AFTER_ADD_STEP = 105
 const COMPLETE_AFTER_CARD_STEP = 125
 
 const CONTACT_ACTION_TYPES = new Set<AutomationAction["type"]>([
+  "CREATE_CONTACT",
   "UPDATE_CONTACT_CUSTOM_FIELDS",
   "SET_CONTACT_STATUS",
   "SET_CONTACT_ASSIGNEE",
@@ -218,6 +219,8 @@ export function buildAutomationFlowGraph(
         : null
     const actionSubtitle = action.type === "ADD_CONTACT_NOTE"
       ? `Note: ${action.noteTitle?.trim() || "Add a title"}`
+      : action.type === "CREATE_CONTACT"
+        ? "Create contact"
       : action.type === "CREATE_TASK"
         ? `Task: ${action.taskConfig?.nameTemplate.trim() || "Add a task name"}`
         : action.type === "FORMAT_DATE_TIME"
@@ -272,7 +275,9 @@ export function buildAutomationFlowGraph(
               : "Choose a destination"
             : waitSubtitle ?? `Action ${actionNumber}`
     return {
-      label: action.type === "FORMAT_TEXT"
+      label: action.type === "CREATE_CONTACT"
+        ? action.createContactConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "FORMAT_TEXT"
         ? action.textFormatterConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "UPDATE_OPPORTUNITY"
           ? action.opportunityConfig?.actionName.trim() || actionLabels[action.type]

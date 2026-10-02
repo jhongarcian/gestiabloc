@@ -125,6 +125,36 @@ describe("serializeAutomationAction", () => {
     )
   })
 
+  test("serializes only the Create contact configuration", () => {
+    const createContactConfig = {
+      actionName: "Create household member",
+      firstNameTemplate: "{contact.first_name}",
+      middleNameTemplate: "",
+      lastNameTemplate: "Household",
+      emailTemplate: "{automation.new_email}",
+      phoneTemplate: "",
+      dateOfBirth: { type: "FIXED" as const, value: "1990-05-03" },
+      statusConfigId: "active",
+      customFieldValues: [{
+        customFieldId: "field-1",
+        source: { type: "TEMPLATE" as const, template: "Created by automation" },
+      }],
+    }
+    assert.deepEqual(
+      serializeAutomationAction({
+        nodeKey: "create-contact-1",
+        type: "CREATE_CONTACT",
+        createContactConfig,
+        statusConfigId: null,
+      }),
+      {
+        nodeKey: "create-contact-1",
+        type: "CREATE_CONTACT",
+        createContactConfig,
+      },
+    )
+  })
+
   test("omits unrelated routing configs and preserves a nested If/Else inside Split", () => {
     const action: AutomationAction = {
       nodeKey: "split-1",

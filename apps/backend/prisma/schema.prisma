@@ -316,6 +316,7 @@ enum AutomationActionType {
   ADD_CONTACT_TAG
   REMOVE_CONTACT_TAG
   ADD_CONTACT_NOTE
+  CREATE_CONTACT
   CREATE_TASK
   FORMAT_DATE_TIME
   FORMAT_NUMBER
@@ -1506,6 +1507,7 @@ model AutomationAction {
   waitConfig               Json?
   noteTitle                String?
   noteBody                 String?
+  createContactConfig      Json?
   taskConfig               Json?
   dateTimeFormatterConfig  Json?
   numberFormatterConfig    Json?

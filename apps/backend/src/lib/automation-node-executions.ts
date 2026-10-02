@@ -38,6 +38,7 @@ const ACTION_LABELS: Record<string, string> = {
   ADD_CONTACT_TAG: "Add contact tag",
   REMOVE_CONTACT_TAG: "Remove contact tag",
   ADD_CONTACT_NOTE: "Add contact note",
+  CREATE_CONTACT: "Create contact",
   CREATE_TASK: "Create task",
   FORMAT_DATE_TIME: "Date/Time formatter",
   FORMAT_NUMBER: "Number formatter",
@@ -67,6 +68,7 @@ export function getAutomationActionNodeLabel(action: {
   deleteOpportunityConfig?: unknown
   addToWorkflowConfig?: unknown
   removeFromWorkflowConfig?: unknown
+  createContactConfig?: unknown
 }) {
   if (action.type === "FORMAT_TEXT") {
     const config = action.textFormatterConfig && typeof action.textFormatterConfig === "object"
@@ -113,6 +115,13 @@ export function getAutomationActionNodeLabel(action: {
   if (action.type === "REMOVE_FROM_WORKFLOW") {
     const config = action.removeFromWorkflowConfig && typeof action.removeFromWorkflowConfig === "object"
       ? action.removeFromWorkflowConfig as Record<string, unknown>
+      : null
+    const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
+    if (actionName) return actionName.slice(0, 120)
+  }
+  if (action.type === "CREATE_CONTACT") {
+    const config = action.createContactConfig && typeof action.createContactConfig === "object"
+      ? action.createContactConfig as Record<string, unknown>
       : null
     const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
     if (actionName) return actionName.slice(0, 120)

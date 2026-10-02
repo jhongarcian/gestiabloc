@@ -10,6 +10,15 @@ import {
   type AutomationNodeLogData,
 } from "./automation-node-executions.js"
 import { AutomationNodeKeySchema } from "./automation-node-key.js"
+import {
+  AutomationCreateContactConfigSchema,
+  createContactAutomationValueIsCompatible,
+  createContactSourceFieldIsCompatible,
+  createContactUsesTemplate,
+  type AutomationCreateContactConfig,
+  type AutomationCreateContactTypedSource,
+  type AutomationCreateContactValueSource,
+} from "./automation-create-contact.js"
 import { normalizeCustomFieldValue } from "./contact-custom-field-values.js"
 import {
   parseContactTemplate,
@@ -97,6 +106,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "ADD_CONTACT_TAG",
   "REMOVE_CONTACT_TAG",
   "ADD_CONTACT_NOTE",
+  "CREATE_CONTACT",
   "CREATE_TASK",
   "FORMAT_DATE_TIME",
   "FORMAT_NUMBER",
@@ -373,6 +383,11 @@ const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
     noteBody: AutomationNoteBodySchema,
   }),
   z.object({
+    type: z.literal("CREATE_CONTACT"),
+    nodeKey: actionNodeKeySchema,
+    createContactConfig: AutomationCreateContactConfigSchema,
+  }),
+  z.object({
     type: z.literal("CREATE_TASK"),
     nodeKey: actionNodeKeySchema,
     taskConfig: AutomationTaskConfigSchema,
@@ -530,6 +545,7 @@ const legacyRoutingActionNullFields = {
   waitConfig: z.null().optional(),
   noteTitle: z.null().optional(),
   noteBody: z.null().optional(),
+  createContactConfig: z.null().optional(),
   taskConfig: z.null().optional(),
   dateTimeFormatterConfig: z.null().optional(),
   numberFormatterConfig: z.null().optional(),
@@ -803,6 +819,18 @@ function automationValueRequirements(action: AutomationControlFlowAction) {
     addTemplate(record.taskConfig?.nameTemplate)
     addTemplate(record.taskConfig?.descriptionTemplate)
     addTemplate(record.taskConfig?.reminder?.messageTemplate)
+  } else if (record.type === "CREATE_CONTACT") {
+    const config = record.createContactConfig
+    addTemplate(config?.firstNameTemplate)
+    addTemplate(config?.middleNameTemplate)
+    addTemplate(config?.lastNameTemplate)
+    addTemplate(config?.emailTemplate)
+    addTemplate(config?.phoneTemplate)
+    addSource(config?.dateOfBirth)
+    for (const assignment of config?.customFieldValues ?? []) {
+      if (assignment?.source?.type === "TEMPLATE") addTemplate(assignment.source.template)
+      else addSource(assignment?.source)
+    }
   } else if (record.type === "IF_ELSE") {
     for (const branch of record.ifElseConfig?.branches ?? []) {
       for (const condition of branch.conditions ?? []) addSource(condition)
@@ -1515,6 +1543,52 @@ export async function validateAutomationConfiguration(
       )
     }
   }
+  const validateCreateContactTypedSource = (
+    source: AutomationCreateContactTypedSource,
+    destinationType: string,
+    label: string,
+  ) => {
+    if (source.type === "FIXED") return
+    if (source.type === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === source.key)
+      if (!field || !createContactSourceFieldIsCompatible(destinationType, field.fieldType)) {
+        throw new AutomationConfigurationError(
+          "INVALID_CREATE_CONTACT_SOURCE",
+          `${label} must use a compatible contact field.`,
+        )
+      }
+      return
+    }
+    if (source.type === "CUSTOM_FIELD") {
+      const field = fieldKeyMap.get(source.key)
+      if (
+        !field ||
+        !field.isActive ||
+        field.isEncrypted ||
+        field.isSensitive ||
+        !createContactSourceFieldIsCompatible(destinationType, field.fieldType)
+      ) {
+        throw new AutomationConfigurationError(
+          "INVALID_CREATE_CONTACT_SOURCE",
+          `${label} must use an active, non-sensitive compatible custom field.`,
+        )
+      }
+      return
+    }
+    const outputKind = automationOutputs.get(source.key)
+    if (!outputKind) {
+      throw new AutomationConfigurationError(
+        "UNKNOWN_AUTOMATION_VALUE",
+        `The automation value “${source.key}” is not available before this action.`,
+      )
+    }
+    if (!createContactAutomationValueIsCompatible(destinationType, outputKind)) {
+      throw new AutomationConfigurationError(
+        "INCOMPATIBLE_AUTOMATION_VALUE",
+        `The automation value “${source.key}” is not compatible with ${label}.`,
+      )
+    }
+  }
   const validateMathSource = (
     config: AutomationMathOperationConfig,
   ) => {
@@ -1878,6 +1952,114 @@ export async function validateAutomationConfiguration(
           ...action.removeFromWorkflowConfig,
           actionName: action.removeFromWorkflowConfig.actionName.trim(),
           targetAutomationNameSnapshot: target.name,
+        },
+      }
+    }
+    if (action.type === "CREATE_CONTACT") {
+      const config = action.createContactConfig
+      if (!activeStatusIds.has(config.statusConfigId)) {
+        throw new AutomationConfigurationError(
+          "INVALID_STATUS_CONFIG",
+          "Select an active contact status for the new contact.",
+        )
+      }
+
+      const availableOutputs = [...automationOutputs.keys()]
+      const templates = [
+        ["First name", config.firstNameTemplate, true],
+        ["Middle name", config.middleNameTemplate ?? "", false],
+        ["Last name", config.lastNameTemplate, true],
+        ["Email", config.emailTemplate ?? "", false],
+        ["Phone", config.phoneTemplate ?? "", false],
+      ] as const
+      for (const [label, template, required] of templates) {
+        if (required && !template.trim()) {
+          throw new AutomationConfigurationError(
+            "INVALID_CREATE_CONTACT_TEMPLATE",
+            `${label} is required.`,
+          )
+        }
+        if (!template) continue
+        const issue = validateContactTemplate(template, fields, availableOutputs).issues[0]
+        if (issue) {
+          throw new AutomationConfigurationError("INVALID_CREATE_CONTACT_TEMPLATE", issue.message)
+        }
+      }
+
+      if (config.dateOfBirth) {
+        validateCreateContactTypedSource(config.dateOfBirth, "DATE", "Date of birth")
+        if (
+          config.dateOfBirth.type === "FIXED" &&
+          !isValidTemplateDate(String(config.dateOfBirth.value ?? ""))
+        ) {
+          throw new AutomationConfigurationError(
+            "INVALID_CREATE_CONTACT_VALUE",
+            "Date of birth must use a valid date.",
+          )
+        }
+      }
+
+      const customFieldValues = config.customFieldValues.map((assignment) => {
+        const field = fieldMap.get(assignment.customFieldId)
+        if (!field || !field.isActive || field.isEncrypted || field.isSensitive) {
+          throw new AutomationConfigurationError(
+            "INVALID_CUSTOM_FIELD",
+            "Select an active, non-sensitive custom field for the new contact.",
+          )
+        }
+        if (createContactUsesTemplate(field.fieldType)) {
+          if (assignment.source.type !== "TEMPLATE" || !assignment.source.template.trim()) {
+            throw new AutomationConfigurationError(
+              "INVALID_CREATE_CONTACT_SOURCE",
+              `${field.label} must use a template with a value.`,
+            )
+          }
+          const issue = validateContactTemplate(
+            assignment.source.template,
+            fields,
+            availableOutputs,
+          ).issues[0]
+          if (issue) {
+            throw new AutomationConfigurationError("INVALID_CREATE_CONTACT_TEMPLATE", issue.message)
+          }
+          return assignment
+        }
+        if (assignment.source.type === "TEMPLATE") {
+          throw new AutomationConfigurationError(
+            "INVALID_CREATE_CONTACT_SOURCE",
+            `${field.label} must use a typed value source.`,
+          )
+        }
+        validateCreateContactTypedSource(assignment.source, field.fieldType, field.label)
+        if (assignment.source.type === "FIXED") {
+          const normalized = normalizeCustomFieldValue(
+            { ...field, options: fieldOptions(field) },
+            assignment.source.value,
+          )
+          if (!normalized.ok || normalized.value === null) {
+            throw new AutomationConfigurationError(
+              "INVALID_CREATE_CONTACT_VALUE",
+              normalized.ok ? `${field.label} requires a value.` : normalized.message,
+            )
+          }
+          return {
+            ...assignment,
+            source: { type: "FIXED" as const, value: normalized.value },
+          }
+        }
+        return assignment
+      })
+
+      return {
+        ...base,
+        createContactConfig: {
+          ...config,
+          actionName: config.actionName.trim(),
+          middleNameTemplate: config.middleNameTemplate?.trim() ? config.middleNameTemplate : null,
+          emailTemplate: config.emailTemplate?.trim() ? config.emailTemplate : null,
+          phoneTemplate: config.phoneTemplate?.trim() ? config.phoneTemplate : null,
+          dateOfBirth: config.dateOfBirth ?? null,
+          customFieldValues,
         },
       }
     }
@@ -2594,6 +2776,7 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
         waitConfig: action.waitConfig,
         noteTitle: action.noteTitle,
         noteBody: action.noteBody,
+        createContactConfig: action.createContactConfig,
         taskConfig: action.taskConfig,
         dateTimeFormatterConfig: action.dateTimeFormatterConfig,
         numberFormatterConfig: action.numberFormatterConfig,
@@ -2645,6 +2828,230 @@ export function parseActionSnapshot(value: unknown): RuntimeAutomationAction[] {
 }
 
 const WORKFLOW_REMOVAL_REASON_CODE = "CONTACT_REMOVED_FROM_WORKFLOW"
+const CREATE_CONTACT_LOCK_NAMESPACE = "automation-create-contact"
+
+function createContactDateOnly(value: unknown) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10)
+  }
+  const candidate = typeof value === "string" ? value.trim().slice(0, 10) : ""
+  return isValidTemplateDate(candidate) ? candidate : null
+}
+
+async function resolveCreateContactTypedSource(
+  prismaTx: any,
+  params: {
+    source: AutomationCreateContactTypedSource
+    destinationType: string
+    tenantId: string
+    contactId: string
+    automationValues: Record<string, unknown>
+    templateContext?: ContactTemplateExecutionContext
+    label: string
+  },
+) {
+  if (params.source.type === "FIXED") return params.source.value
+  if (params.source.type === "AUTOMATION_VALUE") {
+    if (!Object.prototype.hasOwnProperty.call(params.automationValues, params.source.key)) {
+      throw new Error(`The automation value “${params.source.key}” was not created for this run.`)
+    }
+    return params.automationValues[params.source.key]
+  }
+  const resolved = await resolveSafeContactTemplateFieldValue(prismaTx, {
+    tenantId: params.tenantId,
+    contactId: params.contactId,
+    source: params.source.type,
+    key: params.source.key,
+    executionContext: params.templateContext,
+  })
+  if (!resolved || !createContactSourceFieldIsCompatible(params.destinationType, resolved.fieldType)) {
+    throw new Error(`${params.label} uses a field that is no longer available or compatible.`)
+  }
+  return resolved.value
+}
+
+async function acquireCreateContactLocks(
+  prismaTx: any,
+  params: { tenantId: string; email: string | null; phone: string | null },
+) {
+  if (!prismaTx.$queryRaw) return
+  const resourceKeys = [
+    params.email ? `email:${params.email}` : null,
+    params.phone ? `phone:${params.phone}` : null,
+  ].filter((value): value is string => Boolean(value)).sort((left, right) => left.localeCompare(right))
+
+  for (const resourceKey of resourceKeys) {
+    const lockKey = `${params.tenantId}:${resourceKey}`
+    await prismaTx.$queryRaw`
+      SELECT pg_advisory_xact_lock(
+        hashtext(${CREATE_CONTACT_LOCK_NAMESPACE}),
+        hashtext(${lockKey})
+      )
+    `
+  }
+}
+
+export async function executeCreateContactAction(
+  prismaTx: any,
+  params: {
+    config: AutomationCreateContactConfig
+    tenantId: string
+    sourceContactId: string
+    catalog: AutomationRuntimeCatalog
+    occurredAt: Date
+    automationValues: Record<string, unknown>
+    templateContext?: ContactTemplateExecutionContext
+  },
+) {
+  const { config } = params
+  if (!params.catalog.activeStatusIds.has(config.statusConfigId)) {
+    throw new Error("The configured contact status is no longer available.")
+  }
+
+  const customTemplateEntries = config.customFieldValues.flatMap((assignment, index) =>
+    assignment.source.type === "TEMPLATE"
+      ? [[`custom_${index}`, assignment.source.template] as const]
+      : [],
+  )
+  const rendered = await renderContactTemplates(prismaTx, {
+    tenantId: params.tenantId,
+    contactId: params.sourceContactId,
+    templates: {
+      firstName: config.firstNameTemplate,
+      middleName: config.middleNameTemplate ?? "",
+      lastName: config.lastNameTemplate,
+      email: config.emailTemplate ?? "",
+      phone: config.phoneTemplate ?? "",
+      ...Object.fromEntries(customTemplateEntries),
+    },
+    timezone: params.catalog.timezone,
+    occurredAt: params.occurredAt,
+    automationValues: params.automationValues,
+    executionContext: params.templateContext,
+  })
+
+  const firstName = (rendered.firstName ?? "").trim()
+  const middleName = (rendered.middleName ?? "").trim() || null
+  const lastName = (rendered.lastName ?? "").trim()
+  const email = (rendered.email ?? "").trim().toLowerCase() || null
+  const phone = (rendered.phone ?? "").trim() || null
+  if (!firstName || firstName.length > 120) {
+    throw new Error("The rendered first name must contain 1 to 120 characters.")
+  }
+  if (middleName && middleName.length > 120) {
+    throw new Error("The rendered middle name must contain 120 characters or fewer.")
+  }
+  if (!lastName || lastName.length > 120) {
+    throw new Error("The rendered last name must contain 1 to 120 characters.")
+  }
+  if (email && (email.length > 255 || !z.email().safeParse(email).success)) {
+    throw new Error("The rendered email address is invalid.")
+  }
+  if (phone && !/^\+[1-9]\d{7,14}$/.test(phone)) {
+    throw new Error("The rendered phone number must use E.164 format.")
+  }
+
+  let dateOfBirth: string | null = null
+  if (config.dateOfBirth) {
+    const rawDate = await resolveCreateContactTypedSource(prismaTx, {
+      source: config.dateOfBirth,
+      destinationType: "DATE",
+      tenantId: params.tenantId,
+      contactId: params.sourceContactId,
+      automationValues: params.automationValues,
+      templateContext: params.templateContext,
+      label: "Date of birth",
+    })
+    if (rawDate !== null && rawDate !== undefined && String(rawDate).trim() !== "") {
+      dateOfBirth = createContactDateOnly(rawDate)
+      if (!dateOfBirth) throw new Error("The resolved date of birth is invalid.")
+    }
+  }
+
+  const customFieldValues: Array<{ fieldId: string; value: unknown }> = []
+  for (const [index, assignment] of config.customFieldValues.entries()) {
+    const field = params.catalog.fieldMap.get(assignment.customFieldId)
+    if (!field) throw new Error("A configured custom field is no longer available.")
+    let rawValue: unknown
+    if (assignment.source.type === "TEMPLATE") {
+      if (!createContactUsesTemplate(field.fieldType)) {
+        throw new Error(`${field.label} no longer supports a template value.`)
+      }
+      rawValue = rendered[`custom_${index}`] ?? ""
+    } else {
+      rawValue = await resolveCreateContactTypedSource(prismaTx, {
+        source: assignment.source,
+        destinationType: field.fieldType,
+        tenantId: params.tenantId,
+        contactId: params.sourceContactId,
+        automationValues: params.automationValues,
+        templateContext: params.templateContext,
+        label: field.label,
+      })
+      if (field.fieldType === "DATE") rawValue = createContactDateOnly(rawValue)
+    }
+    const normalized = normalizeCustomFieldValue(
+      { ...field, options: fieldOptions(field) },
+      rawValue,
+    )
+    if (!normalized.ok || normalized.value === null) {
+      throw new Error(normalized.ok ? `${field.label} requires a value.` : normalized.message)
+    }
+    customFieldValues.push({ fieldId: field.id, value: normalized.value })
+  }
+
+  await acquireCreateContactLocks(prismaTx, { tenantId: params.tenantId, email, phone })
+  const duplicateFilters = [
+    email ? { email: { equals: email, mode: "insensitive" as const } } : null,
+    phone ? { phone } : null,
+  ].filter((value): value is NonNullable<typeof value> => Boolean(value))
+  if (duplicateFilters.length > 0) {
+    const existing = await prismaTx.contact.findFirst({
+      where: { tenantId: params.tenantId, OR: duplicateFilters },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { email: true, phone: true },
+    })
+    if (existing) {
+      const matchedEmail = Boolean(email && existing.email?.toLowerCase() === email)
+      const matchedPhone = Boolean(phone && existing.phone === phone)
+      const identifier = matchedEmail && matchedPhone
+        ? "email and phone"
+        : matchedEmail
+          ? "email"
+          : matchedPhone
+            ? "phone"
+            : "email or phone"
+      return `Skipped creating contact because the ${identifier} already belongs to a contact.`
+    }
+  }
+
+  const created = await prismaTx.contact.create({
+    data: {
+      tenantId: params.tenantId,
+      firstName,
+      middleName,
+      lastName,
+      email,
+      phone,
+      dateOfBirth: dateOfBirth ? new Date(`${dateOfBirth}T12:00:00.000Z`) : null,
+      statusConfigId: config.statusConfigId,
+    },
+    select: { id: true },
+  })
+  if (customFieldValues.length > 0) {
+    await prismaTx.contactCustomFieldValue.createMany({
+      data: customFieldValues.map((item) => ({
+        tenantId: params.tenantId,
+        contactId: created.id,
+        fieldId: item.fieldId,
+        value: item.value,
+      })),
+    })
+  }
+
+  const name = [firstName, middleName, lastName].filter(Boolean).join(" ")
+  return `Created contact “${name}”.`
+}
 
 async function removeContactFromWorkflowRuns(
   prismaTx: any,
@@ -3083,6 +3490,16 @@ async function applyAutomationAction(
         },
       })
       return `Added contact note “${title.data}”.`
+    } else if (action.type === "CREATE_CONTACT") {
+      return executeCreateContactAction(prismaTx, {
+        config: action.createContactConfig,
+        tenantId,
+        sourceContactId: contactId,
+        catalog,
+        occurredAt,
+        automationValues,
+        templateContext,
+      })
     } else if (action.type === "CREATE_TASK") {
       const config: AutomationTaskConfig = action.taskConfig
       if (!catalog.activeTaskStatusIds.has(config.statusConfigId)) {

@@ -21,6 +21,8 @@ export function serializeAutomationAction(action: AutomationAction): AutomationA
       return { ...base, tagId: action.tagId }
     case "ADD_CONTACT_NOTE":
       return { ...base, noteTitle: action.noteTitle, noteBody: action.noteBody }
+    case "CREATE_CONTACT":
+      return { ...base, createContactConfig: action.createContactConfig }
     case "CREATE_TASK":
       return { ...base, taskConfig: action.taskConfig }
     case "FORMAT_DATE_TIME":
