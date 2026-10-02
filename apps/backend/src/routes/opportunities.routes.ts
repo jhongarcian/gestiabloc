@@ -7,6 +7,7 @@ import {
   AutomationExecutionError,
   deleteAutomationContactFileObjects,
   executeOpportunityAutomations,
+  kickAutomationRunWorker,
   recordAutomationFailure,
 } from "../lib/opportunity-automations.js"
 import { enforceSameOrigin } from "../lib/security.js"
@@ -1207,6 +1208,14 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
       throw error
     }
 
+    if (
+      "queuedRunCount" in createdResult.automation &&
+      typeof createdResult.automation.queuedRunCount === "number" &&
+      createdResult.automation.queuedRunCount > 0
+    ) {
+      kickAutomationRunWorker({ queueOpportunityEvent: queueOpportunityAutomationEvent })
+    }
+
     if (!createdResult.opportunity && !createdResult.automation.contactDeleted) {
       throw new Error("Opportunity creation did not return a record.")
     }
@@ -1384,6 +1393,14 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
           })
         }
         throw error
+      }
+
+      if (
+        "queuedRunCount" in moveResult.automation &&
+        typeof moveResult.automation.queuedRunCount === "number" &&
+        moveResult.automation.queuedRunCount > 0
+      ) {
+        kickAutomationRunWorker({ queueOpportunityEvent: queueOpportunityAutomationEvent })
       }
 
       if (moveResult.concurrent) {

@@ -4,6 +4,7 @@ import { describe, test } from "node:test"
 import {
   AutomationUpsertSchema,
   AutomationDeleteOpportunityConfigSchema,
+  AutomationAddToWorkflowConfigSchema,
   AutomationOpportunityConfigSchema,
   AutomationExecutionError,
   automationSplitBucket,
@@ -587,6 +588,134 @@ describe("Delete opportunity runtime", () => {
       }),
       (error: any) => error?.code === "OPPORTUNITY_CHANGED_CONCURRENTLY",
     )
+  })
+})
+
+describe("Add to workflow runtime", () => {
+  const emptyMap = new Map()
+  const catalog = {
+    fieldMap: emptyMap,
+    fieldKeyMap: emptyMap,
+    activeStatusIds: new Set<string>(),
+    activeTaskStatusIds: new Set<string>(),
+    taskStatusMap: emptyMap,
+    activeUserIds: new Set<string>(),
+    tagIds: new Set<string>(),
+    statusMap: emptyMap,
+    userMap: emptyMap,
+    tagMap: emptyMap,
+    pipelineMap: emptyMap,
+    stageMap: emptyMap,
+    stagePipelineMap: emptyMap,
+    timezone: "America/Chicago",
+  }
+  const action = {
+    nodeKey: "add-workflow-node",
+    type: "ADD_TO_WORKFLOW" as const,
+    addToWorkflowConfig: {
+      actionName: "Start onboarding",
+      targetAutomationId: "target-automation",
+      targetAutomationNameSnapshot: "Onboarding",
+    },
+  }
+  const run = {
+    id: "source-run",
+    tenantId: "tenant-1",
+    automationId: "source-automation",
+    automationName: "Lead intake",
+    contactId: "contact-1",
+    contactName: "Taylor Reed",
+    actorUserId: "user-1",
+    opportunityId: "opportunity-1",
+    attemptId: "source-attempt",
+    eventSource: "OPPORTUNITY_CREATED" as const,
+    triggerType: "OPPORTUNITY_CREATED" as const,
+    sourceStageId: null,
+    targetStageId: "stage-1",
+    cursorIndex: 0,
+    variables: {},
+    eventContext: { pipelineId: "pipeline-1", workflowAutomationIds: ["source-automation"] },
+  }
+
+  test("queues a pinned independent target run and writes its start log", async () => {
+    let childRun: Record<string, any> | null = null
+    let startLog: Record<string, any> | null = null
+    const prismaTx = {
+      automation: {
+        findFirst: async () => ({
+          id: "target-automation",
+          name: "Onboarding",
+          triggerType: "OPPORTUNITY_CREATED",
+          targetStageId: null,
+          actions: [{ nodeKey: "target-action", type: "CLEAR_CONTACT_ASSIGNEE" }],
+        }),
+      },
+      automationRun: {
+        findUnique: async () => null,
+        create: async ({ data }: { data: Record<string, any> }) => {
+          childRun = data
+          return { id: "child-run" }
+        },
+        update: async () => undefined,
+      },
+      automationNodeExecution: {
+        create: async ({ data }: { data: Record<string, any> }) => { startLog = data },
+      },
+      automationExecution: { create: async () => undefined },
+    }
+    const result = await executeAutomationSegmentTx(prismaTx, {
+      run,
+      actions: [action],
+      catalog,
+      startIndex: 0,
+    })
+
+    assert.equal(result.queuedRunCount, 1)
+    assert.equal((childRun as Record<string, any> | null)?.status, "QUEUED")
+    assert.equal((childRun as Record<string, any> | null)?.eventSource, "AUTOMATION_ACTION")
+    assert.equal((childRun as Record<string, any> | null)?.opportunityId, "opportunity-1")
+    assert.deepEqual((childRun as Record<string, any> | null)?.variables, {})
+    assert.equal((childRun as Record<string, any> | null)?.actionSnapshot?.[0]?.nodeKey, "target-action")
+    assert.deepEqual((childRun as Record<string, any> | null)?.eventContext?.workflowAutomationIds, [
+      "source-automation",
+      "target-automation",
+    ])
+    assert.equal((startLog as Record<string, any> | null)?.status, "QUEUED")
+    assert.equal((startLog as Record<string, any> | null)?.nodeLabel, "Started by workflow")
+    assert.equal(result.logs[0]?.details, "Queued “Onboarding” to start.")
+  })
+
+  test("stops a repeated workflow at runtime", async () => {
+    let created = false
+    await assert.rejects(
+      executeAutomationSegmentTx({
+        automation: { findFirst: async () => ({
+          id: "target-automation",
+          name: "Onboarding",
+          triggerType: "OPPORTUNITY_CREATED",
+          targetStageId: null,
+          actions: [{ nodeKey: "target-action", type: "CLEAR_CONTACT_ASSIGNEE" }],
+        }) },
+        automationRun: {
+          findUnique: async () => null,
+          create: async () => { created = true },
+        },
+      }, {
+        run: {
+          ...run,
+          eventContext: { workflowAutomationIds: ["source-automation", "target-automation"] },
+        },
+        actions: [action],
+        catalog,
+        startIndex: 0,
+      }),
+      (error: any) => error?.code === "AUTOMATION_WORKFLOW_LOOP",
+    )
+    assert.equal(created, false)
+  })
+
+  test("validates the Add to workflow configuration shape", () => {
+    assert.deepEqual(AutomationAddToWorkflowConfigSchema.parse(action.addToWorkflowConfig), action.addToWorkflowConfig)
   })
 })
 
@@ -1755,6 +1884,65 @@ describe("AutomationUpsertSchema", () => {
       /Select an available opportunity pipeline/,
     )
   })
+
+  test("validates published workflow targets, refreshes snapshots, and rejects dependency cycles", async () => {
+    const sourceId = "00000000-0000-4000-8000-000000000101"
+    const targetId = "00000000-0000-4000-8000-000000000102"
+    const baseClient = {
+      opportunityPipeline: { findMany: async () => [
+        { id: "pipeline-1", name: "Work", stages: [{ id: "stage-1", name: "New" }] },
+      ] },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const payload = AutomationUpsertSchema.parse({
+      name: "Lead intake",
+      isEnabled: true,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{
+        type: "ADD_TO_WORKFLOW",
+        addToWorkflowConfig: {
+          actionName: "  Start onboarding  ",
+          targetAutomationId: targetId,
+          targetAutomationNameSnapshot: "Old name",
+        },
+      }],
+    })
+    const valid = await validateAutomationConfiguration({
+      ...baseClient,
+      automation: { findMany: async () => [{ id: targetId, name: "Client onboarding", actions: [] }] },
+    }, "tenant-1", payload, { sourceAutomationId: sourceId })
+    assert.deepEqual(valid.actions[0]?.addToWorkflowConfig, {
+      actionName: "Start onboarding",
+      targetAutomationId: targetId,
+      targetAutomationNameSnapshot: "Client onboarding",
+    })
+
+    await assert.rejects(
+      validateAutomationConfiguration({
+        ...baseClient,
+        automation: { findMany: async () => [
+          {
+            id: targetId,
+            name: "Client onboarding",
+            actions: [{
+              type: "ADD_TO_WORKFLOW",
+              addToWorkflowConfig: {
+                actionName: "Back to intake",
+                targetAutomationId: sourceId,
+                targetAutomationNameSnapshot: "Lead intake",
+              },
+            }],
+          },
+          { id: sourceId, name: "Lead intake", actions: [] },
+        ] },
+      }, "tenant-1", payload, { sourceAutomationId: sourceId }),
+      (error: any) => error?.code === "AUTOMATION_WORKFLOW_CYCLE",
+    )
+  })
 })
 
 describe("executeOpportunityAutomations", () => {
@@ -2133,7 +2321,7 @@ describe("executeOpportunityAutomations", () => {
     assert.deepEqual(exitedRunWhere, {
       tenantId: "tenant-1",
       contactId: "contact-1",
-      status: { in: ["RUNNING", "WAITING"] },
+      status: { in: ["QUEUED", "RUNNING", "WAITING"] },
       id: { not: "run-1" },
     })
     assert.deepEqual(nodeLogs.map((log) => log.status), [

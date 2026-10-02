@@ -320,6 +320,12 @@ export type AutomationDeleteOpportunityConfig = {
   pipelineNameSnapshot: string
 }
 
+export type AutomationAddToWorkflowConfig = {
+  actionName: string
+  targetAutomationId: string
+  targetAutomationNameSnapshot: string
+}
+
 export type AutomationAction = {
   id?: string
   nodeKey?: string
@@ -339,6 +345,7 @@ export type AutomationAction = {
     | "IF_ELSE"
     | "SPLIT"
     | "GO_TO"
+    | "ADD_TO_WORKFLOW"
     | "UPDATE_OPPORTUNITY"
     | "DELETE_OPPORTUNITY"
     | "WAIT"
@@ -360,6 +367,7 @@ export type AutomationAction = {
   goToConfig?: AutomationGoToConfig | null
   opportunityConfig?: AutomationOpportunityConfig | null
   deleteOpportunityConfig?: AutomationDeleteOpportunityConfig | null
+  addToWorkflowConfig?: AutomationAddToWorkflowConfig | null
 }
 
 export type AutomationRecord = {
@@ -429,6 +437,11 @@ export type AutomationCatalog = {
   }>
   tags: Array<{ id: string; name: string; bgColor: string; textColor: string }>
   services: Array<{ id: string; name: string }>
+  workflowAutomations: Array<{
+    id: string
+    name: string
+    targetAutomationIds: string[]
+  }>
   users: Array<{ id: string; name: string; email: string }>
 }
 
@@ -450,7 +463,7 @@ export type AutomationNodeExecutionStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | 
 export type AutomationNodeExecution = {
   id: string
   attemptId: string
-  eventSource: "MANUAL_ENROLLMENT" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED"
+  eventSource: "MANUAL_ENROLLMENT" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "AUTOMATION_ACTION"
   contact: {
     id: string | null
     name: string

@@ -3,6 +3,7 @@ export type AutomationNodeEventSource =
   | "MANUAL_ENROLLMENT"
   | "OPPORTUNITY_CREATED"
   | "OPPORTUNITY_STAGE_CHANGED"
+  | "AUTOMATION_ACTION"
 
 export type AutomationNodeLogData = {
   id?: string
@@ -47,6 +48,7 @@ const ACTION_LABELS: Record<string, string> = {
   GO_TO: "Go to",
   UPDATE_OPPORTUNITY: "Update/create opportunity",
   DELETE_OPPORTUNITY: "Delete opportunity",
+  ADD_TO_WORKFLOW: "Add to workflow",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 }
@@ -62,6 +64,7 @@ export function getAutomationActionNodeLabel(action: {
   splitConfig?: unknown
   opportunityConfig?: unknown
   deleteOpportunityConfig?: unknown
+  addToWorkflowConfig?: unknown
 }) {
   if (action.type === "FORMAT_TEXT") {
     const config = action.textFormatterConfig && typeof action.textFormatterConfig === "object"
@@ -94,6 +97,13 @@ export function getAutomationActionNodeLabel(action: {
   if (action.type === "DELETE_OPPORTUNITY") {
     const config = action.deleteOpportunityConfig && typeof action.deleteOpportunityConfig === "object"
       ? action.deleteOpportunityConfig as Record<string, unknown>
+      : null
+    const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
+    if (actionName) return actionName.slice(0, 120)
+  }
+  if (action.type === "ADD_TO_WORKFLOW") {
+    const config = action.addToWorkflowConfig && typeof action.addToWorkflowConfig === "object"
+      ? action.addToWorkflowConfig as Record<string, unknown>
       : null
     const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
     if (actionName) return actionName.slice(0, 120)

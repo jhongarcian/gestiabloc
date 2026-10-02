@@ -8,6 +8,7 @@ import {
   executeAutomationSegmentTx,
   flattenAutomationActionTree,
   getAutomationRuntimeCatalog,
+  kickAutomationRunWorker,
   parseActionSnapshot,
   type OpportunityAutomationEvent,
   type RuntimeAutomationAction,
@@ -306,9 +307,9 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
       where: { id: dispatchId },
       include: { event: true },
     })
-    if (!dispatch || dispatch.eventId !== eventId) return { terminal: true, contactDeleted: false }
+    if (!dispatch || dispatch.eventId !== eventId) return { terminal: true, contactDeleted: false, queuedRunCount: 0 }
     if (["COMPLETED", "FAILED", "SKIPPED", "CANCELED"].includes(dispatch.status)) {
-      return { terminal: true, contactDeleted: false }
+      return { terminal: true, contactDeleted: false, queuedRunCount: 0 }
     }
     const event = dispatch.event
     const actions = parseActionSnapshot(dispatch.actionSnapshot)
@@ -342,7 +343,7 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
         where: { id: dispatch.id },
         data: { status: "CANCELED", completedAt: now },
       })
-      return { terminal: true, contactDeleted: false }
+      return { terminal: true, contactDeleted: false, queuedRunCount: 0 }
     }
 
     if (dispatch.decision !== "RUN") {
@@ -371,7 +372,7 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
         where: { id: dispatch.id },
         data: { status: "SKIPPED", completedAt: now },
       })
-      return { terminal: true, contactDeleted: false }
+      return { terminal: true, contactDeleted: false, queuedRunCount: 0 }
     }
 
     await prismaTx.automationNodeExecution.update({
@@ -439,7 +440,7 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
     if (result.contactDeleted) {
       await cancelRemainingDispatches(prismaTx, event, dispatch.automationOrder)
     }
-    return { terminal: true, contactDeleted: result.contactDeleted }
+    return { terminal: true, contactDeleted: result.contactDeleted, queuedRunCount: result.queuedRunCount }
   }, { maxWait: 5_000, timeout: 20_000 })
   console.info(JSON.stringify({
     metric: "automation_segment_transaction",
@@ -447,6 +448,9 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
     dispatchId,
     durationMs: Date.now() - transactionStartedAt,
   }))
+  if (result.queuedRunCount > 0) {
+    kickAutomationRunWorker({ queueOpportunityEvent: queueOpportunityAutomationEvent })
+  }
   return result
 }
 

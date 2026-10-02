@@ -1,4 +1,5 @@
 import { Router } from "express"
+import { randomUUID } from "node:crypto"
 import { z } from "zod"
 
 import { Prisma } from "../generated/prisma/index.js"
@@ -9,6 +10,7 @@ import {
   AutomationConfigurationError,
   AutomationOpportunityConfigSchema,
   AutomationUpsertSchema,
+  automationWorkflowTargetIds,
   getAutomationOperatorsForFieldType,
   validateAutomationConfiguration,
 } from "../lib/opportunity-automations.js"
@@ -181,6 +183,7 @@ function serializeAutomation(record: any) {
           ? serializeOpportunityConfig(action.opportunityConfig)
           : action.opportunityConfig,
         deleteOpportunityConfig: action.deleteOpportunityConfig,
+        addToWorkflowConfig: action.addToWorkflowConfig,
       }
     }),
     lastExecution: record.executions?.[0]
@@ -208,11 +211,31 @@ function handleWaitingRunError(error: unknown, res: any) {
   return true
 }
 
+async function findEnabledWorkflowReference(
+  prismaClient: any,
+  tenantId: string,
+  targetAutomationId: string,
+) {
+  const automations = await prismaClient.automation.findMany({
+    where: { tenantId, isEnabled: true, id: { not: targetAutomationId } },
+    select: {
+      id: true,
+      name: true,
+      actions: {
+        select: { type: true, addToWorkflowConfig: true, ifElseConfig: true, splitConfig: true },
+      },
+    },
+  })
+  return automations.find((automation: any) =>
+    automationWorkflowTargetIds(automation.actions).includes(targetAutomationId),
+  ) ?? null
+}
+
 router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params)
     await ensureDefaultTaskStatuses(prismaWithAutomations, tenantId)
-    const [pipelines, customFields, statuses, taskStatuses, tags, memberships, services] = await Promise.all([
+    const [pipelines, customFields, statuses, taskStatuses, tags, memberships, services, workflowAutomations] = await Promise.all([
       prismaWithAutomations.opportunityPipeline.findMany({
         where: { tenantId },
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -263,6 +286,18 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
         select: { id: true, name: true },
       }),
+      prismaWithAutomations.automation.findMany({
+        where: { tenantId, isEnabled: true },
+        orderBy: [{ name: "asc" }, { createdAt: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          actions: {
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: { type: true, addToWorkflowConfig: true, ifElseConfig: true, splitConfig: true },
+          },
+        },
+      }),
     ])
 
     return res.json({
@@ -297,6 +332,11 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
         taskStatuses,
         tags,
         services,
+        workflowAutomations: workflowAutomations.map((automation: any) => ({
+          id: automation.id,
+          name: automation.name,
+          targetAutomationIds: automationWorkflowTargetIds(automation.actions),
+        })),
         users: memberships.map((item: any) => ({
           id: item.userId,
           name: item.user.name,
@@ -664,7 +704,10 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
     enforceSameOrigin(req)
     const { tenantId } = TenantPathSchema.parse(req.params)
     const payload = AutomationUpsertSchema.parse(req.body)
-    const normalized = await validateAutomationConfiguration(prismaWithAutomations, tenantId, payload)
+    const automationId = randomUUID()
+    const normalized = await validateAutomationConfiguration(prismaWithAutomations, tenantId, payload, {
+      sourceAutomationId: automationId,
+    })
     const max = await prismaWithAutomations.automation.findFirst({
       where: { tenantId },
       orderBy: { sortOrder: "desc" },
@@ -672,6 +715,7 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
     })
     const record = await prismaWithAutomations.automation.create({
       data: {
+        id: automationId,
         tenantId,
         name: normalized.name,
         isEnabled: normalized.isEnabled,
@@ -702,7 +746,18 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
       select: { id: true },
     })
     if (!existing) return res.status(404).json({ error: "AUTOMATION_NOT_FOUND" })
-    const normalized = await validateAutomationConfiguration(prismaWithAutomations, tenantId, payload)
+    if (!payload.isEnabled) {
+      const referencing = await findEnabledWorkflowReference(prismaWithAutomations, tenantId, automationId)
+      if (referencing) {
+        return res.status(409).json({
+          error: "AUTOMATION_TARGET_IN_USE",
+          message: `“${referencing.name}” uses this automation in an Add to workflow action. Remove that action before unpublishing this automation.`,
+        })
+      }
+    }
+    const normalized = await validateAutomationConfiguration(prismaWithAutomations, tenantId, payload, {
+      sourceAutomationId: automationId,
+    })
     const record = await prismaWithAutomations.$transaction(async (tx: any) => {
       await Promise.all([
         tx.automationCondition.deleteMany({ where: { tenantId, automationId } }),
@@ -739,6 +794,13 @@ router.delete("/:tenantId/automations/:automationId", ...writeMiddlewares, async
       select: { id: true },
     })
     if (!existing) return res.status(404).json({ error: "AUTOMATION_NOT_FOUND" })
+    const referencing = await findEnabledWorkflowReference(prismaWithAutomations, tenantId, automationId)
+    if (referencing) {
+      return res.status(409).json({
+        error: "AUTOMATION_TARGET_IN_USE",
+        message: `“${referencing.name}” uses this automation in an Add to workflow action. Remove that action before deleting this automation.`,
+      })
+    }
     await prismaWithAutomations.automation.delete({ where: { tenantId_id: { tenantId, id: automationId } } })
     return res.json({ ok: true })
   } catch (error) {

@@ -324,6 +324,7 @@ enum AutomationActionType {
   IF_ELSE
   SPLIT
   GO_TO
+  ADD_TO_WORKFLOW
   UPDATE_OPPORTUNITY
   DELETE_OPPORTUNITY
   WAIT
@@ -386,6 +387,7 @@ enum AutomationSideEffectStatus {
 }
 
 enum AutomationRunStatus {
+  QUEUED
   RUNNING
   WAITING
   SUCCEEDED
@@ -397,6 +399,7 @@ enum AutomationNodeEventSource {
   MANUAL_ENROLLMENT
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
+  AUTOMATION_ACTION
 }
 
 enum AutomationProcessStatus {
@@ -1512,6 +1515,7 @@ model AutomationAction {
   goToConfig              Json?
   opportunityConfig       Json?
   deleteOpportunityConfig Json?
+  addToWorkflowConfig     Json?
   sortOrder               Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
@@ -1608,6 +1612,7 @@ model AutomationRun {
   opportunityId          String?
   attemptId              String
   dispatchId             String?                   @unique
+  causationKey           String?                   @unique
   eventSource            AutomationNodeEventSource
   triggerType            AutomationTriggerType
   sourceStageId          String?
@@ -1646,6 +1651,7 @@ model AutomationRun {
   @@index([tenantId, automationId, status, waitingNodeKey, resumeAt], map: "AutomationRun_wait_monitoring_idx")
   @@index([tenantId, contactId, createdAt])
   @@index([status, resumeAt, leaseExpiresAt])
+  @@index([status, createdAt, leaseExpiresAt], map: "AutomationRun_queue_claim_idx")
 }
 
 model AutomationEvent {
