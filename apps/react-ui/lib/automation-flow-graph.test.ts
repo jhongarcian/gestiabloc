@@ -20,6 +20,7 @@ const labels = {
   SPLIT: "Split",
   GO_TO: "Go to",
   UPDATE_OPPORTUNITY: "Update/create opportunity",
+  DELETE_OPPORTUNITY: "Delete opportunity",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 } as const
@@ -423,6 +424,34 @@ describe("buildAutomationFlowGraph", () => {
     assert.equal(node?.data.label, "Move renewal")
     assert.equal(node?.data.subtitle, "Renewals → Follow-up · Won")
     assert.equal(node?.data.actionGroup, "OPPORTUNITY")
+  })
+
+  test("uses the custom Delete opportunity name and keeps the path open", () => {
+    const graph = buildAutomationFlowGraph(
+      {
+        triggerType: "OPPORTUNITY_CREATED",
+        pipelineId: "pipeline-1",
+        targetStageId: "",
+        conditions: [],
+        actions: [{
+          nodeKey: "delete-opportunity-action",
+          type: "DELETE_OPPORTUNITY",
+          deleteOpportunityConfig: {
+            actionName: "Remove renewal",
+            pipelineId: "pipeline-2",
+            pipelineNameSnapshot: "Renewals",
+          },
+        }],
+      },
+      null,
+      labels,
+    )
+    const node = graph.nodes.find((candidate) => candidate.id === "action-delete-opportunity-action")
+    assert.equal(node?.data.label, "Remove renewal")
+    assert.equal(node?.data.subtitle, "Delete from Renewals")
+    assert.equal(node?.data.actionGroup, "OPPORTUNITY")
+    assert.ok(graph.nodes.some((candidate) => candidate.id === "add-1"))
+    assert.ok(graph.edges.some((edge) => edge.source === "action-delete-opportunity-action" && edge.target === "add-1"))
   })
 
   test("places delete contact directly before completion", () => {

@@ -477,6 +477,13 @@ const ACTION_DEFINITIONS = {
     order: 0,
     icon: Kanban,
   },
+  DELETE_OPPORTUNITY: {
+    label: "Delete opportunity",
+    description: "Remove the contact's opportunity from a selected pipeline.",
+    group: "OPPORTUNITY",
+    order: 1,
+    icon: Trash2,
+  },
   UPDATE_CONTACT_CUSTOM_FIELDS: {
     label: "Update contact fields",
     description: "Set or clear multiple contact and custom fields.",
@@ -1114,6 +1121,18 @@ function actionDefaults(
       },
     }
   }
+  if (type === "DELETE_OPPORTUNITY") {
+    const pipeline = catalog.pipelines[0]
+    return {
+      nodeKey,
+      type,
+      deleteOpportunityConfig: {
+        actionName: "Delete opportunity",
+        pipelineId: pipeline?.id ?? "",
+        pipelineNameSnapshot: pipeline?.name ?? "",
+      },
+    }
+  }
   if (type === "WAIT") return { nodeKey, type, waitConfig: { mode: "DURATION", amount: 1, unit: "HOURS" } }
   return { nodeKey, type }
 }
@@ -1566,6 +1585,11 @@ function isActionReady(
       Number.isSafeInteger(config.valueCents) &&
       config.valueCents >= 0 &&
       config.valueCents <= 2_147_483_647
+  }
+  if (action.type === "DELETE_OPPORTUNITY") {
+    const config = action.deleteOpportunityConfig
+    if (!config || !config.actionName.trim() || config.actionName.trim().length > 120) return false
+    return catalog.pipelines.some((pipeline) => pipeline.id === config.pipelineId)
   }
   if (action.type === "WAIT") {
     const config = action.waitConfig
@@ -3236,6 +3260,14 @@ function ActionEditor({
           />
         ) : null}
 
+        {action.type === "DELETE_OPPORTUNITY" && action.deleteOpportunityConfig ? (
+          <DeleteOpportunityActionEditor
+            config={action.deleteOpportunityConfig}
+            catalog={catalog}
+            onChange={(deleteOpportunityConfig) => onChange({ ...action, deleteOpportunityConfig })}
+          />
+        ) : null}
+
         {action.type === "SET_CONTACT_STATUS" ? (
           <Field>
             <FieldLabel htmlFor="action-status">Status</FieldLabel>
@@ -3572,6 +3604,66 @@ function UpdateOpportunityActionEditor({
           </Field>
         </FieldGroup>
       </section>
+    </div>
+  )
+}
+
+function DeleteOpportunityActionEditor({
+  config,
+  catalog,
+  onChange,
+}: {
+  config: NonNullable<AutomationAction["deleteOpportunityConfig"]>
+  catalog: AutomationCatalog
+  onChange: (config: NonNullable<AutomationAction["deleteOpportunityConfig"]>) => void
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <section className="rounded-xl border border-amber-200 bg-amber-50/70 p-3">
+        <div className="mb-3">
+          <p className="text-sm font-semibold text-slate-950">Opportunity</p>
+          <p className="text-xs leading-4 text-slate-600">Choose the pipeline to remove the opportunity from.</p>
+        </div>
+        <FieldGroup className="gap-3">
+          <Field>
+            <FieldLabel htmlFor="delete-opportunity-action-name">Action name</FieldLabel>
+            <Input
+              id="delete-opportunity-action-name"
+              value={config.actionName}
+              maxLength={120}
+              onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+              placeholder="Delete opportunity"
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="delete-opportunity-action-pipeline">Pipeline</FieldLabel>
+            <Select
+              value={config.pipelineId}
+              onValueChange={(pipelineId) => {
+                const pipeline = catalog.pipelines.find((candidate) => candidate.id === pipelineId)
+                onChange({
+                  ...config,
+                  pipelineId,
+                  pipelineNameSnapshot: pipeline?.name ?? "",
+                })
+              }}
+            >
+              <SelectTrigger id="delete-opportunity-action-pipeline" className={COMPACT_SELECT_TRIGGER_CLASS}>
+                <SelectValue placeholder="Select pipeline" />
+              </SelectTrigger>
+              <SelectContent>
+                {catalog.pipelines.map((pipeline) => (
+                  <SelectItem key={pipeline.id} value={pipeline.id}>{pipeline.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        </FieldGroup>
+      </section>
+
+      <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-xs leading-5 text-rose-800">
+        This removes only the opportunity in the selected pipeline. The contact, other opportunities, and automation history remain available.
+      </div>
     </div>
   )
 }
@@ -5469,6 +5561,7 @@ function TaskActionEditor({
 function goToDestinationLabel(action: AutomationAction) {
   if (action.type === "FORMAT_TEXT") return action.textFormatterConfig?.actionName.trim() || "Text formatter"
   if (action.type === "UPDATE_OPPORTUNITY") return action.opportunityConfig?.actionName.trim() || "Update/create opportunity"
+  if (action.type === "DELETE_OPPORTUNITY") return action.deleteOpportunityConfig?.actionName.trim() || "Delete opportunity"
   if (action.type === "IF_ELSE") return action.ifElseConfig?.actionName.trim() || "If/Else"
   if (action.type === "SPLIT") return action.splitConfig?.actionName.trim() || "Split"
   return ACTION_LABELS[action.type]

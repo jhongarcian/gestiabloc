@@ -65,6 +65,7 @@ const CONTACT_ACTION_TYPES = new Set<AutomationAction["type"]>([
 
 const OPPORTUNITY_ACTION_TYPES = new Set<AutomationAction["type"]>([
   "UPDATE_OPPORTUNITY",
+  "DELETE_OPPORTUNITY",
 ])
 
 function actionVisualGroup(type: AutomationAction["type"]): NonNullable<AutomationFlowNodeData["actionGroup"]> {
@@ -251,6 +252,8 @@ export function buildAutomationFlowGraph(
                     ? "Lost"
                     : "Open"
             }`
+        : action.type === "DELETE_OPPORTUNITY"
+          ? `Delete from ${action.deleteOpportunityConfig?.pipelineNameSnapshot || "Pipeline"}`
         : action.type === "UPDATE_CONTACT_CUSTOM_FIELDS"
           ? `Update ${action.customFieldUpdates?.length ?? 0} field${action.customFieldUpdates?.length === 1 ? "" : "s"}`
           : action.type === "DELETE_CONTACT"
@@ -269,6 +272,8 @@ export function buildAutomationFlowGraph(
         ? action.textFormatterConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "UPDATE_OPPORTUNITY"
           ? action.opportunityConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "DELETE_OPPORTUNITY"
+          ? action.deleteOpportunityConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "IF_ELSE"
           ? action.ifElseConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "SPLIT"

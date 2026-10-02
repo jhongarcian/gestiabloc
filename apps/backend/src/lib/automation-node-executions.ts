@@ -46,6 +46,7 @@ const ACTION_LABELS: Record<string, string> = {
   SPLIT: "Split",
   GO_TO: "Go to",
   UPDATE_OPPORTUNITY: "Update/create opportunity",
+  DELETE_OPPORTUNITY: "Delete opportunity",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
 }
@@ -60,6 +61,7 @@ export function getAutomationActionNodeLabel(action: {
   ifElseConfig?: unknown
   splitConfig?: unknown
   opportunityConfig?: unknown
+  deleteOpportunityConfig?: unknown
 }) {
   if (action.type === "FORMAT_TEXT") {
     const config = action.textFormatterConfig && typeof action.textFormatterConfig === "object"
@@ -85,6 +87,13 @@ export function getAutomationActionNodeLabel(action: {
   if (action.type === "UPDATE_OPPORTUNITY") {
     const config = action.opportunityConfig && typeof action.opportunityConfig === "object"
       ? action.opportunityConfig as Record<string, unknown>
+      : null
+    const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
+    if (actionName) return actionName.slice(0, 120)
+  }
+  if (action.type === "DELETE_OPPORTUNITY") {
+    const config = action.deleteOpportunityConfig && typeof action.deleteOpportunityConfig === "object"
+      ? action.deleteOpportunityConfig as Record<string, unknown>
       : null
     const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
     if (actionName) return actionName.slice(0, 120)

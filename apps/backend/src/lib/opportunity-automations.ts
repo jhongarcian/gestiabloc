@@ -106,6 +106,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "SPLIT",
   "GO_TO",
   "UPDATE_OPPORTUNITY",
+  "DELETE_OPPORTUNITY",
   "WAIT",
   "DELETE_CONTACT",
 ] as const
@@ -327,6 +328,12 @@ export const AutomationOpportunityConfigSchema = z.union([
   })),
 ])
 
+export const AutomationDeleteOpportunityConfigSchema = z.object({
+  actionName: z.string().trim().min(1).max(120),
+  pipelineId: idSchema,
+  pipelineNameSnapshot: z.string().trim().min(1).max(120),
+}).strict()
+
 const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("UPDATE_CONTACT_CUSTOM_FIELDS"),
@@ -386,6 +393,11 @@ const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("UPDATE_OPPORTUNITY"),
     nodeKey: actionNodeKeySchema,
     opportunityConfig: AutomationOpportunityConfigSchema,
+  }),
+  z.object({
+    type: z.literal("DELETE_OPPORTUNITY"),
+    nodeKey: actionNodeKeySchema,
+    deleteOpportunityConfig: AutomationDeleteOpportunityConfigSchema,
   }),
   z.object({ type: z.literal("DELETE_CONTACT"), nodeKey: actionNodeKeySchema }),
 ])
@@ -501,6 +513,7 @@ const legacyRoutingActionNullFields = {
   mathOperationConfig: z.null().optional(),
   goToConfig: z.null().optional(),
   opportunityConfig: z.null().optional(),
+  deleteOpportunityConfig: z.null().optional(),
 }
 
 const AutomationIfElseBranchSchema: z.ZodType<AutomationIfElseBranchInput> = z.lazy(() => z.object({
@@ -1684,6 +1697,23 @@ export async function validateAutomationConfiguration(
         },
       }
     }
+    if (action.type === "DELETE_OPPORTUNITY") {
+      const selectedPipeline = opportunityPipelineMap.get(action.deleteOpportunityConfig.pipelineId)
+      if (!selectedPipeline) {
+        throw new AutomationConfigurationError(
+          "OPPORTUNITY_PIPELINE_NOT_FOUND",
+          "Select an available opportunity pipeline.",
+        )
+      }
+      return {
+        ...base,
+        deleteOpportunityConfig: {
+          ...action.deleteOpportunityConfig,
+          actionName: action.deleteOpportunityConfig.actionName.trim(),
+          pipelineNameSnapshot: selectedPipeline.name,
+        },
+      }
+    }
     if (action.type === "DELETE_CONTACT") {
       if (index !== actionInputs.length - 1) {
         throw new AutomationConfigurationError(
@@ -2397,6 +2427,7 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
         mathOperationConfig: action.mathOperationConfig,
         goToConfig: action.goToConfig,
         opportunityConfig: action.opportunityConfig,
+        deleteOpportunityConfig: action.deleteOpportunityConfig,
       }
   const parsed = AutomationActionInputSchema.parse(snapshot)
   return ensureRuntimeAutomationAction(parsed)
@@ -3009,6 +3040,54 @@ async function applyAutomationAction(
       const previousAmount = currencyFormatter.format(existing.valueCents / 100)
       const nextAmount = currencyFormatter.format(config.valueCents / 100)
       return `Updated opportunity from ${previousStage} · ${previousAmount} · ${previousResult} to ${stageLabel} · ${nextAmount} · ${resultLabel}.`
+    } else if (action.type === "DELETE_OPPORTUNITY") {
+      const config = action.deleteOpportunityConfig
+      const pipelineLabel = config.pipelineNameSnapshot || catalog.pipelineMap.get(config.pipelineId) || "Selected pipeline"
+      const existing = await prismaTx.contactOpportunity.findUnique({
+        where: {
+          tenantId_contactId_pipelineId: {
+            tenantId,
+            contactId,
+            pipelineId: config.pipelineId,
+          },
+        },
+        select: {
+          id: true,
+          stageId: true,
+          valueCents: true,
+          result: true,
+          updatedAt: true,
+        },
+      })
+      if (!existing) {
+        return `No opportunity existed in ${pipelineLabel}. No changes were needed.`
+      }
+
+      const deleted = await prismaTx.contactOpportunity.deleteMany({
+        where: {
+          tenantId,
+          id: existing.id,
+          pipelineId: config.pipelineId,
+          updatedAt: existing.updatedAt,
+        },
+      })
+      if (deleted.count !== 1) {
+        const concurrencyError = new AutomationExecutionError({
+          automationId,
+          automationName,
+          actionIndex,
+          contactId,
+          message: "The opportunity changed while this automation was deleting it. The action will be retried safely.",
+        })
+        concurrencyError.code = "OPPORTUNITY_CHANGED_CONCURRENTLY"
+        throw concurrencyError
+      }
+
+      const stageLabel = catalog.stageMap.get(existing.stageId) ?? "Unknown stage"
+      const resultLabel = existing.result === "OPEN" ? "Open" : existing.result === "WON" ? "Won" : "Lost"
+      const amount = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
+        .format(existing.valueCents / 100)
+      return `Deleted opportunity from ${pipelineLabel} · ${stageLabel} · ${amount} · ${resultLabel}.`
     } else if (action.type === "DELETE_CONTACT") {
       const currentRun = runId && prismaTx.automationRun?.findUnique
         ? await prismaTx.automationRun.findUnique({

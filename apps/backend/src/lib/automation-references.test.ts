@@ -320,4 +320,37 @@ describe("findEnabledAutomationReference", () => {
       { id: "automation-1", name: "Move renewal" },
     )
   })
+
+  test("finds pipeline references inside nested Delete opportunity actions", async () => {
+    const prismaClient = {
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Remove renewal",
+          actions: [{
+            type: "IF_ELSE",
+            ifElseConfig: {
+              actionName: "Renewal state",
+              branches: [{
+                actions: [{
+                  type: "DELETE_OPPORTUNITY",
+                  deleteOpportunityConfig: {
+                    actionName: "Remove renewal",
+                    pipelineId: "pipeline-2",
+                    pipelineNameSnapshot: "Renewals",
+                  },
+                }],
+              }],
+            },
+          }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(prismaClient, "tenant-1", { kind: "pipeline", id: "pipeline-2" }),
+      { id: "automation-1", name: "Remove renewal" },
+    )
+  })
 })
