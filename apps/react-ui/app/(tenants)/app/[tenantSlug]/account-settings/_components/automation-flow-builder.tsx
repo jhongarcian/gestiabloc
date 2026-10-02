@@ -456,18 +456,25 @@ const ACTION_DEFINITIONS = {
     order: 7,
     icon: RouteIcon,
   },
+  ADD_TO_WORKFLOW: {
+    label: "Add to workflow",
+    description: "Start another published workflow for this contact.",
+    group: "INTERNAL",
+    order: 8,
+    icon: Workflow,
+  },
   CREATE_TASK: {
     label: "Create task",
     description: "Create a task linked to this contact.",
     group: "INTERNAL",
-    order: 8,
+    order: 9,
     icon: ListTodo,
   },
   ADD_CONTACT_NOTE: {
     label: "Add contact note",
     description: "Add a note using live contact information.",
     group: "INTERNAL",
-    order: 9,
+    order: 10,
     icon: StickyNote,
   },
   UPDATE_OPPORTUNITY: {
@@ -933,6 +940,7 @@ function actionDefaults(
   type: AutomationAction["type"],
   catalog: AutomationCatalog,
   existingNodeKey?: string,
+  sourceAutomationId?: string,
 ): AutomationAction {
   const nodeKey = existingNodeKey ?? crypto.randomUUID()
   if (type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
@@ -1104,6 +1112,18 @@ function actionDefaults(
     }
   }
   if (type === "GO_TO") return { nodeKey, type, goToConfig: { targetNodeKey: "" } }
+  if (type === "ADD_TO_WORKFLOW") {
+    const target = catalog.workflowAutomations.find((automation) => automation.id !== sourceAutomationId)
+    return {
+      nodeKey,
+      type,
+      addToWorkflowConfig: {
+        actionName: "Add to workflow",
+        targetAutomationId: target?.id ?? "",
+        targetAutomationNameSnapshot: target?.name ?? "",
+      },
+    }
+  }
   if (type === "UPDATE_OPPORTUNITY") {
     const pipeline = catalog.pipelines[0]
     const stage = pipeline?.stages[0]
@@ -1575,6 +1595,15 @@ function isActionReady(
   }
   if (action.type === "GO_TO") {
     return targetActions.length === 0 && Boolean(action.goToConfig?.targetNodeKey)
+  }
+  if (action.type === "ADD_TO_WORKFLOW") {
+    const config = action.addToWorkflowConfig
+    return Boolean(
+      config &&
+      config.actionName.trim() &&
+      config.actionName.trim().length <= 120 &&
+      catalog.workflowAutomations.some((automation) => automation.id === config.targetAutomationId),
+    )
   }
   if (action.type === "UPDATE_OPPORTUNITY") {
     const config = action.opportunityConfig
@@ -2412,6 +2441,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     goToIssue={goToPanelIssue}
                     isPickingGoTo={goToPicking}
                     onPickGoToOnCanvas={() => setGoToPicking(true)}
+                    sourceAutomationId={automationId}
                     management={{
                       index: selected.index,
                       total: selectedPathActions.length,
@@ -2454,6 +2484,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     goToIssue={goToPanelIssue}
                     isPickingGoTo={goToPicking}
                     onPickGoToOnCanvas={() => setGoToPicking(true)}
+                    sourceAutomationId={automationId}
                   />
                 ) : selected.kind === "trigger" && triggerEditorDraft ? (
                   <TriggerEditor
@@ -2660,6 +2691,21 @@ function TriggerEditor({
 
   return (
     <div className="flex flex-col gap-4">
+      <section className="flex flex-col gap-3">
+        <FieldGroup className="gap-3">
+          <Field>
+            <FieldLabel htmlFor="automation-name">Automation name</FieldLabel>
+            <Input
+              id="automation-name"
+              value={draft.name}
+              onChange={(event) => onChange({ ...draft, name: event.target.value })}
+              placeholder="Qualify new opportunity"
+            />
+          </Field>
+        </FieldGroup>
+      </section>
+
+      <Separator />
       <section>
         <Field>
           <FieldLabel htmlFor="automation-trigger">Trigger</FieldLabel>
@@ -2758,22 +2804,6 @@ function TriggerEditor({
           </section>
         </>
       ) : null}
-
-      <Separator />
-      <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold text-foreground">Automation details</h3>
-        <FieldGroup className="gap-3">
-          <Field>
-            <FieldLabel htmlFor="automation-name">Automation name</FieldLabel>
-            <Input
-              id="automation-name"
-              value={draft.name}
-              onChange={(event) => onChange({ ...draft, name: event.target.value })}
-              placeholder="Qualify new opportunity"
-            />
-          </Field>
-        </FieldGroup>
-      </section>
     </div>
   )
 }
@@ -3030,6 +3060,7 @@ function NewActionEditor({
   goToIssue,
   isPickingGoTo,
   onPickGoToOnCanvas,
+  sourceAutomationId,
 }: {
   action: AutomationAction | null
   catalog: AutomationCatalog
@@ -3043,6 +3074,7 @@ function NewActionEditor({
   goToIssue?: string | null
   isPickingGoTo: boolean
   onPickGoToOnCanvas: () => void
+  sourceAutomationId?: string
 }) {
   if (action) {
     const definition = ACTION_DEFINITIONS[action.type]
@@ -3085,6 +3117,7 @@ function NewActionEditor({
           goToIssue={goToIssue}
           isPickingGoTo={isPickingGoTo}
           onPickGoToOnCanvas={onPickGoToOnCanvas}
+          sourceAutomationId={sourceAutomationId}
         />
       </div>
     )
@@ -3136,7 +3169,7 @@ function NewActionEditor({
                         catalog.customFields.length === 0) ||
                       ((value === "DELETE_CONTACT" || value === "GO_TO") && targetActions.length > 0)
                     }
-                    onClick={() => onChange(actionDefaults(value, catalog))}
+                    onClick={() => onChange(actionDefaults(value, catalog, undefined, sourceAutomationId))}
                   >
                     <span className={cn(
                       "flex size-8 shrink-0 items-center justify-center rounded-lg",
@@ -3176,6 +3209,7 @@ function ActionEditor({
   goToIssue,
   isPickingGoTo = false,
   onPickGoToOnCanvas,
+  sourceAutomationId,
 }: {
   action: AutomationAction
   catalog: AutomationCatalog
@@ -3190,6 +3224,7 @@ function ActionEditor({
   goToIssue?: string | null
   isPickingGoTo?: boolean
   onPickGoToOnCanvas?: () => void
+  sourceAutomationId?: string
   management?: {
     index: number
     total: number
@@ -3213,7 +3248,7 @@ function ActionEditor({
             <FieldLabel htmlFor="action-type">Action type</FieldLabel>
             <Select
               value={action.type}
-              onValueChange={(type: AutomationAction["type"]) => onChange(actionDefaults(type, catalog, action.nodeKey))}
+              onValueChange={(type: AutomationAction["type"]) => onChange(actionDefaults(type, catalog, action.nodeKey, sourceAutomationId))}
             >
               <SelectTrigger id="action-type" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -3265,6 +3300,15 @@ function ActionEditor({
             config={action.deleteOpportunityConfig}
             catalog={catalog}
             onChange={(deleteOpportunityConfig) => onChange({ ...action, deleteOpportunityConfig })}
+          />
+        ) : null}
+
+        {action.type === "ADD_TO_WORKFLOW" && action.addToWorkflowConfig ? (
+          <AddToWorkflowActionEditor
+            config={action.addToWorkflowConfig}
+            catalog={catalog}
+            sourceAutomationId={sourceAutomationId}
+            onChange={(addToWorkflowConfig) => onChange({ ...action, addToWorkflowConfig })}
           />
         ) : null}
 
@@ -5562,9 +5606,119 @@ function goToDestinationLabel(action: AutomationAction) {
   if (action.type === "FORMAT_TEXT") return action.textFormatterConfig?.actionName.trim() || "Text formatter"
   if (action.type === "UPDATE_OPPORTUNITY") return action.opportunityConfig?.actionName.trim() || "Update/create opportunity"
   if (action.type === "DELETE_OPPORTUNITY") return action.deleteOpportunityConfig?.actionName.trim() || "Delete opportunity"
+  if (action.type === "ADD_TO_WORKFLOW") return action.addToWorkflowConfig?.actionName.trim() || "Add to workflow"
   if (action.type === "IF_ELSE") return action.ifElseConfig?.actionName.trim() || "If/Else"
   if (action.type === "SPLIT") return action.splitConfig?.actionName.trim() || "Split"
   return ACTION_LABELS[action.type]
+}
+
+function workflowTargetCycleReason(
+  catalog: AutomationCatalog,
+  sourceAutomationId: string | undefined,
+  targetAutomationId: string,
+) {
+  if (!sourceAutomationId) return null
+  if (sourceAutomationId === targetAutomationId) return "A workflow cannot start itself."
+  const byId = new Map(catalog.workflowAutomations.map((automation) => [automation.id, automation]))
+  const visited = new Set<string>()
+  const reachesSource = (automationId: string): boolean => {
+    if (automationId === sourceAutomationId) return true
+    if (visited.has(automationId)) return false
+    visited.add(automationId)
+    return (byId.get(automationId)?.targetAutomationIds ?? []).some(reachesSource)
+  }
+  return reachesSource(targetAutomationId)
+    ? "This workflow already leads back to the current workflow."
+    : null
+}
+
+function AddToWorkflowActionEditor({
+  config,
+  catalog,
+  sourceAutomationId,
+  onChange,
+}: {
+  config: NonNullable<AutomationAction["addToWorkflowConfig"]>
+  catalog: AutomationCatalog
+  sourceAutomationId?: string
+  onChange: (config: NonNullable<AutomationAction["addToWorkflowConfig"]>) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const targets = catalog.workflowAutomations.filter((automation) => automation.id !== sourceAutomationId)
+  const selected = targets.find((automation) => automation.id === config.targetAutomationId)
+
+  return (
+    <section className="space-y-3 rounded-xl border border-violet-200 bg-violet-50/70 p-3">
+      <div className="space-y-1">
+        <p className="text-sm font-semibold text-slate-950">Workflow start</p>
+        <p className="text-xs leading-4 text-slate-600">
+          Starts the selected workflow at its first action without checking its entry rules.
+        </p>
+      </div>
+      <Field>
+        <FieldLabel htmlFor="add-to-workflow-action-name">Action name</FieldLabel>
+        <Input
+          id="add-to-workflow-action-name"
+          value={config.actionName}
+          maxLength={120}
+          onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+        />
+      </Field>
+      <Field>
+        <FieldLabel>Published workflow</FieldLabel>
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              role="combobox"
+              aria-expanded={open}
+              className="h-9 w-full justify-between bg-white px-3 font-normal"
+            >
+              <span className="truncate">{(selected?.name ?? config.targetAutomationNameSnapshot) || "Select workflow"}</span>
+              <ChevronsUpDown className="size-4 shrink-0 text-slate-400" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+            <Command>
+              <CommandInput placeholder="Search workflows…" />
+              <CommandList>
+                <CommandEmpty>No published workflows found.</CommandEmpty>
+                <CommandGroup>
+                  {targets.map((automation) => {
+                    const cycleReason = workflowTargetCycleReason(catalog, sourceAutomationId, automation.id)
+                    return (
+                      <CommandItem
+                        key={automation.id}
+                        value={`${automation.name} ${automation.id}`}
+                        disabled={Boolean(cycleReason)}
+                        onSelect={() => {
+                          if (cycleReason) return
+                          onChange({
+                            ...config,
+                            targetAutomationId: automation.id,
+                            targetAutomationNameSnapshot: automation.name,
+                          })
+                          setOpen(false)
+                        }}
+                      >
+                        <Check className={cn("size-4", automation.id === config.targetAutomationId ? "opacity-100" : "opacity-0")} />
+                        <span className="min-w-0 flex-1 truncate">{automation.name}</span>
+                        {cycleReason ? <span className="text-xs text-rose-600">Creates loop</span> : null}
+                      </CommandItem>
+                    )
+                  })}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+      </Field>
+      {targets.length === 0 ? (
+        <p className="text-xs leading-4 text-slate-600">Publish another automation before selecting it here.</p>
+      ) : null}
+    </section>
+  )
 }
 
 function GoToActionEditor({

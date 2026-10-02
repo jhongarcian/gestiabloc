@@ -77,6 +77,30 @@ describe("serializeAutomationAction", () => {
     )
   })
 
+  test("serializes only the Add to workflow configuration", () => {
+    assert.deepEqual(
+      serializeAutomationAction({
+        nodeKey: "workflow-1",
+        type: "ADD_TO_WORKFLOW",
+        addToWorkflowConfig: {
+          actionName: "Start onboarding",
+          targetAutomationId: "automation-2",
+          targetAutomationNameSnapshot: "Client onboarding",
+        },
+        statusConfigId: null,
+      }),
+      {
+        nodeKey: "workflow-1",
+        type: "ADD_TO_WORKFLOW",
+        addToWorkflowConfig: {
+          actionName: "Start onboarding",
+          targetAutomationId: "automation-2",
+          targetAutomationNameSnapshot: "Client onboarding",
+        },
+      },
+    )
+  })
+
   test("omits unrelated routing configs and preserves a nested If/Else inside Split", () => {
     const action: AutomationAction = {
       nodeKey: "split-1",

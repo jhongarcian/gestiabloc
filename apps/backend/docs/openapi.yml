@@ -6482,6 +6482,7 @@ components:
             - IF_ELSE
             - SPLIT
             - GO_TO
+            - ADD_TO_WORKFLOW
             - UPDATE_OPPORTUNITY
             - DELETE_OPPORTUNITY
             - WAIT
@@ -6547,6 +6548,8 @@ components:
           $ref: "#/components/schemas/AutomationOpportunityConfig"
         deleteOpportunityConfig:
           $ref: "#/components/schemas/AutomationDeleteOpportunityConfig"
+        addToWorkflowConfig:
+          $ref: "#/components/schemas/AutomationAddToWorkflowConfig"
         waitConfig:
           oneOf:
             - type: object
@@ -6599,6 +6602,25 @@ components:
           minLength: 1
           maxLength: 200
           description: Stable node key of an executable action in the same automation.
+    AutomationAddToWorkflowConfig:
+      type: object
+      required: [actionName, targetAutomationId, targetAutomationNameSnapshot]
+      description: >-
+        Queues a new independent run of another published automation for the same contact.
+        The target starts at its first action without evaluating its trigger or entry filters.
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        targetAutomationId:
+          type: string
+          format: uuid
+        targetAutomationNameSnapshot:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Refreshed from the target automation when the source is saved.
     AutomationIfElseConfig:
       type: object
       required: [actionName, branches]

@@ -105,6 +105,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "IF_ELSE",
   "SPLIT",
   "GO_TO",
+  "ADD_TO_WORKFLOW",
   "UPDATE_OPPORTUNITY",
   "DELETE_OPPORTUNITY",
   "WAIT",
@@ -334,6 +335,12 @@ export const AutomationDeleteOpportunityConfigSchema = z.object({
   pipelineNameSnapshot: z.string().trim().min(1).max(120),
 }).strict()
 
+export const AutomationAddToWorkflowConfigSchema = z.object({
+  actionName: z.string().trim().min(1).max(120),
+  targetAutomationId: idSchema,
+  targetAutomationNameSnapshot: z.string().trim().min(1).max(120),
+}).strict()
+
 const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("UPDATE_CONTACT_CUSTOM_FIELDS"),
@@ -398,6 +405,11 @@ const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("DELETE_OPPORTUNITY"),
     nodeKey: actionNodeKeySchema,
     deleteOpportunityConfig: AutomationDeleteOpportunityConfigSchema,
+  }),
+  z.object({
+    type: z.literal("ADD_TO_WORKFLOW"),
+    nodeKey: actionNodeKeySchema,
+    addToWorkflowConfig: AutomationAddToWorkflowConfigSchema,
   }),
   z.object({ type: z.literal("DELETE_CONTACT"), nodeKey: actionNodeKeySchema }),
 ])
@@ -514,6 +526,7 @@ const legacyRoutingActionNullFields = {
   goToConfig: z.null().optional(),
   opportunityConfig: z.null().optional(),
   deleteOpportunityConfig: z.null().optional(),
+  addToWorkflowConfig: z.null().optional(),
 }
 
 const AutomationIfElseBranchSchema: z.ZodType<AutomationIfElseBranchInput> = z.lazy(() => z.object({
@@ -579,6 +592,60 @@ export const AutomationUpsertSchema = z
 export type AutomationInput = z.infer<typeof AutomationUpsertSchema>
 export type AutomationOperator = (typeof AUTOMATION_OPERATORS)[number]
 export type AutomationTriggerType = (typeof AUTOMATION_TRIGGER_TYPES)[number]
+
+export function automationWorkflowTargetIds(actions: any[]): string[] {
+  const targets = new Set<string>()
+  const visit = (items: any[]) => {
+    for (const action of items) {
+      if (action?.type === "ADD_TO_WORKFLOW") {
+        const parsed = AutomationAddToWorkflowConfigSchema.safeParse(action.addToWorkflowConfig)
+        if (parsed.success) targets.add(parsed.data.targetAutomationId)
+      }
+      const paths = action?.type === "IF_ELSE"
+        ? action.ifElseConfig?.branches
+        : action?.type === "SPLIT"
+          ? action.splitConfig?.routes
+          : null
+      if (Array.isArray(paths)) {
+        for (const path of paths) visit(Array.isArray(path?.actions) ? path.actions : [])
+      }
+    }
+  }
+  visit(Array.isArray(actions) ? actions : [])
+  return [...targets]
+}
+
+function validatePublishedAutomationWorkflowGraph(params: {
+  sourceAutomationId: string
+  sourceActions: any[]
+  publishedAutomations: Array<{ id: string; actions: any[] }>
+}) {
+  const edges = new Map<string, string[]>()
+  for (const automation of params.publishedAutomations) {
+    if (automation.id === params.sourceAutomationId) continue
+    edges.set(automation.id, automationWorkflowTargetIds(automation.actions))
+  }
+  edges.set(params.sourceAutomationId, automationWorkflowTargetIds(params.sourceActions))
+
+  const states = new Map<string, 0 | 1 | 2>()
+  const visit = (automationId: string): boolean => {
+    const state = states.get(automationId) ?? 0
+    if (state === 1) return true
+    if (state === 2) return false
+    states.set(automationId, 1)
+    for (const targetId of edges.get(automationId) ?? []) {
+      if (visit(targetId)) return true
+    }
+    states.set(automationId, 2)
+    return false
+  }
+  if ([...edges.keys()].some(visit)) {
+    throw new AutomationConfigurationError(
+      "AUTOMATION_WORKFLOW_CYCLE",
+      "This Add to workflow connection would create a workflow loop.",
+    )
+  }
+}
 
 type CustomFieldType =
   | "TEXT"
@@ -1093,8 +1160,9 @@ export async function validateAutomationConfiguration(
   prismaClient: any,
   tenantId: string,
   input: AutomationInput,
+  options: { sourceAutomationId?: string | null } = {},
 ) {
-  const [pipelines, fields, statuses, taskStatuses, memberships, tags, services] = await Promise.all([
+  const [pipelines, fields, statuses, taskStatuses, memberships, tags, services, publishedAutomations] = await Promise.all([
     prismaClient.opportunityPipeline.findMany
       ? prismaClient.opportunityPipeline.findMany({
           where: { tenantId },
@@ -1147,6 +1215,24 @@ export async function validateAutomationConfiguration(
           select: { id: true, name: true },
         })
       : Promise.resolve([]),
+    prismaClient.automation?.findMany
+      ? prismaClient.automation.findMany({
+          where: { tenantId, isEnabled: true },
+          select: {
+            id: true,
+            name: true,
+            actions: {
+              orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+              select: {
+                type: true,
+                addToWorkflowConfig: true,
+                ifElseConfig: true,
+                splitConfig: true,
+              },
+            },
+          },
+        })
+      : Promise.resolve([]),
   ])
 
   const pipeline = pipelines.find((item: any) => item.id === input.trigger.pipelineId)
@@ -1166,6 +1252,9 @@ export async function validateAutomationConfiguration(
   const tagIds = new Set(tags.map((item: any) => item.id))
   const serviceMap = new Map<string, string>(services.map((item: any) => [item.id, item.name]))
   const opportunityPipelineMap = new Map<string, any>(pipelines.map((item: any) => [item.id, item]))
+  const publishedAutomationMap = new Map<string, { id: string; name: string; actions: any[] }>(
+    publishedAutomations.map((automation: any) => [automation.id, automation]),
+  )
 
   const conditions = input.conditions.map((condition, index) => {
     if (condition.source === "OPPORTUNITY_VALUE") {
@@ -1714,6 +1803,29 @@ export async function validateAutomationConfiguration(
         },
       }
     }
+    if (action.type === "ADD_TO_WORKFLOW") {
+      const target = publishedAutomationMap.get(action.addToWorkflowConfig.targetAutomationId)
+      if (!target) {
+        throw new AutomationConfigurationError(
+          "TARGET_AUTOMATION_NOT_PUBLISHED",
+          "Select another published automation.",
+        )
+      }
+      if (options.sourceAutomationId && target.id === options.sourceAutomationId) {
+        throw new AutomationConfigurationError(
+          "AUTOMATION_WORKFLOW_SELF_REFERENCE",
+          "An automation cannot add a contact to itself.",
+        )
+      }
+      return {
+        ...base,
+        addToWorkflowConfig: {
+          ...action.addToWorkflowConfig,
+          actionName: action.addToWorkflowConfig.actionName.trim(),
+          targetAutomationNameSnapshot: target.name,
+        },
+      }
+    }
     if (action.type === "DELETE_CONTACT") {
       if (index !== actionInputs.length - 1) {
         throw new AutomationConfigurationError(
@@ -1988,6 +2100,13 @@ export async function validateAutomationConfiguration(
 
   const actions = normalizeActionPath(input.actions, new Map(), 0)
   validateAutomationGoToControlFlow(actions)
+  if (input.isEnabled && options.sourceAutomationId) {
+    validatePublishedAutomationWorkflowGraph({
+      sourceAutomationId: options.sourceAutomationId,
+      sourceActions: actions,
+      publishedAutomations,
+    })
+  }
 
   return {
     name: input.name,
@@ -2428,6 +2547,7 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
         goToConfig: action.goToConfig,
         opportunityConfig: action.opportunityConfig,
         deleteOpportunityConfig: action.deleteOpportunityConfig,
+        addToWorkflowConfig: action.addToWorkflowConfig,
       }
   const parsed = AutomationActionInputSchema.parse(snapshot)
   return ensureRuntimeAutomationAction(parsed)
@@ -2477,6 +2597,8 @@ async function applyAutomationAction(
     automationName: string
     tenantId: string
     contactId: string
+    contactName: string
+    opportunityId?: string | null
     actorUserId?: string | null
     catalog: AutomationRuntimeCatalog
     occurredAt: Date
@@ -2494,6 +2616,8 @@ async function applyAutomationAction(
     automationName,
     tenantId,
     contactId,
+    contactName,
+    opportunityId,
     actorUserId,
     catalog,
     occurredAt,
@@ -3088,6 +3212,110 @@ async function applyAutomationAction(
       const amount = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
         .format(existing.valueCents / 100)
       return `Deleted opportunity from ${pipelineLabel} · ${stageLabel} · ${amount} · ${resultLabel}.`
+    } else if (action.type === "ADD_TO_WORKFLOW") {
+      const config = action.addToWorkflowConfig
+      const target = await prismaTx.automation.findFirst({
+        where: {
+          tenantId,
+          id: config.targetAutomationId,
+          isEnabled: true,
+        },
+        select: {
+          id: true,
+          name: true,
+          triggerType: true,
+          targetStageId: true,
+          actions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+        },
+      })
+      if (!target) {
+        throw new Error(`The target workflow “${config.targetAutomationNameSnapshot}” is no longer published or available.`)
+      }
+      const actions = target.actions.map(automationActionSnapshot)
+      if (actions.length === 0) throw new Error(`The target workflow “${target.name}” has no actions to run.`)
+
+      const workflowAutomationIds = [...(eventContext.workflowAutomationIds ?? [])]
+      if (automationId && !workflowAutomationIds.includes(automationId)) workflowAutomationIds.push(automationId)
+      const nextDepth = (eventContext.workflowStartDepth ?? 0) + 1
+      if (workflowAutomationIds.includes(target.id) || nextDepth > 20) {
+        const loopError = new AutomationExecutionError({
+          automationId,
+          automationName,
+          actionIndex,
+          contactId,
+          message: workflowAutomationIds.includes(target.id)
+            ? `The workflow “${target.name}” already ran in this workflow chain.`
+            : "This workflow chain reached the maximum of 20 workflow starts.",
+        })
+        loopError.code = "AUTOMATION_WORKFLOW_LOOP"
+        throw loopError
+      }
+
+      const causationKey = runId ? `automation-run:${runId}:workflow-node:${action.nodeKey}` : null
+      const existingRun = causationKey
+        ? await prismaTx.automationRun.findUnique({ where: { causationKey }, select: { id: true } })
+        : null
+      if (!existingRun) {
+        const attemptId = randomUUID()
+        const queuedAt = new Date()
+        await prismaTx.automationRun.create({
+          data: {
+            tenantId,
+            automationId: target.id,
+            automationName: target.name,
+            contactId,
+            contactName,
+            actorUserId: actorUserId ?? null,
+            opportunityId: opportunityId ?? null,
+            attemptId,
+            causationKey,
+            eventSource: "AUTOMATION_ACTION",
+            triggerType: target.triggerType,
+            sourceStageId: eventContext.sourceStageId ?? null,
+            targetStageId: eventContext.targetStageId ?? target.targetStageId ?? null,
+            actionSnapshot: actions,
+            variables: {},
+            cursorIndex: 0,
+            branchDecisions: {},
+            eventContext: {
+              ...eventContext,
+              workflowAutomationIds: [...workflowAutomationIds, target.id],
+              workflowStartDepth: nextDepth,
+              sourceWorkflowAutomationId: automationId,
+              sourceWorkflowAutomationName: automationName,
+              sourceWorkflowNodeKey: action.nodeKey,
+              sourceWorkflowActionName: config.actionName,
+            },
+            status: "QUEUED",
+          },
+        })
+        await prismaTx.automationNodeExecution.create({
+          data: {
+            tenantId,
+            automationId: target.id,
+            automationName: target.name,
+            contactId,
+            contactName,
+            actorUserId: actorUserId ?? null,
+            processId: null,
+            opportunityId: opportunityId ?? null,
+            attemptId,
+            eventSource: "AUTOMATION_ACTION",
+            nodeKind: "TRIGGER",
+            nodeOrder: 0,
+            nodeKey: "AUTOMATION_ACTION",
+            nodeLabel: "Started by workflow",
+            status: "QUEUED",
+            reasonCode: "WORKFLOW_START_QUEUED",
+            details: `Queued by “${automationName}” from “${config.actionName}”.`,
+            occurredAt: queuedAt,
+          },
+        })
+      }
+      return {
+        details: `Queued “${target.name}” to start.`,
+        queuedRunCount: existingRun ? 0 : 1,
+      }
     } else if (action.type === "DELETE_CONTACT") {
       const currentRun = runId && prismaTx.automationRun?.findUnique
         ? await prismaTx.automationRun.findUnique({
@@ -3171,6 +3399,84 @@ async function applyAutomationAction(
           }
         }
       }
+      const queuedOrWaitingRuns = prismaTx.automationRun?.findMany
+        ? await prismaTx.automationRun.findMany({
+            where: {
+              tenantId,
+              contactId,
+              status: { in: ["QUEUED", "WAITING"] },
+              ...(runId ? { id: { not: runId } } : {}),
+            },
+          })
+        : []
+      if (queuedOrWaitingRuns.length > 0) {
+        const canceledAt = new Date()
+        await prismaTx.automationNodeExecution.updateMany({
+          where: {
+            tenantId,
+            attemptId: { in: queuedOrWaitingRuns.map((run: any) => run.attemptId) },
+            status: { in: ["QUEUED", "WAITING"] },
+          },
+          data: {
+            status: "SKIPPED",
+            reasonCode: "CONTACT_DELETED",
+            details: "The contact was deleted by an automation and removed from this workflow run.",
+            occurredAt: canceledAt,
+          },
+        })
+        const remainingLogs = queuedOrWaitingRuns.flatMap((queuedRun: any) => {
+          const visited = new Set(normalizeAutomationCursorState(queuedRun.cursorPath).visitedNodeKeys ?? [])
+          let steps: FlattenedAutomationAction[] = []
+          try {
+            steps = flattenAutomationActionTree(parseActionSnapshot(queuedRun.actionSnapshot))
+          } catch {
+            return []
+          }
+          return steps
+            .filter((step) => !visited.has(step.action.nodeKey))
+            .map((step) => ({
+              tenantId,
+              automationId: queuedRun.automationId,
+              automationName: queuedRun.automationName,
+              contactId,
+              contactName: queuedRun.contactName,
+              actorUserId: queuedRun.actorUserId,
+              processId: null,
+              opportunityId: queuedRun.opportunityId,
+              attemptId: queuedRun.attemptId,
+              eventSource: queuedRun.eventSource,
+              nodeKind: "ACTION" as const,
+              nodeOrder: step.nodeOrder,
+              nodeKey: step.action.nodeKey,
+              nodeLabel: getAutomationActionNodeLabel(step.action),
+              status: "SKIPPED" as const,
+              reasonCode: "CONTACT_DELETED",
+              details: "Skipped because an automation deleted the contact.",
+              branchPath: step.branchPath,
+              occurredAt: canceledAt,
+            }))
+        })
+        if (remainingLogs.length > 0) {
+          await prismaTx.automationNodeExecution.createMany({ data: remainingLogs })
+        }
+        await prismaTx.automationExecution.createMany({
+          data: queuedOrWaitingRuns.map((queuedRun: any) => ({
+            tenantId,
+            automationId: queuedRun.automationId,
+            automationName: queuedRun.automationName,
+            triggerType: queuedRun.triggerType,
+            status: "EXITED" as const,
+            opportunityId: queuedRun.opportunityId,
+            contactId,
+            sourceStageId: queuedRun.sourceStageId,
+            targetStageId: queuedRun.targetStageId,
+            actorUserId: queuedRun.actorUserId,
+            actionCount: queuedRun.cursorIndex,
+            errorCode: "CONTACT_DELETED",
+            errorMessage: "The contact was deleted by another automation run.",
+          })),
+        })
+      }
       const [contactNoteAttachments, serviceNoteAttachments] = await Promise.all([
         prismaTx.contactNoteAttachment.findMany({
           where: { tenantId, note: { contactId } },
@@ -3196,7 +3502,7 @@ async function applyAutomationAction(
         where: {
           tenantId,
           contactId,
-          status: { in: ["RUNNING", "WAITING"] },
+          status: { in: ["QUEUED", "RUNNING", "WAITING"] },
           ...(runId ? { id: { not: runId } } : {}),
         },
         data: {
@@ -3275,6 +3581,11 @@ export async function applyAutomationActions(
   const occurredAt = new Date()
   const automationValues: Record<string, unknown> = {}
   const templateContext = createContactTemplateExecutionContext()
+  const contact = await prismaTx.contact.findFirst({
+    where: { tenantId: params.tenantId, id: params.contactId },
+    select: { firstName: true, middleName: true, lastName: true },
+  })
+  const contactName = contact ? getContactDisplayName(contact) : "Unnamed contact"
   for (let index = 0; index < actions.length; index += 1) {
     if (actions[index]!.type === "WAIT") continue
     if (actions[index]!.type === "DELETE_CONTACT" && index !== actions.length - 1) {
@@ -3293,6 +3604,7 @@ export async function applyAutomationActions(
       automationName: params.automation.name,
       tenantId: params.tenantId,
       contactId: params.contactId,
+      contactName,
       catalog: params.catalog,
       occurredAt,
       runId: null,
@@ -3462,6 +3774,12 @@ type AutomationOpportunityEventContext = {
   chainId?: string | null
   chainDepth?: number
   transitionHistory?: OpportunityAutomationTransition[]
+  workflowAutomationIds?: string[]
+  workflowStartDepth?: number
+  sourceWorkflowAutomationId?: string | null
+  sourceWorkflowAutomationName?: string | null
+  sourceWorkflowNodeKey?: string | null
+  sourceWorkflowActionName?: string | null
 }
 
 function normalizeOpportunityEventContext(value: unknown): AutomationOpportunityEventContext {
@@ -3498,6 +3816,16 @@ function normalizeOpportunityEventContext(value: unknown): AutomationOpportunity
       ? record.chainDepth
       : 0,
     transitionHistory,
+    workflowAutomationIds: Array.isArray(record.workflowAutomationIds)
+      ? [...new Set(record.workflowAutomationIds.filter((item): item is string => typeof item === "string"))]
+      : [],
+    workflowStartDepth: typeof record.workflowStartDepth === "number" && Number.isInteger(record.workflowStartDepth)
+      ? record.workflowStartDepth
+      : 0,
+    sourceWorkflowAutomationId: typeof record.sourceWorkflowAutomationId === "string" ? record.sourceWorkflowAutomationId : null,
+    sourceWorkflowAutomationName: typeof record.sourceWorkflowAutomationName === "string" ? record.sourceWorkflowAutomationName : null,
+    sourceWorkflowNodeKey: typeof record.sourceWorkflowNodeKey === "string" ? record.sourceWorkflowNodeKey : null,
+    sourceWorkflowActionName: typeof record.sourceWorkflowActionName === "string" ? record.sourceWorkflowActionName : null,
   }
 }
 
@@ -3873,6 +4201,7 @@ async function executeBranchedAutomationSegmentTx(
   const logs: AutomationNodeLogData[] = []
   const notificationIds: string[] = []
   const fileCleanupCandidates: AutomationFileCleanupCandidate[] = []
+  let queuedRunCount = 0
   const automationValues = normalizeAutomationVariables(run.variables)
   const branchDecisions = normalizeBranchDecisions(run.branchDecisions)
   const eventContext = normalizeOpportunityEventContext(run.eventContext)
@@ -4188,7 +4517,7 @@ async function executeBranchedAutomationSegmentTx(
             variables: automationValues,
           },
         })
-        return { logs, notificationIds, fileCleanupCandidates, status: "WAITING" as const, contactDeleted: false }
+        return { logs, notificationIds, fileCleanupCandidates, queuedRunCount, status: "WAITING" as const, contactDeleted: false }
       }
 
       logs.push(actionLog(
@@ -4244,7 +4573,7 @@ async function executeBranchedAutomationSegmentTx(
             actionCount: index + 1,
           },
         })
-        return { logs, notificationIds, fileCleanupCandidates, status: "EXITED" as const, contactDeleted: false }
+        return { logs, notificationIds, fileCleanupCandidates, queuedRunCount, status: "EXITED" as const, contactDeleted: false }
       }
       if (action.waitConfig.mode === "FIXED_DATE" && action.waitConfig.pastBehavior === "GO_TO_STEP") {
         const targetNodeKey = action.waitConfig.targetNodeKey
@@ -4277,6 +4606,8 @@ async function executeBranchedAutomationSegmentTx(
         automationName: run.automationName,
         tenantId: run.tenantId,
         contactId: run.contactId,
+        contactName: run.contactName,
+        opportunityId: run.opportunityId,
         actorUserId: run.actorUserId,
         catalog,
         occurredAt: now,
@@ -4289,6 +4620,9 @@ async function executeBranchedAutomationSegmentTx(
       if (CONTACT_CONTEXT_MUTATING_ACTIONS.has(action.type)) invalidateContactContext()
       const details = typeof successDetails === "string" ? successDetails : successDetails?.details
       if (typeof successDetails === "object" && successDetails?.notificationIds) notificationIds.push(...successDetails.notificationIds)
+      if (typeof successDetails === "object" && successDetails && "queuedRunCount" in successDetails && typeof successDetails.queuedRunCount === "number") {
+        queuedRunCount += successDetails.queuedRunCount
+      }
       if (typeof successDetails === "object" && successDetails && "contactDeleted" in successDetails && successDetails.contactDeleted === true) contactDeleted = true
       if (typeof successDetails === "object" && successDetails && "fileCleanupCandidates" in successDetails && Array.isArray(successDetails.fileCleanupCandidates)) {
         fileCleanupCandidates.push(...successDetails.fileCleanupCandidates)
@@ -4376,6 +4710,7 @@ async function executeBranchedAutomationSegmentTx(
     logs: contactDeleted ? logs.map((log) => ({ ...log, contactId: null })) : logs,
     notificationIds,
     fileCleanupCandidates,
+    queuedRunCount,
     status: "SUCCEEDED" as const,
     contactDeleted,
   }
@@ -4418,6 +4753,7 @@ export async function executeAutomationSegmentTx(
   const logs: AutomationNodeLogData[] = []
   const notificationIds: string[] = []
   const fileCleanupCandidates: AutomationFileCleanupCandidate[] = []
+  let queuedRunCount = 0
   const automationValues = normalizeAutomationVariables(run.variables)
   const eventContext = normalizeOpportunityEventContext(run.eventContext)
   const templateContext = createContactTemplateExecutionContext()
@@ -4455,6 +4791,7 @@ export async function executeAutomationSegmentTx(
           logs,
           notificationIds,
           fileCleanupCandidates,
+          queuedRunCount,
           status: "WAITING" as const,
           contactDeleted: false,
         }
@@ -4506,6 +4843,7 @@ export async function executeAutomationSegmentTx(
           logs,
           notificationIds,
           fileCleanupCandidates,
+          queuedRunCount,
           status: "EXITED" as const,
           contactDeleted: false,
         }
@@ -4548,6 +4886,8 @@ export async function executeAutomationSegmentTx(
         automationName: run.automationName,
         tenantId: run.tenantId,
         contactId: run.contactId,
+        contactName: run.contactName,
+        opportunityId: run.opportunityId,
         actorUserId: run.actorUserId,
         catalog,
         occurredAt: now,
@@ -4563,6 +4903,14 @@ export async function executeAutomationSegmentTx(
         : successDetails?.details
       if (typeof successDetails === "object" && successDetails?.notificationIds) {
         notificationIds.push(...successDetails.notificationIds)
+      }
+      if (
+        typeof successDetails === "object" &&
+        successDetails !== null &&
+        "queuedRunCount" in successDetails &&
+        typeof successDetails.queuedRunCount === "number"
+      ) {
+        queuedRunCount += successDetails.queuedRunCount
       }
       if (
         typeof successDetails === "object" &&
@@ -4630,6 +4978,7 @@ export async function executeAutomationSegmentTx(
     logs: contactDeleted ? logs.map((log) => ({ ...log, contactId: null })) : logs,
     notificationIds,
     fileCleanupCandidates,
+    queuedRunCount,
     status: "SUCCEEDED" as const,
     contactDeleted,
   }
@@ -4799,6 +5148,7 @@ export async function executeOpportunityAutomations(
   const fileCleanupCandidates: AutomationFileCleanupCandidate[] = []
   let executedCount = 0
   let contactDeleted = false
+  let queuedRunCount = 0
   for (let planIndex = 0; planIndex < plans.length; planIndex += 1) {
     const plan = plans[planIndex]
     if (!plan.shouldRun) continue
@@ -4861,6 +5211,7 @@ export async function executeOpportunityAutomations(
       plan.logs.push(...result.logs)
       notificationIds.push(...result.notificationIds)
       fileCleanupCandidates.push(...result.fileCleanupCandidates)
+      queuedRunCount += result.queuedRunCount
       if (result.contactDeleted) contactDeleted = true
     } catch (error) {
       if (error instanceof AutomationExecutionError) {
@@ -4922,6 +5273,7 @@ export async function executeOpportunityAutomations(
     executedCount,
     notificationIds,
     fileCleanupCandidates,
+    ...(queuedRunCount > 0 ? { queuedRunCount } : {}),
     contactDeleted,
   }
 }
@@ -5067,6 +5419,26 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
       : []
 
   await prismaClient.$transaction(async (transaction: any) => {
+    if (run.eventSource === "AUTOMATION_ACTION") {
+      const workflowContext = normalizeOpportunityEventContext(run.eventContext)
+      await transaction.automationNodeExecution.updateMany({
+        where: {
+          tenantId: run.tenantId,
+          attemptId: run.attemptId,
+          eventSource: "AUTOMATION_ACTION",
+          nodeKind: "TRIGGER",
+          status: "QUEUED",
+        },
+        data: {
+          status: "EXECUTED",
+          reasonCode: null,
+          details: workflowContext.sourceWorkflowAutomationName
+            ? `Started by “${workflowContext.sourceWorkflowAutomationName}”${workflowContext.sourceWorkflowActionName ? ` from “${workflowContext.sourceWorkflowActionName}”` : ""}.`
+            : "Started by another workflow.",
+          occurredAt: now,
+        },
+      })
+    }
     if (run.waitingNodeExecutionId) {
       await transaction.automationNodeExecution.updateMany({
         where: { tenantId: run.tenantId, id: run.waitingNodeExecutionId },
@@ -5132,6 +5504,7 @@ async function resumeAutomationRun(
           status: "NOT_CLAIMED" as const,
           notificationIds: [] as string[],
           fileCleanupCandidates: [] as AutomationFileCleanupCandidate[],
+          queuedRunCount: 0,
         }
       }
       const actions = parseActionSnapshot(run.actionSnapshot)
@@ -5141,6 +5514,26 @@ async function resumeAutomationRun(
       if (!contact) throw new Error("The contact for this automation run is no longer available.")
       const resumedAt = new Date()
       const catalog = await getAutomationRuntimeCatalog(transaction, run.tenantId)
+      if (run.eventSource === "AUTOMATION_ACTION") {
+        const workflowContext = normalizeOpportunityEventContext(run.eventContext)
+        await transaction.automationNodeExecution.updateMany({
+          where: {
+            tenantId: run.tenantId,
+            attemptId: run.attemptId,
+            eventSource: "AUTOMATION_ACTION",
+            nodeKind: "TRIGGER",
+            status: "QUEUED",
+          },
+          data: {
+            status: "EXECUTED",
+            reasonCode: null,
+            details: workflowContext.sourceWorkflowAutomationName
+              ? `Started by “${workflowContext.sourceWorkflowAutomationName}”${workflowContext.sourceWorkflowActionName ? ` from “${workflowContext.sourceWorkflowActionName}”` : ""}.`
+              : "Started by another workflow.",
+            occurredAt: resumedAt,
+          },
+        })
+      }
       if (run.waitingNodeExecutionId) {
         await transaction.automationNodeExecution.updateMany({
           where: { tenantId: run.tenantId, id: run.waitingNodeExecutionId },
@@ -5188,12 +5581,14 @@ async function resumeAutomationRun(
         status: result.status,
         notificationIds: run.dispatchId ? [] : result.notificationIds,
         fileCleanupCandidates: run.dispatchId ? [] : result.fileCleanupCandidates,
+        queuedRunCount: result.queuedRunCount,
       }
     })
     await emitAutomationTaskNotifications(prismaClient, result.notificationIds).catch((error) => {
       console.error("Could not emit automation task notification", error)
     })
     await deleteAutomationContactFileObjects(result.fileCleanupCandidates)
+    if (result.queuedRunCount > 0) kickAutomationRunWorker({ queueOpportunityEvent })
     return { status: result.status }
   } catch (error) {
     await recordAutomationRunFailure(prismaClient, runId, leaseToken, error)
@@ -5251,6 +5646,10 @@ export async function resumeDueAutomationRuns(
     where: {
       OR: [
         {
+          status: "QUEUED",
+          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
+        },
+        {
           status: "WAITING",
           resumeAt: { lte: now },
           OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
@@ -5262,7 +5661,7 @@ export async function resumeDueAutomationRuns(
         },
       ],
     },
-    orderBy: { resumeAt: "asc" },
+    orderBy: { createdAt: "asc" },
     take: 50,
     select: { id: true },
   })
@@ -5273,6 +5672,10 @@ export async function resumeDueAutomationRuns(
       where: {
         id: candidate.id,
         OR: [
+          {
+            status: "QUEUED",
+            OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
+          },
           {
             status: "WAITING",
             resumeAt: { lte: now },
@@ -5300,4 +5703,19 @@ export async function resumeDueAutomationRuns(
     ))
   }
   return results
+}
+
+let automationRunKickScheduled = false
+
+export function kickAutomationRunWorker(
+  options: { queueOpportunityEvent?: QueueOpportunityAutomationEvent } = {},
+) {
+  if (automationRunKickScheduled) return
+  automationRunKickScheduled = true
+  queueMicrotask(() => {
+    automationRunKickScheduled = false
+    void resumeDueAutomationRuns(undefined, options).catch((error) => {
+      console.error("Failed to process queued automation runs:", error)
+    })
+  })
 }

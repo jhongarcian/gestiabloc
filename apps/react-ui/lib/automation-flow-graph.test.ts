@@ -19,6 +19,7 @@ const labels = {
   IF_ELSE: "If/Else",
   SPLIT: "Split",
   GO_TO: "Go to",
+  ADD_TO_WORKFLOW: "Add to workflow",
   UPDATE_OPPORTUNITY: "Update/create opportunity",
   DELETE_OPPORTUNITY: "Delete opportunity",
   WAIT: "Wait",
@@ -26,6 +27,29 @@ const labels = {
 } as const
 
 describe("buildAutomationFlowGraph", () => {
+  test("shows the custom Add to workflow label and target snapshot", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-1",
+      targetStageId: "",
+      conditions: [],
+      actions: [{
+        nodeKey: "workflow-node",
+        type: "ADD_TO_WORKFLOW",
+        addToWorkflowConfig: {
+          actionName: "Start onboarding",
+          targetAutomationId: "automation-2",
+          targetAutomationNameSnapshot: "Client onboarding",
+        },
+      }],
+    }, null, labels)
+
+    const node = graph.nodes.find((candidate) => candidate.id === "action-workflow-node")
+    assert.equal(node?.data.label, "Start onboarding")
+    assert.equal(node?.data.subtitle, "Start Client onboarding")
+    assert.ok(graph.nodes.some((candidate) => candidate.id === "complete"))
+  })
+
   test("renders Go To as a dotted outer-gutter route without a local completion", () => {
     const graph = buildAutomationFlowGraph(
       {

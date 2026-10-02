@@ -61,6 +61,8 @@ export function serializeAutomationAction(action: AutomationAction): AutomationA
       }
     case "GO_TO":
       return { ...base, goToConfig: action.goToConfig }
+    case "ADD_TO_WORKFLOW":
+      return { ...base, addToWorkflowConfig: action.addToWorkflowConfig }
     case "UPDATE_OPPORTUNITY":
       return { ...base, opportunityConfig: action.opportunityConfig }
     case "DELETE_OPPORTUNITY":
