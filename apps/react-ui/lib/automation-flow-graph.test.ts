@@ -20,6 +20,7 @@ const labels = {
   SPLIT: "Split",
   GO_TO: "Go to",
   ADD_TO_WORKFLOW: "Add to workflow",
+  REMOVE_FROM_WORKFLOW: "Remove from workflow",
   UPDATE_OPPORTUNITY: "Update/create opportunity",
   DELETE_OPPORTUNITY: "Delete opportunity",
   WAIT: "Wait",
@@ -48,6 +49,28 @@ describe("buildAutomationFlowGraph", () => {
     assert.equal(node?.data.label, "Start onboarding")
     assert.equal(node?.data.subtitle, "Start Client onboarding")
     assert.ok(graph.nodes.some((candidate) => candidate.id === "complete"))
+  })
+
+  test("shows the custom Remove from workflow label and target snapshot", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-1",
+      targetStageId: "",
+      conditions: [],
+      actions: [{
+        nodeKey: "remove-workflow-node",
+        type: "REMOVE_FROM_WORKFLOW",
+        removeFromWorkflowConfig: {
+          actionName: "End nurture sequence",
+          targetAutomationId: "automation-2",
+          targetAutomationNameSnapshot: "Lead nurture",
+        },
+      }],
+    }, null, labels)
+
+    const node = graph.nodes.find((candidate) => candidate.id === "action-remove-workflow-node")
+    assert.equal(node?.data.label, "End nurture sequence")
+    assert.equal(node?.data.subtitle, "Remove from Lead nurture")
   })
 
   test("renders Go To as a dotted outer-gutter route without a local completion", () => {

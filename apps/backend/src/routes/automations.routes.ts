@@ -10,6 +10,7 @@ import {
   AutomationConfigurationError,
   AutomationOpportunityConfigSchema,
   AutomationUpsertSchema,
+  automationWorkflowReferenceIds,
   automationWorkflowTargetIds,
   getAutomationOperatorsForFieldType,
   validateAutomationConfiguration,
@@ -184,6 +185,7 @@ function serializeAutomation(record: any) {
           : action.opportunityConfig,
         deleteOpportunityConfig: action.deleteOpportunityConfig,
         addToWorkflowConfig: action.addToWorkflowConfig,
+        removeFromWorkflowConfig: action.removeFromWorkflowConfig,
       }
     }),
     lastExecution: record.executions?.[0]
@@ -222,12 +224,18 @@ async function findEnabledWorkflowReference(
       id: true,
       name: true,
       actions: {
-        select: { type: true, addToWorkflowConfig: true, ifElseConfig: true, splitConfig: true },
+        select: {
+          type: true,
+          addToWorkflowConfig: true,
+          removeFromWorkflowConfig: true,
+          ifElseConfig: true,
+          splitConfig: true,
+        },
       },
     },
   })
   return automations.find((automation: any) =>
-    automationWorkflowTargetIds(automation.actions).includes(targetAutomationId),
+    automationWorkflowReferenceIds(automation.actions).includes(targetAutomationId),
   ) ?? null
 }
 
@@ -751,7 +759,7 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
       if (referencing) {
         return res.status(409).json({
           error: "AUTOMATION_TARGET_IN_USE",
-          message: `“${referencing.name}” uses this automation in an Add to workflow action. Remove that action before unpublishing this automation.`,
+          message: `“${referencing.name}” uses this automation in a workflow action. Remove that action before unpublishing this automation.`,
         })
       }
     }
@@ -798,7 +806,7 @@ router.delete("/:tenantId/automations/:automationId", ...writeMiddlewares, async
     if (referencing) {
       return res.status(409).json({
         error: "AUTOMATION_TARGET_IN_USE",
-        message: `“${referencing.name}” uses this automation in an Add to workflow action. Remove that action before deleting this automation.`,
+        message: `“${referencing.name}” uses this automation in a workflow action. Remove that action before deleting this automation.`,
       })
     }
     await prismaWithAutomations.automation.delete({ where: { tenantId_id: { tenantId, id: automationId } } })

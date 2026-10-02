@@ -256,6 +256,8 @@ export function buildAutomationFlowGraph(
           ? `Delete from ${action.deleteOpportunityConfig?.pipelineNameSnapshot || "Pipeline"}`
         : action.type === "ADD_TO_WORKFLOW"
           ? `Start ${action.addToWorkflowConfig?.targetAutomationNameSnapshot || "workflow"}`
+        : action.type === "REMOVE_FROM_WORKFLOW"
+          ? `Remove from ${action.removeFromWorkflowConfig?.targetAutomationNameSnapshot || "workflow"}`
         : action.type === "UPDATE_CONTACT_CUSTOM_FIELDS"
           ? `Update ${action.customFieldUpdates?.length ?? 0} field${action.customFieldUpdates?.length === 1 ? "" : "s"}`
           : action.type === "DELETE_CONTACT"
@@ -278,6 +280,8 @@ export function buildAutomationFlowGraph(
           ? action.deleteOpportunityConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "ADD_TO_WORKFLOW"
           ? action.addToWorkflowConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "REMOVE_FROM_WORKFLOW"
+          ? action.removeFromWorkflowConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "IF_ELSE"
           ? action.ifElseConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "SPLIT"

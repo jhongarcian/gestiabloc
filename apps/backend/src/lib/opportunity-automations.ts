@@ -106,6 +106,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "SPLIT",
   "GO_TO",
   "ADD_TO_WORKFLOW",
+  "REMOVE_FROM_WORKFLOW",
   "UPDATE_OPPORTUNITY",
   "DELETE_OPPORTUNITY",
   "WAIT",
@@ -341,6 +342,12 @@ export const AutomationAddToWorkflowConfigSchema = z.object({
   targetAutomationNameSnapshot: z.string().trim().min(1).max(120),
 }).strict()
 
+export const AutomationRemoveFromWorkflowConfigSchema = z.object({
+  actionName: z.string().trim().min(1).max(120),
+  targetAutomationId: idSchema,
+  targetAutomationNameSnapshot: z.string().trim().min(1).max(120),
+}).strict()
+
 const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("UPDATE_CONTACT_CUSTOM_FIELDS"),
@@ -410,6 +417,11 @@ const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("ADD_TO_WORKFLOW"),
     nodeKey: actionNodeKeySchema,
     addToWorkflowConfig: AutomationAddToWorkflowConfigSchema,
+  }),
+  z.object({
+    type: z.literal("REMOVE_FROM_WORKFLOW"),
+    nodeKey: actionNodeKeySchema,
+    removeFromWorkflowConfig: AutomationRemoveFromWorkflowConfigSchema,
   }),
   z.object({ type: z.literal("DELETE_CONTACT"), nodeKey: actionNodeKeySchema }),
 ])
@@ -527,6 +539,7 @@ const legacyRoutingActionNullFields = {
   opportunityConfig: z.null().optional(),
   deleteOpportunityConfig: z.null().optional(),
   addToWorkflowConfig: z.null().optional(),
+  removeFromWorkflowConfig: z.null().optional(),
 }
 
 const AutomationIfElseBranchSchema: z.ZodType<AutomationIfElseBranchInput> = z.lazy(() => z.object({
@@ -599,6 +612,28 @@ export function automationWorkflowTargetIds(actions: any[]): string[] {
     for (const action of items) {
       if (action?.type === "ADD_TO_WORKFLOW") {
         const parsed = AutomationAddToWorkflowConfigSchema.safeParse(action.addToWorkflowConfig)
+        if (parsed.success) targets.add(parsed.data.targetAutomationId)
+      }
+      const paths = action?.type === "IF_ELSE"
+        ? action.ifElseConfig?.branches
+        : action?.type === "SPLIT"
+          ? action.splitConfig?.routes
+          : null
+      if (Array.isArray(paths)) {
+        for (const path of paths) visit(Array.isArray(path?.actions) ? path.actions : [])
+      }
+    }
+  }
+  visit(Array.isArray(actions) ? actions : [])
+  return [...targets]
+}
+
+export function automationWorkflowReferenceIds(actions: any[]): string[] {
+  const targets = new Set(automationWorkflowTargetIds(actions))
+  const visit = (items: any[]) => {
+    for (const action of items) {
+      if (action?.type === "REMOVE_FROM_WORKFLOW") {
+        const parsed = AutomationRemoveFromWorkflowConfigSchema.safeParse(action.removeFromWorkflowConfig)
         if (parsed.success) targets.add(parsed.data.targetAutomationId)
       }
       const paths = action?.type === "IF_ELSE"
@@ -1826,6 +1861,26 @@ export async function validateAutomationConfiguration(
         },
       }
     }
+    if (action.type === "REMOVE_FROM_WORKFLOW") {
+      const publishedTarget = publishedAutomationMap.get(action.removeFromWorkflowConfig.targetAutomationId)
+      const target = publishedTarget && publishedTarget.id === options.sourceAutomationId
+        ? { id: publishedTarget.id, name: input.name.trim() }
+        : publishedTarget
+      if (!target) {
+        throw new AutomationConfigurationError(
+          "TARGET_AUTOMATION_NOT_PUBLISHED",
+          "Select a published automation.",
+        )
+      }
+      return {
+        ...base,
+        removeFromWorkflowConfig: {
+          ...action.removeFromWorkflowConfig,
+          actionName: action.removeFromWorkflowConfig.actionName.trim(),
+          targetAutomationNameSnapshot: target.name,
+        },
+      }
+    }
     if (action.type === "DELETE_CONTACT") {
       if (index !== actionInputs.length - 1) {
         throw new AutomationConfigurationError(
@@ -2548,6 +2603,7 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
         opportunityConfig: action.opportunityConfig,
         deleteOpportunityConfig: action.deleteOpportunityConfig,
         addToWorkflowConfig: action.addToWorkflowConfig,
+        removeFromWorkflowConfig: action.removeFromWorkflowConfig,
       }
   const parsed = AutomationActionInputSchema.parse(snapshot)
   return ensureRuntimeAutomationAction(parsed)
@@ -2586,6 +2642,249 @@ export function parseActionSnapshot(value: unknown): RuntimeAutomationAction[] {
   validatePaths(runtimeActions, 0)
   validateAutomationGoToControlFlow(runtimeActions)
   return runtimeActions
+}
+
+const WORKFLOW_REMOVAL_REASON_CODE = "CONTACT_REMOVED_FROM_WORKFLOW"
+
+async function removeContactFromWorkflowRuns(
+  prismaTx: any,
+  params: {
+    tenantId: string
+    contactId: string
+    actorUserId?: string | null
+    sourceAutomationId: string | null
+    sourceAutomationName: string
+    sourceActionName: string
+    targetAutomationId: string
+    targetAutomationNameSnapshot: string
+    currentRunId?: string | null
+    occurredAt: Date
+  },
+) {
+  const target = await prismaTx.automation.findFirst({
+    where: { tenantId: params.tenantId, id: params.targetAutomationId },
+    select: { id: true, name: true },
+  })
+  if (!target) {
+    throw new Error(`The target workflow “${params.targetAutomationNameSnapshot}” is no longer available.`)
+  }
+
+  const details = `Removed by “${params.sourceAutomationName}” from “${params.sourceActionName}”.`
+  let removedCount = 0
+
+  const queuedDispatches = prismaTx.automationDispatch?.findMany
+    ? await prismaTx.automationDispatch.findMany({
+        where: {
+          tenantId: params.tenantId,
+          automationId: target.id,
+          status: "QUEUED",
+          event: { contactId: params.contactId },
+        },
+        include: { event: true },
+      })
+    : []
+  for (const dispatch of queuedDispatches) {
+    const canceled = await prismaTx.automationDispatch.updateMany({
+      where: { id: dispatch.id, status: "QUEUED" },
+      data: {
+        status: "CANCELED",
+        completedAt: params.occurredAt,
+        errorCode: WORKFLOW_REMOVAL_REASON_CODE,
+        errorMessage: details,
+      },
+    })
+    if (canceled.count !== 1) continue
+    removedCount += 1
+    await prismaTx.automationNodeExecution.updateMany({
+      where: { id: dispatch.triggerExecutionId, status: "QUEUED" },
+      data: {
+        status: "SKIPPED",
+        reasonCode: WORKFLOW_REMOVAL_REASON_CODE,
+        details,
+        actorUserId: params.actorUserId ?? null,
+        occurredAt: params.occurredAt,
+      },
+    })
+    let actions: RuntimeAutomationAction[] = []
+    try {
+      actions = parseActionSnapshot(dispatch.actionSnapshot)
+    } catch {
+      // The queued dispatch is still canceled even when its pinned snapshot cannot be read.
+    }
+    const logs = flattenAutomationActionTree(actions).map(({ action, nodeOrder, branchPath }) => ({
+      tenantId: params.tenantId,
+      automationId: dispatch.automationId,
+      automationName: dispatch.automationName,
+      contactId: params.contactId,
+      contactName: dispatch.event.contactName,
+      actorUserId: params.actorUserId ?? dispatch.event.actorUserId,
+      processId: null,
+      opportunityId: dispatch.event.opportunityId,
+      attemptId: dispatch.attemptId,
+      eventSource: dispatch.event.triggerType,
+      nodeKind: "ACTION" as const,
+      nodeOrder,
+      nodeKey: action.nodeKey,
+      nodeLabel: getAutomationActionNodeLabel(action),
+      status: "SKIPPED" as const,
+      reasonCode: WORKFLOW_REMOVAL_REASON_CODE,
+      details,
+      branchPath,
+      occurredAt: params.occurredAt,
+    }))
+    if (logs.length > 0) await prismaTx.automationNodeExecution.createMany({ data: logs })
+  }
+
+  const activeRuns = prismaTx.automationRun?.findMany
+    ? await prismaTx.automationRun.findMany({
+        where: {
+          tenantId: params.tenantId,
+          automationId: target.id,
+          contactId: params.contactId,
+          status: { in: ["QUEUED", "RUNNING", "WAITING"] },
+          ...(params.currentRunId ? { id: { not: params.currentRunId } } : {}),
+        },
+      })
+    : []
+
+  for (const run of activeRuns) {
+    if (run.status === "RUNNING") {
+      const requested = await prismaTx.automationRun.updateMany({
+        where: { id: run.id, status: "RUNNING" },
+        data: {
+          exitRequestedAt: params.occurredAt,
+          exitReasonCode: WORKFLOW_REMOVAL_REASON_CODE,
+          exitReasonDetails: details,
+        },
+      })
+      if (requested.count === 1) {
+        removedCount += 1
+        continue
+      }
+    }
+
+    const exited = await prismaTx.automationRun.updateMany({
+      where: { id: run.id, status: { in: ["QUEUED", "WAITING"] } },
+      data: {
+        status: "EXITED",
+        resumeAt: null,
+        waitingNodeKey: null,
+        waitingNodeExecutionId: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        exitedAt: params.occurredAt,
+        exitRequestedAt: params.occurredAt,
+        exitReasonCode: WORKFLOW_REMOVAL_REASON_CODE,
+        exitReasonDetails: details,
+      },
+    })
+    if (exited.count !== 1) {
+      const requested = await prismaTx.automationRun.updateMany({
+        where: { id: run.id, status: "RUNNING" },
+        data: {
+          exitRequestedAt: params.occurredAt,
+          exitReasonCode: WORKFLOW_REMOVAL_REASON_CODE,
+          exitReasonDetails: details,
+        },
+      })
+      removedCount += requested.count
+      continue
+    }
+    removedCount += 1
+
+    await prismaTx.automationNodeExecution.updateMany({
+      where: {
+        tenantId: params.tenantId,
+        attemptId: run.attemptId,
+        status: "WAITING",
+      },
+      data: {
+        status: "EXECUTED",
+        reasonCode: WORKFLOW_REMOVAL_REASON_CODE,
+        details,
+        actorUserId: params.actorUserId ?? null,
+        occurredAt: params.occurredAt,
+      },
+    })
+    await prismaTx.automationNodeExecution.updateMany({
+      where: {
+        tenantId: params.tenantId,
+        attemptId: run.attemptId,
+        status: "QUEUED",
+      },
+      data: {
+        status: "SKIPPED",
+        reasonCode: WORKFLOW_REMOVAL_REASON_CODE,
+        details,
+        actorUserId: params.actorUserId ?? null,
+        occurredAt: params.occurredAt,
+      },
+    })
+
+    let actions: RuntimeAutomationAction[] = []
+    try {
+      actions = parseActionSnapshot(run.actionSnapshot)
+    } catch {
+      // Preserve the terminal run even when its pinned snapshot cannot be read.
+    }
+    const priorLogs = prismaTx.automationNodeExecution?.findMany
+      ? await prismaTx.automationNodeExecution.findMany({
+          where: { tenantId: params.tenantId, attemptId: run.attemptId },
+          select: { nodeKey: true },
+        })
+      : []
+    const loggedNodeKeys = new Set(
+      priorLogs.map((log: { nodeKey: string | null }) => log.nodeKey).filter(Boolean),
+    )
+    const visitedNodeKeys = new Set(normalizeAutomationCursorState(run.cursorPath).visitedNodeKeys)
+    const remainingLogs = flattenAutomationActionTree(actions)
+      .filter((step) => !visitedNodeKeys.has(step.action.nodeKey) && !loggedNodeKeys.has(step.action.nodeKey))
+      .map(({ action, nodeOrder, branchPath }) => ({
+        tenantId: params.tenantId,
+        automationId: run.automationId,
+        automationName: run.automationName,
+        contactId: params.contactId,
+        contactName: run.contactName,
+        actorUserId: params.actorUserId ?? run.actorUserId,
+        processId: null,
+        opportunityId: run.opportunityId,
+        attemptId: run.attemptId,
+        eventSource: run.eventSource,
+        nodeKind: "ACTION" as const,
+        nodeOrder,
+        nodeKey: action.nodeKey,
+        nodeLabel: getAutomationActionNodeLabel(action),
+        status: "SKIPPED" as const,
+        reasonCode: WORKFLOW_REMOVAL_REASON_CODE,
+        details,
+        branchPath,
+        occurredAt: params.occurredAt,
+      }))
+    if (remainingLogs.length > 0) {
+      await prismaTx.automationNodeExecution.createMany({ data: remainingLogs })
+    }
+    await prismaTx.automationExecution.create({
+      data: {
+        tenantId: params.tenantId,
+        automationId: run.automationId,
+        automationName: run.automationName,
+        triggerType: run.triggerType,
+        status: "EXITED",
+        opportunityId: run.opportunityId,
+        contactId: params.contactId,
+        sourceStageId: run.sourceStageId,
+        targetStageId: run.targetStageId,
+        actorUserId: params.actorUserId ?? run.actorUserId,
+        actionCount: Math.max(run.cursorIndex, visitedNodeKeys.size),
+        errorCode: WORKFLOW_REMOVAL_REASON_CODE,
+        errorMessage: details,
+      },
+    })
+  }
+
+  const exitCurrentRun = params.sourceAutomationId === target.id
+  if (exitCurrentRun) removedCount += 1
+  return { targetName: target.name, removedCount, exitCurrentRun, details }
 }
 
 async function applyAutomationAction(
@@ -3316,6 +3615,28 @@ async function applyAutomationAction(
         details: `Queued “${target.name}” to start.`,
         queuedRunCount: existingRun ? 0 : 1,
       }
+    } else if (action.type === "REMOVE_FROM_WORKFLOW") {
+      const config = action.removeFromWorkflowConfig
+      const result = await removeContactFromWorkflowRuns(prismaTx, {
+        tenantId,
+        contactId,
+        actorUserId,
+        sourceAutomationId: automationId,
+        sourceAutomationName: automationName,
+        sourceActionName: config.actionName,
+        targetAutomationId: config.targetAutomationId,
+        targetAutomationNameSnapshot: config.targetAutomationNameSnapshot,
+        currentRunId: runId,
+        occurredAt,
+      })
+      return {
+        details: result.removedCount > 0
+          ? `Removed the contact from ${result.removedCount} active ${result.removedCount === 1 ? "instance" : "instances"} of “${result.targetName}”.`
+          : `The contact was not active in “${result.targetName}”. No changes were needed.`,
+        exitCurrentRun: result.exitCurrentRun,
+        exitReasonCode: WORKFLOW_REMOVAL_REASON_CODE,
+        exitReasonDetails: result.details,
+      }
     } else if (action.type === "DELETE_CONTACT") {
       const currentRun = runId && prismaTx.automationRun?.findUnique
         ? await prismaTx.automationRun.findUnique({
@@ -4004,6 +4325,101 @@ export type SegmentRun = {
   branchDecisions?: unknown
   eventContext?: unknown
   variables: unknown
+  exitRequestedAt?: Date | null
+  exitReasonCode?: string | null
+  exitReasonDetails?: string | null
+}
+
+type AutomationRunExitRequest = {
+  requestedAt: Date
+  reasonCode: string
+  details: string
+}
+
+function exitRequestFromRun(run: Pick<SegmentRun, "exitRequestedAt" | "exitReasonCode" | "exitReasonDetails">) {
+  if (!run.exitRequestedAt) return null
+  return {
+    requestedAt: run.exitRequestedAt,
+    reasonCode: run.exitReasonCode ?? WORKFLOW_REMOVAL_REASON_CODE,
+    details: run.exitReasonDetails ?? "The contact was removed from this workflow.",
+  } satisfies AutomationRunExitRequest
+}
+
+async function readAutomationRunExitRequest(prismaTx: any, run: SegmentRun) {
+  const pinnedRequest = exitRequestFromRun(run)
+  if (pinnedRequest) return pinnedRequest
+  if (!prismaTx.automationRun?.findUnique) return null
+  const current = await prismaTx.automationRun.findUnique({
+    where: { id: run.id },
+    select: {
+      status: true,
+      exitRequestedAt: true,
+      exitReasonCode: true,
+      exitReasonDetails: true,
+    },
+  })
+  if (!current || current.status !== "RUNNING") return null
+  return exitRequestFromRun(current)
+}
+
+async function guardedAutomationRunUpdate(prismaTx: any, args: any) {
+  if (prismaTx.automationRun?.updateMany) return prismaTx.automationRun.updateMany(args)
+  if (!prismaTx.automationRun?.update) return { count: 0 }
+  await prismaTx.automationRun.update({ where: { id: args.where.id }, data: args.data })
+  return { count: 1 }
+}
+
+async function finishAutomationRunAsExited(
+  prismaTx: any,
+  params: {
+    run: SegmentRun
+    request: AutomationRunExitRequest
+    occurredAt: Date
+    actionCount: number
+    cursorIndex: number
+    cursorPath?: AutomationCursorPathState | null
+    branchDecisions?: AutomationBranchDecisions
+    variables: Record<string, unknown>
+  },
+) {
+  const exited = await guardedAutomationRunUpdate(prismaTx, {
+    where: { id: params.run.id, status: "RUNNING" },
+    data: {
+      status: "EXITED",
+      cursorIndex: params.cursorIndex,
+      ...(params.cursorPath !== undefined ? { cursorPath: params.cursorPath } : {}),
+      ...(params.branchDecisions ? { branchDecisions: params.branchDecisions } : {}),
+      resumeAt: null,
+      waitingNodeKey: null,
+      waitingNodeExecutionId: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      exitedAt: params.occurredAt,
+      exitRequestedAt: params.request.requestedAt,
+      exitReasonCode: params.request.reasonCode,
+      exitReasonDetails: params.request.details,
+      variables: params.variables,
+    },
+  })
+  if (exited.count === 1) {
+    await prismaTx.automationExecution.create({
+      data: {
+        tenantId: params.run.tenantId,
+        automationId: params.run.automationId,
+        automationName: params.run.automationName,
+        triggerType: params.run.triggerType,
+        status: "EXITED",
+        opportunityId: params.run.opportunityId,
+        contactId: params.run.contactId,
+        sourceStageId: params.run.sourceStageId,
+        targetStageId: params.run.targetStageId,
+        actorUserId: params.run.actorUserId,
+        actionCount: params.actionCount,
+        errorCode: params.request.reasonCode,
+        errorMessage: params.request.details,
+      },
+    })
+  }
 }
 
 function normalizeAutomationVariables(value: unknown) {
@@ -4271,7 +4687,40 @@ async function executeBranchedAutomationSegmentTx(
   let contactDeleted = false
   let transitionCount = 0
 
+  const exitRun = async (request: AutomationRunExitRequest) => {
+    appendUnvisitedAutomationLogs({
+      base,
+      actions,
+      logs,
+      visitedNodeKeys,
+      branchDecisions,
+      goToHistory,
+      fallbackReasonCode: request.reasonCode,
+      fallbackDetails: request.details,
+    })
+    await finishAutomationRunAsExited(prismaTx, {
+      run,
+      request,
+      occurredAt: now,
+      actionCount: visitedNodeKeys.size,
+      cursorIndex: visitedNodeKeys.size,
+      cursorPath: automationCursorState(null, visitedNodeKeys, goToHistory),
+      branchDecisions,
+      variables: automationValues,
+    })
+    return {
+      logs,
+      notificationIds,
+      fileCleanupCandidates,
+      queuedRunCount,
+      status: "EXITED" as const,
+      contactDeleted: false,
+    }
+  }
+
   while (index < steps.length) {
+    const pendingExit = await readAutomationRunExitRequest(prismaTx, run)
+    if (pendingExit) return exitRun(pendingExit)
     const step = steps[index]!
     const action = step.action
     transitionCount += 1
@@ -4502,8 +4951,8 @@ async function executeBranchedAutomationSegmentTx(
         ))
         visitedNodeKeys.add(action.nodeKey)
         const nextStep = steps[index + 1]
-        await prismaTx.automationRun.update({
-          where: { id: run.id },
+        const waiting = await guardedAutomationRunUpdate(prismaTx, {
+          where: { id: run.id, status: "RUNNING", exitRequestedAt: null },
           data: {
             status: "WAITING",
             cursorIndex: index + 1,
@@ -4517,6 +4966,13 @@ async function executeBranchedAutomationSegmentTx(
             variables: automationValues,
           },
         })
+        if (waiting.count !== 1) {
+          logs.pop()
+          visitedNodeKeys.delete(action.nodeKey)
+          const exitRequest = await readAutomationRunExitRequest(prismaTx, run)
+          if (exitRequest) return exitRun(exitRequest)
+          throw new Error("The automation run could not be scheduled to resume.")
+        }
         return { logs, notificationIds, fileCleanupCandidates, queuedRunCount, status: "WAITING" as const, contactDeleted: false }
       }
 
@@ -4542,8 +4998,8 @@ async function executeBranchedAutomationSegmentTx(
           fallbackReasonCode: "WAIT_EXITED",
           fallbackDetails: "Skipped because the wait action exited this run.",
         })
-        await prismaTx.automationRun.update({
-          where: { id: run.id },
+        const exitedForWait = await guardedAutomationRunUpdate(prismaTx, {
+          where: { id: run.id, status: "RUNNING", exitRequestedAt: null },
           data: {
             status: "EXITED",
             cursorIndex: index + 1,
@@ -4558,6 +5014,11 @@ async function executeBranchedAutomationSegmentTx(
             variables: automationValues,
           },
         })
+        if (exitedForWait.count !== 1) {
+          const exitRequest = await readAutomationRunExitRequest(prismaTx, run)
+          if (exitRequest) return exitRun(exitRequest)
+          throw new Error("The automation run could not be exited by the wait action.")
+        }
         await prismaTx.automationExecution.create({
           data: {
             tenantId: run.tenantId,
@@ -4629,6 +5090,21 @@ async function executeBranchedAutomationSegmentTx(
       }
       logs.push(actionLog(base, action, step.nodeOrder - 1, "EXECUTED", null, details ?? "Action completed successfully.", undefined, step))
       visitedNodeKeys.add(action.nodeKey)
+      const successRecord = typeof successDetails === "object" && successDetails !== null
+        ? successDetails as Record<string, unknown>
+        : null
+      const actionExitRequest = successRecord?.exitCurrentRun === true
+        ? {
+            requestedAt: now,
+            reasonCode: typeof successRecord.exitReasonCode === "string"
+              ? successRecord.exitReasonCode
+              : WORKFLOW_REMOVAL_REASON_CODE,
+            details: typeof successRecord.exitReasonDetails === "string"
+              ? successRecord.exitReasonDetails
+              : "The contact was removed from this workflow.",
+          }
+        : await readAutomationRunExitRequest(prismaTx, run)
+      if (actionExitRequest) return exitRun(actionExitRequest)
     } catch (error) {
       const executionError = error instanceof AutomationExecutionError
         ? error
@@ -4675,8 +5151,10 @@ async function executeBranchedAutomationSegmentTx(
     goToHistory,
   })
 
-  await prismaTx.automationRun.update({
-    where: { id: run.id },
+  const pendingExit = await readAutomationRunExitRequest(prismaTx, run)
+  if (pendingExit) return exitRun(pendingExit)
+  const succeeded = await guardedAutomationRunUpdate(prismaTx, {
+    where: { id: run.id, status: "RUNNING", exitRequestedAt: null },
     data: {
       status: "SUCCEEDED",
       cursorIndex: visitedNodeKeys.size,
@@ -4691,6 +5169,11 @@ async function executeBranchedAutomationSegmentTx(
       variables: automationValues,
     },
   })
+  if (succeeded.count !== 1) {
+    const racedExit = await readAutomationRunExitRequest(prismaTx, run)
+    if (racedExit) return exitRun(racedExit)
+    throw new Error("The automation run could not be completed.")
+  }
   await prismaTx.automationExecution.create({
     data: {
       tenantId: run.tenantId,
@@ -4759,7 +5242,34 @@ export async function executeAutomationSegmentTx(
   const templateContext = createContactTemplateExecutionContext()
   let contactDeleted = false
 
+  const exitRun = async (request: AutomationRunExitRequest, nextIndex: number) => {
+    const loggedNodeKeys = new Set(logs.map((log) => log.nodeKey))
+    for (let index = nextIndex; index < actions.length; index += 1) {
+      const action = actions[index]!
+      if (loggedNodeKeys.has(action.nodeKey)) continue
+      logs.push(actionLog(base, action, index, "SKIPPED", request.reasonCode, request.details))
+    }
+    await finishAutomationRunAsExited(prismaTx, {
+      run,
+      request,
+      occurredAt: now,
+      actionCount: nextIndex,
+      cursorIndex: nextIndex,
+      variables: automationValues,
+    })
+    return {
+      logs,
+      notificationIds,
+      fileCleanupCandidates,
+      queuedRunCount,
+      status: "EXITED" as const,
+      contactDeleted: false,
+    }
+  }
+
   for (let index = startIndex; index < actions.length; index += 1) {
+    const pendingExit = await readAutomationRunExitRequest(prismaTx, run)
+    if (pendingExit) return exitRun(pendingExit, index)
     const action = actions[index]!
     if (action.type === "WAIT") {
       const resumeAt = calculateWaitAt(action.waitConfig, now)
@@ -4774,8 +5284,8 @@ export async function executeAutomationSegmentTx(
           `Waiting until ${formatWaitInstant(resumeAt, catalog.timezone)}.`,
           logId,
         ))
-        await prismaTx.automationRun.update({
-          where: { id: run.id },
+        const waiting = await guardedAutomationRunUpdate(prismaTx, {
+          where: { id: run.id, status: "RUNNING", exitRequestedAt: null },
           data: {
             status: "WAITING",
             cursorIndex: index + 1,
@@ -4787,6 +5297,12 @@ export async function executeAutomationSegmentTx(
             variables: automationValues,
           },
         })
+        if (waiting.count !== 1) {
+          logs.pop()
+          const exitRequest = await readAutomationRunExitRequest(prismaTx, run)
+          if (exitRequest) return exitRun(exitRequest, index)
+          throw new Error("The automation run could not be scheduled to resume.")
+        }
         return {
           logs,
           notificationIds,
@@ -4810,8 +5326,8 @@ export async function executeAutomationSegmentTx(
         for (let skippedIndex = index + 1; skippedIndex < actions.length; skippedIndex += 1) {
           logs.push(actionLog(base, actions[skippedIndex]!, skippedIndex, "SKIPPED", "WAIT_EXITED", "Skipped because the wait action exited this run."))
         }
-        await prismaTx.automationRun.update({
-          where: { id: run.id },
+        const exitedForWait = await guardedAutomationRunUpdate(prismaTx, {
+          where: { id: run.id, status: "RUNNING", exitRequestedAt: null },
           data: {
             status: "EXITED",
             cursorIndex: index + 1,
@@ -4824,6 +5340,11 @@ export async function executeAutomationSegmentTx(
             variables: automationValues,
           },
         })
+        if (exitedForWait.count !== 1) {
+          const exitRequest = await readAutomationRunExitRequest(prismaTx, run)
+          if (exitRequest) return exitRun(exitRequest, index + 1)
+          throw new Error("The automation run could not be exited by the wait action.")
+        }
         await prismaTx.automationExecution.create({
           data: {
             tenantId: run.tenantId,
@@ -4929,6 +5450,21 @@ export async function executeAutomationSegmentTx(
         fileCleanupCandidates.push(...successDetails.fileCleanupCandidates)
       }
       logs.push(actionLog(base, action, index, "EXECUTED", null, details ?? "Action completed successfully."))
+      const successRecord = typeof successDetails === "object" && successDetails !== null
+        ? successDetails as Record<string, unknown>
+        : null
+      const actionExitRequest = successRecord?.exitCurrentRun === true
+        ? {
+            requestedAt: now,
+            reasonCode: typeof successRecord.exitReasonCode === "string"
+              ? successRecord.exitReasonCode
+              : WORKFLOW_REMOVAL_REASON_CODE,
+            details: typeof successRecord.exitReasonDetails === "string"
+              ? successRecord.exitReasonDetails
+              : "The contact was removed from this workflow.",
+          }
+        : await readAutomationRunExitRequest(prismaTx, run)
+      if (actionExitRequest) return exitRun(actionExitRequest, index + 1)
     } catch (error) {
       if (error instanceof AutomationExecutionError) {
         error.nodeExecutions = failureLogsForSegment(
@@ -4945,8 +5481,10 @@ export async function executeAutomationSegmentTx(
     }
   }
 
-  await prismaTx.automationRun.update({
-    where: { id: run.id },
+  const pendingExit = await readAutomationRunExitRequest(prismaTx, run)
+  if (pendingExit) return exitRun(pendingExit, actions.length)
+  const succeeded = await guardedAutomationRunUpdate(prismaTx, {
+    where: { id: run.id, status: "RUNNING", exitRequestedAt: null },
     data: {
       status: "SUCCEEDED",
       cursorIndex: actions.length,
@@ -4959,6 +5497,11 @@ export async function executeAutomationSegmentTx(
       variables: automationValues,
     },
   })
+  if (succeeded.count !== 1) {
+    const racedExit = await readAutomationRunExitRequest(prismaTx, run)
+    if (racedExit) return exitRun(racedExit, actions.length)
+    throw new Error("The automation run could not be completed.")
+  }
   await prismaTx.automationExecution.create({
     data: {
       tenantId: run.tenantId,
@@ -5417,6 +5960,7 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
       : actions.length > 0
       ? failureLogsForSegment(base, actions, run.cursorIndex, error.actionIndex, [], error.message, error.code)
       : []
+  const requestedExit = exitRequestFromRun(run)
 
   await prismaClient.$transaction(async (transaction: any) => {
     if (run.eventSource === "AUTOMATION_ACTION") {
@@ -5444,16 +5988,46 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
         where: { tenantId: run.tenantId, id: run.waitingNodeExecutionId },
         data: {
           status: "EXECUTED",
-          reasonCode: null,
-          details: run.resumeAt
+          reasonCode: requestedExit?.reasonCode ?? null,
+          details: requestedExit?.details ?? (run.resumeAt
             ? `Scheduled for ${formatWaitInstant(run.resumeAt, timezone)} and resumed at ${formatWaitInstant(now, timezone)} before the following action failed.`
-            : `The wait resumed at ${formatWaitInstant(now, timezone)} before the following action failed.`,
+            : `The wait resumed at ${formatWaitInstant(now, timezone)} before the following action failed.`),
           occurredAt: now,
         },
       })
     }
+    if (requestedExit) {
+      const cursor = normalizeAutomationCursorState(run.cursorPath)
+      const visitedNodeKeys = new Set(cursor.visitedNodeKeys ?? [])
+      if (visitedNodeKeys.size === 0) {
+        for (const action of actions.slice(0, run.cursorIndex)) visitedNodeKeys.add(action.nodeKey)
+      }
+      const exitLogs: AutomationNodeLogData[] = []
+      appendUnvisitedAutomationLogs({
+        base,
+        actions,
+        logs: exitLogs,
+        visitedNodeKeys,
+        branchDecisions: normalizeBranchDecisions(run.branchDecisions),
+        goToHistory: cursor.goToHistory ?? [],
+        fallbackReasonCode: requestedExit.reasonCode,
+        fallbackDetails: requestedExit.details,
+      })
+      await finishAutomationRunAsExited(transaction, {
+        run,
+        request: requestedExit,
+        occurredAt: now,
+        actionCount: Math.max(run.cursorIndex, visitedNodeKeys.size),
+        cursorIndex: Math.max(run.cursorIndex, visitedNodeKeys.size),
+        cursorPath: automationCursorState(null, visitedNodeKeys, cursor.goToHistory ?? []),
+        branchDecisions: normalizeBranchDecisions(run.branchDecisions),
+        variables: normalizeAutomationVariables(run.variables),
+      })
+      if (exitLogs.length > 0) await transaction.automationNodeExecution.createMany({ data: exitLogs })
+      return
+    }
     const updated = await transaction.automationRun.updateMany({
-      where: { id: run.id, status: "RUNNING", leaseToken },
+      where: { id: run.id, status: "RUNNING", leaseToken, exitRequestedAt: null },
       data: {
         status: "FAILED",
         cursorPath: error.cursorPath ?? run.cursorPath,
@@ -5466,7 +6040,58 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
         leaseExpiresAt: null,
       },
     })
-    if (!updated.count) return
+    if (!updated.count) {
+      const currentRun = await transaction.automationRun.findUnique({
+        where: { id: run.id },
+        select: {
+          status: true,
+          exitRequestedAt: true,
+          exitReasonCode: true,
+          exitReasonDetails: true,
+        },
+      })
+      const racedExit = currentRun?.status === "RUNNING" ? exitRequestFromRun(currentRun) : null
+      if (!racedExit) return
+      if (run.waitingNodeExecutionId) {
+        await transaction.automationNodeExecution.updateMany({
+          where: { tenantId: run.tenantId, id: run.waitingNodeExecutionId },
+          data: {
+            status: "EXECUTED",
+            reasonCode: racedExit.reasonCode,
+            details: racedExit.details,
+            occurredAt: now,
+          },
+        })
+      }
+      const cursor = normalizeAutomationCursorState(run.cursorPath)
+      const visitedNodeKeys = new Set(cursor.visitedNodeKeys ?? [])
+      if (visitedNodeKeys.size === 0) {
+        for (const action of actions.slice(0, run.cursorIndex)) visitedNodeKeys.add(action.nodeKey)
+      }
+      const exitLogs: AutomationNodeLogData[] = []
+      appendUnvisitedAutomationLogs({
+        base,
+        actions,
+        logs: exitLogs,
+        visitedNodeKeys,
+        branchDecisions: normalizeBranchDecisions(run.branchDecisions),
+        goToHistory: cursor.goToHistory ?? [],
+        fallbackReasonCode: racedExit.reasonCode,
+        fallbackDetails: racedExit.details,
+      })
+      await finishAutomationRunAsExited(transaction, {
+        run,
+        request: racedExit,
+        occurredAt: now,
+        actionCount: Math.max(run.cursorIndex, visitedNodeKeys.size),
+        cursorIndex: Math.max(run.cursorIndex, visitedNodeKeys.size),
+        cursorPath: automationCursorState(null, visitedNodeKeys, cursor.goToHistory ?? []),
+        branchDecisions: normalizeBranchDecisions(run.branchDecisions),
+        variables: normalizeAutomationVariables(run.variables),
+      })
+      if (exitLogs.length > 0) await transaction.automationNodeExecution.createMany({ data: exitLogs })
+      return
+    }
     await transaction.automationExecution.create({
       data: {
         tenantId: run.tenantId,

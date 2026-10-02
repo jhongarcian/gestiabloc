@@ -325,6 +325,7 @@ enum AutomationActionType {
   SPLIT
   GO_TO
   ADD_TO_WORKFLOW
+  REMOVE_FROM_WORKFLOW
   UPDATE_OPPORTUNITY
   DELETE_OPPORTUNITY
   WAIT
@@ -1491,32 +1492,33 @@ model AutomationCondition {
 }
 
 model AutomationAction {
-  id                      String               @id @default(uuid())
-  tenantId                String
-  automationId            String
-  nodeKey                 String
-  type                    AutomationActionType
-  customFieldId           String?
-  statusConfigId          String?
-  assignedUserId          String?
-  tagId                   String?
-  value                   Json?
-  customFieldUpdates      Json?
-  waitConfig              Json?
-  noteTitle               String?
-  noteBody                String?
-  taskConfig              Json?
-  dateTimeFormatterConfig Json?
-  numberFormatterConfig   Json?
-  textFormatterConfig     Json?
-  mathOperationConfig     Json?
-  ifElseConfig            Json?
-  splitConfig             Json?
-  goToConfig              Json?
-  opportunityConfig       Json?
-  deleteOpportunityConfig Json?
-  addToWorkflowConfig     Json?
-  sortOrder               Int                  @default(0)
+  id                       String               @id @default(uuid())
+  tenantId                 String
+  automationId             String
+  nodeKey                  String
+  type                     AutomationActionType
+  customFieldId            String?
+  statusConfigId           String?
+  assignedUserId           String?
+  tagId                    String?
+  value                    Json?
+  customFieldUpdates       Json?
+  waitConfig               Json?
+  noteTitle                String?
+  noteBody                 String?
+  taskConfig               Json?
+  dateTimeFormatterConfig  Json?
+  numberFormatterConfig    Json?
+  textFormatterConfig      Json?
+  mathOperationConfig      Json?
+  ifElseConfig             Json?
+  splitConfig              Json?
+  goToConfig               Json?
+  opportunityConfig        Json?
+  deleteOpportunityConfig  Json?
+  addToWorkflowConfig      Json?
+  removeFromWorkflowConfig Json?
+  sortOrder                Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
 
@@ -1635,6 +1637,9 @@ model AutomationRun {
   failedAt               DateTime?
   completedAt            DateTime?
   exitedAt               DateTime?
+  exitRequestedAt        DateTime?
+  exitReasonCode         String?
+  exitReasonDetails      String?
 
   tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   automation Automation?         @relation(fields: [automationId], references: [id], onDelete: SetNull)

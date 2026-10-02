@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
-import { queueOpportunityAutomationEvent } from "./automation-event-queue.js"
+import { claimQueuedAutomationDispatch, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
 
 const WAIT_ACTION = {
   id: "action-1",
@@ -11,6 +11,21 @@ const WAIT_ACTION = {
 }
 
 describe("queueOpportunityAutomationEvent", () => {
+  test("claims only a dispatch that is still queued", async () => {
+    let where: Record<string, unknown> | null = null
+    const claimed = await claimQueuedAutomationDispatch({
+      automationDispatch: {
+        updateMany: async (args: { where: Record<string, unknown> }) => {
+          where = args.where
+          return { count: 0 }
+        },
+      },
+    }, { id: "dispatch-1", startedAt: null }, new Date("2026-10-02T12:00:00.000Z"))
+
+    assert.equal(claimed, false)
+    assert.deepEqual(where, { id: "dispatch-1", status: "QUEUED" })
+  })
+
   test("captures event-time decisions and writes queued trigger logs without running actions", async () => {
     const captured: Record<string, any> = {}
     const automations = [

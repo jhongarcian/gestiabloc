@@ -463,18 +463,25 @@ const ACTION_DEFINITIONS = {
     order: 8,
     icon: Workflow,
   },
+  REMOVE_FROM_WORKFLOW: {
+    label: "Remove from workflow",
+    description: "End every active run in a published workflow for this contact.",
+    group: "INTERNAL",
+    order: 9,
+    icon: Unlink2,
+  },
   CREATE_TASK: {
     label: "Create task",
     description: "Create a task linked to this contact.",
     group: "INTERNAL",
-    order: 9,
+    order: 10,
     icon: ListTodo,
   },
   ADD_CONTACT_NOTE: {
     label: "Add contact note",
     description: "Add a note using live contact information.",
     group: "INTERNAL",
-    order: 10,
+    order: 11,
     icon: StickyNote,
   },
   UPDATE_OPPORTUNITY: {
@@ -1124,6 +1131,18 @@ function actionDefaults(
       },
     }
   }
+  if (type === "REMOVE_FROM_WORKFLOW") {
+    const target = catalog.workflowAutomations[0]
+    return {
+      nodeKey,
+      type,
+      removeFromWorkflowConfig: {
+        actionName: "Remove from workflow",
+        targetAutomationId: target?.id ?? "",
+        targetAutomationNameSnapshot: target?.name ?? "",
+      },
+    }
+  }
   if (type === "UPDATE_OPPORTUNITY") {
     const pipeline = catalog.pipelines[0]
     const stage = pipeline?.stages[0]
@@ -1598,6 +1617,15 @@ function isActionReady(
   }
   if (action.type === "ADD_TO_WORKFLOW") {
     const config = action.addToWorkflowConfig
+    return Boolean(
+      config &&
+      config.actionName.trim() &&
+      config.actionName.trim().length <= 120 &&
+      catalog.workflowAutomations.some((automation) => automation.id === config.targetAutomationId),
+    )
+  }
+  if (action.type === "REMOVE_FROM_WORKFLOW") {
+    const config = action.removeFromWorkflowConfig
     return Boolean(
       config &&
       config.actionName.trim() &&
@@ -3309,6 +3337,15 @@ function ActionEditor({
             catalog={catalog}
             sourceAutomationId={sourceAutomationId}
             onChange={(addToWorkflowConfig) => onChange({ ...action, addToWorkflowConfig })}
+          />
+        ) : null}
+
+        {action.type === "REMOVE_FROM_WORKFLOW" && action.removeFromWorkflowConfig ? (
+          <RemoveFromWorkflowActionEditor
+            config={action.removeFromWorkflowConfig}
+            catalog={catalog}
+            sourceAutomationId={sourceAutomationId}
+            onChange={(removeFromWorkflowConfig) => onChange({ ...action, removeFromWorkflowConfig })}
           />
         ) : null}
 
@@ -5607,6 +5644,7 @@ function goToDestinationLabel(action: AutomationAction) {
   if (action.type === "UPDATE_OPPORTUNITY") return action.opportunityConfig?.actionName.trim() || "Update/create opportunity"
   if (action.type === "DELETE_OPPORTUNITY") return action.deleteOpportunityConfig?.actionName.trim() || "Delete opportunity"
   if (action.type === "ADD_TO_WORKFLOW") return action.addToWorkflowConfig?.actionName.trim() || "Add to workflow"
+  if (action.type === "REMOVE_FROM_WORKFLOW") return action.removeFromWorkflowConfig?.actionName.trim() || "Remove from workflow"
   if (action.type === "IF_ELSE") return action.ifElseConfig?.actionName.trim() || "If/Else"
   if (action.type === "SPLIT") return action.splitConfig?.actionName.trim() || "Split"
   return ACTION_LABELS[action.type]
@@ -5648,12 +5686,15 @@ function AddToWorkflowActionEditor({
   const selected = targets.find((automation) => automation.id === config.targetAutomationId)
 
   return (
-    <section className="space-y-3 rounded-xl border border-violet-200 bg-violet-50/70 p-3">
-      <div className="space-y-1">
-        <p className="text-sm font-semibold text-slate-950">Workflow start</p>
-        <p className="text-xs leading-4 text-slate-600">
-          Starts the selected workflow at its first action without checking its entry rules.
-        </p>
+    <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-start gap-2.5">
+        <Workflow className="mt-0.5 size-4 shrink-0 text-violet-600" aria-hidden="true" />
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-slate-950">Workflow start</p>
+          <p className="text-xs leading-4 text-slate-600">
+            Starts the selected workflow at its first action without checking its entry rules.
+          </p>
+        </div>
       </div>
       <Field>
         <FieldLabel htmlFor="add-to-workflow-action-name">Action name</FieldLabel>
@@ -5716,6 +5757,99 @@ function AddToWorkflowActionEditor({
       </Field>
       {targets.length === 0 ? (
         <p className="text-xs leading-4 text-slate-600">Publish another automation before selecting it here.</p>
+      ) : null}
+    </section>
+  )
+}
+
+function RemoveFromWorkflowActionEditor({
+  config,
+  catalog,
+  sourceAutomationId,
+  onChange,
+}: {
+  config: NonNullable<AutomationAction["removeFromWorkflowConfig"]>
+  catalog: AutomationCatalog
+  sourceAutomationId?: string
+  onChange: (config: NonNullable<AutomationAction["removeFromWorkflowConfig"]>) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const targets = catalog.workflowAutomations
+  const selected = targets.find((automation) => automation.id === config.targetAutomationId)
+  const targetsCurrentWorkflow = Boolean(sourceAutomationId && config.targetAutomationId === sourceAutomationId)
+
+  return (
+    <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-start gap-2.5">
+        <Unlink2 className="mt-0.5 size-4 shrink-0 text-rose-600" aria-hidden="true" />
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-slate-950">Workflow removal</p>
+          <p className="text-xs leading-4 text-slate-600">
+            Ends every active instance of the selected workflow for this contact. The contact can enter it again later.
+          </p>
+        </div>
+      </div>
+      <Field>
+        <FieldLabel htmlFor="remove-from-workflow-action-name">Action name</FieldLabel>
+        <Input
+          id="remove-from-workflow-action-name"
+          value={config.actionName}
+          maxLength={120}
+          onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+        />
+      </Field>
+      <Field>
+        <FieldLabel>Published workflow</FieldLabel>
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              role="combobox"
+              aria-expanded={open}
+              className="h-9 w-full justify-between bg-white px-3 font-normal"
+            >
+              <span className="truncate">{(selected?.name ?? config.targetAutomationNameSnapshot) || "Select workflow"}</span>
+              <ChevronsUpDown className="size-4 shrink-0 text-slate-400" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+            <Command>
+              <CommandInput placeholder="Search workflows…" />
+              <CommandList>
+                <CommandEmpty>No published workflows found.</CommandEmpty>
+                <CommandGroup>
+                  {targets.map((automation) => (
+                    <CommandItem
+                      key={automation.id}
+                      value={`${automation.name} ${automation.id}`}
+                      onSelect={() => {
+                        onChange({
+                          ...config,
+                          targetAutomationId: automation.id,
+                          targetAutomationNameSnapshot: automation.name,
+                        })
+                        setOpen(false)
+                      }}
+                    >
+                      <Check className={cn("size-4", automation.id === config.targetAutomationId ? "opacity-100" : "opacity-0")} />
+                      <span className="min-w-0 flex-1 truncate">{automation.name}</span>
+                      {automation.id === sourceAutomationId ? <span className="text-xs text-slate-500">Current</span> : null}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+      </Field>
+      {targetsCurrentWorkflow ? (
+        <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-4 text-slate-600">
+          This ends the current run at this action and skips every later action on its path.
+        </p>
+      ) : null}
+      {targets.length === 0 ? (
+        <p className="text-xs leading-4 text-slate-600">Publish an automation before selecting it here.</p>
       ) : null}
     </section>
   )

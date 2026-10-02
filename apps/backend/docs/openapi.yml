@@ -6483,6 +6483,7 @@ components:
             - SPLIT
             - GO_TO
             - ADD_TO_WORKFLOW
+            - REMOVE_FROM_WORKFLOW
             - UPDATE_OPPORTUNITY
             - DELETE_OPPORTUNITY
             - WAIT
@@ -6550,6 +6551,8 @@ components:
           $ref: "#/components/schemas/AutomationDeleteOpportunityConfig"
         addToWorkflowConfig:
           $ref: "#/components/schemas/AutomationAddToWorkflowConfig"
+        removeFromWorkflowConfig:
+          $ref: "#/components/schemas/AutomationRemoveFromWorkflowConfig"
         waitConfig:
           oneOf:
             - type: object
@@ -6608,6 +6611,26 @@ components:
       description: >-
         Queues a new independent run of another published automation for the same contact.
         The target starts at its first action without evaluating its trigger or entry filters.
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        targetAutomationId:
+          type: string
+          format: uuid
+        targetAutomationNameSnapshot:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Refreshed from the target automation when the source is saved.
+    AutomationRemoveFromWorkflowConfig:
+      type: object
+      required: [actionName, targetAutomationId, targetAutomationNameSnapshot]
+      description: >-
+        Ends every queued, running, or waiting run of a published automation for the
+        same contact. Historical runs remain available and the contact may enter again.
+        Selecting the current automation exits the current run after this action.
       properties:
         actionName:
           type: string

@@ -5,8 +5,11 @@ import {
   AutomationUpsertSchema,
   AutomationDeleteOpportunityConfigSchema,
   AutomationAddToWorkflowConfigSchema,
+  AutomationRemoveFromWorkflowConfigSchema,
   AutomationOpportunityConfigSchema,
   AutomationExecutionError,
+  automationWorkflowReferenceIds,
+  automationWorkflowTargetIds,
   automationSplitBucket,
   evaluateAutomationOperator,
   executeAutomationSegmentTx,
@@ -716,6 +719,355 @@ describe("Add to workflow runtime", () => {
 
   test("validates the Add to workflow configuration shape", () => {
     assert.deepEqual(AutomationAddToWorkflowConfigSchema.parse(action.addToWorkflowConfig), action.addToWorkflowConfig)
+  })
+})
+
+describe("Remove from workflow runtime", () => {
+  const emptyMap = new Map()
+  const catalog = {
+    fieldMap: emptyMap,
+    fieldKeyMap: emptyMap,
+    activeStatusIds: new Set<string>(),
+    activeTaskStatusIds: new Set<string>(),
+    taskStatusMap: emptyMap,
+    activeUserIds: new Set<string>(),
+    tagIds: new Set<string>(),
+    statusMap: emptyMap,
+    userMap: emptyMap,
+    tagMap: emptyMap,
+    pipelineMap: emptyMap,
+    stageMap: emptyMap,
+    stagePipelineMap: emptyMap,
+    timezone: "America/Chicago",
+  }
+  const run = {
+    id: "source-run",
+    tenantId: "tenant-1",
+    automationId: "source-automation",
+    automationName: "Lead intake",
+    contactId: "contact-1",
+    contactName: "Taylor Reed",
+    actorUserId: "user-1",
+    opportunityId: "opportunity-1",
+    attemptId: "source-attempt",
+    eventSource: "OPPORTUNITY_CREATED" as const,
+    triggerType: "OPPORTUNITY_CREATED" as const,
+    sourceStageId: null,
+    targetStageId: "stage-1",
+    cursorIndex: 0,
+    variables: {},
+  }
+  const removeAction = (targetAutomationId: string) => ({
+    nodeKey: "remove-workflow-node",
+    type: "REMOVE_FROM_WORKFLOW" as const,
+    removeFromWorkflowConfig: {
+      actionName: "End nurture",
+      targetAutomationId,
+      targetAutomationNameSnapshot: "Lead nurture",
+    },
+  })
+
+  test("exits a self-targeted run after recording the removal action", async () => {
+    const runUpdates: Array<Record<string, any>> = []
+    const executions: Array<Record<string, any>> = []
+    const result = await executeAutomationSegmentTx({
+      automation: { findFirst: async () => ({ id: "source-automation", name: "Lead intake" }) },
+      automationDispatch: { findMany: async () => [] },
+      automationRun: {
+        findMany: async () => [],
+        findUnique: async () => null,
+        updateMany: async (args: Record<string, any>) => {
+          runUpdates.push(args)
+          return { count: 1 }
+        },
+      },
+      automationExecution: { create: async ({ data }: { data: Record<string, any> }) => { executions.push(data) } },
+      automationNodeExecution: {
+        updateMany: async () => ({ count: 0 }),
+        findMany: async () => [],
+        createMany: async () => undefined,
+      },
+    }, {
+      run,
+      actions: [removeAction("source-automation"), { nodeKey: "later-action", type: "CLEAR_CONTACT_ASSIGNEE" }],
+      catalog,
+      startIndex: 0,
+    })
+
+    assert.equal(result.status, "EXITED")
+    assert.equal(result.logs[0]?.status, "EXECUTED")
+    assert.equal(result.logs[1]?.status, "SKIPPED")
+    assert.equal(result.logs[1]?.reasonCode, "CONTACT_REMOVED_FROM_WORKFLOW")
+    assert.equal(runUpdates.at(-1)?.data.status, "EXITED")
+    assert.equal(executions.at(-1)?.status, "EXITED")
+  })
+
+  test("exits a self-targeted run inside a selected branch", async () => {
+    const result = await executeAutomationSegmentTx({
+      automation: { findFirst: async () => ({ id: "source-automation", name: "Lead intake" }) },
+      automationDispatch: { findMany: async () => [] },
+      automationRun: {
+        findMany: async () => [],
+        findUnique: async () => null,
+        updateMany: async () => ({ count: 1 }),
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        updateMany: async () => ({ count: 0 }),
+        findMany: async () => [],
+        createMany: async () => undefined,
+      },
+    }, {
+      run,
+      actions: [{
+        nodeKey: "route-removal",
+        type: "IF_ELSE",
+        ifElseConfig: {
+          actionName: "Choose route",
+          branches: [
+            {
+              branchKey: "selected-branch",
+              name: "Selected",
+              isDefault: false,
+              matchMode: "ALL",
+              conditions: [{
+                conditionKey: "current-time-present",
+                source: "CURRENT_DATE_TIME",
+                operator: "IS_NOT_EMPTY",
+              }],
+              actions: [
+                removeAction("source-automation"),
+                { nodeKey: "later-branch-action", type: "CLEAR_CONTACT_ASSIGNEE" },
+              ],
+            },
+            {
+              branchKey: "default-branch",
+              name: "Default",
+              isDefault: true,
+              matchMode: "ALL",
+              conditions: [],
+              actions: [],
+            },
+          ],
+        },
+      }],
+      catalog,
+      startIndex: 0,
+    })
+
+    assert.equal(result.status, "EXITED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "remove-workflow-node")?.status, "EXECUTED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "later-branch-action")?.reasonCode, "CONTACT_REMOVED_FROM_WORKFLOW")
+  })
+
+  test("cancels every active target run and succeeds when the source continues", async () => {
+    const runUpdates: Array<Record<string, any>> = []
+    const dispatchUpdates: Array<Record<string, any>> = []
+    const activeRuns = [
+      { ...run, id: "queued-run", automationId: "target-automation", automationName: "Lead nurture", attemptId: "queued-attempt", status: "QUEUED", actionSnapshot: [], cursorPath: null },
+      { ...run, id: "waiting-run", automationId: "target-automation", automationName: "Lead nurture", attemptId: "waiting-attempt", status: "WAITING", actionSnapshot: [], cursorPath: null },
+      { ...run, id: "running-run", automationId: "target-automation", automationName: "Lead nurture", attemptId: "running-attempt", status: "RUNNING", actionSnapshot: [], cursorPath: null },
+    ]
+    const result = await executeAutomationSegmentTx({
+      automation: { findFirst: async () => ({ id: "target-automation", name: "Lead nurture" }) },
+      automationDispatch: {
+        findMany: async () => [{
+          id: "queued-dispatch",
+          automationId: "target-automation",
+          automationName: "Lead nurture",
+          triggerExecutionId: "trigger-log",
+          attemptId: "dispatch-attempt",
+          actionSnapshot: [],
+          event: {
+            contactName: "Taylor Reed",
+            actorUserId: "user-1",
+            opportunityId: "opportunity-1",
+            triggerType: "OPPORTUNITY_CREATED",
+          },
+        }],
+        updateMany: async (args: Record<string, any>) => {
+          dispatchUpdates.push(args)
+          return { count: 1 }
+        },
+      },
+      automationRun: {
+        findMany: async () => activeRuns,
+        findUnique: async () => null,
+        updateMany: async (args: Record<string, any>) => {
+          runUpdates.push(args)
+          return { count: 1 }
+        },
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        updateMany: async () => ({ count: 1 }),
+        findMany: async () => [],
+        createMany: async () => undefined,
+      },
+    }, {
+      run,
+      actions: [removeAction("target-automation")],
+      catalog,
+      startIndex: 0,
+    })
+
+    assert.equal(result.status, "SUCCEEDED")
+    assert.match(result.logs[0]?.details ?? "", /4 active instances/)
+    assert.equal(dispatchUpdates[0]?.where.status, "QUEUED")
+    assert.equal(dispatchUpdates[0]?.data.status, "CANCELED")
+    assert.equal(runUpdates.find((update) => update.where.id === "running-run")?.data.exitReasonCode, "CONTACT_REMOVED_FROM_WORKFLOW")
+    assert.equal(runUpdates.find((update) => update.where.id === "waiting-run")?.data.status, "EXITED")
+    assert.equal(runUpdates.at(-1)?.data.status, "SUCCEEDED")
+  })
+
+  test("honors a cooperative exit request before another action can start", async () => {
+    const runUpdates: Array<Record<string, any>> = []
+    const result = await executeAutomationSegmentTx({
+      automationRun: {
+        updateMany: async (args: Record<string, any>) => {
+          runUpdates.push(args)
+          return { count: 1 }
+        },
+      },
+      automationExecution: { create: async () => undefined },
+    }, {
+      run: {
+        ...run,
+        exitRequestedAt: new Date("2026-10-02T12:00:00.000Z"),
+        exitReasonCode: "CONTACT_REMOVED_FROM_WORKFLOW",
+        exitReasonDetails: "Removed by another workflow.",
+      },
+      actions: [{ nodeKey: "must-not-run", type: "CLEAR_CONTACT_ASSIGNEE" }],
+      catalog,
+      startIndex: 0,
+    })
+
+    assert.equal(result.status, "EXITED")
+    assert.equal(result.logs[0]?.status, "SKIPPED")
+    assert.equal(runUpdates[0]?.data.status, "EXITED")
+  })
+
+  test("cannot finalize a run as successful when cancellation wins the completion race", async () => {
+    let exitVisible = false
+    const executionStatuses: string[] = []
+    const result = await executeAutomationSegmentTx({
+      contact: { update: async () => ({ id: "contact-1" }) },
+      automationRun: {
+        findUnique: async () => exitVisible
+          ? {
+              status: "RUNNING",
+              exitRequestedAt: new Date("2026-10-02T12:00:00.000Z"),
+              exitReasonCode: "CONTACT_REMOVED_FROM_WORKFLOW",
+              exitReasonDetails: "Cancellation won the race.",
+            }
+          : null,
+        updateMany: async ({ data }: { data: Record<string, any> }) => {
+          if (data.status === "SUCCEEDED") {
+            exitVisible = true
+            return { count: 0 }
+          }
+          return { count: 1 }
+        },
+      },
+      automationExecution: {
+        create: async ({ data }: { data: Record<string, any> }) => { executionStatuses.push(data.status) },
+      },
+    }, {
+      run,
+      actions: [{ nodeKey: "clear-assignee", type: "CLEAR_CONTACT_ASSIGNEE" }],
+      catalog,
+      startIndex: 0,
+    })
+
+    assert.equal(result.status, "EXITED")
+    assert.deepEqual(executionStatuses, ["EXITED"])
+  })
+
+  test("treats removal with no active target instance as a successful no-op", async () => {
+    const result = await executeAutomationSegmentTx({
+      automation: { findFirst: async () => ({ id: "target-automation", name: "Lead nurture" }) },
+      automationDispatch: { findMany: async () => [] },
+      automationRun: {
+        findMany: async () => [],
+        findUnique: async () => null,
+        updateMany: async () => ({ count: 1 }),
+      },
+      automationExecution: { create: async () => undefined },
+    }, {
+      run,
+      actions: [removeAction("target-automation")],
+      catalog,
+      startIndex: 0,
+    })
+
+    assert.equal(result.status, "SUCCEEDED")
+    assert.match(result.logs[0]?.details ?? "", /No changes were needed/)
+  })
+
+  test("allows the contact to enter the target workflow again after removal", async () => {
+    let createdRuns = 0
+    const result = await executeAutomationSegmentTx({
+      automation: {
+        findFirst: async () => ({
+          id: "target-automation",
+          name: "Lead nurture",
+          triggerType: "OPPORTUNITY_CREATED",
+          targetStageId: null,
+          actions: [{ nodeKey: "target-action", type: "CLEAR_CONTACT_ASSIGNEE" }],
+        }),
+      },
+      automationDispatch: { findMany: async () => [] },
+      automationRun: {
+        findMany: async () => [],
+        findUnique: async () => null,
+        create: async () => { createdRuns += 1; return { id: "new-target-run" } },
+        updateMany: async () => ({ count: 1 }),
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: { create: async () => undefined },
+    }, {
+      run: { ...run, eventContext: { workflowAutomationIds: ["source-automation"] } },
+      actions: [
+        removeAction("target-automation"),
+        {
+          nodeKey: "add-workflow-again",
+          type: "ADD_TO_WORKFLOW",
+          addToWorkflowConfig: {
+            actionName: "Restart nurture",
+            targetAutomationId: "target-automation",
+            targetAutomationNameSnapshot: "Lead nurture",
+          },
+        },
+      ],
+      catalog,
+      startIndex: 0,
+    })
+
+    assert.equal(result.status, "SUCCEEDED")
+    assert.equal(result.queuedRunCount, 1)
+    assert.equal(createdRuns, 1)
+  })
+
+  test("validates the Remove from workflow configuration shape", () => {
+    const config = removeAction("target-automation").removeFromWorkflowConfig
+    assert.deepEqual(AutomationRemoveFromWorkflowConfigSchema.parse(config), config)
+    assert.throws(() => AutomationRemoveFromWorkflowConfigSchema.parse({
+      ...config,
+      actionName: "   ",
+    }))
+    assert.throws(() => AutomationUpsertSchema.parse({
+      name: "Missing removal configuration",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{ type: "REMOVE_FROM_WORKFLOW" }],
+    }))
+  })
+
+  test("tracks removal dependencies without adding cycle-detection edges", () => {
+    const actions = [removeAction("target-automation")]
+    assert.deepEqual(automationWorkflowReferenceIds(actions), ["target-automation"])
+    assert.deepEqual(automationWorkflowTargetIds(actions), [])
   })
 })
 
@@ -1943,6 +2295,73 @@ describe("AutomationUpsertSchema", () => {
       (error: any) => error?.code === "AUTOMATION_WORKFLOW_CYCLE",
     )
   })
+
+  test("validates Remove from workflow targets, refreshes snapshots, and allows self targeting", async () => {
+    const sourceId = "00000000-0000-4000-8000-000000000201"
+    const targetId = "00000000-0000-4000-8000-000000000202"
+    const baseClient = {
+      opportunityPipeline: { findMany: async () => [
+        { id: "pipeline-1", name: "Work", stages: [{ id: "stage-1", name: "New" }] },
+      ] },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const removalPayload = (targetAutomationId: string) => AutomationUpsertSchema.parse({
+      name: "Renamed lead intake",
+      isEnabled: true,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [{
+        type: "REMOVE_FROM_WORKFLOW",
+        removeFromWorkflowConfig: {
+          actionName: "  End workflow  ",
+          targetAutomationId,
+          targetAutomationNameSnapshot: "Old name",
+        },
+      }],
+    })
+    const published = [
+      { id: sourceId, name: "Lead intake", actions: [] },
+      {
+        id: targetId,
+        name: "Client nurture",
+        actions: [{
+          type: "ADD_TO_WORKFLOW",
+          addToWorkflowConfig: {
+            actionName: "Back to intake",
+            targetAutomationId: sourceId,
+            targetAutomationNameSnapshot: "Lead intake",
+          },
+        }],
+      },
+    ]
+
+    const external = await validateAutomationConfiguration({
+      ...baseClient,
+      automation: { findMany: async () => published },
+    }, "tenant-1", removalPayload(targetId), { sourceAutomationId: sourceId })
+    assert.deepEqual(external.actions[0]?.removeFromWorkflowConfig, {
+      actionName: "End workflow",
+      targetAutomationId: targetId,
+      targetAutomationNameSnapshot: "Client nurture",
+    })
+
+    const self = await validateAutomationConfiguration({
+      ...baseClient,
+      automation: { findMany: async () => published },
+    }, "tenant-1", removalPayload(sourceId), { sourceAutomationId: sourceId })
+    assert.equal(self.actions[0]?.removeFromWorkflowConfig?.targetAutomationNameSnapshot, "Renamed lead intake")
+
+    await assert.rejects(
+      validateAutomationConfiguration({
+        ...baseClient,
+        automation: { findMany: async () => published.filter((automation) => automation.id !== targetId) },
+      }, "tenant-1", removalPayload(targetId), { sourceAutomationId: sourceId }),
+      (error: any) => error?.code === "TARGET_AUTOMATION_NOT_PUBLISHED",
+    )
+  })
 })
 
 describe("executeOpportunityAutomations", () => {
@@ -2253,7 +2672,7 @@ describe("executeOpportunityAutomations", () => {
         },
         update: async () => undefined,
         updateMany: async ({ where }: { where: Record<string, unknown> }) => {
-          exitedRunWhere = where
+          if (where.contactId) exitedRunWhere = where
           return { count: 1 }
         },
       },

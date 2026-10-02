@@ -300,6 +300,18 @@ async function cancelRemainingDispatches(prismaTx: any, event: any, afterOrder: 
   }
 }
 
+export async function claimQueuedAutomationDispatch(
+  prismaTx: any,
+  dispatch: { id: string; startedAt?: Date | null },
+  now: Date,
+) {
+  const claimed = await prismaTx.automationDispatch.updateMany({
+    where: { id: dispatch.id, status: "QUEUED" },
+    data: { status: "PROCESSING", startedAt: dispatch.startedAt ?? now },
+  })
+  return claimed.count === 1
+}
+
 async function processDispatch(prismaClient: any, eventId: string, dispatchId: string) {
   const transactionStartedAt = Date.now()
   const result = await prismaClient.$transaction(async (prismaTx: any) => {
@@ -314,10 +326,9 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
     const event = dispatch.event
     const actions = parseActionSnapshot(dispatch.actionSnapshot)
     const now = new Date()
-    await prismaTx.automationDispatch.update({
-      where: { id: dispatch.id },
-      data: { status: "PROCESSING", startedAt: dispatch.startedAt ?? now },
-    })
+    if (!await claimQueuedAutomationDispatch(prismaTx, dispatch, now)) {
+      return { terminal: true, contactDeleted: false, queuedRunCount: 0 }
+    }
 
     if (!event.contactId) {
       await prismaTx.automationNodeExecution.update({

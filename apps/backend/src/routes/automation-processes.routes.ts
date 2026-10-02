@@ -130,6 +130,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
             opportunityConfig: true,
             deleteOpportunityConfig: true,
             addToWorkflowConfig: true,
+            removeFromWorkflowConfig: true,
           },
         },
       },

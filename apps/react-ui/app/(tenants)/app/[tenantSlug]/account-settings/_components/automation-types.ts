@@ -326,6 +326,12 @@ export type AutomationAddToWorkflowConfig = {
   targetAutomationNameSnapshot: string
 }
 
+export type AutomationRemoveFromWorkflowConfig = {
+  actionName: string
+  targetAutomationId: string
+  targetAutomationNameSnapshot: string
+}
+
 export type AutomationAction = {
   id?: string
   nodeKey?: string
@@ -346,6 +352,7 @@ export type AutomationAction = {
     | "SPLIT"
     | "GO_TO"
     | "ADD_TO_WORKFLOW"
+    | "REMOVE_FROM_WORKFLOW"
     | "UPDATE_OPPORTUNITY"
     | "DELETE_OPPORTUNITY"
     | "WAIT"
@@ -368,6 +375,7 @@ export type AutomationAction = {
   opportunityConfig?: AutomationOpportunityConfig | null
   deleteOpportunityConfig?: AutomationDeleteOpportunityConfig | null
   addToWorkflowConfig?: AutomationAddToWorkflowConfig | null
+  removeFromWorkflowConfig?: AutomationRemoveFromWorkflowConfig | null
 }
 
 export type AutomationRecord = {

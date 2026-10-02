@@ -101,6 +101,30 @@ describe("serializeAutomationAction", () => {
     )
   })
 
+  test("serializes only the Remove from workflow configuration", () => {
+    assert.deepEqual(
+      serializeAutomationAction({
+        nodeKey: "remove-workflow-1",
+        type: "REMOVE_FROM_WORKFLOW",
+        removeFromWorkflowConfig: {
+          actionName: "End nurture",
+          targetAutomationId: "automation-2",
+          targetAutomationNameSnapshot: "Lead nurture",
+        },
+        statusConfigId: null,
+      }),
+      {
+        nodeKey: "remove-workflow-1",
+        type: "REMOVE_FROM_WORKFLOW",
+        removeFromWorkflowConfig: {
+          actionName: "End nurture",
+          targetAutomationId: "automation-2",
+          targetAutomationNameSnapshot: "Lead nurture",
+        },
+      },
+    )
+  })
+
   test("omits unrelated routing configs and preserves a nested If/Else inside Split", () => {
     const action: AutomationAction = {
       nodeKey: "split-1",
