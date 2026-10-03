@@ -44,6 +44,7 @@ import {
   ArrowLeft,
   ArrowUp,
   BadgeCheck,
+  BellRing,
   Calculator,
   CalendarClock,
   Check,
@@ -156,6 +157,7 @@ import type {
   AutomationFieldUpdate,
   AutomationBranchCondition,
   AutomationIfElseBranch,
+  AutomationInternalNotificationConfig,
   AutomationFormatterDateSource,
   AutomationMathOperationConfig,
   AutomationNumberFormatterConfig,
@@ -482,11 +484,18 @@ const ACTION_DEFINITIONS = {
     order: 10,
     icon: ListTodo,
   },
+  SEND_INTERNAL_NOTIFICATION: {
+    label: "Internal notification",
+    description: "Notify the contact assignee or a specific teammate.",
+    group: "INTERNAL",
+    order: 11,
+    icon: BellRing,
+  },
   ADD_CONTACT_NOTE: {
     label: "Add contact note",
     description: "Add a note using live contact information.",
     group: "INTERNAL",
-    order: 11,
+    order: 12,
     icon: StickyNote,
   },
   UPDATE_OPPORTUNITY: {
@@ -1165,6 +1174,18 @@ function actionDefaults(
       },
     }
   }
+  if (type === "SEND_INTERNAL_NOTIFICATION") {
+    return {
+      nodeKey,
+      type,
+      internalNotificationConfig: {
+        actionName: "Internal notification",
+        recipient: { mode: "CONTACT_ASSIGNEE" },
+        titleTemplate: "",
+        bodyTemplate: "",
+      },
+    }
+  }
   if (type === "FORMAT_DATE_TIME") {
     return {
       nodeKey,
@@ -1712,6 +1733,17 @@ function isActionReady(
       if (!config.dueAt || config.assignee.mode === "UNASSIGNED") return false
       if (!isTaskDateTimeReady(config.reminder.at, catalog)) return false
       if (optionalTemplateError(config.reminder.messageTemplate, 500, catalog, availableOutputs)) return false
+    }
+    return true
+  }
+  if (action.type === "SEND_INTERNAL_NOTIFICATION") {
+    const config = action.internalNotificationConfig
+    if (!config || !config.actionName.trim() || config.actionName.trim().length > 120) return false
+    if (noteTemplateError(config.titleTemplate, 160, catalog, availableOutputs)) return false
+    if (optionalTemplateError(config.bodyTemplate, 1_000, catalog, availableOutputs)) return false
+    if (config.recipient.mode === "SPECIFIC_USER") {
+      const specificUserId = config.recipient.userId
+      if (!specificUserId || !catalog.users.some((user) => user.id === specificUserId)) return false
     }
     return true
   }
@@ -3619,6 +3651,20 @@ function ActionEditor({
             timezone={timezone}
             automationOutputs={availableAutomationOutputs}
             onChange={(taskConfig) => onChange({ ...action, taskConfig })}
+          />
+        ) : null}
+
+        {action.type === "SEND_INTERNAL_NOTIFICATION" && action.internalNotificationConfig ? (
+          <InternalNotificationActionEditor
+            actionKey={action.nodeKey ?? "internal-notification"}
+            config={action.internalNotificationConfig}
+            catalog={catalog}
+            timezone={timezone}
+            automationOutputs={availableAutomationOutputs}
+            onChange={(internalNotificationConfig) => onChange({
+              ...action,
+              internalNotificationConfig,
+            })}
           />
         ) : null}
 
@@ -5602,6 +5648,168 @@ function TaskDateTimeEditor({
   )
 }
 
+function InternalNotificationActionEditor({
+  actionKey,
+  config,
+  catalog,
+  timezone,
+  automationOutputs,
+  onChange,
+}: {
+  actionKey: string
+  config: AutomationInternalNotificationConfig
+  catalog: AutomationCatalog
+  timezone?: string | null
+  automationOutputs: AutomationValueDefinition[]
+  onChange: (config: AutomationInternalNotificationConfig) => void
+}) {
+  const [recipientPickerOpen, setRecipientPickerOpen] = useState(false)
+  const specificUserId = config.recipient.mode === "SPECIFIC_USER"
+    ? config.recipient.userId
+    : null
+  const selectedUser = specificUserId
+    ? catalog.users.find((user) => user.id === specificUserId)
+    : null
+  const actionNameValid = config.actionName.trim().length > 0 && config.actionName.trim().length <= 120
+  const titleError = noteTemplateError(config.titleTemplate, 160, catalog, automationOutputs)
+  const bodyError = optionalTemplateError(config.bodyTemplate, 1_000, catalog, automationOutputs)
+
+  return (
+    <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-start gap-2.5">
+        <BellRing className="mt-0.5 size-4 shrink-0 text-violet-600" aria-hidden="true" />
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-slate-950">Internal notification</p>
+          <p className="text-xs leading-4 text-slate-600">
+            Adds a notification to the recipient&apos;s bell and shows it immediately while they are online.
+          </p>
+        </div>
+      </div>
+
+      <Field className="gap-1.5" data-invalid={!actionNameValid}>
+        <FieldLabel htmlFor={`${actionKey}-notification-action-name`}>Action name</FieldLabel>
+        <Input
+          id={`${actionKey}-notification-action-name`}
+          value={config.actionName}
+          maxLength={120}
+          aria-invalid={!actionNameValid}
+          onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+          placeholder="Internal notification"
+        />
+        {!actionNameValid ? <p className="text-xs text-rose-600">Enter an action name.</p> : null}
+      </Field>
+
+      <Field className="gap-2">
+        <FieldLabel htmlFor={`${actionKey}-notification-recipient-mode`}>Recipient</FieldLabel>
+        <Select
+          value={config.recipient.mode}
+          onValueChange={(mode: AutomationInternalNotificationConfig["recipient"]["mode"]) => {
+            onChange({
+              ...config,
+              recipient: mode === "CONTACT_ASSIGNEE"
+                ? { mode }
+                : { mode, userId: catalog.users[0]?.id ?? "" },
+            })
+          }}
+        >
+          <SelectTrigger
+            id={`${actionKey}-notification-recipient-mode`}
+            className={COMPACT_SELECT_TRIGGER_CLASS}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="CONTACT_ASSIGNEE">Contact assignee</SelectItem>
+            <SelectItem value="SPECIFIC_USER">Specific teammate</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+
+      {config.recipient.mode === "SPECIFIC_USER" ? (
+        <Field className="gap-2">
+          <FieldLabel>Teammate</FieldLabel>
+          <Popover open={recipientPickerOpen} onOpenChange={setRecipientPickerOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                role="combobox"
+                aria-expanded={recipientPickerOpen}
+                className="h-9 w-full justify-between bg-white px-3 font-normal"
+              >
+                <span className="truncate">
+                  {selectedUser ? `${selectedUser.name} · ${selectedUser.email}` : "Select teammate"}
+                </span>
+                <ChevronsUpDown className="size-4 shrink-0 text-slate-400" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+              <Command>
+                <CommandInput placeholder="Search teammates…" />
+                <CommandList>
+                  <CommandEmpty>No active teammates found.</CommandEmpty>
+                  <CommandGroup>
+                    {catalog.users.map((user) => (
+                      <CommandItem
+                        key={user.id}
+                        value={`${user.name} ${user.email} ${user.id}`}
+                        onSelect={() => {
+                          onChange({ ...config, recipient: { mode: "SPECIFIC_USER", userId: user.id } })
+                          setRecipientPickerOpen(false)
+                        }}
+                      >
+                        <Check className={cn(
+                          "size-4",
+                          user.id === specificUserId ? "opacity-100" : "opacity-0",
+                        )} />
+                        <span className="min-w-0 flex-1 truncate">{user.name}</span>
+                        <span className="truncate text-xs text-slate-500">{user.email}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+          {!selectedUser ? (
+            <p className="text-xs text-rose-600">Select an active teammate.</p>
+          ) : null}
+        </Field>
+      ) : (
+        <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-4 text-slate-600">
+          The contact must have an active assignee when this action runs.
+        </p>
+      )}
+
+      <ContactTemplateInput
+        id={`${actionKey}-notification-title`}
+        label="Title"
+        value={config.titleTemplate}
+        maxLength={160}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={titleError}
+        onChange={(titleTemplate) => onChange({ ...config, titleTemplate })}
+        placeholder="Policy review needed for {contact.name}"
+      />
+      <ContactTemplateInput
+        id={`${actionKey}-notification-body`}
+        label="Message (optional)"
+        value={config.bodyTemplate ?? ""}
+        maxLength={1_000}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={bodyError}
+        onChange={(bodyTemplate) => onChange({ ...config, bodyTemplate })}
+        multiline
+        placeholder="Add context for the teammate"
+      />
+    </section>
+  )
+}
+
 function TaskActionEditor({
   config,
   catalog,
@@ -5832,6 +6040,7 @@ function TaskActionEditor({
 
 function goToDestinationLabel(action: AutomationAction) {
   if (action.type === "CREATE_CONTACT") return action.createContactConfig?.actionName.trim() || "Create contact"
+  if (action.type === "SEND_INTERNAL_NOTIFICATION") return action.internalNotificationConfig?.actionName.trim() || "Internal notification"
   if (action.type === "FORMAT_TEXT") return action.textFormatterConfig?.actionName.trim() || "Text formatter"
   if (action.type === "UPDATE_OPPORTUNITY") return action.opportunityConfig?.actionName.trim() || "Update/create opportunity"
   if (action.type === "DELETE_OPPORTUNITY") return action.deleteOpportunityConfig?.actionName.trim() || "Delete opportunity"

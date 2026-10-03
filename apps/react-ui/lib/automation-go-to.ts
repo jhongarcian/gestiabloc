@@ -103,6 +103,9 @@ function requiredAutomationValues(action: AutomationAction) {
     addTemplate(action.taskConfig?.nameTemplate)
     addTemplate(action.taskConfig?.descriptionTemplate)
     addTemplate(action.taskConfig?.reminder?.messageTemplate)
+  } else if (action.type === "SEND_INTERNAL_NOTIFICATION") {
+    addTemplate(action.internalNotificationConfig?.titleTemplate)
+    addTemplate(action.internalNotificationConfig?.bodyTemplate)
   } else if (action.type === "CREATE_CONTACT") {
     const config = action.createContactConfig
     addTemplate(config?.firstNameTemplate)

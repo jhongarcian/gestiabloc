@@ -68,7 +68,7 @@ import {
 } from "./automation-text-formatter.js"
 import { NoteBodyInputSchema, NoteTitleInputSchema } from "./note-inputs.js"
 import { deletePrivateObject } from "./private-storage.js"
-import { emitNotificationCreated, type RealtimeNotificationPayload } from "./realtime.js"
+import { emitStoredNotifications } from "./task-notifications.js"
 import { getTaskPriorityFromDueDate, isCompletedStatusName } from "./task-priority-values.js"
 import { evaluateWorkflowOperator } from "./service-followup-runtime.js"
 
@@ -108,6 +108,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "ADD_CONTACT_NOTE",
   "CREATE_CONTACT",
   "CREATE_TASK",
+  "SEND_INTERNAL_NOTIFICATION",
   "FORMAT_DATE_TIME",
   "FORMAT_NUMBER",
   "FORMAT_TEXT",
@@ -358,6 +359,43 @@ export const AutomationRemoveFromWorkflowConfigSchema = z.object({
   targetAutomationNameSnapshot: z.string().trim().min(1).max(120),
 }).strict()
 
+const AutomationInternalNotificationTitleTemplateSchema = z.string()
+  .max(160)
+  .superRefine((value, context) => {
+    for (const issue of parseContactTemplate(value).issues) {
+      context.addIssue({ code: "custom", message: issue.message })
+    }
+  })
+  .transform(sanitizeTaskSingleLine)
+  .pipe(z.string().min(1).max(160))
+
+const AutomationInternalNotificationBodyTemplateSchema = z.string()
+  .max(1_000)
+  .superRefine((value, context) => {
+    for (const issue of parseContactTemplate(value).issues) {
+      context.addIssue({ code: "custom", message: issue.message })
+    }
+  })
+  .transform(sanitizeTaskMultiline)
+  .pipe(z.string().max(1_000))
+
+export const AutomationInternalNotificationConfigSchema = z.object({
+  actionName: z.string().trim().min(1).max(120),
+  recipient: z.discriminatedUnion("mode", [
+    z.object({ mode: z.literal("CONTACT_ASSIGNEE") }).strict(),
+    z.object({
+      mode: z.literal("SPECIFIC_USER"),
+      userId: idSchema,
+    }).strict(),
+  ]),
+  titleTemplate: AutomationInternalNotificationTitleTemplateSchema,
+  bodyTemplate: AutomationInternalNotificationBodyTemplateSchema.nullable().optional(),
+}).strict()
+
+export type AutomationInternalNotificationConfig = z.infer<
+  typeof AutomationInternalNotificationConfigSchema
+>
+
 const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("UPDATE_CONTACT_CUSTOM_FIELDS"),
@@ -391,6 +429,11 @@ const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("CREATE_TASK"),
     nodeKey: actionNodeKeySchema,
     taskConfig: AutomationTaskConfigSchema,
+  }),
+  z.object({
+    type: z.literal("SEND_INTERNAL_NOTIFICATION"),
+    nodeKey: actionNodeKeySchema,
+    internalNotificationConfig: AutomationInternalNotificationConfigSchema,
   }),
   z.object({
     type: z.literal("FORMAT_DATE_TIME"),
@@ -547,6 +590,7 @@ const legacyRoutingActionNullFields = {
   noteBody: z.null().optional(),
   createContactConfig: z.null().optional(),
   taskConfig: z.null().optional(),
+  internalNotificationConfig: z.null().optional(),
   dateTimeFormatterConfig: z.null().optional(),
   numberFormatterConfig: z.null().optional(),
   textFormatterConfig: z.null().optional(),
@@ -819,6 +863,9 @@ function automationValueRequirements(action: AutomationControlFlowAction) {
     addTemplate(record.taskConfig?.nameTemplate)
     addTemplate(record.taskConfig?.descriptionTemplate)
     addTemplate(record.taskConfig?.reminder?.messageTemplate)
+  } else if (record.type === "SEND_INTERNAL_NOTIFICATION") {
+    addTemplate(record.internalNotificationConfig?.titleTemplate)
+    addTemplate(record.internalNotificationConfig?.bodyTemplate)
   } else if (record.type === "CREATE_CONTACT") {
     const config = record.createContactConfig
     addTemplate(config?.firstNameTemplate)
@@ -2233,6 +2280,37 @@ export async function validateAutomationConfiguration(
         },
       }
     }
+    if (action.type === "SEND_INTERNAL_NOTIFICATION") {
+      const config = action.internalNotificationConfig
+      const availableOutputs = [...automationOutputs.keys()]
+      for (const template of [config.titleTemplate, config.bodyTemplate ?? ""]) {
+        if (!template) continue
+        const issue = validateContactTemplate(template, fields, availableOutputs).issues[0]
+        if (issue) {
+          throw new AutomationConfigurationError(
+            "INVALID_INTERNAL_NOTIFICATION_TEMPLATE",
+            issue.message,
+          )
+        }
+      }
+      if (
+        config.recipient.mode === "SPECIFIC_USER" &&
+        !activeUserIds.has(config.recipient.userId)
+      ) {
+        throw new AutomationConfigurationError(
+          "INVALID_INTERNAL_NOTIFICATION_RECIPIENT",
+          "Select an active teammate for the internal notification.",
+        )
+      }
+      return {
+        ...base,
+        internalNotificationConfig: {
+          ...config,
+          actionName: config.actionName.trim(),
+          bodyTemplate: config.bodyTemplate?.trim() ? config.bodyTemplate : null,
+        },
+      }
+    }
     if (action.type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
       const customFieldUpdates = action.customFieldUpdates.map((update) => {
         if ("contactFieldKey" in update) {
@@ -2778,6 +2856,7 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
         noteBody: action.noteBody,
         createContactConfig: action.createContactConfig,
         taskConfig: action.taskConfig,
+        internalNotificationConfig: action.internalNotificationConfig,
         dateTimeFormatterConfig: action.dateTimeFormatterConfig,
         numberFormatterConfig: action.numberFormatterConfig,
         textFormatterConfig: action.textFormatterConfig,
@@ -3669,6 +3748,76 @@ async function applyAutomationAction(
       return {
         details: `Created task “${name}” · ${assignee}${dueLabel ? ` · Due ${dueLabel}` : ""}.`,
         notificationIds,
+      }
+    } else if (action.type === "SEND_INTERNAL_NOTIFICATION") {
+      const config: AutomationInternalNotificationConfig = action.internalNotificationConfig
+      let recipientUserId: string
+
+      if (config.recipient.mode === "CONTACT_ASSIGNEE") {
+        const contact = await prismaTx.contact.findFirst({
+          where: { tenantId, id: contactId },
+          select: { assignedToUserId: true },
+        })
+        if (!contact?.assignedToUserId) {
+          throw new Error("The contact does not have an active assignee to notify.")
+        }
+        recipientUserId = contact.assignedToUserId
+      } else {
+        recipientUserId = config.recipient.userId
+      }
+
+      const membership = await prismaTx.membership.findUnique({
+        where: { userId_tenantId: { userId: recipientUserId, tenantId } },
+        select: { status: true },
+      })
+      if (!membership || membership.status !== "ACTIVE") {
+        throw new Error(
+          config.recipient.mode === "CONTACT_ASSIGNEE"
+            ? "The contact does not have an active assignee to notify."
+            : "The configured notification recipient is no longer active.",
+        )
+      }
+
+      const rendered = await renderContactTemplates(prismaTx, {
+        tenantId,
+        contactId,
+        templates: {
+          title: config.titleTemplate,
+          body: config.bodyTemplate ?? "",
+        },
+        timezone: catalog.timezone,
+        occurredAt,
+        automationValues,
+        executionContext: templateContext,
+      })
+      const title = sanitizeTaskSingleLine(rendered.title ?? "")
+      if (!title || title.length > 160) {
+        throw new Error("The rendered notification title must contain 1 to 160 characters.")
+      }
+      const body = sanitizeTaskMultiline(rendered.body ?? "") || null
+      if (body && body.length > 1_000) {
+        throw new Error("The rendered notification body must contain 1,000 characters or fewer.")
+      }
+
+      const eventKey = `automation-notification:${runId ?? randomUUID()}:${action.nodeKey}:${recipientUserId}`
+      const notification = await prismaTx.notification.upsert({
+        where: { eventKey },
+        create: {
+          tenantId,
+          userId: recipientUserId,
+          contactId,
+          eventKey,
+          type: "AUTOMATION_NOTIFICATION",
+          title,
+          body,
+        },
+        update: {},
+        select: { id: true },
+      })
+      const recipientName = catalog.userMap.get(recipientUserId) ?? "an active teammate"
+      return {
+        details: `Sent internal notification “${title}” to ${recipientName}.`,
+        notificationIds: [notification.id],
       }
     } else if (action.type === "FORMAT_DATE_TIME") {
       const value = await resolveAutomationDateTimeFormatter(prismaTx, {
@@ -6626,8 +6775,8 @@ async function resumeAutomationRun(
         queuedRunCount: result.queuedRunCount,
       }
     })
-    await emitAutomationTaskNotifications(prismaClient, result.notificationIds).catch((error) => {
-      console.error("Could not emit automation task notification", error)
+    await emitStoredNotifications(result.notificationIds, prismaClient).catch((error) => {
+      console.error("Could not emit automation notification", error)
     })
     await deleteAutomationContactFileObjects(result.fileCleanupCandidates)
     if (result.queuedRunCount > 0) kickAutomationRunWorker({ queueOpportunityEvent })
@@ -6635,46 +6784,6 @@ async function resumeAutomationRun(
   } catch (error) {
     await recordAutomationRunFailure(prismaClient, runId, leaseToken, error)
     return { status: "FAILED" as const }
-  }
-}
-
-async function emitAutomationTaskNotifications(prismaClient: any, notificationIds: string[]) {
-  if (notificationIds.length === 0) return
-  const notifications = await prismaClient.notification.findMany({
-    where: { id: { in: notificationIds } },
-    select: {
-      id: true,
-      tenantId: true,
-      userId: true,
-      contactId: true,
-      type: true,
-      title: true,
-      body: true,
-      readAt: true,
-      createdAt: true,
-      taskId: true,
-      taskReminderId: true,
-    },
-  })
-
-  for (const notification of notifications) {
-    const serialized: RealtimeNotificationPayload = {
-      id: notification.id,
-      tenantId: notification.tenantId,
-      userId: notification.userId,
-      contactId: notification.contactId ?? null,
-      type: notification.type,
-      title: notification.title,
-      body: notification.body ?? null,
-      readAt: notification.readAt?.toISOString?.() ?? null,
-      createdAt:
-        typeof notification.createdAt === "string"
-          ? notification.createdAt
-          : notification.createdAt.toISOString(),
-      taskId: notification.taskId ?? null,
-      taskReminderId: notification.taskReminderId ?? null,
-    }
-    emitNotificationCreated(serialized.userId, serialized)
   }
 }
 

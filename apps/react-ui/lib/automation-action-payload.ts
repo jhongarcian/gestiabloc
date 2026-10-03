@@ -25,6 +25,8 @@ export function serializeAutomationAction(action: AutomationAction): AutomationA
       return { ...base, createContactConfig: action.createContactConfig }
     case "CREATE_TASK":
       return { ...base, taskConfig: action.taskConfig }
+    case "SEND_INTERNAL_NOTIFICATION":
+      return { ...base, internalNotificationConfig: action.internalNotificationConfig }
     case "FORMAT_DATE_TIME":
       return { ...base, dateTimeFormatterConfig: action.dateTimeFormatterConfig }
     case "FORMAT_NUMBER":

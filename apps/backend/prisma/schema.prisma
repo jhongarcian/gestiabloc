@@ -183,6 +183,7 @@ enum NotificationType {
   TASK_REMINDER
   TASK_ASSIGNED
   TASK_DUE
+  AUTOMATION_NOTIFICATION
   FOLLOW_UP_OVERDUE
   FOLLOW_UP_FAILED
   CUSTOM_FIELD_ACCESS_REQUEST
@@ -318,6 +319,7 @@ enum AutomationActionType {
   ADD_CONTACT_NOTE
   CREATE_CONTACT
   CREATE_TASK
+  SEND_INTERNAL_NOTIFICATION
   FORMAT_DATE_TIME
   FORMAT_NUMBER
   FORMAT_TEXT
@@ -1493,34 +1495,35 @@ model AutomationCondition {
 }
 
 model AutomationAction {
-  id                       String               @id @default(uuid())
-  tenantId                 String
-  automationId             String
-  nodeKey                  String
-  type                     AutomationActionType
-  customFieldId            String?
-  statusConfigId           String?
-  assignedUserId           String?
-  tagId                    String?
-  value                    Json?
-  customFieldUpdates       Json?
-  waitConfig               Json?
-  noteTitle                String?
-  noteBody                 String?
-  createContactConfig      Json?
-  taskConfig               Json?
-  dateTimeFormatterConfig  Json?
-  numberFormatterConfig    Json?
-  textFormatterConfig      Json?
-  mathOperationConfig      Json?
-  ifElseConfig             Json?
-  splitConfig              Json?
-  goToConfig               Json?
-  opportunityConfig        Json?
-  deleteOpportunityConfig  Json?
-  addToWorkflowConfig      Json?
-  removeFromWorkflowConfig Json?
-  sortOrder                Int                  @default(0)
+  id                         String               @id @default(uuid())
+  tenantId                   String
+  automationId               String
+  nodeKey                    String
+  type                       AutomationActionType
+  customFieldId              String?
+  statusConfigId             String?
+  assignedUserId             String?
+  tagId                      String?
+  value                      Json?
+  customFieldUpdates         Json?
+  waitConfig                 Json?
+  noteTitle                  String?
+  noteBody                   String?
+  createContactConfig        Json?
+  taskConfig                 Json?
+  internalNotificationConfig Json?
+  dateTimeFormatterConfig    Json?
+  numberFormatterConfig      Json?
+  textFormatterConfig        Json?
+  mathOperationConfig        Json?
+  ifElseConfig               Json?
+  splitConfig                Json?
+  goToConfig                 Json?
+  opportunityConfig          Json?
+  deleteOpportunityConfig    Json?
+  addToWorkflowConfig        Json?
+  removeFromWorkflowConfig   Json?
+  sortOrder                  Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
 

@@ -170,6 +170,7 @@ function serializeAutomation(record: any) {
         noteBody: action.noteBody,
         createContactConfig: action.createContactConfig,
         taskConfig: action.taskConfig,
+        internalNotificationConfig: action.internalNotificationConfig,
         dateTimeFormatterConfig: action.dateTimeFormatterConfig,
         numberFormatterConfig: action.numberFormatterConfig,
         textFormatterConfig: action.textFormatterConfig,

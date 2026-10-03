@@ -78,9 +78,12 @@ export async function createTaskAssignmentNotification({
   return serialized
 }
 
-export async function emitStoredTaskNotifications(notificationIds: string[]) {
+export async function emitStoredNotifications(
+  notificationIds: string[],
+  prismaClient: any = prismaWithNotifications,
+) {
   if (notificationIds.length === 0) return
-  const notifications = await prismaWithNotifications.notification.findMany({
+  const notifications = await prismaClient.notification.findMany({
     where: { id: { in: notificationIds } },
     select: notificationSelect,
   })

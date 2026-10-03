@@ -53,6 +53,7 @@ import {
 import { AppSidebar, SidebarEdgeToggle } from "./sidebar"
 import { TenantUserProvider, type TenantUser } from "./tenant-context"
 import { api } from "@/lib/api"
+import { registerRealtimeNotification } from "@/lib/realtime-notifications"
 import { Badge } from "@/components/ui/badge"
 
 type TenantShellProps = {
@@ -80,6 +81,7 @@ type NotificationItem = {
     | "TASK_REMINDER"
     | "TASK_ASSIGNED"
     | "TASK_DUE"
+    | "AUTOMATION_NOTIFICATION"
     | "FOLLOW_UP_OVERDUE"
     | "FOLLOW_UP_FAILED"
     | "CUSTOM_FIELD_ACCESS_REQUEST"
@@ -258,6 +260,12 @@ const notificationMeta = (
         chipClassName:
           "border border-amber-200/80 bg-amber-100/80 text-amber-700",
       }
+    case "AUTOMATION_NOTIFICATION":
+      return {
+        label: "Automation",
+        chipClassName:
+          "border border-violet-200/80 bg-violet-100/80 text-violet-700",
+      }
     case "FOLLOW_UP_OVERDUE":
       return {
         label: "Follow-up overdue",
@@ -328,6 +336,7 @@ export function TenantShell({
   const compactSearchInputRef = useRef<HTMLInputElement>(null)
   const compactSearchTriggerRef = useRef<HTMLButtonElement>(null)
   const socketRef = useRef<SocketClient | null>(null)
+  const knownNotificationIdsRef = useRef(new Set<string>())
   const isLoadingNotificationsRef = useRef(false)
   const isLoadingMoreNotificationsRef = useRef(false)
   const [profileOpen, setProfileOpen] = useState(false)
@@ -663,6 +672,10 @@ export function TenantShell({
         },
       )
 
+      for (const notification of data.items) {
+        knownNotificationIdsRef.current.add(notification.id)
+      }
+
       setNotifications((current) => {
         if (mode === "append") {
           return appendOlderNotifications(current, data.items)
@@ -700,6 +713,10 @@ export function TenantShell({
       page: notificationsPage + 1,
     })
   }, [tenantId, hasMoreNotifications, loadNotifications, notificationsPage])
+
+  useEffect(() => {
+    knownNotificationIdsRef.current.clear()
+  }, [tenantId])
 
   const handleNotificationsScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
@@ -925,6 +942,8 @@ export function TenantShell({
             return
           }
 
+          if (!registerRealtimeNotification(knownNotificationIdsRef.current, payload.id)) return
+
           setNotifications((current) => {
             const nextItem: NotificationItem = {
               id: payload.id,
@@ -941,6 +960,9 @@ export function TenantShell({
             return [nextItem, ...current.filter((item) => item.id !== payload.id)]
           })
           setUnreadCount((current) => current + (payload.readAt ? 0 : 1))
+          if (payload.type === "AUTOMATION_NOTIFICATION") {
+            toast(payload.title, payload.body ? { description: payload.body } : undefined)
+          }
         }
 
         automationHandler = (payload) => {

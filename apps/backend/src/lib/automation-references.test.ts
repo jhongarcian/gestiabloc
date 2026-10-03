@@ -74,6 +74,45 @@ describe("findEnabledAutomationReference", () => {
     )
   })
 
+  test("finds custom fields and selected teammates in internal notifications", async () => {
+    const internalNotificationConfig = {
+      actionName: "Notify reviewer",
+      recipient: { mode: "SPECIFIC_USER", userId: "user-reviewer" },
+      titleTemplate: "Review {contact.custom_field.policy_number}",
+      bodyTemplate: "Open the contact for details.",
+    }
+    const prismaClient = {
+      contactCustomField: {
+        findFirst: async () => ({ key: "policy_number" }),
+      },
+      automation: {
+        findFirst: async () => null,
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Policy review",
+          actions: [{ type: "SEND_INTERNAL_NOTIFICATION", internalNotificationConfig }],
+        }],
+      },
+    }
+
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "customField", id: "field-policy-number" },
+      ),
+      { id: "automation-1", name: "Policy review" },
+    )
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "user", id: "user-reviewer" },
+      ),
+      { id: "automation-1", name: "Policy review" },
+    )
+  })
+
   test("finds custom fields nested in a multi-field update action", async () => {
     const prismaClient = {
       contactCustomField: {

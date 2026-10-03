@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
 import { buildAutomationFlowGraph } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-flow-graph.js"
+import type { AutomationCatalog } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types.js"
 
 const labels = {
   CREATE_CONTACT: "Create contact",
@@ -13,6 +14,7 @@ const labels = {
   REMOVE_CONTACT_TAG: "Remove contact tag",
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_TASK: "Create task",
+  SEND_INTERNAL_NOTIFICATION: "Internal notification",
   FORMAT_DATE_TIME: "Date/Time formatter",
   FORMAT_NUMBER: "Number formatter",
   FORMAT_TEXT: "Text formatter",
@@ -51,6 +53,32 @@ describe("buildAutomationFlowGraph", () => {
     const node = graph.nodes.find((candidate) => candidate.id === "action-create-contact-node")
     assert.equal(node?.data.label, "Create household member")
     assert.equal(node?.data.subtitle, "Create contact")
+  })
+
+  test("shows the custom Internal notification label and recipient", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-1",
+      targetStageId: "",
+      conditions: [],
+      actions: [{
+        nodeKey: "notification-node",
+        type: "SEND_INTERNAL_NOTIFICATION",
+        internalNotificationConfig: {
+          actionName: "Request policy review",
+          recipient: { mode: "SPECIFIC_USER", userId: "user-jane" },
+          titleTemplate: "Review {contact.name}",
+          bodyTemplate: "",
+        },
+      }],
+    }, {
+      pipelines: [],
+      users: [{ id: "user-jane", name: "Jane Smith", email: "jane@example.com" }],
+    } as unknown as AutomationCatalog, labels)
+
+    const node = graph.nodes.find((candidate) => candidate.id === "action-notification-node")
+    assert.equal(node?.data.label, "Request policy review")
+    assert.equal(node?.data.subtitle, "Notify Jane Smith")
   })
 
   test("shows the custom Add to workflow label and target snapshot", () => {

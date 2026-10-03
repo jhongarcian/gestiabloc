@@ -246,6 +246,15 @@ export type AutomationTaskConfig = {
   } | null
 }
 
+export type AutomationInternalNotificationConfig = {
+  actionName: string
+  recipient:
+    | { mode: "CONTACT_ASSIGNEE" }
+    | { mode: "SPECIFIC_USER"; userId: string }
+  titleTemplate: string
+  bodyTemplate?: string | null
+}
+
 export type AutomationFieldUpdate =
   | { customFieldId: string; operation: "SET"; value: unknown }
   | { customFieldId: string; operation: "CLEAR" }
@@ -370,6 +379,7 @@ export type AutomationAction = {
     | "ADD_CONTACT_NOTE"
     | "CREATE_CONTACT"
     | "CREATE_TASK"
+    | "SEND_INTERNAL_NOTIFICATION"
     | "FORMAT_DATE_TIME"
     | "FORMAT_NUMBER"
     | "FORMAT_TEXT"
@@ -392,6 +402,7 @@ export type AutomationAction = {
   noteBody?: string | null
   createContactConfig?: AutomationCreateContactConfig | null
   taskConfig?: AutomationTaskConfig | null
+  internalNotificationConfig?: AutomationInternalNotificationConfig | null
   dateTimeFormatterConfig?: AutomationDateTimeFormatterConfig | null
   numberFormatterConfig?: AutomationNumberFormatterConfig | null
   textFormatterConfig?: AutomationTextFormatterConfig | null

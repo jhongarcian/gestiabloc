@@ -6,6 +6,7 @@ import {
   AutomationDeleteOpportunityConfigSchema,
   AutomationAddToWorkflowConfigSchema,
   AutomationRemoveFromWorkflowConfigSchema,
+  AutomationInternalNotificationConfigSchema,
   AutomationOpportunityConfigSchema,
   AutomationExecutionError,
   automationWorkflowReferenceIds,
@@ -22,6 +23,250 @@ import {
   validateAutomationGoToControlFlow,
   validateAutomationConfiguration,
 } from "./opportunity-automations.js"
+
+describe("Internal notification automation action", () => {
+  const baseConfig = {
+    actionName: "Notify owner",
+    recipient: { mode: "SPECIFIC_USER" as const, userId: "user-active" },
+    titleTemplate: "Review {contact.name}",
+    bodyTemplate: "Prepared on {automation.prepared_date}",
+  }
+
+  test("validates templates and tenant-scoped active recipients", async () => {
+    assert.equal(AutomationInternalNotificationConfigSchema.safeParse(baseConfig).success, true)
+    assert.equal(AutomationInternalNotificationConfigSchema.safeParse({
+      ...baseConfig,
+      actionName: " ",
+    }).success, false)
+
+    const prismaClient = {
+      opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [
+        { userId: "user-active", status: "ACTIVE" },
+        { userId: "user-disabled", status: "DISABLED" },
+      ] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const formatter = {
+      type: "FORMAT_DATE_TIME" as const,
+      dateTimeFormatterConfig: {
+        mode: "DATE" as const,
+        source: { type: "CURRENT_DATE" as const },
+        format: "MMM D, YYYY" as const,
+        outputKey: "prepared_date",
+      },
+    }
+    const notification = {
+      type: "SEND_INTERNAL_NOTIFICATION" as const,
+      internalNotificationConfig: baseConfig,
+    }
+    const valid = AutomationUpsertSchema.parse({
+      name: "Notify teammate",
+      isEnabled: false,
+      trigger: { type: "OPPORTUNITY_CREATED", pipelineId: "pipeline-1" },
+      conditions: [],
+      actions: [formatter, notification],
+    })
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", valid)
+    assert.equal(
+      (normalized.actions[1] as any).internalNotificationConfig.actionName,
+      "Notify owner",
+    )
+
+    const unavailableRecipient = AutomationUpsertSchema.parse({
+      ...valid,
+      actions: [formatter, {
+        ...notification,
+        internalNotificationConfig: {
+          ...baseConfig,
+          recipient: { mode: "SPECIFIC_USER", userId: "user-disabled" },
+        },
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", unavailableRecipient),
+      /Select an active teammate/,
+    )
+
+    const forwardReference = AutomationUpsertSchema.parse({
+      ...valid,
+      actions: [notification, formatter],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", forwardReference),
+      /not available before this action/,
+    )
+  })
+
+  test("uses an assignee set by an earlier action and returns a durable notification", async () => {
+    let assignedToUserId: string | null = null
+    let createdNotification: Record<string, any> | null = null
+    let nodeLogs: Array<Record<string, any>> = []
+    const prismaTx = {
+      automation: {
+        findMany: async () => [{
+          id: "automation-1",
+          name: "Owner review",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-work",
+          targetStageId: null,
+          conditions: [],
+          actions: [
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000001",
+              type: "SET_CONTACT_ASSIGNEE",
+              assignedUserId: "user-jane",
+            },
+            {
+              nodeKey: "00000000-0000-4000-8000-000000000002",
+              type: "SEND_INTERNAL_NOTIFICATION",
+              internalNotificationConfig: {
+                actionName: "Notify owner",
+                recipient: { mode: "CONTACT_ASSIGNEE" },
+                titleTemplate: "Review {contact.name}",
+                bodyTemplate: "Email {contact.email}",
+              },
+            },
+          ],
+        }],
+      },
+      contact: {
+        findFirst: async (args: { select?: Record<string, unknown> }) => {
+          if (args.select?.assignedToUserId && Object.keys(args.select).length === 1) {
+            return { assignedToUserId }
+          }
+          return {
+            id: "contact-1",
+            firstName: "Taylor",
+            middleName: null,
+            lastName: "Reed",
+            email: "taylor@example.com",
+            statusConfigId: "active",
+            assignedToUserId,
+            statusConfig: { name: "Active" },
+            assignedToMembership: assignedToUserId
+              ? { user: { name: "Jane Smith", email: "jane@example.com" } }
+              : null,
+            tags: [],
+            customFieldValues: [],
+          }
+        },
+        update: async ({ data }: { data: { assignedToUserId?: string | null } }) => {
+          if ("assignedToUserId" in data) assignedToUserId = data.assignedToUserId ?? null
+        },
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      membership: {
+        findMany: async () => [{
+          userId: "user-jane",
+          user: { name: "Jane Smith", email: "jane@example.com" },
+        }],
+        findUnique: async () => ({ status: "ACTIVE" }),
+      },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: {
+        findMany: async () => [{ id: "pipeline-work", name: "Work", stages: [] }],
+      },
+      notification: {
+        upsert: async ({ create }: { create: Record<string, any> }) => {
+          createdNotification = create
+          return { id: "notification-1" }
+        },
+      },
+      automationRun: {
+        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        update: async () => undefined,
+      },
+      automationExecution: { create: async () => undefined },
+      automationNodeExecution: {
+        createMany: async ({ data }: { data: Array<Record<string, any>> }) => { nodeLogs = data },
+      },
+    }
+
+    const result = await executeOpportunityAutomations(prismaTx, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.deepEqual(result.notificationIds, ["notification-1"])
+    assert.equal(assignedToUserId, "user-jane")
+    const notificationRecord = createdNotification as Record<string, any> | null
+    assert.ok(notificationRecord)
+    assert.equal(notificationRecord.userId, "user-jane")
+    assert.equal(notificationRecord.contactId, "contact-1")
+    assert.equal(notificationRecord.type, "AUTOMATION_NOTIFICATION")
+    assert.equal(notificationRecord.title, "Review Taylor Reed")
+    assert.equal(notificationRecord.body, "Email taylor@example.com")
+    assert.match(String(notificationRecord.eventKey), /^automation-notification:run-1:/)
+    assert.equal(nodeLogs[2]?.details, "Sent internal notification “Review Taylor Reed” to Jane Smith.")
+  })
+
+  test("fails when the contact has no active assignee", async () => {
+    await assert.rejects(
+      executeAutomationSegmentTx({
+        contact: {
+          findFirst: async () => ({ assignedToUserId: null }),
+        },
+      }, {
+        run: {
+          id: "run-1",
+          tenantId: "tenant-1",
+          automationId: "automation-1",
+          automationName: "Owner review",
+          triggerType: "OPPORTUNITY_CREATED",
+          contactId: "contact-1",
+          contactName: "Taylor Reed",
+          actorUserId: null,
+          opportunityId: "opportunity-1",
+          sourceStageId: null,
+          targetStageId: null,
+          attemptId: "attempt-1",
+          eventSource: "OPPORTUNITY_CREATED",
+          variables: {},
+          eventContext: {},
+        } as any,
+        actions: [{
+          nodeKey: "00000000-0000-4000-8000-000000000001",
+          type: "SEND_INTERNAL_NOTIFICATION",
+          internalNotificationConfig: {
+            actionName: "Notify owner",
+            recipient: { mode: "CONTACT_ASSIGNEE" },
+            titleTemplate: "Review contact",
+            bodyTemplate: null,
+          },
+        }] as any,
+        catalog: {
+          fieldMap: new Map(),
+          fieldKeyMap: new Map(),
+          activeStatusIds: new Set(),
+          activeTaskStatusIds: new Set(),
+          taskStatusMap: new Map(),
+          activeUserIds: new Set(),
+          tagIds: new Set(),
+          statusMap: new Map(),
+          userMap: new Map(),
+          tagMap: new Map(),
+          pipelineMap: new Map(),
+          stageMap: new Map(),
+          stagePipelineMap: new Map(),
+          timezone: "America/Chicago",
+        },
+        startIndex: 0,
+      }),
+      /does not have an active assignee/,
+    )
+  })
+})
 
 describe("validateAutomationGoToControlFlow", () => {
   const split = (routes: Array<{ branchKey: string; name: string; actions: any[] }>) => ({

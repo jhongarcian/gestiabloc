@@ -155,6 +155,28 @@ describe("serializeAutomationAction", () => {
     )
   })
 
+  test("serializes only the Internal notification configuration", () => {
+    const internalNotificationConfig = {
+      actionName: "Notify account owner",
+      recipient: { mode: "SPECIFIC_USER" as const, userId: "user-1" },
+      titleTemplate: "Review {contact.name}",
+      bodyTemplate: "Prepared on {automation.prepared_date}",
+    }
+    assert.deepEqual(
+      serializeAutomationAction({
+        nodeKey: "notification-1",
+        type: "SEND_INTERNAL_NOTIFICATION",
+        internalNotificationConfig,
+        statusConfigId: null,
+      }),
+      {
+        nodeKey: "notification-1",
+        type: "SEND_INTERNAL_NOTIFICATION",
+        internalNotificationConfig,
+      },
+    )
+  })
+
   test("omits unrelated routing configs and preserves a nested If/Else inside Split", () => {
     const action: AutomationAction = {
       nodeKey: "split-1",

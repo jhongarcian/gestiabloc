@@ -221,6 +221,18 @@ export function buildAutomationFlowGraph(
       ? `Note: ${action.noteTitle?.trim() || "Add a title"}`
       : action.type === "CREATE_CONTACT"
         ? "Create contact"
+      : action.type === "SEND_INTERNAL_NOTIFICATION"
+        ? action.internalNotificationConfig?.recipient.mode === "CONTACT_ASSIGNEE"
+          ? "Notify contact assignee"
+          : `Notify ${
+              catalog?.users.find(
+                (user) => user.id === (
+                  action.internalNotificationConfig?.recipient.mode === "SPECIFIC_USER"
+                    ? action.internalNotificationConfig.recipient.userId
+                    : ""
+                ),
+              )?.name ?? "selected teammate"
+            }`
       : action.type === "CREATE_TASK"
         ? `Task: ${action.taskConfig?.nameTemplate.trim() || "Add a task name"}`
         : action.type === "FORMAT_DATE_TIME"
@@ -277,6 +289,8 @@ export function buildAutomationFlowGraph(
     return {
       label: action.type === "CREATE_CONTACT"
         ? action.createContactConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "SEND_INTERNAL_NOTIFICATION"
+          ? action.internalNotificationConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "FORMAT_TEXT"
         ? action.textFormatterConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "UPDATE_OPPORTUNITY"

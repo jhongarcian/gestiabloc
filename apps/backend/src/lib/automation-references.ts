@@ -9,8 +9,10 @@ import {
 import {
   AutomationCustomFieldUpdatesSchema,
   AutomationDeleteOpportunityConfigSchema,
+  AutomationInternalNotificationConfigSchema,
   AutomationOpportunityConfigSchema,
 } from "./opportunity-automations.js"
+import { contactTemplateCustomFieldKeys } from "./contact-templates.js"
 import {
   AutomationDateTimeFormatterConfigSchema,
   dateTimeFormatterCustomFieldKeys,
@@ -135,7 +137,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_CONTACT", "CREATE_TASK", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "DELETE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
+          type: { in: ["CREATE_CONTACT", "CREATE_TASK", "SEND_INTERNAL_NOTIFICATION", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "DELETE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
         },
       },
     },
@@ -153,6 +155,7 @@ export async function findEnabledAutomationReference(
           noteBody: true,
           createContactConfig: true,
           taskConfig: true,
+          internalNotificationConfig: true,
           customFieldUpdates: true,
           dateTimeFormatterConfig: true,
           numberFormatterConfig: true,
@@ -236,6 +239,29 @@ export async function findEnabledAutomationReference(
             customField?.key &&
             createContactConfigCustomFieldKeys(createContact.data).includes(customField.key),
           ))
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
+      }
+      if (action.type === "SEND_INTERNAL_NOTIFICATION") {
+        const notification = AutomationInternalNotificationConfigSchema.safeParse(
+          action.internalNotificationConfig,
+        )
+        if (!notification.success) continue
+        if (
+          reference.kind === "customField" &&
+          customField?.key &&
+          [notification.data.titleTemplate, notification.data.bodyTemplate ?? ""]
+            .flatMap(contactTemplateCustomFieldKeys)
+            .includes(customField.key)
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        if (
+          reference.kind === "user" &&
+          notification.data.recipient.mode === "SPECIFIC_USER" &&
+          notification.data.recipient.userId === reference.id
         ) {
           return { id: automation.id, name: automation.name }
         }

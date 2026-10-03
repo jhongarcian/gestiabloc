@@ -6476,6 +6476,7 @@ components:
             - ADD_CONTACT_NOTE
             - CREATE_CONTACT
             - CREATE_TASK
+            - SEND_INTERNAL_NOTIFICATION
             - FORMAT_DATE_TIME
             - FORMAT_NUMBER
             - FORMAT_TEXT
@@ -6534,6 +6535,8 @@ components:
           $ref: "#/components/schemas/AutomationCreateContactConfig"
         taskConfig:
           $ref: "#/components/schemas/AutomationTaskConfig"
+        internalNotificationConfig:
+          $ref: "#/components/schemas/AutomationInternalNotificationConfig"
         dateTimeFormatterConfig:
           $ref: "#/components/schemas/AutomationDateTimeFormatterConfig"
         numberFormatterConfig:
@@ -7045,6 +7048,47 @@ components:
               type: string
               maxLength: 500
               nullable: true
+    AutomationInternalNotificationConfig:
+      type: object
+      additionalProperties: false
+      required: [actionName, recipient, titleTemplate]
+      description: >-
+        Creates a persistent in-app notification for the contact's active assignee or
+        one selected active tenant teammate. The notification is linked to the current
+        contact and delivered over Socket.io after the automation transaction commits.
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        recipient:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [CONTACT_ASSIGNEE]
+            - type: object
+              additionalProperties: false
+              required: [mode, userId]
+              properties:
+                mode:
+                  type: string
+                  enum: [SPECIFIC_USER]
+                userId:
+                  type: string
+        titleTemplate:
+          type: string
+          minLength: 1
+          maxLength: 160
+          description: Contact template rendered when the action executes.
+        bodyTemplate:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: Optional multiline contact template rendered when the action executes.
     AutomationDateTimeFormatterConfig:
       description: Creates a named, run-scoped value for later note and task text templates.
       oneOf:
@@ -9453,6 +9497,7 @@ components:
           TASK_REMINDER,
           TASK_ASSIGNED,
           TASK_DUE,
+          AUTOMATION_NOTIFICATION,
           FOLLOW_UP_OVERDUE,
           FOLLOW_UP_FAILED,
           CUSTOM_FIELD_ACCESS_REQUEST,
@@ -9477,6 +9522,10 @@ components:
         createdAt:
           type: string
           format: date-time
+        contactId:
+          type: string
+          nullable: true
+          description: Related contact id. Automation notifications use this link to open the current contact.
         taskId:
           type: string
           nullable: true
