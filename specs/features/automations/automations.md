@@ -386,6 +386,24 @@ Delete opportunity is not terminal. Later actions continue normally, and a later
 
 ## 10. Contact Actions
 
+### Create contact
+
+Create contact adds a standalone contact while the automation continues to run against its original contact.
+
+The action supports:
+
+- an editable action name
+- required first- and last-name templates
+- optional middle name, email, and phone templates
+- an active contact status
+- an optional active-team-member assignee selected with the searchable contact assignee picker
+- an optional birthday
+- up to 20 compatible custom-field values
+
+For a fixed phone number, the editor uses the same country picker as the contact overview. It defaults to the United States, formats the value as the number is entered, and saves the normalized E.164 value. The **Insert field** control remains available for dynamic contact fields and earlier automation values. Inserting a dynamic value replaces the fixed number and opens the template editor; clearing the template returns the field to the phone picker.
+
+At execution time, a rendered phone value must be a valid E.164 number. A configured assignee must still be an active member of the same tenant. If an existing contact in the tenant already has the same normalized email or phone, the action succeeds as a no-op and does not modify that contact. The new contact is not automatically enrolled in another workflow, and later actions continue to use the original contact.
+
 ### Update contact fields
 
 One node can update up to 20 distinct regular or custom fields atomically.

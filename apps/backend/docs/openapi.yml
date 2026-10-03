@@ -6722,6 +6722,10 @@ components:
           type: string
           maxLength: 1000
           nullable: true
+          description: >-
+            Optional phone value. Fixed numbers are normalized and stored in E.164 format by
+            the builder's country picker. Contact-field or earlier automation-value tokens are
+            also supported and must render to a valid E.164 number when the action executes.
         dateOfBirth:
           allOf:
             - $ref: "#/components/schemas/AutomationCreateContactTypedSource"
@@ -6729,6 +6733,10 @@ components:
         statusConfigId:
           type: string
           description: Active contact status belonging to the automation tenant.
+        assignedToUserId:
+          type: string
+          nullable: true
+          description: Optional active tenant member assigned to the new contact.
         customFieldValues:
           type: array
           maxItems: 20

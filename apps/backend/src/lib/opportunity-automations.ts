@@ -2017,6 +2017,12 @@ export async function validateAutomationConfiguration(
           "Select an active contact status for the new contact.",
         )
       }
+      if (config.assignedToUserId && !activeUserIds.has(config.assignedToUserId)) {
+        throw new AutomationConfigurationError(
+          "INVALID_ASSIGNEE",
+          "Select an active tenant member for the new contact.",
+        )
+      }
 
       const availableOutputs = [...automationOutputs.keys()]
       const templates = [
@@ -2113,6 +2119,7 @@ export async function validateAutomationConfiguration(
           emailTemplate: config.emailTemplate?.trim() ? config.emailTemplate : null,
           phoneTemplate: config.phoneTemplate?.trim() ? config.phoneTemplate : null,
           dateOfBirth: config.dateOfBirth ?? null,
+          assignedToUserId: config.assignedToUserId ?? null,
           customFieldValues,
         },
       }
@@ -2968,10 +2975,14 @@ async function acquireCreateContactLocks(
   for (const resourceKey of resourceKeys) {
     const lockKey = `${params.tenantId}:${resourceKey}`
     await prismaTx.$queryRaw`
-      SELECT pg_advisory_xact_lock(
-        hashtext(${CREATE_CONTACT_LOCK_NAMESPACE}),
-        hashtext(${lockKey})
+      WITH advisory_lock AS (
+        SELECT pg_advisory_xact_lock(
+          hashtext(${CREATE_CONTACT_LOCK_NAMESPACE}),
+          hashtext(${lockKey})
+        )
       )
+      SELECT 1 AS "lockAcquired"
+      FROM advisory_lock
     `
   }
 }
@@ -2991,6 +3002,9 @@ export async function executeCreateContactAction(
   const { config } = params
   if (!params.catalog.activeStatusIds.has(config.statusConfigId)) {
     throw new Error("The configured contact status is no longer available.")
+  }
+  if (config.assignedToUserId && !params.catalog.activeUserIds.has(config.assignedToUserId)) {
+    throw new Error("The configured contact assignee is no longer available.")
   }
 
   const customTemplateEntries = config.customFieldValues.flatMap((assignment, index) =>
@@ -3120,6 +3134,7 @@ export async function executeCreateContactAction(
       phone,
       dateOfBirth: dateOfBirth ? new Date(`${dateOfBirth}T12:00:00.000Z`) : null,
       statusConfigId: config.statusConfigId,
+      assignedToUserId: config.assignedToUserId ?? null,
     },
     select: { id: true },
   })

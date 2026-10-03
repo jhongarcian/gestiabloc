@@ -289,7 +289,7 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
       prismaWithAutomations.membership.findMany({
         where: { tenantId, status: "ACTIVE" },
         orderBy: { user: { name: "asc" } },
-        select: { userId: true, user: { select: { name: true, email: true } } },
+        select: { userId: true, user: { select: { name: true, email: true, image: true } } },
       }),
       prismaWithAutomations.service.findMany({
         where: { tenantId, isActive: true },
@@ -351,6 +351,7 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
           id: item.userId,
           name: item.user.name,
           email: item.user.email,
+          image: item.user.image ?? null,
         })),
       },
     })

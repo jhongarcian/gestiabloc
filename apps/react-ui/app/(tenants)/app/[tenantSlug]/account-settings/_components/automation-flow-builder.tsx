@@ -83,6 +83,10 @@ import {
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
+import {
+  AssigneeInput,
+  UNASSIGNED_ASSIGNEE_VALUE,
+} from "@/components/assignee-input"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -1039,6 +1043,10 @@ function isCreateContactReady(
   if (createContactEmailTemplateError(config.emailTemplate, catalog, automationOutputs)) return false
   if (createContactPhoneTemplateError(config.phoneTemplate, catalog, automationOutputs)) return false
   if (!catalog.statuses.some((status) => status.id === config.statusConfigId)) return false
+  if (
+    config.assignedToUserId &&
+    !catalog.users.some((user) => user.id === config.assignedToUserId)
+  ) return false
   if (config.dateOfBirth && !isCreateContactTypedSourceReady(
     config.dateOfBirth,
     { label: "Date of birth", fieldType: "DATE", isRequired: false, options: [] },
@@ -1129,6 +1137,7 @@ function actionDefaults(
         phoneTemplate: "",
         dateOfBirth: null,
         statusConfigId: defaultStatus?.id ?? "",
+        assignedToUserId: null,
         customFieldValues: [],
       },
     }
@@ -6867,6 +6876,7 @@ function CreateContactActionEditor({
         label="Phone"
         value={config.phoneTemplate ?? ""}
         maxLength={1_000}
+        phonePicker
         catalog={catalog}
         timezone={timezone}
         automationOutputs={automationOutputs}
@@ -6892,6 +6902,40 @@ function CreateContactActionEditor({
         </Select>
         {!catalog.statuses.some((status) => status.id === config.statusConfigId) ? (
           <p className="text-xs text-destructive">Choose an active contact status.</p>
+        ) : null}
+      </Field>
+
+      <Field
+        className="gap-2"
+        data-invalid={Boolean(
+          config.assignedToUserId &&
+          !catalog.users.some((user) => user.id === config.assignedToUserId),
+        )}
+      >
+        <FieldLabel htmlFor={`${actionKey}-assignee`}>Assignee</FieldLabel>
+        <AssigneeInput
+          id={`${actionKey}-assignee`}
+          value={config.assignedToUserId ?? UNASSIGNED_ASSIGNEE_VALUE}
+          onValueChange={(assignedToUserId) => onChange({
+            ...config,
+            assignedToUserId: assignedToUserId === UNASSIGNED_ASSIGNEE_VALUE
+              ? null
+              : assignedToUserId,
+          })}
+          options={catalog.users.map((user) => ({
+            value: user.id,
+            label: user.name?.trim() || user.email,
+            email: user.email,
+            image: user.image ?? null,
+          }))}
+          ariaInvalid={Boolean(
+            config.assignedToUserId &&
+            !catalog.users.some((user) => user.id === config.assignedToUserId),
+          )}
+        />
+        {config.assignedToUserId &&
+        !catalog.users.some((user) => user.id === config.assignedToUserId) ? (
+          <p className="text-xs text-destructive">Choose an active team member.</p>
         ) : null}
       </Field>
 

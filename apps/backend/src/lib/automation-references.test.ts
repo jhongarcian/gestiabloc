@@ -155,6 +155,7 @@ describe("findEnabledAutomationReference", () => {
       phoneTemplate: null,
       dateOfBirth: null,
       statusConfigId: "active",
+      assignedToUserId: "user-1",
       customFieldValues: [{
         customFieldId: "field-2",
         source: { type: "CUSTOM_FIELD", key: "household_name" },
@@ -187,6 +188,14 @@ describe("findEnabledAutomationReference", () => {
         prismaClient,
         "tenant-1",
         { kind: "status", id: "active" },
+      ),
+      { id: "automation-1", name: "Create household" },
+    )
+    assert.deepEqual(
+      await findEnabledAutomationReference(
+        prismaClient,
+        "tenant-1",
+        { kind: "user", id: "user-1" },
       ),
       { id: "automation-1", name: "Create household" },
     )

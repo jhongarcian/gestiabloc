@@ -360,6 +360,7 @@ export type AutomationCreateContactConfig = {
   phoneTemplate?: string | null
   dateOfBirth?: AutomationCreateContactTypedSource | null
   statusConfigId: string
+  assignedToUserId?: string | null
   customFieldValues: Array<{
     customFieldId: string
     source: AutomationCreateContactValueSource
@@ -488,7 +489,7 @@ export type AutomationCatalog = {
     name: string
     targetAutomationIds: string[]
   }>
-  users: Array<{ id: string; name: string; email: string }>
+  users: Array<{ id: string; name: string; email: string; image?: string | null }>
 }
 
 export type AutomationExecution = {

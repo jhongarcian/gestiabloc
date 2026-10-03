@@ -428,6 +428,7 @@ describe("Create contact automation action", () => {
     phoneTemplate: "+15551234567",
     dateOfBirth: { type: "FIXED" as const, value: "1990-05-03" },
     statusConfigId: "active",
+    assignedToUserId: "user-1",
     customFieldValues: [
       {
         customFieldId: "field-note",
@@ -445,7 +446,7 @@ describe("Create contact automation action", () => {
       opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
       contactCustomField: { findMany: async () => customFields },
       contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
-      membership: { findMany: async () => [] },
+      membership: { findMany: async () => [{ userId: "user-1", status: "ACTIVE" }] },
       tenantTag: { findMany: async () => [] },
     }
     const input = AutomationUpsertSchema.parse({
@@ -457,6 +458,7 @@ describe("Create contact automation action", () => {
     })
     const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", input)
     assert.equal((normalized.actions[0] as any).createContactConfig.actionName, "Create household contact")
+    assert.equal((normalized.actions[0] as any).createContactConfig.assignedToUserId, "user-1")
     assert.equal((normalized.actions[0] as any).createContactConfig.customFieldValues[1].source.value, 42)
 
     const invalid = AutomationUpsertSchema.parse({
@@ -476,16 +478,30 @@ describe("Create contact automation action", () => {
       validateAutomationConfiguration(prismaClient, "tenant-1", invalid),
       /Lead score must be a number/,
     )
+
+    const invalidAssignee = AutomationUpsertSchema.parse({
+      ...input,
+      actions: [{
+        type: "CREATE_CONTACT",
+        createContactConfig: { ...config, assignedToUserId: "inactive-user" },
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalidAssignee),
+      /active tenant member for the new contact/,
+    )
   })
 
   test("creates the contact and typed custom values while keeping the source context", async () => {
     const createdContacts: Array<Record<string, any>> = []
     const customWrites: Array<Record<string, any>> = []
     const lockKeys: string[] = []
+    const lockQueries: string[] = []
     const prismaTx = {
-      $queryRaw: async (_parts: TemplateStringsArray, _namespace: string, lockKey: string) => {
+      $queryRaw: async (parts: TemplateStringsArray, _namespace: string, lockKey: string) => {
         lockKeys.push(lockKey)
-        return [{ pg_advisory_xact_lock: null }]
+        lockQueries.push(parts.join("?"))
+        return [{ lockAcquired: 1 }]
       },
       contact: {
         findFirst: async ({ where }: { where: Record<string, any> }) => {
@@ -521,7 +537,7 @@ describe("Create contact automation action", () => {
         activeStatusIds: new Set(["active"]),
         activeTaskStatusIds: new Set(),
         taskStatusMap: new Map(),
-        activeUserIds: new Set(),
+        activeUserIds: new Set(["user-1"]),
         tagIds: new Set(),
         statusMap: new Map([["active", "Active"]]),
         userMap: new Map(),
@@ -540,6 +556,7 @@ describe("Create contact automation action", () => {
     assert.equal(createdContacts[0]?.email, "new@example.com")
     assert.equal(createdContacts[0]?.phone, "+15551234567")
     assert.equal(createdContacts[0]?.dateOfBirth.toISOString(), "1990-05-03T12:00:00.000Z")
+    assert.equal(createdContacts[0]?.assignedToUserId, "user-1")
     assert.deepEqual(customWrites.map((item) => [item.fieldId, item.value]), [
       ["field-note", "Created for Taylor"],
       ["field-score", 42],
@@ -548,6 +565,9 @@ describe("Create contact automation action", () => {
       "tenant-1:email:new@example.com",
       "tenant-1:phone:+15551234567",
     ])
+    assert.equal(lockQueries.length, 2)
+    assert.match(lockQueries[0]!, /SELECT 1 AS "lockAcquired"\s+FROM advisory_lock/)
+    assert.doesNotMatch(lockQueries[0]!, /^\s*SELECT pg_advisory_xact_lock/)
   })
 
   test("skips successfully when the rendered email already belongs to a tenant contact", async () => {
@@ -585,7 +605,7 @@ describe("Create contact automation action", () => {
         activeStatusIds: new Set(["active"]),
         activeTaskStatusIds: new Set(),
         taskStatusMap: new Map(),
-        activeUserIds: new Set(),
+        activeUserIds: new Set(["user-1"]),
         tagIds: new Set(),
         statusMap: new Map(),
         userMap: new Map(),
@@ -604,6 +624,35 @@ describe("Create contact automation action", () => {
     assert.deepEqual(duplicateWheres[0]?.OR?.[0], {
       email: { equals: "new@example.com", mode: "insensitive" },
     })
+  })
+
+  test("fails before creation when the configured assignee is no longer active", async () => {
+    await assert.rejects(
+      executeCreateContactAction({}, {
+        config,
+        tenantId: "tenant-1",
+        sourceContactId: "source-contact",
+        catalog: {
+          fieldMap: new Map(),
+          fieldKeyMap: new Map(),
+          activeStatusIds: new Set(["active"]),
+          activeTaskStatusIds: new Set(),
+          taskStatusMap: new Map(),
+          activeUserIds: new Set(),
+          tagIds: new Set(),
+          statusMap: new Map(),
+          userMap: new Map(),
+          tagMap: new Map(),
+          pipelineMap: new Map(),
+          stageMap: new Map(),
+          stagePipelineMap: new Map(),
+          timezone: "America/Chicago",
+        },
+        occurredAt: new Date("2026-10-02T12:00:00.000Z"),
+        automationValues: {},
+      }),
+      /contact assignee is no longer available/,
+    )
   })
 })
 
