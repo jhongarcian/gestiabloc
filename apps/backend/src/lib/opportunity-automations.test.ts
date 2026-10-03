@@ -9,6 +9,7 @@ import {
   AutomationInternalNotificationConfigSchema,
   AutomationOpportunityConfigSchema,
   AutomationExecutionError,
+  automationActionContinuation,
   automationWorkflowReferenceIds,
   automationWorkflowTargetIds,
   automationSplitBucket,
@@ -293,6 +294,29 @@ describe("validateAutomationGoToControlFlow", () => {
         },
       ]),
     ]))
+  })
+
+  test("includes Default actions as Go To targets and rejects cycles through Default", () => {
+    const routingAction = {
+      nodeKey: "if-root",
+      type: "IF_ELSE",
+      ifElseConfig: {
+        branches: [
+          { branchKey: "matched", isDefault: false, actions: [{ nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "default-action" } }] },
+          { branchKey: "default", isDefault: true, actions: [{ nodeKey: "default-action", type: "CLEAR_CONTACT_ASSIGNEE" }] },
+        ],
+      },
+    }
+    assert.doesNotThrow(() => validateAutomationGoToControlFlow([routingAction]))
+    routingAction.ifElseConfig.branches[1]!.actions = [{
+      nodeKey: "default-action",
+      type: "GO_TO",
+      goToConfig: { targetNodeKey: "go" },
+    }]
+    assert.throws(
+      () => validateAutomationGoToControlFlow([routingAction]),
+      (error: any) => error?.code === "AUTOMATION_FLOW_CYCLE",
+    )
   })
 
   test("rejects same-path backward jumps and multi-node cycles", () => {
@@ -580,6 +604,135 @@ describe("Create contact automation action", () => {
     assert.deepEqual(duplicateWheres[0]?.OR?.[0], {
       email: { equals: "new@example.com", mode: "insensitive" },
     })
+  })
+})
+
+describe("If/Else Default runtime", () => {
+  test("preserves a nested Default path when continuing after a Wait", () => {
+    const actions = [{
+      nodeKey: "outer-if",
+      type: "IF_ELSE",
+      ifElseConfig: {
+        actionName: "Outer",
+        branches: [
+          { branchKey: "outer-match", name: "Match", isDefault: false, matchMode: "ALL", conditions: [], actions: [] },
+          {
+            branchKey: "outer-default",
+            name: "Default",
+            isDefault: true,
+            matchMode: "ALL",
+            conditions: [],
+            actions: [
+              { nodeKey: "default-wait", type: "WAIT", waitConfig: { mode: "DURATION", amount: 30, unit: "MINUTES" } },
+              {
+                nodeKey: "inner-if",
+                type: "IF_ELSE",
+                ifElseConfig: {
+                  actionName: "Inner",
+                  branches: [
+                    { branchKey: "inner-match", name: "Match", isDefault: false, matchMode: "ALL", conditions: [], actions: [] },
+                    { branchKey: "inner-default", name: "Default", isDefault: true, matchMode: "ALL", conditions: [], actions: [{ nodeKey: "after-wait", type: "CLEAR_CONTACT_ASSIGNEE" }] },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    }]
+    const decisions = {
+      "outer-if": { branchKey: "outer-default", branchName: "Default", decidedAt: "2026-10-02T12:00:00.000Z" },
+      "inner-if": { branchKey: "inner-default", branchName: "Default", decidedAt: "2026-10-02T12:00:00.000Z" },
+    }
+
+    assert.deepEqual(
+      automationActionContinuation(actions as any, decisions, "inner-if").map((step) => step.action.nodeKey),
+      ["inner-if", "after-wait"],
+    )
+  })
+
+  test("executes Default actions and logs unselected condition actions as skipped", async () => {
+    const actions = [{
+      nodeKey: "if-else-node",
+      type: "IF_ELSE" as const,
+      ifElseConfig: {
+        actionName: "Route contact",
+        branches: [
+          {
+            branchKey: "condition-branch",
+            name: "Matched",
+            isDefault: false,
+            matchMode: "ALL" as const,
+            conditions: [{ conditionKey: "never-match", source: "CURRENT_DATE_TIME" as const, operator: "IS_EMPTY" as const }],
+            actions: [{ nodeKey: "unselected-action", type: "CLEAR_CONTACT_ASSIGNEE" as const }],
+          },
+          {
+            branchKey: "default-branch",
+            name: "Default",
+            isDefault: true,
+            matchMode: "ALL" as const,
+            conditions: [],
+            actions: [
+              { nodeKey: "default-first", type: "CLEAR_CONTACT_ASSIGNEE" as const },
+              { nodeKey: "default-second", type: "CLEAR_CONTACT_ASSIGNEE" as const },
+            ],
+          },
+        ],
+      },
+    }]
+    let contactUpdates = 0
+    const emptyMap = new Map()
+    const result = await executeAutomationSegmentTx({
+      contact: { update: async () => { contactUpdates += 1 } },
+      automationRun: { update: async () => undefined },
+      automationExecution: { create: async () => undefined },
+    }, {
+      run: {
+        id: "default-run",
+        tenantId: "tenant-1",
+        automationId: "automation-1",
+        automationName: "Default test",
+        contactId: "contact-1",
+        contactName: "Taylor Reed",
+        actorUserId: "user-1",
+        opportunityId: "opportunity-1",
+        attemptId: "attempt-1",
+        eventSource: "OPPORTUNITY_CREATED",
+        triggerType: "OPPORTUNITY_CREATED",
+        sourceStageId: null,
+        targetStageId: null,
+        cursorIndex: 0,
+        cursorPath: null,
+        branchDecisions: {},
+        variables: {},
+      },
+      actions: actions as any,
+      startIndex: 0,
+      catalog: {
+        fieldMap: emptyMap,
+        fieldKeyMap: emptyMap,
+        activeStatusIds: new Set(),
+        activeTaskStatusIds: new Set(),
+        taskStatusMap: emptyMap,
+        activeUserIds: new Set(),
+        tagIds: new Set(),
+        statusMap: emptyMap,
+        userMap: emptyMap,
+        tagMap: emptyMap,
+        pipelineMap: emptyMap,
+        stageMap: emptyMap,
+        stagePipelineMap: emptyMap,
+        timezone: "America/Chicago",
+      },
+    })
+
+    assert.equal(result.status, "SUCCEEDED")
+    assert.equal(contactUpdates, 2)
+    assert.equal(result.logs.find((log) => log.nodeKey === "if-else-node")?.reasonCode, "DEFAULT_BRANCH_SELECTED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "unselected-action")?.reasonCode, "BRANCH_NOT_SELECTED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "default-first")?.status, "EXECUTED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "default-second")?.status, "EXECUTED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "default-first")?.branchPath?.[0]?.branchName, "Default")
   })
 })
 
@@ -2540,6 +2693,44 @@ describe("AutomationUpsertSchema", () => {
     assert.equal(typeof normalized.actions[0]?.nodeKey, "string")
     assert.equal(typeof config?.branches[0]?.branchKey, "string")
     assert.equal(typeof config?.branches[0]?.conditions[0]?.conditionKey, "string")
+
+    const withDefaultActions = AutomationUpsertSchema.parse({
+      ...base,
+      actions: [{
+        ...ifElse,
+        ifElseConfig: {
+          ...ifElse.ifElseConfig,
+          branches: [
+            ifElse.ifElseConfig.branches[0],
+            {
+              ...ifElse.ifElseConfig.branches[1],
+              actions: [{ type: "SET_CONTACT_STATUS", statusConfigId: "active" }],
+            },
+          ],
+        },
+      }],
+    })
+    const normalizedWithDefaultActions = await validateAutomationConfiguration(prismaClient, "tenant-1", withDefaultActions)
+    assert.equal(normalizedWithDefaultActions.actions[0]?.ifElseConfig?.branches[1]?.actions[0]?.type, "SET_CONTACT_STATUS")
+    assert.equal(typeof normalizedWithDefaultActions.actions[0]?.ifElseConfig?.branches[1]?.actions[0]?.nodeKey, "string")
+
+    const defaultWithConditions = AutomationUpsertSchema.parse({
+      ...base,
+      actions: [{
+        ...ifElse,
+        ifElseConfig: {
+          ...ifElse.ifElseConfig,
+          branches: [ifElse.ifElseConfig.branches[0], {
+            ...ifElse.ifElseConfig.branches[1],
+            conditions: ifElse.ifElseConfig.branches[0].conditions,
+          }],
+        },
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", defaultWithConditions),
+      /Default branch cannot contain conditions/,
+    )
 
     const invalid = AutomationUpsertSchema.parse({
       ...base,

@@ -582,7 +582,7 @@ describe("buildAutomationFlowGraph", () => {
     ))
   })
 
-  test("renders If/Else branches with orthogonal connectors and no Default add button", () => {
+  test("renders an editable empty Default branch with orthogonal connectors", () => {
     const graph = buildAutomationFlowGraph(
       {
         triggerType: "OPPORTUNITY_CREATED",
@@ -627,15 +627,59 @@ describe("buildAutomationFlowGraph", () => {
     assert.ok(graph.nodes.some((node) => node.data.kind === "branch" && node.data.label === "Qualified"))
     assert.ok(graph.nodes.some((node) => node.data.kind === "branch" && node.data.label === "Default"))
     assert.ok(graph.nodes.some((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000102"))
-    assert.equal(graph.nodes.some((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000104"), false)
+    const defaultAdd = graph.nodes.find((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === "00000000-0000-4000-8000-000000000104")
+    assert.equal(defaultAdd?.data.insertionIndex, 0)
     assert.ok(graph.edges.some((edge) => edge.source === "action-00000000-0000-4000-8000-000000000101" && edge.type === "step"))
     const defaultNode = graph.nodes.find((node) => node.data.kind === "branch" && node.data.label === "Default")
     assert.ok(graph.edges.some((edge) =>
       edge.source === defaultNode?.id &&
-      graph.nodes.find((node) => node.id === edge.target)?.data.kind === "complete"
+      edge.target === defaultAdd?.id
     ))
+    assert.ok(graph.edges.some((edge) => edge.source === defaultAdd?.id && graph.nodes.find((node) => node.id === edge.target)?.data.kind === "complete"))
     assert.equal(graph.nodes.filter((node) => node.data.kind === "complete").length, 2)
     assert.equal(graph.nodes.some((node) => node.id === "complete"), false)
+  })
+
+  test("renders Default actions and completes after the last action", () => {
+    const defaultKey = "00000000-0000-4000-8000-000000000114"
+    const actionKey = "00000000-0000-4000-8000-000000000115"
+    const graph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-1",
+      targetStageId: "",
+      conditions: [],
+      actions: [{
+        type: "IF_ELSE",
+        nodeKey: "00000000-0000-4000-8000-000000000111",
+        ifElseConfig: {
+          actionName: "Route lead",
+          branches: [
+            {
+              branchKey: "00000000-0000-4000-8000-000000000112",
+              name: "Qualified",
+              isDefault: false,
+              matchMode: "ALL",
+              conditions: [],
+              actions: [{ type: "CLEAR_CONTACT_ASSIGNEE", nodeKey: "00000000-0000-4000-8000-000000000113" }],
+            },
+            {
+              branchKey: defaultKey,
+              name: "Default",
+              isDefault: true,
+              matchMode: "ALL",
+              conditions: [],
+              actions: [{ type: "SET_CONTACT_STATUS", nodeKey: actionKey, statusConfigId: "active" }],
+            },
+          ],
+        },
+      }],
+    }, null, labels)
+
+    const defaultAdds = graph.nodes.filter((node) => node.data.kind === "add" && node.data.insertionPath?.at(-1)?.branchKey === defaultKey)
+    assert.deepEqual(defaultAdds.map((node) => node.data.insertionIndex), [0, 1])
+    assert.ok(graph.edges.some((edge) => edge.source === defaultAdds[0]?.id && edge.target === `action-${actionKey}`))
+    assert.ok(graph.edges.some((edge) => edge.source === `action-${actionKey}` && edge.target === defaultAdds[1]?.id))
+    assert.ok(graph.edges.some((edge) => edge.source === defaultAdds[1]?.id && graph.nodes.find((node) => node.id === edge.target)?.data.kind === "complete"))
   })
 
   test("renders percentage Split routes and keeps empty control routes editable", () => {

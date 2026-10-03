@@ -946,7 +946,7 @@ function collectAutomationControlFlowLocations(actions: AutomationControlFlowAct
       locations.set(action.nodeKey, { action, pathActions, index })
       if (action.type === "IF_ELSE") {
         for (const branch of action.ifElseConfig?.branches ?? []) {
-          if (!branch.isDefault) visit(branch.actions ?? [])
+          visit(branch.actions ?? [])
         }
       } else if (action.type === "SPLIT") {
         for (const route of action.splitConfig?.routes ?? []) visit(route.actions ?? [])
@@ -993,7 +993,7 @@ export function validateAutomationGoToControlFlow(actions: AutomationControlFlow
     }
     if (action.type === "IF_ELSE") {
       for (const branch of action.ifElseConfig?.branches ?? []) {
-        if (!branch.isDefault) addEdge(action.nodeKey, branch.actions?.[0]?.nodeKey)
+        addEdge(action.nodeKey, branch.actions?.[0]?.nodeKey)
       }
       continue
     }
@@ -1838,21 +1838,28 @@ export async function validateAutomationConfiguration(
         branchKeys.add(branchKey)
         branchNames.add(normalizedName)
         if (branch.isDefault) {
-          if (branch.conditions.length > 0 || branch.actions.length > 0) {
-            throw new AutomationConfigurationError("INVALID_DEFAULT_BRANCH", "The Default branch cannot contain conditions or actions.")
+          if (branch.conditions.length > 0) {
+            throw new AutomationConfigurationError("INVALID_DEFAULT_BRANCH", "The Default branch cannot contain conditions.")
           }
-          return { ...branch, branchKey, matchMode: "ALL" as const, conditions: [], actions: [] }
         }
-        if (branch.conditions.length === 0) {
+        if (!branch.isDefault && branch.conditions.length === 0) {
           throw new AutomationConfigurationError("EMPTY_IF_ELSE_BRANCH", `Add at least one condition to “${branch.name}”.`)
         }
-        if (branch.actions.length === 0) {
+        if (!branch.isDefault && branch.actions.length === 0) {
           throw new AutomationConfigurationError("EMPTY_IF_ELSE_BRANCH", `Add at least one action to “${branch.name}”.`)
         }
         const branchOutputs = new Map(automationOutputs)
-        const normalizedConditions = branch.conditions.map((condition) => normalizeBranchCondition(condition, branchOutputs))
+        const normalizedConditions = branch.isDefault
+          ? []
+          : branch.conditions.map((condition) => normalizeBranchCondition(condition, branchOutputs))
         const branchActions = normalizeActionPath(branch.actions, branchOutputs, depth + 1)
-        return { ...branch, branchKey, conditions: normalizedConditions, actions: branchActions }
+        return {
+          ...branch,
+          branchKey,
+          matchMode: branch.isDefault ? "ALL" as const : branch.matchMode,
+          conditions: normalizedConditions,
+          actions: branchActions,
+        }
       })
       return {
         ...base,
@@ -2733,7 +2740,6 @@ export function flattenAutomationActionTree(actions: RuntimeAutomationAction[]) 
       flattened.push({ action, nodeOrder: flattened.length + 1, branchPath })
       if (action.type === "IF_ELSE") {
         for (const branch of action.ifElseConfig.branches) {
-          if (branch.isDefault) continue
           visit(branch.actions, [
             ...branchPath,
             { nodeKey: action.nodeKey, branchKey: branch.branchKey, branchName: branch.name },
@@ -4606,7 +4612,7 @@ export function automationActionContinuation(
       if (!decision) return
       if (action.type === "IF_ELSE") {
         const branch = action.ifElseConfig.branches.find((candidate) => candidate.branchKey === decision.branchKey)
-        if (!branch || branch.isDefault) return
+        if (!branch) return
         visit(branch.actions)
       } else {
         const route = action.splitConfig.routes.find((candidate) => candidate.branchKey === decision.branchKey)
@@ -5344,9 +5350,9 @@ async function executeBranchedAutomationSegmentTx(
           step,
         ))
         visitedNodeKeys.add(action.nodeKey)
-        const continuation = selectedBranch.isDefault
-          ? []
-          : automationActionContinuation(actions, branchDecisions, selectedBranch.actions[0]?.nodeKey)
+        const continuation = selectedBranch.actions.length > 0
+          ? automationActionContinuation(actions, branchDecisions, selectedBranch.actions[0]?.nodeKey)
+          : []
         steps = continuation
         index = 0
         continue

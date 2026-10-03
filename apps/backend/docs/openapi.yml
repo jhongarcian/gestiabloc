@@ -6781,6 +6781,7 @@ components:
         actions:
           type: array
           maxItems: 100
+          description: Actions to run when this branch is selected. May be empty for the Default branch.
           items:
             $ref: "#/components/schemas/AutomationActionRequest"
     AutomationSplitConfig:

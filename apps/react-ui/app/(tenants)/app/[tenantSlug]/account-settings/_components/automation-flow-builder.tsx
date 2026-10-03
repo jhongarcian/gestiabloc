@@ -1627,11 +1627,14 @@ function isIfElseReady(
   const inheritedOutputs = formatterOutputs(previousActions)
 
   return config.branches.every((branch) => {
-    if (branch.isDefault) return branch.conditions.length === 0 && branch.actions.length === 0
-    if (branch.conditions.length < 1 || branch.conditions.length > 20) return false
-    if (!branch.conditions.every((condition) => isBranchConditionReady(condition, catalog, inheritedOutputs))) return false
+    if (branch.isDefault) {
+      if (branch.conditions.length !== 0) return false
+    } else {
+      if (branch.conditions.length < 1 || branch.conditions.length > 20) return false
+      if (!branch.conditions.every((condition) => isBranchConditionReady(condition, catalog, inheritedOutputs))) return false
+    }
     if (!requireBranchActions && branch.actions.length === 0) return true
-    if (branch.actions.length === 0) return false
+    if (branch.actions.length === 0) return branch.isDefault
     return branch.actions.every((branchAction, index) => {
       if ((branchAction.type === "IF_ELSE" || branchAction.type === "SPLIT" || branchAction.type === "GO_TO") && index !== branch.actions.length - 1) return false
       if (branchAction.type === "DELETE_CONTACT" && index !== branch.actions.length - 1) return false
@@ -1959,7 +1962,6 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
       }
       if (action.type === "IF_ELSE") {
         for (const branch of action.ifElseConfig?.branches ?? []) {
-          if (branch.isDefault) continue
           const nestedIssue = validatePath(branch.actions, [...inherited, ...actions.slice(0, index)])
           if (nestedIssue) return nestedIssue
         }
@@ -4113,7 +4115,7 @@ function IfElseActionEditor({
             onChange={(event) => onChange({ ...action, ifElseConfig: { ...config, actionName: event.target.value } })}
             placeholder="If/Else"
           />
-          <p className="text-xs leading-4 text-slate-500">The first matching branch runs. If none match, the contact exits through Default.</p>
+          <p className="text-xs leading-4 text-slate-500">The first matching branch runs. If none match, the Default branch runs.</p>
         </Field>
       </section>
 
@@ -4221,7 +4223,7 @@ function IfElseActionEditor({
       <section className="rounded-xl border border-slate-200 bg-slate-100/80 p-3">
         <div className="mb-2 flex items-center gap-2">
           <Badge variant="outline" className="rounded-full border-slate-300 bg-white text-[10px] font-semibold text-slate-600">Default</Badge>
-          <p className="text-xs text-slate-500">Always last · no actions</p>
+          <p className="text-xs text-slate-500">Always last · actions optional</p>
         </div>
         <Input
           aria-label="Default branch name"
@@ -4235,6 +4237,9 @@ function IfElseActionEditor({
             },
           })}
         />
+        <p className="mt-2 text-xs text-slate-600">
+          {defaultBranch.actions.length} {defaultBranch.actions.length === 1 ? "action" : "actions"} in this branch. Add and edit them on the canvas.
+        </p>
       </section>
     </div>
   )
