@@ -101,6 +101,82 @@ describe("serializeAutomationAction", () => {
     )
   })
 
+  test("serializes only the Remove from workflow configuration", () => {
+    assert.deepEqual(
+      serializeAutomationAction({
+        nodeKey: "remove-workflow-1",
+        type: "REMOVE_FROM_WORKFLOW",
+        removeFromWorkflowConfig: {
+          actionName: "End nurture",
+          targetAutomationId: "automation-2",
+          targetAutomationNameSnapshot: "Lead nurture",
+        },
+        statusConfigId: null,
+      }),
+      {
+        nodeKey: "remove-workflow-1",
+        type: "REMOVE_FROM_WORKFLOW",
+        removeFromWorkflowConfig: {
+          actionName: "End nurture",
+          targetAutomationId: "automation-2",
+          targetAutomationNameSnapshot: "Lead nurture",
+        },
+      },
+    )
+  })
+
+  test("serializes only the Create contact configuration", () => {
+    const createContactConfig = {
+      actionName: "Create household member",
+      firstNameTemplate: "{contact.first_name}",
+      middleNameTemplate: "",
+      lastNameTemplate: "Household",
+      emailTemplate: "{automation.new_email}",
+      phoneTemplate: "",
+      dateOfBirth: { type: "FIXED" as const, value: "1990-05-03" },
+      statusConfigId: "active",
+      customFieldValues: [{
+        customFieldId: "field-1",
+        source: { type: "TEMPLATE" as const, template: "Created by automation" },
+      }],
+    }
+    assert.deepEqual(
+      serializeAutomationAction({
+        nodeKey: "create-contact-1",
+        type: "CREATE_CONTACT",
+        createContactConfig,
+        statusConfigId: null,
+      }),
+      {
+        nodeKey: "create-contact-1",
+        type: "CREATE_CONTACT",
+        createContactConfig,
+      },
+    )
+  })
+
+  test("serializes only the Internal notification configuration", () => {
+    const internalNotificationConfig = {
+      actionName: "Notify account owner",
+      recipient: { mode: "SPECIFIC_USER" as const, userId: "user-1" },
+      titleTemplate: "Review {contact.name}",
+      bodyTemplate: "Prepared on {automation.prepared_date}",
+    }
+    assert.deepEqual(
+      serializeAutomationAction({
+        nodeKey: "notification-1",
+        type: "SEND_INTERNAL_NOTIFICATION",
+        internalNotificationConfig,
+        statusConfigId: null,
+      }),
+      {
+        nodeKey: "notification-1",
+        type: "SEND_INTERNAL_NOTIFICATION",
+        internalNotificationConfig,
+      },
+    )
+  })
+
   test("omits unrelated routing configs and preserves a nested If/Else inside Split", () => {
     const action: AutomationAction = {
       nodeKey: "split-1",

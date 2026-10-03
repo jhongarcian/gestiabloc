@@ -9,6 +9,7 @@ export type RealtimeNotificationPayload = {
     | "TASK_REMINDER"
     | "TASK_ASSIGNED"
     | "TASK_DUE"
+    | "AUTOMATION_NOTIFICATION"
     | "FOLLOW_UP_OVERDUE"
     | "FOLLOW_UP_FAILED"
     | "CUSTOM_FIELD_ACCESS_REQUEST"
@@ -23,7 +24,7 @@ export type RealtimeNotificationPayload = {
 
 let io: Server | null = null
 
-export function setRealtimeServer(server: Server) {
+export function setRealtimeServer(server: Server | null) {
   io = server
 }
 

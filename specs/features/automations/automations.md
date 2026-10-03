@@ -10,7 +10,8 @@ An automation defines:
 - the pipeline and optional stage that the event must match
 - optional contact filters
 - the ordered actions to execute
-- optional waits and If/Else branches
+- optional waits, conditional branches, random routes, and cross-path routing
+- actions that can update opportunities or explicitly start another workflow
 - whether the automation is a draft or published
 
 This document describes the current product behavior for administrators, support, QA, and engineering. It covers the builder, execution rules, monitoring, and the main API surface.
@@ -49,6 +50,8 @@ The normal lifecycle is:
 6. Every trigger and action result is recorded in the execution logs.
 
 Repeated qualifying opportunity events may create separate runs for the same contact. Parallel runs do not share formatter values or cursor state.
+
+An Add to workflow action is an explicit entry mechanism. It starts the selected published automation at its first action without evaluating that automation's opportunity trigger or contact filters.
 
 ## 4. Draft, Save, And Publish
 
@@ -91,10 +94,13 @@ The first graph node may be unconfigured. Selecting it opens the trigger sidebar
 
 The trigger sidebar contains:
 
+- automation name
 - trigger type
 - pipeline
 - destination stage when using Opportunity enters stage
 - optional contact filters
+
+The automation name appears first, before the trigger selection.
 
 Saving the sidebar configuration closes it and updates the builder draft. The header Save button must still be used to persist the automation.
 
@@ -133,11 +139,12 @@ The builder contains:
 
 Action configuration opens in a vertically scrollable sidebar. Changes remain local until **Save changes** is selected. Cancel restores the node to its previous state.
 
-The builder supports up to 20 action nodes across the complete tree, including nested If/Else branches.
+The builder supports up to 100 action nodes across the complete tree, including nodes inside nested If/Else and Split routes.
 
 Actions are grouped as:
 
 - Internal actions
+- Opportunity actions
 - Contact actions
 - Communication actions
 
@@ -268,6 +275,59 @@ Branch conditions may use live contact values, custom fields, status, assignee, 
 
 If If/Else is inserted between existing actions, every following action moves into Branch 1 in its original order. When an existing action is converted, that selected action is replaced by If/Else and only the actions after it move into Branch 1. The moved actions retain their stable node keys and configurations.
 
+### Split
+
+Split randomly routes each automation run through one percentage-based route.
+
+Rules:
+
+- each Split contains between 2 and 20 ordered routes
+- every percentage is a positive whole number
+- route percentages must total exactly 100%
+- route assignment is independent for every run
+- retries and Wait resumes retain the route already selected for that run
+- only the selected route executes; actions in other routes are logged as skipped
+- empty routes are allowed for control groups and complete successfully
+- Split is terminal in its containing path
+- Split and If/Else may be nested together to a combined depth of three
+
+When Split is inserted between existing actions, the following actions move into Route 1 without changing their order or stable node keys. Each terminal route has its own Complete endpoint in the graph.
+
+### Go To
+
+Go To continues the current run at an exact action in another branch or route.
+
+Rules:
+
+- Go To must be the final action in its source path
+- the destination action executes, followed by the remaining actions in that destination path
+- actions before the selected destination are bypassed and recorded as skipped where applicable
+- self-targets, same-path backward jumps, missing targets, and any connection that creates a cycle are rejected
+- destinations must preserve the availability of automation values used by downstream actions
+- the run persists visited-node and transition history across Waits so it cannot repeat a routed node indefinitely
+
+Go To displays a dotted routing connector in the graph and has no local Complete node because execution continues at its destination. This action is separate from a fixed Wait's Go to step option, which may only select a later action in the same path.
+
+### Add to workflow
+
+Add to workflow explicitly starts another published automation for the same contact.
+
+Configuration includes an editable action name and a searchable published-workflow selection. The current automation and any target that would create a direct or indirect dependency cycle are unavailable.
+
+Runtime behavior:
+
+- the target starts from its first action without evaluating its opportunity trigger or contact filters
+- the target is queued independently and the source automation continues immediately
+- each source execution creates a separate target run, even if the contact already has an active run there
+- transaction retries use a causation key so the same node execution cannot create a duplicate target run
+- the target's current published action definition is pinned when this node executes
+- the contact, actor, opportunity, and original opportunity-event context are inherited
+- formatter values are not copied; the target starts with an empty automation-value collection
+- target failures remain isolated and do not retroactively fail the source run
+- chained workflows cannot revisit an automation already in the chain and may start at most 20 workflows
+
+An enabled automation that is referenced by Add to workflow cannot be unpublished or deleted until the reference is removed. If Delete contact runs, queued or waiting child runs are exited and their remaining actions are logged as skipped.
+
 ### Create task
 
 Create task creates a standard contact-linked task.
@@ -296,7 +356,35 @@ The title and body support live template values. The note is attributed to:
 
 Automation-authored notes remain identifiable after the automation or triggering user is removed. Tenant administrators control editing and deletion of these notes.
 
-## 9. Contact Actions
+## 9. Opportunity Actions
+
+### Update/create opportunity
+
+Update/create opportunity creates or updates the contact's opportunity in a selected pipeline.
+
+Configuration includes:
+
+- editable action name
+- pipeline
+- destination stage
+- outcome: Keep current, Open, Won, or Lost
+- fixed USD value
+
+The action may move an opportunity forward or backward. The configured value applies both when creating a missing opportunity and when updating an existing one. Open clears the closed timestamp; Won or Lost records a closed timestamp. Keep current preserves an existing result and creates a missing opportunity as Open.
+
+Creating an opportunity queues an Opportunity created event. Changing an existing opportunity's stage queues an Opportunity enters stage event. Value-only and outcome-only changes do not create another opportunity event. A completely unchanged opportunity is recorded as a successful no-op.
+
+Generated events use the durable automation queue. Repeated transitions in the same causal chain and chains deeper than 20 events are rejected to prevent automation loops.
+
+### Delete opportunity
+
+Delete opportunity removes the contact's opportunity from one selected pipeline.
+
+It does not delete the contact, opportunities in other pipelines, automation history, or immutable event snapshots. If no opportunity exists in the selected pipeline, the action succeeds as a no-op. It does not generate a new opportunity event because there is no opportunity-deleted trigger.
+
+Delete opportunity is not terminal. Later actions continue normally, and a later Update/create opportunity action may create the opportunity again. A later failure in the same transaction segment rolls the deletion back; reaching a Wait commits it.
+
+## 10. Contact Actions
 
 ### Update contact fields
 
@@ -331,7 +419,7 @@ It permanently removes the contact from the account, exits or cancels remaining 
 
 This action is different from removing one waiting run. Removing a waiting run leaves the contact and all unrelated runs intact.
 
-## 10. Templates And Inserted Values
+## 11. Templates And Inserted Values
 
 Contact notes and task text fields use the reusable Insert field control.
 
@@ -390,7 +478,7 @@ Automation values are isolated per run and survive Wait actions. They do not upd
 
 Templates and actions resolve live contact data when their node runs. Earlier contact mutations in the same segment are visible to later nodes.
 
-## 11. Manual Contact Enrollment
+## 12. Manual Contact Enrollment
 
 Administrators can select contacts in the Contacts page and choose **Add to automation**.
 
@@ -406,7 +494,7 @@ For each manually enrolled contact:
 
 Bulk enrollment runs through the automation-process queue in batches. Progress and errors are available under `/app/{tenantSlug}/automation-processes`.
 
-## 12. Transactions, Waits, And Failures
+## 13. Transactions, Waits, And Failures
 
 Actions execute in transaction segments.
 
@@ -425,7 +513,7 @@ If a node fails:
 
 Configuration errors are not retried. The asynchronous event queue may retry transient database or connection failures according to its worker policy.
 
-## 13. Monitoring Tabs
+## 14. Monitoring Tabs
 
 ### Builder
 
@@ -465,7 +553,7 @@ Statuses:
 
 Logs support contact-name search, status filtering, tenant-timezone timestamps, page sizes of 10, 25, or 50, desktop tables, and mobile cards. Branch actions include their saved branch breadcrumb.
 
-## 14. Wait Node Monitoring And Removal
+## 15. Wait Node Monitoring And Removal
 
 Every saved Wait node displays the number of active waiting runs. Unsaved Wait nodes show a save-first state.
 
@@ -488,7 +576,7 @@ Removing a run from this drawer:
 
 If the Wait worker already claimed the run, removal returns a conflict and the drawer must refresh.
 
-## 15. Automation Ordering
+## 16. Automation Ordering
 
 Automations are listed in execution order and may be moved up or down.
 
@@ -496,7 +584,7 @@ For one opportunity event, relevant automations are processed independently in s
 
 Delete contact is the exception: after one automation deletes the contact, remaining queued work for that contact is canceled because the contact no longer exists.
 
-## 16. API Overview
+## 17. API Overview
 
 Primary account-settings endpoints:
 
@@ -519,7 +607,7 @@ Opportunity create and stage-change responses report whether relevant automation
 
 The complete request and response schemas are maintained in `apps/backend/docs/openapi.yml`.
 
-## 17. Asynchronous Queue Operations
+## 18. Asynchronous Queue Operations
 
 Opportunity events can use the durable PostgreSQL queue when:
 
@@ -529,17 +617,22 @@ AUTOMATION_ASYNC_EVENTS_ENABLED=true
 
 The opportunity transaction commits before automation actions run. Each relevant automation receives an independent dispatch and rollback boundary. The worker uses leases, retry rules for transient failures, and idempotent action/log commits.
 
+The same lease-based run worker claims runs created by Add to workflow. A queued workflow-start log is written in the source transaction and becomes Executed when the target run begins.
+
 Worker configuration, rollout steps, and operational metrics are documented in:
 
 - `apps/backend/docs/automation-event-queue.md`
 
-## 18. Important Limits
+## 19. Important Limits
 
 - 20 top-level trigger filters
-- 20 total action nodes across the complete automation tree
+- 100 total action nodes across the complete automation tree
 - 20 conditions per If/Else branch
 - 20 branches per If/Else configuration, including Default
-- 3 nested If/Else levels
+- 2 to 20 routes per Split, using whole percentages that total 100%
+- 3 combined nested If/Else and Split levels
+- 20 chained Add to workflow starts
+- 20 generated opportunity-event transitions in one causal chain
 - 20 field updates in one Update contact fields action
 - 10 waiting runs per Wait drawer page
 - 160 characters for note titles and task names
@@ -548,7 +641,7 @@ Worker configuration, rollout steps, and operational metrics are documented in:
 - 500 characters for task reminder messages
 - minute precision for fixed task and Wait date/time inputs
 
-## 19. Support Checklist
+## 20. Support Checklist
 
 When an expected automation does not run, verify:
 
@@ -562,5 +655,7 @@ When an expected automation does not run, verify:
 8. A required formatter output was created before a later node referenced it.
 9. A Wait node has not paused the run.
 10. The contact or selected referenced configuration still exists and remains active.
+11. An Add to workflow target is still published and its queued start row has begun processing.
+12. A Go To, Split, or opportunity update was not rejected by cycle protection.
 
 The execution log Details column is the primary source for explaining why a node was queued, skipped, waiting, executed, or failed.

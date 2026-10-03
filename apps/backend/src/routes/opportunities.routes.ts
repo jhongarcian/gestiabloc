@@ -11,7 +11,7 @@ import {
   recordAutomationFailure,
 } from "../lib/opportunity-automations.js"
 import { enforceSameOrigin } from "../lib/security.js"
-import { emitStoredTaskNotifications } from "../lib/task-notifications.js"
+import { emitStoredNotifications } from "../lib/task-notifications.js"
 import {
   getAutomationEventStatus,
   queueOpportunityAutomationEvent,
@@ -1226,8 +1226,8 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
     const createdFileCleanupCandidates = "fileCleanupCandidates" in createdResult.automation
       ? createdResult.automation.fileCleanupCandidates
       : []
-    await emitStoredTaskNotifications(createdNotificationIds).catch((error) => {
-      console.error("Could not emit automation task notification", error)
+    await emitStoredNotifications(createdNotificationIds).catch((error) => {
+      console.error("Could not emit automation notification", error)
     })
     await deleteAutomationContactFileObjects(
       createdFileCleanupCandidates,
@@ -1416,8 +1416,8 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
       const moveFileCleanupCandidates = "fileCleanupCandidates" in moveResult.automation
         ? moveResult.automation.fileCleanupCandidates
         : []
-      await emitStoredTaskNotifications(moveNotificationIds).catch((error) => {
-        console.error("Could not emit automation task notification", error)
+      await emitStoredNotifications(moveNotificationIds).catch((error) => {
+        console.error("Could not emit automation notification", error)
       })
       await deleteAutomationContactFileObjects(
         moveFileCleanupCandidates,

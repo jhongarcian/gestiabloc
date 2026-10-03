@@ -183,6 +183,7 @@ enum NotificationType {
   TASK_REMINDER
   TASK_ASSIGNED
   TASK_DUE
+  AUTOMATION_NOTIFICATION
   FOLLOW_UP_OVERDUE
   FOLLOW_UP_FAILED
   CUSTOM_FIELD_ACCESS_REQUEST
@@ -316,7 +317,9 @@ enum AutomationActionType {
   ADD_CONTACT_TAG
   REMOVE_CONTACT_TAG
   ADD_CONTACT_NOTE
+  CREATE_CONTACT
   CREATE_TASK
+  SEND_INTERNAL_NOTIFICATION
   FORMAT_DATE_TIME
   FORMAT_NUMBER
   FORMAT_TEXT
@@ -325,6 +328,7 @@ enum AutomationActionType {
   SPLIT
   GO_TO
   ADD_TO_WORKFLOW
+  REMOVE_FROM_WORKFLOW
   UPDATE_OPPORTUNITY
   DELETE_OPPORTUNITY
   WAIT
@@ -1491,32 +1495,35 @@ model AutomationCondition {
 }
 
 model AutomationAction {
-  id                      String               @id @default(uuid())
-  tenantId                String
-  automationId            String
-  nodeKey                 String
-  type                    AutomationActionType
-  customFieldId           String?
-  statusConfigId          String?
-  assignedUserId          String?
-  tagId                   String?
-  value                   Json?
-  customFieldUpdates      Json?
-  waitConfig              Json?
-  noteTitle               String?
-  noteBody                String?
-  taskConfig              Json?
-  dateTimeFormatterConfig Json?
-  numberFormatterConfig   Json?
-  textFormatterConfig     Json?
-  mathOperationConfig     Json?
-  ifElseConfig            Json?
-  splitConfig             Json?
-  goToConfig              Json?
-  opportunityConfig       Json?
-  deleteOpportunityConfig Json?
-  addToWorkflowConfig     Json?
-  sortOrder               Int                  @default(0)
+  id                         String               @id @default(uuid())
+  tenantId                   String
+  automationId               String
+  nodeKey                    String
+  type                       AutomationActionType
+  customFieldId              String?
+  statusConfigId             String?
+  assignedUserId             String?
+  tagId                      String?
+  value                      Json?
+  customFieldUpdates         Json?
+  waitConfig                 Json?
+  noteTitle                  String?
+  noteBody                   String?
+  createContactConfig        Json?
+  taskConfig                 Json?
+  internalNotificationConfig Json?
+  dateTimeFormatterConfig    Json?
+  numberFormatterConfig      Json?
+  textFormatterConfig        Json?
+  mathOperationConfig        Json?
+  ifElseConfig               Json?
+  splitConfig                Json?
+  goToConfig                 Json?
+  opportunityConfig          Json?
+  deleteOpportunityConfig    Json?
+  addToWorkflowConfig        Json?
+  removeFromWorkflowConfig   Json?
+  sortOrder                  Int                  @default(0)
 
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
 
@@ -1635,6 +1642,9 @@ model AutomationRun {
   failedAt               DateTime?
   completedAt            DateTime?
   exitedAt               DateTime?
+  exitRequestedAt        DateTime?
+  exitReasonCode         String?
+  exitReasonDetails      String?
 
   tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   automation Automation?         @relation(fields: [automationId], references: [id], onDelete: SetNull)

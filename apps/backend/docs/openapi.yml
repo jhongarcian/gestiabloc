@@ -6474,7 +6474,9 @@ components:
             - ADD_CONTACT_TAG
             - REMOVE_CONTACT_TAG
             - ADD_CONTACT_NOTE
+            - CREATE_CONTACT
             - CREATE_TASK
+            - SEND_INTERNAL_NOTIFICATION
             - FORMAT_DATE_TIME
             - FORMAT_NUMBER
             - FORMAT_TEXT
@@ -6483,6 +6485,7 @@ components:
             - SPLIT
             - GO_TO
             - ADD_TO_WORKFLOW
+            - REMOVE_FROM_WORKFLOW
             - UPDATE_OPPORTUNITY
             - DELETE_OPPORTUNITY
             - WAIT
@@ -6528,8 +6531,12 @@ components:
             Contact values and current-date values are resolved when the action executes.
             Formatter outputs from earlier actions use {automation.output_key} without a
             formatting modifier.
+        createContactConfig:
+          $ref: "#/components/schemas/AutomationCreateContactConfig"
         taskConfig:
           $ref: "#/components/schemas/AutomationTaskConfig"
+        internalNotificationConfig:
+          $ref: "#/components/schemas/AutomationInternalNotificationConfig"
         dateTimeFormatterConfig:
           $ref: "#/components/schemas/AutomationDateTimeFormatterConfig"
         numberFormatterConfig:
@@ -6550,6 +6557,8 @@ components:
           $ref: "#/components/schemas/AutomationDeleteOpportunityConfig"
         addToWorkflowConfig:
           $ref: "#/components/schemas/AutomationAddToWorkflowConfig"
+        removeFromWorkflowConfig:
+          $ref: "#/components/schemas/AutomationRemoveFromWorkflowConfig"
         waitConfig:
           oneOf:
             - type: object
@@ -6621,6 +6630,117 @@ components:
           minLength: 1
           maxLength: 120
           description: Refreshed from the target automation when the source is saved.
+    AutomationRemoveFromWorkflowConfig:
+      type: object
+      required: [actionName, targetAutomationId, targetAutomationNameSnapshot]
+      description: >-
+        Ends every queued, running, or waiting run of a published automation for the
+        same contact. Historical runs remain available and the contact may enter again.
+        Selecting the current automation exits the current run after this action.
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        targetAutomationId:
+          type: string
+          format: uuid
+        targetAutomationNameSnapshot:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Refreshed from the target automation when the source is saved.
+    AutomationCreateContactTypedSource:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, value]
+          properties:
+            type:
+              type: string
+              enum: [FIXED]
+            value: {}
+        - type: object
+          additionalProperties: false
+          required: [type, key]
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_FIELD, CUSTOM_FIELD, AUTOMATION_VALUE]
+            key:
+              type: string
+              minLength: 1
+              maxLength: 100
+    AutomationCreateContactValueSource:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, template]
+          properties:
+            type:
+              type: string
+              enum: [TEMPLATE]
+            template:
+              type: string
+              maxLength: 1000
+        - $ref: "#/components/schemas/AutomationCreateContactTypedSource"
+    AutomationCreateContactConfig:
+      type: object
+      additionalProperties: false
+      required:
+        - actionName
+        - firstNameTemplate
+        - lastNameTemplate
+        - statusConfigId
+        - customFieldValues
+      description: >-
+        Creates a standalone contact while the automation continues on its original
+        contact. An existing tenant contact with the rendered email or phone makes the
+        action a successful no-op.
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        firstNameTemplate:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        middleNameTemplate:
+          type: string
+          maxLength: 1000
+          nullable: true
+        lastNameTemplate:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        emailTemplate:
+          type: string
+          maxLength: 1000
+          nullable: true
+        phoneTemplate:
+          type: string
+          maxLength: 1000
+          nullable: true
+        dateOfBirth:
+          allOf:
+            - $ref: "#/components/schemas/AutomationCreateContactTypedSource"
+          nullable: true
+        statusConfigId:
+          type: string
+          description: Active contact status belonging to the automation tenant.
+        customFieldValues:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [customFieldId, source]
+            properties:
+              customFieldId:
+                type: string
+              source:
+                $ref: "#/components/schemas/AutomationCreateContactValueSource"
     AutomationIfElseConfig:
       type: object
       required: [actionName, branches]
@@ -6928,6 +7048,47 @@ components:
               type: string
               maxLength: 500
               nullable: true
+    AutomationInternalNotificationConfig:
+      type: object
+      additionalProperties: false
+      required: [actionName, recipient, titleTemplate]
+      description: >-
+        Creates a persistent in-app notification for the contact's active assignee or
+        one selected active tenant teammate. The notification is linked to the current
+        contact and delivered over Socket.io after the automation transaction commits.
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        recipient:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [CONTACT_ASSIGNEE]
+            - type: object
+              additionalProperties: false
+              required: [mode, userId]
+              properties:
+                mode:
+                  type: string
+                  enum: [SPECIFIC_USER]
+                userId:
+                  type: string
+        titleTemplate:
+          type: string
+          minLength: 1
+          maxLength: 160
+          description: Contact template rendered when the action executes.
+        bodyTemplate:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: Optional multiline contact template rendered when the action executes.
     AutomationDateTimeFormatterConfig:
       description: Creates a named, run-scoped value for later note and task text templates.
       oneOf:
@@ -9336,6 +9497,7 @@ components:
           TASK_REMINDER,
           TASK_ASSIGNED,
           TASK_DUE,
+          AUTOMATION_NOTIFICATION,
           FOLLOW_UP_OVERDUE,
           FOLLOW_UP_FAILED,
           CUSTOM_FIELD_ACCESS_REQUEST,
@@ -9360,6 +9522,10 @@ components:
         createdAt:
           type: string
           format: date-time
+        contactId:
+          type: string
+          nullable: true
+          description: Related contact id. Automation notifications use this link to open the current contact.
         taskId:
           type: string
           nullable: true

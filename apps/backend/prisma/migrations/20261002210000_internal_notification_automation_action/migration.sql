@@ -1,0 +1,5 @@
+ALTER TYPE "AutomationActionType" ADD VALUE 'SEND_INTERNAL_NOTIFICATION';
+ALTER TYPE "NotificationType" ADD VALUE 'AUTOMATION_NOTIFICATION';
+
+ALTER TABLE "AutomationAction"
+ADD COLUMN "internalNotificationConfig" JSONB;

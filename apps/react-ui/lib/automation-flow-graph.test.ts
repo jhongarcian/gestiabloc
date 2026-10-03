@@ -2,8 +2,10 @@ import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
 import { buildAutomationFlowGraph } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-flow-graph.js"
+import type { AutomationCatalog } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types.js"
 
 const labels = {
+  CREATE_CONTACT: "Create contact",
   UPDATE_CONTACT_CUSTOM_FIELDS: "Update contact fields",
   SET_CONTACT_STATUS: "Set contact status",
   SET_CONTACT_ASSIGNEE: "Assign contact",
@@ -12,6 +14,7 @@ const labels = {
   REMOVE_CONTACT_TAG: "Remove contact tag",
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_TASK: "Create task",
+  SEND_INTERNAL_NOTIFICATION: "Internal notification",
   FORMAT_DATE_TIME: "Date/Time formatter",
   FORMAT_NUMBER: "Number formatter",
   FORMAT_TEXT: "Text formatter",
@@ -20,6 +23,7 @@ const labels = {
   SPLIT: "Split",
   GO_TO: "Go to",
   ADD_TO_WORKFLOW: "Add to workflow",
+  REMOVE_FROM_WORKFLOW: "Remove from workflow",
   UPDATE_OPPORTUNITY: "Update/create opportunity",
   DELETE_OPPORTUNITY: "Delete opportunity",
   WAIT: "Wait",
@@ -27,6 +31,56 @@ const labels = {
 } as const
 
 describe("buildAutomationFlowGraph", () => {
+  test("shows the custom Create contact label and subtitle", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-1",
+      targetStageId: "",
+      conditions: [],
+      actions: [{
+        nodeKey: "create-contact-node",
+        type: "CREATE_CONTACT",
+        createContactConfig: {
+          actionName: "Create household member",
+          firstNameTemplate: "Jamie",
+          lastNameTemplate: "Reed",
+          statusConfigId: "active",
+          customFieldValues: [],
+        },
+      }],
+    }, null, labels)
+
+    const node = graph.nodes.find((candidate) => candidate.id === "action-create-contact-node")
+    assert.equal(node?.data.label, "Create household member")
+    assert.equal(node?.data.subtitle, "Create contact")
+  })
+
+  test("shows the custom Internal notification label and recipient", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-1",
+      targetStageId: "",
+      conditions: [],
+      actions: [{
+        nodeKey: "notification-node",
+        type: "SEND_INTERNAL_NOTIFICATION",
+        internalNotificationConfig: {
+          actionName: "Request policy review",
+          recipient: { mode: "SPECIFIC_USER", userId: "user-jane" },
+          titleTemplate: "Review {contact.name}",
+          bodyTemplate: "",
+        },
+      }],
+    }, {
+      pipelines: [],
+      users: [{ id: "user-jane", name: "Jane Smith", email: "jane@example.com" }],
+    } as unknown as AutomationCatalog, labels)
+
+    const node = graph.nodes.find((candidate) => candidate.id === "action-notification-node")
+    assert.equal(node?.data.label, "Request policy review")
+    assert.equal(node?.data.subtitle, "Notify Jane Smith")
+  })
+
   test("shows the custom Add to workflow label and target snapshot", () => {
     const graph = buildAutomationFlowGraph({
       triggerType: "OPPORTUNITY_CREATED",
@@ -48,6 +102,28 @@ describe("buildAutomationFlowGraph", () => {
     assert.equal(node?.data.label, "Start onboarding")
     assert.equal(node?.data.subtitle, "Start Client onboarding")
     assert.ok(graph.nodes.some((candidate) => candidate.id === "complete"))
+  })
+
+  test("shows the custom Remove from workflow label and target snapshot", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-1",
+      targetStageId: "",
+      conditions: [],
+      actions: [{
+        nodeKey: "remove-workflow-node",
+        type: "REMOVE_FROM_WORKFLOW",
+        removeFromWorkflowConfig: {
+          actionName: "End nurture sequence",
+          targetAutomationId: "automation-2",
+          targetAutomationNameSnapshot: "Lead nurture",
+        },
+      }],
+    }, null, labels)
+
+    const node = graph.nodes.find((candidate) => candidate.id === "action-remove-workflow-node")
+    assert.equal(node?.data.label, "End nurture sequence")
+    assert.equal(node?.data.subtitle, "Remove from Lead nurture")
   })
 
   test("renders Go To as a dotted outer-gutter route without a local completion", () => {

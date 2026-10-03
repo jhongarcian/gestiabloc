@@ -37,6 +37,7 @@ function mutationPayload(record: AutomationRecord, isEnabled = record.isEnabled)
       waitConfig: action.waitConfig,
       noteTitle: action.noteTitle,
       noteBody: action.noteBody,
+      createContactConfig: action.createContactConfig,
       taskConfig: action.taskConfig,
       dateTimeFormatterConfig: action.dateTimeFormatterConfig,
       numberFormatterConfig: action.numberFormatterConfig,

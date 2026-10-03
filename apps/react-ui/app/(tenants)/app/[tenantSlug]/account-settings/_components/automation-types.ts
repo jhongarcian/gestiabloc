@@ -246,6 +246,15 @@ export type AutomationTaskConfig = {
   } | null
 }
 
+export type AutomationInternalNotificationConfig = {
+  actionName: string
+  recipient:
+    | { mode: "CONTACT_ASSIGNEE" }
+    | { mode: "SPECIFIC_USER"; userId: string }
+  titleTemplate: string
+  bodyTemplate?: string | null
+}
+
 export type AutomationFieldUpdate =
   | { customFieldId: string; operation: "SET"; value: unknown }
   | { customFieldId: string; operation: "CLEAR" }
@@ -326,6 +335,37 @@ export type AutomationAddToWorkflowConfig = {
   targetAutomationNameSnapshot: string
 }
 
+export type AutomationRemoveFromWorkflowConfig = {
+  actionName: string
+  targetAutomationId: string
+  targetAutomationNameSnapshot: string
+}
+
+export type AutomationCreateContactTypedSource =
+  | { type: "FIXED"; value: unknown }
+  | { type: "CONTACT_FIELD"; key: string }
+  | { type: "CUSTOM_FIELD"; key: string }
+  | { type: "AUTOMATION_VALUE"; key: string }
+
+export type AutomationCreateContactValueSource =
+  | { type: "TEMPLATE"; template: string }
+  | AutomationCreateContactTypedSource
+
+export type AutomationCreateContactConfig = {
+  actionName: string
+  firstNameTemplate: string
+  middleNameTemplate?: string | null
+  lastNameTemplate: string
+  emailTemplate?: string | null
+  phoneTemplate?: string | null
+  dateOfBirth?: AutomationCreateContactTypedSource | null
+  statusConfigId: string
+  customFieldValues: Array<{
+    customFieldId: string
+    source: AutomationCreateContactValueSource
+  }>
+}
+
 export type AutomationAction = {
   id?: string
   nodeKey?: string
@@ -337,7 +377,9 @@ export type AutomationAction = {
     | "ADD_CONTACT_TAG"
     | "REMOVE_CONTACT_TAG"
     | "ADD_CONTACT_NOTE"
+    | "CREATE_CONTACT"
     | "CREATE_TASK"
+    | "SEND_INTERNAL_NOTIFICATION"
     | "FORMAT_DATE_TIME"
     | "FORMAT_NUMBER"
     | "FORMAT_TEXT"
@@ -346,6 +388,7 @@ export type AutomationAction = {
     | "SPLIT"
     | "GO_TO"
     | "ADD_TO_WORKFLOW"
+    | "REMOVE_FROM_WORKFLOW"
     | "UPDATE_OPPORTUNITY"
     | "DELETE_OPPORTUNITY"
     | "WAIT"
@@ -357,7 +400,9 @@ export type AutomationAction = {
   waitConfig?: AutomationWaitConfig | null
   noteTitle?: string | null
   noteBody?: string | null
+  createContactConfig?: AutomationCreateContactConfig | null
   taskConfig?: AutomationTaskConfig | null
+  internalNotificationConfig?: AutomationInternalNotificationConfig | null
   dateTimeFormatterConfig?: AutomationDateTimeFormatterConfig | null
   numberFormatterConfig?: AutomationNumberFormatterConfig | null
   textFormatterConfig?: AutomationTextFormatterConfig | null
@@ -368,6 +413,7 @@ export type AutomationAction = {
   opportunityConfig?: AutomationOpportunityConfig | null
   deleteOpportunityConfig?: AutomationDeleteOpportunityConfig | null
   addToWorkflowConfig?: AutomationAddToWorkflowConfig | null
+  removeFromWorkflowConfig?: AutomationRemoveFromWorkflowConfig | null
 }
 
 export type AutomationRecord = {

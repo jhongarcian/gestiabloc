@@ -86,5 +86,44 @@ describe("automation Go To graph validation", () => {
       },
     ])]
     assert.match(automationGoToTargetIssue(actions, "go", "note") ?? "", /not available/)
+
+    const createContactActions = [split([
+      {
+        branchKey: "route-a",
+        name: "Route A",
+        actions: [{ nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "create-contact" } }],
+      },
+      {
+        branchKey: "route-b",
+        name: "Route B",
+        actions: [
+          {
+            nodeKey: "formatter",
+            type: "FORMAT_TEXT",
+            textFormatterConfig: {
+              actionName: "Normalize",
+              mode: "UPPER_CASE",
+              source: { type: "CONTACT_FIELD", key: "name" },
+              outputKey: "lead_name",
+            },
+          },
+          {
+            nodeKey: "create-contact",
+            type: "CREATE_CONTACT",
+            createContactConfig: {
+              actionName: "Create household contact",
+              firstNameTemplate: "{automation.lead_name}",
+              lastNameTemplate: "Household",
+              statusConfigId: "active",
+              customFieldValues: [],
+            },
+          },
+        ],
+      },
+    ])]
+    assert.match(
+      automationGoToTargetIssue(createContactActions, "go", "create-contact") ?? "",
+      /not available/,
+    )
   })
 })

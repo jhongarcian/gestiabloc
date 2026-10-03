@@ -4,7 +4,7 @@ import { prisma } from "./prisma.js"
 import {
   processClaimedAutomationEvent,
 } from "./automation-event-queue.js"
-import { emitStoredTaskNotifications } from "./task-notifications.js"
+import { emitStoredNotifications } from "./task-notifications.js"
 import { deleteAutomationContactFileObjects } from "./opportunity-automations.js"
 import { emitAutomationEventCompleted } from "./realtime.js"
 
@@ -238,7 +238,7 @@ async function processSideEffect(effect: { id: string; type: string; payload: un
     : {}
   try {
     if (effect.type === "NOTIFICATION_DELIVERY" && typeof payload.notificationId === "string") {
-      await emitStoredTaskNotifications([payload.notificationId])
+      await emitStoredNotifications([payload.notificationId])
     } else if (effect.type === "FILE_DELETE" && typeof payload.key === "string") {
       await deleteAutomationContactFileObjects([{
         id: typeof payload.fileId === "string" ? payload.fileId : effect.id,

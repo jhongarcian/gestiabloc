@@ -54,6 +54,7 @@ const COMPLETE_AFTER_ADD_STEP = 105
 const COMPLETE_AFTER_CARD_STEP = 125
 
 const CONTACT_ACTION_TYPES = new Set<AutomationAction["type"]>([
+  "CREATE_CONTACT",
   "UPDATE_CONTACT_CUSTOM_FIELDS",
   "SET_CONTACT_STATUS",
   "SET_CONTACT_ASSIGNEE",
@@ -218,6 +219,20 @@ export function buildAutomationFlowGraph(
         : null
     const actionSubtitle = action.type === "ADD_CONTACT_NOTE"
       ? `Note: ${action.noteTitle?.trim() || "Add a title"}`
+      : action.type === "CREATE_CONTACT"
+        ? "Create contact"
+      : action.type === "SEND_INTERNAL_NOTIFICATION"
+        ? action.internalNotificationConfig?.recipient.mode === "CONTACT_ASSIGNEE"
+          ? "Notify contact assignee"
+          : `Notify ${
+              catalog?.users.find(
+                (user) => user.id === (
+                  action.internalNotificationConfig?.recipient.mode === "SPECIFIC_USER"
+                    ? action.internalNotificationConfig.recipient.userId
+                    : ""
+                ),
+              )?.name ?? "selected teammate"
+            }`
       : action.type === "CREATE_TASK"
         ? `Task: ${action.taskConfig?.nameTemplate.trim() || "Add a task name"}`
         : action.type === "FORMAT_DATE_TIME"
@@ -256,6 +271,8 @@ export function buildAutomationFlowGraph(
           ? `Delete from ${action.deleteOpportunityConfig?.pipelineNameSnapshot || "Pipeline"}`
         : action.type === "ADD_TO_WORKFLOW"
           ? `Start ${action.addToWorkflowConfig?.targetAutomationNameSnapshot || "workflow"}`
+        : action.type === "REMOVE_FROM_WORKFLOW"
+          ? `Remove from ${action.removeFromWorkflowConfig?.targetAutomationNameSnapshot || "workflow"}`
         : action.type === "UPDATE_CONTACT_CUSTOM_FIELDS"
           ? `Update ${action.customFieldUpdates?.length ?? 0} field${action.customFieldUpdates?.length === 1 ? "" : "s"}`
           : action.type === "DELETE_CONTACT"
@@ -270,7 +287,11 @@ export function buildAutomationFlowGraph(
               : "Choose a destination"
             : waitSubtitle ?? `Action ${actionNumber}`
     return {
-      label: action.type === "FORMAT_TEXT"
+      label: action.type === "CREATE_CONTACT"
+        ? action.createContactConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "SEND_INTERNAL_NOTIFICATION"
+          ? action.internalNotificationConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "FORMAT_TEXT"
         ? action.textFormatterConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "UPDATE_OPPORTUNITY"
           ? action.opportunityConfig?.actionName.trim() || actionLabels[action.type]
@@ -278,6 +299,8 @@ export function buildAutomationFlowGraph(
           ? action.deleteOpportunityConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "ADD_TO_WORKFLOW"
           ? action.addToWorkflowConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "REMOVE_FROM_WORKFLOW"
+          ? action.removeFromWorkflowConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "IF_ELSE"
           ? action.ifElseConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "SPLIT"

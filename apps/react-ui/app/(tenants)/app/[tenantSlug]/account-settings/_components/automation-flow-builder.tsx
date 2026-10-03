@@ -44,6 +44,7 @@ import {
   ArrowLeft,
   ArrowUp,
   BadgeCheck,
+  BellRing,
   Calculator,
   CalendarClock,
   Check,
@@ -73,6 +74,7 @@ import {
   UserMinus,
   UserPlus,
   UserRound,
+  UserRoundPlus,
   Workflow,
   X,
   Zap,
@@ -97,6 +99,7 @@ import {
 } from "@/components/contact-date-value-input"
 import { ContactTemplateInput } from "@/components/contact-template-input"
 import { DateTimeInput } from "@/components/ui/date-time-input"
+import { DateInput } from "@/components/ui/date-input"
 import {
   Field,
   FieldGroup,
@@ -146,11 +149,15 @@ import type {
   AutomationAction,
   AutomationCatalog,
   AutomationCondition,
+  AutomationCreateContactConfig,
+  AutomationCreateContactTypedSource,
+  AutomationCreateContactValueSource,
   AutomationDateSource,
   AutomationDateTimeFormatterConfig,
   AutomationFieldUpdate,
   AutomationBranchCondition,
   AutomationIfElseBranch,
+  AutomationInternalNotificationConfig,
   AutomationFormatterDateSource,
   AutomationMathOperationConfig,
   AutomationNumberFormatterConfig,
@@ -356,7 +363,7 @@ const ACTION_GROUPS: ReadonlyArray<{
   {
     id: "CONTACT",
     label: "Contact actions",
-    description: "Update the contact record or remove it from the account.",
+    description: "Create or update contact records and manage contact data.",
     icon: ContactRound,
   },
   {
@@ -374,28 +381,28 @@ const ACTION_GROUP_STYLES: Record<AutomationActionGroupId, {
   actionHover: string
 }> = {
   INTERNAL: {
-    section: "border-violet-200 bg-violet-50/75",
-    icon: "bg-violet-100 text-violet-700 ring-violet-200",
-    actionIcon: "bg-violet-100 text-violet-700",
-    actionHover: "hover:border-violet-300 hover:bg-violet-50",
+    section: "border-slate-200 bg-white",
+    icon: "bg-slate-50 text-violet-700 ring-slate-200",
+    actionIcon: "bg-slate-50 text-violet-700",
+    actionHover: "hover:border-slate-300 hover:bg-slate-50",
   },
   OPPORTUNITY: {
-    section: "border-amber-200 bg-amber-50/75",
-    icon: "bg-amber-100 text-amber-800 ring-amber-200",
-    actionIcon: "bg-amber-100 text-amber-800",
-    actionHover: "hover:border-amber-300 hover:bg-amber-50",
+    section: "border-slate-200 bg-white",
+    icon: "bg-slate-50 text-amber-800 ring-slate-200",
+    actionIcon: "bg-slate-50 text-amber-800",
+    actionHover: "hover:border-slate-300 hover:bg-slate-50",
   },
   CONTACT: {
-    section: "border-blue-200 bg-blue-50/75",
-    icon: "bg-blue-100 text-blue-700 ring-blue-200",
-    actionIcon: "bg-blue-100 text-blue-700",
-    actionHover: "hover:border-blue-300 hover:bg-blue-50",
+    section: "border-slate-200 bg-white",
+    icon: "bg-slate-50 text-blue-700 ring-slate-200",
+    actionIcon: "bg-slate-50 text-blue-700",
+    actionHover: "hover:border-slate-300 hover:bg-slate-50",
   },
   COMMUNICATION: {
-    section: "border-emerald-200 bg-emerald-50/75",
-    icon: "bg-emerald-100 text-emerald-700 ring-emerald-200",
-    actionIcon: "bg-emerald-100 text-emerald-700",
-    actionHover: "hover:border-emerald-300 hover:bg-emerald-50",
+    section: "border-slate-200 bg-white",
+    icon: "bg-slate-50 text-emerald-700 ring-slate-200",
+    actionIcon: "bg-slate-50 text-emerald-700",
+    actionHover: "hover:border-slate-300 hover:bg-slate-50",
   },
 }
 
@@ -463,18 +470,32 @@ const ACTION_DEFINITIONS = {
     order: 8,
     icon: Workflow,
   },
+  REMOVE_FROM_WORKFLOW: {
+    label: "Remove from workflow",
+    description: "End every active run in a published workflow for this contact.",
+    group: "INTERNAL",
+    order: 9,
+    icon: Unlink2,
+  },
   CREATE_TASK: {
     label: "Create task",
     description: "Create a task linked to this contact.",
     group: "INTERNAL",
-    order: 9,
+    order: 10,
     icon: ListTodo,
+  },
+  SEND_INTERNAL_NOTIFICATION: {
+    label: "Internal notification",
+    description: "Notify the contact assignee or a specific teammate.",
+    group: "INTERNAL",
+    order: 11,
+    icon: BellRing,
   },
   ADD_CONTACT_NOTE: {
     label: "Add contact note",
     description: "Add a note using live contact information.",
     group: "INTERNAL",
-    order: 10,
+    order: 12,
     icon: StickyNote,
   },
   UPDATE_OPPORTUNITY: {
@@ -495,49 +516,56 @@ const ACTION_DEFINITIONS = {
     label: "Update contact fields",
     description: "Set or clear multiple contact and custom fields.",
     group: "CONTACT",
-    order: 0,
+    order: 1,
     icon: ContactRound,
+  },
+  CREATE_CONTACT: {
+    label: "Create contact",
+    description: "Create a standalone contact from fixed or dynamic values.",
+    group: "CONTACT",
+    order: 0,
+    icon: UserRoundPlus,
   },
   SET_CONTACT_STATUS: {
     label: "Set contact status",
     description: "Change the contact's current status.",
     group: "CONTACT",
-    order: 1,
+    order: 2,
     icon: BadgeCheck,
   },
   SET_CONTACT_ASSIGNEE: {
     label: "Assign contact",
     description: "Assign the contact to a teammate.",
     group: "CONTACT",
-    order: 2,
+    order: 3,
     icon: UserPlus,
   },
   CLEAR_CONTACT_ASSIGNEE: {
     label: "Clear contact assignee",
     description: "Remove the contact's current assignee.",
     group: "CONTACT",
-    order: 3,
+    order: 4,
     icon: UserMinus,
   },
   ADD_CONTACT_TAG: {
     label: "Add contact tag",
     description: "Add an existing tag to the contact.",
     group: "CONTACT",
-    order: 4,
+    order: 5,
     icon: Tag,
   },
   REMOVE_CONTACT_TAG: {
     label: "Remove contact tag",
     description: "Remove an existing tag from the contact.",
     group: "CONTACT",
-    order: 5,
+    order: 6,
     icon: Tags,
   },
   DELETE_CONTACT: {
     label: "Delete contact",
     description: "Permanently delete the contact as the final action.",
     group: "CONTACT",
-    order: 6,
+    order: 7,
     icon: Trash2,
   },
 } satisfies Record<AutomationAction["type"], {
@@ -936,6 +964,150 @@ function isFieldUpdateReady(
     (!field.maxLength || value.trim().length <= field.maxLength)
 }
 
+function createContactUsesTemplate(fieldType: AutomationValueField["fieldType"]) {
+  return fieldType === "TEXT" || fieldType === "TEXTAREA" || fieldType === "PHONE"
+}
+
+function createContactSourceFieldIsCompatible(
+  destinationType: AutomationValueField["fieldType"],
+  sourceType: AutomationCatalog["templateFields"]["contact"][number]["fieldType"],
+) {
+  if (destinationType === "NUMBER" || destinationType === "CURRENCY") {
+    return sourceType === "NUMBER" || sourceType === "CURRENCY"
+  }
+  if (destinationType === "DATE") return sourceType === "DATE"
+  if (destinationType === "SELECT" || destinationType === "RADIO") {
+    return sourceType === "SELECT" || sourceType === "RADIO" || sourceType === "TEXT"
+  }
+  if (destinationType === "MULTI_SELECT") return sourceType === "MULTI_SELECT"
+  if (destinationType === "CHECKBOX") return sourceType === "CHECKBOX"
+  return false
+}
+
+function createContactAutomationValueIsCompatible(
+  destinationType: AutomationValueField["fieldType"],
+  valueKind: AutomationValueDefinition["valueKind"],
+) {
+  if (destinationType === "NUMBER" || destinationType === "CURRENCY") return valueKind === "NUMBER"
+  if (destinationType === "DATE") return valueKind === "DATE"
+  if (destinationType === "SELECT" || destinationType === "RADIO") return valueKind === "TEXT"
+  return false
+}
+
+function isDateOnly(value: unknown) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const date = new Date(`${value}T12:00:00.000Z`)
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+}
+
+function isCreateContactTypedSourceReady(
+  source: AutomationCreateContactTypedSource,
+  field: AutomationValueField,
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+  customFieldId?: string,
+) {
+  if (source.type === "FIXED") {
+    if (field.fieldType === "DATE") return isDateOnly(source.value)
+    if (!customFieldId) return false
+    return isFieldUpdateReady(
+      { customFieldId, operation: "SET", value: source.value },
+      catalog,
+    )
+  }
+  if (source.type === "CONTACT_FIELD") {
+    const sourceField = catalog.templateFields.contact.find((candidate) => candidate.key === source.key)
+    return Boolean(sourceField && createContactSourceFieldIsCompatible(field.fieldType, sourceField.fieldType))
+  }
+  if (source.type === "CUSTOM_FIELD") {
+    const sourceField = catalog.customFields.find((candidate) => candidate.key === source.key)
+    return Boolean(sourceField && createContactSourceFieldIsCompatible(field.fieldType, sourceField.fieldType))
+  }
+  const output = automationOutputs.find((candidate) => candidate.key === source.key)
+  return Boolean(output && createContactAutomationValueIsCompatible(field.fieldType, output.valueKind))
+}
+
+function isCreateContactReady(
+  config: AutomationCreateContactConfig,
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+) {
+  if (!config.actionName.trim() || config.actionName.trim().length > 120) return false
+  if (createContactNameTemplateError("First name", config.firstNameTemplate, false, catalog, automationOutputs)) return false
+  if (createContactNameTemplateError("Middle name", config.middleNameTemplate, true, catalog, automationOutputs)) return false
+  if (createContactNameTemplateError("Last name", config.lastNameTemplate, false, catalog, automationOutputs)) return false
+  if (createContactEmailTemplateError(config.emailTemplate, catalog, automationOutputs)) return false
+  if (createContactPhoneTemplateError(config.phoneTemplate, catalog, automationOutputs)) return false
+  if (!catalog.statuses.some((status) => status.id === config.statusConfigId)) return false
+  if (config.dateOfBirth && !isCreateContactTypedSourceReady(
+    config.dateOfBirth,
+    { label: "Date of birth", fieldType: "DATE", isRequired: false, options: [] },
+    catalog,
+    automationOutputs,
+  )) return false
+  if (config.customFieldValues.length > 20) return false
+  const fieldIds = config.customFieldValues.map((assignment) => assignment.customFieldId)
+  if (new Set(fieldIds).size !== fieldIds.length) return false
+  return config.customFieldValues.every((assignment) => {
+    const field = catalog.customFields.find((candidate) => candidate.id === assignment.customFieldId)
+    if (!field) return false
+    if (createContactUsesTemplate(field.fieldType)) {
+      return assignment.source.type === "TEMPLATE" &&
+        !noteTemplateError(assignment.source.template, 1_000, catalog, automationOutputs)
+    }
+    return assignment.source.type !== "TEMPLATE" && isCreateContactTypedSourceReady(
+      assignment.source,
+      field,
+      catalog,
+      automationOutputs,
+      field.id,
+    )
+  })
+}
+
+function createContactNameTemplateError(
+  label: string,
+  value: string | null | undefined,
+  optional: boolean,
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+) {
+  const templateError = optional
+    ? optionalTemplateError(value, 1_000, catalog, automationOutputs)
+    : noteTemplateError(value ?? "", 1_000, catalog, automationOutputs)
+  if (templateError) return templateError
+  const literal = value?.trim() ?? ""
+  return literal && !literal.includes("{") && literal.length > 120
+    ? `${label} must contain 120 characters or fewer.`
+    : null
+}
+
+function createContactEmailTemplateError(
+  value: string | null | undefined,
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+) {
+  const templateError = optionalTemplateError(value, 1_000, catalog, automationOutputs)
+  if (templateError) return templateError
+  const literal = value?.trim() ?? ""
+  return literal && !literal.includes("{") && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(literal)
+    ? "Enter a valid email address or insert automation data."
+    : null
+}
+
+function createContactPhoneTemplateError(
+  value: string | null | undefined,
+  catalog: AutomationCatalog,
+  automationOutputs: AutomationValueDefinition[],
+) {
+  const templateError = optionalTemplateError(value, 1_000, catalog, automationOutputs)
+  if (templateError) return templateError
+  const literal = value?.trim() ?? ""
+  return literal && !literal.includes("{") && !/^\+[1-9]\d{7,14}$/.test(literal)
+    ? "Enter an E.164 phone number, such as +15551234567, or insert automation data."
+    : null
+}
+
 function actionDefaults(
   type: AutomationAction["type"],
   catalog: AutomationCatalog,
@@ -943,6 +1115,24 @@ function actionDefaults(
   sourceAutomationId?: string,
 ): AutomationAction {
   const nodeKey = existingNodeKey ?? crypto.randomUUID()
+  if (type === "CREATE_CONTACT") {
+    const defaultStatus = catalog.statuses.find((status) => status.name === "Active") ?? catalog.statuses[0]
+    return {
+      nodeKey,
+      type,
+      createContactConfig: {
+        actionName: "Create contact",
+        firstNameTemplate: "",
+        middleNameTemplate: "",
+        lastNameTemplate: "",
+        emailTemplate: "",
+        phoneTemplate: "",
+        dateOfBirth: null,
+        statusConfigId: defaultStatus?.id ?? "",
+        customFieldValues: [],
+      },
+    }
+  }
   if (type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
     const contactField = catalog.contactUpdateFields[0]
     const customField = catalog.customFields[0]
@@ -981,6 +1171,18 @@ function actionDefaults(
         linkedService: null,
         dueAt: null,
         reminder: null,
+      },
+    }
+  }
+  if (type === "SEND_INTERNAL_NOTIFICATION") {
+    return {
+      nodeKey,
+      type,
+      internalNotificationConfig: {
+        actionName: "Internal notification",
+        recipient: { mode: "CONTACT_ASSIGNEE" },
+        titleTemplate: "",
+        bodyTemplate: "",
       },
     }
   }
@@ -1119,6 +1321,18 @@ function actionDefaults(
       type,
       addToWorkflowConfig: {
         actionName: "Add to workflow",
+        targetAutomationId: target?.id ?? "",
+        targetAutomationNameSnapshot: target?.name ?? "",
+      },
+    }
+  }
+  if (type === "REMOVE_FROM_WORKFLOW") {
+    const target = catalog.workflowAutomations[0]
+    return {
+      nodeKey,
+      type,
+      removeFromWorkflowConfig: {
+        actionName: "Remove from workflow",
         targetAutomationId: target?.id ?? "",
         targetAutomationNameSnapshot: target?.name ?? "",
       },
@@ -1477,6 +1691,12 @@ function isActionReady(
 ) {
   if (!action) return false
   const availableOutputs = formatterOutputs(previousActions)
+  if (action.type === "CREATE_CONTACT") {
+    return Boolean(
+      action.createContactConfig &&
+      isCreateContactReady(action.createContactConfig, catalog, availableOutputs),
+    )
+  }
   if (action.type === "UPDATE_CONTACT_CUSTOM_FIELDS") {
     const updates = action.customFieldUpdates ?? []
     const fieldIds = updates.map(updateIdentity)
@@ -1513,6 +1733,17 @@ function isActionReady(
       if (!config.dueAt || config.assignee.mode === "UNASSIGNED") return false
       if (!isTaskDateTimeReady(config.reminder.at, catalog)) return false
       if (optionalTemplateError(config.reminder.messageTemplate, 500, catalog, availableOutputs)) return false
+    }
+    return true
+  }
+  if (action.type === "SEND_INTERNAL_NOTIFICATION") {
+    const config = action.internalNotificationConfig
+    if (!config || !config.actionName.trim() || config.actionName.trim().length > 120) return false
+    if (noteTemplateError(config.titleTemplate, 160, catalog, availableOutputs)) return false
+    if (optionalTemplateError(config.bodyTemplate, 1_000, catalog, availableOutputs)) return false
+    if (config.recipient.mode === "SPECIFIC_USER") {
+      const specificUserId = config.recipient.userId
+      if (!specificUserId || !catalog.users.some((user) => user.id === specificUserId)) return false
     }
     return true
   }
@@ -1598,6 +1829,15 @@ function isActionReady(
   }
   if (action.type === "ADD_TO_WORKFLOW") {
     const config = action.addToWorkflowConfig
+    return Boolean(
+      config &&
+      config.actionName.trim() &&
+      config.actionName.trim().length <= 120 &&
+      catalog.workflowAutomations.some((automation) => automation.id === config.targetAutomationId),
+    )
+  }
+  if (action.type === "REMOVE_FROM_WORKFLOW") {
+    const config = action.removeFromWorkflowConfig
     return Boolean(
       config &&
       config.actionName.trim() &&
@@ -3283,6 +3523,17 @@ function ActionEditor({
           </Field>
         ) : null}
 
+        {action.type === "CREATE_CONTACT" && action.createContactConfig ? (
+          <CreateContactActionEditor
+            actionKey={action.nodeKey ?? "create-contact"}
+            config={action.createContactConfig}
+            catalog={catalog}
+            timezone={timezone}
+            automationOutputs={availableAutomationOutputs}
+            onChange={(createContactConfig) => onChange({ ...action, createContactConfig })}
+          />
+        ) : null}
+
         {action.type === "UPDATE_CONTACT_CUSTOM_FIELDS" ? (
           <ContactFieldUpdatesEditor action={action} catalog={catalog} onChange={onChange} />
         ) : null}
@@ -3309,6 +3560,15 @@ function ActionEditor({
             catalog={catalog}
             sourceAutomationId={sourceAutomationId}
             onChange={(addToWorkflowConfig) => onChange({ ...action, addToWorkflowConfig })}
+          />
+        ) : null}
+
+        {action.type === "REMOVE_FROM_WORKFLOW" && action.removeFromWorkflowConfig ? (
+          <RemoveFromWorkflowActionEditor
+            config={action.removeFromWorkflowConfig}
+            catalog={catalog}
+            sourceAutomationId={sourceAutomationId}
+            onChange={(removeFromWorkflowConfig) => onChange({ ...action, removeFromWorkflowConfig })}
           />
         ) : null}
 
@@ -3391,6 +3651,20 @@ function ActionEditor({
             timezone={timezone}
             automationOutputs={availableAutomationOutputs}
             onChange={(taskConfig) => onChange({ ...action, taskConfig })}
+          />
+        ) : null}
+
+        {action.type === "SEND_INTERNAL_NOTIFICATION" && action.internalNotificationConfig ? (
+          <InternalNotificationActionEditor
+            actionKey={action.nodeKey ?? "internal-notification"}
+            config={action.internalNotificationConfig}
+            catalog={catalog}
+            timezone={timezone}
+            automationOutputs={availableAutomationOutputs}
+            onChange={(internalNotificationConfig) => onChange({
+              ...action,
+              internalNotificationConfig,
+            })}
           />
         ) : null}
 
@@ -5374,6 +5648,168 @@ function TaskDateTimeEditor({
   )
 }
 
+function InternalNotificationActionEditor({
+  actionKey,
+  config,
+  catalog,
+  timezone,
+  automationOutputs,
+  onChange,
+}: {
+  actionKey: string
+  config: AutomationInternalNotificationConfig
+  catalog: AutomationCatalog
+  timezone?: string | null
+  automationOutputs: AutomationValueDefinition[]
+  onChange: (config: AutomationInternalNotificationConfig) => void
+}) {
+  const [recipientPickerOpen, setRecipientPickerOpen] = useState(false)
+  const specificUserId = config.recipient.mode === "SPECIFIC_USER"
+    ? config.recipient.userId
+    : null
+  const selectedUser = specificUserId
+    ? catalog.users.find((user) => user.id === specificUserId)
+    : null
+  const actionNameValid = config.actionName.trim().length > 0 && config.actionName.trim().length <= 120
+  const titleError = noteTemplateError(config.titleTemplate, 160, catalog, automationOutputs)
+  const bodyError = optionalTemplateError(config.bodyTemplate, 1_000, catalog, automationOutputs)
+
+  return (
+    <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-start gap-2.5">
+        <BellRing className="mt-0.5 size-4 shrink-0 text-violet-600" aria-hidden="true" />
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-slate-950">Internal notification</p>
+          <p className="text-xs leading-4 text-slate-600">
+            Adds a notification to the recipient&apos;s bell and shows it immediately while they are online.
+          </p>
+        </div>
+      </div>
+
+      <Field className="gap-1.5" data-invalid={!actionNameValid}>
+        <FieldLabel htmlFor={`${actionKey}-notification-action-name`}>Action name</FieldLabel>
+        <Input
+          id={`${actionKey}-notification-action-name`}
+          value={config.actionName}
+          maxLength={120}
+          aria-invalid={!actionNameValid}
+          onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+          placeholder="Internal notification"
+        />
+        {!actionNameValid ? <p className="text-xs text-rose-600">Enter an action name.</p> : null}
+      </Field>
+
+      <Field className="gap-2">
+        <FieldLabel htmlFor={`${actionKey}-notification-recipient-mode`}>Recipient</FieldLabel>
+        <Select
+          value={config.recipient.mode}
+          onValueChange={(mode: AutomationInternalNotificationConfig["recipient"]["mode"]) => {
+            onChange({
+              ...config,
+              recipient: mode === "CONTACT_ASSIGNEE"
+                ? { mode }
+                : { mode, userId: catalog.users[0]?.id ?? "" },
+            })
+          }}
+        >
+          <SelectTrigger
+            id={`${actionKey}-notification-recipient-mode`}
+            className={COMPACT_SELECT_TRIGGER_CLASS}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="CONTACT_ASSIGNEE">Contact assignee</SelectItem>
+            <SelectItem value="SPECIFIC_USER">Specific teammate</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+
+      {config.recipient.mode === "SPECIFIC_USER" ? (
+        <Field className="gap-2">
+          <FieldLabel>Teammate</FieldLabel>
+          <Popover open={recipientPickerOpen} onOpenChange={setRecipientPickerOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                role="combobox"
+                aria-expanded={recipientPickerOpen}
+                className="h-9 w-full justify-between bg-white px-3 font-normal"
+              >
+                <span className="truncate">
+                  {selectedUser ? `${selectedUser.name} · ${selectedUser.email}` : "Select teammate"}
+                </span>
+                <ChevronsUpDown className="size-4 shrink-0 text-slate-400" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+              <Command>
+                <CommandInput placeholder="Search teammates…" />
+                <CommandList>
+                  <CommandEmpty>No active teammates found.</CommandEmpty>
+                  <CommandGroup>
+                    {catalog.users.map((user) => (
+                      <CommandItem
+                        key={user.id}
+                        value={`${user.name} ${user.email} ${user.id}`}
+                        onSelect={() => {
+                          onChange({ ...config, recipient: { mode: "SPECIFIC_USER", userId: user.id } })
+                          setRecipientPickerOpen(false)
+                        }}
+                      >
+                        <Check className={cn(
+                          "size-4",
+                          user.id === specificUserId ? "opacity-100" : "opacity-0",
+                        )} />
+                        <span className="min-w-0 flex-1 truncate">{user.name}</span>
+                        <span className="truncate text-xs text-slate-500">{user.email}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+          {!selectedUser ? (
+            <p className="text-xs text-rose-600">Select an active teammate.</p>
+          ) : null}
+        </Field>
+      ) : (
+        <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-4 text-slate-600">
+          The contact must have an active assignee when this action runs.
+        </p>
+      )}
+
+      <ContactTemplateInput
+        id={`${actionKey}-notification-title`}
+        label="Title"
+        value={config.titleTemplate}
+        maxLength={160}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={titleError}
+        onChange={(titleTemplate) => onChange({ ...config, titleTemplate })}
+        placeholder="Policy review needed for {contact.name}"
+      />
+      <ContactTemplateInput
+        id={`${actionKey}-notification-body`}
+        label="Message (optional)"
+        value={config.bodyTemplate ?? ""}
+        maxLength={1_000}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={bodyError}
+        onChange={(bodyTemplate) => onChange({ ...config, bodyTemplate })}
+        multiline
+        placeholder="Add context for the teammate"
+      />
+    </section>
+  )
+}
+
 function TaskActionEditor({
   config,
   catalog,
@@ -5603,10 +6039,13 @@ function TaskActionEditor({
 }
 
 function goToDestinationLabel(action: AutomationAction) {
+  if (action.type === "CREATE_CONTACT") return action.createContactConfig?.actionName.trim() || "Create contact"
+  if (action.type === "SEND_INTERNAL_NOTIFICATION") return action.internalNotificationConfig?.actionName.trim() || "Internal notification"
   if (action.type === "FORMAT_TEXT") return action.textFormatterConfig?.actionName.trim() || "Text formatter"
   if (action.type === "UPDATE_OPPORTUNITY") return action.opportunityConfig?.actionName.trim() || "Update/create opportunity"
   if (action.type === "DELETE_OPPORTUNITY") return action.deleteOpportunityConfig?.actionName.trim() || "Delete opportunity"
   if (action.type === "ADD_TO_WORKFLOW") return action.addToWorkflowConfig?.actionName.trim() || "Add to workflow"
+  if (action.type === "REMOVE_FROM_WORKFLOW") return action.removeFromWorkflowConfig?.actionName.trim() || "Remove from workflow"
   if (action.type === "IF_ELSE") return action.ifElseConfig?.actionName.trim() || "If/Else"
   if (action.type === "SPLIT") return action.splitConfig?.actionName.trim() || "Split"
   return ACTION_LABELS[action.type]
@@ -5648,12 +6087,15 @@ function AddToWorkflowActionEditor({
   const selected = targets.find((automation) => automation.id === config.targetAutomationId)
 
   return (
-    <section className="space-y-3 rounded-xl border border-violet-200 bg-violet-50/70 p-3">
-      <div className="space-y-1">
-        <p className="text-sm font-semibold text-slate-950">Workflow start</p>
-        <p className="text-xs leading-4 text-slate-600">
-          Starts the selected workflow at its first action without checking its entry rules.
-        </p>
+    <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-start gap-2.5">
+        <Workflow className="mt-0.5 size-4 shrink-0 text-violet-600" aria-hidden="true" />
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-slate-950">Workflow start</p>
+          <p className="text-xs leading-4 text-slate-600">
+            Starts the selected workflow at its first action without checking its entry rules.
+          </p>
+        </div>
       </div>
       <Field>
         <FieldLabel htmlFor="add-to-workflow-action-name">Action name</FieldLabel>
@@ -5716,6 +6158,99 @@ function AddToWorkflowActionEditor({
       </Field>
       {targets.length === 0 ? (
         <p className="text-xs leading-4 text-slate-600">Publish another automation before selecting it here.</p>
+      ) : null}
+    </section>
+  )
+}
+
+function RemoveFromWorkflowActionEditor({
+  config,
+  catalog,
+  sourceAutomationId,
+  onChange,
+}: {
+  config: NonNullable<AutomationAction["removeFromWorkflowConfig"]>
+  catalog: AutomationCatalog
+  sourceAutomationId?: string
+  onChange: (config: NonNullable<AutomationAction["removeFromWorkflowConfig"]>) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const targets = catalog.workflowAutomations
+  const selected = targets.find((automation) => automation.id === config.targetAutomationId)
+  const targetsCurrentWorkflow = Boolean(sourceAutomationId && config.targetAutomationId === sourceAutomationId)
+
+  return (
+    <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-start gap-2.5">
+        <Unlink2 className="mt-0.5 size-4 shrink-0 text-rose-600" aria-hidden="true" />
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-slate-950">Workflow removal</p>
+          <p className="text-xs leading-4 text-slate-600">
+            Ends every active instance of the selected workflow for this contact. The contact can enter it again later.
+          </p>
+        </div>
+      </div>
+      <Field>
+        <FieldLabel htmlFor="remove-from-workflow-action-name">Action name</FieldLabel>
+        <Input
+          id="remove-from-workflow-action-name"
+          value={config.actionName}
+          maxLength={120}
+          onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+        />
+      </Field>
+      <Field>
+        <FieldLabel>Published workflow</FieldLabel>
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              role="combobox"
+              aria-expanded={open}
+              className="h-9 w-full justify-between bg-white px-3 font-normal"
+            >
+              <span className="truncate">{(selected?.name ?? config.targetAutomationNameSnapshot) || "Select workflow"}</span>
+              <ChevronsUpDown className="size-4 shrink-0 text-slate-400" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+            <Command>
+              <CommandInput placeholder="Search workflows…" />
+              <CommandList>
+                <CommandEmpty>No published workflows found.</CommandEmpty>
+                <CommandGroup>
+                  {targets.map((automation) => (
+                    <CommandItem
+                      key={automation.id}
+                      value={`${automation.name} ${automation.id}`}
+                      onSelect={() => {
+                        onChange({
+                          ...config,
+                          targetAutomationId: automation.id,
+                          targetAutomationNameSnapshot: automation.name,
+                        })
+                        setOpen(false)
+                      }}
+                    >
+                      <Check className={cn("size-4", automation.id === config.targetAutomationId ? "opacity-100" : "opacity-0")} />
+                      <span className="min-w-0 flex-1 truncate">{automation.name}</span>
+                      {automation.id === sourceAutomationId ? <span className="text-xs text-slate-500">Current</span> : null}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+      </Field>
+      {targetsCurrentWorkflow ? (
+        <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-4 text-slate-600">
+          This ends the current run at this action and skips every later action on its path.
+        </p>
+      ) : null}
+      {targets.length === 0 ? (
+        <p className="text-xs leading-4 text-slate-600">Publish an automation before selecting it here.</p>
       ) : null}
     </section>
   )
@@ -6003,6 +6538,504 @@ function WaitIntegerInput({
         onChange(parsed.value)
       }}
     />
+  )
+}
+
+function dateOnlyDisplayValue(value: unknown) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return ""
+  const [year, month, day] = value.split("-")
+  return `${month}/${day}/${year}`
+}
+
+function serializeLocalDate(value: Date | undefined) {
+  if (!value) return ""
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, "0")
+  const day = String(value.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+function DateOnlyActionValueInput({
+  id,
+  value,
+  onChange,
+  disableFuture = false,
+}: {
+  id: string
+  value: unknown
+  onChange: (value: string) => void
+  disableFuture?: boolean
+}) {
+  const displayValue = dateOnlyDisplayValue(value)
+  return (
+    <DateOnlyActionValueInputDraft
+      key={displayValue}
+      id={id}
+      initialValue={displayValue}
+      disableFuture={disableFuture}
+      onChange={onChange}
+    />
+  )
+}
+
+function DateOnlyActionValueInputDraft({
+  id,
+  initialValue,
+  onChange,
+  disableFuture,
+}: {
+  id: string
+  initialValue: string
+  onChange: (value: string) => void
+  disableFuture: boolean
+}) {
+  const [draftValue, setDraftValue] = useState(initialValue)
+  return (
+    <DateInput
+      id={id}
+      value={draftValue}
+      onValueChange={setDraftValue}
+      onDateChange={(date) => onChange(serializeLocalDate(date))}
+      disabledDate={disableFuture ? (date) => date > new Date() : () => false}
+      className="[&_input]:h-8 [&_input]:rounded-full [&_button]:h-8 [&_button]:rounded-full"
+    />
+  )
+}
+
+function createContactDefaultSource(field: AutomationValueField): AutomationCreateContactValueSource {
+  return createContactUsesTemplate(field.fieldType)
+    ? { type: "TEMPLATE", template: "" }
+    : { type: "FIXED", value: defaultFieldUpdateValue(field) }
+}
+
+function CreateContactTypedSourceEditor({
+  idPrefix,
+  field,
+  source,
+  catalog,
+  automationOutputs,
+  customFieldId,
+  disableFuture = false,
+  onChange,
+}: {
+  idPrefix: string
+  field: AutomationValueField
+  source: AutomationCreateContactTypedSource
+  catalog: AutomationCatalog
+  automationOutputs: AutomationValueDefinition[]
+  customFieldId?: string
+  disableFuture?: boolean
+  onChange: (source: AutomationCreateContactTypedSource) => void
+}) {
+  const contactFields = catalog.templateFields.contact.filter((candidate) =>
+    createContactSourceFieldIsCompatible(field.fieldType, candidate.fieldType),
+  )
+  const customFields = catalog.customFields.filter((candidate) =>
+    createContactSourceFieldIsCompatible(field.fieldType, candidate.fieldType),
+  )
+  const outputs = automationOutputs.filter((candidate) =>
+    createContactAutomationValueIsCompatible(field.fieldType, candidate.valueKind),
+  )
+  const sourceValue = source.type === "FIXED"
+    ? "fixed"
+    : source.type === "CONTACT_FIELD"
+      ? `contact:${source.key}`
+      : source.type === "CUSTOM_FIELD"
+        ? `custom:${source.key}`
+        : `automation:${source.key}`
+  const sourceReady = isCreateContactTypedSourceReady(
+    source,
+    field,
+    catalog,
+    automationOutputs,
+    customFieldId,
+  )
+
+  const selectSource = (value: string) => {
+    if (value === "fixed") {
+      onChange({ type: "FIXED", value: defaultFieldUpdateValue(field) })
+      return
+    }
+    const [category, key = ""] = value.split(":", 2)
+    onChange(category === "contact"
+      ? { type: "CONTACT_FIELD", key }
+      : category === "custom"
+        ? { type: "CUSTOM_FIELD", key }
+        : { type: "AUTOMATION_VALUE", key })
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Field className="gap-1.5">
+        <FieldLabel htmlFor={`${idPrefix}-source`} className="text-xs">Value source</FieldLabel>
+        <Select value={sourceValue} onValueChange={selectSource}>
+          <SelectTrigger id={`${idPrefix}-source`} className={COMPACT_SELECT_TRIGGER_CLASS}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="fixed">Fixed value</SelectItem>
+            {contactFields.length > 0 ? (
+              <SelectGroup>
+                <SelectLabel>Current contact</SelectLabel>
+                {contactFields.map((candidate) => (
+                  <SelectItem key={`contact:${candidate.key}`} value={`contact:${candidate.key}`}>
+                    {candidate.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            ) : null}
+            {customFields.length > 0 ? (
+              <SelectGroup>
+                <SelectLabel>Current contact custom fields</SelectLabel>
+                {customFields.map((candidate) => (
+                  <SelectItem key={`custom:${candidate.key}`} value={`custom:${candidate.key}`}>
+                    {candidate.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            ) : null}
+            {outputs.length > 0 ? (
+              <SelectGroup>
+                <SelectLabel>Earlier automation values</SelectLabel>
+                {outputs.map((candidate) => (
+                  <SelectItem key={`automation:${candidate.key}`} value={`automation:${candidate.key}`}>
+                    {candidate.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            ) : null}
+          </SelectContent>
+        </Select>
+      </Field>
+      {source.type === "FIXED" ? (
+        field.fieldType === "DATE" ? (
+          <DateOnlyActionValueInput
+            id={`${idPrefix}-value`}
+            value={source.value}
+            disableFuture={disableFuture}
+            onChange={(value) => onChange({ type: "FIXED", value })}
+          />
+        ) : (
+          <ActionValueInput
+            id={`${idPrefix}-value`}
+            value={source.value}
+            field={field}
+            onChange={(value) => onChange({ type: "FIXED", value })}
+          />
+        )
+      ) : null}
+      {!sourceReady ? (
+        <p className="text-xs text-destructive">
+          {source.type === "FIXED"
+            ? "Enter a valid value."
+            : source.type === "AUTOMATION_VALUE"
+              ? "Choose a compatible value created earlier on this path."
+              : "Choose an available field with a compatible type."}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function CreateContactActionEditor({
+  actionKey,
+  config,
+  catalog,
+  timezone,
+  automationOutputs,
+  onChange,
+}: {
+  actionKey: string
+  config: AutomationCreateContactConfig
+  catalog: AutomationCatalog
+  timezone?: string | null
+  automationOutputs: AutomationValueDefinition[]
+  onChange: (config: AutomationCreateContactConfig) => void
+}) {
+  const assignments = config.customFieldValues
+  const selectedFieldIds = new Set(assignments.map((assignment) => assignment.customFieldId))
+  const unusedFields = catalog.customFields.filter((field) => !selectedFieldIds.has(field.id))
+  const customFieldOptions = unusedFields.map((field) => ({
+    value: `custom:${field.id}`,
+    label: field.label,
+    searchText: field.key,
+  }))
+  const firstNameError = createContactNameTemplateError(
+    "First name",
+    config.firstNameTemplate,
+    false,
+    catalog,
+    automationOutputs,
+  )
+  const middleNameError = createContactNameTemplateError(
+    "Middle name",
+    config.middleNameTemplate,
+    true,
+    catalog,
+    automationOutputs,
+  )
+  const lastNameError = createContactNameTemplateError(
+    "Last name",
+    config.lastNameTemplate,
+    false,
+    catalog,
+    automationOutputs,
+  )
+  const emailError = createContactEmailTemplateError(config.emailTemplate, catalog, automationOutputs)
+  const phoneError = createContactPhoneTemplateError(config.phoneTemplate, catalog, automationOutputs)
+  const duplicateCustomFields = new Set(assignments.map((assignment) => assignment.customFieldId)).size !== assignments.length
+  const replaceAssignment = (
+    index: number,
+    assignment: AutomationCreateContactConfig["customFieldValues"][number],
+  ) => onChange({
+    ...config,
+    customFieldValues: assignments.map((item, itemIndex) => itemIndex === index ? assignment : item),
+  })
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Field className="gap-1.5">
+        <FieldLabel htmlFor={`${actionKey}-name`}>Action name</FieldLabel>
+        <Input
+          id={`${actionKey}-name`}
+          value={config.actionName}
+          maxLength={120}
+          onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+          className="h-8 rounded-full"
+          placeholder="Create contact"
+        />
+        {!config.actionName.trim() ? (
+          <p className="text-xs text-destructive">Enter an action name.</p>
+        ) : null}
+      </Field>
+
+      <ContactTemplateInput
+        id={`${actionKey}-first-name`}
+        label="First name"
+        value={config.firstNameTemplate}
+        maxLength={1_000}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={firstNameError}
+        onChange={(firstNameTemplate) => onChange({ ...config, firstNameTemplate })}
+        placeholder="First name or {contact.first_name}"
+      />
+      <ContactTemplateInput
+        id={`${actionKey}-middle-name`}
+        label="Middle name"
+        value={config.middleNameTemplate ?? ""}
+        maxLength={1_000}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={middleNameError}
+        onChange={(middleNameTemplate) => onChange({ ...config, middleNameTemplate })}
+        placeholder="Optional"
+      />
+      <ContactTemplateInput
+        id={`${actionKey}-last-name`}
+        label="Last name"
+        value={config.lastNameTemplate}
+        maxLength={1_000}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={lastNameError}
+        onChange={(lastNameTemplate) => onChange({ ...config, lastNameTemplate })}
+        placeholder="Last name or {contact.last_name}"
+      />
+      <ContactTemplateInput
+        id={`${actionKey}-email`}
+        label="Email"
+        value={config.emailTemplate ?? ""}
+        maxLength={1_000}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={emailError}
+        onChange={(emailTemplate) => onChange({ ...config, emailTemplate })}
+        placeholder="Optional email or {contact.email}"
+      />
+      <ContactTemplateInput
+        id={`${actionKey}-phone`}
+        label="Phone"
+        value={config.phoneTemplate ?? ""}
+        maxLength={1_000}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={phoneError}
+        onChange={(phoneTemplate) => onChange({ ...config, phoneTemplate })}
+        placeholder="+15551234567 or a phone token"
+      />
+
+      <Field className="gap-2">
+        <FieldLabel htmlFor={`${actionKey}-status`}>Contact status</FieldLabel>
+        <Select
+          value={config.statusConfigId}
+          onValueChange={(statusConfigId) => onChange({ ...config, statusConfigId })}
+        >
+          <SelectTrigger id={`${actionKey}-status`} className={COMPACT_SELECT_TRIGGER_CLASS}>
+            <SelectValue placeholder="Select status" />
+          </SelectTrigger>
+          <SelectContent>
+            {catalog.statuses.map((status) => (
+              <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {!catalog.statuses.some((status) => status.id === config.statusConfigId) ? (
+          <p className="text-xs text-destructive">Choose an active contact status.</p>
+        ) : null}
+      </Field>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-3">
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id={`${actionKey}-birthday-enabled`}
+            checked={Boolean(config.dateOfBirth)}
+            onCheckedChange={(checked) => onChange({
+              ...config,
+              dateOfBirth: checked ? config.dateOfBirth ?? { type: "FIXED", value: "" } : null,
+            })}
+          />
+          <Label htmlFor={`${actionKey}-birthday-enabled`} className="text-sm font-medium">
+            Set birthday
+          </Label>
+        </div>
+        {config.dateOfBirth ? (
+          <div className="mt-3">
+            <CreateContactTypedSourceEditor
+              idPrefix={`${actionKey}-birthday`}
+              field={{ label: "Date of birth", fieldType: "DATE", isRequired: false, options: [] }}
+              source={config.dateOfBirth}
+              catalog={catalog}
+              automationOutputs={automationOutputs}
+              disableFuture
+              onChange={(dateOfBirth) => onChange({ ...config, dateOfBirth })}
+            />
+          </div>
+        ) : null}
+      </div>
+
+      <Separator />
+      <div>
+        <p className="text-sm font-semibold text-slate-900">Custom fields</p>
+        <p className="mt-1 text-xs text-slate-500">
+          Optional values are written only to the new contact.
+        </p>
+        {assignments.length > 20 ? (
+          <p className="mt-1 text-xs text-destructive">Use no more than 20 custom fields.</p>
+        ) : null}
+        {duplicateCustomFields ? (
+          <p className="mt-1 text-xs text-destructive">Each custom field can only be added once.</p>
+        ) : null}
+      </div>
+      {assignments.map((assignment, index) => {
+        const field = catalog.customFields.find((candidate) => candidate.id === assignment.customFieldId)
+        const fieldOptions = catalog.customFields.filter(
+          (candidate) => candidate.id === field?.id || !selectedFieldIds.has(candidate.id),
+        ).map((candidate) => ({
+          value: `custom:${candidate.id}`,
+          label: candidate.label,
+          searchText: candidate.key,
+        }))
+        return (
+          <div key={`${assignment.customFieldId}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-600">Custom field {index + 1}</span>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="size-7 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                aria-label={`Remove custom field ${index + 1}`}
+                onClick={() => onChange({
+                  ...config,
+                  customFieldValues: assignments.filter((_, itemIndex) => itemIndex !== index),
+                })}
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </div>
+            <AutomationFieldPicker
+              value={`custom:${assignment.customFieldId}`}
+              contactFields={[]}
+              customFields={fieldOptions}
+              ariaLabel={`New contact custom field ${index + 1}`}
+              onValueChange={(reference) => {
+                const nextField = catalog.customFields.find(
+                  (candidate) => candidate.id === reference.replace(/^custom:/, ""),
+                )
+                if (!nextField) return
+                replaceAssignment(index, {
+                  customFieldId: nextField.id,
+                  source: createContactDefaultSource(nextField),
+                })
+              }}
+            />
+            {field ? (
+              <div className="mt-3">
+                {createContactUsesTemplate(field.fieldType) ? (
+                  <ContactTemplateInput
+                    id={`${actionKey}-custom-${index}`}
+                    label="Value"
+                    value={assignment.source.type === "TEMPLATE" ? assignment.source.template : ""}
+                    maxLength={1_000}
+                    catalog={catalog}
+                    timezone={timezone}
+                    automationOutputs={automationOutputs}
+                    error={assignment.source.type === "TEMPLATE"
+                      ? noteTemplateError(assignment.source.template, 1_000, catalog, automationOutputs)
+                      : "Choose a template value."}
+                    onChange={(template) => replaceAssignment(index, {
+                      ...assignment,
+                      source: { type: "TEMPLATE", template },
+                    })}
+                    multiline={field.fieldType === "TEXTAREA"}
+                    placeholder={field.fieldType === "PHONE" ? "+15551234567 or a phone token" : "Enter a value or insert data"}
+                  />
+                ) : assignment.source.type !== "TEMPLATE" ? (
+                  <CreateContactTypedSourceEditor
+                    idPrefix={`${actionKey}-custom-${index}`}
+                    field={field}
+                    source={assignment.source}
+                    catalog={catalog}
+                    automationOutputs={automationOutputs}
+                    customFieldId={field.id}
+                    onChange={(source) => replaceAssignment(index, { ...assignment, source })}
+                  />
+                ) : null}
+              </div>
+            ) : <p className="mt-2 text-xs text-destructive">This custom field is unavailable.</p>}
+          </div>
+        )
+      })}
+      <AutomationFieldPicker
+        mode="add"
+        ariaLabel="Add new contact custom field"
+        contactFields={[]}
+        customFields={customFieldOptions}
+        disabled={assignments.length >= 20 || unusedFields.length === 0}
+        onValueChange={(reference) => {
+          const field = catalog.customFields.find(
+            (candidate) => candidate.id === reference.replace(/^custom:/, ""),
+          )
+          if (!field) return
+          onChange({
+            ...config,
+            customFieldValues: [
+              ...assignments,
+              { customFieldId: field.id, source: createContactDefaultSource(field) },
+            ],
+          })
+        }}
+      />
+      <p className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">
+        If the rendered email or phone already belongs to a contact, this action is skipped successfully. Later actions continue on the original contact.
+      </p>
+    </div>
   )
 }
 

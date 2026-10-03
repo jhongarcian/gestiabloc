@@ -103,6 +103,21 @@ function requiredAutomationValues(action: AutomationAction) {
     addTemplate(action.taskConfig?.nameTemplate)
     addTemplate(action.taskConfig?.descriptionTemplate)
     addTemplate(action.taskConfig?.reminder?.messageTemplate)
+  } else if (action.type === "SEND_INTERNAL_NOTIFICATION") {
+    addTemplate(action.internalNotificationConfig?.titleTemplate)
+    addTemplate(action.internalNotificationConfig?.bodyTemplate)
+  } else if (action.type === "CREATE_CONTACT") {
+    const config = action.createContactConfig
+    addTemplate(config?.firstNameTemplate)
+    addTemplate(config?.middleNameTemplate)
+    addTemplate(config?.lastNameTemplate)
+    addTemplate(config?.emailTemplate)
+    addTemplate(config?.phoneTemplate)
+    addSource(config?.dateOfBirth)
+    for (const assignment of config?.customFieldValues ?? []) {
+      if (assignment.source.type === "TEMPLATE") addTemplate(assignment.source.template)
+      else addSource(assignment.source)
+    }
   } else if (action.type === "IF_ELSE") {
     for (const branch of action.ifElseConfig?.branches ?? []) {
       for (const condition of branch.conditions) addSource(condition)

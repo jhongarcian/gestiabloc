@@ -21,8 +21,12 @@ export function serializeAutomationAction(action: AutomationAction): AutomationA
       return { ...base, tagId: action.tagId }
     case "ADD_CONTACT_NOTE":
       return { ...base, noteTitle: action.noteTitle, noteBody: action.noteBody }
+    case "CREATE_CONTACT":
+      return { ...base, createContactConfig: action.createContactConfig }
     case "CREATE_TASK":
       return { ...base, taskConfig: action.taskConfig }
+    case "SEND_INTERNAL_NOTIFICATION":
+      return { ...base, internalNotificationConfig: action.internalNotificationConfig }
     case "FORMAT_DATE_TIME":
       return { ...base, dateTimeFormatterConfig: action.dateTimeFormatterConfig }
     case "FORMAT_NUMBER":
@@ -63,6 +67,8 @@ export function serializeAutomationAction(action: AutomationAction): AutomationA
       return { ...base, goToConfig: action.goToConfig }
     case "ADD_TO_WORKFLOW":
       return { ...base, addToWorkflowConfig: action.addToWorkflowConfig }
+    case "REMOVE_FROM_WORKFLOW":
+      return { ...base, removeFromWorkflowConfig: action.removeFromWorkflowConfig }
     case "UPDATE_OPPORTUNITY":
       return { ...base, opportunityConfig: action.opportunityConfig }
     case "DELETE_OPPORTUNITY":
