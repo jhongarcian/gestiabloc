@@ -6161,6 +6161,11 @@ export async function executeOpportunityAutomations(
     where: {
       tenantId: event.tenantId,
       isEnabled: true,
+      triggerType: event.triggerType,
+      pipelineId: event.pipelineId,
+      ...(event.triggerType === "OPPORTUNITY_STAGE_CHANGED"
+        ? { targetStageId: event.targetStageId }
+        : {}),
     },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {
@@ -6209,10 +6214,14 @@ export async function executeOpportunityAutomations(
     automation: any
     actions: RuntimeAutomationAction[]
     logs: AutomationNodeLogData[]
-    shouldRun: boolean
   }
-  const plans: AutomationPlan[] = automations.map((automation: any) => {
+  const plans: AutomationPlan[] = automations.flatMap((automation: any): AutomationPlan[] => {
     const actions: RuntimeAutomationAction[] = automation.actions.map((action: any) => automationActionSnapshot(action))
+    const trigger = evaluateAutomationTrigger(automation, event, catalog)
+    if (!trigger.matches) return []
+    const conditionResult = evaluateAutomationConditions(automation, event, contact, catalog)
+    if (!conditionResult.matches) return []
+
     const attemptId = randomUUID()
     const occurredAt = new Date()
     const base = {
@@ -6228,51 +6237,17 @@ export async function executeOpportunityAutomations(
       eventSource: event.triggerType,
       occurredAt,
     } satisfies Omit<AutomationNodeLogData, "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
-    const trigger = evaluateAutomationTrigger(automation, event, catalog)
     const logs: AutomationNodeLogData[] = [{
       ...base,
       nodeKind: "TRIGGER",
       nodeOrder: 0,
       nodeKey: automation.triggerType,
       nodeLabel: getAutomationTriggerLabel(automation.triggerType),
-      status: trigger.matches ? "EXECUTED" : "SKIPPED",
-      reasonCode: trigger.matches ? null : "TRIGGER_NOT_MATCHED",
+      status: "EXECUTED",
+      reasonCode: null,
       details: trigger.details,
     }]
-
-    if (!trigger.matches) {
-      logs.push(...flattenAutomationActionTree(actions).map(({ action, nodeOrder, branchPath }) => ({
-        ...base,
-        nodeKind: "ACTION" as const,
-        nodeOrder,
-        nodeKey: action.nodeKey,
-        nodeLabel: getAutomationActionNodeLabel(action),
-        status: "SKIPPED" as const,
-        reasonCode: "TRIGGER_NOT_MET",
-        details: `Skipped because the automation trigger did not match. ${trigger.details}`,
-        branchPath,
-      })))
-      return { automation, actions, logs, shouldRun: false }
-    }
-
-    const conditionResult = evaluateAutomationConditions(automation, event, contact, catalog)
-    if (!conditionResult.matches) {
-      const details = conditionResult.failures.join(" ")
-      logs.push(...flattenAutomationActionTree(actions).map(({ action, nodeOrder, branchPath }) => ({
-        ...base,
-        nodeKind: "ACTION" as const,
-        nodeOrder,
-        nodeKey: action.nodeKey,
-        nodeLabel: getAutomationActionNodeLabel(action),
-        status: "SKIPPED" as const,
-        reasonCode: "FILTERS_NOT_MET",
-        details,
-        branchPath,
-      })))
-      return { automation, actions, logs, shouldRun: false }
-    }
-
-    return { automation, actions, logs, shouldRun: true }
+    return [{ automation, actions, logs }]
   })
 
   const notificationIds: string[] = []
@@ -6282,7 +6257,6 @@ export async function executeOpportunityAutomations(
   let queuedRunCount = 0
   for (let planIndex = 0; planIndex < plans.length; planIndex += 1) {
     const plan = plans[planIndex]
-    if (!plan.shouldRun) continue
 
     if (contactDeleted) {
       const triggerLog = plan.logs[0]!
@@ -6348,7 +6322,6 @@ export async function executeOpportunityAutomations(
       if (error instanceof AutomationExecutionError) {
         for (let index = 0; index < plans.length; index += 1) {
           const tracePlan = plans[index]
-          if (!tracePlan.shouldRun) continue
           const triggerLog = tracePlan.logs.find((log) => log.nodeKind === "TRIGGER")!
           if (index === planIndex) {
             tracePlan.logs = [triggerLog, ...error.nodeExecutions]
@@ -6398,7 +6371,7 @@ export async function executeOpportunityAutomations(
     await prismaTx.automationNodeExecution.createMany({ data: nodeExecutions })
   }
 
-  const matchedCount = plans.filter((plan: { shouldRun: boolean }) => plan.shouldRun).length
+  const matchedCount = plans.length
   return {
     matchedCount,
     executedCount,

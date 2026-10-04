@@ -85,6 +85,8 @@ const iconButton =
   "size-8 cursor-pointer rounded-full border-slate-200 bg-white p-0 text-slate-600 shadow-sm hover:bg-slate-50"
 const dialogClass =
   "max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 bg-white p-0 shadow-2xl sm:max-w-lg [&>button]:cursor-pointer"
+const libraryGridClass =
+  "grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] xl:grid-cols-[repeat(auto-fill,12.5rem)]"
 
 type SortableKind = "folder" | "automation"
 const folderDragId = (id: string) => "folder:" + id
@@ -623,7 +625,7 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
         folderId={record.folderId}
         name={record.name}
         disabled={busy}
-        className={compact ? "min-w-0" : "xl:max-w-64"}
+        className={compact ? "min-w-0" : "xl:max-w-50"}
       >
         {(handle) => (
           <article
@@ -631,16 +633,16 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
               "group relative min-w-0 transition",
               compact
                 ? "flex items-center gap-3 px-2 py-2"
-                : "rounded-[22px] border border-slate-200 bg-white p-3 shadow-sm hover:border-blue-200 hover:shadow-md xl:aspect-square xl:max-w-64",
+                : "rounded-[22px] border border-slate-200 bg-white p-2.5 shadow-sm hover:border-blue-200 hover:shadow-md lg:aspect-square xl:max-w-50",
             )}
           >
-            <div className={compact ? "" : "absolute left-5 top-5"}>{handle}</div>
+            <div className={compact ? "" : "absolute left-4 top-4"}>{handle}</div>
             <div
               className={cn(
                 "min-w-0",
                 compact
                   ? "flex flex-1 items-center gap-3"
-                  : "rounded-xl xl:flex xl:h-full xl:flex-col",
+                  : "rounded-xl lg:flex lg:h-full lg:flex-col",
               )}
             >
               <div
@@ -651,7 +653,7 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
                         "size-9 shrink-0",
                         record.isEnabled ? "bg-emerald-200" : "bg-slate-200",
                       )
-                    : "h-32 w-full bg-slate-50 xl:min-h-0 xl:flex-1 xl:h-auto",
+                    : "h-24 w-full bg-slate-50 lg:min-h-0 lg:h-auto lg:flex-1",
                 )}
               >
                 <EmptyDocument variant={compact ? "row" : "card"} />
@@ -659,7 +661,7 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
               <div
                 className={cn(
                   "min-w-0",
-                  compact ? "flex-1" : "px-1 pb-1 pt-3 pr-10",
+                  compact ? "flex-1" : "px-1 pb-1 pt-2 pr-9",
                 )}
               >
                 <Link
@@ -676,7 +678,7 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
             {compact ? (
               automationMenu(record)
             ) : (
-              <div className="absolute right-4 top-[9.25rem] xl:bottom-4 xl:top-auto">
+              <div className="absolute right-3 top-[7.5rem] lg:bottom-3 lg:top-auto">
                 {automationMenu(record)}
               </div>
             )}
@@ -694,12 +696,12 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
         kind="folder"
         name={folder.name}
         disabled={busy}
-        className="xl:max-w-64"
+        className="xl:max-w-50"
       >
         {(handle) => (
           <FolderDropTarget folder={folder} disabled={busy}>
-            <article className="group relative min-w-0 rounded-[22px] border border-slate-200 bg-white p-3 shadow-sm transition hover:border-blue-200 hover:shadow-md xl:aspect-square xl:max-w-64">
-              <div className="absolute left-5 top-5 z-10">{handle}</div>
+            <article className="group relative min-w-0 rounded-[22px] border border-slate-200 bg-white p-2.5 shadow-sm transition hover:border-blue-200 hover:shadow-md lg:aspect-square xl:max-w-50">
+              <div className="absolute left-4 top-4 z-10">{handle}</div>
               <div
                 role="button"
                 tabIndex={0}
@@ -711,9 +713,9 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
                     openFolder(folder)
                   }
                 }}
-                className="cursor-pointer rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-blue-700 xl:flex xl:h-full xl:flex-col"
+                className="cursor-pointer rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-blue-700 lg:flex lg:h-full lg:flex-col"
               >
-                <div className="flex h-32 items-center justify-center rounded-xl bg-slate-50 xl:min-h-0 xl:flex-1 xl:h-auto">
+                <div className="flex h-24 items-center justify-center rounded-xl bg-slate-50 lg:min-h-0 lg:h-auto lg:flex-1">
                   <EmptyFolder
                     variant="card"
                     documentCount={count}
@@ -722,16 +724,16 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
                     className="pointer-events-none"
                   />
                 </div>
-                <div className="px-1 pb-1 pt-3 pr-10 text-left">
+                <div className="px-1 pb-1 pt-2 pr-9 text-left">
                   <h4 className="truncate text-sm font-semibold text-slate-950">
                     {folder.name}
                   </h4>
-                  <p className="mt-0.5 text-xs text-slate-500">
+                  <p className="mt-0.5 truncate text-xs text-slate-500">
                     {count} automation{count === 1 ? "" : "s"}
                   </p>
                 </div>
               </div>
-              <div className="absolute right-4 top-[9.25rem] xl:bottom-4 xl:top-auto">
+              <div className="absolute right-3 top-[7.5rem] lg:bottom-3 lg:top-auto">
                 {folderMenu(folder)}
               </div>
             </article>
@@ -752,14 +754,10 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
             <div className="flex flex-col gap-1">
               <h2
                 id="automation-settings-title"
-                className="text-2xl font-semibold text-slate-950"
+                className="text-xl font-semibold text-slate-950"
               >
-                Build reliable workflows
+                Automations
               </h2>
-              <p className="max-w-2xl text-sm text-slate-600">
-                Organize your automations into folders without changing when
-                they run.
-              </p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -849,14 +847,11 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
           onDragEnd={handleLibraryDragEnd}
         >
         {loading ? (
-          <div
-            className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-[repeat(auto-fill,16rem)]"
-            aria-label="Loading library"
-          >
+          <div className={libraryGridClass} aria-label="Loading library">
             {[0, 1, 2, 3].map((n) => (
               <div
                 key={n}
-                className="h-52 animate-pulse rounded-[22px] border border-slate-200 bg-slate-100 xl:aspect-square xl:h-auto xl:max-w-64"
+                className="h-42 animate-pulse rounded-[22px] border border-slate-200 bg-slate-100 lg:aspect-square lg:h-auto xl:max-w-50"
               />
             ))}
           </div>
@@ -920,7 +915,7 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
               }
             />
           ) : (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-[repeat(auto-fill,16rem)]">
+            <div className={libraryGridClass}>
               {!activeFolder && (
                 <SortableContext
                   items={orderedFolders.map((folder) => folderDragId(folder.id))}

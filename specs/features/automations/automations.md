@@ -47,7 +47,7 @@ The normal lifecycle is:
 3. The trigger stage and contact filters are evaluated.
 4. A matching automation creates an independent run for that contact.
 5. Actions execute in order until the run completes, exits, fails, or reaches a Wait action.
-6. Every trigger and action result is recorded in the execution logs.
+6. Once an automation matches its trigger and contact filters, every trigger and action result is recorded in the execution logs.
 
 Repeated qualifying opportunity events may create separate runs for the same contact. Parallel runs do not share formatter values or cursor state.
 
@@ -122,8 +122,8 @@ All configured top-level trigger filters must match.
 
 Filters are not displayed as graph nodes. Their behavior is:
 
-- trigger or stage mismatch: trigger and actions are skipped
-- matching trigger with failed filters: trigger is recorded as executed and actions are skipped
+- trigger, pipeline, or stage mismatch: no execution log is created
+- matching trigger with failed filters: no execution log is created
 - full match: trigger and actions execute
 
 When asynchronous event processing is enabled, filter decisions use the contact state captured when the opportunity event occurred. Actions continue to resolve live contact data when their node executes.
@@ -669,7 +669,7 @@ When an expected automation does not run, verify:
 4. The opportunity belongs to the configured pipeline.
 5. A stage-change event entered the configured destination stage.
 6. The contact matched every trigger filter at event time.
-7. Execution logs do not show Queued, Waiting, Skipped, or Failed nodes.
+7. A qualifying execution log exists; no log means the opportunity trigger or contact filters did not match.
 8. A required formatter output was created before a later node referenced it.
 9. A Wait node has not paused the run.
 10. The contact or selected referenced configuration still exists and remains active.

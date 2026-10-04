@@ -3122,13 +3122,53 @@ describe("executeOpportunityAutomations", () => {
     assert.deepEqual(where, {
       tenantId: "tenant-1",
       isEnabled: true,
+      triggerType: "OPPORTUNITY_STAGE_CHANGED",
+      pipelineId: "pipeline-1",
+      targetStageId: "stage-2",
     })
   })
 
-  test("does not run actions when a contact does not match the assignee filter", async () => {
+  test("scopes opportunity-created candidates to the event trigger and pipeline", async () => {
+    let where: Record<string, unknown> | undefined
+    let nodeLogWrites = 0
+    const result = await executeOpportunityAutomations({
+      automation: {
+        findMany: async (args: { where: Record<string, unknown> }) => {
+          where = args.where
+          return []
+        },
+      },
+      automationNodeExecution: {
+        createMany: async () => { nodeLogWrites += 1 },
+      },
+    }, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.deepEqual(where, {
+      tenantId: "tenant-1",
+      isEnabled: true,
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-work",
+    })
+    assert.equal(result.matchedCount, 0)
+    assert.equal(result.executedCount, 0)
+    assert.equal(nodeLogWrites, 0)
+  })
+
+  test("does not persist a run or logs when a contact does not match the trigger filters", async () => {
     let contactUpdates = 0
     let tagRemovals = 0
     let executions = 0
+    let runs = 0
     let nodeLogs: Array<Record<string, unknown>> = []
     const prismaTx = {
       automation: {
@@ -3201,7 +3241,10 @@ describe("executeOpportunityAutomations", () => {
         },
       },
       automationRun: {
-        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        create: async ({ data }: { data: Record<string, unknown> }) => {
+          runs += 1
+          return { id: "run-1", ...data }
+        },
         update: async () => undefined,
       },
       automationNodeExecution: {
@@ -3233,9 +3276,8 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(tagRemovals, 0)
     assert.equal(contactUpdates, 0)
     assert.equal(executions, 0)
-    assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "SKIPPED", "SKIPPED", "SKIPPED"])
-    assert.match(String(nodeLogs[1]?.details), /Assigned to: expected John, found Mary\./)
-    assert.match(String(nodeLogs[1]?.details), /Contact status: expected Inactive, found Active\./)
+    assert.equal(runs, 0)
+    assert.deepEqual(nodeLogs, [])
   })
 
   test("runs a published automation without requiring prior contact enrollment", async () => {
@@ -4836,7 +4878,7 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(nodeLogs[2]?.reasonCode, "WAIT_JUMPED")
   })
 
-  test("logs every node as skipped for an unrelated opportunity event", async () => {
+  test("does not log an unrelated opportunity event", async () => {
     let nodeLogs: Array<Record<string, unknown>> = []
     const forbiddenAction = () => {
       throw new Error("Actions must not run for an unrelated event.")
@@ -4905,8 +4947,7 @@ describe("executeOpportunityAutomations", () => {
       fileCleanupCandidates: [],
       contactDeleted: false,
     })
-    assert.deepEqual(nodeLogs.map((log) => log.status), ["SKIPPED", "SKIPPED"])
-    assert.match(String(nodeLogs[0]?.details), /listens for Opportunity enters stage/)
+    assert.deepEqual(nodeLogs, [])
   })
 
   test("persists rollback-aware node logs after an action failure", async () => {

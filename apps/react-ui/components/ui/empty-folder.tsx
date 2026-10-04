@@ -71,7 +71,7 @@ function EmptyFolder({
               ? "-my-4 h-25 w-44 scale-[.68]"
               : "h-25 w-52 lg:my-2 lg:scale-[1.12]"
             : variant === "card"
-              ? "-mx-10 -my-7 h-28 w-38 origin-center scale-[.6] sm:-mx-9 sm:-my-6 sm:scale-[.66] lg:-mx-7 lg:-my-5 lg:scale-[.74]"
+              ? "-mx-10 -my-7 h-28 w-38 origin-center scale-[.5] sm:-mx-9 sm:-my-6 sm:scale-[.54] lg:-mx-8 lg:-my-6 lg:scale-[.58]"
               : "h-8 w-11 scale-[.21] origin-center -mx-16 -my-14",
         )}
       >
