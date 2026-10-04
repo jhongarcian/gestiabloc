@@ -14,7 +14,7 @@ export function collectAutomationGoToLocations(actions: AutomationAction[]) {
       if (action.nodeKey) locations.set(action.nodeKey, { action, actions: pathActions, index, breadcrumb })
       if (action.type === "IF_ELSE") {
         for (const branch of action.ifElseConfig?.branches ?? []) {
-          if (!branch.isDefault) visit(branch.actions, [...breadcrumb, branch.name])
+          visit(branch.actions, [...breadcrumb, branch.name])
         }
       } else if (action.type === "SPLIT") {
         for (const route of action.splitConfig?.routes ?? []) {
@@ -44,7 +44,7 @@ function controlFlowEdges(actions: AutomationAction[], override?: { sourceNodeKe
         : action.goToConfig?.targetNodeKey)
     } else if (action.type === "IF_ELSE") {
       for (const branch of action.ifElseConfig?.branches ?? []) {
-        if (!branch.isDefault) addEdge(nodeKey, branch.actions[0]?.nodeKey)
+        addEdge(nodeKey, branch.actions[0]?.nodeKey)
       }
     } else if (action.type === "SPLIT") {
       for (const route of action.splitConfig?.routes ?? []) addEdge(nodeKey, route.actions[0]?.nodeKey)

@@ -135,6 +135,7 @@ describe("serializeAutomationAction", () => {
       phoneTemplate: "",
       dateOfBirth: { type: "FIXED" as const, value: "1990-05-03" },
       statusConfigId: "active",
+      assignedToUserId: "user-1",
       customFieldValues: [{
         customFieldId: "field-1",
         source: { type: "TEMPLATE" as const, template: "Created by automation" },

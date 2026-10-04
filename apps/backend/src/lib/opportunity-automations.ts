@@ -645,6 +645,7 @@ export const AutomationActionInputSchema: z.ZodType<AutomationActionInput> = z.l
 export const AutomationUpsertSchema = z
   .object({
     name: z.string().trim().min(1).max(120),
+    folderId: idSchema.nullable().optional(),
     isEnabled: z.boolean().default(false),
     trigger: z.discriminatedUnion("type", [
       z.object({
@@ -946,7 +947,7 @@ function collectAutomationControlFlowLocations(actions: AutomationControlFlowAct
       locations.set(action.nodeKey, { action, pathActions, index })
       if (action.type === "IF_ELSE") {
         for (const branch of action.ifElseConfig?.branches ?? []) {
-          if (!branch.isDefault) visit(branch.actions ?? [])
+          visit(branch.actions ?? [])
         }
       } else if (action.type === "SPLIT") {
         for (const route of action.splitConfig?.routes ?? []) visit(route.actions ?? [])
@@ -993,7 +994,7 @@ export function validateAutomationGoToControlFlow(actions: AutomationControlFlow
     }
     if (action.type === "IF_ELSE") {
       for (const branch of action.ifElseConfig?.branches ?? []) {
-        if (!branch.isDefault) addEdge(action.nodeKey, branch.actions?.[0]?.nodeKey)
+        addEdge(action.nodeKey, branch.actions?.[0]?.nodeKey)
       }
       continue
     }
@@ -1838,21 +1839,28 @@ export async function validateAutomationConfiguration(
         branchKeys.add(branchKey)
         branchNames.add(normalizedName)
         if (branch.isDefault) {
-          if (branch.conditions.length > 0 || branch.actions.length > 0) {
-            throw new AutomationConfigurationError("INVALID_DEFAULT_BRANCH", "The Default branch cannot contain conditions or actions.")
+          if (branch.conditions.length > 0) {
+            throw new AutomationConfigurationError("INVALID_DEFAULT_BRANCH", "The Default branch cannot contain conditions.")
           }
-          return { ...branch, branchKey, matchMode: "ALL" as const, conditions: [], actions: [] }
         }
-        if (branch.conditions.length === 0) {
+        if (!branch.isDefault && branch.conditions.length === 0) {
           throw new AutomationConfigurationError("EMPTY_IF_ELSE_BRANCH", `Add at least one condition to “${branch.name}”.`)
         }
-        if (branch.actions.length === 0) {
+        if (!branch.isDefault && branch.actions.length === 0) {
           throw new AutomationConfigurationError("EMPTY_IF_ELSE_BRANCH", `Add at least one action to “${branch.name}”.`)
         }
         const branchOutputs = new Map(automationOutputs)
-        const normalizedConditions = branch.conditions.map((condition) => normalizeBranchCondition(condition, branchOutputs))
+        const normalizedConditions = branch.isDefault
+          ? []
+          : branch.conditions.map((condition) => normalizeBranchCondition(condition, branchOutputs))
         const branchActions = normalizeActionPath(branch.actions, branchOutputs, depth + 1)
-        return { ...branch, branchKey, conditions: normalizedConditions, actions: branchActions }
+        return {
+          ...branch,
+          branchKey,
+          matchMode: branch.isDefault ? "ALL" as const : branch.matchMode,
+          conditions: normalizedConditions,
+          actions: branchActions,
+        }
       })
       return {
         ...base,
@@ -2010,6 +2018,12 @@ export async function validateAutomationConfiguration(
           "Select an active contact status for the new contact.",
         )
       }
+      if (config.assignedToUserId && !activeUserIds.has(config.assignedToUserId)) {
+        throw new AutomationConfigurationError(
+          "INVALID_ASSIGNEE",
+          "Select an active tenant member for the new contact.",
+        )
+      }
 
       const availableOutputs = [...automationOutputs.keys()]
       const templates = [
@@ -2106,6 +2120,7 @@ export async function validateAutomationConfiguration(
           emailTemplate: config.emailTemplate?.trim() ? config.emailTemplate : null,
           phoneTemplate: config.phoneTemplate?.trim() ? config.phoneTemplate : null,
           dateOfBirth: config.dateOfBirth ?? null,
+          assignedToUserId: config.assignedToUserId ?? null,
           customFieldValues,
         },
       }
@@ -2733,7 +2748,6 @@ export function flattenAutomationActionTree(actions: RuntimeAutomationAction[]) 
       flattened.push({ action, nodeOrder: flattened.length + 1, branchPath })
       if (action.type === "IF_ELSE") {
         for (const branch of action.ifElseConfig.branches) {
-          if (branch.isDefault) continue
           visit(branch.actions, [
             ...branchPath,
             { nodeKey: action.nodeKey, branchKey: branch.branchKey, branchName: branch.name },
@@ -2962,10 +2976,14 @@ async function acquireCreateContactLocks(
   for (const resourceKey of resourceKeys) {
     const lockKey = `${params.tenantId}:${resourceKey}`
     await prismaTx.$queryRaw`
-      SELECT pg_advisory_xact_lock(
-        hashtext(${CREATE_CONTACT_LOCK_NAMESPACE}),
-        hashtext(${lockKey})
+      WITH advisory_lock AS (
+        SELECT pg_advisory_xact_lock(
+          hashtext(${CREATE_CONTACT_LOCK_NAMESPACE}),
+          hashtext(${lockKey})
+        )
       )
+      SELECT 1 AS "lockAcquired"
+      FROM advisory_lock
     `
   }
 }
@@ -2985,6 +3003,9 @@ export async function executeCreateContactAction(
   const { config } = params
   if (!params.catalog.activeStatusIds.has(config.statusConfigId)) {
     throw new Error("The configured contact status is no longer available.")
+  }
+  if (config.assignedToUserId && !params.catalog.activeUserIds.has(config.assignedToUserId)) {
+    throw new Error("The configured contact assignee is no longer available.")
   }
 
   const customTemplateEntries = config.customFieldValues.flatMap((assignment, index) =>
@@ -3114,6 +3135,7 @@ export async function executeCreateContactAction(
       phone,
       dateOfBirth: dateOfBirth ? new Date(`${dateOfBirth}T12:00:00.000Z`) : null,
       statusConfigId: config.statusConfigId,
+      assignedToUserId: config.assignedToUserId ?? null,
     },
     select: { id: true },
   })
@@ -4606,7 +4628,7 @@ export function automationActionContinuation(
       if (!decision) return
       if (action.type === "IF_ELSE") {
         const branch = action.ifElseConfig.branches.find((candidate) => candidate.branchKey === decision.branchKey)
-        if (!branch || branch.isDefault) return
+        if (!branch) return
         visit(branch.actions)
       } else {
         const route = action.splitConfig.routes.find((candidate) => candidate.branchKey === decision.branchKey)
@@ -5344,9 +5366,9 @@ async function executeBranchedAutomationSegmentTx(
           step,
         ))
         visitedNodeKeys.add(action.nodeKey)
-        const continuation = selectedBranch.isDefault
-          ? []
-          : automationActionContinuation(actions, branchDecisions, selectedBranch.actions[0]?.nodeKey)
+        const continuation = selectedBranch.actions.length > 0
+          ? automationActionContinuation(actions, branchDecisions, selectedBranch.actions[0]?.nodeKey)
+          : []
         steps = continuation
         index = 0
         continue
@@ -6139,6 +6161,11 @@ export async function executeOpportunityAutomations(
     where: {
       tenantId: event.tenantId,
       isEnabled: true,
+      triggerType: event.triggerType,
+      pipelineId: event.pipelineId,
+      ...(event.triggerType === "OPPORTUNITY_STAGE_CHANGED"
+        ? { targetStageId: event.targetStageId }
+        : {}),
     },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {
@@ -6187,10 +6214,14 @@ export async function executeOpportunityAutomations(
     automation: any
     actions: RuntimeAutomationAction[]
     logs: AutomationNodeLogData[]
-    shouldRun: boolean
   }
-  const plans: AutomationPlan[] = automations.map((automation: any) => {
+  const plans: AutomationPlan[] = automations.flatMap((automation: any): AutomationPlan[] => {
     const actions: RuntimeAutomationAction[] = automation.actions.map((action: any) => automationActionSnapshot(action))
+    const trigger = evaluateAutomationTrigger(automation, event, catalog)
+    if (!trigger.matches) return []
+    const conditionResult = evaluateAutomationConditions(automation, event, contact, catalog)
+    if (!conditionResult.matches) return []
+
     const attemptId = randomUUID()
     const occurredAt = new Date()
     const base = {
@@ -6206,51 +6237,17 @@ export async function executeOpportunityAutomations(
       eventSource: event.triggerType,
       occurredAt,
     } satisfies Omit<AutomationNodeLogData, "nodeKind" | "nodeOrder" | "nodeKey" | "nodeLabel" | "status" | "reasonCode" | "details">
-    const trigger = evaluateAutomationTrigger(automation, event, catalog)
     const logs: AutomationNodeLogData[] = [{
       ...base,
       nodeKind: "TRIGGER",
       nodeOrder: 0,
       nodeKey: automation.triggerType,
       nodeLabel: getAutomationTriggerLabel(automation.triggerType),
-      status: trigger.matches ? "EXECUTED" : "SKIPPED",
-      reasonCode: trigger.matches ? null : "TRIGGER_NOT_MATCHED",
+      status: "EXECUTED",
+      reasonCode: null,
       details: trigger.details,
     }]
-
-    if (!trigger.matches) {
-      logs.push(...flattenAutomationActionTree(actions).map(({ action, nodeOrder, branchPath }) => ({
-        ...base,
-        nodeKind: "ACTION" as const,
-        nodeOrder,
-        nodeKey: action.nodeKey,
-        nodeLabel: getAutomationActionNodeLabel(action),
-        status: "SKIPPED" as const,
-        reasonCode: "TRIGGER_NOT_MET",
-        details: `Skipped because the automation trigger did not match. ${trigger.details}`,
-        branchPath,
-      })))
-      return { automation, actions, logs, shouldRun: false }
-    }
-
-    const conditionResult = evaluateAutomationConditions(automation, event, contact, catalog)
-    if (!conditionResult.matches) {
-      const details = conditionResult.failures.join(" ")
-      logs.push(...flattenAutomationActionTree(actions).map(({ action, nodeOrder, branchPath }) => ({
-        ...base,
-        nodeKind: "ACTION" as const,
-        nodeOrder,
-        nodeKey: action.nodeKey,
-        nodeLabel: getAutomationActionNodeLabel(action),
-        status: "SKIPPED" as const,
-        reasonCode: "FILTERS_NOT_MET",
-        details,
-        branchPath,
-      })))
-      return { automation, actions, logs, shouldRun: false }
-    }
-
-    return { automation, actions, logs, shouldRun: true }
+    return [{ automation, actions, logs }]
   })
 
   const notificationIds: string[] = []
@@ -6260,7 +6257,6 @@ export async function executeOpportunityAutomations(
   let queuedRunCount = 0
   for (let planIndex = 0; planIndex < plans.length; planIndex += 1) {
     const plan = plans[planIndex]
-    if (!plan.shouldRun) continue
 
     if (contactDeleted) {
       const triggerLog = plan.logs[0]!
@@ -6326,7 +6322,6 @@ export async function executeOpportunityAutomations(
       if (error instanceof AutomationExecutionError) {
         for (let index = 0; index < plans.length; index += 1) {
           const tracePlan = plans[index]
-          if (!tracePlan.shouldRun) continue
           const triggerLog = tracePlan.logs.find((log) => log.nodeKind === "TRIGGER")!
           if (index === planIndex) {
             tracePlan.logs = [triggerLog, ...error.nodeExecutions]
@@ -6376,7 +6371,7 @@ export async function executeOpportunityAutomations(
     await prismaTx.automationNodeExecution.createMany({ data: nodeExecutions })
   }
 
-  const matchedCount = plans.filter((plan: { shouldRun: boolean }) => plan.shouldRun).length
+  const matchedCount = plans.length
   return {
     matchedCount,
     executedCount,

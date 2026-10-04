@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { z } from "zod"
 
 import { Prisma } from "../generated/prisma/index.js"
+import { FolderNameSchema, isExactIdOrder, nextLibraryOrder, normalizeFolderName, planFolderDeletion } from "../lib/automation-library.js"
 
 import {
   AUTOMATION_CONTACT_UPDATE_FIELDS,
@@ -72,6 +73,11 @@ const AutomationExecutionLogsQuerySchema = z.object({
 const ReorderSchema = z.object({
   automationIds: z.array(z.string().trim().min(1)).min(1).max(200),
 })
+const FolderPathSchema = TenantPathSchema.extend({ folderId: z.string().uuid() })
+const FolderBodySchema = z.object({ name: FolderNameSchema }).strict()
+const FolderOrderSchema = z.object({ folderIds: z.array(z.string().uuid()).max(200) }).strict()
+const LibraryOrderSchema = z.object({ folderId: z.string().uuid().nullable(), automationIds: z.array(z.string().uuid()).max(200) }).strict()
+const MoveFolderSchema = z.object({ folderId: z.string().uuid().nullable() }).strict()
 
 const readMiddlewares = [
   requireAuth,
@@ -131,6 +137,8 @@ function serializeAutomation(record: any) {
     name: record.name,
     isEnabled: record.isEnabled,
     sortOrder: record.sortOrder,
+    folderId: record.folderId,
+    librarySortOrder: record.librarySortOrder,
     trigger:
       record.triggerType === "OPPORTUNITY_CREATED"
         ? { type: record.triggerType, pipelineId: record.pipelineId }
@@ -289,7 +297,7 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
       prismaWithAutomations.membership.findMany({
         where: { tenantId, status: "ACTIVE" },
         orderBy: { user: { name: "asc" } },
-        select: { userId: true, user: { select: { name: true, email: true } } },
+        select: { userId: true, user: { select: { name: true, email: true, image: true } } },
       }),
       prismaWithAutomations.service.findMany({
         where: { tenantId, isActive: true },
@@ -351,6 +359,7 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
           id: item.userId,
           name: item.user.name,
           email: item.user.email,
+          image: item.user.image ?? null,
         })),
       },
     })
@@ -661,11 +670,11 @@ router.patch("/:tenantId/automations/reorder", ...writeMiddlewares, async (req, 
     const { tenantId } = TenantPathSchema.parse(req.params)
     const { automationIds } = ReorderSchema.parse(req.body)
     const records = await prismaWithAutomations.automation.findMany({
-      where: { tenantId, id: { in: automationIds } },
+      where: { tenantId },
       select: { id: true },
     })
-    if (records.length !== automationIds.length) {
-      return res.status(404).json({ error: "AUTOMATION_NOT_FOUND" })
+    if (!isExactIdOrder(automationIds, records.map((record: any) => record.id))) {
+      return res.status(400).json({ error: "INVALID_AUTOMATION_ORDER" })
     }
     await prismaWithAutomations.$transaction(
       automationIds.map((id, index) =>
@@ -681,6 +690,107 @@ router.patch("/:tenantId/automations/reorder", ...writeMiddlewares, async (req, 
   }
 })
 
+router.post("/:tenantId/automation-folders", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const { name } = FolderBodySchema.parse(req.body)
+    const normalizedName = normalizeFolderName(name)
+    const existing = await prismaWithAutomations.automationFolder.findUnique({ where: { tenantId_normalizedName: { tenantId, normalizedName } } })
+    if (existing) return res.status(409).json({ error: "FOLDER_NAME_TAKEN" })
+    const last = await prismaWithAutomations.automationFolder.findFirst({ where: { tenantId }, orderBy: { sortOrder: "desc" }, select: { sortOrder: true } })
+    const folder = await prismaWithAutomations.automationFolder.create({ data: { tenantId, name, normalizedName, sortOrder: (last?.sortOrder ?? 0) + 10 } })
+    return res.status(201).json({ ok: true, folder })
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return res.status(409).json({ error: "FOLDER_NAME_TAKEN" })
+    return next(error)
+  }
+})
+
+router.patch("/:tenantId/automation-folders/reorder", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const { folderIds } = FolderOrderSchema.parse(req.body)
+    const current = await prismaWithAutomations.automationFolder.findMany({ where: { tenantId }, select: { id: true } })
+    if (!isExactIdOrder(folderIds, current.map((folder: any) => folder.id))) return res.status(400).json({ error: "INVALID_FOLDER_ORDER" })
+    await prismaWithAutomations.$transaction(folderIds.map((id, index) => prismaWithAutomations.automationFolder.update({ where: { tenantId_id: { tenantId, id } }, data: { sortOrder: (index + 1) * 10 } })))
+    return res.json({ ok: true })
+  } catch (error) { return next(error) }
+})
+
+router.patch("/:tenantId/automation-folders/:folderId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const { tenantId, folderId } = FolderPathSchema.parse(req.params)
+    const { name } = FolderBodySchema.parse(req.body)
+    const normalizedName = normalizeFolderName(name)
+    const folder = await prismaWithAutomations.automationFolder.findUnique({ where: { tenantId_id: { tenantId, id: folderId } } })
+    if (!folder) return res.status(404).json({ error: "FOLDER_NOT_FOUND" })
+    const duplicate = await prismaWithAutomations.automationFolder.findUnique({ where: { tenantId_normalizedName: { tenantId, normalizedName } } })
+    if (duplicate && duplicate.id !== folderId) return res.status(409).json({ error: "FOLDER_NAME_TAKEN" })
+    const updated = await prismaWithAutomations.automationFolder.update({ where: { tenantId_id: { tenantId, id: folderId } }, data: { name, normalizedName } })
+    return res.json({ ok: true, folder: updated })
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return res.status(409).json({ error: "FOLDER_NAME_TAKEN" })
+    return next(error)
+  }
+})
+
+router.delete("/:tenantId/automation-folders/:folderId", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const { tenantId, folderId } = FolderPathSchema.parse(req.params)
+    const movedCount = await prismaWithAutomations.$transaction(async (tx: any) => {
+      const folder = await tx.automationFolder.findUnique({ where: { tenantId_id: { tenantId, id: folderId } } })
+      if (!folder) return null
+      const contained = await tx.automation.findMany({ where: { tenantId, folderId }, orderBy: [{ librarySortOrder: "asc" }, { createdAt: "asc" }], select: { id: true, librarySortOrder: true, sortOrder: true } })
+      const rootLast = await tx.automation.findFirst({ where: { tenantId, folderId: null }, orderBy: { librarySortOrder: "desc" }, select: { librarySortOrder: true } })
+      for (const automation of planFolderDeletion(rootLast?.librarySortOrder ?? 0, contained)) {
+        await tx.automation.update({ where: { tenantId_id: { tenantId, id: automation.id } }, data: { folderId: null, librarySortOrder: automation.librarySortOrder } })
+      }
+      await tx.automationFolder.delete({ where: { tenantId_id: { tenantId, id: folderId } } })
+      return contained.length
+    })
+    if (movedCount === null) return res.status(404).json({ error: "FOLDER_NOT_FOUND" })
+    return res.json({ ok: true, movedCount })
+  } catch (error) { return next(error) }
+})
+
+router.patch("/:tenantId/automations/library-order", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const { folderId, automationIds } = LibraryOrderSchema.parse(req.body)
+    if (folderId) {
+      const folder = await prismaWithAutomations.automationFolder.findUnique({ where: { tenantId_id: { tenantId, id: folderId } } })
+      if (!folder) return res.status(404).json({ error: "FOLDER_NOT_FOUND" })
+    }
+    const current = await prismaWithAutomations.automation.findMany({ where: { tenantId, folderId }, select: { id: true } })
+    if (!isExactIdOrder(automationIds, current.map((automation: any) => automation.id))) return res.status(400).json({ error: "INVALID_LIBRARY_ORDER" })
+    await prismaWithAutomations.$transaction(automationIds.map((id, index) => prismaWithAutomations.automation.update({ where: { tenantId_id: { tenantId, id } }, data: { librarySortOrder: (index + 1) * 10 } })))
+    return res.json({ ok: true })
+  } catch (error) { return next(error) }
+})
+
+router.patch("/:tenantId/automations/:automationId/folder", ...writeMiddlewares, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const { tenantId, automationId } = AutomationPathSchema.parse(req.params)
+    const { folderId } = MoveFolderSchema.parse(req.body)
+    const automation = await prismaWithAutomations.automation.findUnique({ where: { tenantId_id: { tenantId, id: automationId } }, select: { id: true, folderId: true } })
+    if (!automation) return res.status(404).json({ error: "AUTOMATION_NOT_FOUND" })
+    if (folderId) {
+      const folder = await prismaWithAutomations.automationFolder.findUnique({ where: { tenantId_id: { tenantId, id: folderId } } })
+      if (!folder) return res.status(404).json({ error: "FOLDER_NOT_FOUND" })
+    }
+    if (automation.folderId === folderId) return res.json({ ok: true })
+    const last = await prismaWithAutomations.automation.findMany({ where: { tenantId, folderId }, select: { librarySortOrder: true } })
+    await prismaWithAutomations.automation.update({ where: { tenantId_id: { tenantId, id: automationId } }, data: { folderId, librarySortOrder: nextLibraryOrder(last.map((item: any) => item.librarySortOrder)) } })
+    return res.json({ ok: true })
+  } catch (error) { return next(error) }
+})
+
 router.get("/:tenantId/automations", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params)
@@ -689,7 +799,8 @@ router.get("/:tenantId/automations", ...readMiddlewares, async (req, res, next) 
       orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       include: automationInclude,
     })
-    return res.json({ ok: true, items: items.map(serializeAutomation) })
+    const folders = await prismaWithAutomations.automationFolder.findMany({ where: { tenantId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] })
+    return res.json({ ok: true, items: items.map(serializeAutomation), folders })
   } catch (error) {
     return next(error)
   }
@@ -714,6 +825,10 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
     enforceSameOrigin(req)
     const { tenantId } = TenantPathSchema.parse(req.params)
     const payload = AutomationUpsertSchema.parse(req.body)
+    if (payload.folderId) {
+      const folder = await prismaWithAutomations.automationFolder.findUnique({ where: { tenantId_id: { tenantId, id: payload.folderId } } })
+      if (!folder) return res.status(404).json({ error: "FOLDER_NOT_FOUND" })
+    }
     const automationId = randomUUID()
     const normalized = await validateAutomationConfiguration(prismaWithAutomations, tenantId, payload, {
       sourceAutomationId: automationId,
@@ -723,6 +838,7 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
       orderBy: { sortOrder: "desc" },
       select: { sortOrder: true },
     })
+    const libraryLast = await prismaWithAutomations.automation.findFirst({ where: { tenantId, folderId: payload.folderId ?? null }, orderBy: { librarySortOrder: "desc" }, select: { librarySortOrder: true } })
     const record = await prismaWithAutomations.automation.create({
       data: {
         id: automationId,
@@ -734,6 +850,8 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
         sourceStageId: normalized.sourceStageId,
         targetStageId: normalized.targetStageId,
         sortOrder: (max?.sortOrder ?? 0) + 10,
+        folderId: payload.folderId ?? null,
+        librarySortOrder: (libraryLast?.librarySortOrder ?? 0) + 10,
         conditions: { create: normalized.conditions },
         actions: { create: normalized.actions },
       },

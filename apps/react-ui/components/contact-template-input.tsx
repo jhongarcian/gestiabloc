@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/command"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { AppPhoneInput } from "@/components/ui/phone-input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
@@ -62,6 +63,7 @@ type ContactTemplateInputProps = {
   catalog: ContactTemplateCatalog
   maxLength: number
   multiline?: boolean
+  phonePicker?: boolean
   placeholder?: string
   error?: string | null
   timezone?: string | null
@@ -76,6 +78,7 @@ export function ContactTemplateInput({
   catalog,
   maxLength,
   multiline = false,
+  phonePicker = false,
   placeholder,
   error,
   timezone,
@@ -147,7 +150,10 @@ export function ContactTemplateInput({
         })
       : ""
   const selectedLength = Math.max(0, selection.end - selection.start)
-  const insertionLength = value.length - selectedLength + token.length
+  const usesPhonePicker = phonePicker && !value.includes("{")
+  const insertionLength = usesPhonePicker
+    ? token.length
+    : value.length - selectedLength + token.length
   const canInsert = Boolean(token) && insertionLength <= maxLength
 
   const rememberSelection = () => {
@@ -179,8 +185,10 @@ export function ContactTemplateInput({
     if (!canInsert || !token) return
     const start = Math.min(selection.start, value.length)
     const end = Math.min(selection.end, value.length)
-    const nextValue = `${value.slice(0, start)}${token}${value.slice(end)}`
-    const nextCursor = start + token.length
+    const nextValue = usesPhonePicker
+      ? token
+      : `${value.slice(0, start)}${token}${value.slice(end)}`
+    const nextCursor = usesPhonePicker ? token.length : start + token.length
     onChange(nextValue)
     setOpen(false)
     requestAnimationFrame(() => {
@@ -335,6 +343,16 @@ export function ContactTemplateInput({
           {...sharedInputProps}
           ref={(node) => { inputRef.current = node }}
           className="min-h-28 resize-y rounded-xl"
+        />
+      ) : usesPhonePicker ? (
+        <AppPhoneInput
+          id={id}
+          defaultCountry="US"
+          countryCallingCodeEditable={false}
+          value={value}
+          onChange={(nextValue) => onChange(nextValue ?? "")}
+          placeholder={placeholder}
+          aria-invalid={Boolean(error)}
         />
       ) : (
         <Input

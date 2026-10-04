@@ -9,6 +9,7 @@ import {
   AutomationInternalNotificationConfigSchema,
   AutomationOpportunityConfigSchema,
   AutomationExecutionError,
+  automationActionContinuation,
   automationWorkflowReferenceIds,
   automationWorkflowTargetIds,
   automationSplitBucket,
@@ -295,6 +296,29 @@ describe("validateAutomationGoToControlFlow", () => {
     ]))
   })
 
+  test("includes Default actions as Go To targets and rejects cycles through Default", () => {
+    const routingAction = {
+      nodeKey: "if-root",
+      type: "IF_ELSE",
+      ifElseConfig: {
+        branches: [
+          { branchKey: "matched", isDefault: false, actions: [{ nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "default-action" } }] },
+          { branchKey: "default", isDefault: true, actions: [{ nodeKey: "default-action", type: "CLEAR_CONTACT_ASSIGNEE" }] },
+        ],
+      },
+    }
+    assert.doesNotThrow(() => validateAutomationGoToControlFlow([routingAction]))
+    routingAction.ifElseConfig.branches[1]!.actions = [{
+      nodeKey: "default-action",
+      type: "GO_TO",
+      goToConfig: { targetNodeKey: "go" },
+    }]
+    assert.throws(
+      () => validateAutomationGoToControlFlow([routingAction]),
+      (error: any) => error?.code === "AUTOMATION_FLOW_CYCLE",
+    )
+  })
+
   test("rejects same-path backward jumps and multi-node cycles", () => {
     assert.throws(
       () => validateAutomationGoToControlFlow([
@@ -404,6 +428,7 @@ describe("Create contact automation action", () => {
     phoneTemplate: "+15551234567",
     dateOfBirth: { type: "FIXED" as const, value: "1990-05-03" },
     statusConfigId: "active",
+    assignedToUserId: "user-1",
     customFieldValues: [
       {
         customFieldId: "field-note",
@@ -421,7 +446,7 @@ describe("Create contact automation action", () => {
       opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
       contactCustomField: { findMany: async () => customFields },
       contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
-      membership: { findMany: async () => [] },
+      membership: { findMany: async () => [{ userId: "user-1", status: "ACTIVE" }] },
       tenantTag: { findMany: async () => [] },
     }
     const input = AutomationUpsertSchema.parse({
@@ -433,6 +458,7 @@ describe("Create contact automation action", () => {
     })
     const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", input)
     assert.equal((normalized.actions[0] as any).createContactConfig.actionName, "Create household contact")
+    assert.equal((normalized.actions[0] as any).createContactConfig.assignedToUserId, "user-1")
     assert.equal((normalized.actions[0] as any).createContactConfig.customFieldValues[1].source.value, 42)
 
     const invalid = AutomationUpsertSchema.parse({
@@ -452,16 +478,30 @@ describe("Create contact automation action", () => {
       validateAutomationConfiguration(prismaClient, "tenant-1", invalid),
       /Lead score must be a number/,
     )
+
+    const invalidAssignee = AutomationUpsertSchema.parse({
+      ...input,
+      actions: [{
+        type: "CREATE_CONTACT",
+        createContactConfig: { ...config, assignedToUserId: "inactive-user" },
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", invalidAssignee),
+      /active tenant member for the new contact/,
+    )
   })
 
   test("creates the contact and typed custom values while keeping the source context", async () => {
     const createdContacts: Array<Record<string, any>> = []
     const customWrites: Array<Record<string, any>> = []
     const lockKeys: string[] = []
+    const lockQueries: string[] = []
     const prismaTx = {
-      $queryRaw: async (_parts: TemplateStringsArray, _namespace: string, lockKey: string) => {
+      $queryRaw: async (parts: TemplateStringsArray, _namespace: string, lockKey: string) => {
         lockKeys.push(lockKey)
-        return [{ pg_advisory_xact_lock: null }]
+        lockQueries.push(parts.join("?"))
+        return [{ lockAcquired: 1 }]
       },
       contact: {
         findFirst: async ({ where }: { where: Record<string, any> }) => {
@@ -497,7 +537,7 @@ describe("Create contact automation action", () => {
         activeStatusIds: new Set(["active"]),
         activeTaskStatusIds: new Set(),
         taskStatusMap: new Map(),
-        activeUserIds: new Set(),
+        activeUserIds: new Set(["user-1"]),
         tagIds: new Set(),
         statusMap: new Map([["active", "Active"]]),
         userMap: new Map(),
@@ -516,6 +556,7 @@ describe("Create contact automation action", () => {
     assert.equal(createdContacts[0]?.email, "new@example.com")
     assert.equal(createdContacts[0]?.phone, "+15551234567")
     assert.equal(createdContacts[0]?.dateOfBirth.toISOString(), "1990-05-03T12:00:00.000Z")
+    assert.equal(createdContacts[0]?.assignedToUserId, "user-1")
     assert.deepEqual(customWrites.map((item) => [item.fieldId, item.value]), [
       ["field-note", "Created for Taylor"],
       ["field-score", 42],
@@ -524,6 +565,9 @@ describe("Create contact automation action", () => {
       "tenant-1:email:new@example.com",
       "tenant-1:phone:+15551234567",
     ])
+    assert.equal(lockQueries.length, 2)
+    assert.match(lockQueries[0]!, /SELECT 1 AS "lockAcquired"\s+FROM advisory_lock/)
+    assert.doesNotMatch(lockQueries[0]!, /^\s*SELECT pg_advisory_xact_lock/)
   })
 
   test("skips successfully when the rendered email already belongs to a tenant contact", async () => {
@@ -561,7 +605,7 @@ describe("Create contact automation action", () => {
         activeStatusIds: new Set(["active"]),
         activeTaskStatusIds: new Set(),
         taskStatusMap: new Map(),
-        activeUserIds: new Set(),
+        activeUserIds: new Set(["user-1"]),
         tagIds: new Set(),
         statusMap: new Map(),
         userMap: new Map(),
@@ -580,6 +624,164 @@ describe("Create contact automation action", () => {
     assert.deepEqual(duplicateWheres[0]?.OR?.[0], {
       email: { equals: "new@example.com", mode: "insensitive" },
     })
+  })
+
+  test("fails before creation when the configured assignee is no longer active", async () => {
+    await assert.rejects(
+      executeCreateContactAction({}, {
+        config,
+        tenantId: "tenant-1",
+        sourceContactId: "source-contact",
+        catalog: {
+          fieldMap: new Map(),
+          fieldKeyMap: new Map(),
+          activeStatusIds: new Set(["active"]),
+          activeTaskStatusIds: new Set(),
+          taskStatusMap: new Map(),
+          activeUserIds: new Set(),
+          tagIds: new Set(),
+          statusMap: new Map(),
+          userMap: new Map(),
+          tagMap: new Map(),
+          pipelineMap: new Map(),
+          stageMap: new Map(),
+          stagePipelineMap: new Map(),
+          timezone: "America/Chicago",
+        },
+        occurredAt: new Date("2026-10-02T12:00:00.000Z"),
+        automationValues: {},
+      }),
+      /contact assignee is no longer available/,
+    )
+  })
+})
+
+describe("If/Else Default runtime", () => {
+  test("preserves a nested Default path when continuing after a Wait", () => {
+    const actions = [{
+      nodeKey: "outer-if",
+      type: "IF_ELSE",
+      ifElseConfig: {
+        actionName: "Outer",
+        branches: [
+          { branchKey: "outer-match", name: "Match", isDefault: false, matchMode: "ALL", conditions: [], actions: [] },
+          {
+            branchKey: "outer-default",
+            name: "Default",
+            isDefault: true,
+            matchMode: "ALL",
+            conditions: [],
+            actions: [
+              { nodeKey: "default-wait", type: "WAIT", waitConfig: { mode: "DURATION", amount: 30, unit: "MINUTES" } },
+              {
+                nodeKey: "inner-if",
+                type: "IF_ELSE",
+                ifElseConfig: {
+                  actionName: "Inner",
+                  branches: [
+                    { branchKey: "inner-match", name: "Match", isDefault: false, matchMode: "ALL", conditions: [], actions: [] },
+                    { branchKey: "inner-default", name: "Default", isDefault: true, matchMode: "ALL", conditions: [], actions: [{ nodeKey: "after-wait", type: "CLEAR_CONTACT_ASSIGNEE" }] },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    }]
+    const decisions = {
+      "outer-if": { branchKey: "outer-default", branchName: "Default", decidedAt: "2026-10-02T12:00:00.000Z" },
+      "inner-if": { branchKey: "inner-default", branchName: "Default", decidedAt: "2026-10-02T12:00:00.000Z" },
+    }
+
+    assert.deepEqual(
+      automationActionContinuation(actions as any, decisions, "inner-if").map((step) => step.action.nodeKey),
+      ["inner-if", "after-wait"],
+    )
+  })
+
+  test("executes Default actions and logs unselected condition actions as skipped", async () => {
+    const actions = [{
+      nodeKey: "if-else-node",
+      type: "IF_ELSE" as const,
+      ifElseConfig: {
+        actionName: "Route contact",
+        branches: [
+          {
+            branchKey: "condition-branch",
+            name: "Matched",
+            isDefault: false,
+            matchMode: "ALL" as const,
+            conditions: [{ conditionKey: "never-match", source: "CURRENT_DATE_TIME" as const, operator: "IS_EMPTY" as const }],
+            actions: [{ nodeKey: "unselected-action", type: "CLEAR_CONTACT_ASSIGNEE" as const }],
+          },
+          {
+            branchKey: "default-branch",
+            name: "Default",
+            isDefault: true,
+            matchMode: "ALL" as const,
+            conditions: [],
+            actions: [
+              { nodeKey: "default-first", type: "CLEAR_CONTACT_ASSIGNEE" as const },
+              { nodeKey: "default-second", type: "CLEAR_CONTACT_ASSIGNEE" as const },
+            ],
+          },
+        ],
+      },
+    }]
+    let contactUpdates = 0
+    const emptyMap = new Map()
+    const result = await executeAutomationSegmentTx({
+      contact: { update: async () => { contactUpdates += 1 } },
+      automationRun: { update: async () => undefined },
+      automationExecution: { create: async () => undefined },
+    }, {
+      run: {
+        id: "default-run",
+        tenantId: "tenant-1",
+        automationId: "automation-1",
+        automationName: "Default test",
+        contactId: "contact-1",
+        contactName: "Taylor Reed",
+        actorUserId: "user-1",
+        opportunityId: "opportunity-1",
+        attemptId: "attempt-1",
+        eventSource: "OPPORTUNITY_CREATED",
+        triggerType: "OPPORTUNITY_CREATED",
+        sourceStageId: null,
+        targetStageId: null,
+        cursorIndex: 0,
+        cursorPath: null,
+        branchDecisions: {},
+        variables: {},
+      },
+      actions: actions as any,
+      startIndex: 0,
+      catalog: {
+        fieldMap: emptyMap,
+        fieldKeyMap: emptyMap,
+        activeStatusIds: new Set(),
+        activeTaskStatusIds: new Set(),
+        taskStatusMap: emptyMap,
+        activeUserIds: new Set(),
+        tagIds: new Set(),
+        statusMap: emptyMap,
+        userMap: emptyMap,
+        tagMap: emptyMap,
+        pipelineMap: emptyMap,
+        stageMap: emptyMap,
+        stagePipelineMap: emptyMap,
+        timezone: "America/Chicago",
+      },
+    })
+
+    assert.equal(result.status, "SUCCEEDED")
+    assert.equal(contactUpdates, 2)
+    assert.equal(result.logs.find((log) => log.nodeKey === "if-else-node")?.reasonCode, "DEFAULT_BRANCH_SELECTED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "unselected-action")?.reasonCode, "BRANCH_NOT_SELECTED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "default-first")?.status, "EXECUTED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "default-second")?.status, "EXECUTED")
+    assert.equal(result.logs.find((log) => log.nodeKey === "default-first")?.branchPath?.[0]?.branchName, "Default")
   })
 })
 
@@ -2541,6 +2743,44 @@ describe("AutomationUpsertSchema", () => {
     assert.equal(typeof config?.branches[0]?.branchKey, "string")
     assert.equal(typeof config?.branches[0]?.conditions[0]?.conditionKey, "string")
 
+    const withDefaultActions = AutomationUpsertSchema.parse({
+      ...base,
+      actions: [{
+        ...ifElse,
+        ifElseConfig: {
+          ...ifElse.ifElseConfig,
+          branches: [
+            ifElse.ifElseConfig.branches[0],
+            {
+              ...ifElse.ifElseConfig.branches[1],
+              actions: [{ type: "SET_CONTACT_STATUS", statusConfigId: "active" }],
+            },
+          ],
+        },
+      }],
+    })
+    const normalizedWithDefaultActions = await validateAutomationConfiguration(prismaClient, "tenant-1", withDefaultActions)
+    assert.equal(normalizedWithDefaultActions.actions[0]?.ifElseConfig?.branches[1]?.actions[0]?.type, "SET_CONTACT_STATUS")
+    assert.equal(typeof normalizedWithDefaultActions.actions[0]?.ifElseConfig?.branches[1]?.actions[0]?.nodeKey, "string")
+
+    const defaultWithConditions = AutomationUpsertSchema.parse({
+      ...base,
+      actions: [{
+        ...ifElse,
+        ifElseConfig: {
+          ...ifElse.ifElseConfig,
+          branches: [ifElse.ifElseConfig.branches[0], {
+            ...ifElse.ifElseConfig.branches[1],
+            conditions: ifElse.ifElseConfig.branches[0].conditions,
+          }],
+        },
+      }],
+    })
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", defaultWithConditions),
+      /Default branch cannot contain conditions/,
+    )
+
     const invalid = AutomationUpsertSchema.parse({
       ...base,
       actions: [ifElse, { type: "SET_CONTACT_STATUS", statusConfigId: "active" }],
@@ -2882,13 +3122,53 @@ describe("executeOpportunityAutomations", () => {
     assert.deepEqual(where, {
       tenantId: "tenant-1",
       isEnabled: true,
+      triggerType: "OPPORTUNITY_STAGE_CHANGED",
+      pipelineId: "pipeline-1",
+      targetStageId: "stage-2",
     })
   })
 
-  test("does not run actions when a contact does not match the assignee filter", async () => {
+  test("scopes opportunity-created candidates to the event trigger and pipeline", async () => {
+    let where: Record<string, unknown> | undefined
+    let nodeLogWrites = 0
+    const result = await executeOpportunityAutomations({
+      automation: {
+        findMany: async (args: { where: Record<string, unknown> }) => {
+          where = args.where
+          return []
+        },
+      },
+      automationNodeExecution: {
+        createMany: async () => { nodeLogWrites += 1 },
+      },
+    }, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: null,
+      targetStageId: "stage-new",
+    })
+
+    assert.deepEqual(where, {
+      tenantId: "tenant-1",
+      isEnabled: true,
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-work",
+    })
+    assert.equal(result.matchedCount, 0)
+    assert.equal(result.executedCount, 0)
+    assert.equal(nodeLogWrites, 0)
+  })
+
+  test("does not persist a run or logs when a contact does not match the trigger filters", async () => {
     let contactUpdates = 0
     let tagRemovals = 0
     let executions = 0
+    let runs = 0
     let nodeLogs: Array<Record<string, unknown>> = []
     const prismaTx = {
       automation: {
@@ -2961,7 +3241,10 @@ describe("executeOpportunityAutomations", () => {
         },
       },
       automationRun: {
-        create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "run-1", ...data }),
+        create: async ({ data }: { data: Record<string, unknown> }) => {
+          runs += 1
+          return { id: "run-1", ...data }
+        },
         update: async () => undefined,
       },
       automationNodeExecution: {
@@ -2993,9 +3276,8 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(tagRemovals, 0)
     assert.equal(contactUpdates, 0)
     assert.equal(executions, 0)
-    assert.deepEqual(nodeLogs.map((log) => log.status), ["EXECUTED", "SKIPPED", "SKIPPED", "SKIPPED"])
-    assert.match(String(nodeLogs[1]?.details), /Assigned to: expected John, found Mary\./)
-    assert.match(String(nodeLogs[1]?.details), /Contact status: expected Inactive, found Active\./)
+    assert.equal(runs, 0)
+    assert.deepEqual(nodeLogs, [])
   })
 
   test("runs a published automation without requiring prior contact enrollment", async () => {
@@ -4596,7 +4878,7 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(nodeLogs[2]?.reasonCode, "WAIT_JUMPED")
   })
 
-  test("logs every node as skipped for an unrelated opportunity event", async () => {
+  test("does not log an unrelated opportunity event", async () => {
     let nodeLogs: Array<Record<string, unknown>> = []
     const forbiddenAction = () => {
       throw new Error("Actions must not run for an unrelated event.")
@@ -4665,8 +4947,7 @@ describe("executeOpportunityAutomations", () => {
       fileCleanupCandidates: [],
       contactDeleted: false,
     })
-    assert.deepEqual(nodeLogs.map((log) => log.status), ["SKIPPED", "SKIPPED"])
-    assert.match(String(nodeLogs[0]?.details), /listens for Opportunity enters stage/)
+    assert.deepEqual(nodeLogs, [])
   })
 
   test("persists rollback-aware node logs after an action failure", async () => {

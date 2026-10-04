@@ -5661,19 +5661,30 @@ paths:
   /api/account-settings/{tenantId}/automations:
     get:
       tags: [Automations]
-      summary: List opportunity automations in execution order
+      summary: List opportunity automations and single-level folders
       security:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
       responses:
         "200":
-          description: Automation list
+          description: Automations in execution order and folders in manual order. Each automation has folderId and librarySortOrder; sortOrder is execution priority.
           content:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                required: [ok, items, folders]
+                properties:
+                  ok:
+                    type: boolean
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AutomationLibraryRecord"
+                  folders:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AutomationFolder"
     post:
       tags: [Automations]
       summary: Create an opportunity automation
@@ -5719,6 +5730,134 @@ paths:
       responses:
         "200":
           description: Order updated
+  /api/account-settings/{tenantId}/automation-folders:
+    post:
+      tags: [Automations]
+      summary: Create a folder at the library root
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutomationFolderNameRequest"
+      responses:
+        "201":
+          description: Folder created
+        "409":
+          description: Case-insensitive folder name already exists in tenant
+  /api/account-settings/{tenantId}/automation-folders/reorder:
+    patch:
+      tags: [Automations]
+      summary: Replace the manual folder order without changing execution priority
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [folderIds]
+              properties:
+                folderIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        "200":
+          description: Folder order updated
+  /api/account-settings/{tenantId}/automation-folders/{folderId}:
+    parameters:
+      - $ref: "#/components/parameters/TenantIdPathParam"
+      - in: path
+        name: folderId
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      tags: [Automations]
+      summary: Rename a folder
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutomationFolderNameRequest"
+      responses:
+        "200":
+          description: Folder renamed
+        "404":
+          description: Folder does not belong to tenant
+    delete:
+      tags: [Automations]
+      summary: Delete a folder and append its automations to the tenant root
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Folder deleted; automations and history retained
+  /api/account-settings/{tenantId}/automations/library-order:
+    patch:
+      tags: [Automations]
+      summary: Replace automation library order within one root or folder container
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [folderId, automationIds]
+              properties:
+                folderId:
+                  type: string
+                  format: uuid
+                  nullable: true
+                automationIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        "200":
+          description: Library order updated; execution priority unchanged
+  /api/account-settings/{tenantId}/automations/{automationId}/folder:
+    patch:
+      tags: [Automations]
+      summary: Move an automation to a folder or the root
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AutomationIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [folderId]
+              properties:
+                folderId:
+                  type: string
+                  format: uuid
+                  nullable: true
+      responses:
+        "200":
+          description: Automation appended to destination; execution priority unchanged
   /api/account-settings/{tenantId}/automations/{automationId}:
     get:
       tags: [Automations]
@@ -6436,6 +6575,11 @@ components:
         name:
           type: string
           maxLength: 120
+        folderId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Optional destination folder on creation; ignored on configuration edits.
         isEnabled:
           type: boolean
         trigger:
@@ -6453,6 +6597,52 @@ components:
           description: An automation may contain at most 100 action nodes across its complete branch tree.
           items:
             $ref: "#/components/schemas/AutomationActionRequest"
+    AutomationFolderNameRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: Trimmed and case-insensitively unique within the tenant.
+    AutomationFolder:
+      type: object
+      required: [id, name, sortOrder, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        sortOrder:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AutomationLibraryRecord:
+      type: object
+      description: Full automation record; extra workflow fields are included.
+      required: [id, name, sortOrder, folderId, librarySortOrder]
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        sortOrder:
+          type: integer
+          description: Global execution priority.
+        folderId:
+          type: string
+          format: uuid
+          nullable: true
+        librarySortOrder:
+          type: integer
     AutomationActionRequest:
       type: object
       required: [type]
@@ -6722,6 +6912,10 @@ components:
           type: string
           maxLength: 1000
           nullable: true
+          description: >-
+            Optional phone value. Fixed numbers are normalized and stored in E.164 format by
+            the builder's country picker. Contact-field or earlier automation-value tokens are
+            also supported and must render to a valid E.164 number when the action executes.
         dateOfBirth:
           allOf:
             - $ref: "#/components/schemas/AutomationCreateContactTypedSource"
@@ -6729,6 +6923,10 @@ components:
         statusConfigId:
           type: string
           description: Active contact status belonging to the automation tenant.
+        assignedToUserId:
+          type: string
+          nullable: true
+          description: Optional active tenant member assigned to the new contact.
         customFieldValues:
           type: array
           maxItems: 20
@@ -6781,6 +6979,7 @@ components:
         actions:
           type: array
           maxItems: 100
+          description: Actions to run when this branch is selected. May be empty for the Default branch.
           items:
             $ref: "#/components/schemas/AutomationActionRequest"
     AutomationSplitConfig:

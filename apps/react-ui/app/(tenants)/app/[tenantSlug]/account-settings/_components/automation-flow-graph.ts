@@ -79,7 +79,6 @@ type AutomationGraphRoutingBranch = {
   branchKey: string
   name: string
   actions: AutomationAction[]
-  isTerminal: boolean
   subtitle: string
 }
 
@@ -89,9 +88,8 @@ function routingBranchesForAction(action: AutomationAction): AutomationGraphRout
       branchKey: branch.branchKey ?? `branch-${index}`,
       name: branch.name,
       actions: branch.actions,
-      isTerminal: branch.isDefault,
       subtitle: branch.isDefault
-        ? "Default · no actions"
+        ? "When no conditions match"
         : branch.matchMode === "ALL" ? "All conditions" : "Any condition",
     }))
   }
@@ -100,7 +98,6 @@ function routingBranchesForAction(action: AutomationAction): AutomationGraphRout
       branchKey: route.branchKey ?? `route-${index}`,
       name: route.name,
       actions: route.actions,
-      isTerminal: false,
       subtitle: `${route.percentage}% of runs`,
     }))
   }
@@ -112,7 +109,7 @@ function automationPathWidth(actions: AutomationAction[]): number {
     const branches = routingBranchesForAction(action)
     if (!branches || branches.length === 0) continue
     const branchWidths = branches.map((branch) =>
-      Math.max(CARD_WIDTH, branch.isTerminal ? CARD_WIDTH : automationPathWidth(branch.actions))
+      Math.max(CARD_WIDTH, automationPathWidth(branch.actions))
     )
     return branchWidths.reduce((total, width) => total + width, 0) +
       BRANCH_HORIZONTAL_GAP * Math.max(0, branchWidths.length - 1)
@@ -372,7 +369,7 @@ export function buildAutomationFlowGraph(
       const branches = routingBranchesForAction(action)
       if (!branches || branches.length === 0) continue
       const branchWidths = branches.map((branch) =>
-        Math.max(CARD_WIDTH, branch.isTerminal ? CARD_WIDTH : automationPathWidth(branch.actions))
+        Math.max(CARD_WIDTH, automationPathWidth(branch.actions))
       )
       const combinedWidth = branchWidths.reduce((total, width) => total + width, 0) +
         BRANCH_HORIZONTAL_GAP * Math.max(0, branchWidths.length - 1)
@@ -405,30 +402,7 @@ export function buildAutomationFlowGraph(
           targetHandle: "flow-target",
           type: "step",
         })
-        if (branch.isTerminal) {
-          const completeId = `complete-${graphPathKey(branchPath)}`
-          const completeY = y + COMPLETE_AFTER_CARD_STEP
-          nodes.push({
-            id: completeId,
-            type: "automationNode",
-            position: { x: branchX - CARD_WIDTH / 2, y: completeY },
-            data: {
-              kind: "complete",
-              label: "Complete",
-              subtitle: "All actions completed",
-            },
-          })
-          edges.push({
-            id: `${branchId}-${completeId}`,
-            source: branchId,
-            target: completeId,
-            sourceHandle: "flow-source",
-            targetHandle: "flow-target",
-            type: "straight",
-          })
-        } else {
-          renderPath(branch.actions, branchId, branchX, y + BRANCH_TO_PATH_STEP, branchPath)
-        }
+        renderPath(branch.actions, branchId, branchX, y + BRANCH_TO_PATH_STEP, branchPath)
       })
       return
     }

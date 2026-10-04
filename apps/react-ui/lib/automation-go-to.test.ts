@@ -20,6 +20,44 @@ function split(routes: Array<{ branchKey: string; name: string; actions: Automat
 }
 
 describe("automation Go To graph validation", () => {
+  test("includes Default actions as Go To destinations and detects loops through Default", () => {
+    const actions: AutomationAction[] = [{
+      nodeKey: "if-node",
+      type: "IF_ELSE",
+      ifElseConfig: {
+        actionName: "Route contact",
+        branches: [
+          {
+            branchKey: "matched-branch",
+            name: "Matched",
+            isDefault: false,
+            matchMode: "ALL",
+            conditions: [],
+            actions: [{ nodeKey: "go-node", type: "GO_TO", goToConfig: { targetNodeKey: "default-action" } }],
+          },
+          {
+            branchKey: "default-branch",
+            name: "Default",
+            isDefault: true,
+            matchMode: "ALL",
+            conditions: [],
+            actions: [{ nodeKey: "default-action", type: "CLEAR_CONTACT_ASSIGNEE" }],
+          },
+        ],
+      },
+    }]
+
+    assert.equal(automationGoToTargetIssue(actions, "go-node", "default-action"), null)
+    assert.equal(automationGoToDestinations(actions, "go-node").find((item) => item.nodeKey === "default-action")?.breadcrumb.join(" › "), "Main path › Default")
+
+    actions[0]!.ifElseConfig!.branches[1]!.actions = [{
+      nodeKey: "default-action",
+      type: "GO_TO",
+      goToConfig: { targetNodeKey: "go-node" },
+    }]
+    assert.match(validateAutomationGoToGraph(actions) ?? "", /loop/)
+  })
+
   test("offers an acyclic target in another route", () => {
     const actions = [split([
       {

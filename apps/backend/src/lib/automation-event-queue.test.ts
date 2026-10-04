@@ -26,7 +26,7 @@ describe("queueOpportunityAutomationEvent", () => {
     assert.deepEqual(where, { id: "dispatch-1", status: "QUEUED" })
   })
 
-  test("captures event-time decisions and writes queued trigger logs without running actions", async () => {
+  test("queues and logs only automations that match the trigger and contact filters", async () => {
     const captured: Record<string, any> = {}
     const automations = [
       {
@@ -145,17 +145,15 @@ describe("queueOpportunityAutomationEvent", () => {
       isEnabled: true,
       triggerType: "OPPORTUNITY_STAGE_CHANGED",
       pipelineId: "pipeline-1",
+      targetStageId: "stage-2",
     })
-    assert.deepEqual(captured.dispatches.map((item: any) => item.decision), [
-      "RUN",
-      "SKIP_FILTERS",
-      "SKIP_TRIGGER",
-    ])
-    assert.ok(captured.dispatches[1].decisionDetails.includes("expected John, found Mary"))
-    assert.equal(captured.logs.length, 3)
+    assert.deepEqual(captured.dispatches.map((item: any) => item.decision), ["RUN"])
+    assert.equal(captured.dispatches[0].automationId, "automation-run")
+    assert.equal(captured.event.dispatchCount, 1)
+    assert.equal(captured.logs.length, 1)
     assert.ok(captured.logs.every((item: any) => item.status === "QUEUED"))
     assert.equal(result.automationStatus, "QUEUED")
-    assert.equal(result.queuedAutomationCount, 3)
+    assert.equal(result.queuedAutomationCount, 1)
     assert.equal(result.matchedCount, 1)
     assert.equal(captured.event.chainDepth, 0)
     assert.equal(captured.event.chainId, captured.event.id)
@@ -166,6 +164,85 @@ describe("queueOpportunityAutomationEvent", () => {
       sourceStageId: "stage-1",
       targetStageId: "stage-2",
     }])
+  })
+
+  test("does not create queue records when every candidate fails contact filters", async () => {
+    const writes = {
+      events: 0,
+      dispatches: 0,
+      logs: 0,
+    }
+    const result = await queueOpportunityAutomationEvent({
+      automation: {
+        findMany: async () => [{
+          id: "automation-filter",
+          name: "John opportunities",
+          triggerType: "OPPORTUNITY_CREATED",
+          pipelineId: "pipeline-1",
+          targetStageId: null,
+          sourceStageId: null,
+          conditions: [{
+            source: "CONTACT_ASSIGNEE",
+            operator: "EQUALS",
+            assignedUserId: "user-john",
+            compareValue: null,
+          }],
+          actions: [WAIT_ACTION],
+        }],
+      },
+      contact: {
+        findFirst: async () => ({
+          firstName: "Mary",
+          middleName: null,
+          lastName: "Reed",
+          statusConfigId: "status-active",
+          assignedToUserId: "user-mary",
+          tags: [],
+          customFieldValues: [],
+        }),
+      },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "status-active", name: "Active" }] },
+      taskStatusConfig: { findMany: async () => [] },
+      membership: {
+        findMany: async () => [
+          { userId: "user-john", user: { name: "John", email: "john@example.com" } },
+          { userId: "user-mary", user: { name: "Mary", email: "mary@example.com" } },
+        ],
+      },
+      tenantTag: { findMany: async () => [] },
+      opportunityPipeline: {
+        findMany: async () => [{
+          id: "pipeline-1",
+          name: "Work",
+          stages: [{ id: "stage-1", name: "New" }],
+        }],
+      },
+      tenant: { findUnique: async () => ({ timezone: "America/Chicago" }) },
+      automationEvent: { create: async () => { writes.events += 1 } },
+      automationDispatch: { createMany: async () => { writes.dispatches += 1 } },
+      automationNodeExecution: { createMany: async () => { writes.logs += 1 } },
+    }, {
+      tenantId: "tenant-1",
+      actorUserId: "actor-1",
+      triggerType: "OPPORTUNITY_CREATED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-1",
+      valueCents: 25_000,
+      sourceStageId: null,
+      targetStageId: "stage-1",
+    })
+
+    assert.deepEqual(result, {
+      automationEventId: null,
+      automationStatus: "NOT_APPLICABLE",
+      queuedAutomationCount: 0,
+      matchedCount: 0,
+      executedCount: 0,
+      contactDeleted: false,
+    })
+    assert.deepEqual(writes, { events: 0, dispatches: 0, logs: 0 })
   })
 
   test("returns the existing child event for the same causation key", async () => {
@@ -200,8 +277,14 @@ describe("queueOpportunityAutomationEvent", () => {
   })
 
   test("does not create a queue event when no trigger and pipeline candidate exists", async () => {
+    let where: Record<string, unknown> | undefined
     const result = await queueOpportunityAutomationEvent({
-      automation: { findMany: async () => [] },
+      automation: {
+        findMany: async (args: { where: Record<string, unknown> }) => {
+          where = args.where
+          return []
+        },
+      },
     }, {
       tenantId: "tenant-1",
       actorUserId: "actor-1",
@@ -217,5 +300,11 @@ describe("queueOpportunityAutomationEvent", () => {
     assert.equal(result.automationStatus, "NOT_APPLICABLE")
     assert.equal(result.automationEventId, null)
     assert.equal(result.queuedAutomationCount, 0)
+    assert.deepEqual(where, {
+      tenantId: "tenant-1",
+      isEnabled: true,
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-1",
+    })
   })
 })

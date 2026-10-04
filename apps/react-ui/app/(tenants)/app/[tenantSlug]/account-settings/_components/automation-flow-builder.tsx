@@ -83,6 +83,10 @@ import {
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
+import {
+  AssigneeInput,
+  UNASSIGNED_ASSIGNEE_VALUE,
+} from "@/components/assignee-input"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -187,6 +191,8 @@ type AutomationFlowBuilderProps = {
   tenantSlug: string
   automationId?: string
   timezone?: string | null
+  libraryQuery?: string
+  newFolderId?: string | null
 }
 
 type Draft = {
@@ -1039,6 +1045,10 @@ function isCreateContactReady(
   if (createContactEmailTemplateError(config.emailTemplate, catalog, automationOutputs)) return false
   if (createContactPhoneTemplateError(config.phoneTemplate, catalog, automationOutputs)) return false
   if (!catalog.statuses.some((status) => status.id === config.statusConfigId)) return false
+  if (
+    config.assignedToUserId &&
+    !catalog.users.some((user) => user.id === config.assignedToUserId)
+  ) return false
   if (config.dateOfBirth && !isCreateContactTypedSourceReady(
     config.dateOfBirth,
     { label: "Date of birth", fieldType: "DATE", isRequired: false, options: [] },
@@ -1129,6 +1139,7 @@ function actionDefaults(
         phoneTemplate: "",
         dateOfBirth: null,
         statusConfigId: defaultStatus?.id ?? "",
+        assignedToUserId: null,
         customFieldValues: [],
       },
     }
@@ -1627,11 +1638,14 @@ function isIfElseReady(
   const inheritedOutputs = formatterOutputs(previousActions)
 
   return config.branches.every((branch) => {
-    if (branch.isDefault) return branch.conditions.length === 0 && branch.actions.length === 0
-    if (branch.conditions.length < 1 || branch.conditions.length > 20) return false
-    if (!branch.conditions.every((condition) => isBranchConditionReady(condition, catalog, inheritedOutputs))) return false
+    if (branch.isDefault) {
+      if (branch.conditions.length !== 0) return false
+    } else {
+      if (branch.conditions.length < 1 || branch.conditions.length > 20) return false
+      if (!branch.conditions.every((condition) => isBranchConditionReady(condition, catalog, inheritedOutputs))) return false
+    }
     if (!requireBranchActions && branch.actions.length === 0) return true
-    if (branch.actions.length === 0) return false
+    if (branch.actions.length === 0) return branch.isDefault
     return branch.actions.every((branchAction, index) => {
       if ((branchAction.type === "IF_ELSE" || branchAction.type === "SPLIT" || branchAction.type === "GO_TO") && index !== branch.actions.length - 1) return false
       if (branchAction.type === "DELETE_CONTACT" && index !== branch.actions.length - 1) return false
@@ -1959,7 +1973,6 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
       }
       if (action.type === "IF_ELSE") {
         for (const branch of action.ifElseConfig?.branches ?? []) {
-          if (branch.isDefault) continue
           const nestedIssue = validatePath(branch.actions, [...inherited, ...actions.slice(0, index)])
           if (nestedIssue) return nestedIssue
         }
@@ -2003,8 +2016,9 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
   }
 }
 
-export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, timezone }: AutomationFlowBuilderProps) {
+export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, timezone, libraryQuery = "view=grid", newFolderId }: AutomationFlowBuilderProps) {
   const router = useRouter()
+  const libraryHref = `/app/${tenantSlug}/account-settings/automations?${libraryQuery}`
   const [catalog, setCatalog] = useState<AutomationCatalog | null>(null)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
   const [lastSavedDraft, setLastSavedDraft] = useState<Draft>(EMPTY_DRAFT)
@@ -2403,10 +2417,10 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
       } else {
         const { data } = await api.post<{ automation: AutomationRecord }>(
           `/api/account-settings/${tenantId}/automations`,
-          payload,
+          { ...payload, folderId: newFolderId ?? null },
         )
         savedAutomation = data.automation
-        router.replace(`/app/${tenantSlug}/account-settings/automations/${data.automation.id}`)
+        router.replace(`/app/${tenantSlug}/account-settings/automations/${data.automation.id}?${libraryQuery}`)
       }
       const persistedDraft = {
         ...submittedDraft,
@@ -2471,7 +2485,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     try {
       await api.delete(`/api/account-settings/${tenantId}/automations/${automationId}`)
       toast.success("Automation deleted.")
-      router.push(`/app/${tenantSlug}/account-settings/automations`)
+      router.push(libraryHref)
       router.refresh()
     } catch {
       toast.error("Could not delete the automation.")
@@ -2490,7 +2504,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     <div className="flex h-[calc(100dvh-var(--tenant-shell-header-height))] max-h-[calc(100dvh-var(--tenant-shell-header-height))] min-h-0 flex-col gap-3 overflow-hidden bg-slate-50 p-3 md:p-4">
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
         <div className="flex min-w-0 items-center gap-3">
-          <Button asChild size="icon" variant="ghost"><Link href={`/app/${tenantSlug}/account-settings/automations`} aria-label="Back to automations"><ArrowLeft className="h-4 w-4" /></Link></Button>
+          <Button asChild size="icon" variant="ghost"><Link href={libraryHref} aria-label="Back to automations"><ArrowLeft className="h-4 w-4" /></Link></Button>
           <div className="min-w-0">
             <p className="text-xs font-semibold text-cyan-700">Opportunity automation</p>
             <h1 className="truncate text-lg font-semibold text-slate-950">{draft.name || "Untitled automation"}</h1>
@@ -4113,7 +4127,7 @@ function IfElseActionEditor({
             onChange={(event) => onChange({ ...action, ifElseConfig: { ...config, actionName: event.target.value } })}
             placeholder="If/Else"
           />
-          <p className="text-xs leading-4 text-slate-500">The first matching branch runs. If none match, the contact exits through Default.</p>
+          <p className="text-xs leading-4 text-slate-500">The first matching branch runs. If none match, the Default branch runs.</p>
         </Field>
       </section>
 
@@ -4221,7 +4235,7 @@ function IfElseActionEditor({
       <section className="rounded-xl border border-slate-200 bg-slate-100/80 p-3">
         <div className="mb-2 flex items-center gap-2">
           <Badge variant="outline" className="rounded-full border-slate-300 bg-white text-[10px] font-semibold text-slate-600">Default</Badge>
-          <p className="text-xs text-slate-500">Always last · no actions</p>
+          <p className="text-xs text-slate-500">Always last · actions optional</p>
         </div>
         <Input
           aria-label="Default branch name"
@@ -4235,6 +4249,9 @@ function IfElseActionEditor({
             },
           })}
         />
+        <p className="mt-2 text-xs text-slate-600">
+          {defaultBranch.actions.length} {defaultBranch.actions.length === 1 ? "action" : "actions"} in this branch. Add and edit them on the canvas.
+        </p>
       </section>
     </div>
   )
@@ -6862,6 +6879,7 @@ function CreateContactActionEditor({
         label="Phone"
         value={config.phoneTemplate ?? ""}
         maxLength={1_000}
+        phonePicker
         catalog={catalog}
         timezone={timezone}
         automationOutputs={automationOutputs}
@@ -6887,6 +6905,40 @@ function CreateContactActionEditor({
         </Select>
         {!catalog.statuses.some((status) => status.id === config.statusConfigId) ? (
           <p className="text-xs text-destructive">Choose an active contact status.</p>
+        ) : null}
+      </Field>
+
+      <Field
+        className="gap-2"
+        data-invalid={Boolean(
+          config.assignedToUserId &&
+          !catalog.users.some((user) => user.id === config.assignedToUserId),
+        )}
+      >
+        <FieldLabel htmlFor={`${actionKey}-assignee`}>Assignee</FieldLabel>
+        <AssigneeInput
+          id={`${actionKey}-assignee`}
+          value={config.assignedToUserId ?? UNASSIGNED_ASSIGNEE_VALUE}
+          onValueChange={(assignedToUserId) => onChange({
+            ...config,
+            assignedToUserId: assignedToUserId === UNASSIGNED_ASSIGNEE_VALUE
+              ? null
+              : assignedToUserId,
+          })}
+          options={catalog.users.map((user) => ({
+            value: user.id,
+            label: user.name?.trim() || user.email,
+            email: user.email,
+            image: user.image ?? null,
+          }))}
+          ariaInvalid={Boolean(
+            config.assignedToUserId &&
+            !catalog.users.some((user) => user.id === config.assignedToUserId),
+          )}
+        />
+        {config.assignedToUserId &&
+        !catalog.users.some((user) => user.id === config.assignedToUserId) ? (
+          <p className="text-xs text-destructive">Choose an active team member.</p>
         ) : null}
       </Field>
 

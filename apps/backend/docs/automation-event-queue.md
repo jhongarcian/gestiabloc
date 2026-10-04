@@ -30,3 +30,9 @@ Every value is validated during startup. Keep enough PostgreSQL connections avai
 3. Enable the flag in staging and run the 1,000-event load test.
 4. Enable production while monitoring `automation_queue_health`, expired-lease, retry, and completion logs.
 5. Remove the synchronous compatibility path after the production soak period.
+
+## Matching and persistence
+
+Only automations whose opportunity trigger, pipeline, destination stage, and contact filters all match are queued and logged. If no automation matches, the request reports the automation result as `NOT_APPLICABLE` and creates no automation event, dispatch, run, or node-execution record.
+
+Skipped node logs remain part of a run after it has matched and started, including unselected branches and nodes bypassed because of an earlier in-run outcome. Older queued dispatches with saved skip decisions remain processable for deployment compatibility, but new opportunity events do not create them.

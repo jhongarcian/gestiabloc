@@ -47,7 +47,7 @@ The normal lifecycle is:
 3. The trigger stage and contact filters are evaluated.
 4. A matching automation creates an independent run for that contact.
 5. Actions execute in order until the run completes, exits, fails, or reaches a Wait action.
-6. Every trigger and action result is recorded in the execution logs.
+6. Once an automation matches its trigger and contact filters, every trigger and action result is recorded in the execution logs.
 
 Repeated qualifying opportunity events may create separate runs for the same contact. Parallel runs do not share formatter values or cursor state.
 
@@ -122,8 +122,8 @@ All configured top-level trigger filters must match.
 
 Filters are not displayed as graph nodes. Their behavior is:
 
-- trigger or stage mismatch: trigger and actions are skipped
-- matching trigger with failed filters: trigger is recorded as executed and actions are skipped
+- trigger, pipeline, or stage mismatch: no execution log is created
+- matching trigger with failed filters: no execution log is created
 - full match: trigger and actions execute
 
 When asynchronous event processing is enabled, filter decisions use the contact state captured when the opportunity event occurred. Actions continue to resolve live contact data when their node executes.
@@ -385,6 +385,24 @@ It does not delete the contact, opportunities in other pipelines, automation his
 Delete opportunity is not terminal. Later actions continue normally, and a later Update/create opportunity action may create the opportunity again. A later failure in the same transaction segment rolls the deletion back; reaching a Wait commits it.
 
 ## 10. Contact Actions
+
+### Create contact
+
+Create contact adds a standalone contact while the automation continues to run against its original contact.
+
+The action supports:
+
+- an editable action name
+- required first- and last-name templates
+- optional middle name, email, and phone templates
+- an active contact status
+- an optional active-team-member assignee selected with the searchable contact assignee picker
+- an optional birthday
+- up to 20 compatible custom-field values
+
+For a fixed phone number, the editor uses the same country picker as the contact overview. It defaults to the United States, formats the value as the number is entered, and saves the normalized E.164 value. The **Insert field** control remains available for dynamic contact fields and earlier automation values. Inserting a dynamic value replaces the fixed number and opens the template editor; clearing the template returns the field to the phone picker.
+
+At execution time, a rendered phone value must be a valid E.164 number. A configured assignee must still be an active member of the same tenant. If an existing contact in the tenant already has the same normalized email or phone, the action succeeds as a no-op and does not modify that contact. The new contact is not automatically enrolled in another workflow, and later actions continue to use the original contact.
 
 ### Update contact fields
 
@@ -651,7 +669,7 @@ When an expected automation does not run, verify:
 4. The opportunity belongs to the configured pipeline.
 5. A stage-change event entered the configured destination stage.
 6. The contact matched every trigger filter at event time.
-7. Execution logs do not show Queued, Waiting, Skipped, or Failed nodes.
+7. A qualifying execution log exists; no log means the opportunity trigger or contact filters did not match.
 8. A required formatter output was created before a later node referenced it.
 9. A Wait node has not paused the run.
 10. The contact or selected referenced configuration still exists and remains active.

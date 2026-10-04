@@ -27,6 +27,7 @@ export const AutomationCreateContactConfigSchema = z.object({
   phoneTemplate: templateSchema.nullable().optional(),
   dateOfBirth: AutomationCreateContactTypedSourceSchema.nullable().optional(),
   statusConfigId: idSchema,
+  assignedToUserId: idSchema.nullable().optional(),
   customFieldValues: z.array(z.object({
     customFieldId: idSchema,
     source: AutomationCreateContactValueSourceSchema,

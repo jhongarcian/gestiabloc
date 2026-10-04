@@ -360,6 +360,7 @@ export type AutomationCreateContactConfig = {
   phoneTemplate?: string | null
   dateOfBirth?: AutomationCreateContactTypedSource | null
   statusConfigId: string
+  assignedToUserId?: string | null
   customFieldValues: Array<{
     customFieldId: string
     source: AutomationCreateContactValueSource
@@ -421,6 +422,8 @@ export type AutomationRecord = {
   name: string
   isEnabled: boolean
   sortOrder: number
+  folderId: string | null
+  librarySortOrder: number
   trigger:
     | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
     | {
@@ -436,6 +439,14 @@ export type AutomationRecord = {
     createdAt: string
     errorMessage: string | null
   } | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type AutomationFolder = {
+  id: string
+  name: string
+  sortOrder: number
   createdAt: string
   updatedAt: string
 }
@@ -488,7 +499,7 @@ export type AutomationCatalog = {
     name: string
     targetAutomationIds: string[]
   }>
-  users: Array<{ id: string; name: string; email: string }>
+  users: Array<{ id: string; name: string; email: string; image?: string | null }>
 }
 
 export type AutomationExecution = {

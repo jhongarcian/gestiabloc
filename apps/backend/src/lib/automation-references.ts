@@ -232,6 +232,12 @@ export async function findEnabledAutomationReference(
           return { id: automation.id, name: automation.name }
         }
         if (
+          reference.kind === "user" &&
+          createContact.data.assignedToUserId === reference.id
+        ) {
+          return { id: automation.id, name: automation.name }
+        }
+        if (
           reference.kind === "customField" &&
           (createContact.data.customFieldValues.some(
             (assignment) => assignment.customFieldId === reference.id,

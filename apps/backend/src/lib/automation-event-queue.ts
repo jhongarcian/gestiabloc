@@ -89,6 +89,9 @@ export async function queueOpportunityAutomationEvent(
       isEnabled: true,
       triggerType: event.triggerType,
       pipelineId: event.pipelineId,
+      ...(event.triggerType === "OPPORTUNITY_STAGE_CHANGED"
+        ? { targetStageId: event.targetStageId }
+        : {}),
     },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {
@@ -136,22 +139,24 @@ export async function queueOpportunityAutomationEvent(
     targetStageId: event.targetStageId,
   }]
   const occurredAt = new Date()
-  const dispatches = automations.map((automation: any, automationOrder: number) => {
-    const actions = automation.actions.map(automationActionSnapshot)
+  const matchingAutomations = automations.filter((automation: any) => {
     const trigger = evaluateAutomationTrigger(automation, event, catalog)
-    const filters = trigger.matches
-      ? evaluateAutomationConditions(automation, event, contact, catalog)
-      : { matches: false, failures: [] as string[] }
-    const decision = !trigger.matches
-      ? "SKIP_TRIGGER"
-      : filters.matches
-        ? "RUN"
-        : "SKIP_FILTERS"
-    const decisionDetails = !trigger.matches
-      ? trigger.details
-      : filters.matches
-        ? trigger.details
-        : filters.failures.join(" ")
+    if (!trigger.matches) return false
+    return evaluateAutomationConditions(automation, event, contact, catalog).matches
+  })
+  if (matchingAutomations.length === 0) {
+    return {
+      automationEventId: null,
+      automationStatus: "NOT_APPLICABLE",
+      queuedAutomationCount: 0,
+      matchedCount: 0,
+      executedCount: 0,
+      contactDeleted: false,
+    }
+  }
+
+  const dispatches = matchingAutomations.map((automation: any, automationOrder: number) => {
+    const actions = automation.actions.map(automationActionSnapshot)
     return {
       id: randomUUID(),
       tenantId: event.tenantId,
@@ -163,8 +168,8 @@ export async function queueOpportunityAutomationEvent(
       triggerType: automation.triggerType,
       sourceStageId: automation.sourceStageId,
       targetStageId: automation.targetStageId,
-      decision,
-      decisionDetails,
+      decision: "RUN" as const,
+      decisionDetails: "The opportunity event matched this trigger.",
       actionSnapshot: actions,
       attemptId: randomUUID(),
       triggerExecutionId: randomUUID(),
@@ -231,7 +236,7 @@ export async function queueOpportunityAutomationEvent(
     automationEventId: eventId,
     automationStatus: "QUEUED",
     queuedAutomationCount: dispatches.length,
-    matchedCount: dispatches.filter((item: any) => item.decision === "RUN").length,
+    matchedCount: dispatches.length,
     executedCount: 0,
     contactDeleted: false,
   }
