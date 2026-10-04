@@ -8,6 +8,8 @@ import {
   KeyboardSensor,
   PointerSensor,
   closestCenter,
+  pointerWithin,
+  useDroppable,
   useSensor,
   useSensors,
   type CollisionDetection,
@@ -25,9 +27,7 @@ import { CSS } from "@dnd-kit/utilities"
 import { isAxiosError } from "axios"
 import {
   AlertCircle,
-  ArrowDown,
   ArrowLeft,
-  ArrowUp,
   ChevronDown,
   ChevronRight,
   FolderPlus,
@@ -39,7 +39,6 @@ import {
   MoreHorizontal,
   Plus,
   RotateCcw,
-  Workflow,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -65,14 +64,6 @@ import { EmptyDocument } from "@/components/ui/empty-document"
 import { EmptyFolder } from "@/components/ui/empty-folder"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  Sheet,
-  SheetContent,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from "@/components/ui/sheet"
 import { api } from "@/lib/api"
 import {
   groupAutomations,
@@ -97,18 +88,76 @@ const dialogClass =
 
 type SortableKind = "folder" | "automation"
 const folderDragId = (id: string) => "folder:" + id
+const folderDropId = (id: string) => "folder-drop:" + id
 const automationDragId = (id: string) => "automation:" + id
 
 const libraryCollisionDetection: CollisionDetection = (args) => {
   const { kind, folderId } = args.active.data.current ?? {}
+  if (kind === "folder") {
+    return closestCenter({
+      ...args,
+      droppableContainers: args.droppableContainers.filter(
+        (container) => container.data.current?.kind === "folder",
+      ),
+    })
+  }
+  if (kind !== "automation") return []
+
+  const folderTargets = args.droppableContainers.filter(
+    (container) =>
+      container.data.current?.kind === "folder-drop" &&
+      container.data.current.folderId !== folderId,
+  )
+  const hoveredFolder = pointerWithin({
+    ...args,
+    droppableContainers: folderTargets,
+  })
+  if (hoveredFolder.length > 0) return hoveredFolder
+
+  const siblings = args.droppableContainers.filter(
+    (container) =>
+      container.data.current?.kind === "automation" &&
+      container.data.current.folderId === folderId,
+  )
   return closestCenter({
     ...args,
-    droppableContainers: args.droppableContainers.filter((container) => {
-      const data = container.data.current
-      return data?.kind === kind &&
-        (kind === "folder" || data?.folderId === folderId)
-    }),
+    droppableContainers: args.pointerCoordinates
+      ? siblings
+      : [...siblings, ...folderTargets],
   })
+}
+
+function FolderDropTarget({
+  folder,
+  disabled,
+  children,
+}: {
+  folder: AutomationFolder
+  disabled: boolean
+  children: ReactNode
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: folderDropId(folder.id),
+    data: { kind: "folder-drop", folderId: folder.id },
+    disabled,
+  })
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        "relative rounded-[22px]",
+        isOver && "z-10 ring-2 ring-blue-500 ring-offset-2",
+      )}
+    >
+      {children}
+      {isOver && (
+        <span className="sr-only" aria-live="polite">
+          Drop to move into {folder.name}
+        </span>
+      )}
+    </div>
+  )
 }
 
 function SortableLibraryItem({
@@ -151,7 +200,11 @@ function SortableLibraryItem({
       className="inline-flex size-8 shrink-0 touch-none items-center justify-center rounded-full border border-slate-200 bg-white/95 text-slate-500 shadow-sm transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 enabled:cursor-grab"
       {...attributes}
       {...listeners}
-      aria-label={`Drag to reorder ${kind} ${name}`}
+      aria-label={
+        kind === "automation"
+          ? `Drag to reorder or move automation ${name}`
+          : `Drag to reorder folder ${name}`
+      }
     >
       <GripVertical className="size-4" aria-hidden="true" />
     </button>
@@ -232,8 +285,6 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
   const [deleteFolder, setDeleteFolder] = useState<AutomationFolder | null>(
     null,
   )
-  const [orderOpen, setOrderOpen] = useState(false)
-  const [draftOrder, setDraftOrder] = useState<string[]>([])
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -278,14 +329,6 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
     requestedFolder && !activeFolder && !loading && !error,
   )
   const visibleItems = groups.get(activeId) ?? []
-  const executionItems = useMemo(
-    () =>
-      [...items].sort(
-        (a, b) =>
-          a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt),
-      ),
-    [items],
-  )
   const query = serializeLibraryLocation(location)
   const builderHref = (id: string) => base + "/" + id + "?" + query
 
@@ -411,7 +454,15 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
     if (!over || active.id === over.id || busy) return
     const activeData = active.data.current
     const overData = over.data.current
-    if (!activeData || !overData || activeData.kind !== overData.kind) return
+    if (!activeData || !overData) return
+    if (activeData.kind === "automation" && overData.kind === "folder-drop") {
+      const folderId = overData.folderId
+      if (typeof folderId !== "string" || folderId === activeData.folderId) return
+      const record = items.find((item) => item.id === activeData.itemId)
+      if (record) void moveAutomation(record, folderId)
+      return
+    }
+    if (activeData.kind !== overData.kind) return
     if (activeData.kind === "folder") {
       const from = orderedFolders.findIndex((folder) => folder.id === activeData.itemId)
       const to = orderedFolders.findIndex((folder) => folder.id === overData.itemId)
@@ -464,33 +515,6 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
       setBusy(false)
     }
   }
-  function startOrder() {
-    setDraftOrder(executionItems.map((item) => item.id))
-    setOrderOpen(true)
-  }
-  function shiftExecution(index: number, direction: -1 | 1) {
-    const target = index + direction
-    if (target < 0 || target >= draftOrder.length) return
-    const next = [...draftOrder]
-    ;[next[index], next[target]] = [next[target]!, next[index]!]
-    setDraftOrder(next)
-  }
-  async function saveOrder() {
-    setBusy(true)
-    try {
-      await api.patch(endpoint + "/automations/reorder", {
-        automationIds: draftOrder,
-      })
-      setOrderOpen(false)
-      toast.success("Execution order saved.")
-      await load()
-    } catch (cause) {
-      toast.error(errorMessage(cause, "Could not save execution order."))
-    } finally {
-      setBusy(false)
-    }
-  }
-
   function folderMenu(folder: AutomationFolder) {
     return (
       <DropdownMenu>
@@ -591,7 +615,6 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
     )
   }
   function automationCard(record: AutomationRecord, compact = false) {
-    const siblingCount = groups.get(record.folderId)?.length ?? 0
     return (
       <SortableLibraryItem
         key={record.id}
@@ -599,7 +622,7 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
         kind="automation"
         folderId={record.folderId}
         name={record.name}
-        disabled={busy || siblingCount < 2}
+        disabled={busy}
         className={compact ? "min-w-0" : "xl:max-w-64"}
       >
         {(handle) => (
@@ -670,47 +693,49 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
         id={folder.id}
         kind="folder"
         name={folder.name}
-        disabled={busy || orderedFolders.length < 2}
+        disabled={busy}
         className="xl:max-w-64"
       >
         {(handle) => (
-          <article className="group relative min-w-0 rounded-[22px] border border-slate-200 bg-white p-3 shadow-sm transition hover:border-blue-200 hover:shadow-md xl:aspect-square xl:max-w-64">
-            <div className="absolute left-5 top-5 z-10">{handle}</div>
-            <div
-              role="button"
-              tabIndex={0}
-              aria-label={"Open " + folder.name}
-              onClick={() => openFolder(folder)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault()
-                  openFolder(folder)
-                }
-              }}
-              className="cursor-pointer rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-blue-700 xl:flex xl:h-full xl:flex-col"
-            >
-              <div className="flex h-32 items-center justify-center rounded-xl bg-slate-50 xl:min-h-0 xl:flex-1 xl:h-auto">
-                <EmptyFolder
-                  variant="card"
-                  documentCount={count}
-                  heading=""
-                  description={null}
-                  className="pointer-events-none"
-                />
+          <FolderDropTarget folder={folder} disabled={busy}>
+            <article className="group relative min-w-0 rounded-[22px] border border-slate-200 bg-white p-3 shadow-sm transition hover:border-blue-200 hover:shadow-md xl:aspect-square xl:max-w-64">
+              <div className="absolute left-5 top-5 z-10">{handle}</div>
+              <div
+                role="button"
+                tabIndex={0}
+                aria-label={"Open " + folder.name}
+                onClick={() => openFolder(folder)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault()
+                    openFolder(folder)
+                  }
+                }}
+                className="cursor-pointer rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-blue-700 xl:flex xl:h-full xl:flex-col"
+              >
+                <div className="flex h-32 items-center justify-center rounded-xl bg-slate-50 xl:min-h-0 xl:flex-1 xl:h-auto">
+                  <EmptyFolder
+                    variant="card"
+                    documentCount={count}
+                    heading=""
+                    description={null}
+                    className="pointer-events-none"
+                  />
+                </div>
+                <div className="px-1 pb-1 pt-3 pr-10 text-left">
+                  <h4 className="truncate text-sm font-semibold text-slate-950">
+                    {folder.name}
+                  </h4>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {count} automation{count === 1 ? "" : "s"}
+                  </p>
+                </div>
               </div>
-              <div className="px-1 pb-1 pt-3 pr-10 text-left">
-                <h4 className="truncate text-sm font-semibold text-slate-950">
-                  {folder.name}
-                </h4>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  {count} automation{count === 1 ? "" : "s"}
-                </p>
+              <div className="absolute right-4 top-[9.25rem] xl:bottom-4 xl:top-auto">
+                {folderMenu(folder)}
               </div>
-            </div>
-            <div className="absolute right-4 top-[9.25rem] xl:bottom-4 xl:top-auto">
-              {folderMenu(folder)}
-            </div>
-          </article>
+            </article>
+          </FolderDropTarget>
         )}
       </SortableLibraryItem>
     )
@@ -738,15 +763,6 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              className={secondary}
-              onClick={startOrder}
-            >
-              <Workflow data-icon="inline-start" aria-hidden="true" />
-              Execution order
-            </Button>
             <Button asChild variant="ghost" className={secondary}>
               <Link href={"/app/" + tenantSlug + "/automation-processes"}>
                 <History data-icon="inline-start" aria-hidden="true" />
@@ -942,50 +958,52 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
                     id={folder.id}
                     kind="folder"
                     name={folder.name}
-                    disabled={busy || orderedFolders.length < 2}
+                    disabled={busy}
                     className="border-b border-slate-100 last:border-b-0"
                   >
                     {(handle) => (
                       <>
-                        <div className="group flex items-center gap-2 bg-slate-50/70 px-3 py-2 hover:bg-blue-50/60">
-                          {handle}
-                          <Button
-                            type="button"
-                            size="icon-sm"
-                            variant="ghost"
-                            className="size-7 shrink-0"
-                            aria-label={(expanded ? "Collapse " : "Expand ") + folder.name}
-                            aria-expanded={expanded}
-                            onClick={(event) => {
-                              if (event.detail < 2) toggleOpen(folder.id)
-                            }}
-                          >
-                            {expanded ? <ChevronDown /> : <ChevronRight />}
-                          </Button>
-                          <button
-                            type="button"
-                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                            onClick={(event) => {
-                              if (event.detail < 2) toggleOpen(folder.id)
-                            }}
-                            aria-expanded={expanded}
-                          >
-                            <EmptyFolder
-                              variant="row"
-                              documentCount={children.length}
-                              heading=""
-                              description={null}
-                              className="pointer-events-none"
-                            />
-                            <span className="block truncate text-sm font-semibold text-slate-900">
-                              {folder.name}{" "}
-                              <span className="font-normal text-slate-500">
-                                ({children.length})
+                        <FolderDropTarget folder={folder} disabled={busy}>
+                          <div className="group flex items-center gap-2 bg-slate-50/70 px-3 py-2 hover:bg-blue-50/60">
+                            {handle}
+                            <Button
+                              type="button"
+                              size="icon-sm"
+                              variant="ghost"
+                              className="size-7 shrink-0"
+                              aria-label={(expanded ? "Collapse " : "Expand ") + folder.name}
+                              aria-expanded={expanded}
+                              onClick={(event) => {
+                                if (event.detail < 2) toggleOpen(folder.id)
+                              }}
+                            >
+                              {expanded ? <ChevronDown /> : <ChevronRight />}
+                            </Button>
+                            <button
+                              type="button"
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                              onClick={(event) => {
+                                if (event.detail < 2) toggleOpen(folder.id)
+                              }}
+                              aria-expanded={expanded}
+                            >
+                              <EmptyFolder
+                                variant="row"
+                                documentCount={children.length}
+                                heading=""
+                                description={null}
+                                className="pointer-events-none"
+                              />
+                              <span className="block truncate text-sm font-semibold text-slate-900">
+                                {folder.name}{" "}
+                                <span className="font-normal text-slate-500">
+                                  ({children.length})
+                                </span>
                               </span>
-                            </span>
-                          </button>
-                          {folderMenu(folder)}
-                        </div>
+                            </button>
+                            {folderMenu(folder)}
+                          </div>
+                        </FolderDropTarget>
                         {expanded && (
                           <div className="ml-7 border-l border-slate-200 pl-3">
                             {children.length ? (
@@ -1186,103 +1204,6 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
         </DialogContent>
       </Dialog>
 
-      <Sheet
-        open={orderOpen}
-        onOpenChange={(open) => {
-          if (!busy) setOrderOpen(open)
-        }}
-      >
-        <SheetContent
-          side="right"
-          showCloseButton={!busy}
-          onEscapeKeyDown={(event) => {
-            if (busy) event.preventDefault()
-          }}
-          onPointerDownOutside={(event) => {
-            if (busy) event.preventDefault()
-          }}
-          className="w-full gap-0 border-slate-200 bg-white p-0 sm:max-w-xl"
-        >
-          <SheetHeader className="border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left">
-            <p className="text-xs font-semibold text-blue-700">
-              Automation settings
-            </p>
-            <SheetTitle className="text-xl font-semibold text-slate-950">
-              Execution order
-            </SheetTitle>
-            <SheetDescription className="text-sm leading-6 text-slate-600">
-              This global priority is independent of folders and library order.
-              Move an automation, then save the sequence.
-            </SheetDescription>
-          </SheetHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5 [scrollbar-gutter:stable]">
-            {draftOrder.length === 0 ? (
-              <p className="text-sm text-slate-500">No automations yet.</p>
-            ) : (
-              <ol className="space-y-2">
-                {draftOrder.map((id, index) => {
-                  const item = items.find((entry) => entry.id === id)
-                  if (!item) return null
-                  return (
-                    <li
-                      key={id}
-                      className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3"
-                    >
-                      <span className="w-7 text-center text-xs font-bold tabular-nums text-blue-900">
-                        {index + 1}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900">
-                        {item.name}
-                      </span>
-                      <Button
-                        type="button"
-                        size="icon-sm"
-                        variant="outline"
-                        className={iconButton}
-                        disabled={index === 0 || busy}
-                        aria-label={"Move " + item.name + " up"}
-                        onClick={() => shiftExecution(index, -1)}
-                      >
-                        <ArrowUp />
-                      </Button>
-                      <Button
-                        type="button"
-                        size="icon-sm"
-                        variant="outline"
-                        className={iconButton}
-                        disabled={index === draftOrder.length - 1 || busy}
-                        aria-label={"Move " + item.name + " down"}
-                        onClick={() => shiftExecution(index, 1)}
-                      >
-                        <ArrowDown />
-                      </Button>
-                    </li>
-                  )
-                })}
-              </ol>
-            )}
-          </div>
-          <SheetFooter className="flex-row justify-end gap-2 border-t border-slate-100 px-6 py-4">
-            <Button
-              type="button"
-              variant="outline"
-              className={secondary}
-              disabled={busy}
-              onClick={() => setOrderOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              className={primary}
-              disabled={busy || draftOrder.length === 0}
-              onClick={() => void saveOrder()}
-            >
-              {busy && <Loader2 className="animate-spin" />}Save order
-            </Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
     </section>
   )
 }

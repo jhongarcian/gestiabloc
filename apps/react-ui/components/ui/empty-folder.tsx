@@ -68,7 +68,7 @@ function EmptyFolder({
           "relative shrink-0 [perspective:1000px]",
           variant === "empty"
             ? compact
-              ? "-my-4 h-25 w-52 scale-[.68]"
+              ? "-my-4 h-25 w-44 scale-[.68]"
               : "h-25 w-52 lg:my-2 lg:scale-[1.12]"
             : variant === "card"
               ? "-mx-10 -my-7 h-28 w-38 origin-center scale-[.6] sm:-mx-9 sm:-my-6 sm:scale-[.66] lg:-mx-7 lg:-my-5 lg:scale-[.74]"
