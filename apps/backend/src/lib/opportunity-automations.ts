@@ -645,6 +645,7 @@ export const AutomationActionInputSchema: z.ZodType<AutomationActionInput> = z.l
 export const AutomationUpsertSchema = z
   .object({
     name: z.string().trim().min(1).max(120),
+    folderId: idSchema.nullable().optional(),
     isEnabled: z.boolean().default(false),
     trigger: z.discriminatedUnion("type", [
       z.object({

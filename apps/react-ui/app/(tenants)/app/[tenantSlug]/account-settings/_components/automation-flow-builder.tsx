@@ -191,6 +191,8 @@ type AutomationFlowBuilderProps = {
   tenantSlug: string
   automationId?: string
   timezone?: string | null
+  libraryQuery?: string
+  newFolderId?: string | null
 }
 
 type Draft = {
@@ -2014,8 +2016,9 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
   }
 }
 
-export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, timezone }: AutomationFlowBuilderProps) {
+export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, timezone, libraryQuery = "view=grid", newFolderId }: AutomationFlowBuilderProps) {
   const router = useRouter()
+  const libraryHref = `/app/${tenantSlug}/account-settings/automations?${libraryQuery}`
   const [catalog, setCatalog] = useState<AutomationCatalog | null>(null)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
   const [lastSavedDraft, setLastSavedDraft] = useState<Draft>(EMPTY_DRAFT)
@@ -2414,10 +2417,10 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
       } else {
         const { data } = await api.post<{ automation: AutomationRecord }>(
           `/api/account-settings/${tenantId}/automations`,
-          payload,
+          { ...payload, folderId: newFolderId ?? null },
         )
         savedAutomation = data.automation
-        router.replace(`/app/${tenantSlug}/account-settings/automations/${data.automation.id}`)
+        router.replace(`/app/${tenantSlug}/account-settings/automations/${data.automation.id}?${libraryQuery}`)
       }
       const persistedDraft = {
         ...submittedDraft,
@@ -2482,7 +2485,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     try {
       await api.delete(`/api/account-settings/${tenantId}/automations/${automationId}`)
       toast.success("Automation deleted.")
-      router.push(`/app/${tenantSlug}/account-settings/automations`)
+      router.push(libraryHref)
       router.refresh()
     } catch {
       toast.error("Could not delete the automation.")
@@ -2501,7 +2504,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     <div className="flex h-[calc(100dvh-var(--tenant-shell-header-height))] max-h-[calc(100dvh-var(--tenant-shell-header-height))] min-h-0 flex-col gap-3 overflow-hidden bg-slate-50 p-3 md:p-4">
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
         <div className="flex min-w-0 items-center gap-3">
-          <Button asChild size="icon" variant="ghost"><Link href={`/app/${tenantSlug}/account-settings/automations`} aria-label="Back to automations"><ArrowLeft className="h-4 w-4" /></Link></Button>
+          <Button asChild size="icon" variant="ghost"><Link href={libraryHref} aria-label="Back to automations"><ArrowLeft className="h-4 w-4" /></Link></Button>
           <div className="min-w-0">
             <p className="text-xs font-semibold text-cyan-700">Opportunity automation</p>
             <h1 className="truncate text-lg font-semibold text-slate-950">{draft.name || "Untitled automation"}</h1>

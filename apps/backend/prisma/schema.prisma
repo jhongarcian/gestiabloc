@@ -662,6 +662,7 @@ model Tenant {
   calendarStaffGroups               CalendarStaffGroup[]
   calendarStaffGroupMemberships     CalendarStaffGroupMember[]
   automations                       Automation[]
+  automationFolders                 AutomationFolder[]
   automationProcesses               AutomationProcess[]
   automationNodeExecutions          AutomationNodeExecution[]
   automationRuns                    AutomationRun[]
@@ -1435,6 +1436,23 @@ model ContactOpportunity {
   @@index([tenantId, contactId, updatedAt])
 }
 
+model AutomationFolder {
+  id             String       @id @default(uuid())
+  tenantId       String
+  name           String
+  normalizedName String
+  sortOrder      Int          @default(0)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  automations Automation[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, normalizedName])
+  @@index([tenantId, sortOrder])
+}
+
 model Automation {
   id            String                @id @default(uuid())
   tenantId      String
@@ -1445,8 +1463,11 @@ model Automation {
   sourceStageId String?
   targetStageId String?
   sortOrder     Int                   @default(0)
+  folderId      String?
+  librarySortOrder Int                @default(0)
 
   tenant         Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  folder         AutomationFolder?         @relation(fields: [tenantId, folderId], references: [tenantId, id], onDelete: Restrict)
   conditions     AutomationCondition[]
   actions        AutomationAction[]
   executions     AutomationExecution[]
@@ -1466,6 +1487,7 @@ model Automation {
   @@index([tenantId, pipelineId, triggerType, isEnabled])
   @@index([tenantId, sourceStageId])
   @@index([tenantId, targetStageId])
+  @@index([tenantId, folderId, librarySortOrder])
 }
 
 model AutomationCondition {
