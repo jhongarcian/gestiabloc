@@ -21,6 +21,8 @@ export function AccountSettingsLayoutShell({
     pathname.includes("/follow-up-templates/")
   const isAutomationBuilderRoute =
     pathname.includes(`/app/${tenantSlug}/account-settings/automations/`)
+  const isAutomationListRoute =
+    pathname === `/app/${tenantSlug}/account-settings/automations`
 
   if (isFollowUpBuilderRoute || isAutomationBuilderRoute) {
     return <section className="flex h-full min-h-0 flex-col">{children}</section>
@@ -37,9 +39,13 @@ export function AccountSettingsLayoutShell({
             Manage tenant-level configuration and administrative controls.
           </p>
         </div>
-        <Button asChild variant="outline" className="gap-2 self-start bg-white">
+        <Button
+          asChild
+          variant="outline"
+          className="h-8 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+        >
           <Link href={`/onboarding/${tenantSlug}/welcome`}>
-            <Rocket className="h-4 w-4" />
+            <Rocket data-icon="inline-start" aria-hidden="true" />
             Setup guide
           </Link>
         </Button>
@@ -49,7 +55,13 @@ export function AccountSettingsLayoutShell({
         <AccountSettingsTabs tenantSlug={tenantSlug} />
       </div>
 
-      <div className="flex min-h-0 flex-1 rounded-xl bg-white p-2 md:p-4">
+      <div
+        className={
+          isAutomationListRoute
+            ? "flex min-h-0 flex-1"
+            : "flex min-h-0 flex-1 rounded-xl bg-white p-2 md:p-4"
+        }
+      >
         <div className="flex h-full w-full min-h-0 flex-col">{children}</div>
       </div>
     </section>
