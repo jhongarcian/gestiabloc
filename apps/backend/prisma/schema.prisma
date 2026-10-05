@@ -278,6 +278,7 @@ enum OpportunityResult {
 enum AutomationTriggerType {
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
+  OPPORTUNITY_CHANGED
 }
 
 enum AutomationConditionSource {
@@ -403,6 +404,7 @@ enum AutomationNodeEventSource {
   MANUAL_ENROLLMENT
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
+  OPPORTUNITY_CHANGED
   AUTOMATION_ACTION
 }
 
@@ -1462,6 +1464,7 @@ model Automation {
   pipelineId    String
   sourceStageId String?
   targetStageId String?
+  targetResult  OpportunityResult?
   sortOrder     Int                   @default(0)
   folderId      String?
   librarySortOrder Int                @default(0)
@@ -1487,6 +1490,7 @@ model Automation {
   @@index([tenantId, pipelineId, triggerType, isEnabled])
   @@index([tenantId, sourceStageId])
   @@index([tenantId, targetStageId])
+  @@index([tenantId, targetResult])
   @@index([tenantId, folderId, librarySortOrder])
 }
 
@@ -1572,6 +1576,8 @@ model AutomationExecution {
   contactId      String?
   sourceStageId  String?
   targetStageId  String?
+  sourceResult   OpportunityResult?
+  targetResult   OpportunityResult?
   actorUserId    String?
   processId      String?
   processName    String?
@@ -1646,6 +1652,8 @@ model AutomationRun {
   triggerType            AutomationTriggerType
   sourceStageId          String?
   targetStageId          String?
+  sourceResult           OpportunityResult?
+  targetResult           OpportunityResult?
   actionSnapshot         Json
   variables              Json                      @default("{}")
   cursorIndex            Int                       @default(0)
@@ -1702,6 +1710,8 @@ model AutomationEvent {
   sourceStageName       String?
   targetStageId         String
   targetStageName       String
+  sourceResult          OpportunityResult?
+  targetResult          OpportunityResult?
   valueCents            Int
   status                AutomationEventStatus @default(QUEUED)
   dispatchCount         Int                   @default(0)
@@ -1752,6 +1762,7 @@ model AutomationDispatch {
   triggerType          AutomationTriggerType
   sourceStageId        String?
   targetStageId        String?
+  targetResult         OpportunityResult?
   decision             AutomationDispatchDecision
   decisionDetails      String?
   actionSnapshot       Json
@@ -1980,6 +1991,7 @@ model Notification {
   title          String
   body           String?
   readAt         DateTime?
+  dismissedAt    DateTime?
 
   tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1991,6 +2003,7 @@ model Notification {
 
   @@index([tenantId, userId, createdAt])
   @@index([tenantId, userId, readAt, createdAt])
+  @@index([tenantId, userId, dismissedAt, createdAt])
   @@index([tenantId, userId, contactId, createdAt])
 }
 

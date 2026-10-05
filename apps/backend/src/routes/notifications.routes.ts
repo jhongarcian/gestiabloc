@@ -75,6 +75,7 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
     const where = {
       tenantId,
       userId: authed.user.id,
+      dismissedAt: null,
       ...(unreadOnly ? { readAt: null } : {}),
     }
 
@@ -103,6 +104,7 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
         where: {
           tenantId,
           userId: authed.user.id,
+          dismissedAt: null,
           readAt: null,
         },
       }),
@@ -150,6 +152,7 @@ router.patch("/:tenantId/:notificationId/read", requireAuth, async (req, res, ne
         id: notificationId,
         tenantId,
         userId: authed.user.id,
+        dismissedAt: null,
       },
       select: {
         id: true,
@@ -198,6 +201,7 @@ router.delete(
           id: notificationId,
           tenantId,
           userId: authed.user.id,
+          dismissedAt: null,
         },
         select: {
           id: true,
@@ -208,9 +212,12 @@ router.delete(
         return res.status(404).json({ error: "NOTIFICATION_NOT_FOUND" })
       }
 
-      await prismaWithNotifications.notification.delete({
+      await prismaWithNotifications.notification.update({
         where: {
           id: notification.id,
+        },
+        data: {
+          dismissedAt: new Date(),
         },
       })
 
@@ -235,6 +242,7 @@ router.patch("/:tenantId/read-all", requireAuth, async (req, res, next) => {
       where: {
         tenantId,
         userId: authed.user.id,
+        dismissedAt: null,
         readAt: null,
       },
       data: {
@@ -260,10 +268,14 @@ router.delete("/:tenantId", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    const result = await prismaWithNotifications.notification.deleteMany({
+    const result = await prismaWithNotifications.notification.updateMany({
       where: {
         tenantId,
         userId: authed.user.id,
+        dismissedAt: null,
+      },
+      data: {
+        dismissedAt: new Date(),
       },
     })
 

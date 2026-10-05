@@ -402,6 +402,8 @@ export async function exitAutomationWaitingRun(
         contactId: run.contactId,
         sourceStageId: run.sourceStageId,
         targetStageId: run.targetStageId,
+        sourceResult: run.sourceResult,
+        targetResult: run.targetResult,
         actorUserId: params.actorUserId,
         actionCount: Math.max(run.cursorIndex, visitedNodeKeys.size),
       },

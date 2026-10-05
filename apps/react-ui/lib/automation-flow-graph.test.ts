@@ -235,6 +235,32 @@ describe("buildAutomationFlowGraph", () => {
     assert.match(trigger?.data.subtitle ?? "", /^Enters /)
   })
 
+  test("presents stage and outcome variants of Opportunity changed", () => {
+    const stageGraph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CHANGED",
+      pipelineId: "pipeline-1",
+      changeType: "STAGE_ENTERED",
+      targetStageId: "stage-2",
+      conditions: [],
+      actions: [],
+    }, null, labels)
+    const stageTrigger = stageGraph.nodes.find((node) => node.id === "trigger")
+    assert.equal(stageTrigger?.data.label, "Opportunity changed")
+    assert.match(stageTrigger?.data.subtitle ?? "", /^Enters /)
+
+    const wonGraph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CHANGED",
+      pipelineId: "pipeline-1",
+      changeType: "RESULT_WON",
+      targetStageId: "",
+      conditions: [],
+      actions: [],
+    }, null, labels)
+    const wonTrigger = wonGraph.nodes.find((node) => node.id === "trigger")
+    assert.equal(wonTrigger?.data.label, "Opportunity changed")
+    assert.match(wonTrigger?.data.subtitle ?? "", /^Marked won /)
+  })
+
   test("summarizes wait actions without adding extra graph nodes", () => {
     const openWaitingRuns = () => undefined
     const graph = buildAutomationFlowGraph(

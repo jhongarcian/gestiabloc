@@ -7,7 +7,7 @@ Automations turn opportunity events into repeatable work on a contact.
 An automation defines:
 
 - the opportunity event that starts evaluation
-- the pipeline and optional stage that the event must match
+- the pipeline and selected stage or Won/Lost outcome that the event must match
 - optional contact filters
 - the ordered actions to execute
 - optional waits, conditional branches, random routes, and cross-path routing
@@ -44,7 +44,7 @@ The normal lifecycle is:
 
 1. A qualifying opportunity event occurs.
 2. Published automations with the same trigger type and pipeline are evaluated.
-3. The trigger stage and contact filters are evaluated.
+3. The configured stage or Won/Lost change and contact filters are evaluated.
 4. A matching automation creates an independent run for that contact.
 5. Actions execute in order until the run completes, exits, fails, or reaches a Wait action.
 6. Once an automation matches its trigger and contact filters, every trigger and action result is recorded in the execution logs.
@@ -82,11 +82,13 @@ Runs when a new opportunity is created for a contact in the configured pipeline.
 
 The trigger does not require the contact to have been manually enrolled first.
 
-### Opportunity enters stage
+### Opportunity changed
 
-Runs when an existing opportunity moves into the configured stage in the configured pipeline.
+Runs when an existing opportunity enters the configured stage or is marked Won or Lost in the configured pipeline.
 
-The destination stage activates the trigger. A separate “from stage” value is not required.
+Each automation listens for exactly one change. A selected destination stage matches entry from any other stage. Won and Lost match a transition from any different result; Open is not available as an outcome trigger.
+
+If one update changes both the stage and result, it creates one durable opportunity event. Stage and outcome automations that match that event each run once. Creating an opportunity only evaluates Opportunity created automations, even when the new opportunity is already Won or Lost.
 
 ### Trigger configuration
 
@@ -97,7 +99,8 @@ The trigger sidebar contains:
 - automation name
 - trigger type
 - pipeline
-- destination stage when using Opportunity enters stage
+- change to listen for: Enters a stage, Marked won, or Marked lost
+- destination stage when using Enters a stage
 - optional contact filters
 
 The automation name appears first, before the trigger selection.
@@ -122,7 +125,7 @@ All configured top-level trigger filters must match.
 
 Filters are not displayed as graph nodes. Their behavior is:
 
-- trigger, pipeline, or stage mismatch: no execution log is created
+- trigger, pipeline, stage, or outcome mismatch: no execution log is created
 - matching trigger with failed filters: no execution log is created
 - full match: trigger and actions execute
 
@@ -372,7 +375,7 @@ Configuration includes:
 
 The action may move an opportunity forward or backward. The configured value applies both when creating a missing opportunity and when updating an existing one. Open clears the closed timestamp; Won or Lost records a closed timestamp. Keep current preserves an existing result and creates a missing opportunity as Open.
 
-Creating an opportunity queues an Opportunity created event. Changing an existing opportunity's stage queues an Opportunity enters stage event. Value-only and outcome-only changes do not create another opportunity event. A completely unchanged opportunity is recorded as a successful no-op.
+Creating an opportunity queues an Opportunity created event. Changing an existing opportunity's stage or marking it Won or Lost queues one Opportunity changed event. Value-only changes and reopening to Open do not queue a change event. A completely unchanged opportunity is recorded as a successful no-op.
 
 Generated events use the durable automation queue. Repeated transitions in the same causal chain and chains deeper than 20 events are rejected to prevent automation loops.
 
@@ -621,7 +624,7 @@ Primary account-settings endpoints:
 | `GET` | `/api/account-settings/{tenantId}/automations/{automationId}/wait-nodes/{nodeKey}/waiting-runs` | List waiting runs |
 | `DELETE` | `/api/account-settings/{tenantId}/automations/{automationId}/wait-nodes/{nodeKey}/waiting-runs/{runId}` | Exit one waiting run |
 
-Opportunity create and stage-change responses report whether relevant automations were queued. The event-status endpoint exposes aggregate queued, running, completed, skipped, and failed counts.
+Opportunity create and change responses report whether relevant automations were queued. The event-status endpoint exposes aggregate queued, running, completed, skipped, and failed counts.
 
 The complete request and response schemas are maintained in `apps/backend/docs/openapi.yml`.
 
@@ -667,7 +670,7 @@ When an expected automation does not run, verify:
 2. Header changes were saved after the last sidebar edit.
 3. The opportunity event type matches the trigger.
 4. The opportunity belongs to the configured pipeline.
-5. A stage-change event entered the configured destination stage.
+5. An Opportunity changed event entered the configured destination stage or reached the configured Won/Lost result.
 6. The contact matched every trigger filter at event time.
 7. A qualifying execution log exists; no log means the opportunity trigger or contact filters did not match.
 8. A required formatter output was created before a later node referenced it.

@@ -137,6 +137,13 @@ import {
   wrapFollowingActionsInFirstBranch,
 } from "@/lib/automation-if-else-insertion"
 import { parseAutomationWaitIntegerDraft } from "@/lib/automation-wait-input"
+import {
+  hydrateAutomationTrigger,
+  isAutomationTriggerReady,
+  serializeAutomationTrigger,
+  type AutomationBuilderTriggerType,
+  type AutomationChangeType,
+} from "@/lib/automation-trigger"
 import { uniqueAutomationOutputs, validateContactTemplate } from "@/lib/contact-template"
 import {
   dateTimeDraftToUtcIso,
@@ -173,7 +180,6 @@ import type {
   AutomationTaskDateTime,
   AutomationTextFormatterConfig,
   AutomationTextSource,
-  AutomationTriggerType,
   AutomationValueDefinition,
   AutomationWaitConfig,
   AutomationWaitNodeCount,
@@ -198,8 +204,9 @@ type AutomationFlowBuilderProps = {
 type Draft = {
   name: string
   isEnabled: boolean
-  triggerType: AutomationTriggerType | null
+  triggerType: AutomationBuilderTriggerType | null
   pipelineId: string
+  changeType: AutomationChangeType
   targetStageId: string
   conditions: AutomationCondition[]
   actions: AutomationAction[]
@@ -216,6 +223,7 @@ const EMPTY_DRAFT: Draft = {
   isEnabled: false,
   triggerType: null,
   pipelineId: "",
+  changeType: "",
   targetStageId: "",
   conditions: [],
   actions: [],
@@ -293,6 +301,7 @@ function draftSnapshot(draft: Draft) {
     isEnabled: draft.isEnabled,
     triggerType: draft.triggerType,
     pipelineId: draft.pipelineId,
+    changeType: draft.changeType,
     targetStageId: draft.targetStageId,
     conditions: draft.conditions.map((condition) => ({
       source: condition.source,
@@ -308,11 +317,7 @@ function draftSnapshot(draft: Draft) {
 }
 
 function isTriggerReady(draft: Draft | null) {
-  return Boolean(
-    draft?.triggerType &&
-      draft.pipelineId &&
-      (draft.triggerType !== "OPPORTUNITY_STAGE_CHANGED" || draft.targetStageId),
-  )
+  return isAutomationTriggerReady(draft)
 }
 
 const OPERATOR_LABELS: Record<AutomationOperator, string> = {
@@ -1952,7 +1957,8 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   if (!draft.name.trim()) return "Enter an automation name."
   if (!draft.triggerType) return "Select a trigger."
   if (!draft.pipelineId) return "Select a pipeline."
-  if (draft.triggerType === "OPPORTUNITY_STAGE_CHANGED" && !draft.targetStageId) return "Select a stage."
+  if (draft.triggerType === "OPPORTUNITY_CHANGED" && !draft.changeType) return "Select a change to listen for."
+  if (draft.triggerType === "OPPORTUNITY_CHANGED" && draft.changeType === "STAGE_ENTERED" && !draft.targetStageId) return "Select a stage."
   if (draft.actions.length === 0) return "Add at least one action."
   const allActions = flattenDraftActions(draft.actions)
   if (allActions.length > MAX_AUTOMATION_ACTION_NODES) {
@@ -1989,15 +1995,7 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
 }
 
 function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
-  if (!draft.triggerType) throw new Error("Select a trigger.")
-  const trigger =
-    draft.triggerType === "OPPORTUNITY_CREATED"
-      ? { type: draft.triggerType, pipelineId: draft.pipelineId }
-      : {
-          type: draft.triggerType,
-          pipelineId: draft.pipelineId,
-          targetStageId: draft.targetStageId,
-        }
+  const trigger = serializeAutomationTrigger(draft)
 
   return {
     name: draft.name.trim(),
@@ -2058,9 +2056,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
           const loadedDraft: Draft = {
             name: record.name,
             isEnabled: record.isEnabled,
-            triggerType: record.trigger.type,
-            pipelineId: record.trigger.pipelineId,
-            targetStageId: record.trigger.type === "OPPORTUNITY_STAGE_CHANGED" ? record.trigger.targetStageId : "",
+            ...hydrateAutomationTrigger(record.trigger),
             conditions: record.conditions,
             actions: record.actions,
           }
@@ -2966,10 +2962,11 @@ function TriggerEditor({
           <Select
             value={draft.triggerType ?? undefined}
             onValueChange={(value) => {
-              const triggerType = value as AutomationTriggerType
+              const triggerType = value as AutomationBuilderTriggerType
               onChange({
                 ...draft,
                 triggerType,
+                changeType: "",
                 targetStageId: "",
               })
             }}
@@ -2980,7 +2977,7 @@ function TriggerEditor({
             <SelectContent>
               <SelectGroup>
                 <SelectItem value="OPPORTUNITY_CREATED">Opportunity created</SelectItem>
-                <SelectItem value="OPPORTUNITY_STAGE_CHANGED">Opportunity enters a stage</SelectItem>
+                <SelectItem value="OPPORTUNITY_CHANGED">Opportunity changed</SelectItem>
               </SelectGroup>
             </SelectContent>
           </Select>
@@ -3016,7 +3013,33 @@ function TriggerEditor({
                   </SelectContent>
                 </Select>
               </Field>
-              {draft.triggerType === "OPPORTUNITY_STAGE_CHANGED" ? (
+              {draft.triggerType === "OPPORTUNITY_CHANGED" ? (
+                <Field>
+                  <FieldLabel htmlFor="automation-trigger-change">Change to listen for</FieldLabel>
+                  <Select
+                    value={draft.changeType}
+                    onValueChange={(value) =>
+                      onChange({
+                        ...draft,
+                        changeType: value as Draft["changeType"],
+                        targetStageId: "",
+                      })
+                    }
+                  >
+                    <SelectTrigger id="automation-trigger-change" className={COMPACT_SELECT_TRIGGER_CLASS}>
+                      <SelectValue placeholder="Select a change" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="STAGE_ENTERED">Enters a stage</SelectItem>
+                        <SelectItem value="RESULT_WON">Marked won</SelectItem>
+                        <SelectItem value="RESULT_LOST">Marked lost</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </Field>
+              ) : null}
+              {draft.triggerType === "OPPORTUNITY_CHANGED" && draft.changeType === "STAGE_ENTERED" ? (
                 <Field>
                   <FieldLabel htmlFor="automation-trigger-stage">Stage</FieldLabel>
                   <Select

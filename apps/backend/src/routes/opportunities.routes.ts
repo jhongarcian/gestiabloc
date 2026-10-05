@@ -1172,6 +1172,8 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
           valueCents: payload.valueCents,
           sourceStageId: null,
           targetStageId: firstStage.id,
+          sourceResult: null,
+          targetResult: "OPEN",
         } as const
         const automation = asynchronousAutomationEventsEnabled
           ? await queueOpportunityAutomationEvent(prismaTx, automationEvent)
@@ -1196,6 +1198,8 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
           valueCents: payload.valueCents,
           sourceStageId: null,
           targetStageId: firstStage.id,
+          sourceResult: null,
+          targetResult: "OPEN",
         }, error).catch(() => undefined)
         return res.status(error.status).json({
           error: error.code,
@@ -1332,13 +1336,15 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
       const event = {
         tenantId,
         actorUserId: authed.user.id,
-        triggerType: "OPPORTUNITY_STAGE_CHANGED" as const,
+        triggerType: "OPPORTUNITY_CHANGED" as const,
         opportunityId,
         contactId: existing.contactId,
         pipelineId: existing.pipelineId,
         valueCents: existing.valueCents,
         sourceStageId: existing.stageId,
         targetStageId: targetStage.id,
+        sourceResult: existing.result,
+        targetResult: existing.result,
       }
       let moveResult
       try {
@@ -1462,23 +1468,110 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
       })
     }
 
-    const updated = await prisma.contactOpportunity.update({
-      where: {
-        tenantId_id: {
-          tenantId,
-          id: opportunityId,
-        },
-      },
-      data: {
-        result: payload.result,
-        closedAt: new Date(),
-      },
-      select: opportunityCardSelect,
+    const event = {
+      tenantId,
+      actorUserId: authed.user.id,
+      triggerType: "OPPORTUNITY_CHANGED" as const,
+      opportunityId,
+      contactId: existing.contactId,
+      pipelineId: existing.pipelineId,
+      valueCents: existing.valueCents,
+      sourceStageId: existing.stageId,
+      targetStageId: existing.stageId,
+      sourceResult: existing.result,
+      targetResult: payload.result,
+    }
+    let closeResult
+    try {
+      closeResult = await prisma.$transaction(async (tx) => {
+        const prismaTx = tx as any
+        const changed = await prismaTx.contactOpportunity.updateMany({
+          where: {
+            tenantId,
+            id: opportunityId,
+            result: existing.result,
+            updatedAt: existing.updatedAt,
+          },
+          data: {
+            result: payload.result,
+            closedAt: new Date(),
+          },
+        })
+        if (changed.count !== 1) {
+          const current = await prismaTx.contactOpportunity.findUnique({
+            where: { tenantId_id: { tenantId, id: opportunityId } },
+            select: opportunityCardSelect,
+          })
+          return {
+            current,
+            concurrent: true,
+            automation: {
+              matchedCount: 0,
+              executedCount: 0,
+              notificationIds: [] as string[],
+              fileCleanupCandidates: [],
+              contactDeleted: false,
+            },
+          }
+        }
+        const automation = asynchronousAutomationEventsEnabled
+          ? await queueOpportunityAutomationEvent(prismaTx, event)
+          : await executeOpportunityAutomations(prismaTx, event, {
+              queueOpportunityEvent: queueOpportunityAutomationEvent,
+            })
+        const current = await prismaTx.contactOpportunity.findUnique({
+          where: { tenantId_id: { tenantId, id: opportunityId } },
+          select: opportunityCardSelect,
+        })
+        return { current, concurrent: false, automation }
+      })
+    } catch (error) {
+      if (error instanceof AutomationExecutionError) {
+        await recordAutomationFailure(prisma as any, event, error).catch(() => undefined)
+        return res.status(error.status).json({
+          error: error.code,
+          automationId: error.automationId,
+          automationName: error.automationName,
+          actionIndex: error.actionIndex,
+          message: error.message,
+        })
+      }
+      throw error
+    }
+
+    if (
+      "queuedRunCount" in closeResult.automation &&
+      typeof closeResult.automation.queuedRunCount === "number" &&
+      closeResult.automation.queuedRunCount > 0
+    ) {
+      kickAutomationRunWorker({ queueOpportunityEvent: queueOpportunityAutomationEvent })
+    }
+    if (closeResult.concurrent) {
+      return res.status(409).json({ error: "OPPORTUNITY_CHANGED_CONCURRENTLY" })
+    }
+
+    const closeNotificationIds = "notificationIds" in closeResult.automation
+      ? closeResult.automation.notificationIds
+      : []
+    const closeFileCleanupCandidates = "fileCleanupCandidates" in closeResult.automation
+      ? closeResult.automation.fileCleanupCandidates
+      : []
+    await emitStoredNotifications(closeNotificationIds).catch((error) => {
+      console.error("Could not emit automation notification", error)
     })
+    await deleteAutomationContactFileObjects(closeFileCleanupCandidates)
+    const automationResult = { ...closeResult.automation }
+    delete (automationResult as any).notificationIds
+    delete (automationResult as any).fileCleanupCandidates
+    if ("automationEventId" in closeResult.automation && closeResult.automation.automationEventId) {
+      kickAutomationEventWorker()
+    }
 
     return res.json({
       ok: true,
-      opportunity: serializeOpportunityCard(updated),
+      opportunity: closeResult.current ? serializeOpportunityCard(closeResult.current) : null,
+      contactDeleted: closeResult.automation.contactDeleted,
+      automation: automationResult,
     })
   } catch (error) {
     return next(error)

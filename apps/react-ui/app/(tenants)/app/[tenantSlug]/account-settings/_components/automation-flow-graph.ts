@@ -39,6 +39,7 @@ export type AutomationWaitNodeBadge = NonNullable<AutomationFlowNodeData["waitBa
 export type AutomationFlowDraft = {
   triggerType: AutomationTriggerType | null
   pipelineId: string
+  changeType?: "" | "STAGE_ENTERED" | "RESULT_WON" | "RESULT_LOST"
   targetStageId: string
   conditions: AutomationCondition[]
   actions: AutomationAction[]
@@ -177,6 +178,7 @@ export function buildAutomationFlowGraph(
 ) {
   const pipeline = catalog?.pipelines.find((item) => item.id === draft.pipelineId)
   const target = pipeline?.stages.find((item) => item.id === draft.targetStageId)
+  const changeType = draft.triggerType === "OPPORTUNITY_STAGE_CHANGED" ? "STAGE_ENTERED" : draft.changeType
   const rootWidth = automationPathWidth(draft.actions)
   const rootCenterX = Math.max(FLOW_CENTER_X, FLOW_SIDE_PADDING + rootWidth / 2)
   const triggerSubtitle =
@@ -184,7 +186,13 @@ export function buildAutomationFlowGraph(
       ? "Click to choose what starts this automation"
       : draft.triggerType === "OPPORTUNITY_CREATED"
         ? `Created in ${pipeline?.name ?? "Select a pipeline"}`
-        : `Enters ${target?.name ?? "Select a stage"} in ${pipeline?.name ?? "Select a pipeline"}`
+        : changeType === "STAGE_ENTERED"
+          ? `Enters ${target?.name ?? "Select a stage"} in ${pipeline?.name ?? "Select a pipeline"}`
+          : changeType === "RESULT_WON"
+            ? `Marked won in ${pipeline?.name ?? "Select a pipeline"}`
+            : changeType === "RESULT_LOST"
+              ? `Marked lost in ${pipeline?.name ?? "Select a pipeline"}`
+              : "Click to choose a change"
   const nodes: Array<Node<AutomationFlowNodeData>> = [
     {
       id: "trigger",
@@ -197,7 +205,9 @@ export function buildAutomationFlowGraph(
             ? "Select a trigger"
             : draft.triggerType === "OPPORTUNITY_CREATED"
               ? "Opportunity created"
-              : "Opportunity enters stage",
+              : draft.triggerType === "OPPORTUNITY_STAGE_CHANGED"
+                ? "Opportunity enters stage"
+                : "Opportunity changed",
         subtitle: triggerSubtitle,
         configured: draft.triggerType !== null,
       },

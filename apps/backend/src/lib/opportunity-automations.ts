@@ -75,6 +75,7 @@ import { evaluateWorkflowOperator } from "./service-followup-runtime.js"
 export const AUTOMATION_TRIGGER_TYPES = [
   "OPPORTUNITY_CREATED",
   "OPPORTUNITY_STAGE_CHANGED",
+  "OPPORTUNITY_CHANGED",
 ] as const
 
 export const AUTOMATION_OPERATORS = [
@@ -656,7 +657,21 @@ export const AutomationUpsertSchema = z
         type: z.literal("OPPORTUNITY_STAGE_CHANGED"),
         pipelineId: idSchema,
         targetStageId: idSchema,
-      }),
+      }).strict(),
+      z.object({
+        type: z.literal("OPPORTUNITY_CHANGED"),
+        pipelineId: idSchema,
+        change: z.discriminatedUnion("type", [
+          z.object({
+            type: z.literal("STAGE_ENTERED"),
+            stageId: idSchema,
+          }).strict(),
+          z.object({
+            type: z.literal("RESULT_CHANGED"),
+            result: z.enum(["WON", "LOST"]),
+          }).strict(),
+        ]),
+      }).strict(),
     ]),
     conditions: z.array(AutomationConditionInputSchema).max(20).default([]),
     actions: z.array(AutomationActionInputSchema).min(1).max(MAX_AUTOMATION_ACTION_NODES),
@@ -1349,8 +1364,13 @@ export async function validateAutomationConfiguration(
   const pipeline = pipelines.find((item: any) => item.id === input.trigger.pipelineId)
   if (!pipeline) throw new AutomationConfigurationError("PIPELINE_NOT_FOUND", "The selected pipeline no longer exists.")
   const stageIds = new Set(pipeline.stages.map((stage: { id: string }) => stage.id))
-  if (input.trigger.type === "OPPORTUNITY_STAGE_CHANGED") {
-    if (!stageIds.has(input.trigger.targetStageId)) {
+  const configuredStageId = input.trigger.type === "OPPORTUNITY_STAGE_CHANGED"
+    ? input.trigger.targetStageId
+    : input.trigger.type === "OPPORTUNITY_CHANGED" && input.trigger.change.type === "STAGE_ENTERED"
+      ? input.trigger.change.stageId
+      : null
+  if (configuredStageId) {
+    if (!stageIds.has(configuredStageId)) {
       throw new AutomationConfigurationError("PIPELINE_STAGE_NOT_FOUND", "The selected stage does not belong to the selected pipeline.")
     }
   }
@@ -2441,12 +2461,13 @@ export async function validateAutomationConfiguration(
   return {
     name: input.name,
     isEnabled: input.isEnabled,
-    triggerType: input.trigger.type,
+    triggerType: input.trigger.type === "OPPORTUNITY_STAGE_CHANGED" ? "OPPORTUNITY_CHANGED" as const : input.trigger.type,
     pipelineId: input.trigger.pipelineId,
     sourceStageId: null,
-    targetStageId:
-      input.trigger.type === "OPPORTUNITY_STAGE_CHANGED"
-        ? input.trigger.targetStageId
+    targetStageId: configuredStageId,
+    targetResult:
+      input.trigger.type === "OPPORTUNITY_CHANGED" && input.trigger.change.type === "RESULT_CHANGED"
+        ? input.trigger.change.result
         : null,
     conditions,
     actions,
@@ -2463,6 +2484,8 @@ export type OpportunityAutomationEvent = {
   valueCents: number
   sourceStageId: string | null
   targetStageId: string | null
+  sourceResult?: "OPEN" | "WON" | "LOST" | null
+  targetResult?: "OPEN" | "WON" | "LOST" | null
   chainId?: string | null
   parentEventId?: string | null
   chainDepth?: number
@@ -2474,11 +2497,13 @@ export type OpportunityAutomationEvent = {
 }
 
 export type OpportunityAutomationTransition = {
-  kind: "CREATED" | "STAGE_CHANGED"
+  kind: "CREATED" | "STAGE_CHANGED" | "CHANGED"
   opportunityKey: string
   pipelineId: string
   sourceStageId: string | null
   targetStageId: string
+  sourceResult?: "OPEN" | "WON" | "LOST" | null
+  targetResult?: "OPEN" | "WON" | "LOST" | null
 }
 
 export type QueueOpportunityAutomationEvent = (
@@ -3382,6 +3407,8 @@ async function removeContactFromWorkflowRuns(
         contactId: params.contactId,
         sourceStageId: run.sourceStageId,
         targetStageId: run.targetStageId,
+        sourceResult: run.sourceResult,
+        targetResult: run.targetResult,
         actorUserId: params.actorUserId ?? run.actorUserId,
         actionCount: Math.max(run.cursorIndex, visitedNodeKeys.size),
         errorCode: WORKFLOW_REMOVAL_REASON_CODE,
@@ -3940,14 +3967,16 @@ async function applyAutomationAction(
         return `Opportunity already matched ${pipelineLabel} → ${stageLabel} · ${amount} · ${resultLabel}. No changes were needed.`
       }
 
-      const transitionKind = existing ? "STAGE_CHANGED" as const : "CREATED" as const
-      const shouldQueueEvent = !existing || stageChanged
+      const transitionKind = existing ? "CHANGED" as const : "CREATED" as const
+      const shouldQueueEvent = !existing || stageChanged || (resultChanged && desiredResult !== "OPEN")
       const transition: OpportunityAutomationTransition = {
         kind: transitionKind,
         opportunityKey: existing?.id ?? `${contactId}:${config.pipelineId}`,
         pipelineId: config.pipelineId,
         sourceStageId: existing?.stageId ?? null,
         targetStageId: config.stageId,
+        sourceResult: existing?.result ?? null,
+        targetResult: desiredResult,
       }
       const history = eventContext.transitionHistory ?? []
       const nextDepth = (eventContext.chainDepth ?? 0) + 1
@@ -3955,7 +3984,9 @@ async function applyAutomationAction(
         candidate.kind === transition.kind &&
         candidate.pipelineId === transition.pipelineId &&
         candidate.sourceStageId === transition.sourceStageId &&
-        candidate.targetStageId === transition.targetStageId
+        candidate.targetStageId === transition.targetStageId &&
+        (candidate.sourceResult ?? null) === transition.sourceResult &&
+        (candidate.targetResult ?? null) === transition.targetResult
       )
       if (shouldQueueEvent && (nextDepth > 20 || repeatedTransition)) {
         const loopError = new AutomationExecutionError({
@@ -4022,13 +4053,15 @@ async function applyAutomationAction(
         await queueOpportunityEvent(prismaTx, {
           tenantId,
           actorUserId: actorUserId ?? null,
-          triggerType: existing ? "OPPORTUNITY_STAGE_CHANGED" : "OPPORTUNITY_CREATED",
+          triggerType: existing ? "OPPORTUNITY_CHANGED" : "OPPORTUNITY_CREATED",
           opportunityId,
           contactId,
           pipelineId: config.pipelineId,
           valueCents,
           sourceStageId: existing?.stageId ?? null,
           targetStageId: config.stageId,
+          sourceResult: existing?.result ?? null,
+          targetResult: desiredResult,
           chainId: eventContext.chainId ?? runId ?? randomUUID(),
           parentEventId: eventContext.eventId ?? null,
           chainDepth: nextDepth,
@@ -4112,6 +4145,7 @@ async function applyAutomationAction(
           name: true,
           triggerType: true,
           targetStageId: true,
+          targetResult: true,
           actions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
         },
       })
@@ -4160,6 +4194,8 @@ async function applyAutomationAction(
             triggerType: target.triggerType,
             sourceStageId: eventContext.sourceStageId ?? null,
             targetStageId: eventContext.targetStageId ?? target.targetStageId ?? null,
+            sourceResult: eventContext.sourceResult ?? null,
+            targetResult: eventContext.targetResult ?? target.targetResult ?? null,
             actionSnapshot: actions,
             variables: {},
             cursorIndex: 0,
@@ -4379,6 +4415,8 @@ async function applyAutomationAction(
             contactId,
             sourceStageId: queuedRun.sourceStageId,
             targetStageId: queuedRun.targetStageId,
+            sourceResult: queuedRun.sourceResult,
+            targetResult: queuedRun.targetResult,
             actorUserId: queuedRun.actorUserId,
             actionCount: queuedRun.cursorIndex,
             errorCode: "CONTACT_DELETED",
@@ -4678,6 +4716,8 @@ type AutomationOpportunityEventContext = {
   valueCents?: number | null
   sourceStageId?: string | null
   targetStageId?: string | null
+  sourceResult?: "OPEN" | "WON" | "LOST" | null
+  targetResult?: "OPEN" | "WON" | "LOST" | null
   occurredAt?: string | null
   eventId?: string | null
   chainId?: string | null
@@ -4699,7 +4739,7 @@ function normalizeOpportunityEventContext(value: unknown): AutomationOpportunity
         if (!item || typeof item !== "object" || Array.isArray(item)) return []
         const transition = item as Record<string, unknown>
         if (
-          (transition.kind !== "CREATED" && transition.kind !== "STAGE_CHANGED") ||
+          (transition.kind !== "CREATED" && transition.kind !== "STAGE_CHANGED" && transition.kind !== "CHANGED") ||
           typeof transition.opportunityKey !== "string" ||
           typeof transition.pipelineId !== "string" ||
           typeof transition.targetStageId !== "string"
@@ -4710,6 +4750,12 @@ function normalizeOpportunityEventContext(value: unknown): AutomationOpportunity
           pipelineId: transition.pipelineId,
           sourceStageId: typeof transition.sourceStageId === "string" ? transition.sourceStageId : null,
           targetStageId: transition.targetStageId,
+          sourceResult: transition.sourceResult === "OPEN" || transition.sourceResult === "WON" || transition.sourceResult === "LOST"
+            ? transition.sourceResult
+            : null,
+          targetResult: transition.targetResult === "OPEN" || transition.targetResult === "WON" || transition.targetResult === "LOST"
+            ? transition.targetResult
+            : null,
         } satisfies OpportunityAutomationTransition]
       })
     : []
@@ -4718,6 +4764,12 @@ function normalizeOpportunityEventContext(value: unknown): AutomationOpportunity
     valueCents: typeof record.valueCents === "number" && Number.isFinite(record.valueCents) ? record.valueCents : null,
     sourceStageId: typeof record.sourceStageId === "string" ? record.sourceStageId : null,
     targetStageId: typeof record.targetStageId === "string" ? record.targetStageId : null,
+    sourceResult: record.sourceResult === "OPEN" || record.sourceResult === "WON" || record.sourceResult === "LOST"
+      ? record.sourceResult
+      : null,
+    targetResult: record.targetResult === "OPEN" || record.targetResult === "WON" || record.targetResult === "LOST"
+      ? record.targetResult
+      : null,
     occurredAt: typeof record.occurredAt === "string" ? record.occurredAt : null,
     eventId: typeof record.eventId === "string" ? record.eventId : null,
     chainId: typeof record.chainId === "string" ? record.chainId : null,
@@ -4908,6 +4960,8 @@ export type SegmentRun = {
   triggerType: AutomationTriggerType
   sourceStageId: string | null
   targetStageId: string | null
+  sourceResult?: "OPEN" | "WON" | "LOST" | null
+  targetResult?: "OPEN" | "WON" | "LOST" | null
   cursorIndex: number
   cursorPath?: unknown
   branchDecisions?: unknown
@@ -5001,6 +5055,8 @@ async function finishAutomationRunAsExited(
         contactId: params.run.contactId,
         sourceStageId: params.run.sourceStageId,
         targetStageId: params.run.targetStageId,
+        sourceResult: params.run.sourceResult,
+        targetResult: params.run.targetResult,
         actorUserId: params.run.actorUserId,
         actionCount: params.actionCount,
         errorCode: params.request.reasonCode,
@@ -5618,6 +5674,8 @@ async function executeBranchedAutomationSegmentTx(
             contactId: run.contactId,
             sourceStageId: run.sourceStageId,
             targetStageId: run.targetStageId,
+            sourceResult: run.sourceResult,
+            targetResult: run.targetResult,
             actorUserId: run.actorUserId,
             actionCount: index + 1,
           },
@@ -5773,6 +5831,8 @@ async function executeBranchedAutomationSegmentTx(
       contactId: run.contactId,
       sourceStageId: run.sourceStageId,
       targetStageId: run.targetStageId,
+      sourceResult: run.sourceResult,
+      targetResult: run.targetResult,
       actorUserId: run.actorUserId,
       actionCount: visitedNodeKeys.size,
     },
@@ -5944,6 +6004,8 @@ export async function executeAutomationSegmentTx(
             contactId: run.contactId,
             sourceStageId: run.sourceStageId,
             targetStageId: run.targetStageId,
+            sourceResult: run.sourceResult,
+            targetResult: run.targetResult,
             actorUserId: run.actorUserId,
             actionCount: index + 1,
           },
@@ -6101,6 +6163,8 @@ export async function executeAutomationSegmentTx(
       contactId: run.contactId,
       sourceStageId: run.sourceStageId,
       targetStageId: run.targetStageId,
+      sourceResult: run.sourceResult,
+      targetResult: run.targetResult,
       actorUserId: run.actorUserId,
       actionCount: actions.length,
     },
@@ -6120,7 +6184,14 @@ export function evaluateAutomationTrigger(
   event: OpportunityAutomationEvent,
   catalog: AutomationRuntimeCatalog,
 ) {
-  if (automation.triggerType !== event.triggerType) {
+  if (event.triggerType === "OPPORTUNITY_CREATED") {
+    if (automation.triggerType !== "OPPORTUNITY_CREATED") {
+      return {
+        matches: false,
+        details: `Skipped because this automation listens for ${getAutomationTriggerLabel(automation.triggerType)}, not ${getAutomationTriggerLabel(event.triggerType)}.`,
+      }
+    }
+  } else if (automation.triggerType === "OPPORTUNITY_CREATED") {
     return {
       matches: false,
       details: `Skipped because this automation listens for ${getAutomationTriggerLabel(automation.triggerType)}, not ${getAutomationTriggerLabel(event.triggerType)}.`,
@@ -6134,10 +6205,30 @@ export function evaluateAutomationTrigger(
       details: `Pipeline: expected ${expected}, found ${found}.`,
     }
   }
-  if (
-    automation.triggerType === "OPPORTUNITY_STAGE_CHANGED" &&
-    automation.targetStageId !== event.targetStageId
-  ) {
+  if (event.triggerType === "OPPORTUNITY_CREATED") {
+    return { matches: true, details: "The opportunity was created in the selected pipeline." }
+  }
+  const stageChanged = event.triggerType === "OPPORTUNITY_STAGE_CHANGED" || (
+    event.triggerType === "OPPORTUNITY_CHANGED" &&
+    event.sourceStageId !== event.targetStageId
+  )
+  const resultChanged = event.triggerType === "OPPORTUNITY_CHANGED" &&
+    event.sourceResult != null &&
+    event.targetResult != null &&
+    event.sourceResult !== event.targetResult
+  if (automation.targetResult) {
+    if (!resultChanged || automation.targetResult !== event.targetResult) {
+      const expected = automation.targetResult === "WON" ? "Won" : "Lost"
+      const found = event.targetResult === "WON" ? "Won" : event.targetResult === "LOST" ? "Lost" : "Open"
+      return {
+        matches: false,
+        details: `Result: expected ${expected}, found ${found}.`,
+      }
+    }
+    const resultLabel = event.targetResult === "WON" ? "Won" : "Lost"
+    return { matches: true, details: `The opportunity was marked ${resultLabel}.` }
+  }
+  if (!stageChanged || automation.targetStageId !== event.targetStageId) {
     const expected = automation.targetStageId
       ? catalog.stageMap.get(automation.targetStageId) ?? automation.targetStageId
       : "empty"
@@ -6149,7 +6240,39 @@ export function evaluateAutomationTrigger(
       details: `Stage: expected ${expected}, found ${found}.`,
     }
   }
-  return { matches: true, details: "The opportunity event matched this trigger." }
+  const target = event.targetStageId
+    ? catalog.stageMap.get(event.targetStageId) ?? event.targetStageId
+    : "the selected stage"
+  const source = event.sourceStageId
+    ? catalog.stageMap.get(event.sourceStageId) ?? event.sourceStageId
+    : null
+  return {
+    matches: true,
+    details: source ? `The opportunity moved from ${source} to ${target}.` : `The opportunity entered ${target}.`,
+  }
+}
+
+export function automationTriggerCandidateWhere(event: OpportunityAutomationEvent) {
+  if (event.triggerType === "OPPORTUNITY_CREATED") {
+    return { triggerType: "OPPORTUNITY_CREATED" as const }
+  }
+  const stageChanged = event.triggerType === "OPPORTUNITY_STAGE_CHANGED" || event.sourceStageId !== event.targetStageId
+  const resultChanged = event.triggerType === "OPPORTUNITY_CHANGED" &&
+    event.sourceResult != null &&
+    event.targetResult != null &&
+    event.sourceResult !== event.targetResult &&
+    (event.targetResult === "WON" || event.targetResult === "LOST")
+  const candidates: any[] = []
+  if (stageChanged) {
+    candidates.push(
+      { triggerType: "OPPORTUNITY_STAGE_CHANGED", targetStageId: event.targetStageId },
+      { triggerType: "OPPORTUNITY_CHANGED", targetStageId: event.targetStageId, targetResult: null },
+    )
+  }
+  if (resultChanged) {
+    candidates.push({ triggerType: "OPPORTUNITY_CHANGED", targetResult: event.targetResult })
+  }
+  return candidates.length > 0 ? { OR: candidates } : { id: "__no_matching_trigger__" }
 }
 
 export async function executeOpportunityAutomations(
@@ -6161,11 +6284,8 @@ export async function executeOpportunityAutomations(
     where: {
       tenantId: event.tenantId,
       isEnabled: true,
-      triggerType: event.triggerType,
       pipelineId: event.pipelineId,
-      ...(event.triggerType === "OPPORTUNITY_STAGE_CHANGED"
-        ? { targetStageId: event.targetStageId }
-        : {}),
+      ...automationTriggerCandidateWhere(event),
     },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {
@@ -6204,11 +6324,17 @@ export async function executeOpportunityAutomations(
   const contactName = getContactDisplayName(contact)
   const rootChainId = event.chainId ?? randomUUID()
   const rootTransitionHistory = event.transitionHistory ?? [{
-    kind: event.triggerType === "OPPORTUNITY_CREATED" ? "CREATED" as const : "STAGE_CHANGED" as const,
+    kind: event.triggerType === "OPPORTUNITY_CREATED"
+      ? "CREATED" as const
+      : event.triggerType === "OPPORTUNITY_STAGE_CHANGED"
+        ? "STAGE_CHANGED" as const
+        : "CHANGED" as const,
     opportunityKey: event.opportunityId,
     pipelineId: event.pipelineId,
     sourceStageId: event.sourceStageId,
     targetStageId: event.targetStageId!,
+    sourceResult: event.sourceResult ?? null,
+    targetResult: event.targetResult ?? null,
   }]
   type AutomationPlan = {
     automation: any
@@ -6289,6 +6415,8 @@ export async function executeOpportunityAutomations(
           triggerType: event.triggerType,
           sourceStageId: event.sourceStageId,
           targetStageId: event.targetStageId,
+          sourceResult: event.sourceResult,
+          targetResult: event.targetResult,
           actionSnapshot: plan.actions,
           cursorIndex: 0,
           eventContext: {
@@ -6296,6 +6424,8 @@ export async function executeOpportunityAutomations(
             valueCents: event.valueCents,
             sourceStageId: event.sourceStageId,
             targetStageId: event.targetStageId,
+            sourceResult: event.sourceResult,
+            targetResult: event.targetResult,
             occurredAt: triggerLog.occurredAt.toISOString(),
             eventId: event.parentEventId ?? null,
             chainId: rootChainId,
@@ -6402,6 +6532,8 @@ export async function recordAutomationFailure(prismaClient: any, event: Opportun
           triggerType: event.triggerType,
           sourceStageId: event.sourceStageId,
           targetStageId: event.targetStageId,
+          sourceResult: event.sourceResult,
+          targetResult: event.targetResult,
           actionSnapshot: error.actionSnapshot,
           cursorIndex: error.actionIndex,
           cursorPath: error.cursorPath,
@@ -6411,6 +6543,8 @@ export async function recordAutomationFailure(prismaClient: any, event: Opportun
             valueCents: event.valueCents,
             sourceStageId: event.sourceStageId,
             targetStageId: event.targetStageId,
+            sourceResult: event.sourceResult,
+            targetResult: event.targetResult,
             occurredAt: new Date().toISOString(),
             eventId: event.parentEventId ?? null,
             chainId: event.chainId ?? null,
@@ -6436,6 +6570,8 @@ export async function recordAutomationFailure(prismaClient: any, event: Opportun
         contactId: event.contactId,
         sourceStageId: event.sourceStageId,
         targetStageId: event.targetStageId,
+        sourceResult: event.sourceResult,
+        targetResult: event.targetResult,
         actorUserId: event.actorUserId,
         actionCount: error.actionIndex,
         errorCode: error.code,
@@ -6664,6 +6800,8 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
         contactId: run.contactId,
         sourceStageId: run.sourceStageId,
         targetStageId: run.targetStageId,
+        sourceResult: run.sourceResult,
+        targetResult: run.targetResult,
         actorUserId: run.actorUserId,
         actionCount: run.cursorIndex,
         errorCode: error.code,

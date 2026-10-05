@@ -1,4 +1,4 @@
-export type AutomationTriggerType = "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED"
+export type AutomationTriggerType = "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
 export type AutomationOperator =
   | "EQUALS"
   | "NOT_EQUALS"
@@ -427,9 +427,11 @@ export type AutomationRecord = {
   trigger:
     | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
     | {
-        type: "OPPORTUNITY_STAGE_CHANGED"
+        type: "OPPORTUNITY_CHANGED"
         pipelineId: string
-        targetStageId: string
+        change:
+          | { type: "STAGE_ENTERED"; stageId: string }
+          | { type: "RESULT_CHANGED"; result: "WON" | "LOST" }
       }
   conditions: AutomationCondition[]
   actions: AutomationAction[]
@@ -520,7 +522,7 @@ export type AutomationNodeExecutionStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | 
 export type AutomationNodeExecution = {
   id: string
   attemptId: string
-  eventSource: "MANUAL_ENROLLMENT" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "AUTOMATION_ACTION"
+  eventSource: "MANUAL_ENROLLMENT" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
   contact: {
     id: string | null
     name: string

@@ -956,7 +956,7 @@ describe("Update/create opportunity runtime", () => {
     assert.match(result.logs[0]?.details ?? "", /Created opportunity in Work/)
   })
 
-  test("moves an existing opportunity backward or forward and emits only stage changes", async () => {
+  test("moves an existing opportunity and emits one combined change event", async () => {
     const updatedAt = new Date("2026-10-01T14:00:00.000Z")
     let updateData: Record<string, unknown> | null = null
     const childEvents: Record<string, unknown>[] = []
@@ -988,12 +988,15 @@ describe("Update/create opportunity runtime", () => {
     assert.equal((updateData as Record<string, unknown> | null)?.valueCents, 25_000)
     assert.equal((updateData as Record<string, unknown> | null)?.result, "LOST")
     assert.equal(childEvents.length, 1)
-    assert.equal(childEvents[0]?.triggerType, "OPPORTUNITY_STAGE_CHANGED")
+    assert.equal(childEvents[0]?.triggerType, "OPPORTUNITY_CHANGED")
     assert.equal(childEvents[0]?.valueCents, 25_000)
+    assert.equal(childEvents[0]?.sourceResult, "OPEN")
+    assert.equal(childEvents[0]?.targetResult, "LOST")
   })
 
-  test("updates value and result without creating a stage event and rejects repeated transitions", async () => {
+  test("queues Won or Lost result changes and rejects repeated combined transitions", async () => {
     let queueCalls = 0
+    const queuedEvents: Record<string, unknown>[] = []
     let updateCalls = 0
     const updatePayloads: Record<string, unknown>[] = []
     const existing = {
@@ -1032,11 +1035,19 @@ describe("Update/create opportunity runtime", () => {
       actions: [action("WON")],
       catalog,
       startIndex: 0,
-      queueOpportunityEvent: async () => { queueCalls += 1 },
+      queueOpportunityEvent: async (_tx, event) => {
+        queueCalls += 1
+        queuedEvents.push(event as unknown as Record<string, unknown>)
+      },
     })
     assert.equal(updateCalls, 1)
-    assert.equal(queueCalls, 0)
+    assert.equal(queueCalls, 1)
     assert.equal(updatePayloads[0]?.valueCents, 25_000)
+    assert.equal(queuedEvents[0]?.triggerType, "OPPORTUNITY_CHANGED")
+    assert.equal(queuedEvents[0]?.sourceStageId, "stage-2")
+    assert.equal(queuedEvents[0]?.targetStageId, "stage-2")
+    assert.equal(queuedEvents[0]?.sourceResult, "OPEN")
+    assert.equal(queuedEvents[0]?.targetResult, "WON")
 
     existing.stageId = "stage-1"
     await assert.rejects(
@@ -1044,11 +1055,13 @@ describe("Update/create opportunity runtime", () => {
         run: run({
           chainDepth: 3,
           transitionHistory: [{
-            kind: "STAGE_CHANGED",
+            kind: "CHANGED",
             opportunityKey: "opportunity-1",
             pipelineId: "pipeline-1",
             sourceStageId: "stage-1",
             targetStageId: "stage-2",
+            sourceResult: "OPEN",
+            targetResult: "OPEN",
           }],
         }),
         actions: [action()],
@@ -1908,7 +1921,7 @@ describe("AutomationUpsertSchema", () => {
     assert.equal(result.success, true)
   })
 
-  test("accepts creation and stage-change trigger shapes", () => {
+  test("accepts creation, legacy stage, stage-entry, and Won/Lost trigger shapes", () => {
     const base = {
       name: "Qualified opportunity",
       isEnabled: false,
@@ -1926,12 +1939,112 @@ describe("AutomationUpsertSchema", () => {
       AutomationUpsertSchema.safeParse({
         ...base,
         trigger: {
+          type: "OPPORTUNITY_CHANGED",
+          pipelineId: "pipeline-1",
+          change: { type: "STAGE_ENTERED", stageId: "stage-2" },
+        },
+      }).success,
+      true,
+    )
+    for (const result of ["WON", "LOST"] as const) {
+      assert.equal(
+        AutomationUpsertSchema.safeParse({
+          ...base,
+          trigger: {
+            type: "OPPORTUNITY_CHANGED",
+            pipelineId: "pipeline-1",
+            change: { type: "RESULT_CHANGED", result },
+          },
+        }).success,
+        true,
+      )
+    }
+    assert.equal(
+      AutomationUpsertSchema.safeParse({
+        ...base,
+        trigger: {
+          type: "OPPORTUNITY_CHANGED",
+          pipelineId: "pipeline-1",
+          change: { type: "RESULT_CHANGED", result: "OPEN" },
+        },
+      }).success,
+      false,
+    )
+    assert.equal(
+      AutomationUpsertSchema.safeParse({
+        ...base,
+        trigger: {
           type: "OPPORTUNITY_STAGE_CHANGED",
           pipelineId: "pipeline-1",
           targetStageId: "stage-2",
         },
       }).success,
       true,
+    )
+  })
+
+  test("normalizes new and legacy change triggers and validates the selected stage", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [{
+        id: "pipeline-1",
+        name: "Work",
+        stages: [{ id: "stage-1", name: "New" }, { id: "stage-2", name: "Working" }],
+      }] },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const base = {
+      name: "Opportunity changed",
+      isEnabled: false,
+      conditions: [],
+      actions: [{ type: "DELETE_CONTACT" as const }],
+    }
+    const stage = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({
+      ...base,
+      trigger: {
+        type: "OPPORTUNITY_CHANGED",
+        pipelineId: "pipeline-1",
+        change: { type: "STAGE_ENTERED", stageId: "stage-2" },
+      },
+    }))
+    assert.equal(stage.triggerType, "OPPORTUNITY_CHANGED")
+    assert.equal(stage.targetStageId, "stage-2")
+    assert.equal(stage.targetResult, null)
+
+    const outcome = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({
+      ...base,
+      trigger: {
+        type: "OPPORTUNITY_CHANGED",
+        pipelineId: "pipeline-1",
+        change: { type: "RESULT_CHANGED", result: "WON" },
+      },
+    }))
+    assert.equal(outcome.targetStageId, null)
+    assert.equal(outcome.targetResult, "WON")
+
+    const legacy = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({
+      ...base,
+      trigger: {
+        type: "OPPORTUNITY_STAGE_CHANGED",
+        pipelineId: "pipeline-1",
+        targetStageId: "stage-1",
+      },
+    }))
+    assert.equal(legacy.triggerType, "OPPORTUNITY_CHANGED")
+    assert.equal(legacy.targetStageId, "stage-1")
+
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({
+        ...base,
+        trigger: {
+          type: "OPPORTUNITY_CHANGED",
+          pipelineId: "pipeline-1",
+          change: { type: "STAGE_ENTERED", stageId: "stage-other" },
+        },
+      })),
+      (error: any) => error?.code === "PIPELINE_STAGE_NOT_FOUND",
     )
   })
 
@@ -3122,9 +3235,11 @@ describe("executeOpportunityAutomations", () => {
     assert.deepEqual(where, {
       tenantId: "tenant-1",
       isEnabled: true,
-      triggerType: "OPPORTUNITY_STAGE_CHANGED",
       pipelineId: "pipeline-1",
-      targetStageId: "stage-2",
+      OR: [
+        { triggerType: "OPPORTUNITY_STAGE_CHANGED", targetStageId: "stage-2" },
+        { triggerType: "OPPORTUNITY_CHANGED", targetStageId: "stage-2", targetResult: null },
+      ],
     })
   })
 
@@ -3162,6 +3277,37 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(result.matchedCount, 0)
     assert.equal(result.executedCount, 0)
     assert.equal(nodeLogWrites, 0)
+  })
+
+  test("selects Won listeners for an outcome-only change", async () => {
+    let where: Record<string, unknown> | undefined
+    await executeOpportunityAutomations({
+      automation: {
+        findMany: async (args: { where: Record<string, unknown> }) => {
+          where = args.where
+          return []
+        },
+      },
+    }, {
+      tenantId: "tenant-1",
+      actorUserId: "user-1",
+      triggerType: "OPPORTUNITY_CHANGED",
+      opportunityId: "opportunity-1",
+      contactId: "contact-1",
+      pipelineId: "pipeline-work",
+      valueCents: 0,
+      sourceStageId: "stage-working",
+      targetStageId: "stage-working",
+      sourceResult: "OPEN",
+      targetResult: "WON",
+    })
+
+    assert.deepEqual(where, {
+      tenantId: "tenant-1",
+      isEnabled: true,
+      pipelineId: "pipeline-work",
+      OR: [{ triggerType: "OPPORTUNITY_CHANGED", targetResult: "WON" }],
+    })
   })
 
   test("does not persist a run or logs when a contact does not match the trigger filters", async () => {
