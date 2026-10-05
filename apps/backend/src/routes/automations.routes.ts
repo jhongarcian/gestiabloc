@@ -140,7 +140,9 @@ function serializeAutomation(record: any) {
     folderId: record.folderId,
     librarySortOrder: record.librarySortOrder,
     trigger:
-      record.triggerType === "OPPORTUNITY_CREATED"
+      record.triggerType === "CONTACT_CREATED"
+        ? { type: "CONTACT_CREATED" as const }
+        : record.triggerType === "OPPORTUNITY_CREATED"
         ? { type: record.triggerType, pipelineId: record.pipelineId }
         : {
             type: "OPPORTUNITY_CHANGED" as const,
@@ -153,6 +155,7 @@ function serializeAutomation(record: any) {
       id: condition.id,
       source: condition.source,
       operator: condition.operator,
+      fieldKey: condition.fieldKey,
       customFieldId: condition.customFieldId,
       statusConfigId: condition.statusConfigId,
       assignedUserId: condition.assignedUserId,

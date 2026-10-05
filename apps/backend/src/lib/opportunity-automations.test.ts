@@ -441,6 +441,31 @@ describe("Create contact automation action", () => {
     ],
   }
 
+  test("does not recreate a contact when the causal creation event already exists", async () => {
+    let attemptedCreate = false
+    const result = await executeCreateContactAction({
+      automationEvent: { findUnique: async () => ({ id: "existing-event" }) },
+      contact: { create: async () => { attemptedCreate = true } },
+    }, {
+      config,
+      tenantId: "tenant-1",
+      sourceContactId: "source-contact",
+      catalog: { activeStatusIds: new Set(["active"]), activeUserIds: new Set(["user-1"]) } as any,
+      occurredAt: new Date("2026-10-02T12:00:00.000Z"),
+      automationValues: {},
+      creationEvent: {
+        actorUserId: "user-1",
+        automationId: "automation-1",
+        automationName: "Create a contact",
+        nodeKey: "node-1",
+        runId: "run-1",
+        eventContext: {},
+      },
+    })
+    assert.match(result, /already completed/)
+    assert.equal(attemptedCreate, false)
+  })
+
   test("validates tenant fields, status, templates, and fixed typed values", async () => {
     const prismaClient = {
       opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
@@ -1828,6 +1853,33 @@ describe("deleteAutomationContactFileObjects", () => {
 })
 
 describe("AutomationUpsertSchema", () => {
+  test("accepts a contact-created trigger without a pipeline and validates standard field filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const base = {
+      name: "New contact",
+      isEnabled: false,
+      trigger: { type: "CONTACT_CREATED" },
+      conditions: [{ source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" }],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "CONTACT_CREATED")
+    assert.equal(normalized.pipelineId, null)
+    assert.equal(normalized.conditions[0].fieldKey, "email")
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({
+        ...base,
+        conditions: [{ source: "OPPORTUNITY_VALUE", operator: "EQUALS", compareValue: 100 }],
+      })),
+      /Opportunity value is unavailable/,
+    )
+  })
   test("accepts up to 100 action nodes in one path", () => {
     const base = {
       name: "Long automation",

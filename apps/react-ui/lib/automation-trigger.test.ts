@@ -8,6 +8,12 @@ import {
 } from "./automation-trigger.js"
 
 describe("automation trigger payloads", () => {
+  test("contact creation needs no pipeline and round trips through the builder", () => {
+    const draft = { triggerType: "CONTACT_CREATED" as const, pipelineId: "", changeType: "" as const, targetStageId: "" }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "CONTACT_CREATED" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "CONTACT_CREATED" }), draft)
+  })
   test("serializes stage, Won, and Lost listeners", () => {
     assert.deepEqual(serializeAutomationTrigger({
       triggerType: "OPPORTUNITY_CHANGED",

@@ -184,6 +184,8 @@ export function buildAutomationFlowGraph(
   const triggerSubtitle =
     draft.triggerType === null
       ? "Click to choose what starts this automation"
+      : draft.triggerType === "CONTACT_CREATED"
+        ? "Starts when a new contact is added"
       : draft.triggerType === "OPPORTUNITY_CREATED"
         ? `Created in ${pipeline?.name ?? "Select a pipeline"}`
         : changeType === "STAGE_ENTERED"
@@ -203,6 +205,8 @@ export function buildAutomationFlowGraph(
         label:
           draft.triggerType === null
             ? "Select a trigger"
+            : draft.triggerType === "CONTACT_CREATED"
+              ? "Contact created"
             : draft.triggerType === "OPPORTUNITY_CREATED"
               ? "Opportunity created"
               : draft.triggerType === "OPPORTUNITY_STAGE_CHANGED"

@@ -306,6 +306,7 @@ function draftSnapshot(draft: Draft) {
     conditions: draft.conditions.map((condition) => ({
       source: condition.source,
       operator: condition.operator,
+      fieldKey: condition.fieldKey,
       customFieldId: condition.customFieldId,
       statusConfigId: condition.statusConfigId,
       assignedUserId: condition.assignedUserId,
@@ -349,6 +350,14 @@ const NUMERIC_OPERATORS: AutomationOperator[] = [
   "BETWEEN",
 ]
 const STATUS_OPERATORS: AutomationOperator[] = ["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]
+const TEXT_OPERATORS: AutomationOperator[] = ["EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_CONTAINS", "IS_EMPTY", "IS_NOT_EMPTY"]
+const DATE_OPERATORS: AutomationOperator[] = [...NUMERIC_OPERATORS, "IS_EMPTY", "IS_NOT_EMPTY"]
+const BOOLEAN_OPERATORS: AutomationOperator[] = ["IS_TRUE", "IS_FALSE", "IS_EMPTY", "IS_NOT_EMPTY"]
+function contactFieldOperators(fieldType: AutomationCatalog["templateFields"]["contact"][number]["fieldType"]): AutomationOperator[] {
+  if (fieldType === "DATE" || fieldType === "NUMBER" || fieldType === "CURRENCY") return DATE_OPERATORS
+  if (fieldType === "CHECKBOX") return BOOLEAN_OPERATORS
+  return TEXT_OPERATORS
+}
 const VALUELESS_OPERATORS = new Set<AutomationOperator>(["IS_EMPTY", "IS_NOT_EMPTY", "IS_TRUE", "IS_FALSE"])
 
 type AutomationActionGroupId = "INTERNAL" | "OPPORTUNITY" | "CONTACT" | "COMMUNICATION"
@@ -1897,6 +1906,10 @@ function conditionDefaults(
   source: AutomationCondition["source"],
   catalog: AutomationCatalog,
 ): AutomationCondition {
+  if (source === "CONTACT_FIELD") {
+    const field = catalog.templateFields.contact.find((candidate) => !["status", "assigned_to", "tags"].includes(candidate.key))
+    return { source, operator: "EQUALS", fieldKey: field?.key ?? null, compareValue: "" }
+  }
   if (source === "CONTACT_CUSTOM_FIELD") {
     const field = catalog.customFields[0]
     const operator = field?.operators[0] ?? "EQUALS"
@@ -1939,7 +1952,8 @@ function conditionDefaults(
   return { source, operator: "GREATER_THAN_OR_EQUAL", compareValue: 0 }
 }
 
-function defaultCondition(catalog: AutomationCatalog) {
+function defaultCondition(catalog: AutomationCatalog, triggerType?: AutomationBuilderTriggerType | null) {
+  if (triggerType === "CONTACT_CREATED") return conditionDefaults("CONTACT_FIELD", catalog)
   if (catalog.customFields.length > 0) return conditionDefaults("CONTACT_CUSTOM_FIELD", catalog)
   if (catalog.statuses.length > 0) return conditionDefaults("CONTACT_STATUS", catalog)
   if (catalog.users.length > 0) return conditionDefaults("CONTACT_ASSIGNEE", catalog)
@@ -1956,7 +1970,7 @@ function apiError(error: unknown) {
 function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   if (!draft.name.trim()) return "Enter an automation name."
   if (!draft.triggerType) return "Select a trigger."
-  if (!draft.pipelineId) return "Select a pipeline."
+  if (draft.triggerType !== "CONTACT_CREATED" && !draft.pipelineId) return "Select a pipeline."
   if (draft.triggerType === "OPPORTUNITY_CHANGED" && !draft.changeType) return "Select a change to listen for."
   if (draft.triggerType === "OPPORTUNITY_CHANGED" && draft.changeType === "STAGE_ENTERED" && !draft.targetStageId) return "Select a stage."
   if (draft.actions.length === 0) return "Add at least one action."
@@ -2004,6 +2018,7 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
     conditions: draft.conditions.map((condition) => ({
       source: condition.source,
       operator: condition.operator,
+      fieldKey: condition.fieldKey,
       customFieldId: condition.customFieldId,
       statusConfigId: condition.statusConfigId,
       assignedUserId: condition.assignedUserId,
@@ -2966,8 +2981,12 @@ function TriggerEditor({
               onChange({
                 ...draft,
                 triggerType,
+                pipelineId: triggerType === "CONTACT_CREATED" ? "" : draft.pipelineId,
                 changeType: "",
                 targetStageId: "",
+                conditions: triggerType === "CONTACT_CREATED"
+                  ? draft.conditions.filter((condition) => condition.source !== "OPPORTUNITY_VALUE")
+                  : draft.conditions,
               })
             }}
           >
@@ -2976,6 +2995,7 @@ function TriggerEditor({
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
+                <SelectItem value="CONTACT_CREATED">Contact created</SelectItem>
                 <SelectItem value="OPPORTUNITY_CREATED">Opportunity created</SelectItem>
                 <SelectItem value="OPPORTUNITY_CHANGED">Opportunity changed</SelectItem>
               </SelectGroup>
@@ -2986,6 +3006,7 @@ function TriggerEditor({
 
       {draft.triggerType ? (
         <>
+          {draft.triggerType !== "CONTACT_CREATED" ? <>
           <Separator />
           <section>
             <FieldGroup className="gap-3">
@@ -3064,6 +3085,7 @@ function TriggerEditor({
               ) : null}
             </FieldGroup>
           </section>
+          </> : null}
 
           <Separator />
           <section className="flex flex-col gap-3">
@@ -3107,7 +3129,7 @@ function ConditionsEditor({
           type="button"
           variant="outline"
           className={compact ? COMPACT_SECONDARY_BUTTON_CLASS : "mt-3"}
-          onClick={() => onChange([defaultCondition(catalog)])}
+          onClick={() => onChange([defaultCondition(catalog, draft.triggerType)])}
         >
           <Plus data-icon="inline-start" /> Add filter
         </Button>
@@ -3123,6 +3145,7 @@ function ConditionsEditor({
           condition={condition}
           index={index}
           catalog={catalog}
+          triggerType={draft.triggerType}
           onChange={(patch) => updateCondition(index, patch)}
           onDelete={() => onChange(draft.conditions.filter((_, itemIndex) => itemIndex !== index))}
         />
@@ -3131,7 +3154,7 @@ function ConditionsEditor({
         type="button"
         variant="outline"
         className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full")}
-        onClick={() => onChange([...draft.conditions, defaultCondition(catalog)])}
+        onClick={() => onChange([...draft.conditions, defaultCondition(catalog, draft.triggerType)])}
       >
         <Plus data-icon="inline-start" /> Add filter
       </Button>
@@ -3143,21 +3166,30 @@ function ConditionCard({
   condition,
   index,
   catalog,
+  triggerType,
   onChange,
   onDelete,
 }: {
   condition: AutomationCondition
   index: number
   catalog: AutomationCatalog
+  triggerType: AutomationBuilderTriggerType | null
   onChange: (patch: Partial<AutomationCondition>) => void
   onDelete: () => void
 }) {
-  const field = catalog.customFields.find((item) => item.id === condition.customFieldId)
+  const regularField = condition.source === "CONTACT_FIELD"
+    ? catalog.templateFields.contact.find((item) => item.key === condition.fieldKey)
+    : undefined
+  const field = condition.source === "CONTACT_FIELD"
+    ? regularField ? { ...regularField, options: [] as string[] } : undefined
+    : catalog.customFields.find((item) => item.id === condition.customFieldId)
   const operators =
     condition.source === "OPPORTUNITY_VALUE"
       ? NUMERIC_OPERATORS
-      : condition.source === "CONTACT_CUSTOM_FIELD"
-        ? field?.operators ?? []
+      : condition.source === "CONTACT_FIELD"
+        ? regularField ? contactFieldOperators(regularField.fieldType) : []
+        : condition.source === "CONTACT_CUSTOM_FIELD"
+          ? catalog.customFields.find((item) => item.id === condition.customFieldId)?.operators ?? []
         : STATUS_OPERATORS
   const sourceIcon =
     condition.source === "CONTACT_ASSIGNEE" ? (
@@ -3195,6 +3227,7 @@ function ConditionCard({
           value={condition.source}
           onValueChange={(source: AutomationCondition["source"]) =>
             onChange({
+              fieldKey: null,
               customFieldId: null,
               statusConfigId: null,
               assignedUserId: null,
@@ -3206,14 +3239,38 @@ function ConditionCard({
         >
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
+            <SelectItem value="CONTACT_FIELD">Contact field</SelectItem>
             <SelectItem value="CONTACT_CUSTOM_FIELD" disabled={catalog.customFields.length === 0}>Custom field</SelectItem>
             <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem>
             <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem>
             <SelectItem value="CONTACT_TAGS" disabled={catalog.tags.length === 0}>Tags</SelectItem>
-            <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem>
+            {triggerType !== "CONTACT_CREATED" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
           </SelectContent>
         </Select>
       </div>
+      {condition.source === "CONTACT_FIELD" ? (
+        <div className="space-y-2">
+          <Label>Contact field</Label>
+          <Select
+            value={condition.fieldKey ?? ""}
+            onValueChange={(fieldKey) => {
+              const selected = catalog.templateFields.contact.find((item) => item.key === fieldKey)
+              onChange({
+                fieldKey,
+                operator: selected?.fieldType === "CHECKBOX" ? "IS_TRUE" : "EQUALS",
+                compareValue: selected?.fieldType === "CHECKBOX" ? null : "",
+              })
+            }}
+          >
+            <SelectTrigger><SelectValue placeholder="Select field" /></SelectTrigger>
+            <SelectContent>
+              {catalog.templateFields.contact
+                .filter((item) => !["status", "assigned_to", "tags"].includes(item.key))
+                .map((item) => <SelectItem key={item.key} value={item.key}>{item.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
       {condition.source === "CONTACT_CUSTOM_FIELD" ? (
         <div className="space-y-2">
           <Label>Custom field</Label>
@@ -3290,7 +3347,7 @@ function ConditionValueInput({
   onTagChange,
 }: {
   condition: AutomationCondition
-  field?: AutomationCatalog["customFields"][number]
+  field?: { fieldType: AutomationCatalog["templateFields"]["contact"][number]["fieldType"]; options: string[] }
   catalog: AutomationCatalog
   onChange: (value: unknown) => void
   onStatusChange: (value: string) => void

@@ -1,4 +1,4 @@
-export type AutomationTriggerType = "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
+export type AutomationTriggerType = "CONTACT_CREATED" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
 export type AutomationOperator =
   | "EQUALS"
   | "NOT_EQUALS"
@@ -20,12 +20,14 @@ export type AutomationOperator =
 export type AutomationCondition = {
   id?: string
   source:
+    | "CONTACT_FIELD"
     | "OPPORTUNITY_VALUE"
     | "CONTACT_STATUS"
     | "CONTACT_CUSTOM_FIELD"
     | "CONTACT_ASSIGNEE"
     | "CONTACT_TAGS"
   operator: AutomationOperator
+  fieldKey?: string | null
   customFieldId?: string | null
   statusConfigId?: string | null
   assignedUserId?: string | null
@@ -425,6 +427,7 @@ export type AutomationRecord = {
   folderId: string | null
   librarySortOrder: number
   trigger:
+    | { type: "CONTACT_CREATED" }
     | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
     | {
         type: "OPPORTUNITY_CHANGED"
@@ -522,7 +525,7 @@ export type AutomationNodeExecutionStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | 
 export type AutomationNodeExecution = {
   id: string
   attemptId: string
-  eventSource: "MANUAL_ENROLLMENT" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
+  eventSource: "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
   contact: {
     id: string | null
     name: string

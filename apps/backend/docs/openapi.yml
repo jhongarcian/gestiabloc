@@ -624,7 +624,7 @@ paths:
     post:
       tags: [Contacts]
       summary: Create a contact
-      description: Creates a new contact in the tenant and applies selected status or the default Active status.
+      description: Creates a new contact in the tenant, applies the selected or default Active status, and evaluates contact-created automations against values saved in this creation request.
       security:
         - cookieAuth: []
       parameters:
@@ -6575,6 +6575,13 @@ components:
       oneOf:
         - type: object
           additionalProperties: false
+          required: [type]
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_CREATED]
+        - type: object
+          additionalProperties: false
           required: [type, pipelineId]
           properties:
             type:
@@ -7761,6 +7768,7 @@ components:
         source:
           type: string
           enum:
+            - CONTACT_FIELD
             - OPPORTUNITY_VALUE
             - CONTACT_STATUS
             - CONTACT_CUSTOM_FIELD
@@ -7788,6 +7796,10 @@ components:
         customFieldId:
           type: string
           nullable: true
+        fieldKey:
+          type: string
+          nullable: true
+          description: Standard contact field key when source is CONTACT_FIELD.
         statusConfigId:
           type: string
           nullable: true
@@ -9213,6 +9225,23 @@ components:
           nullable: true
         statusConfigId:
           type: string
+        tagIds:
+          type: array
+          maxItems: 100
+          description: Tenant tag ids assigned before contact-created filters are evaluated.
+          items:
+            type: string
+        customFieldValues:
+          type: array
+          maxItems: 100
+          description: Active, non-sensitive, unencrypted custom field values saved before contact-created filters are evaluated.
+          items:
+            type: object
+            required: [fieldId, value]
+            properties:
+              fieldId:
+                type: string
+              value: {}
     CreateContactResponse:
       type: object
       properties:

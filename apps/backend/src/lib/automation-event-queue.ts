@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 
 import {
   AutomationExecutionError,
+  CONTACT_AUTOMATION_SNAPSHOT_SELECT,
   automationTriggerCandidateWhere,
   automationActionSnapshot,
   evaluateAutomationConditions,
@@ -108,10 +109,14 @@ export async function queueOpportunityAutomationEvent(
     }
   }
 
+  const needsContactFields = automations.some((automation: any) =>
+    automation.conditions.some((condition: any) => condition.source === "CONTACT_FIELD"),
+  )
+
   const [contact, catalog] = await Promise.all([
     prismaTx.contact.findFirst({
       where: { tenantId: event.tenantId, id: event.contactId },
-      select: {
+      select: needsContactFields ? CONTACT_AUTOMATION_SNAPSHOT_SELECT : {
         firstName: true,
         middleName: true,
         lastName: true,
@@ -239,6 +244,154 @@ export async function queueOpportunityAutomationEvent(
     })),
   })
 
+  return {
+    automationEventId: eventId,
+    automationStatus: "QUEUED",
+    queuedAutomationCount: dispatches.length,
+    matchedCount: dispatches.length,
+    executedCount: 0,
+    contactDeleted: false,
+  }
+}
+
+export type ContactCreatedAutomationEvent = {
+  tenantId: string
+  contactId: string
+  actorUserId: string | null
+  chainId?: string | null
+  parentEventId?: string | null
+  chainDepth?: number
+  sourceAutomationId?: string | null
+  sourceAutomationName?: string | null
+  sourceNodeKey?: string | null
+  causationKey?: string | null
+}
+
+export async function queueContactCreatedAutomationEvent(
+  prismaTx: any,
+  event: ContactCreatedAutomationEvent,
+): Promise<QueuedAutomationResult> {
+  if (event.causationKey) {
+    const existing = await prismaTx.automationEvent.findUnique({
+      where: { causationKey: event.causationKey },
+      include: { dispatches: { select: { decision: true } } },
+    })
+    if (existing) return {
+      automationEventId: existing.id,
+      automationStatus: "QUEUED",
+      queuedAutomationCount: existing.dispatches.length,
+      matchedCount: existing.dispatches.filter((item: any) => item.decision === "RUN").length,
+      executedCount: existing.completedCount,
+      contactDeleted: false,
+    }
+  }
+  const automations = await prismaTx.automation.findMany({
+    where: { tenantId: event.tenantId, isEnabled: true, triggerType: "CONTACT_CREATED" },
+    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+    include: {
+      conditions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+      actions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+    },
+  })
+  if (automations.length === 0) return {
+    automationEventId: null,
+    automationStatus: "NOT_APPLICABLE",
+    queuedAutomationCount: 0,
+    matchedCount: 0,
+    executedCount: 0,
+    contactDeleted: false,
+  }
+  const [contact, catalog] = await Promise.all([
+    prismaTx.contact.findFirst({
+      where: { tenantId: event.tenantId, id: event.contactId },
+      select: CONTACT_AUTOMATION_SNAPSHOT_SELECT,
+    }),
+    getAutomationRuntimeCatalog(prismaTx, event.tenantId),
+  ])
+  if (!contact) throw new Error("Contact not found while queuing automation.")
+  const matches = automations.filter((automation: any) =>
+    evaluateAutomationConditions(automation, { valueCents: null }, contact, catalog).matches,
+  )
+  if (matches.length === 0) return {
+    automationEventId: null,
+    automationStatus: "NOT_APPLICABLE",
+    queuedAutomationCount: 0,
+    matchedCount: 0,
+    executedCount: 0,
+    contactDeleted: false,
+  }
+  const eventId = randomUUID()
+  const occurredAt = new Date()
+  const contactName = getContactDisplayName(contact)
+  const dispatches = matches.map((automation: any, automationOrder: number) => ({
+    id: randomUUID(),
+    tenantId: event.tenantId,
+    eventId,
+    automationId: automation.id,
+    automationSnapshotId: automation.id,
+    automationName: automation.name,
+    automationOrder,
+    triggerType: "CONTACT_CREATED" as const,
+    sourceStageId: null,
+    targetStageId: null,
+    targetResult: null,
+    decision: "RUN" as const,
+    decisionDetails: "The contact matched the creation filters.",
+    actionSnapshot: automation.actions.map(automationActionSnapshot),
+    attemptId: randomUUID(),
+    triggerExecutionId: randomUUID(),
+  }))
+  await prismaTx.automationEvent.create({ data: {
+    id: eventId,
+    tenantId: event.tenantId,
+    contactId: event.contactId,
+    contactName,
+    opportunityId: null,
+    opportunitySnapshotId: null,
+    actorUserId: event.actorUserId,
+    actorName: event.actorUserId ? catalog.userMap.get(event.actorUserId) ?? null : null,
+    triggerType: "CONTACT_CREATED",
+    pipelineId: null,
+    pipelineName: null,
+    sourceStageId: null,
+    sourceStageName: null,
+    targetStageId: null,
+    targetStageName: null,
+    sourceResult: null,
+    targetResult: null,
+    valueCents: null,
+    chainId: event.chainId ?? eventId,
+    parentEventId: event.parentEventId ?? null,
+    chainDepth: event.chainDepth ?? 0,
+    transitionHistory: [],
+    sourceAutomationId: event.sourceAutomationId ?? null,
+    sourceAutomationName: event.sourceAutomationName ?? null,
+    sourceNodeKey: event.sourceNodeKey ?? null,
+    causationKey: event.causationKey ?? null,
+    dispatchCount: dispatches.length,
+  } })
+  await prismaTx.automationDispatch.createMany({ data: dispatches })
+  await prismaTx.automationNodeExecution.createMany({ data: dispatches.map((dispatch: any) => ({
+    id: dispatch.triggerExecutionId,
+    tenantId: event.tenantId,
+    automationId: dispatch.automationId,
+    automationName: dispatch.automationName,
+    contactId: event.contactId,
+    contactName,
+    actorUserId: event.actorUserId,
+    processId: null,
+    opportunityId: null,
+    attemptId: dispatch.attemptId,
+    eventSource: "CONTACT_CREATED" as const,
+    nodeKind: "TRIGGER" as const,
+    nodeOrder: 0,
+    nodeKey: "CONTACT_CREATED",
+    nodeLabel: getAutomationTriggerLabel("CONTACT_CREATED"),
+    status: "QUEUED" as const,
+    reasonCode: "AUTOMATION_QUEUED",
+    details: "Queued for automation processing.",
+    occurredAt,
+  })) })
   return {
     automationEventId: eventId,
     automationStatus: "QUEUED",

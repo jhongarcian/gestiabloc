@@ -25,6 +25,7 @@ import {
   renderContactNoteTemplates,
   renderContactTemplates,
   CONTACT_TEMPLATE_REGULAR_FIELDS,
+  regularContactValue,
   isValidTemplateDate,
   validateContactTemplate,
   createContactTemplateExecutionContext,
@@ -73,6 +74,7 @@ import { getTaskPriorityFromDueDate, isCompletedStatusName } from "./task-priori
 import { evaluateWorkflowOperator } from "./service-followup-runtime.js"
 
 export const AUTOMATION_TRIGGER_TYPES = [
+  "CONTACT_CREATED",
   "OPPORTUNITY_CREATED",
   "OPPORTUNITY_STAGE_CHANGED",
   "OPPORTUNITY_CHANGED",
@@ -235,6 +237,13 @@ const opportunityValueConditionSchema = z.object({
   compareValue: z.unknown().nullable().optional(),
 })
 
+const contactFieldConditionSchema = z.object({
+  source: z.literal("CONTACT_FIELD"),
+  operator: operatorSchema,
+  fieldKey: z.string().trim().min(1),
+  compareValue: z.unknown().nullable().optional(),
+})
+
 const contactStatusConditionSchema = z.object({
   source: z.literal("CONTACT_STATUS"),
   operator: operatorSchema,
@@ -310,6 +319,7 @@ export const AutomationCustomFieldUpdatesSchema = z
   })
 
 export const AutomationConditionInputSchema = z.discriminatedUnion("source", [
+  contactFieldConditionSchema,
   opportunityValueConditionSchema,
   contactStatusConditionSchema,
   customFieldConditionSchema,
@@ -649,6 +659,7 @@ export const AutomationUpsertSchema = z
     folderId: idSchema.nullable().optional(),
     isEnabled: z.boolean().default(false),
     trigger: z.discriminatedUnion("type", [
+      z.object({ type: z.literal("CONTACT_CREATED") }).strict(),
       z.object({
         type: z.literal("OPPORTUNITY_CREATED"),
         pipelineId: idSchema,
@@ -1288,6 +1299,7 @@ export async function validateAutomationConfiguration(
   input: AutomationInput,
   options: { sourceAutomationId?: string | null } = {},
 ) {
+  const triggerPipelineId = input.trigger.type === "CONTACT_CREATED" ? null : input.trigger.pipelineId
   const [pipelines, fields, statuses, taskStatuses, memberships, tags, services, publishedAutomations] = await Promise.all([
     prismaClient.opportunityPipeline.findMany
       ? prismaClient.opportunityPipeline.findMany({
@@ -1299,7 +1311,7 @@ export async function validateAutomationConfiguration(
           },
         })
       : prismaClient.opportunityPipeline.findUnique({
-          where: { tenantId_id: { tenantId, id: input.trigger.pipelineId } },
+          where: { tenantId_id: { tenantId, id: triggerPipelineId ?? "" } },
           select: {
             id: true,
             name: true,
@@ -1361,9 +1373,11 @@ export async function validateAutomationConfiguration(
       : Promise.resolve([]),
   ])
 
-  const pipeline = pipelines.find((item: any) => item.id === input.trigger.pipelineId)
-  if (!pipeline) throw new AutomationConfigurationError("PIPELINE_NOT_FOUND", "The selected pipeline no longer exists.")
-  const stageIds = new Set(pipeline.stages.map((stage: { id: string }) => stage.id))
+  const pipeline = triggerPipelineId
+    ? pipelines.find((item: any) => item.id === triggerPipelineId)
+    : null
+  if (input.trigger.type !== "CONTACT_CREATED" && !pipeline) throw new AutomationConfigurationError("PIPELINE_NOT_FOUND", "The selected pipeline no longer exists.")
+  const stageIds = new Set((pipeline?.stages ?? []).map((stage: { id: string }) => stage.id))
   const configuredStageId = input.trigger.type === "OPPORTUNITY_STAGE_CHANGED"
     ? input.trigger.targetStageId
     : input.trigger.type === "OPPORTUNITY_CHANGED" && input.trigger.change.type === "STAGE_ENTERED"
@@ -1388,7 +1402,27 @@ export async function validateAutomationConfiguration(
   )
 
   const conditions = input.conditions.map((condition, index) => {
+    if (condition.source === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === condition.fieldKey)
+      if (!field || ["status", "assigned_to", "tags"].includes(field.key)) {
+        throw new AutomationConfigurationError("INVALID_CONTACT_FIELD", "Select an available contact field.")
+      }
+      if (!getAutomationOperatorsForFieldType(field.fieldType).includes(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_CONDITION_OPERATOR", `The selected operator is not available for ${field.label}.`)
+      }
+      return {
+        tenantId,
+        source: condition.source,
+        operator: condition.operator,
+        fieldKey: field.key,
+        compareValue: normalizeCompareValue(condition.operator, condition.compareValue, valueTypeForCustomField(field.fieldType)),
+        sortOrder: (index + 1) * 10,
+      }
+    }
     if (condition.source === "OPPORTUNITY_VALUE") {
+      if (input.trigger.type === "CONTACT_CREATED") {
+        throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Opportunity value is unavailable for a contact-created trigger.")
+      }
       if (!NUMBER_OPERATORS.has(condition.operator) || EMPTY_OPERATORS.has(condition.operator)) {
         throw new AutomationConfigurationError("INVALID_CONDITION_OPERATOR", "The selected operator is not available for opportunity value.")
       }
@@ -2462,7 +2496,7 @@ export async function validateAutomationConfiguration(
     name: input.name,
     isEnabled: input.isEnabled,
     triggerType: input.trigger.type === "OPPORTUNITY_STAGE_CHANGED" ? "OPPORTUNITY_CHANGED" as const : input.trigger.type,
-    pipelineId: input.trigger.pipelineId,
+    pipelineId: input.trigger.type === "CONTACT_CREATED" ? null : input.trigger.pipelineId,
     sourceStageId: null,
     targetStageId: configuredStageId,
     targetResult:
@@ -2477,7 +2511,7 @@ export async function validateAutomationConfiguration(
 export type OpportunityAutomationEvent = {
   tenantId: string
   actorUserId: string | null
-  triggerType: AutomationTriggerType
+  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED">
   opportunityId: string
   contactId: string
   pipelineId: string
@@ -2543,14 +2577,59 @@ function operatorExpectation(operator: AutomationOperator, expected: unknown, fo
   return `expected ${descriptions[operator] ?? operator.toLocaleLowerCase()} ${expectedLabel}, found ${foundLabel}`
 }
 
+export const CONTACT_AUTOMATION_SNAPSHOT_SELECT = {
+  id: true,
+  firstName: true,
+  middleName: true,
+  lastName: true,
+  phone: true,
+  secondaryPhone: true,
+  email: true,
+  addressLine1: true,
+  addressLine2: true,
+  city: true,
+  state: true,
+  postalCode: true,
+  country: true,
+  mailingAddressLine1: true,
+  mailingAddressLine2: true,
+  mailingCity: true,
+  mailingState: true,
+  mailingPostalCode: true,
+  mailingCountry: true,
+  emergencyContactName: true,
+  emergencyContactPhone: true,
+  emergencyContactRelationship: true,
+  dateOfBirth: true,
+  gender: true,
+  height: true,
+  weight: true,
+  deceasedAt: true,
+  medicarePartA: true,
+  medicarePartB: true,
+  smokerStatus: true,
+  leadDate: true,
+  leadSource: true,
+  leadOtherSource: true,
+  createdAt: true,
+  updatedAt: true,
+  statusConfigId: true,
+  assignedToUserId: true,
+  tags: { select: { tagId: true } },
+  customFieldValues: { select: { fieldId: true, value: true } },
+  servicingAgentMembership: { select: { user: { select: { name: true, email: true } } } },
+  additionalAgentMembership: { select: { user: { select: { name: true, email: true } } } },
+} as const
+
 export function evaluateAutomationConditions(
   automation: any,
-  event: OpportunityAutomationEvent,
+  event: OpportunityAutomationEvent | { valueCents: number | null },
   contact: {
     statusConfigId: string | null
     assignedToUserId: string | null
     tags: Array<{ tagId: string }>
     customFieldValues: Array<{ fieldId: string; value: unknown }>
+    [key: string]: unknown
   },
   catalog: AutomationRuntimeCatalog,
 ) {
@@ -2564,7 +2643,18 @@ export function evaluateAutomationConditions(
     let currentValue: unknown = null
     let expectedValue: unknown = condition.compareValue
 
-    if (condition.source === "OPPORTUNITY_VALUE") {
+    if (condition.source === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === condition.fieldKey)
+      label = field?.label ?? "Contact field"
+      currentValue = field ? regularContactValue(contact, field.key) : null
+      if (field?.fieldType === "DATE" && currentValue instanceof Date) currentValue = currentValue.toISOString().slice(0, 10)
+      matches = Boolean(field) && evaluateAutomationOperator(
+        condition.operator,
+        currentValue,
+        condition.compareValue,
+        field ? valueTypeForCustomField(field.fieldType) : "string",
+      )
+    } else if (condition.source === "OPPORTUNITY_VALUE") {
       label = "Opportunity value"
       currentValue = event.valueCents
       matches = evaluateAutomationOperator(condition.operator, currentValue, condition.compareValue, "number")
@@ -3023,6 +3113,14 @@ export async function executeCreateContactAction(
     occurredAt: Date
     automationValues: Record<string, unknown>
     templateContext?: ContactTemplateExecutionContext
+    creationEvent?: {
+      actorUserId: string | null
+      automationId: string | null
+      automationName: string
+      nodeKey: string
+      runId: string | null
+      eventContext: AutomationOpportunityEventContext
+    }
   },
 ) {
   const { config } = params
@@ -3031,6 +3129,13 @@ export async function executeCreateContactAction(
   }
   if (config.assignedToUserId && !params.catalog.activeUserIds.has(config.assignedToUserId)) {
     throw new Error("The configured contact assignee is no longer available.")
+  }
+  if (params.creationEvent?.runId && prismaTx.automationEvent?.findUnique) {
+    const existingEvent = await prismaTx.automationEvent.findUnique({
+      where: { causationKey: `automation-run:${params.creationEvent.runId}:contact:${params.creationEvent.nodeKey}` },
+      select: { id: true },
+    })
+    if (existingEvent) return "Skipped creating contact because this action already completed."
   }
 
   const customTemplateEntries = config.customFieldValues.flatMap((assignment, index) =>
@@ -3150,6 +3255,11 @@ export async function executeCreateContactAction(
     }
   }
 
+  const nextChainDepth = (params.creationEvent?.eventContext.chainDepth ?? 0) + 1
+  if (params.creationEvent && nextChainDepth > 20) {
+    throw new Error("Creating this contact would exceed the maximum automation chain depth.")
+  }
+
   const created = await prismaTx.contact.create({
     data: {
       tenantId: params.tenantId,
@@ -3172,6 +3282,23 @@ export async function executeCreateContactAction(
         fieldId: item.fieldId,
         value: item.value,
       })),
+    })
+  }
+
+  if (params.creationEvent) {
+    const { queueContactCreatedAutomationEvent } = await import("./automation-event-queue.js")
+    const source = params.creationEvent
+    await queueContactCreatedAutomationEvent(prismaTx, {
+      tenantId: params.tenantId,
+      contactId: created.id,
+      actorUserId: source.actorUserId,
+      chainId: source.eventContext.chainId,
+      parentEventId: source.eventContext.eventId,
+      chainDepth: nextChainDepth,
+      sourceAutomationId: source.automationId,
+      sourceAutomationName: source.automationName,
+      sourceNodeKey: source.nodeKey,
+      causationKey: source.runId ? `automation-run:${source.runId}:contact:${source.nodeKey}` : null,
     })
   }
 
@@ -3627,6 +3754,14 @@ async function applyAutomationAction(
         occurredAt,
         automationValues,
         templateContext,
+        creationEvent: {
+          actorUserId: actorUserId ?? null,
+          automationId,
+          automationName,
+          nodeKey: action.nodeKey,
+          runId: runId ?? null,
+          eventContext,
+        },
       })
     } else if (action.type === "CREATE_TASK") {
       const config: AutomationTaskConfig = action.taskConfig
@@ -6303,10 +6438,14 @@ export async function executeOpportunityAutomations(
     }
   }
 
+  const needsContactFields = automations.some((automation: any) =>
+    automation.conditions.some((condition: any) => condition.source === "CONTACT_FIELD"),
+  )
+
   const [contact, catalog] = await Promise.all([
     prismaTx.contact.findFirst({
       where: { tenantId: event.tenantId, id: event.contactId },
-      select: {
+      select: needsContactFields ? CONTACT_AUTOMATION_SNAPSHOT_SELECT : {
         id: true,
         firstName: true,
         middleName: true,

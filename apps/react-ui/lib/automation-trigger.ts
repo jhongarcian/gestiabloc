@@ -11,6 +11,7 @@ export type AutomationTriggerDraft = {
 }
 
 type SavedAutomationTrigger =
+  | { type: "CONTACT_CREATED" }
   | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
   | { type: "OPPORTUNITY_STAGE_CHANGED"; pipelineId: string; targetStageId: string }
   | {
@@ -22,7 +23,9 @@ type SavedAutomationTrigger =
     }
 
 export function isAutomationTriggerReady(draft: AutomationTriggerDraft | null) {
-  if (!draft?.triggerType || !draft.pipelineId) return false
+  if (!draft?.triggerType) return false
+  if (draft.triggerType === "CONTACT_CREATED") return true
+  if (!draft.pipelineId) return false
   if (draft.triggerType === "OPPORTUNITY_CREATED") return true
   if (!draft.changeType) return false
   return draft.changeType !== "STAGE_ENTERED" || Boolean(draft.targetStageId)
@@ -30,6 +33,7 @@ export function isAutomationTriggerReady(draft: AutomationTriggerDraft | null) {
 
 export function serializeAutomationTrigger(draft: AutomationTriggerDraft) {
   if (!draft.triggerType) throw new Error("Select a trigger.")
+  if (draft.triggerType === "CONTACT_CREATED") return { type: "CONTACT_CREATED" as const }
   if (draft.triggerType === "OPPORTUNITY_CREATED") {
     return { type: "OPPORTUNITY_CREATED" as const, pipelineId: draft.pipelineId }
   }
@@ -50,6 +54,9 @@ export function serializeAutomationTrigger(draft: AutomationTriggerDraft) {
 }
 
 export function hydrateAutomationTrigger(trigger: SavedAutomationTrigger): AutomationTriggerDraft {
+  if (trigger.type === "CONTACT_CREATED") {
+    return { triggerType: "CONTACT_CREATED", pipelineId: "", changeType: "", targetStageId: "" }
+  }
   if (trigger.type === "OPPORTUNITY_CREATED") {
     return {
       triggerType: "OPPORTUNITY_CREATED",

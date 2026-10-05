@@ -276,12 +276,14 @@ enum OpportunityResult {
 }
 
 enum AutomationTriggerType {
+  CONTACT_CREATED
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
   OPPORTUNITY_CHANGED
 }
 
 enum AutomationConditionSource {
+  CONTACT_FIELD
   OPPORTUNITY_VALUE
   CONTACT_STATUS
   CONTACT_CUSTOM_FIELD
@@ -402,6 +404,7 @@ enum AutomationRunStatus {
 
 enum AutomationNodeEventSource {
   MANUAL_ENROLLMENT
+  CONTACT_CREATED
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
   OPPORTUNITY_CHANGED
@@ -1461,7 +1464,7 @@ model Automation {
   name          String
   isEnabled     Boolean               @default(false)
   triggerType   AutomationTriggerType
-  pipelineId    String
+  pipelineId    String?
   sourceStageId String?
   targetStageId String?
   targetResult  OpportunityResult?
@@ -1500,6 +1503,7 @@ model AutomationCondition {
   automationId   String
   source         AutomationConditionSource
   operator       AutomationOperator
+  fieldKey       String?
   customFieldId  String?
   statusConfigId String?
   assignedUserId String?
@@ -1700,19 +1704,19 @@ model AutomationEvent {
   contactId             String?
   contactName           String
   opportunityId         String?
-  opportunitySnapshotId String
+  opportunitySnapshotId String?
   actorUserId           String?
   actorName             String?
   triggerType           AutomationTriggerType
-  pipelineId            String
-  pipelineName          String
+  pipelineId            String?
+  pipelineName          String?
   sourceStageId         String?
   sourceStageName       String?
-  targetStageId         String
-  targetStageName       String
+  targetStageId         String?
+  targetStageName       String?
   sourceResult          OpportunityResult?
   targetResult          OpportunityResult?
-  valueCents            Int
+  valueCents            Int?
   status                AutomationEventStatus @default(QUEUED)
   dispatchCount         Int                   @default(0)
   completedCount        Int                   @default(0)

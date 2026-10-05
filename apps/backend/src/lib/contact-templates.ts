@@ -473,7 +473,7 @@ function membershipName(value: unknown) {
   return String(user?.name ?? "").trim() || String(user?.email ?? "").trim()
 }
 
-function regularContactValue(contact: Record<string, unknown>, key: string) {
+export function regularContactValue(contact: Record<string, unknown>, key: string) {
   if (key === "name") {
     return [contact.firstName, contact.middleName, contact.lastName]
       .filter((part) => typeof part === "string" && part.trim())

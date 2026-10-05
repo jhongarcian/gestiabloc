@@ -1,6 +1,7 @@
 export type AutomationNodeLogStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | "FAILED" | "WAITING"
 export type AutomationNodeEventSource =
   | "MANUAL_ENROLLMENT"
+  | "CONTACT_CREATED"
   | "OPPORTUNITY_CREATED"
   | "OPPORTUNITY_STAGE_CHANGED"
   | "OPPORTUNITY_CHANGED"
@@ -140,6 +141,7 @@ export function getAutomationActionNodeLabel(action: {
 }
 
 export function getAutomationTriggerLabel(triggerType: string) {
+  if (triggerType === "CONTACT_CREATED") return "Contact created"
   if (triggerType === "OPPORTUNITY_CREATED") return "Opportunity created"
   return "Opportunity changed"
 }

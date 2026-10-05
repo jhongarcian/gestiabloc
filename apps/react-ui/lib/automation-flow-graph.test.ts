@@ -31,6 +31,18 @@ const labels = {
 } as const
 
 describe("buildAutomationFlowGraph", () => {
+  test("labels a contact-created trigger without a pipeline", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "CONTACT_CREATED",
+      pipelineId: "",
+      targetStageId: "",
+      conditions: [],
+      actions: [],
+    }, null, labels)
+    const trigger = graph.nodes.find((node) => node.id === "trigger")
+    assert.equal(trigger?.data.label, "Contact created")
+    assert.equal(trigger?.data.subtitle, "Starts when a new contact is added")
+  })
   test("shows the custom Create contact label and subtitle", () => {
     const graph = buildAutomationFlowGraph({
       triggerType: "OPPORTUNITY_CREATED",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
-import { claimQueuedAutomationDispatch, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
+import { claimQueuedAutomationDispatch, queueContactCreatedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
 
 const WAIT_ACTION = {
   id: "action-1",
@@ -9,6 +9,63 @@ const WAIT_ACTION = {
   type: "WAIT",
   waitConfig: { mode: "DURATION", amount: 1, unit: "SECONDS" },
 }
+
+describe("queueContactCreatedAutomationEvent", () => {
+  test("matches the creation snapshot across standard fields, custom fields, and tags", async () => {
+    const writes: Record<string, any> = {}
+    const contact = {
+      id: "contact-1",
+      firstName: "Mary",
+      middleName: null,
+      lastName: "Reed",
+      email: "mary@example.com",
+      dateOfBirth: new Date("1990-05-03T12:00:00.000Z"),
+      statusConfigId: "status-active",
+      assignedToUserId: null,
+      tags: [{ tagId: "tag-new" }],
+      customFieldValues: [{ fieldId: "field-source", value: "Referral" }],
+    }
+    const base = {
+      name: "Welcome",
+      triggerType: "CONTACT_CREATED",
+      pipelineId: null,
+      conditions: [
+        { source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" },
+        { source: "CONTACT_FIELD", fieldKey: "date_of_birth", operator: "EQUALS", compareValue: "1990-05-03" },
+        { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-source", operator: "EQUALS", compareValue: "Referral" },
+        { source: "CONTACT_TAGS", tagId: "tag-new", operator: "EQUALS", compareValue: null },
+      ],
+      actions: [WAIT_ACTION],
+    }
+    const prismaTx = {
+      automation: { findMany: async () => [
+        { ...base, id: "automation-match" },
+        { ...base, id: "automation-skip", conditions: [{ source: "CONTACT_FIELD", fieldKey: "first_name", operator: "EQUALS", compareValue: "John" }] },
+      ] },
+      contact: { findFirst: async () => contact },
+      contactCustomField: { findMany: async () => [{ id: "field-source", key: "source", label: "Source", fieldType: "TEXT", isActive: true, isEncrypted: false, isSensitive: false, options: null }] },
+      contactStatusConfig: { findMany: async () => [{ id: "status-active", name: "Active" }] },
+      taskStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "tag-new", name: "New" }] },
+      opportunityPipeline: { findMany: async () => [] },
+      tenant: { findUnique: async () => ({ timezone: "America/Chicago" }) },
+      automationEvent: { create: async ({ data }: any) => { writes.event = data; return data } },
+      automationDispatch: { createMany: async ({ data }: any) => { writes.dispatches = data } },
+      automationNodeExecution: { createMany: async ({ data }: any) => { writes.logs = data } },
+    }
+    const result = await queueContactCreatedAutomationEvent(prismaTx, {
+      tenantId: "tenant-1", contactId: "contact-1", actorUserId: "actor-1",
+    })
+    assert.equal(result.matchedCount, 1)
+    assert.equal(writes.dispatches[0].automationId, "automation-match")
+    assert.equal(writes.dispatches.length, 1)
+    assert.equal(writes.event.triggerType, "CONTACT_CREATED")
+    assert.equal(writes.event.pipelineId, null)
+    assert.equal(writes.event.opportunitySnapshotId, null)
+    assert.equal(writes.logs[0].eventSource, "CONTACT_CREATED")
+  })
+})
 
 describe("queueOpportunityAutomationEvent", () => {
   test("claims only a dispatch that is still queued", async () => {
