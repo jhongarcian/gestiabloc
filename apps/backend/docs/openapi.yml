@@ -3674,6 +3674,7 @@ paths:
     get:
       tags: [Notifications]
       summary: List notifications for the current user
+      description: Returns notifications that have not been dismissed.
       security:
         - cookieAuth: []
       parameters:
@@ -3717,6 +3718,7 @@ paths:
     delete:
       tags: [Notifications]
       summary: Clear all notifications for the current user
+      description: Dismisses visible notifications while preserving their event keys so due-task alerts are not recreated on the next load.
       security:
         - cookieAuth: []
       parameters:
@@ -3805,9 +3807,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/notifications/{tenantId}/{notificationId}:
     delete:
       tags: [Notifications]
-      summary: Delete one notification
+      summary: Dismiss one notification
       security:
         - cookieAuth: []
       parameters:
@@ -3819,7 +3822,7 @@ paths:
             type: string
       responses:
         "200":
-          description: Notification deleted
+          description: Notification dismissed
           content:
             application/json:
               schema:
@@ -9820,6 +9823,9 @@ components:
         ok:
           type: boolean
           example: true
+        deletedCount:
+          type: integer
+          description: Number of notifications dismissed from the inbox.
     TaskPriority:
       type: string
       enum: [HIGH, MEDIUM, LOW]

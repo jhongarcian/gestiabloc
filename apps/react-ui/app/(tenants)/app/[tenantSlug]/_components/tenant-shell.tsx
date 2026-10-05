@@ -829,10 +829,12 @@ export function TenantShell({
       setNotifications((current) =>
         current.map((item) => ({
           ...item,
-          readAt: item.readAt ?? data.readAt,
+          readAt:
+            item.readAt ??
+            (item.createdAt <= data.readAt ? data.readAt : null),
         })),
       )
-      setUnreadCount(0)
+      setUnreadCount((current) => Math.max(0, current - data.updatedCount))
     } catch {
       toast.error("Could not mark all notifications as read.")
     } finally {
@@ -1333,95 +1335,98 @@ export function TenantShell({
             onScroll={handleNotificationsScroll}
           >
             <div className="flex flex-col">
-                {isNotificationsLoading ? (
-                  <div className="flex min-h-40 items-center justify-center text-sm text-slate-500">
-                    <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
-                    Loading notifications...
-                  </div>
-                ) : notifications.length ? (
-                  <>
-                    {notifications.map((notification) => {
-                      const meta = notificationMeta(notification.type)
-                      const isDeleting = deletingNotificationId === notification.id
+              {isNotificationsLoading ? (
+                <div className="flex min-h-40 items-center justify-center text-sm text-slate-500">
+                  <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
+                  Loading notifications...
+                </div>
+              ) : notifications.length ? (
+                <>
+                  {notifications.map((notification) => {
+                    const meta = notificationMeta(notification.type)
+                    const isDeleting = deletingNotificationId === notification.id
 
-                      return (
-                        <div
-                          key={notification.id}
-                          className="relative border-b border-slate-200 py-3 last:border-b-0"
-                        >
-                          <button
-                            type="button"
-                            aria-label={`Dismiss notification: ${notification.title}`}
-                            className="absolute right-1 top-5 z-10 flex size-8 cursor-pointer items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-blue-700"
-                            onClick={() => void handleDeleteNotification(notification)}
-                            disabled={isDeleting || isNotificationsActionPending !== null}
-                          >
-                            {isDeleting ? (
-                              <LoaderCircle className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <X className="h-4 w-4" />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void handleNotificationClick(notification)}
-                            className="flex w-full cursor-pointer flex-col gap-2 rounded-xl px-3 py-3 pr-12 text-left transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-blue-700"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="flex min-w-0 flex-col gap-2">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span
-                                    className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${meta.chipClassName}`}
-                                  >
-                                    {meta.label}
-                                  </span>
-                                  {!notification.readAt ? (
-                                    <span className="inline-flex size-2 rounded-full bg-blue-700" aria-label="Unread" />
-                                  ) : null}
-                                </div>
-                                <p className="text-sm font-semibold leading-5 text-slate-950">
-                                  {notification.title}
-                                </p>
-                              </div>
-                            </div>
-                            <p className="text-sm leading-6 text-slate-600">
-                              {notification.body ?? "Open notification"}
-                            </p>
-                            <span className="flex items-center gap-1.5 text-xs text-slate-500">
-                              <Clock3 className="size-3.5" aria-hidden="true" />
-                              {formatNotificationDate(notification.createdAt)}
-                            </span>
-                          </button>
-                        </div>
-                      )
-                    })}
-                    <div className="py-5">
-                      {isMoreNotificationsLoading ? (
-                        <div className="flex h-12 items-center justify-center text-sm text-slate-500">
-                          <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
-                          Loading more...
-                        </div>
-                      ) : hasMoreNotifications ? (
-                        <Button
+                    return (
+                      <div
+                        key={notification.id}
+                        className="relative border-b border-slate-200 py-3 last:border-b-0"
+                      >
+                        <button
                           type="button"
-                          variant="outline"
-                          className="h-10 w-full cursor-pointer rounded-xl border-slate-200 bg-white text-slate-700 shadow-none hover:bg-slate-50"
-                          onClick={() => void loadMoreNotifications()}
+                          aria-label={`Dismiss notification: ${notification.title}`}
+                          className="absolute right-1 top-5 z-10 flex size-8 cursor-pointer items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-blue-700"
+                          onClick={() => void handleDeleteNotification(notification)}
+                          disabled={isDeleting || isNotificationsActionPending !== null}
                         >
-                          Load older notifications
-                        </Button>
-                      ) : (
-                        <div className="flex h-10 items-center justify-center text-xs font-medium text-slate-400">
-                          You’re up to date.
-                        </div>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <div className="my-6 flex min-h-40 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-6 text-center text-sm text-slate-500">
-                    You’re all caught up.
+                          {isDeleting ? (
+                            <LoaderCircle className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <X className="h-4 w-4" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleNotificationClick(notification)}
+                          className="flex w-full cursor-pointer flex-col gap-2 rounded-xl px-3 py-3 pr-12 text-left transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-blue-700"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex min-w-0 flex-col gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span
+                                  className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${meta.chipClassName}`}
+                                >
+                                  {meta.label}
+                                </span>
+                                {!notification.readAt ? (
+                                  <>
+                                    <span className="inline-flex size-2 rounded-full bg-blue-700" aria-hidden="true" />
+                                    <span className="sr-only">Unread</span>
+                                  </>
+                                ) : null}
+                              </div>
+                              <p className="text-sm font-semibold leading-5 text-slate-950">
+                                {notification.title}
+                              </p>
+                            </div>
+                          </div>
+                          <p className="text-sm leading-6 text-slate-600">
+                            {notification.body ?? "Open notification"}
+                          </p>
+                          <span className="flex items-center gap-1.5 text-xs text-slate-500">
+                            <Clock3 className="size-3.5" aria-hidden="true" />
+                            {formatNotificationDate(notification.createdAt)}
+                          </span>
+                        </button>
+                      </div>
+                    )
+                  })}
+                  <div className="py-5">
+                    {isMoreNotificationsLoading ? (
+                      <div className="flex h-12 items-center justify-center text-sm text-slate-500">
+                        <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
+                        Loading more...
+                      </div>
+                    ) : hasMoreNotifications ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-10 w-full cursor-pointer rounded-xl border-slate-200 bg-white text-slate-700 shadow-none hover:bg-slate-50"
+                        onClick={() => void loadMoreNotifications()}
+                      >
+                        Load older notifications
+                      </Button>
+                    ) : (
+                      <div className="flex h-10 items-center justify-center text-xs font-medium text-slate-400">
+                        You’re up to date.
+                      </div>
+                    )}
                   </div>
-                )}
+                </>
+              ) : (
+                <div className="my-6 flex min-h-40 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-6 text-center text-sm text-slate-500">
+                  You’re all caught up.
+                </div>
+              )}
             </div>
           </div>
           <SheetFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
