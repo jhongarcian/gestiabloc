@@ -287,6 +287,8 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
   const [deleteFolder, setDeleteFolder] = useState<AutomationFolder | null>(
     null,
   )
+  const [automationToDelete, setAutomationToDelete] =
+    useState<AutomationRecord | null>(null)
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -499,17 +501,14 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
       setBusy(false)
     }
   }
-  async function removeAutomation(record: AutomationRecord) {
-    if (
-      !window.confirm(
-        "Delete “" + record.name + "”? Execution history will be preserved.",
-      )
-    )
-      return
+  async function removeAutomation() {
+    if (!automationToDelete) return
+    const record = automationToDelete
     setBusy(true)
     try {
       await api.delete(endpoint + "/automations/" + record.id)
       toast.success("Automation deleted.")
+      setAutomationToDelete(null)
       await load()
     } catch (cause) {
       toast.error(errorMessage(cause, "Could not delete the automation."))
@@ -607,7 +606,7 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
           <DropdownMenuGroup>
             <DropdownMenuItem
               variant="destructive"
-              onSelect={() => void removeAutomation(record)}
+              onSelect={() => setAutomationToDelete(record)}
             >
               Delete automation
             </DropdownMenuItem>
@@ -1194,6 +1193,83 @@ export function AutomationsPanel({ tenantId, tenantSlug }: Props) {
               onClick={() => void removeFolder()}
             >
               {busy && <Loader2 className="animate-spin" />}Delete folder
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={automationToDelete !== null}
+        onOpenChange={(open) => {
+          if (!open && !busy) setAutomationToDelete(null)
+        }}
+      >
+        <DialogContent
+          className={dialogClass}
+          showCloseButton={!busy}
+          onEscapeKeyDown={(event) => {
+            if (busy) event.preventDefault()
+          }}
+          onPointerDownOutside={(event) => {
+            if (busy) event.preventDefault()
+          }}
+        >
+          <DialogHeader className="relative overflow-hidden border-b border-rose-100 bg-rose-50 px-6 py-6 text-left sm:px-7">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(190,18,60,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(190,18,60,.08)_1px,transparent_1px)] [background-size:42px_42px]"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-rose-300/30 blur-3xl"
+            />
+            <div className="relative pr-10">
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <p className="text-xs font-semibold text-rose-700">
+                  Automation library
+                </p>
+                <DialogTitle className="text-xl font-semibold text-slate-950">
+                  Delete automation
+                </DialogTitle>
+                <DialogDescription className="text-sm leading-6 text-slate-600">
+                  Delete “{automationToDelete?.name}” and permanently remove its
+                  configuration. Existing execution history will be preserved.
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+          <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
+            <div className="rounded-2xl border border-rose-200 bg-rose-50/60 p-4">
+              <p className="text-sm font-semibold text-rose-900">
+                This action cannot be undone.
+              </p>
+              <p className="mt-1 text-sm leading-6 text-slate-600">
+                To use this workflow again, you will need to recreate and
+                publish the automation.
+              </p>
+            </div>
+          </div>
+          <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
+            <Button
+              type="button"
+              variant="outline"
+              className={secondary}
+              disabled={busy}
+              onClick={() => setAutomationToDelete(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              className="h-8 min-w-32 cursor-pointer rounded-full px-3 text-xs font-semibold"
+              disabled={busy}
+              onClick={() => void removeAutomation()}
+            >
+              {busy ? (
+                <Loader2 data-icon="inline-start" className="animate-spin" />
+              ) : null}
+              {busy ? "Deleting..." : "Delete automation"}
             </Button>
           </DialogFooter>
         </DialogContent>

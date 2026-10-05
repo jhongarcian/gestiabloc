@@ -143,9 +143,11 @@ describe("queueOpportunityAutomationEvent", () => {
     assert.deepEqual(captured.where, {
       tenantId: "tenant-1",
       isEnabled: true,
-      triggerType: "OPPORTUNITY_STAGE_CHANGED",
       pipelineId: "pipeline-1",
-      targetStageId: "stage-2",
+      OR: [
+        { triggerType: "OPPORTUNITY_STAGE_CHANGED", targetStageId: "stage-2" },
+        { triggerType: "OPPORTUNITY_CHANGED", targetStageId: "stage-2", targetResult: null },
+      ],
     })
     assert.deepEqual(captured.dispatches.map((item: any) => item.decision), ["RUN"])
     assert.equal(captured.dispatches[0].automationId, "automation-run")
@@ -163,6 +165,8 @@ describe("queueOpportunityAutomationEvent", () => {
       pipelineId: "pipeline-1",
       sourceStageId: "stage-1",
       targetStageId: "stage-2",
+      sourceResult: null,
+      targetResult: null,
     }])
   })
 

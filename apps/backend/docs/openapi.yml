@@ -3674,6 +3674,7 @@ paths:
     get:
       tags: [Notifications]
       summary: List notifications for the current user
+      description: Returns notifications that have not been dismissed.
       security:
         - cookieAuth: []
       parameters:
@@ -3717,6 +3718,7 @@ paths:
     delete:
       tags: [Notifications]
       summary: Clear all notifications for the current user
+      description: Dismisses visible notifications while preserving their event keys so due-task alerts are not recreated on the next load.
       security:
         - cookieAuth: []
       parameters:
@@ -3805,9 +3807,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/notifications/{tenantId}/{notificationId}:
     delete:
       tags: [Notifications]
-      summary: Delete one notification
+      summary: Dismiss one notification
       security:
         - cookieAuth: []
       parameters:
@@ -3819,7 +3822,7 @@ paths:
             type: string
       responses:
         "200":
-          description: Notification deleted
+          description: Notification dismissed
           content:
             application/json:
               schema:
@@ -6014,7 +6017,7 @@ paths:
   /api/opportunities/{tenantId}/{opportunityId}:
     patch:
       tags: [Opportunities]
-      summary: Update an opportunity and queue relevant stage-change automations
+      summary: Update an opportunity and queue relevant opportunity-change automations
       security:
         - cookieAuth: []
       parameters:
@@ -6568,6 +6571,50 @@ components:
         exitedAt:
           type: string
           format: date-time
+    AutomationTriggerRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, pipelineId]
+          properties:
+            type:
+              type: string
+              enum: [OPPORTUNITY_CREATED]
+            pipelineId:
+              type: string
+              format: uuid
+        - type: object
+          additionalProperties: false
+          required: [type, pipelineId, change]
+          properties:
+            type:
+              type: string
+              enum: [OPPORTUNITY_CHANGED]
+            pipelineId:
+              type: string
+              format: uuid
+            change:
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  required: [type, stageId]
+                  properties:
+                    type:
+                      type: string
+                      enum: [STAGE_ENTERED]
+                    stageId:
+                      type: string
+                      format: uuid
+                - type: object
+                  additionalProperties: false
+                  required: [type, result]
+                  properties:
+                    type:
+                      type: string
+                      enum: [RESULT_CHANGED]
+                    result:
+                      type: string
+                      enum: [WON, LOST]
     AutomationMutationRequest:
       type: object
       required: [name, isEnabled, trigger, conditions, actions]
@@ -6583,8 +6630,7 @@ components:
         isEnabled:
           type: boolean
         trigger:
-          type: object
-          additionalProperties: true
+          $ref: "#/components/schemas/AutomationTriggerRequest"
         conditions:
           type: array
           maxItems: 20
@@ -9777,6 +9823,9 @@ components:
         ok:
           type: boolean
           example: true
+        deletedCount:
+          type: integer
+          description: Number of notifications dismissed from the inbox.
     TaskPriority:
       type: string
       enum: [HIGH, MEDIUM, LOW]

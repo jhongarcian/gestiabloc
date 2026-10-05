@@ -143,9 +143,11 @@ function serializeAutomation(record: any) {
       record.triggerType === "OPPORTUNITY_CREATED"
         ? { type: record.triggerType, pipelineId: record.pipelineId }
         : {
-            type: record.triggerType,
+            type: "OPPORTUNITY_CHANGED" as const,
             pipelineId: record.pipelineId,
-            targetStageId: record.targetStageId,
+            change: record.targetResult
+              ? { type: "RESULT_CHANGED" as const, result: record.targetResult }
+              : { type: "STAGE_ENTERED" as const, stageId: record.targetStageId },
           },
     conditions: record.conditions.map((condition: any) => ({
       id: condition.id,
@@ -849,6 +851,7 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
         pipelineId: normalized.pipelineId,
         sourceStageId: normalized.sourceStageId,
         targetStageId: normalized.targetStageId,
+        targetResult: normalized.targetResult,
         sortOrder: (max?.sortOrder ?? 0) + 10,
         folderId: payload.folderId ?? null,
         librarySortOrder: (libraryLast?.librarySortOrder ?? 0) + 10,
@@ -900,6 +903,7 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
           pipelineId: normalized.pipelineId,
           sourceStageId: normalized.sourceStageId,
           targetStageId: normalized.targetStageId,
+          targetResult: normalized.targetResult,
           conditions: { create: normalized.conditions },
           actions: { create: normalized.actions },
         },

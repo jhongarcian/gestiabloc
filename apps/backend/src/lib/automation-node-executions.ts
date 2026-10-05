@@ -3,6 +3,7 @@ export type AutomationNodeEventSource =
   | "MANUAL_ENROLLMENT"
   | "OPPORTUNITY_CREATED"
   | "OPPORTUNITY_STAGE_CHANGED"
+  | "OPPORTUNITY_CHANGED"
   | "AUTOMATION_ACTION"
 
 export type AutomationNodeLogData = {
@@ -139,9 +140,8 @@ export function getAutomationActionNodeLabel(action: {
 }
 
 export function getAutomationTriggerLabel(triggerType: string) {
-  return triggerType === "OPPORTUNITY_STAGE_CHANGED"
-    ? "Opportunity enters stage"
-    : "Opportunity created"
+  if (triggerType === "OPPORTUNITY_CREATED") return "Opportunity created"
+  return "Opportunity changed"
 }
 
 export function getContactDisplayName(contact: {

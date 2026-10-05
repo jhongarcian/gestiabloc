@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 
 import {
   AutomationExecutionError,
+  automationTriggerCandidateWhere,
   automationActionSnapshot,
   evaluateAutomationConditions,
   evaluateAutomationTrigger,
@@ -87,11 +88,8 @@ export async function queueOpportunityAutomationEvent(
     where: {
       tenantId: event.tenantId,
       isEnabled: true,
-      triggerType: event.triggerType,
       pipelineId: event.pipelineId,
-      ...(event.triggerType === "OPPORTUNITY_STAGE_CHANGED"
-        ? { targetStageId: event.targetStageId }
-        : {}),
+      ...automationTriggerCandidateWhere(event),
     },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {
@@ -132,11 +130,17 @@ export async function queueOpportunityAutomationEvent(
   const chainId = event.chainId ?? eventId
   const chainDepth = event.chainDepth ?? 0
   const transitionHistory = event.transitionHistory ?? [{
-    kind: event.triggerType === "OPPORTUNITY_CREATED" ? "CREATED" as const : "STAGE_CHANGED" as const,
+    kind: event.triggerType === "OPPORTUNITY_CREATED"
+      ? "CREATED" as const
+      : event.triggerType === "OPPORTUNITY_STAGE_CHANGED"
+        ? "STAGE_CHANGED" as const
+        : "CHANGED" as const,
     opportunityKey: event.opportunityId,
     pipelineId: event.pipelineId,
     sourceStageId: event.sourceStageId,
     targetStageId: event.targetStageId,
+    sourceResult: event.sourceResult ?? null,
+    targetResult: event.targetResult ?? null,
   }]
   const occurredAt = new Date()
   const matchingAutomations = automations.filter((automation: any) => {
@@ -168,8 +172,9 @@ export async function queueOpportunityAutomationEvent(
       triggerType: automation.triggerType,
       sourceStageId: automation.sourceStageId,
       targetStageId: automation.targetStageId,
+      targetResult: automation.targetResult,
       decision: "RUN" as const,
-      decisionDetails: "The opportunity event matched this trigger.",
+      decisionDetails: evaluateAutomationTrigger(automation, event, catalog).details,
       actionSnapshot: actions,
       attemptId: randomUUID(),
       triggerExecutionId: randomUUID(),
@@ -195,6 +200,8 @@ export async function queueOpportunityAutomationEvent(
         : null,
       targetStageId: event.targetStageId,
       targetStageName: catalog.stageMap.get(event.targetStageId) ?? "Stage",
+      sourceResult: event.sourceResult ?? null,
+      targetResult: event.targetResult ?? null,
       valueCents: event.valueCents,
       chainId,
       parentEventId: event.parentEventId ?? null,
@@ -415,6 +422,8 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
         triggerType: event.triggerType,
         sourceStageId: event.sourceStageId,
         targetStageId: event.targetStageId,
+        sourceResult: event.sourceResult,
+        targetResult: event.targetResult,
         actionSnapshot: actions,
         cursorIndex: 0,
         eventContext: {
@@ -422,6 +431,8 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
           valueCents: event.valueCents,
           sourceStageId: event.sourceStageId,
           targetStageId: event.targetStageId,
+          sourceResult: event.sourceResult,
+          targetResult: event.targetResult,
           occurredAt: event.createdAt instanceof Date ? event.createdAt.toISOString() : String(event.createdAt),
           eventId: event.id,
           chainId: event.chainId,
@@ -558,6 +569,8 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
         triggerType: dispatch.event.triggerType,
         sourceStageId: dispatch.event.sourceStageId,
         targetStageId: dispatch.event.targetStageId,
+        sourceResult: dispatch.event.sourceResult,
+        targetResult: dispatch.event.targetResult,
         actionSnapshot: actions,
         cursorIndex: Math.max(0, executionError?.actionIndex ?? 0),
         cursorPath: executionError?.cursorPath ?? null,
@@ -567,6 +580,8 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
           valueCents: dispatch.event.valueCents,
           sourceStageId: dispatch.event.sourceStageId,
           targetStageId: dispatch.event.targetStageId,
+          sourceResult: dispatch.event.sourceResult,
+          targetResult: dispatch.event.targetResult,
           occurredAt: dispatch.event.createdAt instanceof Date
             ? dispatch.event.createdAt.toISOString()
             : String(dispatch.event.createdAt),
@@ -601,6 +616,8 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
         contactId: dispatch.event.contactId,
         sourceStageId: dispatch.event.sourceStageId,
         targetStageId: dispatch.event.targetStageId,
+        sourceResult: dispatch.event.sourceResult,
+        targetResult: dispatch.event.targetResult,
         actorUserId: dispatch.event.actorUserId,
         actionCount: Math.max(0, executionError?.actionIndex ?? 0),
         errorCode: failureCode,
