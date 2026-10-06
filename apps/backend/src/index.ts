@@ -17,6 +17,7 @@ import appointmentsRoutes from "./routes/appointments.routes"
 import opportunitiesRoutes from "./routes/opportunities.routes"
 import automationsRoutes from "./routes/automations.routes"
 import automationProcessesRoutes from "./routes/automation-processes.routes"
+import contactImportsRoutes from "./routes/contact-imports.routes"
 import onboardingRoutes from "./routes/onboarding.routes"
 import servicesProductsRoutes from "./routes/services-products.routes"
 import servicesRoutes from "./routes/services.routes"
@@ -102,6 +103,7 @@ app.use("/api/files", filesRoutes);
 app.use("/api/account-settings", automationsRoutes);
 app.use("/api/account-settings", accountSettingsRoutes);
 app.use("/api/automation-processes", automationProcessesRoutes);
+app.use("/api/contact-imports", contactImportsRoutes);
 app.use("/api/contacts", contactsRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/tasks", tasksRoutes);

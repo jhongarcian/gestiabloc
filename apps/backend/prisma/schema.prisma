@@ -101,6 +101,23 @@ enum ContactCustomFieldType {
   CHECKBOX
 }
 
+enum ContactImportStatus {
+  DRAFT
+  QUEUED
+  PROCESSING
+  CANCEL_REQUESTED
+  CANCELED
+  COMPLETED
+  COMPLETED_WITH_ISSUES
+  FAILED
+}
+
+enum ContactImportPhase {
+  VALIDATING
+  IMPORTING
+  REPORTING
+}
+
 enum ServiceProfessionalKind {
   INTERNAL_USER
   EXTERNAL
@@ -674,6 +691,7 @@ model Tenant {
   automationEvents                  AutomationEvent[]
   automationDispatches              AutomationDispatch[]
   automationSideEffects             AutomationSideEffect[]
+  contactImports                    ContactImport[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2171,6 +2189,62 @@ model ContactCustomFieldValue {
   @@unique([tenantId, contactId, fieldId])
   @@index([tenantId, contactId])
   @@index([tenantId, fieldId])
+}
+
+model ContactImport {
+  id                 String               @id @default(uuid())
+  tenantId           String
+  requestedByUserId  String
+  sourceKey          String
+  fileName           String
+  fileSize           Int
+  status             ContactImportStatus  @default(DRAFT)
+  phase              ContactImportPhase?
+  headers            Json?
+  mappings           Json?
+  settings           Json?
+  totalRows          Int                  @default(0)
+  processedRows      Int                  @default(0)
+  createdRows        Int                  @default(0)
+  duplicateRows      Int                  @default(0)
+  invalidRows        Int                  @default(0)
+  lastCommittedRow   Int                  @default(0)
+  attemptCount       Int                  @default(0)
+  availableAt        DateTime             @default(now())
+  leaseToken         String?
+  leaseExpiresAt     DateTime?
+  reportKey          String?
+  sourceDeletedAt    DateTime?
+  issuesDeletedAt    DateTime?
+  cancelRequestedAt  DateTime?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  lastError          String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  tenant             Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issues             ContactImportIssue[]
+
+  @@unique([tenantId, id])
+  @@index([status, availableAt, createdAt])
+  @@index([status, leaseExpiresAt])
+  @@index([tenantId, createdAt])
+}
+
+model ContactImportIssue {
+  id          String        @id @default(uuid())
+  tenantId    String
+  importId    String
+  rowNumber   Int
+  code        String
+  message     String
+  createdAt   DateTime      @default(now())
+
+  import      ContactImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, rowNumber])
+  @@index([tenantId, importId, rowNumber])
 }
 
 model Contact {

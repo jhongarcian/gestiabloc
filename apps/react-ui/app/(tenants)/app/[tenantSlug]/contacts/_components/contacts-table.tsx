@@ -6,11 +6,13 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  FileUp,
   Filter,
   Loader2,
   RefreshCw,
   Search,
 } from "lucide-react"
+import Link from "next/link"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
   startTransition,
@@ -85,6 +87,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { api } from "@/lib/api"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
@@ -96,6 +104,7 @@ import { CreateContactDialog } from "./create-contact-dialog"
 type ContactsTableProps = {
   tenantSlug: string
   tenantId: string
+  canImport: boolean
   statusOptions: Array<{
     label: string
     value: string
@@ -608,6 +617,7 @@ function ContactMobileCardSkeleton() {
 export function ContactsTable({
   tenantSlug,
   tenantId,
+  canImport,
   statusOptions,
   tagOptions,
 }: ContactsTableProps) {
@@ -1171,6 +1181,29 @@ export function ContactsTable({
               }}
               onCompleted={loadContacts}
             />
+            {canImport ? (
+              <TooltipProvider delayDuration={120}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      asChild
+                      size="icon"
+                      className="size-7 rounded-full border border-blue-950 bg-blue-950 text-white shadow-none hover:bg-blue-900"
+                    >
+                      <Link
+                        href={`/app/${tenantSlug}/contacts/imports`}
+                        aria-label="Import contacts from CSV"
+                      >
+                        <FileUp aria-hidden="true" />
+                      </Link>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8}>
+                    Import contacts from CSV
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : null}
           </div>
         </div>
       </header>
