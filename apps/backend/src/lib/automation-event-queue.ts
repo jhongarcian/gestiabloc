@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { contactSnapshotsDiffer, matchesContactChangeRules, type ContactChangeSnapshot } from "./contact-change-rules.js"
 
 import {
   AutomationExecutionError,
@@ -13,6 +14,7 @@ import {
   kickAutomationRunWorker,
   parseActionSnapshot,
   type OpportunityAutomationEvent,
+  type OpportunityAutomationTransition,
   type RuntimeAutomationAction,
 } from "./opportunity-automations.js"
 import {
@@ -265,6 +267,152 @@ export type ContactCreatedAutomationEvent = {
   sourceAutomationName?: string | null
   sourceNodeKey?: string | null
   causationKey?: string | null
+}
+
+export async function loadContactChangeSnapshot(prismaTx: any, tenantId: string, contactId: string): Promise<ContactChangeSnapshot | null> {
+  if (typeof prismaTx.$queryRawUnsafe === "function") {
+    await prismaTx.$queryRawUnsafe('SELECT id FROM "Contact" WHERE "tenantId" = $1 AND id = $2 FOR UPDATE', tenantId, contactId)
+  }
+  return prismaTx.contact.findFirst({
+    where: { tenantId, id: contactId },
+    select: CONTACT_AUTOMATION_SNAPSHOT_SELECT,
+  })
+}
+
+export async function captureContactChangeSnapshot(prismaTx: any, tenantId: string, contactId: string): Promise<ContactChangeSnapshot | null> {
+  // Only snapshot contacts when a published Contact changed automation can use the change.
+  // Some lightweight execution clients do not expose the automation catalog.
+  if (typeof prismaTx.automation?.count !== "function") return null
+  const enabledCount = await prismaTx.automation.count({
+    where: { tenantId, isEnabled: true, triggerType: "CONTACT_CHANGED" },
+  })
+  if (enabledCount === 0) return null
+  return loadContactChangeSnapshot(prismaTx, tenantId, contactId)
+}
+
+export type ContactChangedAutomationEvent = ContactCreatedAutomationEvent & {
+  before: ContactChangeSnapshot
+  transitionHistory?: OpportunityAutomationTransition[]
+}
+
+export async function queueContactChangedAutomationEvent(
+  prismaTx: any,
+  event: ContactChangedAutomationEvent,
+): Promise<QueuedAutomationResult> {
+  const noMatch: QueuedAutomationResult = {
+    automationEventId: null,
+    automationStatus: "NOT_APPLICABLE",
+    queuedAutomationCount: 0,
+    matchedCount: 0,
+    executedCount: 0,
+    contactDeleted: false,
+  }
+  const after = await loadContactChangeSnapshot(prismaTx, event.tenantId, event.contactId)
+  if (!after || !contactSnapshotsDiffer(event.before, after)) return noMatch
+  if ((event.chainDepth ?? 0) > 20) throw new Error("This contact update exceeded the maximum automation chain depth.")
+  if (event.causationKey) {
+    const existing = await prismaTx.automationEvent.findUnique({
+      where: { causationKey: event.causationKey },
+      include: { dispatches: { select: { decision: true } } },
+    })
+    if (existing) return {
+      automationEventId: existing.id,
+      automationStatus: "QUEUED",
+      queuedAutomationCount: existing.dispatches.length,
+      matchedCount: existing.dispatches.filter((item: any) => item.decision === "RUN").length,
+      executedCount: existing.completedCount,
+      contactDeleted: false,
+    }
+  }
+  const automations = await prismaTx.automation.findMany({
+    where: { tenantId: event.tenantId, isEnabled: true, triggerType: "CONTACT_CHANGED" },
+    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+    include: {
+      changeRules: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+      conditions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+      actions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+    },
+  })
+  if (automations.length === 0) return noMatch
+  const catalog = await getAutomationRuntimeCatalog(prismaTx, event.tenantId)
+  const matches = automations.filter((automation: any) =>
+    matchesContactChangeRules(automation.changeRules, event.before, after) &&
+    evaluateAutomationConditions(automation, { valueCents: null }, after, catalog).matches,
+  )
+  if (matches.length === 0) return noMatch
+  const eventId = randomUUID()
+  const occurredAt = new Date()
+  const contactName = getContactDisplayName(after)
+  const dispatches = matches.map((automation: any, automationOrder: number) => ({
+    id: randomUUID(),
+    tenantId: event.tenantId,
+    eventId,
+    automationId: automation.id,
+    automationSnapshotId: automation.id,
+    automationName: automation.name,
+    automationOrder,
+    triggerType: "CONTACT_CHANGED" as const,
+    sourceStageId: null,
+    targetStageId: null,
+    targetResult: null,
+    decision: "RUN" as const,
+    decisionDetails: "The selected contact changes and filters matched.",
+    actionSnapshot: automation.actions.map(automationActionSnapshot),
+    attemptId: randomUUID(),
+    triggerExecutionId: randomUUID(),
+  }))
+  await prismaTx.automationEvent.create({ data: {
+    id: eventId,
+    tenantId: event.tenantId,
+    contactId: event.contactId,
+    contactName,
+    opportunityId: null,
+    opportunitySnapshotId: null,
+    actorUserId: event.actorUserId,
+    actorName: event.actorUserId ? catalog.userMap.get(event.actorUserId) ?? null : null,
+    triggerType: "CONTACT_CHANGED",
+    pipelineId: null,
+    pipelineName: null,
+    sourceStageId: null,
+    sourceStageName: null,
+    targetStageId: null,
+    targetStageName: null,
+    sourceResult: null,
+    targetResult: null,
+    valueCents: null,
+    chainId: event.chainId ?? eventId,
+    parentEventId: event.parentEventId ?? null,
+    chainDepth: event.chainDepth ?? 0,
+    transitionHistory: event.transitionHistory ?? [],
+    sourceAutomationId: event.sourceAutomationId ?? null,
+    sourceAutomationName: event.sourceAutomationName ?? null,
+    sourceNodeKey: event.sourceNodeKey ?? null,
+    causationKey: event.causationKey ?? null,
+    dispatchCount: dispatches.length,
+  } })
+  await prismaTx.automationDispatch.createMany({ data: dispatches })
+  await prismaTx.automationNodeExecution.createMany({ data: dispatches.map((dispatch: any) => ({
+    id: dispatch.triggerExecutionId,
+    tenantId: event.tenantId,
+    automationId: dispatch.automationId,
+    automationName: dispatch.automationName,
+    contactId: event.contactId,
+    contactName,
+    actorUserId: event.actorUserId,
+    processId: null,
+    opportunityId: null,
+    attemptId: dispatch.attemptId,
+    eventSource: "CONTACT_CHANGED" as const,
+    nodeKind: "TRIGGER" as const,
+    nodeOrder: 0,
+    nodeKey: "CONTACT_CHANGED",
+    nodeLabel: getAutomationTriggerLabel("CONTACT_CHANGED"),
+    status: "QUEUED" as const,
+    reasonCode: "AUTOMATION_QUEUED",
+    details: "Queued for automation processing.",
+    occurredAt,
+  })) })
+  return { ...noMatch, automationEventId: eventId, automationStatus: "QUEUED", queuedAutomationCount: dispatches.length, matchedCount: dispatches.length }
 }
 
 export async function queueContactCreatedAutomationEvent(

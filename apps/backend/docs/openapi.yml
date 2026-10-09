@@ -6713,6 +6713,52 @@ components:
               enum: [CONTACT_CREATED]
         - type: object
           additionalProperties: false
+          required: [type, changes]
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_CHANGED]
+            changes:
+              type: array
+              minItems: 1
+              maxItems: 20
+              description: All rules must match during one contact update. Optional contact filters evaluate the resulting state.
+              items:
+                oneOf:
+                  - type: object
+                    required: [source, operator, fieldKey]
+                    properties:
+                      source: { type: string, enum: [CONTACT_FIELD] }
+                      operator: { type: string, enum: [HAS_CHANGED, HAS_CHANGED_TO] }
+                      fieldKey: { type: string }
+                      value: { nullable: true, description: Required for HAS_CHANGED_TO; null means cleared. }
+                  - type: object
+                    required: [source, operator, customFieldId]
+                    properties:
+                      source: { type: string, enum: [CONTACT_CUSTOM_FIELD] }
+                      operator: { type: string, enum: [HAS_CHANGED, HAS_CHANGED_TO] }
+                      customFieldId: { type: string, format: uuid }
+                      value: { nullable: true, description: Required for HAS_CHANGED_TO; null means cleared. }
+                  - type: object
+                    required: [source, operator]
+                    properties:
+                      source: { type: string, enum: [CONTACT_STATUS] }
+                      operator: { type: string, enum: [HAS_CHANGED, HAS_CHANGED_TO] }
+                      statusConfigId: { type: string, format: uuid, description: Required for HAS_CHANGED_TO. }
+                  - type: object
+                    required: [source, operator]
+                    properties:
+                      source: { type: string, enum: [CONTACT_ASSIGNEE] }
+                      operator: { type: string, enum: [HAS_CHANGED, HAS_CHANGED_TO] }
+                      assignedUserId: { type: string, format: uuid, nullable: true, description: Required for HAS_CHANGED_TO; null means unassigned. }
+                  - type: object
+                    required: [source, operator]
+                    properties:
+                      source: { type: string, enum: [CONTACT_TAGS] }
+                      operator: { type: string, enum: [ADDED, REMOVED] }
+                      tagId: { type: string, format: uuid, nullable: true, description: Omit or set null for any tag. }
+        - type: object
+          additionalProperties: false
           required: [type, pipelineId]
           properties:
             type:

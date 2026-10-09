@@ -294,6 +294,7 @@ enum OpportunityResult {
 
 enum AutomationTriggerType {
   CONTACT_CREATED
+  CONTACT_CHANGED
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
   OPPORTUNITY_CHANGED
@@ -325,6 +326,13 @@ enum AutomationOperator {
   IS_FALSE
   IS_EMPTY
   IS_NOT_EMPTY
+}
+
+enum AutomationChangeOperator {
+  HAS_CHANGED
+  HAS_CHANGED_TO
+  ADDED
+  REMOVED
 }
 
 enum AutomationActionType {
@@ -422,6 +430,7 @@ enum AutomationRunStatus {
 enum AutomationNodeEventSource {
   MANUAL_ENROLLMENT
   CONTACT_CREATED
+  CONTACT_CHANGED
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
   OPPORTUNITY_CHANGED
@@ -1493,6 +1502,7 @@ model Automation {
   tenant         Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   folder         AutomationFolder?         @relation(fields: [tenantId, folderId], references: [tenantId, id], onDelete: Restrict)
   conditions     AutomationCondition[]
+  changeRules    AutomationContactChangeRule[]
   actions        AutomationAction[]
   executions     AutomationExecution[]
   processes      AutomationProcess[]
@@ -1513,6 +1523,29 @@ model Automation {
   @@index([tenantId, targetStageId])
   @@index([tenantId, targetResult])
   @@index([tenantId, folderId, librarySortOrder])
+}
+
+model AutomationContactChangeRule {
+  id             String   @id @default(uuid())
+  tenantId       String
+  automationId   String
+  source         AutomationConditionSource
+  operator       AutomationChangeOperator
+  fieldKey       String?
+  customFieldId  String?
+  statusConfigId String?
+  assignedUserId String?
+  tagId          String?
+  compareValue   Json?
+  sortOrder      Int      @default(0)
+
+  automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, automationId, sortOrder])
 }
 
 model AutomationCondition {

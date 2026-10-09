@@ -6,7 +6,7 @@ import {
   encryptCustomFieldValue,
 } from "../lib/contact-custom-field-encryption.js"
 import { buildContactAssigneeUpdate } from "../lib/contact-assignee-update.js"
-import { queueContactCreatedAutomationEvent } from "../lib/automation-event-queue.js"
+import { loadContactChangeSnapshot, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent } from "../lib/automation-event-queue.js"
 import { kickAutomationEventWorker } from "../lib/automation-event-worker.js"
 import { normalizeCustomFieldValue } from "../lib/contact-custom-field-values.js"
 import { summarizeVisibleContactFollowUpServices } from "../lib/contact-followup-visibility.js"
@@ -3725,13 +3725,13 @@ router.post("/:tenantId/:contactId/tags", requireAuth, async (req, res, next) =>
       return res.status(409).json({ error: "CONTACT_TAG_ALREADY_EXISTS" })
     }
 
-    await prismaWithContacts.contactTag.create({
-      data: {
-        tenantId,
-        contactId,
-        tagId,
-      },
+    const automation = await prisma.$transaction(async (tx) => {
+      const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
+      if (!before) throw new Error("Contact not found while adding a tag.")
+      await (tx as any).contactTag.create({ data: { tenantId, contactId, tagId } })
+      return queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
     })
+    if (automation.automationEventId) kickAutomationEventWorker()
 
     return res.status(201).json({
       ok: true,
@@ -3764,9 +3764,13 @@ router.delete("/:tenantId/:contactId/tags/:tagId", requireAuth, async (req, res,
       return res.status(404).json({ error: "CONTACT_TAG_NOT_FOUND" })
     }
 
-    await prismaWithContacts.contactTag.delete({
-      where: { id: existingAssignment.id },
+    const automation = await prisma.$transaction(async (tx) => {
+      const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
+      if (!before) throw new Error("Contact not found while removing a tag.")
+      await (tx as any).contactTag.delete({ where: { id: existingAssignment.id } })
+      return queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
     })
+    if (automation.automationEventId) kickAutomationEventWorker()
 
     return res.json({ ok: true })
   } catch (error) {
@@ -3819,7 +3823,10 @@ router.patch("/:tenantId/:contactId/assignee", requireAuth, async (req, res, nex
       }
     }
 
-    const updatedContact = await prisma.contact.update({
+    const { updatedContact, automation } = await prisma.$transaction(async (tx) => {
+      const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
+      if (!before) throw new Error("Contact not found while assigning a user.")
+      const updatedContact = await tx.contact.update({
       where: { id: contactId },
       data: {
         assignedToUserId: resolvedAssignedToUserId,
@@ -3839,7 +3846,11 @@ router.patch("/:tenantId/:contactId/assignee", requireAuth, async (req, res, nex
           },
         },
       },
+      })
+      const automation = await queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
+      return { updatedContact, automation }
     })
+    if (automation.automationEventId) kickAutomationEventWorker()
 
     return res.json({
       ok: true,
@@ -3901,7 +3912,10 @@ router.patch("/:tenantId/:contactId/status", requireAuth, async (req, res, next)
       return res.status(400).json({ error: "INVALID_STATUS_CONFIG" })
     }
 
-    const updatedContact = await prisma.contact.update({
+    const { updatedContact, automation } = await prisma.$transaction(async (tx) => {
+      const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
+      if (!before) throw new Error("Contact not found while updating status.")
+      const updatedContact = await tx.contact.update({
       where: { id: contactId },
       data: {
         statusConfigId: resolvedStatusConfigId,
@@ -3917,7 +3931,11 @@ router.patch("/:tenantId/:contactId/status", requireAuth, async (req, res, next)
           },
         },
       },
+      })
+      const automation = await queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
+      return { updatedContact, automation }
     })
+    if (automation.automationEventId) kickAutomationEventWorker()
 
     return res.json({
       ok: true,
@@ -4229,6 +4247,8 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
 
     const updated = await prisma.$transaction(async (tx) => {
       const txContacts = tx as any
+      const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
+      if (!before) throw new Error("Contact not found while updating.")
       const updatedContact = await tx.contact.update({
         where: { id: contactId },
         data: {
@@ -4419,8 +4439,10 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
         )
       }
 
-      return { updatedContact }
+      const automation = await queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
+      return { updatedContact, automation }
     })
+    if (updated.automation.automationEventId) kickAutomationEventWorker()
 
     const tags = await prismaWithContacts.contactTag.findMany({
       where: { tenantId, contactId },

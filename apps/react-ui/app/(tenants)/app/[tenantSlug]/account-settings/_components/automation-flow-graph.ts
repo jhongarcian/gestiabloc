@@ -41,6 +41,7 @@ export type AutomationFlowDraft = {
   pipelineId: string
   changeType?: "" | "STAGE_ENTERED" | "RESULT_WON" | "RESULT_LOST"
   targetStageId: string
+  changes?: Array<unknown>
   conditions: AutomationCondition[]
   actions: AutomationAction[]
 }
@@ -186,6 +187,8 @@ export function buildAutomationFlowGraph(
       ? "Click to choose what starts this automation"
       : draft.triggerType === "CONTACT_CREATED"
         ? "Starts when a new contact is added"
+      : draft.triggerType === "CONTACT_CHANGED"
+        ? `All ${draft.changes?.length ?? 0} change rule${draft.changes?.length === 1 ? "" : "s"} in one update`
       : draft.triggerType === "OPPORTUNITY_CREATED"
         ? `Created in ${pipeline?.name ?? "Select a pipeline"}`
         : changeType === "STAGE_ENTERED"
@@ -207,6 +210,8 @@ export function buildAutomationFlowGraph(
             ? "Select a trigger"
             : draft.triggerType === "CONTACT_CREATED"
               ? "Contact created"
+            : draft.triggerType === "CONTACT_CHANGED"
+              ? "Contact changed"
             : draft.triggerType === "OPPORTUNITY_CREATED"
               ? "Opportunity created"
               : draft.triggerType === "OPPORTUNITY_STAGE_CHANGED"

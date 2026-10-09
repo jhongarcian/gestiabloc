@@ -9,10 +9,21 @@ import {
 
 describe("automation trigger payloads", () => {
   test("contact creation needs no pipeline and round trips through the builder", () => {
-    const draft = { triggerType: "CONTACT_CREATED" as const, pipelineId: "", changeType: "" as const, targetStageId: "" }
+    const draft = { triggerType: "CONTACT_CREATED" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes: [] }
     assert.equal(isAutomationTriggerReady(draft), true)
     assert.deepEqual(serializeAutomationTrigger(draft), { type: "CONTACT_CREATED" })
     assert.deepEqual(hydrateAutomationTrigger({ type: "CONTACT_CREATED" }), draft)
+  })
+  test("contact changes require rules and preserve their target values", () => {
+    const changes = [
+      { source: "CONTACT_ASSIGNEE" as const, operator: "HAS_CHANGED_TO" as const, assignedUserId: null },
+      { source: "CONTACT_TAGS" as const, operator: "ADDED" as const, tagId: null },
+    ]
+    const draft = { triggerType: "CONTACT_CHANGED" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "CONTACT_CHANGED", changes })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "CONTACT_CHANGED", changes }), draft)
+    assert.equal(isAutomationTriggerReady({ ...draft, changes: [] }), false)
   })
   test("serializes stage, Won, and Lost listeners", () => {
     assert.deepEqual(serializeAutomationTrigger({

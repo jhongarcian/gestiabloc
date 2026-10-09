@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
-import { claimQueuedAutomationDispatch, queueContactCreatedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
+import { claimQueuedAutomationDispatch, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
 
 const WAIT_ACTION = {
   id: "action-1",
@@ -64,6 +64,54 @@ describe("queueContactCreatedAutomationEvent", () => {
     assert.equal(writes.event.pipelineId, null)
     assert.equal(writes.event.opportunitySnapshotId, null)
     assert.equal(writes.logs[0].eventSource, "CONTACT_CREATED")
+  })
+})
+
+describe("queueContactChangedAutomationEvent", () => {
+  test("does not queue a no-op and stops an over-deep automation chain", async () => {
+    const before = { id: "contact-1", firstName: "Mary", statusConfigId: "active", assignedToUserId: null, tags: [], customFieldValues: [] }
+    let after = before
+    const prismaTx = { contact: { findFirst: async () => after } }
+    const noOp = await queueContactChangedAutomationEvent(prismaTx, { tenantId: "tenant-1", contactId: "contact-1", actorUserId: null, before })
+    assert.equal(noOp.automationEventId, null)
+    after = { ...before, firstName: "Maria" }
+    await assert.rejects(
+      queueContactChangedAutomationEvent(prismaTx, { tenantId: "tenant-1", contactId: "contact-1", actorUserId: null, before, chainDepth: 21 }),
+      /maximum automation chain depth/,
+    )
+  })
+  test("queues one matching run after all change rules and resulting-state filters pass", async () => {
+    const writes: Record<string, any> = {}
+    const before = { id: "contact-1", firstName: "Mary", lastName: "Reed", statusConfigId: "active", assignedToUserId: null, tags: [], customFieldValues: [] }
+    const after = { ...before, firstName: "Maria", tags: [{ tagId: "new" }] }
+    const changes = [
+      { source: "CONTACT_FIELD", operator: "HAS_CHANGED_TO", fieldKey: "firstName", compareValue: "Maria" },
+      { source: "CONTACT_TAGS", operator: "ADDED", tagId: "new" },
+    ]
+    const base = { name: "Contact changed", triggerType: "CONTACT_CHANGED", changeRules: changes, conditions: [], actions: [WAIT_ACTION] }
+    const prismaTx = {
+      contact: { findFirst: async () => after },
+      automation: { findMany: async () => [
+        { ...base, id: "match", conditions: [{ source: "CONTACT_FIELD", operator: "EQUALS", fieldKey: "first_name", compareValue: "Maria" }] },
+        { ...base, id: "filter-fail", conditions: [{ source: "CONTACT_FIELD", operator: "EQUALS", fieldKey: "first_name", compareValue: "Mary" }] },
+        { ...base, id: "change-fail", changeRules: [...changes, { source: "CONTACT_ASSIGNEE", operator: "HAS_CHANGED" }] },
+      ] },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      taskStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "new", name: "New" }] },
+      opportunityPipeline: { findMany: async () => [] },
+      tenant: { findUnique: async () => ({ timezone: "America/Chicago" }) },
+      automationEvent: { create: async ({ data }: any) => { writes.event = data; return data } },
+      automationDispatch: { createMany: async ({ data }: any) => { writes.dispatches = data } },
+      automationNodeExecution: { createMany: async ({ data }: any) => { writes.logs = data } },
+    }
+    const result = await queueContactChangedAutomationEvent(prismaTx, { tenantId: "tenant-1", contactId: "contact-1", actorUserId: null, before })
+    assert.equal(result.matchedCount, 1)
+    assert.equal(writes.dispatches[0].automationId, "match")
+    assert.equal(writes.event.triggerType, "CONTACT_CHANGED")
+    assert.equal(writes.logs[0].eventSource, "CONTACT_CHANGED")
   })
 })
 

@@ -78,6 +78,7 @@ export async function findEnabledAutomationReference(
     referenceWhere = {
       OR: [
         { conditions: { some: { customFieldId: reference.id } } },
+        { changeRules: { some: { customFieldId: reference.id } } },
         { actions: { some: { customFieldId: reference.id } } },
         ...(noteTemplateReference ? [noteTemplateReference] : []),
       ],
@@ -86,6 +87,7 @@ export async function findEnabledAutomationReference(
     referenceWhere = {
       OR: [
         { conditions: { some: { statusConfigId: reference.id } } },
+        { changeRules: { some: { statusConfigId: reference.id } } },
         { actions: { some: { statusConfigId: reference.id } } },
       ],
     }
@@ -95,6 +97,7 @@ export async function findEnabledAutomationReference(
     referenceWhere = {
       OR: [
         { conditions: { some: { tagId: reference.id } } },
+        { changeRules: { some: { tagId: reference.id } } },
         { actions: { some: { tagId: reference.id } } },
       ],
     }
@@ -102,6 +105,7 @@ export async function findEnabledAutomationReference(
     referenceWhere = {
       OR: [
         { conditions: { some: { assignedUserId: reference.id } } },
+        { changeRules: { some: { assignedUserId: reference.id } } },
         { actions: { some: { assignedUserId: reference.id } } },
       ],
     }

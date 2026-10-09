@@ -4,6 +4,22 @@ import { describe, test } from "node:test"
 import { findEnabledAutomationReference } from "./automation-references.js"
 
 describe("findEnabledAutomationReference", () => {
+  test("protects fields, statuses, tags, and users selected by a change trigger", async () => {
+    const searches: string[] = []
+    const prismaClient = {
+      contactCustomField: { findFirst: async () => ({ key: "source" }) },
+      automation: {
+        findFirst: async ({ where }: { where: Record<string, unknown> }) => {
+          searches.push(JSON.stringify(where))
+          return { id: "automation-1", name: "Contact changed" }
+        },
+      },
+    }
+    for (const [kind, key] of [["customField", "customFieldId"], ["status", "statusConfigId"], ["tag", "tagId"], ["user", "assignedUserId"]] as const) {
+      await findEnabledAutomationReference(prismaClient, "tenant-1", { kind, id: "selected-id" })
+      assert.match(searches.at(-1) ?? "", new RegExp(`changeRules.*${key}.*selected-id`))
+    }
+  })
   test("includes note title and body tokens when checking a custom field", async () => {
     let automationWhere: Record<string, unknown> | null = null
     const prismaClient = {

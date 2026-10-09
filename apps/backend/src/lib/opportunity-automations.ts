@@ -75,6 +75,7 @@ import { evaluateWorkflowOperator } from "./service-followup-runtime.js"
 
 export const AUTOMATION_TRIGGER_TYPES = [
   "CONTACT_CREATED",
+  "CONTACT_CHANGED",
   "OPPORTUNITY_CREATED",
   "OPPORTUNITY_STAGE_CHANGED",
   "OPPORTUNITY_CHANGED",
@@ -325,6 +326,14 @@ export const AutomationConditionInputSchema = z.discriminatedUnion("source", [
   customFieldConditionSchema,
   contactAssigneeConditionSchema,
   contactTagsConditionSchema,
+])
+
+export const AutomationContactChangeRuleSchema = z.discriminatedUnion("source", [
+  z.object({ source: z.literal("CONTACT_FIELD"), operator: z.enum(["HAS_CHANGED", "HAS_CHANGED_TO"]), fieldKey: z.string().trim().min(1), value: z.unknown().optional() }).strict(),
+  z.object({ source: z.literal("CONTACT_CUSTOM_FIELD"), operator: z.enum(["HAS_CHANGED", "HAS_CHANGED_TO"]), customFieldId: idSchema, value: z.unknown().optional() }).strict(),
+  z.object({ source: z.literal("CONTACT_STATUS"), operator: z.enum(["HAS_CHANGED", "HAS_CHANGED_TO"]), statusConfigId: idSchema.optional() }).strict(),
+  z.object({ source: z.literal("CONTACT_ASSIGNEE"), operator: z.enum(["HAS_CHANGED", "HAS_CHANGED_TO"]), assignedUserId: idSchema.nullable().optional() }).strict(),
+  z.object({ source: z.literal("CONTACT_TAGS"), operator: z.enum(["ADDED", "REMOVED"]), tagId: idSchema.nullable().optional() }).strict(),
 ])
 
 const automationOpportunityConfigBase = {
@@ -660,6 +669,7 @@ export const AutomationUpsertSchema = z
     isEnabled: z.boolean().default(false),
     trigger: z.discriminatedUnion("type", [
       z.object({ type: z.literal("CONTACT_CREATED") }).strict(),
+      z.object({ type: z.literal("CONTACT_CHANGED"), changes: z.array(AutomationContactChangeRuleSchema).min(1).max(20) }).strict(),
       z.object({
         type: z.literal("OPPORTUNITY_CREATED"),
         pipelineId: idSchema,
@@ -1299,7 +1309,8 @@ export async function validateAutomationConfiguration(
   input: AutomationInput,
   options: { sourceAutomationId?: string | null } = {},
 ) {
-  const triggerPipelineId = input.trigger.type === "CONTACT_CREATED" ? null : input.trigger.pipelineId
+  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED"
+  const triggerPipelineId = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" ? null : input.trigger.pipelineId
   const [pipelines, fields, statuses, taskStatuses, memberships, tags, services, publishedAutomations] = await Promise.all([
     prismaClient.opportunityPipeline.findMany
       ? prismaClient.opportunityPipeline.findMany({
@@ -1376,7 +1387,7 @@ export async function validateAutomationConfiguration(
   const pipeline = triggerPipelineId
     ? pipelines.find((item: any) => item.id === triggerPipelineId)
     : null
-  if (input.trigger.type !== "CONTACT_CREATED" && !pipeline) throw new AutomationConfigurationError("PIPELINE_NOT_FOUND", "The selected pipeline no longer exists.")
+  if (!contactTrigger && !pipeline) throw new AutomationConfigurationError("PIPELINE_NOT_FOUND", "The selected pipeline no longer exists.")
   const stageIds = new Set((pipeline?.stages ?? []).map((stage: { id: string }) => stage.id))
   const configuredStageId = input.trigger.type === "OPPORTUNITY_STAGE_CHANGED"
     ? input.trigger.targetStageId
@@ -1397,6 +1408,55 @@ export async function validateAutomationConfiguration(
   const tagIds = new Set(tags.map((item: any) => item.id))
   const serviceMap = new Map<string, string>(services.map((item: any) => [item.id, item.name]))
   const opportunityPipelineMap = new Map<string, any>(pipelines.map((item: any) => [item.id, item]))
+  const changeRules = input.trigger.type === "CONTACT_CHANGED"
+    ? input.trigger.changes.map((rule, index) => {
+        const base = { tenantId, source: rule.source, operator: rule.operator, sortOrder: (index + 1) * 10 }
+        if (rule.source === "CONTACT_FIELD") {
+          const field = AUTOMATION_CONTACT_UPDATE_FIELD_MAP.get(rule.fieldKey as any)
+          if (!field) throw new AutomationConfigurationError("INVALID_CONTACT_FIELD", "Select an editable contact field.")
+          if (rule.operator === "HAS_CHANGED") return { ...base, fieldKey: field.key }
+          if (!Object.hasOwn(rule, "value") || (rule.value === null && field.isRequired)) {
+            throw new AutomationConfigurationError("INVALID_CHANGE_VALUE", `Select a target value for ${field.label}.`)
+          }
+          if (rule.value === null) return { ...base, fieldKey: field.key, compareValue: null }
+          const normalized = normalizeAutomationContactFieldValue(field, rule.value)
+          if (!normalized.ok) throw new AutomationConfigurationError("INVALID_CHANGE_VALUE", normalized.message)
+          return { ...base, fieldKey: field.key, compareValue: normalized.value }
+        }
+        if (rule.source === "CONTACT_CUSTOM_FIELD") {
+          const field = fieldMap.get(rule.customFieldId)
+          if (!field || !field.isActive || field.isEncrypted || field.isSensitive) {
+            throw new AutomationConfigurationError("INVALID_CUSTOM_FIELD", "Select an active, non-sensitive custom field.")
+          }
+          if (rule.operator === "HAS_CHANGED") return { ...base, customFieldId: field.id }
+          if (!Object.hasOwn(rule, "value") || (rule.value === null && field.isRequired)) {
+            throw new AutomationConfigurationError("INVALID_CHANGE_VALUE", `Select a target value for ${field.label}.`)
+          }
+          if (rule.value === null) return { ...base, customFieldId: field.id, compareValue: null }
+          const normalized = normalizeCustomFieldValue({ ...field, options: fieldOptions(field) }, rule.value)
+          if (!normalized.ok || normalized.value === null) {
+            throw new AutomationConfigurationError("INVALID_CHANGE_VALUE", normalized.ok ? `Select a target value for ${field.label}.` : normalized.message)
+          }
+          return { ...base, customFieldId: field.id, compareValue: normalized.value }
+        }
+        if (rule.source === "CONTACT_STATUS") {
+          if (rule.operator === "HAS_CHANGED") return base
+          if (!rule.statusConfigId || !activeStatusIds.has(rule.statusConfigId)) {
+            throw new AutomationConfigurationError("INVALID_STATUS_CONFIG", "Select an active contact status.")
+          }
+          return { ...base, statusConfigId: rule.statusConfigId }
+        }
+        if (rule.source === "CONTACT_ASSIGNEE") {
+          if (rule.operator === "HAS_CHANGED") return base
+          if (!Object.hasOwn(rule, "assignedUserId") || (rule.assignedUserId && !activeUserIds.has(rule.assignedUserId))) {
+            throw new AutomationConfigurationError("INVALID_ASSIGNEE", "Select an active user or Unassigned.")
+          }
+          return { ...base, assignedUserId: rule.assignedUserId ?? null }
+        }
+        if (rule.tagId && !tagIds.has(rule.tagId)) throw new AutomationConfigurationError("INVALID_TAG", "Select a tenant tag or Any tag.")
+        return { ...base, tagId: rule.tagId ?? null }
+      })
+    : []
   const publishedAutomationMap = new Map<string, { id: string; name: string; actions: any[] }>(
     publishedAutomations.map((automation: any) => [automation.id, automation]),
   )
@@ -1420,8 +1480,8 @@ export async function validateAutomationConfiguration(
       }
     }
     if (condition.source === "OPPORTUNITY_VALUE") {
-      if (input.trigger.type === "CONTACT_CREATED") {
-        throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Opportunity value is unavailable for a contact-created trigger.")
+      if (contactTrigger) {
+        throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Opportunity value is unavailable for a contact trigger.")
       }
       if (!NUMBER_OPERATORS.has(condition.operator) || EMPTY_OPERATORS.has(condition.operator)) {
         throw new AutomationConfigurationError("INVALID_CONDITION_OPERATOR", "The selected operator is not available for opportunity value.")
@@ -2496,7 +2556,7 @@ export async function validateAutomationConfiguration(
     name: input.name,
     isEnabled: input.isEnabled,
     triggerType: input.trigger.type === "OPPORTUNITY_STAGE_CHANGED" ? "OPPORTUNITY_CHANGED" as const : input.trigger.type,
-    pipelineId: input.trigger.type === "CONTACT_CREATED" ? null : input.trigger.pipelineId,
+    pipelineId: input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" ? null : input.trigger.pipelineId,
     sourceStageId: null,
     targetStageId: configuredStageId,
     targetResult:
@@ -2504,6 +2564,7 @@ export async function validateAutomationConfiguration(
         ? input.trigger.change.result
         : null,
     conditions,
+    changeRules,
     actions,
   }
 }
@@ -2511,7 +2572,7 @@ export async function validateAutomationConfiguration(
 export type OpportunityAutomationEvent = {
   tenantId: string
   actorUserId: string | null
-  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED">
+  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED">
   opportunityId: string
   contactId: string
   pipelineId: string
@@ -3549,7 +3610,7 @@ async function removeContactFromWorkflowRuns(
   return { targetName: target.name, removedCount, exitCurrentRun, details }
 }
 
-async function applyAutomationAction(
+async function applyAutomationActionInner(
   prismaTx: any,
   params: {
     action: RuntimeAutomationAction
@@ -4653,6 +4714,36 @@ async function applyAutomationAction(
       message: error instanceof Error ? error.message : "The automation action could not be completed.",
     })
   }
+}
+
+async function applyAutomationAction(
+  prismaTx: any,
+  params: Parameters<typeof applyAutomationActionInner>[1],
+) {
+  const contactAction = new Set([
+    "UPDATE_CONTACT_CUSTOM_FIELDS", "SET_CONTACT_CUSTOM_FIELD", "CLEAR_CONTACT_CUSTOM_FIELD",
+    "SET_CONTACT_STATUS", "SET_CONTACT_ASSIGNEE", "CLEAR_CONTACT_ASSIGNEE",
+    "ADD_CONTACT_TAG", "REMOVE_CONTACT_TAG",
+  ]).has(params.action.type)
+  if (!contactAction) return applyAutomationActionInner(prismaTx, params)
+  const { captureContactChangeSnapshot, queueContactChangedAutomationEvent } = await import("./automation-event-queue.js")
+  const before = await captureContactChangeSnapshot(prismaTx, params.tenantId, params.contactId)
+  const result = await applyAutomationActionInner(prismaTx, params)
+  if (before) await queueContactChangedAutomationEvent(prismaTx, {
+    tenantId: params.tenantId,
+    contactId: params.contactId,
+    actorUserId: params.actorUserId ?? null,
+    before,
+    chainId: params.eventContext?.chainId,
+    parentEventId: params.eventContext?.eventId,
+    chainDepth: (params.eventContext?.chainDepth ?? 0) + 1,
+    transitionHistory: params.eventContext?.transitionHistory,
+    sourceAutomationId: params.automationId,
+    sourceAutomationName: params.automationName,
+    sourceNodeKey: params.action.nodeKey,
+    causationKey: params.runId ? `automation-run:${params.runId}:contact-change:${params.action.nodeKey}` : null,
+  })
+  return result
 }
 
 export async function applyAutomationActions(

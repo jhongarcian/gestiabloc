@@ -1853,6 +1853,45 @@ describe("deleteAutomationContactFileObjects", () => {
 })
 
 describe("AutomationUpsertSchema", () => {
+  test("validates contact change rules separately from contact filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [
+        { id: "field-safe", key: "source", label: "Source", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: null },
+        { id: "field-private", key: "secret", label: "Secret", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: true, isSensitive: true, options: null },
+      ] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
+      membership: { findMany: async () => [{ userId: "user-a", status: "ACTIVE" }] },
+      tenantTag: { findMany: async () => [{ id: "tag-a" }] },
+    }
+    const base = {
+      name: "Contact changed",
+      isEnabled: false,
+      conditions: [{ source: "CONTACT_STATUS", operator: "EQUALS", statusConfigId: "active" }],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const changes = [
+      { source: "CONTACT_FIELD", operator: "HAS_CHANGED_TO", fieldKey: "firstName", value: "Maria" },
+      { source: "CONTACT_CUSTOM_FIELD", operator: "HAS_CHANGED_TO", customFieldId: "field-safe", value: null },
+      { source: "CONTACT_ASSIGNEE", operator: "HAS_CHANGED_TO", assignedUserId: null },
+      { source: "CONTACT_TAGS", operator: "ADDED", tagId: null },
+    ]
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, trigger: { type: "CONTACT_CHANGED", changes } }))
+    assert.equal(normalized.triggerType, "CONTACT_CHANGED")
+    assert.equal(normalized.pipelineId, null)
+    assert.equal(normalized.changeRules.length, 4)
+    assert.equal(normalized.conditions.length, 1)
+    assert.equal("compareValue" in normalized.changeRules[1]!, true)
+    assert.equal((normalized.changeRules[1] as { compareValue: unknown }).compareValue, null)
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, trigger: { type: "CONTACT_CHANGED", changes: [{ source: "CONTACT_CUSTOM_FIELD", operator: "HAS_CHANGED", customFieldId: "field-private" }] } })),
+      /non-sensitive custom field/,
+    )
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, trigger: { type: "CONTACT_CHANGED", changes: [{ source: "CONTACT_FIELD", operator: "HAS_CHANGED_TO", fieldKey: "firstName", value: null }] } })),
+      /target value/,
+    )
+  })
   test("accepts a contact-created trigger without a pipeline and validates standard field filters", async () => {
     const prismaClient = {
       opportunityPipeline: { findMany: async () => [] },

@@ -1,4 +1,11 @@
-export type AutomationTriggerType = "CONTACT_CREATED" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
+export type AutomationTriggerType = "CONTACT_CREATED" | "CONTACT_CHANGED" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
+
+export type AutomationContactChangeRule =
+  | { source: "CONTACT_FIELD"; operator: "HAS_CHANGED" | "HAS_CHANGED_TO"; fieldKey: string; value?: unknown }
+  | { source: "CONTACT_CUSTOM_FIELD"; operator: "HAS_CHANGED" | "HAS_CHANGED_TO"; customFieldId: string; value?: unknown }
+  | { source: "CONTACT_STATUS"; operator: "HAS_CHANGED" | "HAS_CHANGED_TO"; statusConfigId?: string }
+  | { source: "CONTACT_ASSIGNEE"; operator: "HAS_CHANGED" | "HAS_CHANGED_TO"; assignedUserId?: string | null }
+  | { source: "CONTACT_TAGS"; operator: "ADDED" | "REMOVED"; tagId?: string | null }
 export type AutomationOperator =
   | "EQUALS"
   | "NOT_EQUALS"
@@ -428,6 +435,7 @@ export type AutomationRecord = {
   librarySortOrder: number
   trigger:
     | { type: "CONTACT_CREATED" }
+    | { type: "CONTACT_CHANGED"; changes: AutomationContactChangeRule[] }
     | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
     | {
         type: "OPPORTUNITY_CHANGED"
@@ -525,7 +533,7 @@ export type AutomationNodeExecutionStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | 
 export type AutomationNodeExecution = {
   id: string
   attemptId: string
-  eventSource: "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
+  eventSource: "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
   contact: {
     id: string | null
     name: string

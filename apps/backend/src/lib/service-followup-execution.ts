@@ -549,7 +549,7 @@ async function applyContactFieldUpdate(
   })
 }
 
-export async function executeActionNode(params: {
+async function executeActionNodeInner(params: {
   prismaTx: PrismaTx
   tenantId: string
   templateId: string
@@ -1026,6 +1026,26 @@ export async function executeActionNode(params: {
   }
 
   return false
+}
+
+export async function executeActionNode(params: Parameters<typeof executeActionNodeInner>[0]): Promise<boolean> {
+  const kind = params.node.data?.kind
+  const changesContact = ["assign", "removeUser", "tagAdd", "tagRemove", "statusUpdate", "contactFieldUpdate"].includes(kind ?? "")
+  if (!changesContact) return executeActionNodeInner(params)
+  const { captureContactChangeSnapshot, queueContactChangedAutomationEvent } = await import("./automation-event-queue.js")
+  const before = await captureContactChangeSnapshot(params.prismaTx, params.tenantId, params.contactService.contactId)
+  const executed = await executeActionNodeInner(params)
+  if (executed && before) {
+    await queueContactChangedAutomationEvent(params.prismaTx, {
+      tenantId: params.tenantId,
+      contactId: params.contactService.contactId,
+      actorUserId: params.actorUserId,
+      before,
+      sourceNodeKey: params.node.id,
+      causationKey: params.runId ? `follow-up-run:${params.runId}:contact-change:${params.node.id}` : null,
+    })
+  }
+  return executed
 }
 
 export async function syncContactServiceActiveStep(params: {

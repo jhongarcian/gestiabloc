@@ -1,4 +1,4 @@
-import type { AutomationTriggerType } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types"
+import type { AutomationContactChangeRule, AutomationTriggerType } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types"
 
 export type AutomationBuilderTriggerType = Exclude<AutomationTriggerType, "OPPORTUNITY_STAGE_CHANGED">
 export type AutomationChangeType = "" | "STAGE_ENTERED" | "RESULT_WON" | "RESULT_LOST"
@@ -8,10 +8,12 @@ export type AutomationTriggerDraft = {
   pipelineId: string
   changeType: AutomationChangeType
   targetStageId: string
+  changes?: AutomationContactChangeRule[]
 }
 
 type SavedAutomationTrigger =
   | { type: "CONTACT_CREATED" }
+  | { type: "CONTACT_CHANGED"; changes: AutomationContactChangeRule[] }
   | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
   | { type: "OPPORTUNITY_STAGE_CHANGED"; pipelineId: string; targetStageId: string }
   | {
@@ -25,15 +27,30 @@ type SavedAutomationTrigger =
 export function isAutomationTriggerReady(draft: AutomationTriggerDraft | null) {
   if (!draft?.triggerType) return false
   if (draft.triggerType === "CONTACT_CREATED") return true
+  if (draft.triggerType === "CONTACT_CHANGED") return Boolean(draft.changes?.length) && draft.changes!.every((rule) => {
+    if (rule.source === "CONTACT_FIELD") return Boolean(rule.fieldKey) && (rule.operator !== "HAS_CHANGED_TO" || validTarget(rule.value))
+    if (rule.source === "CONTACT_CUSTOM_FIELD") return Boolean(rule.customFieldId) && (rule.operator !== "HAS_CHANGED_TO" || validTarget(rule.value))
+    if (rule.source === "CONTACT_STATUS") return rule.operator !== "HAS_CHANGED_TO" || Boolean(rule.statusConfigId)
+    if (rule.source === "CONTACT_ASSIGNEE") return rule.operator !== "HAS_CHANGED_TO" || Object.hasOwn(rule, "assignedUserId")
+    return true
+  })
   if (!draft.pipelineId) return false
   if (draft.triggerType === "OPPORTUNITY_CREATED") return true
   if (!draft.changeType) return false
   return draft.changeType !== "STAGE_ENTERED" || Boolean(draft.targetStageId)
 }
 
+function validTarget(value: unknown) {
+  if (value === undefined || value === "") return false
+  if (typeof value === "number" && !Number.isFinite(value)) return false
+  if (Array.isArray(value) && value.length === 0) return false
+  return true
+}
+
 export function serializeAutomationTrigger(draft: AutomationTriggerDraft) {
   if (!draft.triggerType) throw new Error("Select a trigger.")
   if (draft.triggerType === "CONTACT_CREATED") return { type: "CONTACT_CREATED" as const }
+  if (draft.triggerType === "CONTACT_CHANGED") return { type: "CONTACT_CHANGED" as const, changes: draft.changes ?? [] }
   if (draft.triggerType === "OPPORTUNITY_CREATED") {
     return { type: "OPPORTUNITY_CREATED" as const, pipelineId: draft.pipelineId }
   }
@@ -55,7 +72,10 @@ export function serializeAutomationTrigger(draft: AutomationTriggerDraft) {
 
 export function hydrateAutomationTrigger(trigger: SavedAutomationTrigger): AutomationTriggerDraft {
   if (trigger.type === "CONTACT_CREATED") {
-    return { triggerType: "CONTACT_CREATED", pipelineId: "", changeType: "", targetStageId: "" }
+    return { triggerType: "CONTACT_CREATED", pipelineId: "", changeType: "", targetStageId: "", changes: [] }
+  }
+  if (trigger.type === "CONTACT_CHANGED") {
+    return { triggerType: "CONTACT_CHANGED", pipelineId: "", changeType: "", targetStageId: "", changes: trigger.changes }
   }
   if (trigger.type === "OPPORTUNITY_CREATED") {
     return {

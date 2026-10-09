@@ -95,6 +95,7 @@ const writeMiddlewares = [
 
 const automationInclude = {
   conditions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+  changeRules: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
   actions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
   executions: { orderBy: { createdAt: "desc" }, take: 1 },
 } as const
@@ -142,6 +143,17 @@ function serializeAutomation(record: any) {
     trigger:
       record.triggerType === "CONTACT_CREATED"
         ? { type: "CONTACT_CREATED" as const }
+        : record.triggerType === "CONTACT_CHANGED"
+        ? { type: "CONTACT_CHANGED" as const, changes: record.changeRules.map((rule: any) => ({
+            source: rule.source,
+            operator: rule.operator,
+            ...(rule.fieldKey ? { fieldKey: rule.fieldKey } : {}),
+            ...(rule.customFieldId ? { customFieldId: rule.customFieldId } : {}),
+            ...(rule.operator === "HAS_CHANGED_TO" && rule.source === "CONTACT_STATUS" ? { statusConfigId: rule.statusConfigId } : {}),
+            ...(rule.operator === "HAS_CHANGED_TO" && rule.source === "CONTACT_ASSIGNEE" ? { assignedUserId: rule.assignedUserId } : {}),
+            ...(rule.source === "CONTACT_TAGS" ? { tagId: rule.tagId } : {}),
+            ...(rule.operator === "HAS_CHANGED_TO" && (rule.source === "CONTACT_FIELD" || rule.source === "CONTACT_CUSTOM_FIELD") ? { value: rule.compareValue } : {}),
+          })) }
         : record.triggerType === "OPPORTUNITY_CREATED"
         ? { type: record.triggerType, pipelineId: record.pipelineId }
         : {
@@ -859,6 +871,7 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
         folderId: payload.folderId ?? null,
         librarySortOrder: (libraryLast?.librarySortOrder ?? 0) + 10,
         conditions: { create: normalized.conditions },
+        changeRules: { create: normalized.changeRules },
         actions: { create: normalized.actions },
       },
       include: automationInclude,
@@ -895,6 +908,7 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
     const record = await prismaWithAutomations.$transaction(async (tx: any) => {
       await Promise.all([
         tx.automationCondition.deleteMany({ where: { tenantId, automationId } }),
+        tx.automationContactChangeRule.deleteMany({ where: { tenantId, automationId } }),
         tx.automationAction.deleteMany({ where: { tenantId, automationId } }),
       ])
       return tx.automation.update({
@@ -908,6 +922,7 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
           targetStageId: normalized.targetStageId,
           targetResult: normalized.targetResult,
           conditions: { create: normalized.conditions },
+          changeRules: { create: normalized.changeRules },
           actions: { create: normalized.actions },
         },
         include: automationInclude,
