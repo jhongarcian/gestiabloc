@@ -430,6 +430,55 @@ const ACTION_GROUP_STYLES: Record<AutomationActionGroupId, {
   },
 }
 
+const TRIGGER_GROUPS = [
+  {
+    id: "CONTACT",
+    label: "Contact triggers",
+    description: "Start when a contact is created or updated.",
+    icon: ContactRound,
+    triggers: ["CONTACT_CREATED", "CONTACT_CHANGED"],
+  },
+  {
+    id: "OPPORTUNITY",
+    label: "Opportunity triggers",
+    description: "Start when an opportunity is created or changes.",
+    icon: Kanban,
+    triggers: ["OPPORTUNITY_CREATED", "OPPORTUNITY_CHANGED"],
+  },
+] as const
+
+const TRIGGER_DEFINITIONS: Record<AutomationBuilderTriggerType, {
+  label: string
+  description: string
+  icon: LucideIcon
+  group: "CONTACT" | "OPPORTUNITY"
+}> = {
+  CONTACT_CREATED: {
+    label: "Contact created",
+    description: "When a new contact is added.",
+    icon: UserRoundPlus,
+    group: "CONTACT",
+  },
+  CONTACT_CHANGED: {
+    label: "Contact changed",
+    description: "When selected contact details change.",
+    icon: ContactRound,
+    group: "CONTACT",
+  },
+  OPPORTUNITY_CREATED: {
+    label: "Opportunity created",
+    description: "When a new opportunity is added.",
+    icon: Kanban,
+    group: "OPPORTUNITY",
+  },
+  OPPORTUNITY_CHANGED: {
+    label: "Opportunity changed",
+    description: "When an opportunity enters a stage or changes result.",
+    icon: GitBranch,
+    group: "OPPORTUNITY",
+  },
+}
+
 const ACTION_DEFINITIONS = {
   WAIT: {
     label: "Wait",
@@ -2951,6 +3000,7 @@ function TriggerEditor({
   catalog: AutomationCatalog
   onChange: (draft: Draft) => void
 }) {
+  const [isChoosingTrigger, setIsChoosingTrigger] = useState(false)
   const setConditions = (conditions: AutomationCondition[]) => onChange({ ...draft, conditions })
   const updateCondition = (index: number, patch: Partial<AutomationCondition>) => {
     setConditions(
@@ -2959,6 +3009,29 @@ function TriggerEditor({
       ),
     )
   }
+  const chooseTrigger = (triggerType: AutomationBuilderTriggerType) => {
+    if (triggerType === draft.triggerType) {
+      setIsChoosingTrigger(false)
+      return
+    }
+    onChange({
+      ...draft,
+      triggerType,
+      pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" ? "" : draft.pipelineId,
+      changeType: "",
+      targetStageId: "",
+      conditions: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED"
+        ? draft.conditions.filter((condition) => condition.source !== "OPPORTUNITY_VALUE")
+        : draft.conditions,
+      changes: triggerType === "CONTACT_CHANGED" && draft.changes.length === 0
+        ? [{ source: "CONTACT_FIELD", operator: "HAS_CHANGED", fieldKey: catalog.contactUpdateFields[0]?.key ?? "" }]
+        : draft.changes,
+    })
+    setIsChoosingTrigger(false)
+  }
+
+  const selectedTrigger = draft.triggerType ? TRIGGER_DEFINITIONS[draft.triggerType] : null
+  const SelectedTriggerIcon = selectedTrigger?.icon ?? Zap
 
   return (
     <div className="flex flex-col gap-4">
@@ -2977,44 +3050,85 @@ function TriggerEditor({
       </section>
 
       <Separator />
-      <section>
-        <Field>
-          <FieldLabel htmlFor="automation-trigger">Trigger</FieldLabel>
-          <Select
-            value={draft.triggerType ?? undefined}
-            onValueChange={(value) => {
-              const triggerType = value as AutomationBuilderTriggerType
-              onChange({
-                ...draft,
-                triggerType,
-                pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" ? "" : draft.pipelineId,
-                changeType: "",
-                targetStageId: "",
-                conditions: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED"
-                  ? draft.conditions.filter((condition) => condition.source !== "OPPORTUNITY_VALUE")
-                  : draft.conditions,
-                changes: triggerType === "CONTACT_CHANGED" && draft.changes.length === 0
-                  ? [{ source: "CONTACT_FIELD", operator: "HAS_CHANGED", fieldKey: catalog.contactUpdateFields[0]?.key ?? "" }]
-                  : draft.changes,
-              })
-            }}
-          >
-            <SelectTrigger id="automation-trigger" className={COMPACT_SELECT_TRIGGER_CLASS}>
-              <SelectValue placeholder="Select a trigger" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectItem value="CONTACT_CREATED">Contact created</SelectItem>
-                <SelectItem value="CONTACT_CHANGED">Contact changed</SelectItem>
-                <SelectItem value="OPPORTUNITY_CREATED">Opportunity created</SelectItem>
-                <SelectItem value="OPPORTUNITY_CHANGED">Opportunity changed</SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </Field>
-      </section>
+      {isChoosingTrigger || !selectedTrigger ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <p className="text-sm font-semibold text-slate-950">Choose a trigger</p>
+              <p className="text-xs leading-4 text-slate-500">Select the event that starts this workflow.</p>
+            </div>
+            {selectedTrigger ? (
+              <Button type="button" variant="outline" className={COMPACT_SECONDARY_BUTTON_CLASS} onClick={() => setIsChoosingTrigger(false)}>
+                Cancel
+              </Button>
+            ) : null}
+          </div>
+          {TRIGGER_GROUPS.map((group) => {
+            const GroupIcon = group.icon
+            const groupStyle = ACTION_GROUP_STYLES[group.id]
+            return (
+              <section key={group.id} className={cn("flex flex-col gap-2 rounded-xl border p-3", groupStyle.section)}>
+                <div className="flex items-start gap-2.5">
+                  <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg ring-1", groupStyle.icon)}>
+                    <GroupIcon aria-hidden="true" className="size-4" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-slate-800">{group.label}</p>
+                    <p className="text-xs leading-4 text-slate-500">{group.description}</p>
+                  </div>
+                </div>
+                <Separator />
+                <div className="flex flex-col gap-2">
+                  {group.triggers.map((value) => {
+                    const definition = TRIGGER_DEFINITIONS[value]
+                    const TriggerIcon = definition.icon
+                    return (
+                      <Button
+                        key={value}
+                        type="button"
+                        variant="outline"
+                        aria-pressed={draft.triggerType === value}
+                        className={cn(
+                          "h-auto w-full cursor-pointer items-start justify-start gap-3 whitespace-normal rounded-lg border-slate-200 bg-white px-3 py-2.5 text-left shadow-none transition",
+                          groupStyle.actionHover,
+                          draft.triggerType === value && "border-blue-300 bg-blue-50",
+                        )}
+                        onClick={() => chooseTrigger(value)}
+                      >
+                        <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", groupStyle.actionIcon)}>
+                          <TriggerIcon aria-hidden="true" className="size-4" />
+                        </span>
+                        <span className="min-w-0 text-left">
+                          <span className="block text-sm font-medium text-slate-900">{definition.label}</span>
+                          <span className="mt-0.5 block text-xs font-normal leading-4 text-slate-500">{definition.description}</span>
+                        </span>
+                      </Button>
+                    )
+                  })}
+                </div>
+              </section>
+            )
+          })}
+        </div>
+      ) : (
+        <div className={cn("flex items-center justify-between gap-3 rounded-xl border p-2.5", ACTION_GROUP_STYLES[selectedTrigger.group].section)}>
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-xl", ACTION_GROUP_STYLES[selectedTrigger.group].actionIcon)}>
+              <SelectedTriggerIcon aria-hidden="true" className="size-4.5" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-xs text-slate-500">Trigger</p>
+              <p className="truncate text-sm font-semibold text-slate-950">{selectedTrigger.label}</p>
+              <p className="text-xs leading-4 text-slate-500">{selectedTrigger.description}</p>
+            </div>
+          </div>
+          <Button type="button" variant="outline" className={COMPACT_SECONDARY_BUTTON_CLASS} onClick={() => setIsChoosingTrigger(true)}>
+            Change
+          </Button>
+        </div>
+      )}
 
-      {draft.triggerType ? (
+      {draft.triggerType && !isChoosingTrigger ? (
         <>
           {draft.triggerType === "CONTACT_CHANGED" ? <>
             <Separator />
@@ -3138,10 +3252,10 @@ function ContactChangeRulesEditor({ draft, catalog, onChange }: {
   const setRules = (changes: AutomationContactChangeRule[]) => onChange({ ...draft, changes })
   const updateRule = (index: number, rule: AutomationContactChangeRule) =>
     setRules(draft.changes.map((current, currentIndex) => currentIndex === index ? rule : current))
-  return <section className="space-y-3">
+  return <section className="flex flex-col gap-3">
     <div>
-      <h3 className="text-sm font-semibold text-foreground">Changes to listen for</h3>
-      <p className="text-xs text-muted-foreground">All rules must happen in the same update.</p>
+      <h3 className="text-sm font-semibold text-slate-950">Changes to listen for</h3>
+      <p className="text-xs leading-4 text-slate-500">All rules must happen in the same update.</p>
     </div>
     {draft.changes.map((rule, index) => {
       const field = rule.source === "CONTACT_FIELD"
@@ -3152,15 +3266,22 @@ function ContactChangeRulesEditor({ draft, catalog, onChange }: {
       const target = rule.source === "CONTACT_FIELD" || rule.source === "CONTACT_CUSTOM_FIELD" ? rule.value : undefined
       const updateTarget = (value: unknown) => updateRule(index, { ...rule, value } as AutomationContactChangeRule)
       const canClear = Boolean(field && !field.isRequired)
-      return <div key={index} className="space-y-3 rounded-xl border p-3">
+      const RuleIcon = rule.source === "CONTACT_TAGS" ? Tags
+        : rule.source === "CONTACT_ASSIGNEE" ? UserRound
+          : rule.source === "CONTACT_STATUS" ? BadgeCheck
+            : ListChecks
+      return <div key={index} className="space-y-3 rounded-2xl border border-slate-200 p-3">
         <div className="flex items-center justify-between">
-          <span className="text-sm font-medium">Change {index + 1}</span>
-          <Button type="button" variant="ghost" size="icon" aria-label={`Remove change ${index + 1}`} onClick={() => setRules(draft.changes.filter((_, currentIndex) => currentIndex !== index))}><Trash2 className="h-4 w-4" /></Button>
+          <div className="flex items-center gap-2">
+            <span className="flex size-7 items-center justify-center rounded-lg bg-slate-100 text-slate-600"><RuleIcon aria-hidden="true" className="size-4" /></span>
+            <span className="text-sm font-semibold text-slate-900">Change {index + 1}</span>
+          </div>
+          <Button type="button" variant="ghost" size="icon" className="text-rose-600" aria-label={`Remove change ${index + 1}`} onClick={() => setRules(draft.changes.filter((_, currentIndex) => currentIndex !== index))}><Trash2 className="h-4 w-4" /></Button>
         </div>
         <div className="space-y-2">
           <Label>Watch</Label>
           <Select value={rule.source} onValueChange={(source) => updateRule(index, defaultChangeRule(source as AutomationContactChangeRule["source"], catalog))}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="CONTACT_FIELD" disabled={catalog.contactUpdateFields.length === 0}>Contact field</SelectItem>
               <SelectItem value="CONTACT_CUSTOM_FIELD" disabled={catalog.customFields.length === 0}>Custom field</SelectItem>
@@ -3170,29 +3291,29 @@ function ContactChangeRulesEditor({ draft, catalog, onChange }: {
             </SelectContent>
           </Select>
         </div>
-        {rule.source === "CONTACT_FIELD" ? <div className="space-y-2"><Label>Contact field</Label><Select value={rule.fieldKey} onValueChange={(fieldKey) => updateRule(index, { source: rule.source, operator: rule.operator, fieldKey })}><SelectTrigger><SelectValue placeholder="Select field" /></SelectTrigger><SelectContent>{catalog.contactUpdateFields.map((item) => <SelectItem key={item.key} value={item.key}>{item.label}</SelectItem>)}</SelectContent></Select></div> : null}
-        {rule.source === "CONTACT_CUSTOM_FIELD" ? <div className="space-y-2"><Label>Custom field</Label><Select value={rule.customFieldId} onValueChange={(customFieldId) => updateRule(index, { source: rule.source, operator: rule.operator, customFieldId })}><SelectTrigger><SelectValue placeholder="Select field" /></SelectTrigger><SelectContent>{catalog.customFields.map((item) => <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>)}</SelectContent></Select></div> : null}
+        {rule.source === "CONTACT_FIELD" ? <div className="space-y-2"><Label>Contact field</Label><Select value={rule.fieldKey} onValueChange={(fieldKey) => updateRule(index, { source: rule.source, operator: rule.operator, fieldKey })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select field" /></SelectTrigger><SelectContent>{catalog.contactUpdateFields.map((item) => <SelectItem key={item.key} value={item.key}>{item.label}</SelectItem>)}</SelectContent></Select></div> : null}
+        {rule.source === "CONTACT_CUSTOM_FIELD" ? <div className="space-y-2"><Label>Custom field</Label><Select value={rule.customFieldId} onValueChange={(customFieldId) => updateRule(index, { source: rule.source, operator: rule.operator, customFieldId })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select field" /></SelectTrigger><SelectContent>{catalog.customFields.map((item) => <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>)}</SelectContent></Select></div> : null}
         <div className="space-y-2"><Label>Change</Label><Select value={rule.operator} onValueChange={(operator) => {
           if (rule.source === "CONTACT_TAGS") updateRule(index, { ...rule, operator: operator as "ADDED" | "REMOVED" })
           else if (rule.source === "CONTACT_FIELD") updateRule(index, { source: rule.source, fieldKey: rule.fieldKey, operator: operator as "HAS_CHANGED" | "HAS_CHANGED_TO" })
           else if (rule.source === "CONTACT_CUSTOM_FIELD") updateRule(index, { source: rule.source, customFieldId: rule.customFieldId, operator: operator as "HAS_CHANGED" | "HAS_CHANGED_TO" })
           else if (rule.source === "CONTACT_STATUS") updateRule(index, { source: rule.source, operator: operator as "HAS_CHANGED" | "HAS_CHANGED_TO" })
           else updateRule(index, { source: rule.source, operator: operator as "HAS_CHANGED" | "HAS_CHANGED_TO" })
-        }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{rule.source === "CONTACT_TAGS" ? <><SelectItem value="ADDED">Added</SelectItem><SelectItem value="REMOVED">Removed</SelectItem></> : <><SelectItem value="HAS_CHANGED">Has changed</SelectItem><SelectItem value="HAS_CHANGED_TO">Has changed to</SelectItem></>}</SelectContent></Select></div>
-        {rule.source === "CONTACT_TAGS" ? <div className="space-y-2"><Label>Tag</Label><Select value={rule.tagId ?? "__ANY__"} onValueChange={(value) => updateRule(index, { ...rule, tagId: value === "__ANY__" ? null : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__ANY__">Any tag</SelectItem>{catalog.tags.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div> : null}
-        {rule.source === "CONTACT_STATUS" && rule.operator === "HAS_CHANGED_TO" ? <div className="space-y-2"><Label>New status</Label><Select value={rule.statusConfigId ?? ""} onValueChange={(statusConfigId) => updateRule(index, { ...rule, statusConfigId })}><SelectTrigger><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.statuses.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div> : null}
-        {rule.source === "CONTACT_ASSIGNEE" && rule.operator === "HAS_CHANGED_TO" ? <div className="space-y-2"><Label>New assignee</Label><Select value={rule.assignedUserId === undefined ? "" : rule.assignedUserId ?? "__UNASSIGNED__"} onValueChange={(value) => updateRule(index, { ...rule, assignedUserId: value === "__UNASSIGNED__" ? null : value })}><SelectTrigger><SelectValue placeholder="Select assignee" /></SelectTrigger><SelectContent><SelectItem value="__UNASSIGNED__">Unassigned</SelectItem>{catalog.users.map((item) => <SelectItem key={item.id} value={item.id}>{item.name} · {item.email}</SelectItem>)}</SelectContent></Select></div> : null}
+        }}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger><SelectContent>{rule.source === "CONTACT_TAGS" ? <><SelectItem value="ADDED">Added</SelectItem><SelectItem value="REMOVED">Removed</SelectItem></> : <><SelectItem value="HAS_CHANGED">Has changed</SelectItem><SelectItem value="HAS_CHANGED_TO">Has changed to</SelectItem></>}</SelectContent></Select></div>
+        {rule.source === "CONTACT_TAGS" ? <div className="space-y-2"><Label>Tag</Label><Select value={rule.tagId ?? "__ANY__"} onValueChange={(value) => updateRule(index, { ...rule, tagId: value === "__ANY__" ? null : value })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__ANY__">Any tag</SelectItem>{catalog.tags.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div> : null}
+        {rule.source === "CONTACT_STATUS" && rule.operator === "HAS_CHANGED_TO" ? <div className="space-y-2"><Label>New status</Label><Select value={rule.statusConfigId ?? ""} onValueChange={(statusConfigId) => updateRule(index, { ...rule, statusConfigId })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.statuses.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div> : null}
+        {rule.source === "CONTACT_ASSIGNEE" && rule.operator === "HAS_CHANGED_TO" ? <div className="space-y-2"><Label>New assignee</Label><Select value={rule.assignedUserId === undefined ? "" : rule.assignedUserId ?? "__UNASSIGNED__"} onValueChange={(value) => updateRule(index, { ...rule, assignedUserId: value === "__UNASSIGNED__" ? null : value })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select assignee" /></SelectTrigger><SelectContent><SelectItem value="__UNASSIGNED__">Unassigned</SelectItem>{catalog.users.map((item) => <SelectItem key={item.id} value={item.id}>{item.name} · {item.email}</SelectItem>)}</SelectContent></Select></div> : null}
         {(rule.source === "CONTACT_FIELD" || rule.source === "CONTACT_CUSTOM_FIELD") && rule.operator === "HAS_CHANGED_TO" ? <div className="space-y-2">
           <Label>New value</Label>
-          {canClear ? <Select value={target === undefined ? "" : target === null ? "EMPTY" : "VALUE"} onValueChange={(mode) => updateTarget(mode === "EMPTY" ? null : field?.fieldType === "CHECKBOX" ? false : field?.fieldType === "MULTI_SELECT" ? [] : field?.fieldType === "NUMBER" || field?.fieldType === "CURRENCY" ? 0 : "")}><SelectTrigger><SelectValue placeholder="Choose value or empty" /></SelectTrigger><SelectContent><SelectItem value="VALUE">Specific value</SelectItem><SelectItem value="EMPTY">Empty / cleared</SelectItem></SelectContent></Select> : null}
-          {target !== null && field?.fieldType === "CHECKBOX" ? <Select value={typeof target === "boolean" ? String(target) : ""} onValueChange={(value) => updateTarget(value === "true")}><SelectTrigger><SelectValue placeholder="Select true or false" /></SelectTrigger><SelectContent><SelectItem value="true">True</SelectItem><SelectItem value="false">False</SelectItem></SelectContent></Select> : null}
-          {target !== null && field && (field.fieldType === "SELECT" || field.fieldType === "RADIO") ? <Select value={typeof target === "string" ? target : ""} onValueChange={updateTarget}><SelectTrigger><SelectValue placeholder="Select value" /></SelectTrigger><SelectContent>{field.options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select> : null}
+          {canClear ? <Select value={target === undefined ? "" : target === null ? "EMPTY" : "VALUE"} onValueChange={(mode) => updateTarget(mode === "EMPTY" ? null : field?.fieldType === "CHECKBOX" ? false : field?.fieldType === "MULTI_SELECT" ? [] : field?.fieldType === "NUMBER" || field?.fieldType === "CURRENCY" ? 0 : "")}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Choose value or empty" /></SelectTrigger><SelectContent><SelectItem value="VALUE">Specific value</SelectItem><SelectItem value="EMPTY">Empty / cleared</SelectItem></SelectContent></Select> : null}
+          {target !== null && field?.fieldType === "CHECKBOX" ? <Select value={typeof target === "boolean" ? String(target) : ""} onValueChange={(value) => updateTarget(value === "true")}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select true or false" /></SelectTrigger><SelectContent><SelectItem value="true">True</SelectItem><SelectItem value="false">False</SelectItem></SelectContent></Select> : null}
+          {target !== null && field && (field.fieldType === "SELECT" || field.fieldType === "RADIO") ? <Select value={typeof target === "string" ? target : ""} onValueChange={updateTarget}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select value" /></SelectTrigger><SelectContent>{field.options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select> : null}
           {target !== null && field?.fieldType === "MULTI_SELECT" ? <div className="space-y-1">{field.options.map((option) => <label key={option} className="flex items-center gap-2 text-sm"><Checkbox checked={Array.isArray(target) && target.includes(option)} onCheckedChange={(checked) => updateTarget(checked ? [...(Array.isArray(target) ? target : []), option] : (Array.isArray(target) ? target : []).filter((value) => value !== option))} />{option}</label>)}</div> : null}
           {target !== null && field && !["CHECKBOX", "SELECT", "RADIO", "MULTI_SELECT"].includes(field.fieldType) ? <Input type={field.fieldType === "DATE" ? "date" : field.fieldType === "NUMBER" || field.fieldType === "CURRENCY" ? "number" : "text"} value={target === undefined ? "" : String(target)} onChange={(event) => updateTarget(field.fieldType === "NUMBER" || field.fieldType === "CURRENCY" ? event.target.value === "" ? "" : Number(event.target.value) : event.target.value)} placeholder="Enter target value" /> : null}
         </div> : null}
       </div>
     })}
-    <Button type="button" variant="outline" disabled={draft.changes.length >= 20} onClick={() => setRules([...draft.changes, defaultChangeRule("CONTACT_FIELD", catalog)])}><Plus className="mr-2 h-4 w-4" />Add change</Button>
+    <Button type="button" variant="outline" className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full")} disabled={draft.changes.length >= 20} onClick={() => setRules([...draft.changes, defaultChangeRule("CONTACT_FIELD", catalog)])}><Plus data-icon="inline-start" />Add change</Button>
   </section>
 }
 
@@ -3326,7 +3447,7 @@ function ConditionCard({
             })
           }
         >
-          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="CONTACT_FIELD">Contact field</SelectItem>
             <SelectItem value="CONTACT_CUSTOM_FIELD" disabled={catalog.customFields.length === 0}>Custom field</SelectItem>
@@ -3351,7 +3472,7 @@ function ConditionCard({
               })
             }}
           >
-            <SelectTrigger><SelectValue placeholder="Select field" /></SelectTrigger>
+            <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select field" /></SelectTrigger>
             <SelectContent>
               {catalog.templateFields.contact
                 .filter((item) => !["status", "assigned_to", "tags"].includes(item.key))
@@ -3379,7 +3500,7 @@ function ConditionCard({
               onChange({ customFieldId, operator, compareValue })
             }}
           >
-            <SelectTrigger><SelectValue placeholder="Select field" /></SelectTrigger>
+            <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select field" /></SelectTrigger>
             <SelectContent>
               {catalog.customFields.map((item) => <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>)}
             </SelectContent>
@@ -3407,7 +3528,7 @@ function ConditionCard({
             })
           }}
         >
-          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
           <SelectContent>
             {operators.map((operator) => <SelectItem key={operator} value={operator}>{operatorLabel(operator)}</SelectItem>)}
           </SelectContent>
@@ -3445,13 +3566,13 @@ function ConditionValueInput({
 }) {
   if (VALUELESS_OPERATORS.has(condition.operator)) return null
   if (condition.source === "CONTACT_STATUS") {
-    return <div className="space-y-2"><Label>Status</Label><Select value={condition.statusConfigId ?? ""} onValueChange={onStatusChange}><SelectTrigger><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.statuses.map((status) => <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>)}</SelectContent></Select></div>
+    return <div className="space-y-2"><Label>Status</Label><Select value={condition.statusConfigId ?? ""} onValueChange={onStatusChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.statuses.map((status) => <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>)}</SelectContent></Select></div>
   }
   if (condition.source === "CONTACT_ASSIGNEE") {
-    return <div className="space-y-2"><Label>Assigned to</Label><Select value={condition.assignedUserId ?? ""} onValueChange={onAssigneeChange}><SelectTrigger><SelectValue placeholder="Select team member" /></SelectTrigger><SelectContent>{catalog.users.map((user) => <SelectItem key={user.id} value={user.id}>{user.name} · {user.email}</SelectItem>)}</SelectContent></Select></div>
+    return <div className="space-y-2"><Label>Assigned to</Label><Select value={condition.assignedUserId ?? ""} onValueChange={onAssigneeChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select team member" /></SelectTrigger><SelectContent>{catalog.users.map((user) => <SelectItem key={user.id} value={user.id}>{user.name} · {user.email}</SelectItem>)}</SelectContent></Select></div>
   }
   if (condition.source === "CONTACT_TAGS") {
-    return <div className="space-y-2"><Label>Tag</Label><Select value={condition.tagId ?? ""} onValueChange={onTagChange}><SelectTrigger><SelectValue placeholder="Select tag" /></SelectTrigger><SelectContent>{catalog.tags.map((tag) => <SelectItem key={tag.id} value={tag.id}>{tag.name}</SelectItem>)}</SelectContent></Select></div>
+    return <div className="space-y-2"><Label>Tag</Label><Select value={condition.tagId ?? ""} onValueChange={onTagChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select tag" /></SelectTrigger><SelectContent>{catalog.tags.map((tag) => <SelectItem key={tag.id} value={tag.id}>{tag.name}</SelectItem>)}</SelectContent></Select></div>
   }
   if (condition.operator === "BETWEEN") {
     const range = (condition.compareValue ?? {}) as { min?: unknown; max?: unknown }
@@ -3459,7 +3580,7 @@ function ConditionValueInput({
     return <div className="grid grid-cols-2 gap-2"><div className="space-y-2"><Label>Minimum</Label><Input type={type} value={String(range.min ?? "")} onChange={(event) => onChange({ ...range, min: type === "number" ? Number(event.target.value) : event.target.value })} /></div><div className="space-y-2"><Label>Maximum</Label><Input type={type} value={String(range.max ?? "")} onChange={(event) => onChange({ ...range, max: type === "number" ? Number(event.target.value) : event.target.value })} /></div></div>
   }
   if (field && (field.fieldType === "SELECT" || field.fieldType === "RADIO")) {
-    return <div className="space-y-2"><Label>Value</Label><Select value={String(condition.compareValue ?? "")} onValueChange={onChange}><SelectTrigger><SelectValue placeholder="Select value" /></SelectTrigger><SelectContent>{field.options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div>
+    return <div className="space-y-2"><Label>Value</Label><Select value={String(condition.compareValue ?? "")} onValueChange={onChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select value" /></SelectTrigger><SelectContent>{field.options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div>
   }
   if (field?.fieldType === "MULTI_SELECT") {
     return <div className="space-y-2"><Label>Values</Label><Input value={Array.isArray(condition.compareValue) ? condition.compareValue.join(", ") : ""} onChange={(event) => onChange(event.target.value.split(",").map((item) => item.trim()).filter(Boolean))} placeholder="Option A, Option B" /></div>
