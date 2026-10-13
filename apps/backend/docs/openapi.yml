@@ -6713,6 +6713,21 @@ components:
               enum: [CONTACT_CREATED]
         - type: object
           additionalProperties: false
+          required: [type, tagId, change]
+          description: Runs when the selected tag is added to or removed from a contact. Optional contact filters evaluate the resulting contact state.
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_TAG]
+            tagId:
+              type: string
+              format: uuid
+              description: One existing tag in the tenant.
+            change:
+              type: string
+              enum: [ADDED, REMOVED]
+        - type: object
+          additionalProperties: false
           required: [type, changes]
           properties:
             type:

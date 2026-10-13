@@ -25,6 +25,15 @@ describe("automation trigger payloads", () => {
     assert.deepEqual(hydrateAutomationTrigger({ type: "CONTACT_CHANGED", changes }), draft)
     assert.equal(isAutomationTriggerReady({ ...draft, changes: [] }), false)
   })
+  test("contact tag requires exactly one selected tag and round trips", () => {
+    const changes = [{ source: "CONTACT_TAGS" as const, operator: "REMOVED" as const, tagId: "tag-1" }]
+    const draft = { triggerType: "CONTACT_TAG" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "CONTACT_TAG", tagId: "tag-1", change: "REMOVED" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "CONTACT_TAG", tagId: "tag-1", change: "REMOVED" }), draft)
+    assert.equal(isAutomationTriggerReady({ ...draft, changes: [{ ...changes[0], tagId: "" }] }), false)
+    assert.equal(isAutomationTriggerReady({ ...draft, changes: [...changes, ...changes] }), false)
+  })
   test("serializes stage, Won, and Lost listeners", () => {
     assert.deepEqual(serializeAutomationTrigger({
       triggerType: "OPPORTUNITY_CHANGED",

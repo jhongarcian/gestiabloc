@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
-import { claimQueuedAutomationDispatch, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
+import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
 
 const WAIT_ACTION = {
   id: "action-1",
@@ -68,6 +68,16 @@ describe("queueContactCreatedAutomationEvent", () => {
 })
 
 describe("queueContactChangedAutomationEvent", () => {
+  test("captures workflow action snapshots when a contact tag trigger is enabled", async () => {
+    const contact = { id: "contact-1", firstName: "Mary", statusConfigId: "active", assignedToUserId: null, tags: [], customFieldValues: [] }
+    let countWhere: any
+    const snapshot = await captureContactChangeSnapshot({
+      automation: { count: async ({ where }: any) => { countWhere = where; return 1 } },
+      contact: { findFirst: async () => contact },
+    }, "tenant-1", "contact-1")
+    assert.equal(snapshot, contact)
+    assert.deepEqual(countWhere.triggerType, { in: ["CONTACT_CHANGED", "CONTACT_TAG"] })
+  })
   test("does not queue a no-op and stops an over-deep automation chain", async () => {
     const before = { id: "contact-1", firstName: "Mary", statusConfigId: "active", assignedToUserId: null, tags: [], customFieldValues: [] }
     let after = before
@@ -112,6 +122,57 @@ describe("queueContactChangedAutomationEvent", () => {
     assert.equal(writes.dispatches[0].automationId, "match")
     assert.equal(writes.event.triggerType, "CONTACT_CHANGED")
     assert.equal(writes.logs[0].eventSource, "CONTACT_CHANGED")
+  })
+  test("queues the selected contact tag change once and keeps contact-change matches in the same event", async () => {
+    const events: any[] = []
+    const dispatches: any[][] = []
+    const logs: any[][] = []
+    let queryWhere: any
+    const empty = { id: "contact-1", firstName: "Mary", statusConfigId: "active", assignedToUserId: null, tags: [], customFieldValues: [] }
+    const tagged = { ...empty, tags: [{ tagId: "tag-1" }] }
+    let after = tagged
+    const tagRule = (operator: "ADDED" | "REMOVED", tagId = "tag-1") => [{ source: "CONTACT_TAGS", operator, tagId }]
+    const base = { name: "Tag automation", conditions: [], actions: [WAIT_ACTION] }
+    const prismaTx = {
+      contact: { findFirst: async () => after },
+      automation: { findMany: async ({ where }: any) => {
+        queryWhere = where
+        return [
+          { ...base, id: "added", triggerType: "CONTACT_TAG", changeRules: tagRule("ADDED") },
+          { ...base, id: "removed", triggerType: "CONTACT_TAG", changeRules: tagRule("REMOVED") },
+          { ...base, id: "other-tag", triggerType: "CONTACT_TAG", changeRules: tagRule("ADDED", "tag-2") },
+          { ...base, id: "filtered", triggerType: "CONTACT_TAG", changeRules: tagRule("ADDED"), conditions: [{ source: "CONTACT_STATUS", operator: "EQUALS", statusConfigId: "inactive" }] },
+          { ...base, id: "changed", triggerType: "CONTACT_CHANGED", changeRules: tagRule("ADDED") },
+        ]
+      } },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", name: "Active" }] },
+      taskStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "tag-1", name: "One" }, { id: "tag-2", name: "Two" }] },
+      opportunityPipeline: { findMany: async () => [] },
+      tenant: { findUnique: async () => ({ timezone: "America/Chicago" }) },
+      automationEvent: { create: async ({ data }: any) => { events.push(data); return data } },
+      automationDispatch: { createMany: async ({ data }: any) => { dispatches.push(data) } },
+      automationNodeExecution: { createMany: async ({ data }: any) => { logs.push(data) } },
+    }
+
+    const added = await queueContactChangedAutomationEvent(prismaTx, { tenantId: "tenant-1", contactId: "contact-1", actorUserId: null, before: empty })
+    assert.deepEqual(queryWhere.triggerType, { in: ["CONTACT_CHANGED", "CONTACT_TAG"] })
+    assert.equal(added.matchedCount, 2)
+    assert.equal(events.length, 1)
+    assert.deepEqual(dispatches[0].map((item) => [item.automationId, item.triggerType]), [["added", "CONTACT_TAG"], ["changed", "CONTACT_CHANGED"]])
+    assert.deepEqual(logs[0].map((item) => item.eventSource), ["CONTACT_TAG", "CONTACT_CHANGED"])
+
+    const noOp = await queueContactChangedAutomationEvent(prismaTx, { tenantId: "tenant-1", contactId: "contact-1", actorUserId: null, before: tagged })
+    assert.equal(noOp.matchedCount, 0)
+    assert.equal(events.length, 1)
+
+    after = empty
+    const removed = await queueContactChangedAutomationEvent(prismaTx, { tenantId: "tenant-1", contactId: "contact-1", actorUserId: null, before: tagged })
+    assert.equal(removed.matchedCount, 1)
+    assert.deepEqual(dispatches[1].map((item) => item.automationId), ["removed"])
+    assert.equal(logs[1][0].eventSource, "CONTACT_TAG")
   })
 })
 

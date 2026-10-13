@@ -1919,6 +1919,31 @@ describe("AutomationUpsertSchema", () => {
       /Opportunity value is unavailable/,
     )
   })
+  test("contact tag requires one existing tag and preserves the selected change", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "tag-1" }] },
+    }
+    const base = {
+      name: "Tag removed",
+      isEnabled: false,
+      trigger: { type: "CONTACT_TAG", tagId: "tag-1", change: "REMOVED" },
+      conditions: [],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "CONTACT_TAG")
+    assert.equal(normalized.pipelineId, null)
+    assert.deepEqual(normalized.changeRules, [{ tenantId: "tenant-1", source: "CONTACT_TAGS", operator: "REMOVED", tagId: "tag-1", sortOrder: 10 }])
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, trigger: { type: "CONTACT_TAG", tagId: "tag-2", change: "ADDED" } })),
+      /existing contact tag/,
+    )
+    assert.equal(AutomationUpsertSchema.safeParse({ ...base, trigger: { type: "CONTACT_TAG", tagId: "tag-1", change: "ADDED", otherTagId: "tag-2" } }).success, false)
+  })
   test("accepts up to 100 action nodes in one path", () => {
     const base = {
       name: "Long automation",

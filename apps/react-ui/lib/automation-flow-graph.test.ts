@@ -56,6 +56,19 @@ describe("buildAutomationFlowGraph", () => {
     assert.equal(trigger?.data.label, "Contact changed")
     assert.equal(trigger?.data.subtitle, "All 2 change rules in one update")
   })
+  test("shows the selected tag and change in the trigger node", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "CONTACT_TAG",
+      pipelineId: "",
+      targetStageId: "",
+      changes: [{ source: "CONTACT_TAGS", operator: "REMOVED", tagId: "tag-1" }],
+      conditions: [],
+      actions: [],
+    }, { pipelines: [], tags: [{ id: "tag-1", name: "Renewal" }] } as unknown as AutomationCatalog, labels)
+    const trigger = graph.nodes.find((node) => node.id === "trigger")
+    assert.equal(trigger?.data.label, "Contact tag")
+    assert.equal(trigger?.data.subtitle, "Removed: Renewal")
+  })
   test("shows the custom Create contact label and subtitle", () => {
     const graph = buildAutomationFlowGraph({
       triggerType: "OPPORTUNITY_CREATED",

@@ -76,6 +76,7 @@ import { evaluateWorkflowOperator } from "./service-followup-runtime.js"
 export const AUTOMATION_TRIGGER_TYPES = [
   "CONTACT_CREATED",
   "CONTACT_CHANGED",
+  "CONTACT_TAG",
   "OPPORTUNITY_CREATED",
   "OPPORTUNITY_STAGE_CHANGED",
   "OPPORTUNITY_CHANGED",
@@ -670,6 +671,7 @@ export const AutomationUpsertSchema = z
     trigger: z.discriminatedUnion("type", [
       z.object({ type: z.literal("CONTACT_CREATED") }).strict(),
       z.object({ type: z.literal("CONTACT_CHANGED"), changes: z.array(AutomationContactChangeRuleSchema).min(1).max(20) }).strict(),
+      z.object({ type: z.literal("CONTACT_TAG"), tagId: idSchema, change: z.enum(["ADDED", "REMOVED"]) }).strict(),
       z.object({
         type: z.literal("OPPORTUNITY_CREATED"),
         pipelineId: idSchema,
@@ -1309,8 +1311,9 @@ export async function validateAutomationConfiguration(
   input: AutomationInput,
   options: { sourceAutomationId?: string | null } = {},
 ) {
-  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED"
-  const triggerPipelineId = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" ? null : input.trigger.pipelineId
+  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG"
+  const triggerPipelineId = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG"
+    ? null : input.trigger.pipelineId
   const [pipelines, fields, statuses, taskStatuses, memberships, tags, services, publishedAutomations] = await Promise.all([
     prismaClient.opportunityPipeline.findMany
       ? prismaClient.opportunityPipeline.findMany({
@@ -1408,7 +1411,12 @@ export async function validateAutomationConfiguration(
   const tagIds = new Set(tags.map((item: any) => item.id))
   const serviceMap = new Map<string, string>(services.map((item: any) => [item.id, item.name]))
   const opportunityPipelineMap = new Map<string, any>(pipelines.map((item: any) => [item.id, item]))
-  const changeRules = input.trigger.type === "CONTACT_CHANGED"
+  if (input.trigger.type === "CONTACT_TAG" && !tagIds.has(input.trigger.tagId)) {
+    throw new AutomationConfigurationError("INVALID_TAG", "Select an existing contact tag.")
+  }
+  const changeRules = input.trigger.type === "CONTACT_TAG"
+    ? [{ tenantId, source: "CONTACT_TAGS" as const, operator: input.trigger.change, tagId: input.trigger.tagId, sortOrder: 10 }]
+    : input.trigger.type === "CONTACT_CHANGED"
     ? input.trigger.changes.map((rule, index) => {
         const base = { tenantId, source: rule.source, operator: rule.operator, sortOrder: (index + 1) * 10 }
         if (rule.source === "CONTACT_FIELD") {
@@ -2556,7 +2564,8 @@ export async function validateAutomationConfiguration(
     name: input.name,
     isEnabled: input.isEnabled,
     triggerType: input.trigger.type === "OPPORTUNITY_STAGE_CHANGED" ? "OPPORTUNITY_CHANGED" as const : input.trigger.type,
-    pipelineId: input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" ? null : input.trigger.pipelineId,
+    pipelineId: input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG"
+      ? null : input.trigger.pipelineId,
     sourceStageId: null,
     targetStageId: configuredStageId,
     targetResult:
@@ -2572,7 +2581,7 @@ export async function validateAutomationConfiguration(
 export type OpportunityAutomationEvent = {
   tenantId: string
   actorUserId: string | null
-  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED">
+  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG">
   opportunityId: string
   contactId: string
   pipelineId: string
@@ -3442,7 +3451,7 @@ async function removeContactFromWorkflowRuns(
       processId: null,
       opportunityId: dispatch.event.opportunityId,
       attemptId: dispatch.attemptId,
-      eventSource: dispatch.event.triggerType,
+      eventSource: dispatch.triggerType,
       nodeKind: "ACTION" as const,
       nodeOrder,
       nodeKey: action.nodeKey,
@@ -4497,7 +4506,7 @@ async function applyAutomationActionInner(
             processId: null,
             opportunityId: dispatch.event.opportunityId,
             attemptId: dispatch.attemptId,
-            eventSource: dispatch.event.triggerType,
+            eventSource: dispatch.triggerType,
             nodeKind: "ACTION" as const,
             nodeOrder: queuedIndex + 1,
             nodeKey: queuedAction.nodeKey,

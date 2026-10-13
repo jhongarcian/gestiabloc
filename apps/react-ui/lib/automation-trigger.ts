@@ -14,6 +14,7 @@ export type AutomationTriggerDraft = {
 type SavedAutomationTrigger =
   | { type: "CONTACT_CREATED" }
   | { type: "CONTACT_CHANGED"; changes: AutomationContactChangeRule[] }
+  | { type: "CONTACT_TAG"; tagId: string; change: "ADDED" | "REMOVED" }
   | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
   | { type: "OPPORTUNITY_STAGE_CHANGED"; pipelineId: string; targetStageId: string }
   | {
@@ -27,6 +28,10 @@ type SavedAutomationTrigger =
 export function isAutomationTriggerReady(draft: AutomationTriggerDraft | null) {
   if (!draft?.triggerType) return false
   if (draft.triggerType === "CONTACT_CREATED") return true
+  if (draft.triggerType === "CONTACT_TAG") {
+    return draft.changes?.length === 1 && draft.changes[0]?.source === "CONTACT_TAGS"
+      && Boolean(draft.changes[0].tagId) && ["ADDED", "REMOVED"].includes(draft.changes[0].operator)
+  }
   if (draft.triggerType === "CONTACT_CHANGED") return Boolean(draft.changes?.length) && draft.changes!.every((rule) => {
     if (rule.source === "CONTACT_FIELD") return Boolean(rule.fieldKey) && (rule.operator !== "HAS_CHANGED_TO" || validTarget(rule.value))
     if (rule.source === "CONTACT_CUSTOM_FIELD") return Boolean(rule.customFieldId) && (rule.operator !== "HAS_CHANGED_TO" || validTarget(rule.value))
@@ -50,6 +55,13 @@ function validTarget(value: unknown) {
 export function serializeAutomationTrigger(draft: AutomationTriggerDraft) {
   if (!draft.triggerType) throw new Error("Select a trigger.")
   if (draft.triggerType === "CONTACT_CREATED") return { type: "CONTACT_CREATED" as const }
+  if (draft.triggerType === "CONTACT_TAG") {
+    const rule = draft.changes?.[0]
+    if (draft.changes?.length !== 1 || rule?.source !== "CONTACT_TAGS" || !rule.tagId || !["ADDED", "REMOVED"].includes(rule.operator)) {
+      throw new Error("Select one tag and whether it is added or removed.")
+    }
+    return { type: "CONTACT_TAG" as const, tagId: rule.tagId, change: rule.operator }
+  }
   if (draft.triggerType === "CONTACT_CHANGED") return { type: "CONTACT_CHANGED" as const, changes: draft.changes ?? [] }
   if (draft.triggerType === "OPPORTUNITY_CREATED") {
     return { type: "OPPORTUNITY_CREATED" as const, pipelineId: draft.pipelineId }
@@ -76,6 +88,9 @@ export function hydrateAutomationTrigger(trigger: SavedAutomationTrigger): Autom
   }
   if (trigger.type === "CONTACT_CHANGED") {
     return { triggerType: "CONTACT_CHANGED", pipelineId: "", changeType: "", targetStageId: "", changes: trigger.changes }
+  }
+  if (trigger.type === "CONTACT_TAG") {
+    return { triggerType: "CONTACT_TAG", pipelineId: "", changeType: "", targetStageId: "", changes: [{ source: "CONTACT_TAGS", operator: trigger.change, tagId: trigger.tagId }] }
   }
   if (trigger.type === "OPPORTUNITY_CREATED") {
     return {

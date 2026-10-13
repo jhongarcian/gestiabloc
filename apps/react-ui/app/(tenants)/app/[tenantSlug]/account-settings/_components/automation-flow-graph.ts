@@ -2,7 +2,7 @@ import type { Edge, Node } from "@xyflow/react"
 
 import { formatDateTimeForDisplay } from "@/lib/date-time"
 
-import type { AutomationAction, AutomationCatalog, AutomationCondition, AutomationTriggerType } from "./automation-types"
+import type { AutomationAction, AutomationCatalog, AutomationCondition, AutomationContactChangeRule, AutomationTriggerType } from "./automation-types"
 
 export type AutomationFlowNodeData = {
   kind: "trigger" | "action" | "add" | "branch" | "complete" | "route-bound"
@@ -41,7 +41,7 @@ export type AutomationFlowDraft = {
   pipelineId: string
   changeType?: "" | "STAGE_ENTERED" | "RESULT_WON" | "RESULT_LOST"
   targetStageId: string
-  changes?: Array<unknown>
+  changes?: AutomationContactChangeRule[]
   conditions: AutomationCondition[]
   actions: AutomationAction[]
 }
@@ -180,6 +180,7 @@ export function buildAutomationFlowGraph(
   const pipeline = catalog?.pipelines.find((item) => item.id === draft.pipelineId)
   const target = pipeline?.stages.find((item) => item.id === draft.targetStageId)
   const changeType = draft.triggerType === "OPPORTUNITY_STAGE_CHANGED" ? "STAGE_ENTERED" : draft.changeType
+  const tagChangeRule = draft.changes?.[0]?.source === "CONTACT_TAGS" ? draft.changes[0] : null
   const rootWidth = automationPathWidth(draft.actions)
   const rootCenterX = Math.max(FLOW_CENTER_X, FLOW_SIDE_PADDING + rootWidth / 2)
   const triggerSubtitle =
@@ -189,6 +190,8 @@ export function buildAutomationFlowGraph(
         ? "Starts when a new contact is added"
       : draft.triggerType === "CONTACT_CHANGED"
         ? `All ${draft.changes?.length ?? 0} change rule${draft.changes?.length === 1 ? "" : "s"} in one update`
+      : draft.triggerType === "CONTACT_TAG"
+        ? `${tagChangeRule?.operator === "REMOVED" ? "Removed" : "Added"}: ${catalog?.tags.find((tag) => tag.id === tagChangeRule?.tagId)?.name ?? "Select a tag"}`
       : draft.triggerType === "OPPORTUNITY_CREATED"
         ? `Created in ${pipeline?.name ?? "Select a pipeline"}`
         : changeType === "STAGE_ENTERED"
@@ -212,6 +215,8 @@ export function buildAutomationFlowGraph(
               ? "Contact created"
             : draft.triggerType === "CONTACT_CHANGED"
               ? "Contact changed"
+            : draft.triggerType === "CONTACT_TAG"
+              ? "Contact tag"
             : draft.triggerType === "OPPORTUNITY_CREATED"
               ? "Opportunity created"
               : draft.triggerType === "OPPORTUNITY_STAGE_CHANGED"

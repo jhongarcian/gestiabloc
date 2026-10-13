@@ -3,6 +3,7 @@ export type AutomationNodeEventSource =
   | "MANUAL_ENROLLMENT"
   | "CONTACT_CREATED"
   | "CONTACT_CHANGED"
+  | "CONTACT_TAG"
   | "OPPORTUNITY_CREATED"
   | "OPPORTUNITY_STAGE_CHANGED"
   | "OPPORTUNITY_CHANGED"
@@ -144,6 +145,7 @@ export function getAutomationActionNodeLabel(action: {
 export function getAutomationTriggerLabel(triggerType: string) {
   if (triggerType === "CONTACT_CREATED") return "Contact created"
   if (triggerType === "CONTACT_CHANGED") return "Contact changed"
+  if (triggerType === "CONTACT_TAG") return "Contact tag"
   if (triggerType === "OPPORTUNITY_CREATED") return "Opportunity created"
   return "Opportunity changed"
 }

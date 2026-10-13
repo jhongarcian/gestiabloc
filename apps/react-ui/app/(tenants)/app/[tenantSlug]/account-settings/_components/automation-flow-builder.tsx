@@ -434,9 +434,9 @@ const TRIGGER_GROUPS = [
   {
     id: "CONTACT",
     label: "Contact triggers",
-    description: "Start when a contact is created or updated.",
+    description: "Start when a contact is created, updated, or tagged.",
     icon: ContactRound,
-    triggers: ["CONTACT_CREATED", "CONTACT_CHANGED"],
+    triggers: ["CONTACT_CREATED", "CONTACT_CHANGED", "CONTACT_TAG"],
   },
   {
     id: "OPPORTUNITY",
@@ -463,6 +463,12 @@ const TRIGGER_DEFINITIONS: Record<AutomationBuilderTriggerType, {
     label: "Contact changed",
     description: "When selected contact details change.",
     icon: ContactRound,
+    group: "CONTACT",
+  },
+  CONTACT_TAG: {
+    label: "Contact tag",
+    description: "When a selected tag is added or removed.",
+    icon: Tags,
     group: "CONTACT",
   },
   OPPORTUNITY_CREATED: {
@@ -2006,7 +2012,7 @@ function conditionDefaults(
 }
 
 function defaultCondition(catalog: AutomationCatalog, triggerType?: AutomationBuilderTriggerType | null) {
-  if (triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED") return conditionDefaults("CONTACT_FIELD", catalog)
+  if (triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG") return conditionDefaults("CONTACT_FIELD", catalog)
   if (catalog.customFields.length > 0) return conditionDefaults("CONTACT_CUSTOM_FIELD", catalog)
   if (catalog.statuses.length > 0) return conditionDefaults("CONTACT_STATUS", catalog)
   if (catalog.users.length > 0) return conditionDefaults("CONTACT_ASSIGNEE", catalog)
@@ -2023,8 +2029,9 @@ function apiError(error: unknown) {
 function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   if (!draft.name.trim()) return "Enter an automation name."
   if (!draft.triggerType) return "Select a trigger."
-  if (draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && !draft.pipelineId) return "Select a pipeline."
+  if (draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && !draft.pipelineId) return "Select a pipeline."
   if (draft.triggerType === "CONTACT_CHANGED" && !isAutomationTriggerReady(draft)) return "Complete at least one contact change rule."
+  if (draft.triggerType === "CONTACT_TAG" && !isAutomationTriggerReady(draft)) return "Select a tag and whether it is added or removed."
   if (draft.triggerType === "OPPORTUNITY_CHANGED" && !draft.changeType) return "Select a change to listen for."
   if (draft.triggerType === "OPPORTUNITY_CHANGED" && draft.changeType === "STAGE_ENTERED" && !draft.targetStageId) return "Select a stage."
   if (draft.actions.length === 0) return "Add at least one action."
@@ -2122,11 +2129,12 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
         setCatalog(nextCatalog)
         if (automationResponse) {
           const record = automationResponse.data.automation
+          const hydratedTrigger = hydrateAutomationTrigger(record.trigger)
           const loadedDraft: Draft = {
             name: record.name,
             isEnabled: record.isEnabled,
-            ...hydrateAutomationTrigger(record.trigger),
-            changes: record.trigger.type === "CONTACT_CHANGED" ? record.trigger.changes : [],
+            ...hydratedTrigger,
+            changes: hydratedTrigger.changes ?? [],
             conditions: record.conditions,
             actions: record.actions,
           }
@@ -3017,15 +3025,17 @@ function TriggerEditor({
     onChange({
       ...draft,
       triggerType,
-      pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" ? "" : draft.pipelineId,
+      pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" ? "" : draft.pipelineId,
       changeType: "",
       targetStageId: "",
-      conditions: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED"
+      conditions: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG"
         ? draft.conditions.filter((condition) => condition.source !== "OPPORTUNITY_VALUE")
         : draft.conditions,
-      changes: triggerType === "CONTACT_CHANGED" && draft.changes.length === 0
-        ? [{ source: "CONTACT_FIELD", operator: "HAS_CHANGED", fieldKey: catalog.contactUpdateFields[0]?.key ?? "" }]
-        : draft.changes,
+      changes: triggerType === "CONTACT_TAG"
+        ? [{ source: "CONTACT_TAGS", operator: "ADDED", tagId: "" }]
+        : triggerType === "CONTACT_CHANGED" && (draft.changes.length === 0 || draft.changes[0]?.source === "CONTACT_TAGS" && draft.changes.length === 1)
+          ? [{ source: "CONTACT_FIELD", operator: "HAS_CHANGED", fieldKey: catalog.contactUpdateFields[0]?.key ?? "" }]
+          : draft.changes,
     })
     setIsChoosingTrigger(false)
   }
@@ -3135,7 +3145,44 @@ function TriggerEditor({
             <ContactChangeRulesEditor draft={draft} catalog={catalog} onChange={onChange} />
           </> : null}
 
-          {draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" ? <>
+          {draft.triggerType === "CONTACT_TAG" ? <>
+            <Separator />
+            <FieldGroup className="gap-3">
+              <Field>
+                <FieldLabel htmlFor="automation-tag-change">Tag change</FieldLabel>
+                <Select
+                  value={draft.changes[0]?.source === "CONTACT_TAGS" ? draft.changes[0].operator : "ADDED"}
+                  onValueChange={(operator: "ADDED" | "REMOVED") => onChange({
+                    ...draft,
+                    changes: [{ source: "CONTACT_TAGS", operator, tagId: draft.changes[0]?.source === "CONTACT_TAGS" ? draft.changes[0].tagId : "" }],
+                  })}
+                >
+                  <SelectTrigger id="automation-tag-change" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ADDED">Added</SelectItem>
+                    <SelectItem value="REMOVED">Removed</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="automation-trigger-tag">Tag</FieldLabel>
+                <Select
+                  value={draft.changes[0]?.source === "CONTACT_TAGS" ? draft.changes[0].tagId ?? "" : ""}
+                  onValueChange={(tagId) => onChange({
+                    ...draft,
+                    changes: [{ source: "CONTACT_TAGS", operator: draft.changes[0]?.source === "CONTACT_TAGS" ? draft.changes[0].operator : "ADDED", tagId }],
+                  })}
+                >
+                  <SelectTrigger id="automation-trigger-tag" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select one tag" /></SelectTrigger>
+                  <SelectContent>
+                    {catalog.tags.map((tag) => <SelectItem key={tag.id} value={tag.id}>{tag.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Field>
+            </FieldGroup>
+          </> : null}
+
+          {draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" ? <>
           <Separator />
           <section>
             <FieldGroup className="gap-3">
@@ -3454,7 +3501,7 @@ function ConditionCard({
             <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem>
             <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem>
             <SelectItem value="CONTACT_TAGS" disabled={catalog.tags.length === 0}>Tags</SelectItem>
-            {triggerType !== "CONTACT_CREATED" && triggerType !== "CONTACT_CHANGED" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
+            {triggerType !== "CONTACT_CREATED" && triggerType !== "CONTACT_CHANGED" && triggerType !== "CONTACT_TAG" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
           </SelectContent>
         </Select>
       </div>

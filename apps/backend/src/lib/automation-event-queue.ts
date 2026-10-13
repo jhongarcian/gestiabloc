@@ -51,7 +51,7 @@ function actionLogs(params: {
     processId: null,
     opportunityId: params.event.opportunityId,
     attemptId: params.dispatch.attemptId,
-    eventSource: params.event.triggerType,
+    eventSource: params.dispatch.triggerType,
     nodeKind: "ACTION" as const,
     nodeOrder,
     nodeKey: action.nodeKey,
@@ -280,11 +280,11 @@ export async function loadContactChangeSnapshot(prismaTx: any, tenantId: string,
 }
 
 export async function captureContactChangeSnapshot(prismaTx: any, tenantId: string, contactId: string): Promise<ContactChangeSnapshot | null> {
-  // Only snapshot contacts when a published Contact changed automation can use the change.
+  // Only snapshot contacts when a published contact change or tag automation can use the change.
   // Some lightweight execution clients do not expose the automation catalog.
   if (typeof prismaTx.automation?.count !== "function") return null
   const enabledCount = await prismaTx.automation.count({
-    where: { tenantId, isEnabled: true, triggerType: "CONTACT_CHANGED" },
+    where: { tenantId, isEnabled: true, triggerType: { in: ["CONTACT_CHANGED", "CONTACT_TAG"] } },
   })
   if (enabledCount === 0) return null
   return loadContactChangeSnapshot(prismaTx, tenantId, contactId)
@@ -325,7 +325,7 @@ export async function queueContactChangedAutomationEvent(
     }
   }
   const automations = await prismaTx.automation.findMany({
-    where: { tenantId: event.tenantId, isEnabled: true, triggerType: "CONTACT_CHANGED" },
+    where: { tenantId: event.tenantId, isEnabled: true, triggerType: { in: ["CONTACT_CHANGED", "CONTACT_TAG"] } },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {
       changeRules: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
@@ -351,12 +351,14 @@ export async function queueContactChangedAutomationEvent(
     automationSnapshotId: automation.id,
     automationName: automation.name,
     automationOrder,
-    triggerType: "CONTACT_CHANGED" as const,
+    triggerType: automation.triggerType as "CONTACT_CHANGED" | "CONTACT_TAG",
     sourceStageId: null,
     targetStageId: null,
     targetResult: null,
     decision: "RUN" as const,
-    decisionDetails: "The selected contact changes and filters matched.",
+    decisionDetails: automation.triggerType === "CONTACT_TAG"
+      ? "The selected tag change and contact filters matched."
+      : "The selected contact changes and filters matched.",
     actionSnapshot: automation.actions.map(automationActionSnapshot),
     attemptId: randomUUID(),
     triggerExecutionId: randomUUID(),
@@ -402,11 +404,11 @@ export async function queueContactChangedAutomationEvent(
     processId: null,
     opportunityId: null,
     attemptId: dispatch.attemptId,
-    eventSource: "CONTACT_CHANGED" as const,
+    eventSource: dispatch.triggerType,
     nodeKind: "TRIGGER" as const,
     nodeOrder: 0,
-    nodeKey: "CONTACT_CHANGED",
-    nodeLabel: getAutomationTriggerLabel("CONTACT_CHANGED"),
+    nodeKey: dispatch.triggerType,
+    nodeLabel: getAutomationTriggerLabel(dispatch.triggerType),
     status: "QUEUED" as const,
     reasonCode: "AUTOMATION_QUEUED",
     details: "Queued for automation processing.",
@@ -719,8 +721,8 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
         opportunityId: event.opportunityId,
         attemptId: dispatch.attemptId,
         dispatchId: dispatch.id,
-        eventSource: event.triggerType,
-        triggerType: event.triggerType,
+        eventSource: dispatch.triggerType,
+        triggerType: dispatch.triggerType,
         sourceStageId: event.sourceStageId,
         targetStageId: event.targetStageId,
         sourceResult: event.sourceResult,
@@ -830,7 +832,7 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
             processId: null,
             opportunityId: dispatch.event.opportunityId,
             attemptId: dispatch.attemptId,
-            eventSource: dispatch.event.triggerType,
+            eventSource: dispatch.triggerType,
             nodeKind: "ACTION" as const,
             nodeOrder: 1,
             nodeKey: "invalid-action-snapshot",
@@ -866,8 +868,8 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
         opportunityId: dispatch.event.opportunityId,
         attemptId: dispatch.attemptId,
         dispatchId: dispatch.id,
-        eventSource: dispatch.event.triggerType,
-        triggerType: dispatch.event.triggerType,
+        eventSource: dispatch.triggerType,
+        triggerType: dispatch.triggerType,
         sourceStageId: dispatch.event.sourceStageId,
         targetStageId: dispatch.event.targetStageId,
         sourceResult: dispatch.event.sourceResult,
@@ -911,7 +913,7 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
         tenantId: dispatch.tenantId,
         automationId: dispatch.automationId,
         automationName: dispatch.automationName,
-        triggerType: dispatch.event.triggerType,
+        triggerType: dispatch.triggerType,
         status: "FAILED",
         opportunityId: dispatch.event.opportunityId,
         contactId: dispatch.event.contactId,
