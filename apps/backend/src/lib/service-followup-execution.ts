@@ -834,7 +834,7 @@ async function executeActionNodeInner(params: {
         typeof item.fileId === "string" && item.fileId.length > 0,
     )
 
-    await prismaTx.contactNote.create({
+    const note = await prismaTx.contactNote.create({
       data: {
         tenantId,
         contactId: contactService.contactId,
@@ -854,6 +854,14 @@ async function executeActionNodeInner(params: {
             }
           : undefined,
       },
+    })
+    const { queueContactNoteAddedAutomationEvent } = await import("./automation-event-queue.js")
+    await queueContactNoteAddedAutomationEvent(prismaTx, {
+      tenantId,
+      contactId: contactService.contactId,
+      actorUserId,
+      sourceNodeKey: node.id,
+      causationKey: runId ? `follow-up-run:${runId}:note-added:${node.id}` : note?.id ? `contact-note:${note.id}:added` : null,
     })
     await createActionExecutionLog({
       prismaTx,

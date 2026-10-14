@@ -1853,6 +1853,34 @@ describe("deleteAutomationContactFileObjects", () => {
 })
 
 describe("AutomationUpsertSchema", () => {
+  test("note-added accepts only contact field, custom field, and tag filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [{ id: "field-source", key: "source", label: "Source", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: null }] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "tag-a" }] },
+    }
+    const base = {
+      name: "Note added",
+      isEnabled: false,
+      trigger: { type: "CONTACT_NOTE_ADDED" },
+      conditions: [
+        { source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" },
+        { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-source", operator: "EQUALS", compareValue: "Referral" },
+        { source: "CONTACT_TAGS", tagId: "tag-a", operator: "EQUALS" },
+      ],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "CONTACT_NOTE_ADDED")
+    assert.equal(normalized.pipelineId, null)
+    assert.deepEqual(normalized.conditions.map((condition: any) => condition.source), ["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"])
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "CONTACT_STATUS", operator: "EQUALS", statusConfigId: "active" }] })),
+      /Note added filters/,
+    )
+  })
   test("validates contact change rules separately from contact filters", async () => {
     const prismaClient = {
       opportunityPipeline: { findMany: async () => [] },

@@ -417,10 +417,22 @@ export async function queueContactChangedAutomationEvent(
   return { ...noMatch, automationEventId: eventId, automationStatus: "QUEUED", queuedAutomationCount: dispatches.length, matchedCount: dispatches.length }
 }
 
-export async function queueContactCreatedAutomationEvent(
+async function queueContactSnapshotAutomationEvent(
   prismaTx: any,
   event: ContactCreatedAutomationEvent,
+  triggerType: "CONTACT_CREATED" | "CONTACT_NOTE_ADDED",
 ): Promise<QueuedAutomationResult> {
+  if (triggerType === "CONTACT_NOTE_ADDED" && (event.chainDepth ?? 0) > 20) {
+    throw new Error("This note update exceeded the maximum automation chain depth.")
+  }
+  if (triggerType === "CONTACT_NOTE_ADDED" && typeof prismaTx.automation?.findMany !== "function") return {
+    automationEventId: null,
+    automationStatus: "NOT_APPLICABLE",
+    queuedAutomationCount: 0,
+    matchedCount: 0,
+    executedCount: 0,
+    contactDeleted: false,
+  }
   if (event.causationKey) {
     const existing = await prismaTx.automationEvent.findUnique({
       where: { causationKey: event.causationKey },
@@ -436,7 +448,7 @@ export async function queueContactCreatedAutomationEvent(
     }
   }
   const automations = await prismaTx.automation.findMany({
-    where: { tenantId: event.tenantId, isEnabled: true, triggerType: "CONTACT_CREATED" },
+    where: { tenantId: event.tenantId, isEnabled: true, triggerType },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {
       conditions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
@@ -460,6 +472,7 @@ export async function queueContactCreatedAutomationEvent(
   ])
   if (!contact) throw new Error("Contact not found while queuing automation.")
   const matches = automations.filter((automation: any) =>
+    !(triggerType === "CONTACT_NOTE_ADDED" && automation.id === event.sourceAutomationId) &&
     evaluateAutomationConditions(automation, { valueCents: null }, contact, catalog).matches,
   )
   if (matches.length === 0) return {
@@ -481,12 +494,14 @@ export async function queueContactCreatedAutomationEvent(
     automationSnapshotId: automation.id,
     automationName: automation.name,
     automationOrder,
-    triggerType: "CONTACT_CREATED" as const,
+    triggerType,
     sourceStageId: null,
     targetStageId: null,
     targetResult: null,
     decision: "RUN" as const,
-    decisionDetails: "The contact matched the creation filters.",
+    decisionDetails: triggerType === "CONTACT_NOTE_ADDED"
+      ? "A note was added and the contact matched the filters."
+      : "The contact matched the creation filters.",
     actionSnapshot: automation.actions.map(automationActionSnapshot),
     attemptId: randomUUID(),
     triggerExecutionId: randomUUID(),
@@ -500,7 +515,7 @@ export async function queueContactCreatedAutomationEvent(
     opportunitySnapshotId: null,
     actorUserId: event.actorUserId,
     actorName: event.actorUserId ? catalog.userMap.get(event.actorUserId) ?? null : null,
-    triggerType: "CONTACT_CREATED",
+    triggerType,
     pipelineId: null,
     pipelineName: null,
     sourceStageId: null,
@@ -532,11 +547,11 @@ export async function queueContactCreatedAutomationEvent(
     processId: null,
     opportunityId: null,
     attemptId: dispatch.attemptId,
-    eventSource: "CONTACT_CREATED" as const,
+    eventSource: triggerType,
     nodeKind: "TRIGGER" as const,
     nodeOrder: 0,
-    nodeKey: "CONTACT_CREATED",
-    nodeLabel: getAutomationTriggerLabel("CONTACT_CREATED"),
+    nodeKey: triggerType,
+    nodeLabel: getAutomationTriggerLabel(triggerType),
     status: "QUEUED" as const,
     reasonCode: "AUTOMATION_QUEUED",
     details: "Queued for automation processing.",
@@ -550,6 +565,14 @@ export async function queueContactCreatedAutomationEvent(
     executedCount: 0,
     contactDeleted: false,
   }
+}
+
+export function queueContactCreatedAutomationEvent(prismaTx: any, event: ContactCreatedAutomationEvent) {
+  return queueContactSnapshotAutomationEvent(prismaTx, event, "CONTACT_CREATED")
+}
+
+export function queueContactNoteAddedAutomationEvent(prismaTx: any, event: ContactCreatedAutomationEvent): Promise<QueuedAutomationResult> {
+  return queueContactSnapshotAutomationEvent(prismaTx, event, "CONTACT_NOTE_ADDED")
 }
 
 async function createSideEffects(prismaTx: any, params: {

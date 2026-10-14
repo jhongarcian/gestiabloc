@@ -1,4 +1,4 @@
-export type AutomationTriggerType = "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
+export type AutomationTriggerType = "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
 
 export type AutomationContactChangeRule =
   | { source: "CONTACT_FIELD"; operator: "HAS_CHANGED" | "HAS_CHANGED_TO"; fieldKey: string; value?: unknown }
@@ -437,6 +437,7 @@ export type AutomationRecord = {
     | { type: "CONTACT_CREATED" }
     | { type: "CONTACT_CHANGED"; changes: AutomationContactChangeRule[] }
     | { type: "CONTACT_TAG"; tagId: string; change: "ADDED" | "REMOVED" }
+    | { type: "CONTACT_NOTE_ADDED" }
     | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
     | {
         type: "OPPORTUNITY_CHANGED"
@@ -534,7 +535,7 @@ export type AutomationNodeExecutionStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | 
 export type AutomationNodeExecution = {
   id: string
   attemptId: string
-  eventSource: "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
+  eventSource: "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
   contact: {
     id: string | null
     name: string

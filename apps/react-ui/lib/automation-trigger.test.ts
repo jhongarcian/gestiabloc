@@ -14,6 +14,12 @@ describe("automation trigger payloads", () => {
     assert.deepEqual(serializeAutomationTrigger(draft), { type: "CONTACT_CREATED" })
     assert.deepEqual(hydrateAutomationTrigger({ type: "CONTACT_CREATED" }), draft)
   })
+  test("note added needs no pipeline and preserves optional contact filters separately", () => {
+    const draft = { triggerType: "CONTACT_NOTE_ADDED" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes: [] }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "CONTACT_NOTE_ADDED" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "CONTACT_NOTE_ADDED" }), draft)
+  })
   test("contact changes require rules and preserve their target values", () => {
     const changes = [
       { source: "CONTACT_ASSIGNEE" as const, operator: "HAS_CHANGED_TO" as const, assignedUserId: null },

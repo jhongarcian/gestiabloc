@@ -6713,6 +6713,14 @@ components:
               enum: [CONTACT_CREATED]
         - type: object
           additionalProperties: false
+          required: [type]
+          description: Runs when a note is added to a contact. Optional filters may use contact fields, active non-sensitive custom fields, and tags, evaluated after the note is saved.
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_NOTE_ADDED]
+        - type: object
+          additionalProperties: false
           required: [type, tagId, change]
           description: Runs when the selected tag is added to or removed from a contact. Optional contact filters evaluate the resulting contact state.
           properties:

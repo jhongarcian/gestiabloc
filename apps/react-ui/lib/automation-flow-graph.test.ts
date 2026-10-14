@@ -43,6 +43,18 @@ describe("buildAutomationFlowGraph", () => {
     assert.equal(trigger?.data.label, "Contact created")
     assert.equal(trigger?.data.subtitle, "Starts when a new contact is added")
   })
+  test("labels the note-added trigger", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "CONTACT_NOTE_ADDED",
+      pipelineId: "",
+      targetStageId: "",
+      conditions: [],
+      actions: [],
+    }, null, labels)
+    const trigger = graph.nodes.find((node) => node.id === "trigger")
+    assert.equal(trigger?.data.label, "Note added")
+    assert.equal(trigger?.data.subtitle, "Starts when a note is added to a contact")
+  })
   test("shows the selected contact change rules", () => {
     const graph = buildAutomationFlowGraph({
       triggerType: "CONTACT_CHANGED",

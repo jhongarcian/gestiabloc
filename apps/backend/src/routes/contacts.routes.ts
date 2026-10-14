@@ -6,7 +6,7 @@ import {
   encryptCustomFieldValue,
 } from "../lib/contact-custom-field-encryption.js"
 import { buildContactAssigneeUpdate } from "../lib/contact-assignee-update.js"
-import { loadContactChangeSnapshot, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent } from "../lib/automation-event-queue.js"
+import { loadContactChangeSnapshot, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent } from "../lib/automation-event-queue.js"
 import { kickAutomationEventWorker } from "../lib/automation-event-worker.js"
 import { normalizeCustomFieldValue } from "../lib/contact-custom-field-values.js"
 import { summarizeVisibleContactFollowUpServices } from "../lib/contact-followup-visibility.js"
@@ -2979,7 +2979,7 @@ router.post(
           payload.followUpTemplateId ?? contactService.followUpTemplateId ?? null
       }
 
-      const created = await prisma.$transaction(async (tx) => {
+      const { created, automation } = await prisma.$transaction(async (tx) => {
         const txWithContacts = tx as any
         const note = await txWithContacts.contactNote.create({
           data: {
@@ -3053,8 +3053,15 @@ router.post(
           },
         })
 
-        return note
+        const automation = await queueContactNoteAddedAutomationEvent(tx, {
+          tenantId,
+          contactId,
+          actorUserId: authed.user.id,
+          causationKey: `contact-note:${note.id}:added`,
+        })
+        return { created: note, automation }
       })
+      if (automation.automationEventId) kickAutomationEventWorker()
 
       return res.status(201).json({
         ok: true,

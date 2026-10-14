@@ -77,6 +77,7 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "CONTACT_CREATED",
   "CONTACT_CHANGED",
   "CONTACT_TAG",
+  "CONTACT_NOTE_ADDED",
   "OPPORTUNITY_CREATED",
   "OPPORTUNITY_STAGE_CHANGED",
   "OPPORTUNITY_CHANGED",
@@ -672,6 +673,7 @@ export const AutomationUpsertSchema = z
       z.object({ type: z.literal("CONTACT_CREATED") }).strict(),
       z.object({ type: z.literal("CONTACT_CHANGED"), changes: z.array(AutomationContactChangeRuleSchema).min(1).max(20) }).strict(),
       z.object({ type: z.literal("CONTACT_TAG"), tagId: idSchema, change: z.enum(["ADDED", "REMOVED"]) }).strict(),
+      z.object({ type: z.literal("CONTACT_NOTE_ADDED") }).strict(),
       z.object({
         type: z.literal("OPPORTUNITY_CREATED"),
         pipelineId: idSchema,
@@ -1311,8 +1313,8 @@ export async function validateAutomationConfiguration(
   input: AutomationInput,
   options: { sourceAutomationId?: string | null } = {},
 ) {
-  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG"
-  const triggerPipelineId = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG"
+  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED"
+  const triggerPipelineId = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED"
     ? null : input.trigger.pipelineId
   const [pipelines, fields, statuses, taskStatuses, memberships, tags, services, publishedAutomations] = await Promise.all([
     prismaClient.opportunityPipeline.findMany
@@ -1470,6 +1472,9 @@ export async function validateAutomationConfiguration(
   )
 
   const conditions = input.conditions.map((condition, index) => {
+    if (input.trigger.type === "CONTACT_NOTE_ADDED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Note added filters can use contact fields, custom fields, or tags.")
+    }
     if (condition.source === "CONTACT_FIELD") {
       const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === condition.fieldKey)
       if (!field || ["status", "assigned_to", "tags"].includes(field.key)) {
@@ -2564,7 +2569,7 @@ export async function validateAutomationConfiguration(
     name: input.name,
     isEnabled: input.isEnabled,
     triggerType: input.trigger.type === "OPPORTUNITY_STAGE_CHANGED" ? "OPPORTUNITY_CHANGED" as const : input.trigger.type,
-    pipelineId: input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG"
+    pipelineId: input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED"
       ? null : input.trigger.pipelineId,
     sourceStageId: null,
     targetStageId: configuredStageId,
@@ -2581,7 +2586,7 @@ export async function validateAutomationConfiguration(
 export type OpportunityAutomationEvent = {
   tenantId: string
   actorUserId: string | null
-  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG">
+  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED">
   opportunityId: string
   contactId: string
   pipelineId: string
@@ -3803,7 +3808,7 @@ async function applyAutomationActionInner(
       if (!body.success) {
         throw new Error("The rendered contact note body must contain 1 to 5,000 characters.")
       }
-      await prismaTx.contactNote.create({
+      const note = await prismaTx.contactNote.create({
         data: {
           tenantId,
           contactId,
@@ -3813,6 +3818,19 @@ async function applyAutomationActionInner(
           body: body.data,
           createdById: null,
         },
+      })
+      const { queueContactNoteAddedAutomationEvent } = await import("./automation-event-queue.js")
+      await queueContactNoteAddedAutomationEvent(prismaTx, {
+        tenantId,
+        contactId,
+        actorUserId: actorUserId ?? null,
+        chainId: eventContext.chainId,
+        parentEventId: eventContext.eventId,
+        chainDepth: (eventContext.chainDepth ?? 0) + 1,
+        sourceAutomationId: automationId,
+        sourceAutomationName: automationName,
+        sourceNodeKey: action.nodeKey,
+        causationKey: runId ? `automation-run:${runId}:note-added:${action.nodeKey}` : note?.id ? `contact-note:${note.id}:added` : null,
       })
       return `Added contact note “${title.data}”.`
     } else if (action.type === "CREATE_CONTACT") {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
-import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
+import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
 
 const WAIT_ACTION = {
   id: "action-1",
@@ -64,6 +64,76 @@ describe("queueContactCreatedAutomationEvent", () => {
     assert.equal(writes.event.pipelineId, null)
     assert.equal(writes.event.opportunitySnapshotId, null)
     assert.equal(writes.logs[0].eventSource, "CONTACT_CREATED")
+  })
+})
+
+describe("queueContactNoteAddedAutomationEvent", () => {
+  test("matches contact, custom-field, and tag filters once per added note", async () => {
+    const writes: Record<string, any> = {}
+    const contact = {
+      id: "contact-1",
+      firstName: "Mary",
+      lastName: "Reed",
+      statusConfigId: null,
+      assignedToUserId: null,
+      tags: [{ tagId: "tag-new" }],
+      customFieldValues: [{ fieldId: "field-source", value: "Referral" }],
+    }
+    const filters = [
+      { source: "CONTACT_FIELD", fieldKey: "first_name", operator: "EQUALS", compareValue: "Mary" },
+      { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-source", operator: "EQUALS", compareValue: "Referral" },
+      { source: "CONTACT_TAGS", tagId: "tag-new", operator: "EQUALS", compareValue: null },
+    ]
+    let selectedTrigger: unknown
+    const prismaTx = {
+      automation: {
+        count: async () => 1,
+        findMany: async ({ where }: any) => {
+          selectedTrigger = where.triggerType
+          return [
+            { id: "match", name: "Follow up", triggerType: "CONTACT_NOTE_ADDED", conditions: filters, actions: [WAIT_ACTION] },
+            { id: "skip", name: "Skip", triggerType: "CONTACT_NOTE_ADDED", conditions: [{ ...filters[0], compareValue: "John" }], actions: [WAIT_ACTION] },
+          ]
+        },
+      },
+      automationEvent: {
+        findUnique: async ({ where }: any) => writes.event?.causationKey === where.causationKey
+          ? { ...writes.event, dispatches: [{ decision: "RUN" }], completedCount: 0 }
+          : null,
+        create: async ({ data }: any) => { writes.event = data; writes.createCount = (writes.createCount ?? 0) + 1; return data },
+      },
+      contact: { findFirst: async () => contact },
+      contactCustomField: { findMany: async () => [{ id: "field-source", key: "source", label: "Source", fieldType: "TEXT", isActive: true, isEncrypted: false, isSensitive: false, options: null }] },
+      contactStatusConfig: { findMany: async () => [] },
+      taskStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "tag-new", name: "New" }] },
+      opportunityPipeline: { findMany: async () => [] },
+      tenant: { findUnique: async () => ({ timezone: "America/Chicago" }) },
+      automationDispatch: { createMany: async ({ data }: any) => { writes.dispatches = data } },
+      automationNodeExecution: { createMany: async ({ data }: any) => { writes.logs = data } },
+    }
+    const event = { tenantId: "tenant-1", contactId: "contact-1", actorUserId: "user-1", causationKey: "contact-note:note-1:added" }
+    const first = await queueContactNoteAddedAutomationEvent(prismaTx, event)
+    assert.equal(selectedTrigger, "CONTACT_NOTE_ADDED")
+    assert.equal(first.matchedCount, 1)
+    assert.equal(writes.dispatches.length, 1)
+    assert.equal(writes.event.triggerType, "CONTACT_NOTE_ADDED")
+    assert.equal(writes.logs[0].eventSource, "CONTACT_NOTE_ADDED")
+    const retry = await queueContactNoteAddedAutomationEvent(prismaTx, event)
+    assert.equal(retry.automationEventId, first.automationEventId)
+    assert.equal(writes.createCount, 1)
+    const selfTriggered = await queueContactNoteAddedAutomationEvent(prismaTx, {
+      ...event,
+      causationKey: "contact-note:note-2:added",
+      sourceAutomationId: "match",
+    })
+    assert.equal(selfTriggered.matchedCount, 0)
+    assert.equal(writes.createCount, 1)
+    await assert.rejects(
+      queueContactNoteAddedAutomationEvent(prismaTx, { ...event, chainDepth: 21 }),
+      /maximum automation chain depth/,
+    )
   })
 })
 
