@@ -1,0 +1,2 @@
+ALTER TYPE "AutomationTriggerType" ADD VALUE 'CONTACT_NOTE_ADDED';
+ALTER TYPE "AutomationNodeEventSource" ADD VALUE 'CONTACT_NOTE_ADDED';
