@@ -6721,6 +6721,14 @@ components:
               enum: [CONTACT_NOTE_ADDED]
         - type: object
           additionalProperties: false
+          required: [type]
+          description: Runs when a task is created for a contact. Optional task and contact filters are evaluated against creation-time values. Each Task added automation can enroll once per automation chain.
+          properties:
+            type:
+              type: string
+              enum: [TASK_ADDED]
+        - type: object
+          additionalProperties: false
           required: [type, tagId, change]
           description: Runs when the selected tag is added to or removed from a contact. Optional contact filters evaluate the resulting contact state.
           properties:
@@ -7286,6 +7294,7 @@ components:
           type: string
           enum:
             - CONTACT_FIELD
+            - TASK_FIELD
             - CONTACT_CUSTOM_FIELD
             - CONTACT_STATUS
             - CONTACT_ASSIGNEE
@@ -7999,7 +8008,7 @@ components:
         fieldKey:
           type: string
           nullable: true
-          description: Standard contact field key when source is CONTACT_FIELD.
+          description: Standard contact field key for CONTACT_FIELD, or one of name, description, statusConfigId, assignedToUserId, startedAt, dueDate, priority, linkedEntityName, linkedEntityType for TASK_FIELD. Task date comparisons use ISO date-times with an offset; task assignee INCLUDES_ANY uses an array of active user IDs.
         statusConfigId:
           type: string
           nullable: true

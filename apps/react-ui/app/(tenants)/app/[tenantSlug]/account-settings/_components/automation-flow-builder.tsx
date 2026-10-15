@@ -357,6 +357,30 @@ const STATUS_OPERATORS: AutomationOperator[] = ["EQUALS", "NOT_EQUALS", "IS_EMPT
 const TEXT_OPERATORS: AutomationOperator[] = ["EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_CONTAINS", "IS_EMPTY", "IS_NOT_EMPTY"]
 const DATE_OPERATORS: AutomationOperator[] = [...NUMERIC_OPERATORS, "IS_EMPTY", "IS_NOT_EMPTY"]
 const BOOLEAN_OPERATORS: AutomationOperator[] = ["IS_TRUE", "IS_FALSE", "IS_EMPTY", "IS_NOT_EMPTY"]
+const TASK_FILTER_FIELDS = {
+  name: { label: "Task name", kind: "text", operators: ["EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_CONTAINS"] as AutomationOperator[] },
+  description: { label: "Description", kind: "text", operators: TEXT_OPERATORS },
+  statusConfigId: { label: "Status", kind: "status", operators: STATUS_OPERATORS },
+  assignedToUserId: { label: "Assigned user", kind: "assignee", operators: ["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[] },
+  startedAt: { label: "Start date and time", kind: "date", operators: NUMERIC_OPERATORS },
+  dueDate: { label: "Due date and time", kind: "date", operators: DATE_OPERATORS },
+  priority: { label: "Priority", kind: "priority", operators: STATUS_OPERATORS },
+  linkedEntityName: { label: "Linked service or product", kind: "text", operators: TEXT_OPERATORS },
+  linkedEntityType: { label: "Linked item type", kind: "linkedType", operators: STATUS_OPERATORS },
+} as const
+type TaskFilterFieldKey = keyof typeof TASK_FILTER_FIELDS
+function taskFilterField(key: string | null | undefined) {
+  return key && Object.hasOwn(TASK_FILTER_FIELDS, key) ? TASK_FILTER_FIELDS[key as TaskFilterFieldKey] : null
+}
+function taskFilterDefault(key: TaskFilterFieldKey, catalog: AutomationCatalog): Pick<AutomationCondition, "operator" | "compareValue"> {
+  if (key === "assignedToUserId") return { operator: "INCLUDES_ANY", compareValue: catalog.users[0] ? [catalog.users[0].id] : [] }
+  if (key === "statusConfigId") return { operator: "EQUALS", compareValue: catalog.taskStatuses[0]?.id ?? "" }
+  if (key === "priority") return { operator: "EQUALS", compareValue: "HIGH" }
+  if (key === "linkedEntityType") return { operator: "EQUALS", compareValue: "SERVICE" }
+  if (key === "startedAt") return { operator: "GREATER_THAN_OR_EQUAL", compareValue: "" }
+  if (key === "dueDate") return { operator: "IS_NOT_EMPTY", compareValue: null }
+  return { operator: key === "name" ? "CONTAINS" : "IS_NOT_EMPTY", compareValue: key === "name" ? "" : null }
+}
 function contactFieldOperators(fieldType: AutomationCatalog["templateFields"]["contact"][number]["fieldType"]): AutomationOperator[] {
   if (fieldType === "DATE" || fieldType === "NUMBER" || fieldType === "CURRENCY") return DATE_OPERATORS
   if (fieldType === "CHECKBOX") return BOOLEAN_OPERATORS
@@ -434,9 +458,9 @@ const TRIGGER_GROUPS = [
   {
     id: "CONTACT",
     label: "Contact triggers",
-    description: "Start when a contact, tag, or note changes.",
+    description: "Start when a contact, tag, note, or task changes.",
     icon: ContactRound,
-    triggers: ["CONTACT_CREATED", "CONTACT_CHANGED", "CONTACT_TAG", "CONTACT_NOTE_ADDED"],
+    triggers: ["CONTACT_CREATED", "CONTACT_CHANGED", "CONTACT_TAG", "CONTACT_NOTE_ADDED", "TASK_ADDED"],
   },
   {
     id: "OPPORTUNITY",
@@ -475,6 +499,12 @@ const TRIGGER_DEFINITIONS: Record<AutomationBuilderTriggerType, {
     label: "Note added",
     description: "When a note is added to a contact.",
     icon: StickyNote,
+    group: "CONTACT",
+  },
+  TASK_ADDED: {
+    label: "Task added",
+    description: "When a task is added to a contact.",
+    icon: ListTodo,
     group: "CONTACT",
   },
   OPPORTUNITY_CREATED: {
@@ -1971,6 +2001,7 @@ function conditionDefaults(
   source: AutomationCondition["source"],
   catalog: AutomationCatalog,
 ): AutomationCondition {
+  if (source === "TASK_FIELD") return { source, fieldKey: "name", operator: "CONTAINS", compareValue: "" }
   if (source === "CONTACT_FIELD") {
     const field = catalog.templateFields.contact.find((candidate) => !["status", "assigned_to", "tags"].includes(candidate.key))
     return { source, operator: "EQUALS", fieldKey: field?.key ?? null, compareValue: "" }
@@ -2018,6 +2049,7 @@ function conditionDefaults(
 }
 
 function defaultCondition(catalog: AutomationCatalog, triggerType?: AutomationBuilderTriggerType | null) {
+  if (triggerType === "TASK_ADDED") return conditionDefaults("TASK_FIELD", catalog)
   if (triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED") return conditionDefaults("CONTACT_FIELD", catalog)
   if (catalog.customFields.length > 0) return conditionDefaults("CONTACT_CUSTOM_FIELD", catalog)
   if (catalog.statuses.length > 0) return conditionDefaults("CONTACT_STATUS", catalog)
@@ -2035,9 +2067,22 @@ function apiError(error: unknown) {
 function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   if (!draft.name.trim()) return "Enter an automation name."
   if (!draft.triggerType) return "Select a trigger."
-  if (draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && !draft.pipelineId) return "Select a pipeline."
+  if (draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && !draft.pipelineId) return "Select a pipeline."
   if (draft.triggerType === "CONTACT_CHANGED" && !isAutomationTriggerReady(draft)) return "Complete at least one contact change rule."
   if (draft.triggerType === "CONTACT_TAG" && !isAutomationTriggerReady(draft)) return "Select a tag and whether it is added or removed."
+  if (draft.triggerType === "TASK_ADDED") {
+    for (const condition of draft.conditions) {
+      if (condition.source !== "TASK_FIELD") continue
+      const field = taskFilterField(condition.fieldKey)
+      if (!field || !field.operators.includes(condition.operator)) return "Complete each task filter."
+      if (VALUELESS_OPERATORS.has(condition.operator)) continue
+      if (field.kind === "assignee" && (!Array.isArray(condition.compareValue) || condition.compareValue.length === 0)) return "Select at least one task assignee."
+      if (field.kind === "date" && (condition.operator === "BETWEEN"
+        ? !condition.compareValue || typeof condition.compareValue !== "object" || Object.values(condition.compareValue).length !== 2 || Object.values(condition.compareValue).some((value) => typeof value !== "string" || !value)
+        : typeof condition.compareValue !== "string" || !condition.compareValue)) return "Complete each task date and time filter."
+      if (field.kind !== "date" && field.kind !== "assignee" && !condition.compareValue) return "Complete each task filter."
+    }
+  }
   if (draft.triggerType === "OPPORTUNITY_CHANGED" && !draft.changeType) return "Select a change to listen for."
   if (draft.triggerType === "OPPORTUNITY_CHANGED" && draft.changeType === "STAGE_ENTERED" && !draft.targetStageId) return "Select a stage."
   if (draft.actions.length === 0) return "Add at least one action."
@@ -2220,6 +2265,11 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     flattenDraftActions(draft.actions).some((action) => action.type === "ADD_CONTACT_NOTE") ||
     (selected?.kind === "new-action" && pendingAction?.type === "ADD_CONTACT_NOTE") ||
     (selected?.kind === "action" && editingAction?.type === "ADD_CONTACT_NOTE")
+  )
+  const showTaskAddedActionNotice = draft.triggerType === "TASK_ADDED" && (
+    flattenDraftActions(draft.actions).some((action) => action.type === "CREATE_TASK") ||
+    (selected?.kind === "new-action" && pendingAction?.type === "CREATE_TASK") ||
+    (selected?.kind === "action" && editingAction?.type === "CREATE_TASK")
   )
 
   const goToPreviewDraft = useMemo(() => {
@@ -2698,6 +2748,12 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
           A note created here won’t restart this automation. Other Note added automations can respond once to the same sequence.
         </div>
       ) : null}
+      {activeTab === "builder" && showTaskAddedActionNotice ? (
+        <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-5 text-amber-950">
+          <span className="font-semibold">Task added and Create task:</span>{" "}
+          A task created here won’t restart this automation. Other Task added automations can respond once to the same sequence.
+        </div>
+      ) : null}
 
       {activeTab === "builder" ? (
         <section className="flex min-h-0 flex-1 gap-3 overflow-hidden">
@@ -2838,6 +2894,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     draft={triggerEditorDraft}
                     pipeline={triggerPipeline}
                     catalog={catalog}
+                    timezone={timezone}
                     onChange={setTriggerEditorDraft}
                   />
                 ) : null}
@@ -3020,11 +3077,13 @@ function TriggerEditor({
   draft,
   pipeline,
   catalog,
+  timezone,
   onChange,
 }: {
   draft: Draft
   pipeline?: AutomationCatalog["pipelines"][number]
   catalog: AutomationCatalog
+  timezone?: string | null
   onChange: (draft: Draft) => void
 }) {
   const [isChoosingTrigger, setIsChoosingTrigger] = useState(false)
@@ -3044,14 +3103,16 @@ function TriggerEditor({
     onChange({
       ...draft,
       triggerType,
-      pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" ? "" : draft.pipelineId,
+      pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_ADDED" ? "" : draft.pipelineId,
       changeType: "",
       targetStageId: "",
       conditions: triggerType === "CONTACT_NOTE_ADDED"
         ? draft.conditions.filter((condition) => ["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
+        : triggerType === "TASK_ADDED"
+          ? draft.conditions.filter((condition) => ["TASK_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
         : triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG"
-          ? draft.conditions.filter((condition) => condition.source !== "OPPORTUNITY_VALUE")
-          : draft.conditions,
+          ? draft.conditions.filter((condition) => condition.source !== "OPPORTUNITY_VALUE" && condition.source !== "TASK_FIELD")
+          : draft.conditions.filter((condition) => condition.source !== "TASK_FIELD"),
       changes: triggerType === "CONTACT_TAG"
         ? [{ source: "CONTACT_TAGS", operator: "ADDED", tagId: "" }]
         : triggerType === "CONTACT_CHANGED" && (draft.changes.length === 0 || draft.changes[0]?.source === "CONTACT_TAGS" && draft.changes.length === 1)
@@ -3203,7 +3264,7 @@ function TriggerEditor({
             </FieldGroup>
           </> : null}
 
-          {draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" ? <>
+          {draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" ? <>
           <Separator />
           <section>
             <FieldGroup className="gap-3">
@@ -3287,13 +3348,14 @@ function TriggerEditor({
           <Separator />
           <section className="flex flex-col gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-foreground">Contact filters</h3>
+              <h3 className="text-sm font-semibold text-foreground">{draft.triggerType === "TASK_ADDED" ? "Task and contact filters" : "Contact filters"}</h3>
               <p className="text-xs text-muted-foreground">Optional · all filters must match</p>
             </div>
             <ConditionsEditor
               compact
               draft={draft}
               catalog={catalog}
+              timezone={timezone}
               onChange={setConditions}
               updateCondition={updateCondition}
             />
@@ -3388,12 +3450,14 @@ function ContactChangeRulesEditor({ draft, catalog, onChange }: {
 function ConditionsEditor({
   draft,
   catalog,
+  timezone,
   onChange,
   updateCondition,
   compact = false,
 }: {
   draft: Draft
   catalog: AutomationCatalog
+  timezone?: string | null
   onChange: (conditions: AutomationCondition[]) => void
   updateCondition: (index: number, patch: Partial<AutomationCondition>) => void
   compact?: boolean
@@ -3402,7 +3466,7 @@ function ConditionsEditor({
     return (
       <div className={compact ? "flex items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 p-2.5" : "py-10 text-center"}>
         {compact ? null : <ListChecks className="mx-auto size-7 text-slate-300" />}
-        <p className={compact ? "text-xs text-slate-600" : "mt-2 text-sm text-slate-600"}>No contact filters</p>
+        <p className={compact ? "text-xs text-slate-600" : "mt-2 text-sm text-slate-600"}>No filters</p>
         <Button
           type="button"
           variant="outline"
@@ -3423,6 +3487,7 @@ function ConditionsEditor({
           condition={condition}
           index={index}
           catalog={catalog}
+          timezone={timezone}
           triggerType={draft.triggerType}
           onChange={(patch) => updateCondition(index, patch)}
           onDelete={() => onChange(draft.conditions.filter((_, itemIndex) => itemIndex !== index))}
@@ -3444,6 +3509,7 @@ function ConditionCard({
   condition,
   index,
   catalog,
+  timezone,
   triggerType,
   onChange,
   onDelete,
@@ -3451,6 +3517,7 @@ function ConditionCard({
   condition: AutomationCondition
   index: number
   catalog: AutomationCatalog
+  timezone?: string | null
   triggerType: AutomationBuilderTriggerType | null
   onChange: (patch: Partial<AutomationCondition>) => void
   onDelete: () => void
@@ -3461,16 +3528,21 @@ function ConditionCard({
   const field = condition.source === "CONTACT_FIELD"
     ? regularField ? { ...regularField, options: [] as string[] } : undefined
     : catalog.customFields.find((item) => item.id === condition.customFieldId)
+  const taskField = condition.source === "TASK_FIELD" ? taskFilterField(condition.fieldKey) : null
   const operators =
     condition.source === "OPPORTUNITY_VALUE"
       ? NUMERIC_OPERATORS
+      : condition.source === "TASK_FIELD"
+        ? taskField?.operators ?? []
       : condition.source === "CONTACT_FIELD"
         ? regularField ? contactFieldOperators(regularField.fieldType) : []
         : condition.source === "CONTACT_CUSTOM_FIELD"
           ? catalog.customFields.find((item) => item.id === condition.customFieldId)?.operators ?? []
         : STATUS_OPERATORS
   const sourceIcon =
-    condition.source === "CONTACT_ASSIGNEE" ? (
+    condition.source === "TASK_FIELD" ? (
+      <ListTodo className="h-4 w-4" />
+    ) : condition.source === "CONTACT_ASSIGNEE" ? (
       <UserRound className="h-4 w-4" />
     ) : condition.source === "CONTACT_TAGS" ? (
       <Tags className="h-4 w-4" />
@@ -3485,6 +3557,7 @@ function ConditionCard({
     if (condition.source === "CONTACT_TAGS" && operator === "NOT_EQUALS") return "Does not have tag"
     if (condition.source === "CONTACT_ASSIGNEE" && operator === "EQUALS") return "Is assigned to"
     if (condition.source === "CONTACT_ASSIGNEE" && operator === "NOT_EQUALS") return "Is not assigned to"
+    if (condition.source === "TASK_FIELD" && condition.fieldKey === "assignedToUserId" && operator === "INCLUDES_ANY") return "Assigned to any"
     return OPERATOR_LABELS[operator]
   }
 
@@ -3517,15 +3590,23 @@ function ConditionCard({
         >
           <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
           <SelectContent>
+            {triggerType === "TASK_ADDED" ? <SelectItem value="TASK_FIELD">Task field</SelectItem> : null}
             <SelectItem value="CONTACT_FIELD">Contact field</SelectItem>
             <SelectItem value="CONTACT_CUSTOM_FIELD" disabled={catalog.customFields.length === 0}>Custom field</SelectItem>
-            {triggerType !== "CONTACT_NOTE_ADDED" ? <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem> : null}
-            {triggerType !== "CONTACT_NOTE_ADDED" ? <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem> : null}
+            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" ? <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem> : null}
+            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" ? <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem> : null}
             <SelectItem value="CONTACT_TAGS" disabled={catalog.tags.length === 0}>Tags</SelectItem>
-            {triggerType !== "CONTACT_CREATED" && triggerType !== "CONTACT_CHANGED" && triggerType !== "CONTACT_TAG" && triggerType !== "CONTACT_NOTE_ADDED" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
+            {triggerType !== "CONTACT_CREATED" && triggerType !== "CONTACT_CHANGED" && triggerType !== "CONTACT_TAG" && triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
           </SelectContent>
         </Select>
       </div>
+      {condition.source === "TASK_FIELD" ? <div className="space-y-2">
+        <Label>Task field</Label>
+        <Select value={condition.fieldKey ?? ""} onValueChange={(fieldKey: TaskFilterFieldKey) => onChange({ fieldKey, ...taskFilterDefault(fieldKey, catalog) })}>
+          <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select task field" /></SelectTrigger>
+          <SelectContent>{Object.entries(TASK_FILTER_FIELDS).map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}</SelectContent>
+        </Select>
+      </div> : null}
       {condition.source === "CONTACT_FIELD" ? (
         <div className="space-y-2">
           <Label>Contact field</Label>
@@ -3581,9 +3662,14 @@ function ConditionCard({
           value={condition.operator}
           onValueChange={(operator: AutomationOperator) => {
             const valueless = VALUELESS_OPERATORS.has(operator)
+            const taskDefault = condition.source === "TASK_FIELD" && condition.fieldKey && taskFilterField(condition.fieldKey)
+              ? taskFilterDefault(condition.fieldKey as TaskFilterFieldKey, catalog).compareValue
+              : null
             onChange({
               operator,
-              compareValue: valueless ? null : condition.compareValue,
+              compareValue: valueless ? null : condition.source === "TASK_FIELD"
+                ? operator === "BETWEEN" ? { min: "", max: "" } : condition.compareValue ?? taskDefault
+                : condition.compareValue,
               ...(condition.source === "CONTACT_STATUS"
                 ? { statusConfigId: valueless ? null : condition.statusConfigId ?? catalog.statuses[0]?.id ?? null }
                 : {}),
@@ -3606,6 +3692,7 @@ function ConditionCard({
         condition={condition}
         field={field}
         catalog={catalog}
+        timezone={timezone}
         onChange={(compareValue) => onChange({ compareValue })}
         onStatusChange={(statusConfigId) => onChange({ statusConfigId })}
         onAssigneeChange={(assignedUserId) => onChange({ assignedUserId })}
@@ -3619,6 +3706,7 @@ function ConditionValueInput({
   condition,
   field,
   catalog,
+  timezone,
   onChange,
   onStatusChange,
   onAssigneeChange,
@@ -3627,12 +3715,14 @@ function ConditionValueInput({
   condition: AutomationCondition
   field?: { fieldType: AutomationCatalog["templateFields"]["contact"][number]["fieldType"]; options: string[] }
   catalog: AutomationCatalog
+  timezone?: string | null
   onChange: (value: unknown) => void
   onStatusChange: (value: string) => void
   onAssigneeChange: (value: string) => void
   onTagChange: (value: string) => void
 }) {
   if (VALUELESS_OPERATORS.has(condition.operator)) return null
+  if (condition.source === "TASK_FIELD") return <TaskConditionValueInput condition={condition} catalog={catalog} timezone={timezone} onChange={onChange} />
   if (condition.source === "CONTACT_STATUS") {
     return <div className="space-y-2"><Label>Status</Label><Select value={condition.statusConfigId ?? ""} onValueChange={onStatusChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.statuses.map((status) => <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>)}</SelectContent></Select></div>
   }
@@ -3657,6 +3747,42 @@ function ConditionValueInput({
   const type = field?.fieldType === "DATE" ? "date" : field?.fieldType === "NUMBER" || field?.fieldType === "CURRENCY" || isOpportunityValue ? "number" : "text"
   const shownValue = isOpportunityValue ? Number(condition.compareValue ?? 0) / 100 : condition.compareValue ?? ""
   return <div className="space-y-2"><Label>{isOpportunityValue ? "Value (USD)" : "Value"}</Label><Input type={type} value={String(shownValue)} onChange={(event) => onChange(isOpportunityValue ? Math.round(Number(event.target.value) * 100) : type === "number" ? Number(event.target.value) : event.target.value)} /></div>
+}
+
+function TaskFilterDateInput({ value, onChange, timezone }: { value: unknown; onChange: (value: string) => void; timezone?: string | null }) {
+  const [draft, setDraft] = useState<DateTimeDraft>(() => typeof value === "string" && value ? formatUtcIsoToDateTimeDraft(value, timezone) : { date: "", time: "" })
+  return <DateTimeInput value={draft} onValueChange={(next) => {
+    setDraft(next)
+    onChange(dateTimeDraftToUtcIso(next, timezone) ?? "")
+  }} timezone={timezone} />
+}
+
+function TaskConditionValueInput({ condition, catalog, timezone, onChange }: {
+  condition: AutomationCondition
+  catalog: AutomationCatalog
+  timezone?: string | null
+  onChange: (value: unknown) => void
+}) {
+  const field = taskFilterField(condition.fieldKey)
+  if (!field) return null
+  if (field.kind === "assignee") {
+    const selected = Array.isArray(condition.compareValue) ? condition.compareValue as string[] : []
+    return <div className="space-y-2"><Label>Assigned to any of</Label><div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/40 p-2">
+      {catalog.users.map((user) => <label key={user.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white"><Checkbox checked={selected.includes(user.id)} onCheckedChange={(checked) => onChange(checked ? [...selected, user.id] : selected.filter((id) => id !== user.id))} /><span>{user.name} · {user.email}</span></label>)}
+      {catalog.users.length === 0 ? <p className="px-2 py-1 text-xs text-slate-500">No active users</p> : null}
+    </div></div>
+  }
+  if (field.kind === "status") return <div className="space-y-2"><Label>Task status</Label><Select value={String(condition.compareValue ?? "")} onValueChange={onChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.taskStatuses.map((status) => <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>)}</SelectContent></Select></div>
+  if (field.kind === "priority") return <div className="space-y-2"><Label>Priority at creation</Label><Select value={String(condition.compareValue ?? "")} onValueChange={onChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="HIGH">High</SelectItem><SelectItem value="MEDIUM">Medium</SelectItem><SelectItem value="LOW">Low</SelectItem></SelectContent></Select></div>
+  if (field.kind === "linkedType") return <div className="space-y-2"><Label>Linked item type</Label><Select value={String(condition.compareValue ?? "")} onValueChange={onChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="SERVICE">Service</SelectItem><SelectItem value="PRODUCT">Product</SelectItem></SelectContent></Select></div>
+  if (field.kind === "date") {
+    if (condition.operator === "BETWEEN") {
+      const range = condition.compareValue && typeof condition.compareValue === "object" ? condition.compareValue as { min?: unknown; max?: unknown } : {}
+      return <div className="space-y-3"><div className="space-y-2"><Label>From</Label><TaskFilterDateInput key={`min-${String(range.min ?? "")}`} value={range.min} onChange={(min) => onChange({ ...range, min })} timezone={timezone} /></div><div className="space-y-2"><Label>Through</Label><TaskFilterDateInput key={`max-${String(range.max ?? "")}`} value={range.max} onChange={(max) => onChange({ ...range, max })} timezone={timezone} /></div></div>
+    }
+    return <div className="space-y-2"><Label>Date and time</Label><TaskFilterDateInput key={String(condition.compareValue ?? "")} value={condition.compareValue} onChange={onChange} timezone={timezone} /></div>
+  }
+  return <div className="space-y-2"><Label>Text</Label><Input value={String(condition.compareValue ?? "")} onChange={(event) => onChange(event.target.value)} placeholder="Enter text" /></div>
 }
 
 function NewActionEditor({

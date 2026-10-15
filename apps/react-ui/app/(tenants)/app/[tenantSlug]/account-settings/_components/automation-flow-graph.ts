@@ -190,6 +190,8 @@ export function buildAutomationFlowGraph(
         ? "Starts when a new contact is added"
       : draft.triggerType === "CONTACT_NOTE_ADDED"
         ? "Starts when a note is added to a contact"
+      : draft.triggerType === "TASK_ADDED"
+        ? "Starts when a task is added to a contact"
       : draft.triggerType === "CONTACT_CHANGED"
         ? `All ${draft.changes?.length ?? 0} change rule${draft.changes?.length === 1 ? "" : "s"} in one update`
       : draft.triggerType === "CONTACT_TAG"
@@ -217,6 +219,8 @@ export function buildAutomationFlowGraph(
               ? "Contact created"
             : draft.triggerType === "CONTACT_NOTE_ADDED"
               ? "Note added"
+            : draft.triggerType === "TASK_ADDED"
+              ? "Task added"
             : draft.triggerType === "CONTACT_CHANGED"
               ? "Contact changed"
             : draft.triggerType === "CONTACT_TAG"

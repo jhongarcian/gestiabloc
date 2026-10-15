@@ -2,6 +2,8 @@ import { type Response, Router } from "express"
 import { z } from "zod"
 
 import { prisma } from "../lib/prisma.js"
+import { queueTaskAddedAutomationEvent } from "../lib/automation-event-queue.js"
+import { kickAutomationEventWorker } from "../lib/automation-event-worker.js"
 import {
   getTaskDueDayOffset,
   getTaskPriorityFromDueDate,
@@ -770,7 +772,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
     } =
       resolvedPayload
 
-    const task = await prisma.$transaction(async (tx) => {
+    const { task, automation } = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any
 
       const createdTask = await prismaTx.task.create({
@@ -851,8 +853,16 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
         }
       }
 
-      return createdTask
+      const automation = await queueTaskAddedAutomationEvent(prismaTx, {
+        tenantId,
+        contactId: contactId!,
+        taskId: createdTask.id,
+        actorUserId: authed.user.id,
+      })
+      return { task: createdTask, automation }
     })
+
+    if (automation.automationEventId) kickAutomationEventWorker()
 
     if (task.assignedToUserId) {
       await createTaskAssignmentNotification({

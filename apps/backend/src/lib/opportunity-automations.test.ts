@@ -1853,6 +1853,41 @@ describe("deleteAutomationContactFileObjects", () => {
 })
 
 describe("AutomationUpsertSchema", () => {
+  test("task-added validates task fields and safe contact filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [
+        { id: "field-safe", key: "source", label: "Source", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: null },
+        { id: "field-secret", key: "secret", label: "Secret", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: true, isSensitive: true, options: null },
+      ] },
+      contactStatusConfig: { findMany: async () => [] },
+      taskStatusConfig: { findMany: async () => [{ id: "todo", name: "To Do", isActive: true }] },
+      membership: { findMany: async () => [{ userId: "user-a", status: "ACTIVE" }, { userId: "user-b", status: "ACTIVE" }] },
+      tenantTag: { findMany: async () => [{ id: "tag-a" }] },
+    }
+    const base = {
+      name: "Task added", isEnabled: false, trigger: { type: "TASK_ADDED" },
+      conditions: [
+        { source: "TASK_FIELD", fieldKey: "statusConfigId", operator: "EQUALS", compareValue: "todo" },
+        { source: "TASK_FIELD", fieldKey: "assignedToUserId", operator: "INCLUDES_ANY", compareValue: ["user-a", "user-b"] },
+        { source: "TASK_FIELD", fieldKey: "dueDate", operator: "GREATER_THAN", compareValue: "2026-10-15T09:00:00-05:00" },
+        { source: "TASK_FIELD", fieldKey: "description", operator: "IS_EMPTY" },
+        { source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" },
+        { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-safe", operator: "EQUALS", compareValue: "Referral" },
+        { source: "CONTACT_TAGS", tagId: "tag-a", operator: "EQUALS" },
+      ],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "TASK_ADDED")
+    assert.equal(normalized.pipelineId, null)
+    assert.deepEqual(normalized.conditions[1]?.compareValue, ["user-a", "user-b"])
+    assert.equal(normalized.conditions[2]?.compareValue, "2026-10-15T14:00:00.000Z")
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "assignedToUserId", operator: "INCLUDES_ANY", compareValue: ["inactive"] }] })), /active task assignees/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-secret", operator: "EQUALS", compareValue: "secret" }] })), /non-sensitive custom field/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "dueDate", operator: "EQUALS", compareValue: "2026-10-15" }] })), /timezone/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "dueDate", operator: "BETWEEN", compareValue: { min: "2026-10-16T09:00:00-05:00", max: "2026-10-15T09:00:00-05:00" } }] })), /start before it ends/)
+  })
   test("note-added accepts only contact field, custom field, and tag filters", async () => {
     const prismaClient = {
       opportunityPipeline: { findMany: async () => [] },
@@ -4632,6 +4667,9 @@ describe("executeOpportunityAutomations", () => {
   })
 
   test("creates a contact-linked task with live templates, reminder, and notification", async () => {
+    let taskTriggerQueries = 0
+    let queuedTaskEvent: Record<string, unknown> | null = null
+    let queuedTaskDispatches: Array<Record<string, unknown>> = []
     const created: {
       task?: Record<string, unknown>
       activity?: Record<string, unknown>
@@ -4640,7 +4678,12 @@ describe("executeOpportunityAutomations", () => {
     } = {}
     const prismaTx = {
       automation: {
-        findMany: async () => [{
+        findMany: async ({ where }: { where?: { triggerType?: string } }) => {
+          if (where?.triggerType === "TASK_ADDED") {
+            taskTriggerQueries += 1
+            return [{ id: "task-trigger", name: "Task added", triggerType: "TASK_ADDED", conditions: [], actions: [] }]
+          }
+          return [{
           id: "automation-1",
           name: "Appointment follow-up",
           triggerType: "OPPORTUNITY_CREATED",
@@ -4677,10 +4720,26 @@ describe("executeOpportunityAutomations", () => {
               },
             },
           }],
-        }],
+          }]
+        },
       },
       contact: {
         findFirst: async (args: { select?: Record<string, unknown> }) => {
+          if (args.select?.tags) {
+            return {
+              id: "contact-1",
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              email: "taylor@example.com",
+              statusConfigId: "active",
+              statusConfig: { name: "Active" },
+              assignedToUserId: "user-john",
+              assignedToMembership: { user: { name: "John", email: "john@example.com" } },
+              tags: [],
+              customFieldValues: [],
+            }
+          }
           if (args.select?.email) {
             return {
               firstName: "Taylor",
@@ -4725,7 +4784,14 @@ describe("executeOpportunityAutomations", () => {
           created.task = data
           return { id: "task-1" }
         },
+        findFirst: async () => created.task ? { id: "task-1", ...created.task } : null,
       },
+      automationTriggerChainClaim: { createManyAndReturn: async () => [{ automationId: "task-trigger" }] },
+      automationEvent: {
+        findUnique: async () => null,
+        create: async ({ data }: { data: Record<string, unknown> }) => { queuedTaskEvent = data },
+      },
+      automationDispatch: { createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { queuedTaskDispatches = data } },
       taskActivity: {
         create: async ({ data }: { data: Record<string, unknown> }) => { created.activity = data },
       },
@@ -4774,6 +4840,10 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(created.reminder?.createdById, null)
     assert.equal(created.reminder?.message, "Reminder for Taylor")
     assert.equal(created.notification?.type, "TASK_ASSIGNED")
+    assert.equal(taskTriggerQueries, 1)
+    assert.equal(queuedTaskEvent?.taskId, "task-1")
+    assert.equal((queuedTaskEvent?.taskSnapshot as Record<string, unknown>)?.name, "Call Taylor Reed")
+    assert.deepEqual(queuedTaskDispatches.map((dispatch) => [dispatch.automationId, dispatch.decision]), [["task-trigger", "RUN"]])
   })
 
   test("renders values changed by an earlier action in the same segment", async () => {

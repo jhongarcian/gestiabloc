@@ -4,6 +4,22 @@ import { describe, test } from "node:test"
 import { findEnabledAutomationReference } from "./automation-references.js"
 
 describe("findEnabledAutomationReference", () => {
+  test("protects task statuses and users selected by Task added filters", async () => {
+    const prismaClient = {
+      automation: {
+        findFirst: async () => null,
+        findMany: async ({ where }: any) => where.triggerType === "TASK_ADDED" ? [{
+          id: "task-automation", name: "Task routing",
+          conditions: [
+            { compareValue: "todo" },
+            { compareValue: ["user-a", "user-b"] },
+          ],
+        }] : [],
+      },
+    }
+    assert.deepEqual(await findEnabledAutomationReference(prismaClient, "tenant-1", { kind: "taskStatus", id: "todo" }), { id: "task-automation", name: "Task routing" })
+    assert.deepEqual(await findEnabledAutomationReference(prismaClient, "tenant-1", { kind: "user", id: "user-b" }), { id: "task-automation", name: "Task routing" })
+  })
   test("protects fields, statuses, tags, and users selected by a change trigger", async () => {
     const searches: string[] = []
     const prismaClient = {

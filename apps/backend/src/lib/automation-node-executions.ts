@@ -5,6 +5,7 @@ export type AutomationNodeEventSource =
   | "CONTACT_CHANGED"
   | "CONTACT_TAG"
   | "CONTACT_NOTE_ADDED"
+  | "TASK_ADDED"
   | "OPPORTUNITY_CREATED"
   | "OPPORTUNITY_STAGE_CHANGED"
   | "OPPORTUNITY_CHANGED"
@@ -148,6 +149,7 @@ export function getAutomationTriggerLabel(triggerType: string) {
   if (triggerType === "CONTACT_CHANGED") return "Contact changed"
   if (triggerType === "CONTACT_TAG") return "Contact tag"
   if (triggerType === "CONTACT_NOTE_ADDED") return "Note added"
+  if (triggerType === "TASK_ADDED") return "Task added"
   if (triggerType === "OPPORTUNITY_CREATED") return "Opportunity created"
   return "Opportunity changed"
 }

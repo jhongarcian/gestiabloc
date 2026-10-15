@@ -117,6 +117,31 @@ export async function findEnabledAutomationReference(
   })
   if (directReference) return directReference
 
+  if (reference.kind === "taskStatus" || reference.kind === "user") {
+    const fieldKey = reference.kind === "taskStatus" ? "statusConfigId" : "assignedToUserId"
+    const taskAutomations = await prismaClient.automation.findMany({
+      where: {
+        tenantId,
+        isEnabled: true,
+        triggerType: "TASK_ADDED",
+        conditions: { some: { source: "TASK_FIELD", fieldKey } },
+      },
+      select: {
+        id: true,
+        name: true,
+        conditions: { where: { source: "TASK_FIELD", fieldKey }, select: { compareValue: true } },
+      },
+    })
+    const taskFilterReference = taskAutomations.find((automation: any) =>
+      (automation.conditions ?? []).some((condition: any) =>
+        reference.kind === "user"
+          ? Array.isArray(condition.compareValue) && condition.compareValue.includes(reference.id)
+          : condition.compareValue === reference.id,
+      ),
+    )
+    if (taskFilterReference) return { id: taskFilterReference.id, name: taskFilterReference.name }
+  }
+
   if (
     reference.kind !== "customField" &&
     reference.kind !== "status" &&

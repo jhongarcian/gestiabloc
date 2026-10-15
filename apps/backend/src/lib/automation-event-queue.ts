@@ -7,6 +7,7 @@ import {
   automationTriggerCandidateWhere,
   automationActionSnapshot,
   evaluateAutomationConditions,
+  evaluateAutomationTaskConditions,
   evaluateAutomationTrigger,
   executeAutomationSegmentTx,
   flattenAutomationActionTree,
@@ -269,6 +270,8 @@ export type ContactCreatedAutomationEvent = {
   causationKey?: string | null
 }
 
+export type TaskAddedAutomationEvent = ContactCreatedAutomationEvent & { taskId: string }
+
 export async function loadContactChangeSnapshot(prismaTx: any, tenantId: string, contactId: string): Promise<ContactChangeSnapshot | null> {
   if (typeof prismaTx.$queryRawUnsafe === "function") {
     await prismaTx.$queryRawUnsafe('SELECT id FROM "Contact" WHERE "tenantId" = $1 AND id = $2 FOR UPDATE', tenantId, contactId)
@@ -419,16 +422,19 @@ export async function queueContactChangedAutomationEvent(
 
 async function queueContactSnapshotAutomationEvent(
   prismaTx: any,
-  event: ContactCreatedAutomationEvent,
-  triggerType: "CONTACT_CREATED" | "CONTACT_NOTE_ADDED",
+  event: ContactCreatedAutomationEvent & { taskId?: string },
+  triggerType: "CONTACT_CREATED" | "CONTACT_NOTE_ADDED" | "TASK_ADDED",
 ): Promise<QueuedAutomationResult> {
-  if (triggerType === "CONTACT_NOTE_ADDED" && typeof prismaTx.automation?.findMany !== "function") return {
+  if (triggerType !== "CONTACT_CREATED" && typeof prismaTx.automation?.findMany !== "function") return {
     automationEventId: null,
     automationStatus: "NOT_APPLICABLE",
     queuedAutomationCount: 0,
     matchedCount: 0,
     executedCount: 0,
     contactDeleted: false,
+  }
+  if (triggerType === "TASK_ADDED" && event.taskId && typeof prismaTx.$queryRawUnsafe === "function") {
+    await prismaTx.$queryRawUnsafe('SELECT id FROM "Task" WHERE "tenantId" = $1 AND id = $2 FOR UPDATE', event.tenantId, event.taskId)
   }
   if (event.causationKey && (triggerType === "CONTACT_CREATED" || typeof prismaTx.automationEvent?.findUnique === "function")) {
     const existing = await prismaTx.automationEvent.findUnique({
@@ -444,7 +450,7 @@ async function queueContactSnapshotAutomationEvent(
       contactDeleted: false,
     }
   }
-  const automations = await prismaTx.automation.findMany({
+  const foundAutomations = await prismaTx.automation.findMany({
     where: { tenantId: event.tenantId, isEnabled: true, triggerType },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {
@@ -452,6 +458,7 @@ async function queueContactSnapshotAutomationEvent(
       actions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
     },
   })
+  const automations = foundAutomations.filter((automation: any) => automation.triggerType === triggerType)
   if (automations.length === 0) return {
     automationEventId: null,
     automationStatus: "NOT_APPLICABLE",
@@ -468,9 +475,22 @@ async function queueContactSnapshotAutomationEvent(
     getAutomationRuntimeCatalog(prismaTx, event.tenantId),
   ])
   if (!contact) throw new Error("Contact not found while queuing automation.")
+  const task = triggerType === "TASK_ADDED" && event.taskId
+    ? await prismaTx.task.findFirst({
+        where: { tenantId: event.tenantId, id: event.taskId, contactId: event.contactId },
+        select: { id: true, name: true, description: true, statusConfigId: true, assignedToUserId: true, startedAt: true, dueDate: true, priority: true, linkedEntityName: true, linkedEntityType: true },
+      })
+    : null
+  if (triggerType === "TASK_ADDED" && !task) throw new Error("Task not found while queuing automation.")
+  const taskSnapshot = task ? {
+    ...task,
+    startedAt: task.startedAt?.toISOString() ?? null,
+    dueDate: task.dueDate?.toISOString() ?? null,
+  } : null
   const matches = automations.filter((automation: any) =>
     automation.triggerType === triggerType &&
-    evaluateAutomationConditions(automation, { valueCents: null }, contact, catalog).matches,
+    evaluateAutomationConditions({ ...automation, conditions: automation.conditions.filter((condition: any) => condition.source !== "TASK_FIELD") }, { valueCents: null }, contact, catalog).matches &&
+    (triggerType !== "TASK_ADDED" || evaluateAutomationTaskConditions(automation, taskSnapshot!).matches),
   )
   if (matches.length === 0) return {
     automationEventId: null,
@@ -484,12 +504,12 @@ async function queueContactSnapshotAutomationEvent(
   const chainId = event.chainId ?? eventId
   const chainDepth = event.chainDepth ?? 0
   const claimedAutomationIds = new Set<string>()
-  if (triggerType === "CONTACT_NOTE_ADDED" && chainDepth <= 20) {
+  if (triggerType !== "CONTACT_CREATED" && chainDepth <= 20) {
     const claimable = matches
       .filter((automation: any) => automation.id !== event.sourceAutomationId)
       .sort((left: any, right: any) => left.id.localeCompare(right.id))
     if (claimable.length > 0) {
-      const ownedClaims = await prismaTx.automationNoteChainClaim.createManyAndReturn({
+      const ownedClaims = await prismaTx.automationTriggerChainClaim.createManyAndReturn({
         data: claimable.map((automation: any) => ({
           tenantId: event.tenantId,
           chainId,
@@ -515,17 +535,17 @@ async function queueContactSnapshotAutomationEvent(
     sourceStageId: null,
     targetStageId: null,
     targetResult: null,
-    decision: triggerType === "CONTACT_NOTE_ADDED" && !claimedAutomationIds.has(automation.id)
+    decision: triggerType !== "CONTACT_CREATED" && !claimedAutomationIds.has(automation.id)
       ? "SKIP_TRIGGER" as const
       : "RUN" as const,
-    decisionDetails: triggerType === "CONTACT_NOTE_ADDED"
+    decisionDetails: triggerType !== "CONTACT_CREATED"
       ? chainDepth > 20
-        ? "Skipped: the note automation chain reached its maximum depth. The note was saved."
+        ? `Skipped: the automation chain reached its maximum depth. The ${triggerType === "TASK_ADDED" ? "task" : "note"} was saved.`
         : automation.id === event.sourceAutomationId
-          ? "Skipped: this automation created the note and cannot restart itself."
+          ? `Skipped: this automation created the ${triggerType === "TASK_ADDED" ? "task" : "note"} and cannot restart itself.`
           : claimedAutomationIds.has(automation.id)
-            ? "A note was added and the contact matched the filters."
-            : "Skipped: this automation already ran for this note chain."
+            ? `${triggerType === "TASK_ADDED" ? "A task" : "A note"} was added and the filters matched.`
+            : "Skipped: this automation already ran for this automation chain."
       : "The contact matched the creation filters.",
     actionSnapshot: automation.actions.map(automationActionSnapshot),
     attemptId: randomUUID(),
@@ -538,6 +558,8 @@ async function queueContactSnapshotAutomationEvent(
     contactName,
     opportunityId: null,
     opportunitySnapshotId: null,
+    taskId: taskSnapshot?.id ?? null,
+    taskSnapshot: taskSnapshot ?? undefined,
     actorUserId: event.actorUserId,
     actorName: event.actorUserId ? catalog.userMap.get(event.actorUserId) ?? null : null,
     triggerType,
@@ -598,6 +620,10 @@ export function queueContactCreatedAutomationEvent(prismaTx: any, event: Contact
 
 export function queueContactNoteAddedAutomationEvent(prismaTx: any, event: ContactCreatedAutomationEvent): Promise<QueuedAutomationResult> {
   return queueContactSnapshotAutomationEvent(prismaTx, event, "CONTACT_NOTE_ADDED")
+}
+
+export function queueTaskAddedAutomationEvent(prismaTx: any, event: TaskAddedAutomationEvent): Promise<QueuedAutomationResult> {
+  return queueContactSnapshotAutomationEvent(prismaTx, { ...event, causationKey: event.causationKey ?? `task:${event.taskId}:added` }, "TASK_ADDED")
 }
 
 async function createSideEffects(prismaTx: any, params: {

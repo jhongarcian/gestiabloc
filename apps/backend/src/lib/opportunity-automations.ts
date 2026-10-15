@@ -78,6 +78,7 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "CONTACT_CHANGED",
   "CONTACT_TAG",
   "CONTACT_NOTE_ADDED",
+  "TASK_ADDED",
   "OPPORTUNITY_CREATED",
   "OPPORTUNITY_STAGE_CHANGED",
   "OPPORTUNITY_CHANGED",
@@ -261,6 +262,13 @@ const customFieldConditionSchema = z.object({
   compareValue: z.unknown().nullable().optional(),
 })
 
+const taskFieldConditionSchema = z.object({
+  source: z.literal("TASK_FIELD"),
+  fieldKey: z.enum(["name", "description", "statusConfigId", "assignedToUserId", "startedAt", "dueDate", "priority", "linkedEntityName", "linkedEntityType"]),
+  operator: operatorSchema,
+  compareValue: z.unknown().nullable().optional(),
+}).strict()
+
 const contactAssigneeConditionSchema = z.object({
   source: z.literal("CONTACT_ASSIGNEE"),
   operator: operatorSchema,
@@ -323,6 +331,7 @@ export const AutomationCustomFieldUpdatesSchema = z
 
 export const AutomationConditionInputSchema = z.discriminatedUnion("source", [
   contactFieldConditionSchema,
+  taskFieldConditionSchema,
   opportunityValueConditionSchema,
   contactStatusConditionSchema,
   customFieldConditionSchema,
@@ -674,6 +683,7 @@ export const AutomationUpsertSchema = z
       z.object({ type: z.literal("CONTACT_CHANGED"), changes: z.array(AutomationContactChangeRuleSchema).min(1).max(20) }).strict(),
       z.object({ type: z.literal("CONTACT_TAG"), tagId: idSchema, change: z.enum(["ADDED", "REMOVED"]) }).strict(),
       z.object({ type: z.literal("CONTACT_NOTE_ADDED") }).strict(),
+      z.object({ type: z.literal("TASK_ADDED") }).strict(),
       z.object({
         type: z.literal("OPPORTUNITY_CREATED"),
         pipelineId: idSchema,
@@ -836,6 +846,18 @@ const ARRAY_OPERATORS = new Set<AutomationOperator>([
   "IS_EMPTY",
   "IS_NOT_EMPTY",
 ])
+
+const TASK_FILTER_FIELDS: Record<string, { label: string; valueType: ValueType; operators: ReadonlySet<AutomationOperator>; options?: string[]; required?: boolean }> = {
+  name: { label: "Task name", valueType: "string", operators: STRING_OPERATORS, required: true },
+  description: { label: "Task description", valueType: "string", operators: STRING_OPERATORS },
+  statusConfigId: { label: "Task status", valueType: "string", operators: new Set<AutomationOperator>(["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]) },
+  assignedToUserId: { label: "Task assignee", valueType: "stringArray", operators: new Set<AutomationOperator>(["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"]) },
+  startedAt: { label: "Task start date", valueType: "date", operators: new Set([...NUMBER_OPERATORS].filter((operator) => !EMPTY_OPERATORS.has(operator))) },
+  dueDate: { label: "Task due date", valueType: "date", operators: NUMBER_OPERATORS },
+  priority: { label: "Task priority", valueType: "string", operators: new Set<AutomationOperator>(["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]), options: ["HIGH", "MEDIUM", "LOW"] },
+  linkedEntityName: { label: "Linked service or product", valueType: "string", operators: STRING_OPERATORS },
+  linkedEntityType: { label: "Linked item type", valueType: "string", operators: new Set<AutomationOperator>(["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]), options: ["SERVICE", "PRODUCT"] },
+}
 const BOOLEAN_OPERATORS = new Set<AutomationOperator>([
   "IS_TRUE",
   "IS_FALSE",
@@ -1313,9 +1335,8 @@ export async function validateAutomationConfiguration(
   input: AutomationInput,
   options: { sourceAutomationId?: string | null } = {},
 ) {
-  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED"
-  const triggerPipelineId = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED"
-    ? null : input.trigger.pipelineId
+  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED"
+  const triggerPipelineId = "pipelineId" in input.trigger ? input.trigger.pipelineId : null
   const [pipelines, fields, statuses, taskStatuses, memberships, tags, services, publishedAutomations] = await Promise.all([
     prismaClient.opportunityPipeline.findMany
       ? prismaClient.opportunityPipeline.findMany({
@@ -1474,6 +1495,48 @@ export async function validateAutomationConfiguration(
   const conditions = input.conditions.map((condition, index) => {
     if (input.trigger.type === "CONTACT_NOTE_ADDED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
       throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Note added filters can use contact fields, custom fields, or tags.")
+    }
+    if (input.trigger.type === "TASK_ADDED" && !["TASK_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Task added filters can use task details, contact fields, custom fields, or tags.")
+    }
+    if (condition.source === "TASK_FIELD") {
+      if (input.trigger.type !== "TASK_ADDED") {
+        throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Task filters are only available for Task added.")
+      }
+      const field = TASK_FILTER_FIELDS[condition.fieldKey]
+      if (!field || !field.operators.has(condition.operator) || (field.required && EMPTY_OPERATORS.has(condition.operator))) {
+        throw new AutomationConfigurationError("INVALID_TASK_FILTER", "Select an available task field and operator.")
+      }
+      let compareValue = normalizeCompareValue(condition.operator, condition.compareValue, field.valueType)
+      if (!EMPTY_OPERATORS.has(condition.operator)) {
+        if (condition.fieldKey === "statusConfigId" && !activeTaskStatusIds.has(String(compareValue))) {
+          throw new AutomationConfigurationError("INVALID_TASK_FILTER", "Select an active task status.")
+        }
+        if (condition.fieldKey === "assignedToUserId" && (!(compareValue instanceof Array) || compareValue.some((id) => !activeUserIds.has(id)))) {
+          throw new AutomationConfigurationError("INVALID_TASK_FILTER", "Select active task assignees.")
+        }
+        if (field.options && !field.options.includes(String(compareValue))) {
+          throw new AutomationConfigurationError("INVALID_TASK_FILTER", `Select an available ${field.label.toLowerCase()}.`)
+        }
+        if (field.valueType === "date") {
+          const canonicalDate = (value: unknown) => {
+            if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) || Number.isNaN(Date.parse(value))) {
+              throw new AutomationConfigurationError("INVALID_TASK_FILTER", "Enter a task date and time with a timezone.")
+            }
+            return new Date(value).toISOString()
+          }
+          if (condition.operator === "BETWEEN") {
+            const range = compareValue as { min: unknown; max: unknown }
+            const min = canonicalDate(range.min)
+            const max = canonicalDate(range.max)
+            if (min > max) throw new AutomationConfigurationError("INVALID_TASK_FILTER", "The task date range must start before it ends.")
+            compareValue = { min, max }
+          } else {
+            compareValue = canonicalDate(compareValue)
+          }
+        }
+      }
+      return { tenantId, source: condition.source, fieldKey: condition.fieldKey, operator: condition.operator, compareValue, sortOrder: (index + 1) * 10 }
     }
     if (condition.source === "CONTACT_FIELD") {
       const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === condition.fieldKey)
@@ -2569,8 +2632,7 @@ export async function validateAutomationConfiguration(
     name: input.name,
     isEnabled: input.isEnabled,
     triggerType: input.trigger.type === "OPPORTUNITY_STAGE_CHANGED" ? "OPPORTUNITY_CHANGED" as const : input.trigger.type,
-    pipelineId: input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED"
-      ? null : input.trigger.pipelineId,
+    pipelineId: "pipelineId" in input.trigger ? input.trigger.pipelineId : null,
     sourceStageId: null,
     targetStageId: configuredStageId,
     targetResult:
@@ -2586,7 +2648,7 @@ export async function validateAutomationConfiguration(
 export type OpportunityAutomationEvent = {
   tenantId: string
   actorUserId: string | null
-  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED">
+  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED">
   opportunityId: string
   contactId: string
   pipelineId: string
@@ -2788,6 +2850,25 @@ export function evaluateAutomationConditions(
     }
   }
 
+  return { matches: failures.length === 0, failures }
+}
+
+export function evaluateAutomationTaskConditions(automation: any, task: Record<string, unknown>) {
+  const failures: string[] = []
+  for (const condition of automation.conditions) {
+    if (condition.source !== "TASK_FIELD") continue
+    const field = TASK_FILTER_FIELDS[condition.fieldKey]
+    if (!field) {
+      failures.push("Task field is unavailable.")
+      continue
+    }
+    let currentValue = task[condition.fieldKey]
+    if (condition.fieldKey === "assignedToUserId") currentValue = currentValue ? [currentValue] : []
+    if (field.valueType === "date" && currentValue instanceof Date) currentValue = currentValue.toISOString()
+    if (!evaluateAutomationOperator(condition.operator, currentValue, condition.compareValue, field.valueType)) {
+      failures.push(`${field.label} did not match the task filter.`)
+    }
+  }
   return { matches: failures.length === 0, failures }
 }
 
@@ -4006,6 +4087,21 @@ async function applyAutomationActionInner(
         })
         notificationIds.push(notification.id)
       }
+
+      const { queueTaskAddedAutomationEvent } = await import("./automation-event-queue.js")
+      await queueTaskAddedAutomationEvent(prismaTx, {
+        tenantId,
+        contactId,
+        taskId: task.id,
+        actorUserId: actorUserId ?? null,
+        chainId: eventContext.chainId,
+        parentEventId: eventContext.eventId,
+        chainDepth: (eventContext.chainDepth ?? 0) + 1,
+        sourceAutomationId: automationId,
+        sourceAutomationName: automationName,
+        sourceNodeKey: action.nodeKey,
+        causationKey: runId ? `automation-run:${runId}:task-added:${action.nodeKey}` : `task:${task.id}:added`,
+      })
 
       const assignee = assignedToUserId
         ? catalog.userMap.get(assignedToUserId) ?? "an active teammate"

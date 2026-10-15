@@ -916,6 +916,15 @@ async function executeActionNodeInner(params: {
       type: "CREATED",
       title: "Task created by follow-up workflow",
     })
+    const { queueTaskAddedAutomationEvent } = await import("./automation-event-queue.js")
+    await queueTaskAddedAutomationEvent(prismaTx, {
+      tenantId,
+      contactId: contactService.contactId,
+      taskId: task.id,
+      actorUserId,
+      sourceNodeKey: node.id,
+      causationKey: runId ? `follow-up-run:${runId}:task-added:${node.id}` : `task:${task.id}:added`,
+    })
     await createActionExecutionLog({
       prismaTx,
       tenantId,
