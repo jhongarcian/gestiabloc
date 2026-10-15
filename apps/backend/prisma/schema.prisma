@@ -297,6 +297,7 @@ enum AutomationTriggerType {
   CONTACT_CHANGED
   CONTACT_TAG
   CONTACT_NOTE_ADDED
+  TASK_ADDED
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
   OPPORTUNITY_CHANGED
@@ -304,6 +305,7 @@ enum AutomationTriggerType {
 
 enum AutomationConditionSource {
   CONTACT_FIELD
+  TASK_FIELD
   OPPORTUNITY_VALUE
   CONTACT_STATUS
   CONTACT_CUSTOM_FIELD
@@ -435,6 +437,7 @@ enum AutomationNodeEventSource {
   CONTACT_CHANGED
   CONTACT_TAG
   CONTACT_NOTE_ADDED
+  TASK_ADDED
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
   OPPORTUNITY_CHANGED
@@ -703,7 +706,7 @@ model Tenant {
   automationRuns                    AutomationRun[]
   automationEvents                  AutomationEvent[]
   automationDispatches              AutomationDispatch[]
-  automationNoteChainClaims         AutomationNoteChainClaim[]
+  automationTriggerChainClaims      AutomationTriggerChainClaim[]
   automationSideEffects             AutomationSideEffect[]
   contactImports                    ContactImport[]
 
@@ -1761,6 +1764,8 @@ model AutomationEvent {
   contactName           String
   opportunityId         String?
   opportunitySnapshotId String?
+  taskId                String?
+  taskSnapshot          Json?
   actorUserId           String?
   actorName             String?
   triggerType           AutomationTriggerType
@@ -1806,6 +1811,7 @@ model AutomationEvent {
 
   @@unique([tenantId, id])
   @@index([tenantId, contactId, createdAt])
+  @@index([tenantId, taskId])
   @@index([tenantId, chainId, chainDepth])
   @@index([tenantId, status, availableAt, createdAt])
   @@index([status, leaseExpiresAt])
@@ -1848,7 +1854,7 @@ model AutomationDispatch {
   @@index([tenantId, status, createdAt])
 }
 
-model AutomationNoteChainClaim {
+model AutomationTriggerChainClaim {
   tenantId     String
   chainId      String
   automationId String
