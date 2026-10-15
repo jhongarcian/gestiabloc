@@ -2216,6 +2216,12 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
       }),
   ), [automationId, draft.actions, savedWaitNodeKeys, waitNodeCountState, waitNodeCounts])
 
+  const showNoteAddedActionNotice = draft.triggerType === "CONTACT_NOTE_ADDED" && (
+    flattenDraftActions(draft.actions).some((action) => action.type === "ADD_CONTACT_NOTE") ||
+    (selected?.kind === "new-action" && pendingAction?.type === "ADD_CONTACT_NOTE") ||
+    (selected?.kind === "action" && editingAction?.type === "ADD_CONTACT_NOTE")
+  )
+
   const goToPreviewDraft = useMemo(() => {
     if (selected?.kind === "action" && editingAction?.type === "GO_TO") {
       return mutateActionsAtPath(draft, selected.path, (actions) => {
@@ -2685,6 +2691,13 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
           </TabsList>
         </Tabs>
       </div>
+
+      {activeTab === "builder" && showNoteAddedActionNotice ? (
+        <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-5 text-amber-950">
+          <span className="font-semibold">Note added and Add contact note:</span>{" "}
+          A note created here won’t restart this automation. Other Note added automations can respond once to the same sequence.
+        </div>
+      ) : null}
 
       {activeTab === "builder" ? (
         <section className="flex min-h-0 flex-1 gap-3 overflow-hidden">

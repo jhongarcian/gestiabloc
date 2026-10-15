@@ -703,6 +703,7 @@ model Tenant {
   automationRuns                    AutomationRun[]
   automationEvents                  AutomationEvent[]
   automationDispatches              AutomationDispatch[]
+  automationNoteChainClaims         AutomationNoteChainClaim[]
   automationSideEffects             AutomationSideEffect[]
   contactImports                    ContactImport[]
 
@@ -1845,6 +1846,17 @@ model AutomationDispatch {
   @@unique([eventId, automationSnapshotId])
   @@index([tenantId, eventId, automationOrder])
   @@index([tenantId, status, createdAt])
+}
+
+model AutomationNoteChainClaim {
+  tenantId     String
+  chainId      String
+  automationId String
+  createdAt    DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, chainId, automationId])
 }
 
 model AutomationSideEffect {

@@ -68,8 +68,13 @@ describe("queueContactCreatedAutomationEvent", () => {
 })
 
 describe("queueContactNoteAddedAutomationEvent", () => {
-  test("matches contact, custom-field, and tag filters once per added note", async () => {
-    const writes: Record<string, any> = {}
+  const fixture = (automations: any[]) => {
+    const writes = {
+      events: [] as any[],
+      dispatches: [] as any[],
+      logs: [] as any[],
+      claims: new Map<string, any>(),
+    }
     const contact = {
       id: "contact-1",
       firstName: "Mary",
@@ -79,28 +84,32 @@ describe("queueContactNoteAddedAutomationEvent", () => {
       tags: [{ tagId: "tag-new" }],
       customFieldValues: [{ fieldId: "field-source", value: "Referral" }],
     }
-    const filters = [
-      { source: "CONTACT_FIELD", fieldKey: "first_name", operator: "EQUALS", compareValue: "Mary" },
-      { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-source", operator: "EQUALS", compareValue: "Referral" },
-      { source: "CONTACT_TAGS", tagId: "tag-new", operator: "EQUALS", compareValue: null },
-    ]
-    let selectedTrigger: unknown
     const prismaTx = {
       automation: {
-        count: async () => 1,
-        findMany: async ({ where }: any) => {
-          selectedTrigger = where.triggerType
-          return [
-            { id: "match", name: "Follow up", triggerType: "CONTACT_NOTE_ADDED", conditions: filters, actions: [WAIT_ACTION] },
-            { id: "skip", name: "Skip", triggerType: "CONTACT_NOTE_ADDED", conditions: [{ ...filters[0], compareValue: "John" }], actions: [WAIT_ACTION] },
-          ]
+        findMany: async ({ where }: any) => automations.filter((automation) => automation.triggerType === where.triggerType),
+      },
+      automationNoteChainClaim: {
+        createManyAndReturn: async ({ data }: any) => {
+          const owned: Array<{ automationId: string }> = []
+          for (const claim of data) {
+            const key = `${claim.tenantId}:${claim.chainId}:${claim.automationId}`
+            if (writes.claims.has(key)) continue
+            writes.claims.set(key, claim)
+            owned.push({ automationId: claim.automationId })
+          }
+          return owned
         },
       },
       automationEvent: {
-        findUnique: async ({ where }: any) => writes.event?.causationKey === where.causationKey
-          ? { ...writes.event, dispatches: [{ decision: "RUN" }], completedCount: 0 }
-          : null,
-        create: async ({ data }: any) => { writes.event = data; writes.createCount = (writes.createCount ?? 0) + 1; return data },
+        findUnique: async ({ where }: any) => {
+          const existing = writes.events.find((item) => item.causationKey === where.causationKey)
+          return existing ? {
+            ...existing,
+            dispatches: writes.dispatches.filter((dispatch) => dispatch.eventId === existing.id),
+            completedCount: 0,
+          } : null
+        },
+        create: async ({ data }: any) => { writes.events.push(data); return data },
       },
       contact: { findFirst: async () => contact },
       contactCustomField: { findMany: async () => [{ id: "field-source", key: "source", label: "Source", fieldType: "TEXT", isActive: true, isEncrypted: false, isSensitive: false, options: null }] },
@@ -110,30 +119,100 @@ describe("queueContactNoteAddedAutomationEvent", () => {
       tenantTag: { findMany: async () => [{ id: "tag-new", name: "New" }] },
       opportunityPipeline: { findMany: async () => [] },
       tenant: { findUnique: async () => ({ timezone: "America/Chicago" }) },
-      automationDispatch: { createMany: async ({ data }: any) => { writes.dispatches = data } },
-      automationNodeExecution: { createMany: async ({ data }: any) => { writes.logs = data } },
+      automationDispatch: { createMany: async ({ data }: any) => { writes.dispatches.push(...data) } },
+      automationNodeExecution: { createMany: async ({ data }: any) => { writes.logs.push(...data) } },
     }
+    return { prismaTx, contact, writes }
+  }
+
+  const noteAutomation = (id: string, conditions: any[] = []) => ({
+    id,
+    name: id,
+    triggerType: "CONTACT_NOTE_ADDED",
+    conditions,
+    actions: [WAIT_ACTION],
+  })
+
+  test("matches contact, custom-field, and tag filters, with a new chain for each manually added note", async () => {
+    const filters = [
+      { source: "CONTACT_FIELD", fieldKey: "first_name", operator: "EQUALS", compareValue: "Mary" },
+      { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-source", operator: "EQUALS", compareValue: "Referral" },
+      { source: "CONTACT_TAGS", tagId: "tag-new", operator: "EQUALS", compareValue: null },
+    ]
+    const { prismaTx, writes } = fixture([
+      noteAutomation("match", filters),
+      noteAutomation("unfiltered"),
+      noteAutomation("skip", [{ ...filters[0], compareValue: "John" }]),
+    ])
     const event = { tenantId: "tenant-1", contactId: "contact-1", actorUserId: "user-1", causationKey: "contact-note:note-1:added" }
     const first = await queueContactNoteAddedAutomationEvent(prismaTx, event)
-    assert.equal(selectedTrigger, "CONTACT_NOTE_ADDED")
-    assert.equal(first.matchedCount, 1)
-    assert.equal(writes.dispatches.length, 1)
-    assert.equal(writes.event.triggerType, "CONTACT_NOTE_ADDED")
+    assert.equal(first.matchedCount, 2)
+    assert.deepEqual(writes.dispatches.map((dispatch) => dispatch.automationId), ["match", "unfiltered"])
+    assert.equal(writes.events[0].triggerType, "CONTACT_NOTE_ADDED")
     assert.equal(writes.logs[0].eventSource, "CONTACT_NOTE_ADDED")
     const retry = await queueContactNoteAddedAutomationEvent(prismaTx, event)
     assert.equal(retry.automationEventId, first.automationEventId)
-    assert.equal(writes.createCount, 1)
-    const selfTriggered = await queueContactNoteAddedAutomationEvent(prismaTx, {
-      ...event,
-      causationKey: "contact-note:note-2:added",
-      sourceAutomationId: "match",
+    assert.equal(writes.events.length, 1)
+    const second = await queueContactNoteAddedAutomationEvent(prismaTx, { ...event, causationKey: "contact-note:note-2:added" })
+    assert.equal(second.matchedCount, 2)
+    assert.notEqual(second.automationEventId, first.automationEventId)
+    assert.equal(writes.claims.size, 4)
+  })
+
+  test("allows A to start B, then skips both when B adds another note", async () => {
+    const { prismaTx, contact, writes } = fixture([
+      noteAutomation("A"),
+      noteAutomation("B", [{ source: "CONTACT_FIELD", fieldKey: "first_name", operator: "EQUALS", compareValue: "Maria" }]),
+    ])
+    const base = { tenantId: "tenant-1", contactId: "contact-1", actorUserId: null }
+    const root = await queueContactNoteAddedAutomationEvent(prismaTx, { ...base, causationKey: "note-root" })
+    assert.equal(root.matchedCount, 1)
+    contact.firstName = "Maria"
+    const child = await queueContactNoteAddedAutomationEvent(prismaTx, {
+      ...base, chainId: root.automationEventId, parentEventId: root.automationEventId,
+      sourceAutomationId: "A", chainDepth: 1, causationKey: "note-child",
     })
-    assert.equal(selfTriggered.matchedCount, 0)
-    assert.equal(writes.createCount, 1)
-    await assert.rejects(
-      queueContactNoteAddedAutomationEvent(prismaTx, { ...event, chainDepth: 21 }),
-      /maximum automation chain depth/,
-    )
+    assert.equal(child.matchedCount, 1)
+    assert.deepEqual(writes.dispatches.filter((dispatch) => dispatch.eventId === child.automationEventId).map((dispatch) => dispatch.decision), ["SKIP_TRIGGER", "RUN"])
+    const grandchild = await queueContactNoteAddedAutomationEvent(prismaTx, {
+      ...base, chainId: root.automationEventId, parentEventId: child.automationEventId,
+      sourceAutomationId: "B", chainDepth: 2, causationKey: "note-grandchild",
+    })
+    assert.equal(grandchild.matchedCount, 0)
+    const skipped = writes.dispatches.filter((dispatch) => dispatch.eventId === grandchild.automationEventId)
+    assert.deepEqual(skipped.map((dispatch) => dispatch.decision), ["SKIP_TRIGGER", "SKIP_TRIGGER"])
+    assert.match(skipped[0].decisionDetails, /already ran for this note chain/)
+    assert.match(skipped[1].decisionDetails, /created the note/)
+    assert.equal(writes.claims.size, 2)
+    const retry = await queueContactNoteAddedAutomationEvent(prismaTx, {
+      ...base, chainId: root.automationEventId, sourceAutomationId: "B", causationKey: "note-grandchild",
+    })
+    assert.equal(retry.automationEventId, grandchild.automationEventId)
+    assert.equal(writes.events.length, 3)
+  })
+
+  test("claims concurrent child notes once per chain", async () => {
+    const { prismaTx, writes } = fixture([noteAutomation("B")])
+    const base = { tenantId: "tenant-1", contactId: "contact-1", actorUserId: null, chainId: "shared-chain", sourceAutomationId: "A" }
+    const results = await Promise.all([
+      queueContactNoteAddedAutomationEvent(prismaTx, { ...base, causationKey: "child-1" }),
+      queueContactNoteAddedAutomationEvent(prismaTx, { ...base, causationKey: "child-2" }),
+    ])
+    assert.deepEqual(results.map((result) => result.matchedCount).sort(), [0, 1])
+    assert.equal(writes.claims.size, 1)
+    assert.equal(writes.dispatches.filter((dispatch) => dispatch.decision === "RUN").length, 1)
+  })
+
+  test("suppresses an over-depth note event without failing the note operation", async () => {
+    const { prismaTx, writes } = fixture([noteAutomation("A")])
+    const result = await queueContactNoteAddedAutomationEvent(prismaTx, {
+      tenantId: "tenant-1", contactId: "contact-1", actorUserId: null,
+      chainId: "deep-chain", chainDepth: 21, causationKey: "deep-note",
+    })
+    assert.equal(result.matchedCount, 0)
+    assert.equal(writes.claims.size, 0)
+    assert.equal(writes.dispatches[0].decision, "SKIP_TRIGGER")
+    assert.match(writes.dispatches[0].decisionDetails, /maximum depth.*note was saved/i)
   })
 })
 

@@ -422,9 +422,6 @@ async function queueContactSnapshotAutomationEvent(
   event: ContactCreatedAutomationEvent,
   triggerType: "CONTACT_CREATED" | "CONTACT_NOTE_ADDED",
 ): Promise<QueuedAutomationResult> {
-  if (triggerType === "CONTACT_NOTE_ADDED" && (event.chainDepth ?? 0) > 20) {
-    throw new Error("This note update exceeded the maximum automation chain depth.")
-  }
   if (triggerType === "CONTACT_NOTE_ADDED" && typeof prismaTx.automation?.findMany !== "function") return {
     automationEventId: null,
     automationStatus: "NOT_APPLICABLE",
@@ -433,7 +430,7 @@ async function queueContactSnapshotAutomationEvent(
     executedCount: 0,
     contactDeleted: false,
   }
-  if (event.causationKey) {
+  if (event.causationKey && (triggerType === "CONTACT_CREATED" || typeof prismaTx.automationEvent?.findUnique === "function")) {
     const existing = await prismaTx.automationEvent.findUnique({
       where: { causationKey: event.causationKey },
       include: { dispatches: { select: { decision: true } } },
@@ -472,7 +469,7 @@ async function queueContactSnapshotAutomationEvent(
   ])
   if (!contact) throw new Error("Contact not found while queuing automation.")
   const matches = automations.filter((automation: any) =>
-    !(triggerType === "CONTACT_NOTE_ADDED" && automation.id === event.sourceAutomationId) &&
+    automation.triggerType === triggerType &&
     evaluateAutomationConditions(automation, { valueCents: null }, contact, catalog).matches,
   )
   if (matches.length === 0) return {
@@ -484,6 +481,26 @@ async function queueContactSnapshotAutomationEvent(
     contactDeleted: false,
   }
   const eventId = randomUUID()
+  const chainId = event.chainId ?? eventId
+  const chainDepth = event.chainDepth ?? 0
+  const claimedAutomationIds = new Set<string>()
+  if (triggerType === "CONTACT_NOTE_ADDED" && chainDepth <= 20) {
+    const claimable = matches
+      .filter((automation: any) => automation.id !== event.sourceAutomationId)
+      .sort((left: any, right: any) => left.id.localeCompare(right.id))
+    if (claimable.length > 0) {
+      const ownedClaims = await prismaTx.automationNoteChainClaim.createManyAndReturn({
+        data: claimable.map((automation: any) => ({
+          tenantId: event.tenantId,
+          chainId,
+          automationId: automation.id,
+        })),
+        skipDuplicates: true,
+        select: { automationId: true },
+      })
+      for (const claim of ownedClaims) claimedAutomationIds.add(claim.automationId)
+    }
+  }
   const occurredAt = new Date()
   const contactName = getContactDisplayName(contact)
   const dispatches = matches.map((automation: any, automationOrder: number) => ({
@@ -498,9 +515,17 @@ async function queueContactSnapshotAutomationEvent(
     sourceStageId: null,
     targetStageId: null,
     targetResult: null,
-    decision: "RUN" as const,
+    decision: triggerType === "CONTACT_NOTE_ADDED" && !claimedAutomationIds.has(automation.id)
+      ? "SKIP_TRIGGER" as const
+      : "RUN" as const,
     decisionDetails: triggerType === "CONTACT_NOTE_ADDED"
-      ? "A note was added and the contact matched the filters."
+      ? chainDepth > 20
+        ? "Skipped: the note automation chain reached its maximum depth. The note was saved."
+        : automation.id === event.sourceAutomationId
+          ? "Skipped: this automation created the note and cannot restart itself."
+          : claimedAutomationIds.has(automation.id)
+            ? "A note was added and the contact matched the filters."
+            : "Skipped: this automation already ran for this note chain."
       : "The contact matched the creation filters.",
     actionSnapshot: automation.actions.map(automationActionSnapshot),
     attemptId: randomUUID(),
@@ -525,7 +550,7 @@ async function queueContactSnapshotAutomationEvent(
     sourceResult: null,
     targetResult: null,
     valueCents: null,
-    chainId: event.chainId ?? eventId,
+    chainId,
     parentEventId: event.parentEventId ?? null,
     chainDepth: event.chainDepth ?? 0,
     transitionHistory: [],
@@ -561,7 +586,7 @@ async function queueContactSnapshotAutomationEvent(
     automationEventId: eventId,
     automationStatus: "QUEUED",
     queuedAutomationCount: dispatches.length,
-    matchedCount: dispatches.length,
+    matchedCount: dispatches.filter((dispatch: any) => dispatch.decision === "RUN").length,
     executedCount: 0,
     contactDeleted: false,
   }
