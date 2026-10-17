@@ -1,0 +1,2 @@
+ALTER TYPE "AutomationTriggerType" ADD VALUE 'TASK_COMPLETED';
+ALTER TYPE "AutomationNodeEventSource" ADD VALUE 'TASK_COMPLETED';

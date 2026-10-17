@@ -7,6 +7,7 @@ import {
 export {
   getTaskDueDayOffset,
   getTaskPriorityFromDueDate,
+  hasTaskEnteredCompletedStatus,
   isCompletedStatusName,
   isSameLocalDay,
   type TaskPriority,

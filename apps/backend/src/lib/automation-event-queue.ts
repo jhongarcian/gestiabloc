@@ -271,6 +271,7 @@ export type ContactCreatedAutomationEvent = {
 }
 
 export type TaskAddedAutomationEvent = ContactCreatedAutomationEvent & { taskId: string }
+export type TaskCompletedAutomationEvent = ContactCreatedAutomationEvent & { taskId: string; causationKey: string; completedAt: Date }
 
 export async function loadContactChangeSnapshot(prismaTx: any, tenantId: string, contactId: string): Promise<ContactChangeSnapshot | null> {
   if (typeof prismaTx.$queryRawUnsafe === "function") {
@@ -422,8 +423,8 @@ export async function queueContactChangedAutomationEvent(
 
 async function queueContactSnapshotAutomationEvent(
   prismaTx: any,
-  event: ContactCreatedAutomationEvent & { taskId?: string },
-  triggerType: "CONTACT_CREATED" | "CONTACT_NOTE_ADDED" | "TASK_ADDED",
+  event: ContactCreatedAutomationEvent & { taskId?: string; completedAt?: Date },
+  triggerType: "CONTACT_CREATED" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED",
 ): Promise<QueuedAutomationResult> {
   if (triggerType !== "CONTACT_CREATED" && typeof prismaTx.automation?.findMany !== "function") return {
     automationEventId: null,
@@ -433,7 +434,8 @@ async function queueContactSnapshotAutomationEvent(
     executedCount: 0,
     contactDeleted: false,
   }
-  if (triggerType === "TASK_ADDED" && event.taskId && typeof prismaTx.$queryRawUnsafe === "function") {
+  const isTaskEvent = triggerType === "TASK_ADDED" || triggerType === "TASK_COMPLETED"
+  if (isTaskEvent && event.taskId && typeof prismaTx.$queryRawUnsafe === "function") {
     await prismaTx.$queryRawUnsafe('SELECT id FROM "Task" WHERE "tenantId" = $1 AND id = $2 FOR UPDATE', event.tenantId, event.taskId)
   }
   if (event.causationKey && (triggerType === "CONTACT_CREATED" || typeof prismaTx.automationEvent?.findUnique === "function")) {
@@ -475,17 +477,18 @@ async function queueContactSnapshotAutomationEvent(
     getAutomationRuntimeCatalog(prismaTx, event.tenantId),
   ])
   if (!contact) throw new Error("Contact not found while queuing automation.")
-  const task = triggerType === "TASK_ADDED" && event.taskId
+  const task = isTaskEvent && event.taskId
     ? await prismaTx.task.findFirst({
         where: { tenantId: event.tenantId, id: event.taskId, contactId: event.contactId },
         select: { id: true, name: true, description: true, statusConfigId: true, assignedToUserId: true, startedAt: true, dueDate: true, priority: true, linkedEntityName: true, linkedEntityType: true },
       })
     : null
-  if (triggerType === "TASK_ADDED" && !task) throw new Error("Task not found while queuing automation.")
+  if (isTaskEvent && !task) throw new Error("Task not found while queuing automation.")
   const taskSnapshot = task ? {
     ...task,
     startedAt: task.startedAt?.toISOString() ?? null,
     dueDate: task.dueDate?.toISOString() ?? null,
+    ...(triggerType === "TASK_COMPLETED" ? { completedAt: event.completedAt?.toISOString() ?? new Date().toISOString() } : {}),
   } : null
   const matches = automations.filter((automation: any) =>
     automation.triggerType === triggerType &&
@@ -540,11 +543,11 @@ async function queueContactSnapshotAutomationEvent(
       : "RUN" as const,
     decisionDetails: triggerType !== "CONTACT_CREATED"
       ? chainDepth > 20
-        ? `Skipped: the automation chain reached its maximum depth. The ${triggerType === "TASK_ADDED" ? "task" : "note"} was saved.`
+        ? `Skipped: the automation chain reached its maximum depth. The ${triggerType === "CONTACT_NOTE_ADDED" ? "note was saved" : triggerType === "TASK_ADDED" ? "task was saved" : "task remains completed"}.`
         : automation.id === event.sourceAutomationId
-          ? `Skipped: this automation created the ${triggerType === "TASK_ADDED" ? "task" : "note"} and cannot restart itself.`
+          ? `Skipped: this automation ${triggerType === "TASK_COMPLETED" ? "completed the task" : triggerType === "TASK_ADDED" ? "created the task" : "created the note"} and cannot restart itself.`
           : claimedAutomationIds.has(automation.id)
-            ? `${triggerType === "TASK_ADDED" ? "A task" : "A note"} was added and the filters matched.`
+            ? `${triggerType === "TASK_COMPLETED" ? "A task was completed" : triggerType === "TASK_ADDED" ? "A task was added" : "A note was added"} and the filters matched.`
             : "Skipped: this automation already ran for this automation chain."
       : "The contact matched the creation filters.",
     actionSnapshot: automation.actions.map(automationActionSnapshot),
@@ -624,6 +627,10 @@ export function queueContactNoteAddedAutomationEvent(prismaTx: any, event: Conta
 
 export function queueTaskAddedAutomationEvent(prismaTx: any, event: TaskAddedAutomationEvent): Promise<QueuedAutomationResult> {
   return queueContactSnapshotAutomationEvent(prismaTx, { ...event, causationKey: event.causationKey ?? `task:${event.taskId}:added` }, "TASK_ADDED")
+}
+
+export function queueTaskCompletedAutomationEvent(prismaTx: any, event: TaskCompletedAutomationEvent): Promise<QueuedAutomationResult> {
+  return queueContactSnapshotAutomationEvent(prismaTx, event, "TASK_COMPLETED")
 }
 
 async function createSideEffects(prismaTx: any, params: {

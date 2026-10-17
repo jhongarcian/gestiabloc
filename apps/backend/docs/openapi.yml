@@ -6729,6 +6729,14 @@ components:
               enum: [TASK_ADDED]
         - type: object
           additionalProperties: false
+          required: [type]
+          description: Runs when an existing contact-linked task changes from a non-completed status to Completed. Optional contact field, active non-sensitive custom field, and tag filters use the contact state at completion. Each Task completed automation can enroll once per chain.
+          properties:
+            type:
+              type: string
+              enum: [TASK_COMPLETED]
+        - type: object
+          additionalProperties: false
           required: [type, tagId, change]
           description: Runs when the selected tag is added to or removed from a contact. Optional contact filters evaluate the resulting contact state.
           properties:

@@ -2,12 +2,13 @@ import { type Response, Router } from "express"
 import { z } from "zod"
 
 import { prisma } from "../lib/prisma.js"
-import { queueTaskAddedAutomationEvent } from "../lib/automation-event-queue.js"
+import { queueTaskAddedAutomationEvent, queueTaskCompletedAutomationEvent } from "../lib/automation-event-queue.js"
 import { kickAutomationEventWorker } from "../lib/automation-event-worker.js"
 import {
   getTaskDueDayOffset,
   getTaskPriorityFromDueDate,
   getTenantTimezone,
+  hasTaskEnteredCompletedStatus,
   isSameLocalDay,
   isCompletedStatusName,
 } from "../lib/task-priority.js"
@@ -221,22 +222,6 @@ async function getUserDisplayName(userId: string | null | undefined) {
   })
 
   return user?.name?.trim() || user?.email || "Unknown user"
-}
-
-async function getStatusDisplayName(tenantId: string, statusConfigId: string | null | undefined) {
-  if (!statusConfigId) return "No status"
-
-  const status = await prismaWithTasks.taskStatusConfig.findFirst({
-    where: {
-      tenantId,
-      id: statusConfigId,
-    },
-    select: {
-      name: true,
-    },
-  })
-
-  return status?.name ?? "No status"
 }
 
 async function resolveTaskMutationPayload(
@@ -961,24 +946,30 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
     const [
       previousAssigneeLabel,
       nextAssigneeLabel,
-      previousStatusLabel,
-      nextStatusLabel,
     ] = await Promise.all([
       getUserDisplayName(existingTask.assignedToUserId),
       getUserDisplayName(resolvedPayload.assignedToUserId),
-      getStatusDisplayName(tenantId, existingTask.statusConfigId),
-      getStatusDisplayName(tenantId, resolvedPayload.statusConfigId),
     ])
 
-    const task = await prisma.$transaction(async (tx) => {
+    const { task, automation } = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any
+      await prismaTx.$queryRawUnsafe('SELECT id FROM "Task" WHERE "tenantId" = $1 AND id = $2 FOR UPDATE', tenantId, existingTask.id)
+      const lockedTask = await prismaTx.task.findFirst({
+        where: { tenantId, id: existingTask.id },
+        select: { statusConfigId: true, contactId: true, statusConfig: { select: { name: true } } },
+      })
+      if (!lockedTask) throw new Error("Task no longer exists.")
+      const nextStatusConfigId = payload.statusConfigId === undefined ? lockedTask.statusConfigId : resolvedPayload.statusConfigId
+      const nextStatusName = payload.statusConfigId === undefined ? lockedTask.statusConfig?.name ?? null : resolvedPayload.statusName
+      const nextContactId = payload.contactId === undefined ? lockedTask.contactId : resolvedPayload.contactId
+      const enteredCompleted = lockedTask.statusConfigId !== nextStatusConfigId && hasTaskEnteredCompletedStatus(lockedTask.statusConfig?.name, nextStatusName)
 
       const updatedTask = await prismaTx.task.update({
         where: { id: existingTask.id },
         data: {
           name: sanitizeSingleLineText(mergedPayload.name),
           description: mergedPayload.description ? sanitizeMultilineText(mergedPayload.description) : null,
-          contactId: resolvedPayload.contactId,
+          contactId: nextContactId,
           contactServiceId: resolvedPayload.contactServiceId,
           followUpTemplateId: resolvedPayload.followUpTemplateId,
           contactServiceFollowUpStepId: resolvedPayload.contactServiceFollowUpStepId,
@@ -987,12 +978,12 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
               ? sanitizeSingleLineText(resolvedPayload.linkedEntityName)
               : null,
           linkedEntityType: resolvedPayload.linkedEntityType,
-          statusConfigId: resolvedPayload.statusConfigId,
+          statusConfigId: nextStatusConfigId,
           assignedToUserId: resolvedPayload.assignedToUserId,
           priority: getTaskPriorityFromDueDate(
             resolvedPayload.dueDate,
             tenantTimezone,
-            isCompletedStatusName(resolvedPayload.statusName),
+            isCompletedStatusName(nextStatusName),
           ),
           dueDate: resolvedPayload.dueDate,
           startedAt: resolvedPayload.startedAt,
@@ -1000,6 +991,7 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
         select: {
           id: true,
           name: true,
+          contactId: true,
           assignedToUserId: true,
         },
       })
@@ -1025,15 +1017,16 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
         })
       }
 
-      if (existingTask.statusConfigId !== resolvedPayload.statusConfigId) {
-        await createTaskActivity({
+      let statusActivity: { id: string; createdAt: Date } | null = null
+      if (lockedTask.statusConfigId !== nextStatusConfigId) {
+        statusActivity = await createTaskActivity({
           prismaClient: prismaTx,
           tenantId,
           taskId: existingTask.id,
           actorUserId: authed.user.id,
           type: "STATUS_CHANGED",
           title: "Status changed",
-          details: `${previousStatusLabel} -> ${nextStatusLabel}`,
+          details: `${lockedTask.statusConfig?.name ?? "No status"} -> ${nextStatusName ?? "No status"}`,
         })
       }
 
@@ -1118,8 +1111,20 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
         }
       }
 
-      return updatedTask
+      const automation = statusActivity && enteredCompleted && updatedTask.contactId
+        ? await queueTaskCompletedAutomationEvent(prismaTx, {
+            tenantId,
+            contactId: updatedTask.contactId,
+            taskId: updatedTask.id,
+            actorUserId: authed.user.id,
+            causationKey: `task-status-activity:${statusActivity.id}:completed`,
+            completedAt: statusActivity.createdAt,
+          })
+        : null
+      return { task: updatedTask, automation }
     })
+
+    if (automation?.automationEventId) kickAutomationEventWorker()
 
     const assigneeChanged = existingTask.assignedToUserId !== task.assignedToUserId
     if (assigneeChanged && task.assignedToUserId) {

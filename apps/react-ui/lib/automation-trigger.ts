@@ -17,6 +17,7 @@ type SavedAutomationTrigger =
   | { type: "CONTACT_TAG"; tagId: string; change: "ADDED" | "REMOVED" }
   | { type: "CONTACT_NOTE_ADDED" }
   | { type: "TASK_ADDED" }
+  | { type: "TASK_COMPLETED" }
   | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
   | { type: "OPPORTUNITY_STAGE_CHANGED"; pipelineId: string; targetStageId: string }
   | {
@@ -32,6 +33,7 @@ export function isAutomationTriggerReady(draft: AutomationTriggerDraft | null) {
   if (draft.triggerType === "CONTACT_CREATED") return true
   if (draft.triggerType === "CONTACT_NOTE_ADDED") return true
   if (draft.triggerType === "TASK_ADDED") return true
+  if (draft.triggerType === "TASK_COMPLETED") return true
   if (draft.triggerType === "CONTACT_TAG") {
     return draft.changes?.length === 1 && draft.changes[0]?.source === "CONTACT_TAGS"
       && Boolean(draft.changes[0].tagId) && ["ADDED", "REMOVED"].includes(draft.changes[0].operator)
@@ -61,6 +63,7 @@ export function serializeAutomationTrigger(draft: AutomationTriggerDraft) {
   if (draft.triggerType === "CONTACT_CREATED") return { type: "CONTACT_CREATED" as const }
   if (draft.triggerType === "CONTACT_NOTE_ADDED") return { type: "CONTACT_NOTE_ADDED" as const }
   if (draft.triggerType === "TASK_ADDED") return { type: "TASK_ADDED" as const }
+  if (draft.triggerType === "TASK_COMPLETED") return { type: "TASK_COMPLETED" as const }
   if (draft.triggerType === "CONTACT_TAG") {
     const rule = draft.changes?.[0]
     if (draft.changes?.length !== 1 || rule?.source !== "CONTACT_TAGS" || !rule.tagId || !["ADDED", "REMOVED"].includes(rule.operator)) {
@@ -97,6 +100,9 @@ export function hydrateAutomationTrigger(trigger: SavedAutomationTrigger): Autom
   }
   if (trigger.type === "TASK_ADDED") {
     return { triggerType: "TASK_ADDED", pipelineId: "", changeType: "", targetStageId: "", changes: [] }
+  }
+  if (trigger.type === "TASK_COMPLETED") {
+    return { triggerType: "TASK_COMPLETED", pipelineId: "", changeType: "", targetStageId: "", changes: [] }
   }
   if (trigger.type === "CONTACT_CHANGED") {
     return { triggerType: "CONTACT_CHANGED", pipelineId: "", changeType: "", targetStageId: "", changes: trigger.changes }

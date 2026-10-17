@@ -79,6 +79,7 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "CONTACT_TAG",
   "CONTACT_NOTE_ADDED",
   "TASK_ADDED",
+  "TASK_COMPLETED",
   "OPPORTUNITY_CREATED",
   "OPPORTUNITY_STAGE_CHANGED",
   "OPPORTUNITY_CHANGED",
@@ -684,6 +685,7 @@ export const AutomationUpsertSchema = z
       z.object({ type: z.literal("CONTACT_TAG"), tagId: idSchema, change: z.enum(["ADDED", "REMOVED"]) }).strict(),
       z.object({ type: z.literal("CONTACT_NOTE_ADDED") }).strict(),
       z.object({ type: z.literal("TASK_ADDED") }).strict(),
+      z.object({ type: z.literal("TASK_COMPLETED") }).strict(),
       z.object({
         type: z.literal("OPPORTUNITY_CREATED"),
         pipelineId: idSchema,
@@ -1335,7 +1337,7 @@ export async function validateAutomationConfiguration(
   input: AutomationInput,
   options: { sourceAutomationId?: string | null } = {},
 ) {
-  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED"
+  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED" || input.trigger.type === "TASK_COMPLETED"
   const triggerPipelineId = "pipelineId" in input.trigger ? input.trigger.pipelineId : null
   const [pipelines, fields, statuses, taskStatuses, memberships, tags, services, publishedAutomations] = await Promise.all([
     prismaClient.opportunityPipeline.findMany
@@ -1495,6 +1497,9 @@ export async function validateAutomationConfiguration(
   const conditions = input.conditions.map((condition, index) => {
     if (input.trigger.type === "CONTACT_NOTE_ADDED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
       throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Note added filters can use contact fields, custom fields, or tags.")
+    }
+    if (input.trigger.type === "TASK_COMPLETED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Task completed filters can use contact fields, custom fields, or tags.")
     }
     if (input.trigger.type === "TASK_ADDED" && !["TASK_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
       throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Task added filters can use task details, contact fields, custom fields, or tags.")
@@ -2648,7 +2653,7 @@ export async function validateAutomationConfiguration(
 export type OpportunityAutomationEvent = {
   tenantId: string
   actorUserId: string | null
-  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED">
+  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED">
   opportunityId: string
   contactId: string
   pipelineId: string

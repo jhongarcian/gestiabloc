@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
-import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent, queueTaskAddedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
+import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent, queueTaskAddedAutomationEvent, queueTaskCompletedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
 
 const WAIT_ACTION = {
   id: "action-1",
@@ -67,7 +67,7 @@ describe("queueContactCreatedAutomationEvent", () => {
   })
 })
 
-describe("note and task creation automation events", () => {
+describe("note and task automation events", () => {
   const fixture = (automations: any[]) => {
     const writes = {
       events: [] as any[],
@@ -140,6 +140,55 @@ describe("note and task creation automation events", () => {
   })
   const taskAutomation = (id: string, conditions: any[] = []) => ({
     id, name: id, triggerType: "TASK_ADDED", conditions, actions: [WAIT_ACTION],
+  })
+  const completedAutomation = (id: string, conditions: any[] = []) => ({
+    id, name: id, triggerType: "TASK_COMPLETED", conditions, actions: [WAIT_ACTION],
+  })
+
+  test("task completion uses contact filters and preserves the completion-time task snapshot", async () => {
+    const filters = [
+      { source: "CONTACT_FIELD", fieldKey: "first_name", operator: "EQUALS", compareValue: "Mary" },
+      { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-source", operator: "EQUALS", compareValue: "Referral" },
+      { source: "CONTACT_TAGS", tagId: "tag-new", operator: "EQUALS" },
+    ]
+    const { prismaTx, contact, task, writes } = fixture([
+      completedAutomation("match", filters),
+      completedAutomation("unfiltered"),
+      completedAutomation("other-contact", [{ ...filters[0], compareValue: "John" }]),
+    ])
+    task.statusConfigId = "completed"
+    const completedAt = new Date("2026-10-16T16:30:00.000Z")
+    const event = { tenantId: "tenant-1", contactId: "contact-1", taskId: task.id, actorUserId: "user-john", causationKey: "task-status-activity:activity-1:completed", completedAt }
+    const first = await queueTaskCompletedAutomationEvent(prismaTx, event)
+    assert.equal(first.matchedCount, 2)
+    assert.deepEqual(writes.dispatches.map((dispatch) => dispatch.automationId), ["match", "unfiltered"])
+    assert.equal(writes.events[0].triggerType, "TASK_COMPLETED")
+    assert.equal(writes.events[0].taskId, task.id)
+    assert.equal(writes.events[0].taskSnapshot.completedAt, completedAt.toISOString())
+    assert.equal(writes.events[0].taskSnapshot.statusConfigId, "completed")
+    assert.equal(writes.events[0].contactName, "Mary Reed")
+    task.name = "Changed later"
+    contact.firstName = "John"
+    assert.equal(writes.events[0].taskSnapshot.name, "Call Mary")
+    assert.equal(writes.events[0].contactName, "Mary Reed")
+    assert.equal((await queueTaskCompletedAutomationEvent(prismaTx, event)).automationEventId, first.automationEventId)
+    assert.equal(writes.events.length, 1)
+    const repeatedCompletion = await queueTaskCompletedAutomationEvent(prismaTx, { ...event, causationKey: "task-status-activity:activity-2:completed" })
+    assert.equal(repeatedCompletion.matchedCount, 2)
+    assert.notEqual(repeatedCompletion.automationEventId, first.automationEventId)
+  })
+
+  test("task completion claims once per chain and records a depth-limit skip", async () => {
+    const { prismaTx, writes } = fixture([completedAutomation("complete-A")])
+    const base = { tenantId: "tenant-1", contactId: "contact-1", taskId: "task-1", actorUserId: null, completedAt: new Date("2026-10-16T16:30:00.000Z") }
+    const first = await queueTaskCompletedAutomationEvent(prismaTx, { ...base, causationKey: "completion-1" })
+    assert.equal(first.matchedCount, 1)
+    const repeatedInChain = await queueTaskCompletedAutomationEvent(prismaTx, { ...base, causationKey: "completion-2", chainId: first.automationEventId, chainDepth: 1 })
+    assert.equal(repeatedInChain.matchedCount, 0)
+    assert.match(writes.dispatches.at(-1).decisionDetails, /already ran for this automation chain/)
+    const overDepth = await queueTaskCompletedAutomationEvent(prismaTx, { ...base, causationKey: "completion-3", chainId: first.automationEventId, chainDepth: 21 })
+    assert.equal(overDepth.matchedCount, 0)
+    assert.match(writes.dispatches.at(-1).decisionDetails, /maximum depth.*task remains completed/i)
   })
 
   test("task creation matches all task and contact filters against the creation snapshot", async () => {

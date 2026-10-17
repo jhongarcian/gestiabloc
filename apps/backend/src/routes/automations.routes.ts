@@ -147,6 +147,8 @@ function serializeAutomation(record: any) {
         ? { type: "CONTACT_NOTE_ADDED" as const }
         : record.triggerType === "TASK_ADDED"
         ? { type: "TASK_ADDED" as const }
+        : record.triggerType === "TASK_COMPLETED"
+        ? { type: "TASK_COMPLETED" as const }
         : record.triggerType === "CONTACT_TAG"
         ? { type: "CONTACT_TAG" as const, tagId: record.changeRules[0]?.tagId ?? "", change: record.changeRules[0]?.operator }
         : record.triggerType === "CONTACT_CHANGED"
