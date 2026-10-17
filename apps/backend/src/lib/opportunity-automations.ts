@@ -80,6 +80,7 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "CONTACT_NOTE_ADDED",
   "TASK_ADDED",
   "TASK_COMPLETED",
+  "APPOINTMENT_CREATED",
   "BIRTHDAY_REMINDER",
   "OPPORTUNITY_CREATED",
   "OPPORTUNITY_STAGE_CHANGED",
@@ -271,6 +272,13 @@ const taskFieldConditionSchema = z.object({
   compareValue: z.unknown().nullable().optional(),
 }).strict()
 
+const appointmentFieldConditionSchema = z.object({
+  source: z.literal("APPOINTMENT_FIELD"),
+  fieldKey: z.enum(["serviceId", "title", "notes", "assignedToUserId", "bookedByUserId", "startAt", "endAt", "isAllDay"]),
+  operator: operatorSchema,
+  compareValue: z.unknown().nullable().optional(),
+}).strict()
+
 const contactAssigneeConditionSchema = z.object({
   source: z.literal("CONTACT_ASSIGNEE"),
   operator: operatorSchema,
@@ -334,6 +342,7 @@ export const AutomationCustomFieldUpdatesSchema = z
 export const AutomationConditionInputSchema = z.discriminatedUnion("source", [
   contactFieldConditionSchema,
   taskFieldConditionSchema,
+  appointmentFieldConditionSchema,
   opportunityValueConditionSchema,
   contactStatusConditionSchema,
   customFieldConditionSchema,
@@ -687,6 +696,7 @@ export const AutomationUpsertSchema = z
       z.object({ type: z.literal("CONTACT_NOTE_ADDED") }).strict(),
       z.object({ type: z.literal("TASK_ADDED") }).strict(),
       z.object({ type: z.literal("TASK_COMPLETED") }).strict(),
+      z.object({ type: z.literal("APPOINTMENT_CREATED") }).strict(),
       z.object({ type: z.literal("BIRTHDAY_REMINDER"), localTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Choose a time in HH:mm format.") }).strict(),
       z.object({
         type: z.literal("OPPORTUNITY_CREATED"),
@@ -861,6 +871,16 @@ const TASK_FILTER_FIELDS: Record<string, { label: string; valueType: ValueType; 
   priority: { label: "Task priority", valueType: "string", operators: new Set<AutomationOperator>(["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]), options: ["HIGH", "MEDIUM", "LOW"] },
   linkedEntityName: { label: "Linked service or product", valueType: "string", operators: STRING_OPERATORS },
   linkedEntityType: { label: "Linked item type", valueType: "string", operators: new Set<AutomationOperator>(["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]), options: ["SERVICE", "PRODUCT"] },
+}
+const APPOINTMENT_FILTER_FIELDS: Record<string, { label: string; valueType: ValueType; operators: ReadonlySet<AutomationOperator>; required?: boolean }> = {
+  serviceId: { label: "Service", valueType: "stringArray", operators: new Set<AutomationOperator>(["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"]) },
+  title: { label: "Appointment title", valueType: "string", operators: STRING_OPERATORS, required: true },
+  notes: { label: "Appointment notes", valueType: "string", operators: STRING_OPERATORS },
+  assignedToUserId: { label: "Assigned user", valueType: "stringArray", operators: new Set<AutomationOperator>(["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"]), required: true },
+  bookedByUserId: { label: "Booked by", valueType: "stringArray", operators: new Set<AutomationOperator>(["INCLUDES_ANY"]), required: true },
+  startAt: { label: "Start date and time", valueType: "date", operators: new Set([...NUMBER_OPERATORS].filter((operator) => !EMPTY_OPERATORS.has(operator))), required: true },
+  endAt: { label: "End date and time", valueType: "date", operators: new Set([...NUMBER_OPERATORS].filter((operator) => !EMPTY_OPERATORS.has(operator))), required: true },
+  isAllDay: { label: "All-day appointment", valueType: "boolean", operators: new Set<AutomationOperator>(["IS_TRUE", "IS_FALSE"]) },
 }
 const BOOLEAN_OPERATORS = new Set<AutomationOperator>([
   "IS_TRUE",
@@ -1339,7 +1359,7 @@ export async function validateAutomationConfiguration(
   input: AutomationInput,
   options: { sourceAutomationId?: string | null } = {},
 ) {
-  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED" || input.trigger.type === "TASK_COMPLETED" || input.trigger.type === "BIRTHDAY_REMINDER"
+  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED" || input.trigger.type === "TASK_COMPLETED" || input.trigger.type === "APPOINTMENT_CREATED" || input.trigger.type === "BIRTHDAY_REMINDER"
   const triggerPipelineId = "pipelineId" in input.trigger ? input.trigger.pipelineId : null
   const [pipelines, fields, statuses, taskStatuses, memberships, tags, services, publishedAutomations] = await Promise.all([
     prismaClient.opportunityPipeline.findMany
@@ -1508,6 +1528,41 @@ export async function validateAutomationConfiguration(
     }
     if (input.trigger.type === "TASK_ADDED" && !["TASK_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
       throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Task added filters can use task details, contact fields, custom fields, or tags.")
+    }
+    if (input.trigger.type === "APPOINTMENT_CREATED" && !["APPOINTMENT_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Appointment created filters can use appointment details, contact fields, custom fields, or tags.")
+    }
+    if (condition.source === "APPOINTMENT_FIELD") {
+      if (input.trigger.type !== "APPOINTMENT_CREATED") throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Appointment filters are only available for Appointment created.")
+      const field = APPOINTMENT_FILTER_FIELDS[condition.fieldKey]
+      if (!field || !field.operators.has(condition.operator) || (field.required && EMPTY_OPERATORS.has(condition.operator))) {
+        throw new AutomationConfigurationError("INVALID_APPOINTMENT_FILTER", "Select an available appointment field and operator.")
+      }
+      let compareValue = normalizeCompareValue(condition.operator, condition.compareValue, field.valueType)
+      if (!EMPTY_OPERATORS.has(condition.operator)) {
+        if (condition.fieldKey === "serviceId" && (!(compareValue instanceof Array) || compareValue.some((id) => !serviceMap.has(id)))) {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_FILTER", "Select active services from this tenant.")
+        }
+        if (["assignedToUserId", "bookedByUserId"].includes(condition.fieldKey) && (!(compareValue instanceof Array) || compareValue.some((id) => !activeUserIds.has(id)))) {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_FILTER", "Select active team members.")
+        }
+        if (field.valueType === "date") {
+          const canonicalDate = (value: unknown) => {
+            if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) || Number.isNaN(Date.parse(value))) {
+              throw new AutomationConfigurationError("INVALID_APPOINTMENT_FILTER", "Enter an appointment date and time with a timezone.")
+            }
+            return new Date(value).toISOString()
+          }
+          if (condition.operator === "BETWEEN") {
+            const range = compareValue as { min: unknown; max: unknown }
+            const min = canonicalDate(range.min)
+            const max = canonicalDate(range.max)
+            if (min > max) throw new AutomationConfigurationError("INVALID_APPOINTMENT_FILTER", "The appointment date range must start before it ends.")
+            compareValue = { min, max }
+          } else compareValue = canonicalDate(compareValue)
+        }
+      }
+      return { tenantId, source: condition.source, fieldKey: condition.fieldKey, operator: condition.operator, compareValue, sortOrder: (index + 1) * 10 }
     }
     if (condition.source === "TASK_FIELD") {
       if (input.trigger.type !== "TASK_ADDED") {
@@ -2659,7 +2714,7 @@ export async function validateAutomationConfiguration(
 export type OpportunityAutomationEvent = {
   tenantId: string
   actorUserId: string | null
-  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "BIRTHDAY_REMINDER">
+  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "BIRTHDAY_REMINDER">
   opportunityId: string
   contactId: string
   pipelineId: string
@@ -2878,6 +2933,25 @@ export function evaluateAutomationTaskConditions(automation: any, task: Record<s
     if (field.valueType === "date" && currentValue instanceof Date) currentValue = currentValue.toISOString()
     if (!evaluateAutomationOperator(condition.operator, currentValue, condition.compareValue, field.valueType)) {
       failures.push(`${field.label} did not match the task filter.`)
+    }
+  }
+  return { matches: failures.length === 0, failures }
+}
+
+export function evaluateAutomationAppointmentConditions(automation: any, appointment: Record<string, unknown>) {
+  const failures: string[] = []
+  for (const condition of automation.conditions) {
+    if (condition.source !== "APPOINTMENT_FIELD") continue
+    const field = APPOINTMENT_FILTER_FIELDS[condition.fieldKey]
+    if (!field) {
+      failures.push("Appointment field is unavailable.")
+      continue
+    }
+    let currentValue = appointment[condition.fieldKey]
+    if (field.valueType === "stringArray") currentValue = currentValue ? [currentValue] : []
+    if (field.valueType === "date" && currentValue instanceof Date) currentValue = currentValue.toISOString()
+    if (!evaluateAutomationOperator(condition.operator, currentValue, condition.compareValue, field.valueType)) {
+      failures.push(`${field.label} did not match the appointment filter.`)
     }
   }
   return { matches: failures.length === 0, failures }

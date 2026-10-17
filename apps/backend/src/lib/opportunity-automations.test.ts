@@ -1853,6 +1853,46 @@ describe("deleteAutomationContactFileObjects", () => {
 })
 
 describe("AutomationUpsertSchema", () => {
+  test("appointment-created validates service and appointment filters with safe contact filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [
+        { id: "field-safe", key: "source", label: "Source", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: null },
+        { id: "field-secret", key: "secret", label: "Secret", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: true, isSensitive: true, options: null },
+      ] },
+      contactStatusConfig: { findMany: async () => [] },
+      taskStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [{ userId: "user-a", status: "ACTIVE" }, { userId: "user-b", status: "ACTIVE" }] },
+      tenantTag: { findMany: async () => [{ id: "tag-a" }] },
+      service: { findMany: async () => [{ id: "service-a", name: "A" }, { id: "service-b", name: "B" }] },
+    }
+    const base = {
+      name: "Appointment created", isEnabled: false, trigger: { type: "APPOINTMENT_CREATED" },
+      conditions: [
+        { source: "APPOINTMENT_FIELD", fieldKey: "serviceId", operator: "INCLUDES_ANY", compareValue: ["service-a", "service-b"] },
+        { source: "APPOINTMENT_FIELD", fieldKey: "assignedToUserId", operator: "INCLUDES_ANY", compareValue: ["user-a", "user-b"] },
+        { source: "APPOINTMENT_FIELD", fieldKey: "bookedByUserId", operator: "INCLUDES_ANY", compareValue: ["user-a"] },
+        { source: "APPOINTMENT_FIELD", fieldKey: "startAt", operator: "GREATER_THAN", compareValue: "2026-10-20T09:00:00-05:00" },
+        { source: "APPOINTMENT_FIELD", fieldKey: "isAllDay", operator: "IS_FALSE" },
+        { source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" },
+        { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-safe", operator: "EQUALS", compareValue: "Referral" },
+        { source: "CONTACT_TAGS", tagId: "tag-a", operator: "EQUALS" },
+      ],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "APPOINTMENT_CREATED")
+    assert.equal(normalized.pipelineId, null)
+    assert.deepEqual(normalized.conditions[0]?.compareValue, ["service-a", "service-b"])
+    assert.equal(normalized.conditions[3]?.compareValue, "2026-10-20T14:00:00.000Z")
+    assert.equal(normalized.conditions[4]?.compareValue, null)
+    const emptyService = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "APPOINTMENT_FIELD", fieldKey: "serviceId", operator: "IS_EMPTY" }] }))
+    assert.equal(emptyService.conditions[0]?.compareValue, null)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "APPOINTMENT_FIELD", fieldKey: "serviceId", operator: "INCLUDES_ANY", compareValue: ["other-tenant"] }] })), /active services from this tenant/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "APPOINTMENT_FIELD", fieldKey: "startAt", operator: "EQUALS", compareValue: "2026-10-20" }] })), /timezone/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-secret", operator: "EQUALS", compareValue: "secret" }] })), /non-sensitive custom field/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "name", operator: "CONTAINS", compareValue: "call" }] })), /Appointment created filters/)
+  })
   test("task-added validates task fields and safe contact filters", async () => {
     const prismaClient = {
       opportunityPipeline: { findMany: async () => [] },

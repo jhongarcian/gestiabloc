@@ -299,6 +299,7 @@ enum AutomationTriggerType {
   CONTACT_NOTE_ADDED
   TASK_ADDED
   TASK_COMPLETED
+  APPOINTMENT_CREATED
   BIRTHDAY_REMINDER
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
@@ -308,6 +309,7 @@ enum AutomationTriggerType {
 enum AutomationConditionSource {
   CONTACT_FIELD
   TASK_FIELD
+  APPOINTMENT_FIELD
   OPPORTUNITY_VALUE
   CONTACT_STATUS
   CONTACT_CUSTOM_FIELD
@@ -441,6 +443,7 @@ enum AutomationNodeEventSource {
   CONTACT_NOTE_ADDED
   TASK_ADDED
   TASK_COMPLETED
+  APPOINTMENT_CREATED
   BIRTHDAY_REMINDER
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
@@ -1772,6 +1775,8 @@ model AutomationEvent {
   opportunitySnapshotId String?
   taskId                String?
   taskSnapshot          Json?
+  appointmentId         String?
+  appointmentSnapshot   Json?
   birthdaySnapshot      Json?
   actorUserId           String?
   actorName             String?
@@ -1819,6 +1824,7 @@ model AutomationEvent {
   @@unique([tenantId, id])
   @@index([tenantId, contactId, createdAt])
   @@index([tenantId, taskId])
+  @@index([tenantId, appointmentId])
   @@index([tenantId, chainId, chainDepth])
   @@index([tenantId, status, availableAt, createdAt])
   @@index([status, leaseExpiresAt])

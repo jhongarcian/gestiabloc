@@ -6737,6 +6737,14 @@ components:
               enum: [TASK_COMPLETED]
         - type: object
           additionalProperties: false
+          required: [type]
+          description: Runs when a contact appointment is booked. Optional appointment and contact filters use booking-time values. Service filters match the appointment's service ID, can include several services, or match no service. Each automation can enroll once per chain.
+          properties:
+            type:
+              type: string
+              enum: [APPOINTMENT_CREATED]
+        - type: object
+          additionalProperties: false
           required: [type, localTime]
           description: Runs once per contact per tenant-local calendar year on their birthday. Uses the tenant timezone, excludes deceased contacts, and evaluates optional contact field, active non-sensitive custom field, and tag filters when queued. February 29 birthdays use February 28 in non-leap years.
           properties:
@@ -7998,6 +8006,8 @@ components:
           type: string
           enum:
             - CONTACT_FIELD
+            - TASK_FIELD
+            - APPOINTMENT_FIELD
             - OPPORTUNITY_VALUE
             - CONTACT_STATUS
             - CONTACT_CUSTOM_FIELD
@@ -8028,7 +8038,7 @@ components:
         fieldKey:
           type: string
           nullable: true
-          description: Standard contact field key for CONTACT_FIELD, or one of name, description, statusConfigId, assignedToUserId, startedAt, dueDate, priority, linkedEntityName, linkedEntityType for TASK_FIELD. Task date comparisons use ISO date-times with an offset; task assignee INCLUDES_ANY uses an array of active user IDs.
+          description: Standard contact field key for CONTACT_FIELD; task fields for TASK_FIELD; or serviceId, title, notes, assignedToUserId, bookedByUserId, startAt, endAt, isAllDay for APPOINTMENT_FIELD. Appointment service and user INCLUDES_ANY use arrays of tenant IDs. IS_EMPTY on serviceId matches appointments with no service. Date comparisons use ISO date-times with an offset.
         statusConfigId:
           type: string
           nullable: true

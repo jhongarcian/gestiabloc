@@ -20,6 +20,18 @@ describe("findEnabledAutomationReference", () => {
     assert.deepEqual(await findEnabledAutomationReference(prismaClient, "tenant-1", { kind: "taskStatus", id: "todo" }), { id: "task-automation", name: "Task routing" })
     assert.deepEqual(await findEnabledAutomationReference(prismaClient, "tenant-1", { kind: "user", id: "user-b" }), { id: "task-automation", name: "Task routing" })
   })
+  test("protects users selected by Appointment created filters", async () => {
+    const prismaClient = {
+      automation: {
+        findFirst: async () => null,
+        findMany: async ({ where }: any) => where.triggerType === "APPOINTMENT_CREATED" ? [{
+          id: "appointment-automation", name: "Appointment routing",
+          conditions: [{ compareValue: ["user-a", "user-b"] }],
+        }] : [],
+      },
+    }
+    assert.deepEqual(await findEnabledAutomationReference(prismaClient, "tenant-1", { kind: "user", id: "user-b" }), { id: "appointment-automation", name: "Appointment routing" })
+  })
   test("protects fields, statuses, tags, and users selected by a change trigger", async () => {
     const searches: string[] = []
     const prismaClient = {

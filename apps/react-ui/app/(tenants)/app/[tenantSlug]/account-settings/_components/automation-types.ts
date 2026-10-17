@@ -1,4 +1,4 @@
-export type AutomationTriggerType = "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
+export type AutomationTriggerType = "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
 
 export type AutomationContactChangeRule =
   | { source: "CONTACT_FIELD"; operator: "HAS_CHANGED" | "HAS_CHANGED_TO"; fieldKey: string; value?: unknown }
@@ -29,6 +29,7 @@ export type AutomationCondition = {
   source:
     | "CONTACT_FIELD"
     | "TASK_FIELD"
+    | "APPOINTMENT_FIELD"
     | "OPPORTUNITY_VALUE"
     | "CONTACT_STATUS"
     | "CONTACT_CUSTOM_FIELD"
@@ -441,6 +442,7 @@ export type AutomationRecord = {
     | { type: "CONTACT_NOTE_ADDED" }
     | { type: "TASK_ADDED" }
     | { type: "TASK_COMPLETED" }
+    | { type: "APPOINTMENT_CREATED" }
     | { type: "BIRTHDAY_REMINDER"; localTime: string }
     | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
     | {
@@ -539,7 +541,7 @@ export type AutomationNodeExecutionStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | 
 export type AutomationNodeExecution = {
   id: string
   attemptId: string
-  eventSource: "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
+  eventSource: "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
   contact: {
     id: string | null
     name: string

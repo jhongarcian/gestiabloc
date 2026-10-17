@@ -142,6 +142,28 @@ export async function findEnabledAutomationReference(
     if (taskFilterReference) return { id: taskFilterReference.id, name: taskFilterReference.name }
   }
 
+  if (reference.kind === "user") {
+    const appointmentAutomations = await prismaClient.automation.findMany({
+      where: {
+        tenantId,
+        isEnabled: true,
+        triggerType: "APPOINTMENT_CREATED",
+        conditions: { some: { source: "APPOINTMENT_FIELD", fieldKey: { in: ["assignedToUserId", "bookedByUserId"] } } },
+      },
+      select: {
+        id: true,
+        name: true,
+        conditions: { where: { source: "APPOINTMENT_FIELD", fieldKey: { in: ["assignedToUserId", "bookedByUserId"] } }, select: { compareValue: true } },
+      },
+    })
+    const appointmentFilterReference = appointmentAutomations.find((automation: any) =>
+      (automation.conditions ?? []).some((condition: any) =>
+        Array.isArray(condition.compareValue) && condition.compareValue.includes(reference.id),
+      ),
+    )
+    if (appointmentFilterReference) return { id: appointmentFilterReference.id, name: appointmentFilterReference.name }
+  }
+
   if (
     reference.kind !== "customField" &&
     reference.kind !== "status" &&

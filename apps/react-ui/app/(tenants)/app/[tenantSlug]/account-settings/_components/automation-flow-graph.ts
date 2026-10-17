@@ -195,6 +195,8 @@ export function buildAutomationFlowGraph(
         ? "Starts when a task is added to a contact"
       : draft.triggerType === "TASK_COMPLETED"
         ? "Starts when a contact task is completed"
+      : draft.triggerType === "APPOINTMENT_CREATED"
+        ? "Starts when a contact appointment is booked"
       : draft.triggerType === "BIRTHDAY_REMINDER"
         ? `Runs on each birthday at ${draft.birthdayLocalTime ?? "09:00"}`
       : draft.triggerType === "CONTACT_CHANGED"
@@ -228,6 +230,8 @@ export function buildAutomationFlowGraph(
               ? "Task added"
             : draft.triggerType === "TASK_COMPLETED"
               ? "Task completed"
+            : draft.triggerType === "APPOINTMENT_CREATED"
+              ? "Appointment created"
             : draft.triggerType === "BIRTHDAY_REMINDER"
               ? "Birthday reminder"
             : draft.triggerType === "CONTACT_CHANGED"

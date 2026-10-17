@@ -12,6 +12,7 @@ import {
   listCalendarBlockOccurrences,
   updateAppointmentAtomically,
 } from "../lib/appointment-booking.js"
+import { kickAutomationEventWorker } from "../lib/automation-event-worker.js"
 import { prisma } from "../lib/prisma.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
@@ -1132,6 +1133,8 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
         availability: bookingResult.availability,
       })
     }
+
+    if (bookingResult.automation.automationEventId) kickAutomationEventWorker()
 
     return res.status(201).json({
       ok: true,

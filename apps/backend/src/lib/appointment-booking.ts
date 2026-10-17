@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "../generated/prisma/index.js"
 
 import { prisma } from "./prisma.js"
+import { queueAppointmentCreatedAutomationEvent } from "./automation-event-queue.js"
 
 const DEFAULT_TIMEZONE = "America/Chicago"
 const CALENDAR_SLOT_DURATION_OPTIONS = [15, 30, 45, 60, 120] as const
@@ -1352,9 +1353,17 @@ export async function createAppointmentAtomically(
             message: `${params.actorDisplayName} created this appointment and assigned it to ${params.assignedToLabel} for ${formatAuditDateTimeRange(params.startAt, params.endAt, timezone)}.`,
           })
 
+          const automation = await queueAppointmentCreatedAutomationEvent(tx, {
+            tenantId: params.tenantId,
+            contactId: params.contactId,
+            appointmentId: appointment.id,
+            actorUserId: params.bookedByUserId,
+          })
+
           return {
             ok: true as const,
             appointment,
+            automation,
           }
         },
         {

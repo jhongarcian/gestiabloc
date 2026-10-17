@@ -149,6 +149,8 @@ function serializeAutomation(record: any) {
         ? { type: "TASK_ADDED" as const }
         : record.triggerType === "TASK_COMPLETED"
         ? { type: "TASK_COMPLETED" as const }
+        : record.triggerType === "APPOINTMENT_CREATED"
+        ? { type: "APPOINTMENT_CREATED" as const }
         : record.triggerType === "BIRTHDAY_REMINDER"
         ? { type: "BIRTHDAY_REMINDER" as const, localTime: record.birthdayLocalTime ?? "09:00" }
         : record.triggerType === "CONTACT_TAG"

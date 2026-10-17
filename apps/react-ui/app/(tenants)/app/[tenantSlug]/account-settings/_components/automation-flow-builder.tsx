@@ -370,6 +370,27 @@ const TASK_FILTER_FIELDS = {
   linkedEntityName: { label: "Linked service or product", kind: "text", operators: TEXT_OPERATORS },
   linkedEntityType: { label: "Linked item type", kind: "linkedType", operators: STATUS_OPERATORS },
 } as const
+const APPOINTMENT_FILTER_FIELDS = {
+  serviceId: { label: "Service", kind: "service", operators: ["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[] },
+  title: { label: "Appointment title", kind: "text", operators: ["EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_CONTAINS"] as AutomationOperator[] },
+  notes: { label: "Notes", kind: "text", operators: TEXT_OPERATORS },
+  assignedToUserId: { label: "Assigned user", kind: "person", operators: ["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[] },
+  bookedByUserId: { label: "Booked by", kind: "person", operators: ["INCLUDES_ANY"] as AutomationOperator[] },
+  startAt: { label: "Start date and time", kind: "date", operators: NUMERIC_OPERATORS },
+  endAt: { label: "End date and time", kind: "date", operators: NUMERIC_OPERATORS },
+  isAllDay: { label: "All day", kind: "boolean", operators: ["IS_TRUE", "IS_FALSE"] as AutomationOperator[] },
+} as const
+type AppointmentFilterFieldKey = keyof typeof APPOINTMENT_FILTER_FIELDS
+function appointmentFilterField(key: string | null | undefined) {
+  return key && Object.hasOwn(APPOINTMENT_FILTER_FIELDS, key) ? APPOINTMENT_FILTER_FIELDS[key as AppointmentFilterFieldKey] : null
+}
+function appointmentFilterDefault(key: AppointmentFilterFieldKey, catalog: AutomationCatalog): Pick<AutomationCondition, "operator" | "compareValue"> {
+  if (key === "serviceId") return { operator: "INCLUDES_ANY", compareValue: catalog.services[0] ? [catalog.services[0].id] : [] }
+  if (key === "assignedToUserId" || key === "bookedByUserId") return { operator: "INCLUDES_ANY", compareValue: catalog.users[0] ? [catalog.users[0].id] : [] }
+  if (key === "startAt" || key === "endAt") return { operator: "GREATER_THAN_OR_EQUAL", compareValue: "" }
+  if (key === "isAllDay") return { operator: "IS_TRUE", compareValue: null }
+  return { operator: key === "title" ? "CONTAINS" : "IS_NOT_EMPTY", compareValue: key === "title" ? "" : null }
+}
 type TaskFilterFieldKey = keyof typeof TASK_FILTER_FIELDS
 function taskFilterField(key: string | null | undefined) {
   return key && Object.hasOwn(TASK_FILTER_FIELDS, key) ? TASK_FILTER_FIELDS[key as TaskFilterFieldKey] : null
@@ -424,7 +445,7 @@ const ACTION_GROUPS: ReadonlyArray<{
   },
 ]
 
-const ACTION_GROUP_STYLES: Record<AutomationActionGroupId, {
+const ACTION_GROUP_STYLES: Record<AutomationActionGroupId | "APPOINTMENT", {
   section: string
   icon: string
   actionIcon: string
@@ -448,6 +469,12 @@ const ACTION_GROUP_STYLES: Record<AutomationActionGroupId, {
     actionIcon: "bg-slate-50 text-blue-700",
     actionHover: "hover:border-slate-300 hover:bg-slate-50",
   },
+  APPOINTMENT: {
+    section: "border-slate-200 bg-white",
+    icon: "bg-slate-50 text-cyan-800 ring-slate-200",
+    actionIcon: "bg-slate-50 text-cyan-800",
+    actionHover: "hover:border-slate-300 hover:bg-slate-50",
+  },
   COMMUNICATION: {
     section: "border-slate-200 bg-white",
     icon: "bg-slate-50 text-emerald-700 ring-slate-200",
@@ -465,6 +492,13 @@ const TRIGGER_GROUPS = [
     triggers: ["CONTACT_CREATED", "CONTACT_CHANGED", "BIRTHDAY_REMINDER", "CONTACT_TAG", "CONTACT_NOTE_ADDED", "TASK_ADDED", "TASK_COMPLETED"],
   },
   {
+    id: "APPOINTMENT",
+    label: "Appointment triggers",
+    description: "Start when an appointment is booked.",
+    icon: CalendarClock,
+    triggers: ["APPOINTMENT_CREATED"],
+  },
+  {
     id: "OPPORTUNITY",
     label: "Opportunity triggers",
     description: "Start when an opportunity is created or changes.",
@@ -477,7 +511,7 @@ const TRIGGER_DEFINITIONS: Record<AutomationBuilderTriggerType, {
   label: string
   description: string
   icon: LucideIcon
-  group: "CONTACT" | "OPPORTUNITY"
+  group: "CONTACT" | "APPOINTMENT" | "OPPORTUNITY"
 }> = {
   CONTACT_CREATED: {
     label: "Contact created",
@@ -514,6 +548,12 @@ const TRIGGER_DEFINITIONS: Record<AutomationBuilderTriggerType, {
     description: "When a contact task is marked Completed.",
     icon: CheckCircle2,
     group: "CONTACT",
+  },
+  APPOINTMENT_CREATED: {
+    label: "Appointment created",
+    description: "When a contact appointment is booked.",
+    icon: CalendarClock,
+    group: "APPOINTMENT",
   },
   BIRTHDAY_REMINDER: {
     label: "Birthday reminder",
@@ -2016,6 +2056,7 @@ function conditionDefaults(
   catalog: AutomationCatalog,
 ): AutomationCondition {
   if (source === "TASK_FIELD") return { source, fieldKey: "name", operator: "CONTAINS", compareValue: "" }
+  if (source === "APPOINTMENT_FIELD") return { source, fieldKey: "serviceId", operator: "IS_NOT_EMPTY", compareValue: null }
   if (source === "CONTACT_FIELD") {
     const field = catalog.templateFields.contact.find((candidate) => !["status", "assigned_to", "tags"].includes(candidate.key))
     return { source, operator: "EQUALS", fieldKey: field?.key ?? null, compareValue: "" }
@@ -2064,6 +2105,7 @@ function conditionDefaults(
 
 function defaultCondition(catalog: AutomationCatalog, triggerType?: AutomationBuilderTriggerType | null) {
   if (triggerType === "TASK_ADDED") return conditionDefaults("TASK_FIELD", catalog)
+  if (triggerType === "APPOINTMENT_CREATED") return conditionDefaults("APPOINTMENT_FIELD", catalog)
   if (triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "BIRTHDAY_REMINDER") return conditionDefaults("CONTACT_FIELD", catalog)
   if (catalog.customFields.length > 0) return conditionDefaults("CONTACT_CUSTOM_FIELD", catalog)
   if (catalog.statuses.length > 0) return conditionDefaults("CONTACT_STATUS", catalog)
@@ -2081,7 +2123,7 @@ function apiError(error: unknown) {
 function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   if (!draft.name.trim()) return "Enter an automation name."
   if (!draft.triggerType) return "Select a trigger."
-  if (draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "BIRTHDAY_REMINDER" && !draft.pipelineId) return "Select a pipeline."
+  if (draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "BIRTHDAY_REMINDER" && !draft.pipelineId) return "Select a pipeline."
   if (draft.triggerType === "BIRTHDAY_REMINDER" && !isAutomationTriggerReady(draft)) return "Choose a valid birthday reminder time."
   if (draft.triggerType === "CONTACT_CHANGED" && !isAutomationTriggerReady(draft)) return "Complete at least one contact change rule."
   if (draft.triggerType === "CONTACT_TAG" && !isAutomationTriggerReady(draft)) return "Select a tag and whether it is added or removed."
@@ -2096,6 +2138,19 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
         ? !condition.compareValue || typeof condition.compareValue !== "object" || Object.values(condition.compareValue).length !== 2 || Object.values(condition.compareValue).some((value) => typeof value !== "string" || !value)
         : typeof condition.compareValue !== "string" || !condition.compareValue)) return "Complete each task date and time filter."
       if (field.kind !== "date" && field.kind !== "assignee" && !condition.compareValue) return "Complete each task filter."
+    }
+  }
+  if (draft.triggerType === "APPOINTMENT_CREATED") {
+    for (const condition of draft.conditions) {
+      if (condition.source !== "APPOINTMENT_FIELD") continue
+      const field = appointmentFilterField(condition.fieldKey)
+      if (!field || !field.operators.includes(condition.operator)) return "Complete each appointment filter."
+      if (VALUELESS_OPERATORS.has(condition.operator)) continue
+      if ((field.kind === "service" || field.kind === "person") && (!Array.isArray(condition.compareValue) || condition.compareValue.length === 0)) return "Select at least one service or team member."
+      if (field.kind === "date" && (condition.operator === "BETWEEN"
+        ? !condition.compareValue || typeof condition.compareValue !== "object" || Object.values(condition.compareValue).length !== 2 || Object.values(condition.compareValue).some((value) => typeof value !== "string" || !value)
+        : typeof condition.compareValue !== "string" || !condition.compareValue)) return "Complete each appointment date and time filter."
+      if (field.kind === "text" && !condition.compareValue) return "Complete each appointment filter."
     }
   }
   if (draft.triggerType === "OPPORTUNITY_CHANGED" && !draft.changeType) return "Select a change to listen for."
@@ -2142,16 +2197,23 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
     name: draft.name.trim(),
     isEnabled,
     trigger,
-    conditions: draft.conditions.map((condition) => ({
-      source: condition.source,
-      operator: condition.operator,
-      fieldKey: condition.fieldKey,
-      customFieldId: condition.customFieldId,
-      statusConfigId: condition.statusConfigId,
-      assignedUserId: condition.assignedUserId,
-      tagId: condition.tagId,
-      compareValue: condition.compareValue,
-    })),
+    conditions: draft.conditions.map((condition) => condition.source === "TASK_FIELD" || condition.source === "APPOINTMENT_FIELD"
+      ? {
+          source: condition.source,
+          operator: condition.operator,
+          fieldKey: condition.fieldKey,
+          compareValue: condition.compareValue,
+        }
+      : {
+          source: condition.source,
+          operator: condition.operator,
+          fieldKey: condition.fieldKey,
+          customFieldId: condition.customFieldId,
+          statusConfigId: condition.statusConfigId,
+          assignedUserId: condition.assignedUserId,
+          tagId: condition.tagId,
+          compareValue: condition.compareValue,
+        }),
     actions: draft.actions.map(serializeAutomationAction),
   }
 }
@@ -3119,16 +3181,18 @@ function TriggerEditor({
     onChange({
       ...draft,
       triggerType,
-      pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "BIRTHDAY_REMINDER" ? "" : draft.pipelineId,
+      pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_CREATED" || triggerType === "BIRTHDAY_REMINDER" ? "" : draft.pipelineId,
       changeType: "",
       targetStageId: "",
       conditions: triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "BIRTHDAY_REMINDER"
         ? draft.conditions.filter((condition) => ["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
         : triggerType === "TASK_ADDED"
           ? draft.conditions.filter((condition) => ["TASK_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
+        : triggerType === "APPOINTMENT_CREATED"
+          ? draft.conditions.filter((condition) => ["APPOINTMENT_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
         : triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG"
-          ? draft.conditions.filter((condition) => condition.source !== "OPPORTUNITY_VALUE" && condition.source !== "TASK_FIELD")
-          : draft.conditions.filter((condition) => condition.source !== "TASK_FIELD"),
+          ? draft.conditions.filter((condition) => condition.source !== "OPPORTUNITY_VALUE" && condition.source !== "TASK_FIELD" && condition.source !== "APPOINTMENT_FIELD")
+          : draft.conditions.filter((condition) => condition.source !== "TASK_FIELD" && condition.source !== "APPOINTMENT_FIELD"),
       changes: triggerType === "CONTACT_TAG"
         ? [{ source: "CONTACT_TAGS", operator: "ADDED", tagId: "" }]
         : triggerType === "CONTACT_CHANGED" && (draft.changes.length === 0 || draft.changes[0]?.source === "CONTACT_TAGS" && draft.changes.length === 1)
@@ -3296,7 +3360,7 @@ function TriggerEditor({
             </FieldGroup>
           </> : null}
 
-          {draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "BIRTHDAY_REMINDER" ? <>
+          {draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "BIRTHDAY_REMINDER" ? <>
           <Separator />
           <section>
             <FieldGroup className="gap-3">
@@ -3380,7 +3444,7 @@ function TriggerEditor({
           <Separator />
           <section className="flex flex-col gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-foreground">{draft.triggerType === "TASK_ADDED" ? "Task and contact filters" : "Contact filters"}</h3>
+              <h3 className="text-sm font-semibold text-foreground">{draft.triggerType === "TASK_ADDED" ? "Task and contact filters" : draft.triggerType === "APPOINTMENT_CREATED" ? "Appointment and contact filters" : "Contact filters"}</h3>
               <p className="text-xs text-muted-foreground">Optional · all filters must match</p>
             </div>
             <ConditionsEditor
@@ -3561,11 +3625,14 @@ function ConditionCard({
     ? regularField ? { ...regularField, options: [] as string[] } : undefined
     : catalog.customFields.find((item) => item.id === condition.customFieldId)
   const taskField = condition.source === "TASK_FIELD" ? taskFilterField(condition.fieldKey) : null
+  const appointmentField = condition.source === "APPOINTMENT_FIELD" ? appointmentFilterField(condition.fieldKey) : null
   const operators =
     condition.source === "OPPORTUNITY_VALUE"
       ? NUMERIC_OPERATORS
       : condition.source === "TASK_FIELD"
         ? taskField?.operators ?? []
+      : condition.source === "APPOINTMENT_FIELD"
+        ? appointmentField?.operators ?? []
       : condition.source === "CONTACT_FIELD"
         ? regularField ? contactFieldOperators(regularField.fieldType) : []
         : condition.source === "CONTACT_CUSTOM_FIELD"
@@ -3574,6 +3641,8 @@ function ConditionCard({
   const sourceIcon =
     condition.source === "TASK_FIELD" ? (
       <ListTodo className="h-4 w-4" />
+    ) : condition.source === "APPOINTMENT_FIELD" ? (
+      <CalendarClock className="h-4 w-4" />
     ) : condition.source === "CONTACT_ASSIGNEE" ? (
       <UserRound className="h-4 w-4" />
     ) : condition.source === "CONTACT_TAGS" ? (
@@ -3590,6 +3659,10 @@ function ConditionCard({
     if (condition.source === "CONTACT_ASSIGNEE" && operator === "EQUALS") return "Is assigned to"
     if (condition.source === "CONTACT_ASSIGNEE" && operator === "NOT_EQUALS") return "Is not assigned to"
     if (condition.source === "TASK_FIELD" && condition.fieldKey === "assignedToUserId" && operator === "INCLUDES_ANY") return "Assigned to any"
+    if (condition.source === "APPOINTMENT_FIELD" && condition.fieldKey === "serviceId" && operator === "INCLUDES_ANY") return "Is one of"
+    if (condition.source === "APPOINTMENT_FIELD" && condition.fieldKey === "serviceId" && operator === "IS_EMPTY") return "No service"
+    if (condition.source === "APPOINTMENT_FIELD" && condition.fieldKey === "serviceId" && operator === "IS_NOT_EMPTY") return "Has a service"
+    if (condition.source === "APPOINTMENT_FIELD" && (condition.fieldKey === "assignedToUserId" || condition.fieldKey === "bookedByUserId") && operator === "INCLUDES_ANY") return "Is one of"
     return OPERATOR_LABELS[operator]
   }
 
@@ -3623,12 +3696,13 @@ function ConditionCard({
           <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
           <SelectContent>
             {triggerType === "TASK_ADDED" ? <SelectItem value="TASK_FIELD">Task field</SelectItem> : null}
+            {triggerType === "APPOINTMENT_CREATED" ? <SelectItem value="APPOINTMENT_FIELD">Appointment field</SelectItem> : null}
             <SelectItem value="CONTACT_FIELD">Contact field</SelectItem>
             <SelectItem value="CONTACT_CUSTOM_FIELD" disabled={catalog.customFields.length === 0}>Custom field</SelectItem>
-            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem> : null}
-            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem> : null}
+            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem> : null}
+            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem> : null}
             <SelectItem value="CONTACT_TAGS" disabled={catalog.tags.length === 0}>Tags</SelectItem>
-            {triggerType !== "CONTACT_CREATED" && triggerType !== "CONTACT_CHANGED" && triggerType !== "CONTACT_TAG" && triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
+            {triggerType !== "CONTACT_CREATED" && triggerType !== "CONTACT_CHANGED" && triggerType !== "CONTACT_TAG" && triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
           </SelectContent>
         </Select>
       </div>
@@ -3637,6 +3711,13 @@ function ConditionCard({
         <Select value={condition.fieldKey ?? ""} onValueChange={(fieldKey: TaskFilterFieldKey) => onChange({ fieldKey, ...taskFilterDefault(fieldKey, catalog) })}>
           <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select task field" /></SelectTrigger>
           <SelectContent>{Object.entries(TASK_FILTER_FIELDS).map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}</SelectContent>
+        </Select>
+      </div> : null}
+      {condition.source === "APPOINTMENT_FIELD" ? <div className="space-y-2">
+        <Label>Appointment field</Label>
+        <Select value={condition.fieldKey ?? ""} onValueChange={(fieldKey: AppointmentFilterFieldKey) => onChange({ fieldKey, ...appointmentFilterDefault(fieldKey, catalog) })}>
+          <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select appointment field" /></SelectTrigger>
+          <SelectContent>{Object.entries(APPOINTMENT_FILTER_FIELDS).map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}</SelectContent>
         </Select>
       </div> : null}
       {condition.source === "CONTACT_FIELD" ? (
@@ -3697,10 +3778,15 @@ function ConditionCard({
             const taskDefault = condition.source === "TASK_FIELD" && condition.fieldKey && taskFilterField(condition.fieldKey)
               ? taskFilterDefault(condition.fieldKey as TaskFilterFieldKey, catalog).compareValue
               : null
+            const appointmentDefault = condition.source === "APPOINTMENT_FIELD" && condition.fieldKey && appointmentFilterField(condition.fieldKey)
+              ? appointmentFilterDefault(condition.fieldKey as AppointmentFilterFieldKey, catalog).compareValue
+              : null
             onChange({
               operator,
               compareValue: valueless ? null : condition.source === "TASK_FIELD"
                 ? operator === "BETWEEN" ? { min: "", max: "" } : condition.compareValue ?? taskDefault
+                : condition.source === "APPOINTMENT_FIELD"
+                  ? operator === "BETWEEN" ? { min: "", max: "" } : condition.compareValue ?? appointmentDefault
                 : condition.compareValue,
               ...(condition.source === "CONTACT_STATUS"
                 ? { statusConfigId: valueless ? null : condition.statusConfigId ?? catalog.statuses[0]?.id ?? null }
@@ -3755,6 +3841,7 @@ function ConditionValueInput({
 }) {
   if (VALUELESS_OPERATORS.has(condition.operator)) return null
   if (condition.source === "TASK_FIELD") return <TaskConditionValueInput condition={condition} catalog={catalog} timezone={timezone} onChange={onChange} />
+  if (condition.source === "APPOINTMENT_FIELD") return <AppointmentConditionValueInput condition={condition} catalog={catalog} timezone={timezone} onChange={onChange} />
   if (condition.source === "CONTACT_STATUS") {
     return <div className="space-y-2"><Label>Status</Label><Select value={condition.statusConfigId ?? ""} onValueChange={onStatusChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.statuses.map((status) => <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>)}</SelectContent></Select></div>
   }
@@ -3813,6 +3900,32 @@ function TaskConditionValueInput({ condition, catalog, timezone, onChange }: {
       return <div className="space-y-3"><div className="space-y-2"><Label>From</Label><TaskFilterDateInput key={`min-${String(range.min ?? "")}`} value={range.min} onChange={(min) => onChange({ ...range, min })} timezone={timezone} /></div><div className="space-y-2"><Label>Through</Label><TaskFilterDateInput key={`max-${String(range.max ?? "")}`} value={range.max} onChange={(max) => onChange({ ...range, max })} timezone={timezone} /></div></div>
     }
     return <div className="space-y-2"><Label>Date and time</Label><TaskFilterDateInput key={String(condition.compareValue ?? "")} value={condition.compareValue} onChange={onChange} timezone={timezone} /></div>
+  }
+  return <div className="space-y-2"><Label>Text</Label><Input value={String(condition.compareValue ?? "")} onChange={(event) => onChange(event.target.value)} placeholder="Enter text" /></div>
+}
+
+function AppointmentConditionValueInput({ condition, catalog, timezone, onChange }: {
+  condition: AutomationCondition
+  catalog: AutomationCatalog
+  timezone?: string | null
+  onChange: (value: unknown) => void
+}) {
+  const field = appointmentFilterField(condition.fieldKey)
+  if (!field) return null
+  if (field.kind === "service" || field.kind === "person") {
+    const selected = Array.isArray(condition.compareValue) ? condition.compareValue as string[] : []
+    const options = field.kind === "service" ? catalog.services : catalog.users
+    return <div className="space-y-2"><Label>{field.kind === "service" ? "Match any selected service" : "Match any selected team member"}</Label><div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/40 p-2">
+      {options.map((option) => <label key={option.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white"><Checkbox checked={selected.includes(option.id)} onCheckedChange={(checked) => onChange(checked ? [...selected, option.id] : selected.filter((id) => id !== option.id))} /><span>{option.name}</span></label>)}
+      {options.length === 0 ? <p className="px-2 py-1 text-xs text-slate-500">{field.kind === "service" ? "No active services" : "No active team members"}</p> : null}
+    </div></div>
+  }
+  if (field.kind === "date") {
+    if (condition.operator === "BETWEEN") {
+      const range = condition.compareValue && typeof condition.compareValue === "object" ? condition.compareValue as { min?: unknown; max?: unknown } : {}
+      return <div className="space-y-3"><div className="space-y-2"><Label>From</Label><TaskFilterDateInput key={`appointment-min-${String(range.min ?? "")}`} value={range.min} onChange={(min) => onChange({ ...range, min })} timezone={timezone} /></div><div className="space-y-2"><Label>Through</Label><TaskFilterDateInput key={`appointment-max-${String(range.max ?? "")}`} value={range.max} onChange={(max) => onChange({ ...range, max })} timezone={timezone} /></div></div>
+    }
+    return <div className="space-y-2"><Label>Date and time</Label><TaskFilterDateInput key={`appointment-${String(condition.compareValue ?? "")}`} value={condition.compareValue} onChange={onChange} timezone={timezone} /></div>
   }
   return <div className="space-y-2"><Label>Text</Label><Input value={String(condition.compareValue ?? "")} onChange={(event) => onChange(event.target.value)} placeholder="Enter text" /></div>
 }

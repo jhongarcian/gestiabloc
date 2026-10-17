@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
-import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueBirthdayReminderAutomationEvent, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent, queueTaskAddedAutomationEvent, queueTaskCompletedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
+import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueAppointmentCreatedAutomationEvent, queueBirthdayReminderAutomationEvent, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent, queueTaskAddedAutomationEvent, queueTaskCompletedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
 
 const WAIT_ACTION = {
   id: "action-1",
@@ -67,7 +67,7 @@ describe("queueContactCreatedAutomationEvent", () => {
   })
 })
 
-describe("note and task automation events", () => {
+describe("contact-linked automation events", () => {
   const fixture = (automations: any[]) => {
     const writes = {
       events: [] as any[],
@@ -90,6 +90,13 @@ describe("note and task automation events", () => {
       id: "task-1", name: "Call Mary", description: null, statusConfigId: "todo", assignedToUserId: "user-john",
       startedAt: new Date("2026-10-15T14:00:00.000Z"), dueDate: new Date("2026-10-16T19:00:00.000Z"),
       priority: "HIGH", linkedEntityName: "Annual review", linkedEntityType: "SERVICE",
+    }
+    const appointment = {
+      id: "appointment-1", title: "Annual review with Mary", notes: null as string | null, serviceId: "service-a" as string | null,
+      service: { name: "Annual review" } as { name: string } | null,
+      bookedByUserId: "user-john", assignedToUserId: "user-jane",
+      startAt: new Date("2026-10-20T15:00:00.000Z"), endAt: new Date("2026-10-20T16:00:00.000Z"),
+      isAllDay: false, status: "SCHEDULED", createdAt: new Date("2026-10-16T18:00:00.000Z"),
     }
     const prismaTx = {
       automation: {
@@ -132,6 +139,7 @@ describe("note and task automation events", () => {
       },
       contact: { findFirst: async () => contact },
       task: { findFirst: async ({ where }: any) => ({ ...task, id: where.id }) },
+      appointment: { findFirst: async ({ where }: any) => ({ ...appointment, id: where.id }) },
       contactCustomField: { findMany: async () => [{ id: "field-source", key: "source", label: "Source", fieldType: "TEXT", isActive: true, isEncrypted: false, isSensitive: false, options: null }] },
       contactStatusConfig: { findMany: async () => [] },
       taskStatusConfig: { findMany: async () => [] },
@@ -142,7 +150,7 @@ describe("note and task automation events", () => {
       automationDispatch: { createMany: async ({ data }: any) => { writes.dispatches.push(...data) } },
       automationNodeExecution: { createMany: async ({ data }: any) => { writes.logs.push(...data) } },
     }
-    return { prismaTx, contact, task, writes }
+    return { prismaTx, contact, task, appointment, writes }
   }
 
   const noteAutomation = (id: string, conditions: any[] = []) => ({
@@ -157,6 +165,66 @@ describe("note and task automation events", () => {
   })
   const completedAutomation = (id: string, conditions: any[] = []) => ({
     id, name: id, triggerType: "TASK_COMPLETED", conditions, actions: [WAIT_ACTION],
+  })
+  const appointmentAutomation = (id: string, conditions: any[] = []) => ({
+    id, name: id, triggerType: "APPOINTMENT_CREATED", conditions, actions: [WAIT_ACTION],
+  })
+
+  test("appointment creation matches its service, details, and contact state at booking", async () => {
+    const filters = [
+      { source: "APPOINTMENT_FIELD", fieldKey: "serviceId", operator: "INCLUDES_ANY", compareValue: ["service-b", "service-a"] },
+      { source: "APPOINTMENT_FIELD", fieldKey: "title", operator: "CONTAINS", compareValue: "review" },
+      { source: "APPOINTMENT_FIELD", fieldKey: "notes", operator: "IS_EMPTY" },
+      { source: "APPOINTMENT_FIELD", fieldKey: "assignedToUserId", operator: "INCLUDES_ANY", compareValue: ["user-jane"] },
+      { source: "APPOINTMENT_FIELD", fieldKey: "bookedByUserId", operator: "INCLUDES_ANY", compareValue: ["user-john"] },
+      { source: "APPOINTMENT_FIELD", fieldKey: "startAt", operator: "GREATER_THAN", compareValue: "2026-10-20T14:00:00.000Z" },
+      { source: "APPOINTMENT_FIELD", fieldKey: "endAt", operator: "BETWEEN", compareValue: { min: "2026-10-20T15:00:00.000Z", max: "2026-10-20T17:00:00.000Z" } },
+      { source: "APPOINTMENT_FIELD", fieldKey: "isAllDay", operator: "IS_FALSE" },
+      { source: "CONTACT_FIELD", fieldKey: "first_name", operator: "EQUALS", compareValue: "Mary" },
+      { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-source", operator: "EQUALS", compareValue: "Referral" },
+      { source: "CONTACT_TAGS", tagId: "tag-new", operator: "EQUALS" },
+    ]
+    const { prismaTx, appointment, contact, writes } = fixture([
+      appointmentAutomation("match", filters),
+      appointmentAutomation("any-appointment"),
+      appointmentAutomation("wrong-service", [{ source: "APPOINTMENT_FIELD", fieldKey: "serviceId", operator: "INCLUDES_ANY", compareValue: ["service-b"] }]),
+    ])
+    const event = { tenantId: "tenant-1", contactId: "contact-1", appointmentId: appointment.id, actorUserId: "user-john" }
+    const first = await queueAppointmentCreatedAutomationEvent(prismaTx, event)
+    assert.equal(first.matchedCount, 2)
+    assert.deepEqual(writes.dispatches.map((dispatch) => dispatch.automationId), ["match", "any-appointment"])
+    assert.equal(writes.events[0].appointmentId, appointment.id)
+    assert.equal(writes.events[0].appointmentSnapshot.serviceName, "Annual review")
+    assert.equal(writes.events[0].appointmentSnapshot.startAt, "2026-10-20T15:00:00.000Z")
+    assert.equal(writes.events[0].causationKey, "appointment:appointment-1:created")
+    appointment.title = "Renamed later"
+    appointment.service!.name = "Renamed service"
+    contact.firstName = "Changed"
+    assert.equal(writes.events[0].appointmentSnapshot.title, "Annual review with Mary")
+    assert.equal(writes.events[0].appointmentSnapshot.serviceName, "Annual review")
+    assert.equal(writes.events[0].contactName, "Mary Reed")
+    assert.equal((await queueAppointmentCreatedAutomationEvent(prismaTx, event)).automationEventId, first.automationEventId)
+    assert.equal(writes.events.length, 1)
+  })
+
+  test("appointment creation can match no service and suppress a repeated chain enrollment", async () => {
+    const { prismaTx, appointment, writes } = fixture([
+      appointmentAutomation("no-service", [{ source: "APPOINTMENT_FIELD", fieldKey: "serviceId", operator: "IS_EMPTY" }]),
+      appointmentAutomation("with-service", [{ source: "APPOINTMENT_FIELD", fieldKey: "serviceId", operator: "IS_NOT_EMPTY" }]),
+    ])
+    appointment.serviceId = null
+    appointment.service = null
+    const first = await queueAppointmentCreatedAutomationEvent(prismaTx, { tenantId: "tenant-1", contactId: "contact-1", appointmentId: "appointment-1", actorUserId: null })
+    assert.equal(first.matchedCount, 1)
+    assert.equal(writes.events[0].appointmentSnapshot.serviceId, null)
+    const repeated = await queueAppointmentCreatedAutomationEvent(prismaTx, { tenantId: "tenant-1", contactId: "contact-1", appointmentId: "appointment-2", actorUserId: null, chainId: first.automationEventId, chainDepth: 1 })
+    assert.equal(repeated.matchedCount, 0)
+    assert.match(writes.dispatches.at(-1).decisionDetails, /already ran for this automation chain/)
+    const separateBooking = await queueAppointmentCreatedAutomationEvent(prismaTx, { tenantId: "tenant-1", contactId: "contact-1", appointmentId: "appointment-3", actorUserId: null })
+    assert.equal(separateBooking.matchedCount, 1)
+    const overDepth = await queueAppointmentCreatedAutomationEvent(prismaTx, { tenantId: "tenant-1", contactId: "contact-1", appointmentId: "appointment-4", actorUserId: null, chainId: first.automationEventId, chainDepth: 21 })
+    assert.equal(overDepth.matchedCount, 0)
+    assert.match(writes.dispatches.at(-1).decisionDetails, /maximum depth.*appointment was saved/i)
   })
   const birthdayAutomation = (id: string, conditions: any[] = []) => ({
     id, name: id, triggerType: "BIRTHDAY_REMINDER", birthdayLocalTime: "09:00", conditions, actions: [WAIT_ACTION],
