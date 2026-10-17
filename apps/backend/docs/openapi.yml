@@ -6745,6 +6745,17 @@ components:
               enum: [APPOINTMENT_CREATED]
         - type: object
           additionalProperties: false
+          required: [type, status]
+          description: Runs when an existing appointment actually changes to the selected status, from any previous status. Optional contact field, active non-sensitive custom field, and tag filters use the contact state at the time of the change. Each automation can enroll once per chain.
+          properties:
+            type:
+              type: string
+              enum: [APPOINTMENT_STATUS_CHANGED]
+            status:
+              type: string
+              enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED, COMPLETED]
+        - type: object
+          additionalProperties: false
           required: [type, localTime]
           description: Runs once per contact per tenant-local calendar year on their birthday. Uses the tenant timezone, excludes deceased contacts, and evaluates optional contact field, active non-sensitive custom field, and tag filters when queued. February 29 birthdays use February 28 in non-leap years.
           properties:
@@ -13188,7 +13199,7 @@ components:
           nullable: true
         status:
           type: string
-          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED]
+          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED, COMPLETED]
     CalendarEventsResponse:
       type: object
       properties:
@@ -13388,7 +13399,7 @@ components:
               format: date-time
             status:
               type: string
-              enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED]
+              enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED, COMPLETED]
             assignedToUserId:
               type: string
               nullable: true
@@ -13425,7 +13436,7 @@ components:
           type: boolean
         status:
           type: string
-          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED]
+          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED, COMPLETED]
     CalendarAppointmentConflictResponse:
       type: object
       properties:

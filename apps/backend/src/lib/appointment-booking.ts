@@ -1,7 +1,7 @@
-import { Prisma, type PrismaClient } from "../generated/prisma/index.js"
+import { Prisma, type AppointmentStatus, type PrismaClient } from "../generated/prisma/index.js"
 
 import { prisma } from "./prisma.js"
-import { queueAppointmentCreatedAutomationEvent } from "./automation-event-queue.js"
+import { queueAppointmentCreatedAutomationEvent, queueAppointmentStatusChangedAutomationEvent } from "./automation-event-queue.js"
 
 const DEFAULT_TIMEZONE = "America/Chicago"
 const CALENDAR_SLOT_DURATION_OPTIONS = [15, 30, 45, 60, 120] as const
@@ -49,6 +49,7 @@ type UpdateAppointmentAtomicallyParams = {
   startAt: Date
   endAt: Date
   isAllDay: boolean
+  status?: AppointmentStatus
 }
 
 type AppointmentAuditActionValue =
@@ -56,6 +57,11 @@ type AppointmentAuditActionValue =
   | "REASSIGNED"
   | "RESCHEDULED"
   | "CANCELED"
+  | "STATUS_CHANGED"
+
+export function formatAppointmentStatusLabel(status: string) {
+  return status.toLowerCase().split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ")
+}
 
 export function getSafeTimezone(timezone?: string | null) {
   return timezone?.trim() || DEFAULT_TIMEZONE
@@ -660,7 +666,7 @@ async function createAppointmentAuditLog(
     message: string
   },
 ) {
-  await tx.appointmentAuditLog.create({
+  return tx.appointmentAuditLog.create({
     data: {
       tenantId: params.tenantId,
       appointmentId: params.appointmentId,
@@ -669,6 +675,39 @@ async function createAppointmentAuditLog(
       action: params.action,
       message: params.message,
     },
+  })
+}
+
+export async function recordAppointmentStatusChange(
+  tx: Prisma.TransactionClient,
+  params: {
+    tenantId: string
+    appointmentId: string
+    contactId: string
+    actorUserId: string | null
+    actorDisplayName: string
+    previousStatus: AppointmentStatus
+    status: AppointmentStatus
+  },
+) {
+  if (params.previousStatus === params.status) return null
+  const audit = await createAppointmentAuditLog(tx, {
+    tenantId: params.tenantId,
+    appointmentId: params.appointmentId,
+    actorUserId: params.actorUserId,
+    actorDisplayName: params.actorDisplayName,
+    action: params.status === "CANCELED" ? "CANCELED" : "STATUS_CHANGED",
+    message: `${params.actorDisplayName} changed the appointment status from ${formatAppointmentStatusLabel(params.previousStatus)} to ${formatAppointmentStatusLabel(params.status)}.`,
+  })
+  return queueAppointmentStatusChangedAutomationEvent(tx, {
+    tenantId: params.tenantId,
+    contactId: params.contactId,
+    appointmentId: params.appointmentId,
+    actorUserId: params.actorUserId,
+    previousStatus: params.previousStatus,
+    status: params.status,
+    changedAt: audit.createdAt,
+    causationKey: `appointment-status-audit:${audit.id}`,
   })
 }
 
@@ -1401,6 +1440,7 @@ export async function updateAppointmentAtomically(
     try {
       return await prisma.$transaction(
         async (tx) => {
+          await tx.$queryRawUnsafe('SELECT id FROM "Appointment" WHERE "tenantId" = $1 AND id = $2 FOR UPDATE', params.tenantId, params.appointmentId)
           const existing = await tx.appointment.findFirst({
             where: {
               id: params.appointmentId,
@@ -1412,6 +1452,7 @@ export async function updateAppointmentAtomically(
               assignedToUserId: true,
               startAt: true,
               endAt: true,
+              status: true,
               assignedTo: {
                 select: {
                   name: true,
@@ -1475,20 +1516,23 @@ export async function updateAppointmentAtomically(
             })
           }
 
-          const availability = await evaluateAvailability(tx, {
-            tenantId: params.tenantId,
-            contactId: params.contactId,
-            assignedToUserId: params.assignedToUserId,
-            startAt: params.startAt,
-            endAt: params.endAt,
-            appointmentId: params.appointmentId,
-          })
+          const nextStatus = params.status ?? existing.status
+          if (nextStatus === "SCHEDULED") {
+            const availability = await evaluateAvailability(tx, {
+              tenantId: params.tenantId,
+              contactId: params.contactId,
+              assignedToUserId: params.assignedToUserId,
+              startAt: params.startAt,
+              endAt: params.endAt,
+              appointmentId: params.appointmentId,
+            })
 
-          if (!availability.available) {
-            return {
-              ok: false as const,
-              error: "APPOINTMENT_TIME_UNAVAILABLE" as const,
-              availability,
+            if (!availability.available) {
+              return {
+                ok: false as const,
+                error: "APPOINTMENT_TIME_UNAVAILABLE" as const,
+                availability,
+              }
             }
           }
 
@@ -1505,7 +1549,7 @@ export async function updateAppointmentAtomically(
               startAt: params.startAt,
               endAt: params.endAt,
               isAllDay: params.isAllDay,
-              status: "SCHEDULED",
+              status: nextStatus,
             },
             select: {
               id: true,
@@ -1551,9 +1595,20 @@ export async function updateAppointmentAtomically(
             })
           }
 
+          const automation = await recordAppointmentStatusChange(tx, {
+            tenantId: params.tenantId,
+            appointmentId: appointment.id,
+            contactId: appointment.contactId,
+            actorUserId: params.actorUserId,
+            actorDisplayName: params.actorDisplayName,
+            previousStatus: existing.status,
+            status: nextStatus,
+          })
+
           return {
             ok: true as const,
             appointment,
+            automation,
           }
         },
         {

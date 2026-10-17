@@ -254,6 +254,7 @@ enum AppointmentStatus {
   SHOW
   NO_SHOW
   CANCELED
+  COMPLETED
 }
 
 enum AppointmentAuditAction {
@@ -261,6 +262,7 @@ enum AppointmentAuditAction {
   REASSIGNED
   RESCHEDULED
   CANCELED
+  STATUS_CHANGED
 }
 
 enum CalendarScheduleScope {
@@ -300,6 +302,7 @@ enum AutomationTriggerType {
   TASK_ADDED
   TASK_COMPLETED
   APPOINTMENT_CREATED
+  APPOINTMENT_STATUS_CHANGED
   BIRTHDAY_REMINDER
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
@@ -444,6 +447,7 @@ enum AutomationNodeEventSource {
   TASK_ADDED
   TASK_COMPLETED
   APPOINTMENT_CREATED
+  APPOINTMENT_STATUS_CHANGED
   BIRTHDAY_REMINDER
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
@@ -1508,6 +1512,7 @@ model Automation {
   isEnabled     Boolean               @default(false)
   triggerType   AutomationTriggerType
   birthdayLocalTime String?
+  appointmentTargetStatus AppointmentStatus?
   pipelineId    String?
   sourceStageId String?
   targetStageId String?
@@ -1777,6 +1782,7 @@ model AutomationEvent {
   taskSnapshot          Json?
   appointmentId         String?
   appointmentSnapshot   Json?
+  contactSnapshot       Json?
   birthdaySnapshot      Json?
   actorUserId           String?
   actorName             String?

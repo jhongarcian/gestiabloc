@@ -81,6 +81,7 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "TASK_ADDED",
   "TASK_COMPLETED",
   "APPOINTMENT_CREATED",
+  "APPOINTMENT_STATUS_CHANGED",
   "BIRTHDAY_REMINDER",
   "OPPORTUNITY_CREATED",
   "OPPORTUNITY_STAGE_CHANGED",
@@ -697,6 +698,7 @@ export const AutomationUpsertSchema = z
       z.object({ type: z.literal("TASK_ADDED") }).strict(),
       z.object({ type: z.literal("TASK_COMPLETED") }).strict(),
       z.object({ type: z.literal("APPOINTMENT_CREATED") }).strict(),
+      z.object({ type: z.literal("APPOINTMENT_STATUS_CHANGED"), status: z.enum(["SCHEDULED", "CONFIRMED", "SHOW", "NO_SHOW", "CANCELED", "COMPLETED"]) }).strict(),
       z.object({ type: z.literal("BIRTHDAY_REMINDER"), localTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Choose a time in HH:mm format.") }).strict(),
       z.object({
         type: z.literal("OPPORTUNITY_CREATED"),
@@ -1359,7 +1361,7 @@ export async function validateAutomationConfiguration(
   input: AutomationInput,
   options: { sourceAutomationId?: string | null } = {},
 ) {
-  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED" || input.trigger.type === "TASK_COMPLETED" || input.trigger.type === "APPOINTMENT_CREATED" || input.trigger.type === "BIRTHDAY_REMINDER"
+  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED" || input.trigger.type === "TASK_COMPLETED" || input.trigger.type === "APPOINTMENT_CREATED" || input.trigger.type === "APPOINTMENT_STATUS_CHANGED" || input.trigger.type === "BIRTHDAY_REMINDER"
   const triggerPipelineId = "pipelineId" in input.trigger ? input.trigger.pipelineId : null
   const [pipelines, fields, statuses, taskStatuses, memberships, tags, services, publishedAutomations] = await Promise.all([
     prismaClient.opportunityPipeline.findMany
@@ -1522,6 +1524,9 @@ export async function validateAutomationConfiguration(
     }
     if (input.trigger.type === "TASK_COMPLETED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
       throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Task completed filters can use contact fields, custom fields, or tags.")
+    }
+    if (input.trigger.type === "APPOINTMENT_STATUS_CHANGED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Appointment status changed filters can use contact fields, custom fields, or tags.")
     }
     if (input.trigger.type === "BIRTHDAY_REMINDER" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
       throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Birthday reminder filters can use contact fields, custom fields, or tags.")
@@ -2698,6 +2703,7 @@ export async function validateAutomationConfiguration(
     isEnabled: input.isEnabled,
     triggerType: input.trigger.type === "OPPORTUNITY_STAGE_CHANGED" ? "OPPORTUNITY_CHANGED" as const : input.trigger.type,
     birthdayLocalTime: input.trigger.type === "BIRTHDAY_REMINDER" ? input.trigger.localTime : null,
+    appointmentTargetStatus: input.trigger.type === "APPOINTMENT_STATUS_CHANGED" ? input.trigger.status : null,
     pipelineId: "pipelineId" in input.trigger ? input.trigger.pipelineId : null,
     sourceStageId: null,
     targetStageId: configuredStageId,
@@ -2714,7 +2720,7 @@ export async function validateAutomationConfiguration(
 export type OpportunityAutomationEvent = {
   tenantId: string
   actorUserId: string | null
-  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "BIRTHDAY_REMINDER">
+  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER">
   opportunityId: string
   contactId: string
   pipelineId: string

@@ -275,6 +275,13 @@ export type ContactCreatedAutomationEvent = {
 export type TaskAddedAutomationEvent = ContactCreatedAutomationEvent & { taskId: string }
 export type TaskCompletedAutomationEvent = ContactCreatedAutomationEvent & { taskId: string; causationKey: string; completedAt: Date }
 export type AppointmentCreatedAutomationEvent = ContactCreatedAutomationEvent & { appointmentId: string }
+export type AppointmentStatusChangedAutomationEvent = ContactCreatedAutomationEvent & {
+  appointmentId: string
+  previousStatus: string
+  status: string
+  changedAt: Date
+  causationKey: string
+}
 export type BirthdayReminderAutomationEvent = ContactCreatedAutomationEvent & {
   automationId: string
   occurrenceYear: number
@@ -434,8 +441,8 @@ export async function queueContactChangedAutomationEvent(
 
 async function queueContactSnapshotAutomationEvent(
   prismaTx: any,
-  event: ContactCreatedAutomationEvent & { taskId?: string; appointmentId?: string; completedAt?: Date; automationId?: string; occurrenceYear?: number; localDate?: string; timezone?: string; scheduledLocalTime?: string; clockAt?: Date },
-  triggerType: "CONTACT_CREATED" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "BIRTHDAY_REMINDER",
+  event: ContactCreatedAutomationEvent & { taskId?: string; appointmentId?: string; completedAt?: Date; previousStatus?: string; status?: string; changedAt?: Date; automationId?: string; occurrenceYear?: number; localDate?: string; timezone?: string; scheduledLocalTime?: string; clockAt?: Date },
+  triggerType: "CONTACT_CREATED" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER",
 ): Promise<QueuedAutomationResult> {
   if (triggerType !== "CONTACT_CREATED" && typeof prismaTx.automation?.findMany !== "function") return {
     automationEventId: null,
@@ -512,13 +519,15 @@ async function queueContactSnapshotAutomationEvent(
     dueDate: task.dueDate?.toISOString() ?? null,
     ...(triggerType === "TASK_COMPLETED" ? { completedAt: event.completedAt?.toISOString() ?? new Date().toISOString() } : {}),
   } : null
-  const appointment = triggerType === "APPOINTMENT_CREATED" && event.appointmentId
+  const isAppointmentEvent = triggerType === "APPOINTMENT_CREATED" || triggerType === "APPOINTMENT_STATUS_CHANGED"
+  const appointment = isAppointmentEvent && event.appointmentId
     ? await prismaTx.appointment.findFirst({
         where: { tenantId: event.tenantId, id: event.appointmentId, contactId: event.contactId },
         select: { id: true, title: true, notes: true, serviceId: true, bookedByUserId: true, assignedToUserId: true, startAt: true, endAt: true, isAllDay: true, status: true, createdAt: true, service: { select: { name: true } } },
       })
     : null
-  if (triggerType === "APPOINTMENT_CREATED" && !appointment) throw new Error("Appointment not found while queuing automation.")
+  if (isAppointmentEvent && !appointment) throw new Error("Appointment not found while queuing automation.")
+  if (triggerType === "APPOINTMENT_STATUS_CHANGED" && appointment?.status !== event.status) throw new Error("Appointment status changed before queuing automation.")
   const appointmentSnapshot = appointment ? {
     id: appointment.id,
     title: appointment.title,
@@ -532,12 +541,17 @@ async function queueContactSnapshotAutomationEvent(
     isAllDay: appointment.isAllDay,
     status: appointment.status,
     createdAt: appointment.createdAt.toISOString(),
+    ...(triggerType === "APPOINTMENT_STATUS_CHANGED" ? {
+      previousStatus: event.previousStatus,
+      changedAt: event.changedAt?.toISOString(),
+    } : {}),
   } : null
   const matches = automations.filter((automation: any) =>
     automation.triggerType === triggerType &&
     evaluateAutomationConditions({ ...automation, conditions: automation.conditions.filter((condition: any) => condition.source !== "TASK_FIELD" && condition.source !== "APPOINTMENT_FIELD") }, { valueCents: null }, contact, catalog).matches &&
     (triggerType !== "TASK_ADDED" || evaluateAutomationTaskConditions(automation, taskSnapshot!).matches) &&
-    (triggerType !== "APPOINTMENT_CREATED" || evaluateAutomationAppointmentConditions(automation, appointmentSnapshot!).matches),
+    (triggerType !== "APPOINTMENT_CREATED" || evaluateAutomationAppointmentConditions(automation, appointmentSnapshot!).matches) &&
+    (triggerType !== "APPOINTMENT_STATUS_CHANGED" || automation.appointmentTargetStatus === event.status),
   )
   if (matches.length === 0) return {
     automationEventId: null,
@@ -598,11 +612,11 @@ async function queueContactSnapshotAutomationEvent(
       : "RUN" as const,
     decisionDetails: triggerType !== "CONTACT_CREATED"
       ? chainDepth > 20
-        ? `Skipped: the automation chain reached its maximum depth. The ${triggerType === "CONTACT_NOTE_ADDED" ? "note was saved" : triggerType === "TASK_ADDED" ? "task was saved" : triggerType === "TASK_COMPLETED" ? "task remains completed" : triggerType === "APPOINTMENT_CREATED" ? "appointment was saved" : "birthday reminder was saved"}.`
+        ? `Skipped: the automation chain reached its maximum depth. The ${triggerType === "CONTACT_NOTE_ADDED" ? "note was saved" : triggerType === "TASK_ADDED" ? "task was saved" : triggerType === "TASK_COMPLETED" ? "task remains completed" : isAppointmentEvent ? "appointment was saved" : "birthday reminder was saved"}.`
         : automation.id === event.sourceAutomationId
-          ? `Skipped: this automation ${triggerType === "TASK_COMPLETED" ? "completed the task" : triggerType === "TASK_ADDED" ? "created the task" : triggerType === "APPOINTMENT_CREATED" ? "created the appointment" : triggerType === "CONTACT_NOTE_ADDED" ? "created the note" : "started the reminder"} and cannot restart itself.`
+          ? `Skipped: this automation ${triggerType === "TASK_COMPLETED" ? "completed the task" : triggerType === "TASK_ADDED" ? "created the task" : triggerType === "APPOINTMENT_CREATED" ? "created the appointment" : triggerType === "APPOINTMENT_STATUS_CHANGED" ? "changed the appointment status" : triggerType === "CONTACT_NOTE_ADDED" ? "created the note" : "started the reminder"} and cannot restart itself.`
           : claimedAutomationIds.has(automation.id)
-            ? `${triggerType === "TASK_COMPLETED" ? "A task was completed" : triggerType === "TASK_ADDED" ? "A task was added" : triggerType === "APPOINTMENT_CREATED" ? "An appointment was created" : triggerType === "CONTACT_NOTE_ADDED" ? "A note was added" : "The birthday reminder is due"} and the filters matched.`
+            ? `${triggerType === "TASK_COMPLETED" ? "A task was completed" : triggerType === "TASK_ADDED" ? "A task was added" : triggerType === "APPOINTMENT_CREATED" ? "An appointment was created" : triggerType === "APPOINTMENT_STATUS_CHANGED" ? "An appointment status changed" : triggerType === "CONTACT_NOTE_ADDED" ? "A note was added" : "The birthday reminder is due"} and the filters matched.`
             : "Skipped: this automation already ran for this automation chain."
       : "The contact matched the creation filters.",
     actionSnapshot: automation.actions.map(automationActionSnapshot),
@@ -620,6 +634,15 @@ async function queueContactSnapshotAutomationEvent(
     taskSnapshot: taskSnapshot ?? undefined,
     appointmentId: appointmentSnapshot?.id ?? null,
     appointmentSnapshot: appointmentSnapshot ?? undefined,
+    contactSnapshot: triggerType === "APPOINTMENT_STATUS_CHANGED" ? {
+      fields: Object.fromEntries(Object.entries(contact)
+        .filter(([key]) => !["tags", "customFieldValues", "servicingAgentMembership", "additionalAgentMembership"].includes(key))
+        .map(([key, value]) => [key, value instanceof Date ? value.toISOString() : value])),
+      tagIds: contact.tags.map((item: { tagId: string }) => item.tagId),
+      customFieldValues: contact.customFieldValues
+        .filter((item: { fieldId: string }) => catalog.fieldMap.has(item.fieldId))
+        .map((item: { fieldId: string; value: unknown }) => ({ fieldId: item.fieldId, value: item.value })),
+    } : undefined,
     birthdaySnapshot: triggerType === "BIRTHDAY_REMINDER" ? {
       dateOfBirth: contact.dateOfBirth.toISOString().slice(0, 10),
       localDate: event.localDate,
@@ -698,6 +721,10 @@ export function queueTaskCompletedAutomationEvent(prismaTx: any, event: TaskComp
 
 export function queueAppointmentCreatedAutomationEvent(prismaTx: any, event: AppointmentCreatedAutomationEvent): Promise<QueuedAutomationResult> {
   return queueContactSnapshotAutomationEvent(prismaTx, { ...event, causationKey: event.causationKey ?? `appointment:${event.appointmentId}:created` }, "APPOINTMENT_CREATED")
+}
+
+export function queueAppointmentStatusChangedAutomationEvent(prismaTx: any, event: AppointmentStatusChangedAutomationEvent): Promise<QueuedAutomationResult> {
+  return queueContactSnapshotAutomationEvent(prismaTx, event, "APPOINTMENT_STATUS_CHANGED")
 }
 
 export function queueBirthdayReminderAutomationEvent(prismaTx: any, event: BirthdayReminderAutomationEvent): Promise<QueuedAutomationResult> {

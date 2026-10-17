@@ -2,7 +2,7 @@ import type { Edge, Node } from "@xyflow/react"
 
 import { formatDateTimeForDisplay } from "@/lib/date-time"
 
-import type { AutomationAction, AutomationCatalog, AutomationCondition, AutomationContactChangeRule, AutomationTriggerType } from "./automation-types"
+import type { AppointmentAutomationStatus, AutomationAction, AutomationCatalog, AutomationCondition, AutomationContactChangeRule, AutomationTriggerType } from "./automation-types"
 
 export type AutomationFlowNodeData = {
   kind: "trigger" | "action" | "add" | "branch" | "complete" | "route-bound"
@@ -42,6 +42,7 @@ export type AutomationFlowDraft = {
   changeType?: "" | "STAGE_ENTERED" | "RESULT_WON" | "RESULT_LOST"
   targetStageId: string
   birthdayLocalTime?: string
+  appointmentTargetStatus?: AppointmentAutomationStatus | ""
   changes?: AutomationContactChangeRule[]
   conditions: AutomationCondition[]
   actions: AutomationAction[]
@@ -197,6 +198,8 @@ export function buildAutomationFlowGraph(
         ? "Starts when a contact task is completed"
       : draft.triggerType === "APPOINTMENT_CREATED"
         ? "Starts when a contact appointment is booked"
+      : draft.triggerType === "APPOINTMENT_STATUS_CHANGED"
+        ? `Changes to ${draft.appointmentTargetStatus ? draft.appointmentTargetStatus.replaceAll("_", " ").toLowerCase() : "select a status"}`
       : draft.triggerType === "BIRTHDAY_REMINDER"
         ? `Runs on each birthday at ${draft.birthdayLocalTime ?? "09:00"}`
       : draft.triggerType === "CONTACT_CHANGED"
@@ -232,6 +235,8 @@ export function buildAutomationFlowGraph(
               ? "Task completed"
             : draft.triggerType === "APPOINTMENT_CREATED"
               ? "Appointment created"
+            : draft.triggerType === "APPOINTMENT_STATUS_CHANGED"
+              ? "Appointment status changed"
             : draft.triggerType === "BIRTHDAY_REMINDER"
               ? "Birthday reminder"
             : draft.triggerType === "CONTACT_CHANGED"

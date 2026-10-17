@@ -157,6 +157,7 @@ import { AutomationExecutionLogsTab } from "./automation-execution-logs-tab"
 import { AutomationFieldPicker } from "./automation-field-picker"
 import { AutomationWaitingRunsSheet } from "./automation-waiting-runs-sheet"
 import type {
+  AppointmentAutomationStatus,
   AutomationAction,
   AutomationCatalog,
   AutomationCondition,
@@ -210,6 +211,7 @@ type Draft = {
   changeType: AutomationChangeType
   targetStageId: string
   birthdayLocalTime: string
+  appointmentTargetStatus: AppointmentAutomationStatus | ""
   changes: AutomationContactChangeRule[]
   conditions: AutomationCondition[]
   actions: AutomationAction[]
@@ -229,6 +231,7 @@ const EMPTY_DRAFT: Draft = {
   changeType: "",
   targetStageId: "",
   birthdayLocalTime: "09:00",
+  appointmentTargetStatus: "",
   changes: [],
   conditions: [],
   actions: [],
@@ -496,7 +499,7 @@ const TRIGGER_GROUPS = [
     label: "Appointment triggers",
     description: "Start when an appointment is booked.",
     icon: CalendarClock,
-    triggers: ["APPOINTMENT_CREATED"],
+    triggers: ["APPOINTMENT_CREATED", "APPOINTMENT_STATUS_CHANGED"],
   },
   {
     id: "OPPORTUNITY",
@@ -553,6 +556,12 @@ const TRIGGER_DEFINITIONS: Record<AutomationBuilderTriggerType, {
     label: "Appointment created",
     description: "When a contact appointment is booked.",
     icon: CalendarClock,
+    group: "APPOINTMENT",
+  },
+  APPOINTMENT_STATUS_CHANGED: {
+    label: "Appointment status changed",
+    description: "When an appointment changes to a selected status.",
+    icon: BadgeCheck,
     group: "APPOINTMENT",
   },
   BIRTHDAY_REMINDER: {
@@ -2106,7 +2115,7 @@ function conditionDefaults(
 function defaultCondition(catalog: AutomationCatalog, triggerType?: AutomationBuilderTriggerType | null) {
   if (triggerType === "TASK_ADDED") return conditionDefaults("TASK_FIELD", catalog)
   if (triggerType === "APPOINTMENT_CREATED") return conditionDefaults("APPOINTMENT_FIELD", catalog)
-  if (triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "BIRTHDAY_REMINDER") return conditionDefaults("CONTACT_FIELD", catalog)
+  if (triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_STATUS_CHANGED" || triggerType === "BIRTHDAY_REMINDER") return conditionDefaults("CONTACT_FIELD", catalog)
   if (catalog.customFields.length > 0) return conditionDefaults("CONTACT_CUSTOM_FIELD", catalog)
   if (catalog.statuses.length > 0) return conditionDefaults("CONTACT_STATUS", catalog)
   if (catalog.users.length > 0) return conditionDefaults("CONTACT_ASSIGNEE", catalog)
@@ -2123,8 +2132,9 @@ function apiError(error: unknown) {
 function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   if (!draft.name.trim()) return "Enter an automation name."
   if (!draft.triggerType) return "Select a trigger."
-  if (draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "BIRTHDAY_REMINDER" && !draft.pipelineId) return "Select a pipeline."
+  if (draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "APPOINTMENT_STATUS_CHANGED" && draft.triggerType !== "BIRTHDAY_REMINDER" && !draft.pipelineId) return "Select a pipeline."
   if (draft.triggerType === "BIRTHDAY_REMINDER" && !isAutomationTriggerReady(draft)) return "Choose a valid birthday reminder time."
+  if (draft.triggerType === "APPOINTMENT_STATUS_CHANGED" && !isAutomationTriggerReady(draft)) return "Select an appointment status."
   if (draft.triggerType === "CONTACT_CHANGED" && !isAutomationTriggerReady(draft)) return "Complete at least one contact change rule."
   if (draft.triggerType === "CONTACT_TAG" && !isAutomationTriggerReady(draft)) return "Select a tag and whether it is added or removed."
   if (draft.triggerType === "TASK_ADDED") {
@@ -2263,6 +2273,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
             isEnabled: record.isEnabled,
             ...hydratedTrigger,
             birthdayLocalTime: hydratedTrigger.birthdayLocalTime ?? "09:00",
+            appointmentTargetStatus: hydratedTrigger.appointmentTargetStatus ?? "",
             changes: hydratedTrigger.changes ?? [],
             conditions: record.conditions,
             actions: record.actions,
@@ -3181,10 +3192,10 @@ function TriggerEditor({
     onChange({
       ...draft,
       triggerType,
-      pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_CREATED" || triggerType === "BIRTHDAY_REMINDER" ? "" : draft.pipelineId,
+      pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_CREATED" || triggerType === "APPOINTMENT_STATUS_CHANGED" || triggerType === "BIRTHDAY_REMINDER" ? "" : draft.pipelineId,
       changeType: "",
       targetStageId: "",
-      conditions: triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "BIRTHDAY_REMINDER"
+      conditions: triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_STATUS_CHANGED" || triggerType === "BIRTHDAY_REMINDER"
         ? draft.conditions.filter((condition) => ["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
         : triggerType === "TASK_ADDED"
           ? draft.conditions.filter((condition) => ["TASK_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
@@ -3198,6 +3209,7 @@ function TriggerEditor({
         : triggerType === "CONTACT_CHANGED" && (draft.changes.length === 0 || draft.changes[0]?.source === "CONTACT_TAGS" && draft.changes.length === 1)
           ? [{ source: "CONTACT_FIELD", operator: "HAS_CHANGED", fieldKey: catalog.contactUpdateFields[0]?.key ?? "" }]
           : draft.changes,
+      appointmentTargetStatus: triggerType === "APPOINTMENT_STATUS_CHANGED" ? draft.appointmentTargetStatus : "",
     })
     setIsChoosingTrigger(false)
   }
@@ -3360,7 +3372,33 @@ function TriggerEditor({
             </FieldGroup>
           </> : null}
 
-          {draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "BIRTHDAY_REMINDER" ? <>
+          {draft.triggerType === "APPOINTMENT_STATUS_CHANGED" ? <>
+            <Separator />
+            <FieldGroup className="gap-3">
+              <Field>
+                <FieldLabel htmlFor="automation-appointment-target-status">Run when status changes to</FieldLabel>
+                <Select
+                  value={draft.appointmentTargetStatus}
+                  onValueChange={(status) => onChange({ ...draft, appointmentTargetStatus: status as AppointmentAutomationStatus })}
+                >
+                  <SelectTrigger id="automation-appointment-target-status" className={COMPACT_SELECT_TRIGGER_CLASS}>
+                    <SelectValue placeholder="Select a status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="SCHEDULED">Scheduled</SelectItem>
+                    <SelectItem value="CONFIRMED">Confirmed</SelectItem>
+                    <SelectItem value="SHOW">Show</SelectItem>
+                    <SelectItem value="NO_SHOW">No Show</SelectItem>
+                    <SelectItem value="CANCELED">Canceled</SelectItem>
+                    <SelectItem value="COMPLETED">Completed</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">Runs only when an existing appointment changes to this status.</p>
+              </Field>
+            </FieldGroup>
+          </> : null}
+
+          {draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "APPOINTMENT_STATUS_CHANGED" && draft.triggerType !== "BIRTHDAY_REMINDER" ? <>
           <Separator />
           <section>
             <FieldGroup className="gap-3">
@@ -3699,10 +3737,10 @@ function ConditionCard({
             {triggerType === "APPOINTMENT_CREATED" ? <SelectItem value="APPOINTMENT_FIELD">Appointment field</SelectItem> : null}
             <SelectItem value="CONTACT_FIELD">Contact field</SelectItem>
             <SelectItem value="CONTACT_CUSTOM_FIELD" disabled={catalog.customFields.length === 0}>Custom field</SelectItem>
-            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem> : null}
-            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem> : null}
+            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem> : null}
+            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem> : null}
             <SelectItem value="CONTACT_TAGS" disabled={catalog.tags.length === 0}>Tags</SelectItem>
-            {triggerType !== "CONTACT_CREATED" && triggerType !== "CONTACT_CHANGED" && triggerType !== "CONTACT_TAG" && triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
+            {triggerType !== "CONTACT_CREATED" && triggerType !== "CONTACT_CHANGED" && triggerType !== "CONTACT_TAG" && triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
           </SelectContent>
         </Select>
       </div>

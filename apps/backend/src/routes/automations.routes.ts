@@ -151,6 +151,8 @@ function serializeAutomation(record: any) {
         ? { type: "TASK_COMPLETED" as const }
         : record.triggerType === "APPOINTMENT_CREATED"
         ? { type: "APPOINTMENT_CREATED" as const }
+        : record.triggerType === "APPOINTMENT_STATUS_CHANGED"
+        ? { type: "APPOINTMENT_STATUS_CHANGED" as const, status: record.appointmentTargetStatus }
         : record.triggerType === "BIRTHDAY_REMINDER"
         ? { type: "BIRTHDAY_REMINDER" as const, localTime: record.birthdayLocalTime ?? "09:00" }
         : record.triggerType === "CONTACT_TAG"
@@ -876,6 +878,7 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
         isEnabled: normalized.isEnabled,
         triggerType: normalized.triggerType,
         birthdayLocalTime: normalized.birthdayLocalTime,
+        appointmentTargetStatus: normalized.appointmentTargetStatus,
         pipelineId: normalized.pipelineId,
         sourceStageId: normalized.sourceStageId,
         targetStageId: normalized.targetStageId,
@@ -931,6 +934,7 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
           isEnabled: normalized.isEnabled,
           triggerType: normalized.triggerType,
           birthdayLocalTime: normalized.birthdayLocalTime,
+          appointmentTargetStatus: normalized.appointmentTargetStatus,
           pipelineId: normalized.pipelineId,
           sourceStageId: normalized.sourceStageId,
           targetStageId: normalized.targetStageId,

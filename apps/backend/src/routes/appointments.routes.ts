@@ -5,6 +5,7 @@ import {
   buildAppointmentSlots,
   createAppointmentAtomically,
   evaluateAvailability,
+  recordAppointmentStatusChange,
   getDefaultRange,
   getSafeCalendarBufferMode,
   getSafeCalendarSlotDuration,
@@ -123,7 +124,7 @@ const UpdateAppointmentSchema = z
     endAt: z.string().datetime().optional(),
     isAllDay: z.boolean().optional(),
     status: z
-      .enum(["SCHEDULED", "CONFIRMED", "SHOW", "NO_SHOW", "CANCELED"])
+      .enum(["SCHEDULED", "CONFIRMED", "SHOW", "NO_SHOW", "CANCELED", "COMPLETED"])
       .optional(),
   })
   .superRefine((value, ctx) => {
@@ -1183,17 +1184,20 @@ router.patch("/:tenantId/:appointmentId", requireAuth, async (req, res, next) =>
       return res.status(404).json({ error: "APPOINTMENT_NOT_FOUND" })
     }
 
-    if (
-      payload.status &&
-      payload.status !== "SCHEDULED"
-    ) {
-      const updatedAppointment = await prisma.$transaction(async (tx) => {
+    if (payload.status && payload.status !== "SCHEDULED" && Object.keys(payload).length === 1) {
+      const statusResult = await prisma.$transaction(async (tx) => {
+        await tx.$queryRawUnsafe('SELECT id FROM "Appointment" WHERE "tenantId" = $1 AND id = $2 FOR UPDATE', tenantId, appointmentId)
+        const locked = await tx.appointment.findFirst({
+          where: { tenantId, id: appointmentId },
+          select: { status: true },
+        })
+        if (!locked) return null
         const updated = await tx.appointment.update({
           where: {
             id: appointmentId,
           },
           data: {
-            status: payload.status,
+            status: payload.status!,
           },
           select: {
             id: true,
@@ -1207,31 +1211,28 @@ router.patch("/:tenantId/:appointmentId", requireAuth, async (req, res, next) =>
           },
         })
 
-        if (
-          payload.status === "CANCELED" &&
-          existingAppointment.status !== "CANCELED"
-        ) {
-          await tx.appointmentAuditLog.create({
-            data: {
-              tenantId,
-              appointmentId,
-              actorUserId: authed.user.id,
-              actorDisplayName: getActorDisplayName(authed.user),
-              action: "CANCELED",
-              message: `${getActorDisplayName(authed.user)} canceled this appointment.`,
-            },
-          })
-        }
+        const automation = await recordAppointmentStatusChange(tx, {
+          tenantId,
+          appointmentId,
+          contactId: updated.contactId,
+          actorUserId: authed.user.id,
+          actorDisplayName: getActorDisplayName(authed.user),
+          previousStatus: locked.status,
+          status: payload.status!,
+        })
 
-        return updated
+        return { appointment: updated, automation }
       })
+
+      if (!statusResult) return res.status(404).json({ error: "APPOINTMENT_NOT_FOUND" })
+      if (statusResult.automation?.automationEventId) kickAutomationEventWorker()
 
       return res.json({
         ok: true,
         item: {
-          ...updatedAppointment,
-          startAt: updatedAppointment.startAt.toISOString(),
-          endAt: updatedAppointment.endAt.toISOString(),
+          ...statusResult.appointment,
+          startAt: statusResult.appointment.startAt.toISOString(),
+          endAt: statusResult.appointment.endAt.toISOString(),
         },
       })
     }
@@ -1319,6 +1320,7 @@ router.patch("/:tenantId/:appointmentId", requireAuth, async (req, res, next) =>
       startAt: nextStartAt,
       endAt: nextEndAt,
       isAllDay: nextIsAllDay,
+      status: payload.status,
     })
 
     if (!updateResult.ok) {
@@ -1331,6 +1333,8 @@ router.patch("/:tenantId/:appointmentId", requireAuth, async (req, res, next) =>
         availability: updateResult.availability,
       })
     }
+
+    if (updateResult.automation?.automationEventId) kickAutomationEventWorker()
 
     return res.json({
       ok: true,

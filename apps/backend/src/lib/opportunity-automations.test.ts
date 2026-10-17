@@ -1892,6 +1892,18 @@ describe("AutomationUpsertSchema", () => {
     await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "APPOINTMENT_FIELD", fieldKey: "startAt", operator: "EQUALS", compareValue: "2026-10-20" }] })), /timezone/)
     await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-secret", operator: "EQUALS", compareValue: "secret" }] })), /non-sensitive custom field/)
     await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "name", operator: "CONTAINS", compareValue: "call" }] })), /Appointment created filters/)
+    const statusBase = {
+      ...base,
+      trigger: { type: "APPOINTMENT_STATUS_CHANGED", status: "COMPLETED" },
+      conditions: base.conditions.filter((condition) => condition.source !== "APPOINTMENT_FIELD"),
+    }
+    const statusNormalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(statusBase))
+    assert.equal(statusNormalized.triggerType, "APPOINTMENT_STATUS_CHANGED")
+    assert.equal(statusNormalized.appointmentTargetStatus, "COMPLETED")
+    assert.equal(statusNormalized.conditions.length, 3)
+    assert.equal(AutomationUpsertSchema.safeParse({ ...statusBase, trigger: { type: "APPOINTMENT_STATUS_CHANGED", status: "OTHER" } }).success, false)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...statusBase, conditions: [base.conditions[0]] })), /Appointment status changed filters/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...statusBase, conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-secret", operator: "EQUALS", compareValue: "secret" }] })), /non-sensitive custom field/)
   })
   test("task-added validates task fields and safe contact filters", async () => {
     const prismaClient = {

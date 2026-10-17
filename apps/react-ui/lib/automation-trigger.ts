@@ -1,4 +1,4 @@
-import type { AutomationContactChangeRule, AutomationTriggerType } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types"
+import type { AppointmentAutomationStatus, AutomationContactChangeRule, AutomationTriggerType } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types"
 
 export type AutomationBuilderTriggerType = Exclude<AutomationTriggerType, "OPPORTUNITY_STAGE_CHANGED">
 export type AutomationChangeType = "" | "STAGE_ENTERED" | "RESULT_WON" | "RESULT_LOST"
@@ -10,6 +10,7 @@ export type AutomationTriggerDraft = {
   targetStageId: string
   changes?: AutomationContactChangeRule[]
   birthdayLocalTime?: string
+  appointmentTargetStatus?: AppointmentAutomationStatus | ""
 }
 
 type SavedAutomationTrigger =
@@ -20,6 +21,7 @@ type SavedAutomationTrigger =
   | { type: "TASK_ADDED" }
   | { type: "TASK_COMPLETED" }
   | { type: "APPOINTMENT_CREATED" }
+  | { type: "APPOINTMENT_STATUS_CHANGED"; status: AppointmentAutomationStatus }
   | { type: "BIRTHDAY_REMINDER"; localTime: string }
   | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
   | { type: "OPPORTUNITY_STAGE_CHANGED"; pipelineId: string; targetStageId: string }
@@ -38,6 +40,7 @@ export function isAutomationTriggerReady(draft: AutomationTriggerDraft | null) {
   if (draft.triggerType === "TASK_ADDED") return true
   if (draft.triggerType === "TASK_COMPLETED") return true
   if (draft.triggerType === "APPOINTMENT_CREATED") return true
+  if (draft.triggerType === "APPOINTMENT_STATUS_CHANGED") return ["SCHEDULED", "CONFIRMED", "SHOW", "NO_SHOW", "CANCELED", "COMPLETED"].includes(draft.appointmentTargetStatus ?? "")
   if (draft.triggerType === "BIRTHDAY_REMINDER") return /^([01]\d|2[0-3]):[0-5]\d$/.test(draft.birthdayLocalTime ?? "09:00")
   if (draft.triggerType === "CONTACT_TAG") {
     return draft.changes?.length === 1 && draft.changes[0]?.source === "CONTACT_TAGS"
@@ -70,6 +73,10 @@ export function serializeAutomationTrigger(draft: AutomationTriggerDraft) {
   if (draft.triggerType === "TASK_ADDED") return { type: "TASK_ADDED" as const }
   if (draft.triggerType === "TASK_COMPLETED") return { type: "TASK_COMPLETED" as const }
   if (draft.triggerType === "APPOINTMENT_CREATED") return { type: "APPOINTMENT_CREATED" as const }
+  if (draft.triggerType === "APPOINTMENT_STATUS_CHANGED") {
+    if (!isAutomationTriggerReady(draft)) throw new Error("Select an appointment status.")
+    return { type: "APPOINTMENT_STATUS_CHANGED" as const, status: draft.appointmentTargetStatus as AppointmentAutomationStatus }
+  }
   if (draft.triggerType === "BIRTHDAY_REMINDER") return { type: "BIRTHDAY_REMINDER" as const, localTime: draft.birthdayLocalTime ?? "09:00" }
   if (draft.triggerType === "CONTACT_TAG") {
     const rule = draft.changes?.[0]
@@ -113,6 +120,9 @@ export function hydrateAutomationTrigger(trigger: SavedAutomationTrigger): Autom
   }
   if (trigger.type === "APPOINTMENT_CREATED") {
     return { triggerType: "APPOINTMENT_CREATED", pipelineId: "", changeType: "", targetStageId: "", changes: [] }
+  }
+  if (trigger.type === "APPOINTMENT_STATUS_CHANGED") {
+    return { triggerType: "APPOINTMENT_STATUS_CHANGED", pipelineId: "", changeType: "", targetStageId: "", changes: [], appointmentTargetStatus: trigger.status }
   }
   if (trigger.type === "BIRTHDAY_REMINDER") {
     return { triggerType: "BIRTHDAY_REMINDER", pipelineId: "", changeType: "", targetStageId: "", changes: [], birthdayLocalTime: trigger.localTime }

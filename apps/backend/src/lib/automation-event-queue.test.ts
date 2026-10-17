@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
-import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueAppointmentCreatedAutomationEvent, queueBirthdayReminderAutomationEvent, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent, queueTaskAddedAutomationEvent, queueTaskCompletedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
+import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueAppointmentCreatedAutomationEvent, queueAppointmentStatusChangedAutomationEvent, queueBirthdayReminderAutomationEvent, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent, queueTaskAddedAutomationEvent, queueTaskCompletedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
 
 const WAIT_ACTION = {
   id: "action-1",
@@ -168,6 +168,45 @@ describe("contact-linked automation events", () => {
   })
   const appointmentAutomation = (id: string, conditions: any[] = []) => ({
     id, name: id, triggerType: "APPOINTMENT_CREATED", conditions, actions: [WAIT_ACTION],
+  })
+  const appointmentStatusAutomation = (id: string, status: string, conditions: any[] = []) => ({
+    id, name: id, triggerType: "APPOINTMENT_STATUS_CHANGED", appointmentTargetStatus: status, conditions, actions: [WAIT_ACTION],
+  })
+
+  test("appointment status changes match one destination status and snapshot contact filters", async () => {
+    const filters = [
+      { source: "CONTACT_FIELD", fieldKey: "first_name", operator: "EQUALS", compareValue: "Mary" },
+      { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-source", operator: "EQUALS", compareValue: "Referral" },
+      { source: "CONTACT_TAGS", tagId: "tag-new", operator: "EQUALS" },
+    ]
+    const { prismaTx, appointment, contact, writes } = fixture([
+      appointmentStatusAutomation("match", "COMPLETED", filters),
+      appointmentStatusAutomation("wrong-status", "SHOW", filters),
+      appointmentStatusAutomation("wrong-contact", "COMPLETED", [{ source: "CONTACT_FIELD", fieldKey: "first_name", operator: "EQUALS", compareValue: "John" }]),
+    ])
+    appointment.status = "COMPLETED"
+    const event = { tenantId: "tenant-1", contactId: contact.id, appointmentId: appointment.id, actorUserId: "user-john", previousStatus: "CONFIRMED", status: "COMPLETED", changedAt: new Date("2026-10-20T16:00:00Z"), causationKey: "appointment-status-audit:1" }
+    const first = await queueAppointmentStatusChangedAutomationEvent(prismaTx, event)
+    assert.equal(first.matchedCount, 1)
+    assert.equal(writes.dispatches[0].automationId, "match")
+    assert.equal(writes.events[0].appointmentSnapshot.previousStatus, "CONFIRMED")
+    assert.equal(writes.events[0].appointmentSnapshot.status, "COMPLETED")
+    assert.equal(writes.events[0].contactSnapshot.fields.firstName, "Mary")
+    assert.deepEqual(writes.events[0].contactSnapshot.tagIds, ["tag-new"])
+    assert.deepEqual(writes.events[0].contactSnapshot.customFieldValues, [{ fieldId: "field-source", value: "Referral" }])
+    contact.firstName = "Changed later"
+    assert.equal(writes.events[0].contactSnapshot.fields.firstName, "Mary")
+    assert.equal((await queueAppointmentStatusChangedAutomationEvent(prismaTx, event)).automationEventId, first.automationEventId)
+    assert.equal(writes.events.length, 1)
+    appointment.status = "SHOW"
+    await queueAppointmentStatusChangedAutomationEvent(prismaTx, { ...event, previousStatus: "COMPLETED", status: "SHOW", causationKey: "appointment-status-audit:2" })
+    appointment.status = "COMPLETED"
+    contact.firstName = "Mary"
+    const again = await queueAppointmentStatusChangedAutomationEvent(prismaTx, { ...event, previousStatus: "SHOW", causationKey: "appointment-status-audit:3" })
+    assert.equal(again.matchedCount, 1)
+    const suppressed = await queueAppointmentStatusChangedAutomationEvent(prismaTx, { ...event, previousStatus: "SHOW", causationKey: "appointment-status-audit:4", chainId: first.automationEventId, chainDepth: 1 })
+    assert.equal(suppressed.matchedCount, 0)
+    assert.match(writes.dispatches.at(-1).decisionDetails, /already ran for this automation chain/)
   })
 
   test("appointment creation matches its service, details, and contact state at booking", async () => {
