@@ -32,6 +32,13 @@ describe("automation trigger payloads", () => {
     assert.deepEqual(serializeAutomationTrigger(draft), { type: "TASK_COMPLETED" })
     assert.deepEqual(hydrateAutomationTrigger({ type: "TASK_COMPLETED" }), draft)
   })
+  test("birthday reminder keeps its chosen local time", () => {
+    const draft = { triggerType: "BIRTHDAY_REMINDER" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes: [], birthdayLocalTime: "14:30" }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "BIRTHDAY_REMINDER", localTime: "14:30" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "BIRTHDAY_REMINDER", localTime: "14:30" }), draft)
+    assert.equal(isAutomationTriggerReady({ ...draft, birthdayLocalTime: "25:00" }), false)
+  })
   test("contact changes require rules and preserve their target values", () => {
     const changes = [
       { source: "CONTACT_ASSIGNEE" as const, operator: "HAS_CHANGED_TO" as const, assignedUserId: null },

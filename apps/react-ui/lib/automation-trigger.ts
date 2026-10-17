@@ -9,6 +9,7 @@ export type AutomationTriggerDraft = {
   changeType: AutomationChangeType
   targetStageId: string
   changes?: AutomationContactChangeRule[]
+  birthdayLocalTime?: string
 }
 
 type SavedAutomationTrigger =
@@ -18,6 +19,7 @@ type SavedAutomationTrigger =
   | { type: "CONTACT_NOTE_ADDED" }
   | { type: "TASK_ADDED" }
   | { type: "TASK_COMPLETED" }
+  | { type: "BIRTHDAY_REMINDER"; localTime: string }
   | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
   | { type: "OPPORTUNITY_STAGE_CHANGED"; pipelineId: string; targetStageId: string }
   | {
@@ -34,6 +36,7 @@ export function isAutomationTriggerReady(draft: AutomationTriggerDraft | null) {
   if (draft.triggerType === "CONTACT_NOTE_ADDED") return true
   if (draft.triggerType === "TASK_ADDED") return true
   if (draft.triggerType === "TASK_COMPLETED") return true
+  if (draft.triggerType === "BIRTHDAY_REMINDER") return /^([01]\d|2[0-3]):[0-5]\d$/.test(draft.birthdayLocalTime ?? "09:00")
   if (draft.triggerType === "CONTACT_TAG") {
     return draft.changes?.length === 1 && draft.changes[0]?.source === "CONTACT_TAGS"
       && Boolean(draft.changes[0].tagId) && ["ADDED", "REMOVED"].includes(draft.changes[0].operator)
@@ -64,6 +67,7 @@ export function serializeAutomationTrigger(draft: AutomationTriggerDraft) {
   if (draft.triggerType === "CONTACT_NOTE_ADDED") return { type: "CONTACT_NOTE_ADDED" as const }
   if (draft.triggerType === "TASK_ADDED") return { type: "TASK_ADDED" as const }
   if (draft.triggerType === "TASK_COMPLETED") return { type: "TASK_COMPLETED" as const }
+  if (draft.triggerType === "BIRTHDAY_REMINDER") return { type: "BIRTHDAY_REMINDER" as const, localTime: draft.birthdayLocalTime ?? "09:00" }
   if (draft.triggerType === "CONTACT_TAG") {
     const rule = draft.changes?.[0]
     if (draft.changes?.length !== 1 || rule?.source !== "CONTACT_TAGS" || !rule.tagId || !["ADDED", "REMOVED"].includes(rule.operator)) {
@@ -103,6 +107,9 @@ export function hydrateAutomationTrigger(trigger: SavedAutomationTrigger): Autom
   }
   if (trigger.type === "TASK_COMPLETED") {
     return { triggerType: "TASK_COMPLETED", pipelineId: "", changeType: "", targetStageId: "", changes: [] }
+  }
+  if (trigger.type === "BIRTHDAY_REMINDER") {
+    return { triggerType: "BIRTHDAY_REMINDER", pipelineId: "", changeType: "", targetStageId: "", changes: [], birthdayLocalTime: trigger.localTime }
   }
   if (trigger.type === "CONTACT_CHANGED") {
     return { triggerType: "CONTACT_CHANGED", pipelineId: "", changeType: "", targetStageId: "", changes: trigger.changes }

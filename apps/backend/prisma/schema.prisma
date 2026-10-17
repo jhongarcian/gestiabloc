@@ -299,6 +299,7 @@ enum AutomationTriggerType {
   CONTACT_NOTE_ADDED
   TASK_ADDED
   TASK_COMPLETED
+  BIRTHDAY_REMINDER
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
   OPPORTUNITY_CHANGED
@@ -440,6 +441,7 @@ enum AutomationNodeEventSource {
   CONTACT_NOTE_ADDED
   TASK_ADDED
   TASK_COMPLETED
+  BIRTHDAY_REMINDER
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
   OPPORTUNITY_CHANGED
@@ -709,6 +711,7 @@ model Tenant {
   automationEvents                  AutomationEvent[]
   automationDispatches              AutomationDispatch[]
   automationTriggerChainClaims      AutomationTriggerChainClaim[]
+  automationBirthdayClaims          AutomationBirthdayClaim[]
   automationSideEffects             AutomationSideEffect[]
   contactImports                    ContactImport[]
 
@@ -1501,6 +1504,7 @@ model Automation {
   name          String
   isEnabled     Boolean               @default(false)
   triggerType   AutomationTriggerType
+  birthdayLocalTime String?
   pipelineId    String?
   sourceStageId String?
   targetStageId String?
@@ -1768,6 +1772,7 @@ model AutomationEvent {
   opportunitySnapshotId String?
   taskId                String?
   taskSnapshot          Json?
+  birthdaySnapshot      Json?
   actorUserId           String?
   actorName             String?
   triggerType           AutomationTriggerType
@@ -1865,6 +1870,20 @@ model AutomationTriggerChainClaim {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@id([tenantId, chainId, automationId])
+}
+
+model AutomationBirthdayClaim {
+  tenantId       String
+  automationId   String
+  contactId      String
+  occurrenceYear Int
+  localDate      String
+  createdAt      DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, automationId, contactId, occurrenceYear])
+  @@index([tenantId, occurrenceYear])
 }
 
 model AutomationSideEffect {

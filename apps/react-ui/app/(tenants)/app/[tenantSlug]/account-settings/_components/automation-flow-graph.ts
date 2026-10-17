@@ -41,6 +41,7 @@ export type AutomationFlowDraft = {
   pipelineId: string
   changeType?: "" | "STAGE_ENTERED" | "RESULT_WON" | "RESULT_LOST"
   targetStageId: string
+  birthdayLocalTime?: string
   changes?: AutomationContactChangeRule[]
   conditions: AutomationCondition[]
   actions: AutomationAction[]
@@ -194,6 +195,8 @@ export function buildAutomationFlowGraph(
         ? "Starts when a task is added to a contact"
       : draft.triggerType === "TASK_COMPLETED"
         ? "Starts when a contact task is completed"
+      : draft.triggerType === "BIRTHDAY_REMINDER"
+        ? `Runs on each birthday at ${draft.birthdayLocalTime ?? "09:00"}`
       : draft.triggerType === "CONTACT_CHANGED"
         ? `All ${draft.changes?.length ?? 0} change rule${draft.changes?.length === 1 ? "" : "s"} in one update`
       : draft.triggerType === "CONTACT_TAG"
@@ -225,6 +228,8 @@ export function buildAutomationFlowGraph(
               ? "Task added"
             : draft.triggerType === "TASK_COMPLETED"
               ? "Task completed"
+            : draft.triggerType === "BIRTHDAY_REMINDER"
+              ? "Birthday reminder"
             : draft.triggerType === "CONTACT_CHANGED"
               ? "Contact changed"
             : draft.triggerType === "CONTACT_TAG"

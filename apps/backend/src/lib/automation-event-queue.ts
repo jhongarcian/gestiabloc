@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { contactSnapshotsDiffer, matchesContactChangeRules, type ContactChangeSnapshot } from "./contact-change-rules.js"
+import { birthdayLocalClock, isBirthdayOnLocalDate, isBirthdayReminderDue } from "./automation-birthday.js"
 
 import {
   AutomationExecutionError,
@@ -272,6 +273,14 @@ export type ContactCreatedAutomationEvent = {
 
 export type TaskAddedAutomationEvent = ContactCreatedAutomationEvent & { taskId: string }
 export type TaskCompletedAutomationEvent = ContactCreatedAutomationEvent & { taskId: string; causationKey: string; completedAt: Date }
+export type BirthdayReminderAutomationEvent = ContactCreatedAutomationEvent & {
+  automationId: string
+  occurrenceYear: number
+  localDate: string
+  timezone: string
+  scheduledLocalTime: string
+  clockAt: Date
+}
 
 export async function loadContactChangeSnapshot(prismaTx: any, tenantId: string, contactId: string): Promise<ContactChangeSnapshot | null> {
   if (typeof prismaTx.$queryRawUnsafe === "function") {
@@ -423,8 +432,8 @@ export async function queueContactChangedAutomationEvent(
 
 async function queueContactSnapshotAutomationEvent(
   prismaTx: any,
-  event: ContactCreatedAutomationEvent & { taskId?: string; completedAt?: Date },
-  triggerType: "CONTACT_CREATED" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED",
+  event: ContactCreatedAutomationEvent & { taskId?: string; completedAt?: Date; automationId?: string; occurrenceYear?: number; localDate?: string; timezone?: string; scheduledLocalTime?: string; clockAt?: Date },
+  triggerType: "CONTACT_CREATED" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "BIRTHDAY_REMINDER",
 ): Promise<QueuedAutomationResult> {
   if (triggerType !== "CONTACT_CREATED" && typeof prismaTx.automation?.findMany !== "function") return {
     automationEventId: null,
@@ -453,7 +462,7 @@ async function queueContactSnapshotAutomationEvent(
     }
   }
   const foundAutomations = await prismaTx.automation.findMany({
-    where: { tenantId: event.tenantId, isEnabled: true, triggerType },
+    where: { tenantId: event.tenantId, isEnabled: true, triggerType, ...(event.automationId ? { id: event.automationId } : {}) },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {
       conditions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
@@ -476,7 +485,18 @@ async function queueContactSnapshotAutomationEvent(
     }),
     getAutomationRuntimeCatalog(prismaTx, event.tenantId),
   ])
+  if (!contact && triggerType === "BIRTHDAY_REMINDER") return {
+    automationEventId: null, automationStatus: "NOT_APPLICABLE", queuedAutomationCount: 0,
+    matchedCount: 0, executedCount: 0, contactDeleted: false,
+  }
   if (!contact) throw new Error("Contact not found while queuing automation.")
+  if (triggerType === "BIRTHDAY_REMINDER") {
+    const current = birthdayLocalClock(event.clockAt!, event.timezone!)
+    if (automations[0]?.birthdayLocalTime !== event.scheduledLocalTime || contact.deceasedAt || current.localDate !== event.localDate || !isBirthdayOnLocalDate(contact.dateOfBirth, current.year, current.month, current.day) || !isBirthdayReminderDue(current.localTime, event.scheduledLocalTime!)) return {
+      automationEventId: null, automationStatus: "NOT_APPLICABLE", queuedAutomationCount: 0,
+      matchedCount: 0, executedCount: 0, contactDeleted: false,
+    }
+  }
   const task = isTaskEvent && event.taskId
     ? await prismaTx.task.findFirst({
         where: { tenantId: event.tenantId, id: event.taskId, contactId: event.contactId },
@@ -502,6 +522,17 @@ async function queueContactSnapshotAutomationEvent(
     matchedCount: 0,
     executedCount: 0,
     contactDeleted: false,
+  }
+  if (triggerType === "BIRTHDAY_REMINDER") {
+    const owned = await prismaTx.automationBirthdayClaim.createManyAndReturn({
+      data: [{ tenantId: event.tenantId, automationId: event.automationId, contactId: event.contactId, occurrenceYear: event.occurrenceYear, localDate: event.localDate }],
+      skipDuplicates: true,
+      select: { contactId: true },
+    })
+    if (owned.length === 0) return {
+      automationEventId: null, automationStatus: "NOT_APPLICABLE", queuedAutomationCount: 0,
+      matchedCount: 0, executedCount: 0, contactDeleted: false,
+    }
   }
   const eventId = randomUUID()
   const chainId = event.chainId ?? eventId
@@ -543,11 +574,11 @@ async function queueContactSnapshotAutomationEvent(
       : "RUN" as const,
     decisionDetails: triggerType !== "CONTACT_CREATED"
       ? chainDepth > 20
-        ? `Skipped: the automation chain reached its maximum depth. The ${triggerType === "CONTACT_NOTE_ADDED" ? "note was saved" : triggerType === "TASK_ADDED" ? "task was saved" : "task remains completed"}.`
+        ? `Skipped: the automation chain reached its maximum depth. The ${triggerType === "CONTACT_NOTE_ADDED" ? "note was saved" : triggerType === "TASK_ADDED" ? "task was saved" : triggerType === "TASK_COMPLETED" ? "task remains completed" : "birthday reminder was saved"}.`
         : automation.id === event.sourceAutomationId
-          ? `Skipped: this automation ${triggerType === "TASK_COMPLETED" ? "completed the task" : triggerType === "TASK_ADDED" ? "created the task" : "created the note"} and cannot restart itself.`
+          ? `Skipped: this automation ${triggerType === "TASK_COMPLETED" ? "completed the task" : triggerType === "TASK_ADDED" ? "created the task" : triggerType === "CONTACT_NOTE_ADDED" ? "created the note" : "started the reminder"} and cannot restart itself.`
           : claimedAutomationIds.has(automation.id)
-            ? `${triggerType === "TASK_COMPLETED" ? "A task was completed" : triggerType === "TASK_ADDED" ? "A task was added" : "A note was added"} and the filters matched.`
+            ? `${triggerType === "TASK_COMPLETED" ? "A task was completed" : triggerType === "TASK_ADDED" ? "A task was added" : triggerType === "CONTACT_NOTE_ADDED" ? "A note was added" : "The birthday reminder is due"} and the filters matched.`
             : "Skipped: this automation already ran for this automation chain."
       : "The contact matched the creation filters.",
     actionSnapshot: automation.actions.map(automationActionSnapshot),
@@ -563,6 +594,12 @@ async function queueContactSnapshotAutomationEvent(
     opportunitySnapshotId: null,
     taskId: taskSnapshot?.id ?? null,
     taskSnapshot: taskSnapshot ?? undefined,
+    birthdaySnapshot: triggerType === "BIRTHDAY_REMINDER" ? {
+      dateOfBirth: contact.dateOfBirth.toISOString().slice(0, 10),
+      localDate: event.localDate,
+      timezone: event.timezone,
+      scheduledLocalTime: event.scheduledLocalTime,
+    } : undefined,
     actorUserId: event.actorUserId,
     actorName: event.actorUserId ? catalog.userMap.get(event.actorUserId) ?? null : null,
     triggerType,
@@ -631,6 +668,13 @@ export function queueTaskAddedAutomationEvent(prismaTx: any, event: TaskAddedAut
 
 export function queueTaskCompletedAutomationEvent(prismaTx: any, event: TaskCompletedAutomationEvent): Promise<QueuedAutomationResult> {
   return queueContactSnapshotAutomationEvent(prismaTx, event, "TASK_COMPLETED")
+}
+
+export function queueBirthdayReminderAutomationEvent(prismaTx: any, event: BirthdayReminderAutomationEvent): Promise<QueuedAutomationResult> {
+  return queueContactSnapshotAutomationEvent(prismaTx, {
+    ...event,
+    causationKey: `birthday:${event.tenantId}:${event.automationId}:${event.contactId}:${event.occurrenceYear}`,
+  }, "BIRTHDAY_REMINDER")
 }
 
 async function createSideEffects(prismaTx: any, params: {

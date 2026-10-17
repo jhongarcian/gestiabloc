@@ -149,6 +149,8 @@ function serializeAutomation(record: any) {
         ? { type: "TASK_ADDED" as const }
         : record.triggerType === "TASK_COMPLETED"
         ? { type: "TASK_COMPLETED" as const }
+        : record.triggerType === "BIRTHDAY_REMINDER"
+        ? { type: "BIRTHDAY_REMINDER" as const, localTime: record.birthdayLocalTime ?? "09:00" }
         : record.triggerType === "CONTACT_TAG"
         ? { type: "CONTACT_TAG" as const, tagId: record.changeRules[0]?.tagId ?? "", change: record.changeRules[0]?.operator }
         : record.triggerType === "CONTACT_CHANGED"
@@ -871,6 +873,7 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
         name: normalized.name,
         isEnabled: normalized.isEnabled,
         triggerType: normalized.triggerType,
+        birthdayLocalTime: normalized.birthdayLocalTime,
         pipelineId: normalized.pipelineId,
         sourceStageId: normalized.sourceStageId,
         targetStageId: normalized.targetStageId,
@@ -925,6 +928,7 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
           name: normalized.name,
           isEnabled: normalized.isEnabled,
           triggerType: normalized.triggerType,
+          birthdayLocalTime: normalized.birthdayLocalTime,
           pipelineId: normalized.pipelineId,
           sourceStageId: normalized.sourceStageId,
           targetStageId: normalized.targetStageId,

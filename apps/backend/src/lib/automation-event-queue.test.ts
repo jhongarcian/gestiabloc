@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
-import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent, queueTaskAddedAutomationEvent, queueTaskCompletedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
+import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueBirthdayReminderAutomationEvent, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent, queueTaskAddedAutomationEvent, queueTaskCompletedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
 
 const WAIT_ACTION = {
   id: "action-1",
@@ -81,6 +81,8 @@ describe("note and task automation events", () => {
       lastName: "Reed",
       statusConfigId: null,
       assignedToUserId: null,
+      dateOfBirth: new Date("1990-10-16T12:00:00.000Z"),
+      deceasedAt: null as Date | null,
       tags: [{ tagId: "tag-new" }],
       customFieldValues: [{ fieldId: "field-source", value: "Referral" }],
     }
@@ -91,7 +93,19 @@ describe("note and task automation events", () => {
     }
     const prismaTx = {
       automation: {
-        findMany: async ({ where }: any) => automations.filter((automation) => automation.triggerType === where.triggerType),
+        findMany: async ({ where }: any) => automations.filter((automation) => automation.triggerType === where.triggerType && (!where.id || automation.id === where.id)),
+      },
+      automationBirthdayClaim: {
+        createManyAndReturn: async ({ data }: any) => {
+          const owned: Array<{ contactId: string }> = []
+          for (const claim of data) {
+            const key = `birthday:${claim.tenantId}:${claim.automationId}:${claim.contactId}:${claim.occurrenceYear}`
+            if (writes.claims.has(key)) continue
+            writes.claims.set(key, claim)
+            owned.push({ contactId: claim.contactId })
+          }
+          return owned
+        },
       },
       automationTriggerChainClaim: {
         createManyAndReturn: async ({ data }: any) => {
@@ -143,6 +157,70 @@ describe("note and task automation events", () => {
   })
   const completedAutomation = (id: string, conditions: any[] = []) => ({
     id, name: id, triggerType: "TASK_COMPLETED", conditions, actions: [WAIT_ACTION],
+  })
+  const birthdayAutomation = (id: string, conditions: any[] = []) => ({
+    id, name: id, triggerType: "BIRTHDAY_REMINDER", birthdayLocalTime: "09:00", conditions, actions: [WAIT_ACTION],
+  })
+
+  test("birthday reminder checks current contact filters, saves the occurrence, and claims once per year", async () => {
+    const filters = [
+      { source: "CONTACT_FIELD", fieldKey: "first_name", operator: "EQUALS", compareValue: "Mary" },
+      { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-source", operator: "EQUALS", compareValue: "Referral" },
+      { source: "CONTACT_TAGS", tagId: "tag-new", operator: "EQUALS" },
+    ]
+    const { prismaTx, contact, writes } = fixture([birthdayAutomation("birthday-a", filters)])
+    const base = {
+      tenantId: "tenant-1", contactId: "contact-1", automationId: "birthday-a", actorUserId: null,
+      occurrenceYear: 2026, localDate: "2026-10-16", timezone: "America/Chicago", scheduledLocalTime: "09:00",
+      clockAt: new Date("2026-10-16T15:00:00.000Z"),
+    }
+    contact.firstName = "John"
+    assert.equal((await queueBirthdayReminderAutomationEvent(prismaTx, base)).matchedCount, 0)
+    assert.equal(writes.claims.size, 0)
+    contact.firstName = "Mary"
+    const first = await queueBirthdayReminderAutomationEvent(prismaTx, base)
+    assert.equal(first.matchedCount, 1)
+    assert.equal(writes.events[0].triggerType, "BIRTHDAY_REMINDER")
+    assert.deepEqual(writes.events[0].birthdaySnapshot, {
+      dateOfBirth: "1990-10-16", localDate: "2026-10-16", timezone: "America/Chicago", scheduledLocalTime: "09:00",
+    })
+    assert.equal(writes.events[0].causationKey, "birthday:tenant-1:birthday-a:contact-1:2026")
+    assert.equal((await queueBirthdayReminderAutomationEvent(prismaTx, base)).automationEventId, first.automationEventId)
+    assert.equal(writes.events.length, 1)
+    const nextYear = await queueBirthdayReminderAutomationEvent(prismaTx, {
+      ...base, occurrenceYear: 2027, localDate: "2027-10-16", clockAt: new Date("2027-10-16T15:00:00.000Z"),
+    })
+    assert.equal(nextYear.matchedCount, 1)
+    assert.equal(writes.events.length, 2)
+    contact.deceasedAt = new Date("2028-01-01T00:00:00.000Z")
+    assert.equal((await queueBirthdayReminderAutomationEvent(prismaTx, {
+      ...base, occurrenceYear: 2028, localDate: "2028-10-16", clockAt: new Date("2028-10-16T15:00:00.000Z"),
+    })).matchedCount, 0)
+    assert.equal(writes.events.length, 2)
+    contact.deceasedAt = null
+    contact.dateOfBirth = new Date("1990-10-17T12:00:00.000Z")
+    assert.equal((await queueBirthdayReminderAutomationEvent(prismaTx, {
+      ...base, occurrenceYear: 2028, localDate: "2028-10-16", clockAt: new Date("2028-10-16T15:00:00.000Z"),
+    })).matchedCount, 0)
+    contact.dateOfBirth = new Date("1990-10-16T12:00:00.000Z")
+    assert.equal((await queueBirthdayReminderAutomationEvent(prismaTx, {
+      ...base, occurrenceYear: 2028, localDate: "2028-10-16", clockAt: new Date("2028-10-16T15:00:00.000Z"),
+    })).matchedCount, 1)
+    assert.equal((await queueBirthdayReminderAutomationEvent(prismaTx, {
+      ...base, occurrenceYear: 2029, localDate: "2029-10-16", clockAt: new Date("2029-10-17T05:00:00.000Z"),
+    })).matchedCount, 0)
+  })
+
+  test("concurrent birthday enrollments produce one event and one annual claim", async () => {
+    const { prismaTx, writes } = fixture([birthdayAutomation("birthday-a")])
+    const event = {
+      tenantId: "tenant-1", contactId: "contact-1", automationId: "birthday-a", actorUserId: null,
+      occurrenceYear: 2026, localDate: "2026-10-16", timezone: "America/Chicago", scheduledLocalTime: "09:00",
+      clockAt: new Date("2026-10-16T15:00:00.000Z"),
+    }
+    await Promise.all([queueBirthdayReminderAutomationEvent(prismaTx, event), queueBirthdayReminderAutomationEvent(prismaTx, event)])
+    assert.equal(writes.events.length, 1)
+    assert.equal([...writes.claims.keys()].filter((key) => key.startsWith("birthday:")).length, 1)
   })
 
   test("task completion uses contact filters and preserves the completion-time task snapshot", async () => {

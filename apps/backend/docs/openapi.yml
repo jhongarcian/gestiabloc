@@ -6737,6 +6737,18 @@ components:
               enum: [TASK_COMPLETED]
         - type: object
           additionalProperties: false
+          required: [type, localTime]
+          description: Runs once per contact per tenant-local calendar year on their birthday. Uses the tenant timezone, excludes deceased contacts, and evaluates optional contact field, active non-sensitive custom field, and tag filters when queued. February 29 birthdays use February 28 in non-leap years.
+          properties:
+            type:
+              type: string
+              enum: [BIRTHDAY_REMINDER]
+            localTime:
+              type: string
+              pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+              example: '09:00'
+        - type: object
+          additionalProperties: false
           required: [type, tagId, change]
           description: Runs when the selected tag is added to or removed from a contact. Optional contact filters evaluate the resulting contact state.
           properties:

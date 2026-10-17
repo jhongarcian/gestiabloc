@@ -1916,6 +1916,36 @@ describe("AutomationUpsertSchema", () => {
     await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "name", operator: "CONTAINS", compareValue: "Call" }] })), /Task completed filters/)
     await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-secret", operator: "EQUALS", compareValue: "secret" }] })), /non-sensitive custom field/)
   })
+  test("birthday reminder validates local time and only safe contact filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [
+        { id: "field-safe", key: "source", label: "Source", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: null },
+        { id: "field-secret", key: "secret", label: "Secret", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: true, isSensitive: true, options: null },
+      ] },
+      contactStatusConfig: { findMany: async () => [] },
+      taskStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "tag-a" }] },
+    }
+    const base = {
+      name: "Birthday reminder", isEnabled: true,
+      trigger: { type: "BIRTHDAY_REMINDER", localTime: "09:00" },
+      conditions: [
+        { source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" },
+        { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-safe", operator: "EQUALS", compareValue: "Referral" },
+        { source: "CONTACT_TAGS", tagId: "tag-a", operator: "EQUALS" },
+      ],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "BIRTHDAY_REMINDER")
+    assert.equal(normalized.birthdayLocalTime, "09:00")
+    assert.equal(normalized.pipelineId, null)
+    assert.equal(AutomationUpsertSchema.safeParse({ ...base, trigger: { type: "BIRTHDAY_REMINDER", localTime: "24:00" } }).success, false)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "name", operator: "EQUALS", compareValue: "Call" }] })), /Birthday reminder filters/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-secret", operator: "EQUALS", compareValue: "secret" }] })), /non-sensitive custom field/)
+  })
   test("note-added accepts only contact field, custom field, and tag filters", async () => {
     const prismaClient = {
       opportunityPipeline: { findMany: async () => [] },

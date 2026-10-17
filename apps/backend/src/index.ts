@@ -38,6 +38,7 @@ import { getAllowedWebOrigins } from "./lib/security"
 import { runAutomationProcessQueue } from "./lib/automation-process-worker"
 import { resumeDueAutomationRuns } from "./lib/opportunity-automations"
 import { queueOpportunityAutomationEvent } from "./lib/automation-event-queue"
+import { runBirthdayReminderScanOnce } from "./lib/automation-birthday-scheduler"
 import {
   AUTOMATION_EVENT_WORKER_CONFIG,
   reportAutomationQueueMetrics,
@@ -313,6 +314,16 @@ const start = async () => {
     })
   }, AUTOMATION_EVENT_WORKER_CONFIG.pollMs)
   automationEventInterval.unref?.()
+
+  void runBirthdayReminderScanOnce().catch((error) => {
+    console.error("Failed to scan birthday reminders on startup:", error)
+  })
+  const birthdayReminderInterval = setInterval(() => {
+    void runBirthdayReminderScanOnce().catch((error) => {
+      console.error("Failed to scan birthday reminders:", error)
+    })
+  }, 60_000)
+  birthdayReminderInterval.unref?.()
 
   const automationSideEffectInterval = setInterval(() => {
     void runAutomationSideEffectWorkerOnce().catch((error) => {
