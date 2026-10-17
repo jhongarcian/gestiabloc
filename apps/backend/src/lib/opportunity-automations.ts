@@ -40,6 +40,12 @@ import {
   type AutomationTaskConfig,
 } from "./automation-task.js"
 import {
+  AutomationAppointmentConfigSchema,
+  resolveAutomationAppointmentStart,
+  type AutomationAppointmentConfig,
+} from "./automation-appointment.js"
+import { createAppointmentInTransaction, getSafeCalendarSlotDuration } from "./appointment-booking.js"
+import {
   AutomationDateTimeFormatterConfigSchema,
   resolveAutomationDateTimeFormatter,
   type AutomationFormatterDateSource,
@@ -119,6 +125,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "ADD_CONTACT_NOTE",
   "CREATE_CONTACT",
   "CREATE_TASK",
+  "CREATE_APPOINTMENT",
   "SEND_INTERNAL_NOTIFICATION",
   "FORMAT_DATE_TIME",
   "FORMAT_NUMBER",
@@ -474,6 +481,11 @@ const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
     taskConfig: AutomationTaskConfigSchema,
   }),
   z.object({
+    type: z.literal("CREATE_APPOINTMENT"),
+    nodeKey: actionNodeKeySchema,
+    appointmentConfig: AutomationAppointmentConfigSchema,
+  }),
+  z.object({
     type: z.literal("SEND_INTERNAL_NOTIFICATION"),
     nodeKey: actionNodeKeySchema,
     internalNotificationConfig: AutomationInternalNotificationConfigSchema,
@@ -633,6 +645,7 @@ const legacyRoutingActionNullFields = {
   noteBody: z.null().optional(),
   createContactConfig: z.null().optional(),
   taskConfig: z.null().optional(),
+  appointmentConfig: z.null().optional(),
   internalNotificationConfig: z.null().optional(),
   dateTimeFormatterConfig: z.null().optional(),
   numberFormatterConfig: z.null().optional(),
@@ -952,6 +965,10 @@ function automationValueRequirements(action: AutomationControlFlowAction) {
     addTemplate(record.taskConfig?.nameTemplate)
     addTemplate(record.taskConfig?.descriptionTemplate)
     addTemplate(record.taskConfig?.reminder?.messageTemplate)
+  } else if (record.type === "CREATE_APPOINTMENT") {
+    addTemplate(record.appointmentConfig?.titleTemplate)
+    addTemplate(record.appointmentConfig?.notesTemplate)
+    addSource(record.appointmentConfig?.startAt?.source)
   } else if (record.type === "SEND_INTERNAL_NOTIFICATION") {
     addTemplate(record.internalNotificationConfig?.titleTemplate)
     addTemplate(record.internalNotificationConfig?.bodyTemplate)
@@ -2555,6 +2572,51 @@ export async function validateAutomationConfiguration(
         },
       }
     }
+    if (action.type === "CREATE_APPOINTMENT") {
+      const config = action.appointmentConfig
+      for (const template of [config.titleTemplate, config.notesTemplate ?? ""]) {
+        const issue = validateContactTemplate(template, fields, [...automationOutputs.keys()]).issues[0]
+        if (issue) throw new AutomationConfigurationError("INVALID_APPOINTMENT_TEMPLATE", issue.message)
+      }
+      if (config.assignee.mode === "SPECIFIC_USER" && !activeUserIds.has(config.assignee.userId)) {
+        throw new AutomationConfigurationError("INVALID_APPOINTMENT_ASSIGNEE", "Select an active appointment assignee.")
+      }
+      if (config.linkedService && !serviceMap.has(config.linkedService.id)) {
+        throw new AutomationConfigurationError("INVALID_APPOINTMENT_SERVICE", "Select an active appointment service.")
+      }
+      const source = config.startAt.source
+      if (source.type === "CONTACT_FIELD") {
+        const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((item) => item.key === source.key)
+        if (!field || field.fieldType !== "DATE") {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_DATE", "Select an available contact date field.")
+        }
+      } else if (source.type === "CUSTOM_FIELD") {
+        const field = fieldKeyMap.get(source.key)
+        if (!field || field.fieldType !== "DATE" || !field.isActive || field.isSensitive || field.isEncrypted) {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_DATE", "Select an active, non-sensitive custom date field.")
+        }
+      } else if (source.type === "AUTOMATION_VALUE") {
+        if (automationOutputs.get(source.key) !== "DATE") {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_DATE", "Select an earlier date value available on every route.")
+        }
+      } else if (source.type === "SPECIFIC_DATE") {
+        try {
+          new Intl.DateTimeFormat("en-US", { timeZone: source.timezone }).format(new Date())
+        } catch {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_TIMEZONE", "Select a valid appointment timezone.")
+        }
+      }
+      return {
+        ...base,
+        appointmentConfig: {
+          ...config,
+          linkedService: config.linkedService
+            ? { id: config.linkedService.id, nameSnapshot: serviceMap.get(config.linkedService.id)! }
+            : null,
+          notesTemplate: config.notesTemplate?.trim() ? config.notesTemplate : null,
+        },
+      }
+    }
     if (action.type === "SEND_INTERNAL_NOTIFICATION") {
       const config = action.internalNotificationConfig
       const availableOutputs = [...automationOutputs.keys()]
@@ -3232,6 +3294,7 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
         noteBody: action.noteBody,
         createContactConfig: action.createContactConfig,
         taskConfig: action.taskConfig,
+        appointmentConfig: action.appointmentConfig,
         internalNotificationConfig: action.internalNotificationConfig,
         dateTimeFormatterConfig: action.dateTimeFormatterConfig,
         numberFormatterConfig: action.numberFormatterConfig,
@@ -4207,6 +4270,95 @@ async function applyAutomationActionInner(
       return {
         details: `Created task “${name}” · ${assignee}${dueLabel ? ` · Due ${dueLabel}` : ""}.`,
         notificationIds,
+      }
+    } else if (action.type === "CREATE_APPOINTMENT") {
+      const config: AutomationAppointmentConfig = action.appointmentConfig
+      const source = config.startAt.source
+      if (source.type === "CUSTOM_FIELD") {
+        const field = catalog.fieldKeyMap.get(source.key)
+        if (!field || field.fieldType !== "DATE") throw new Error("The configured appointment date field is unavailable.")
+      }
+      if (source.type === "CONTACT_FIELD" && !CONTACT_TEMPLATE_REGULAR_FIELDS.some((field) => field.key === source.key && field.fieldType === "DATE")) {
+        throw new Error("The configured appointment date field is unavailable.")
+      }
+      const contact = await prismaTx.contact.findFirst({
+        where: { tenantId, id: contactId },
+        select: { assignedToUserId: true },
+      })
+      if (!contact) throw new Error("The contact for this appointment is unavailable.")
+      const assignedToUserId = config.assignee.mode === "CONTACT_ASSIGNEE"
+        ? contact.assignedToUserId
+        : config.assignee.userId
+      if (!assignedToUserId) throw new Error("The contact does not have an active appointment assignee.")
+      const membership = await prismaTx.membership.findUnique({
+        where: { userId_tenantId: { tenantId, userId: assignedToUserId } },
+        select: { status: true, user: { select: { name: true, email: true } } },
+      })
+      if (!membership || membership.status !== "ACTIVE") throw new Error("The configured appointment assignee is no longer active.")
+      if (config.linkedService) {
+        const service = await prismaTx.service.findFirst({
+          where: { tenantId, id: config.linkedService.id, isActive: true },
+          select: { id: true },
+        })
+        if (!service) throw new Error("The configured appointment service is no longer active.")
+      }
+      const rendered = await renderContactTemplates(prismaTx, {
+        tenantId,
+        contactId,
+        templates: { title: config.titleTemplate, notes: config.notesTemplate ?? "" },
+        timezone: catalog.timezone,
+        occurredAt,
+        automationValues,
+        executionContext: templateContext,
+      })
+      const title = sanitizeTaskSingleLine(rendered.title ?? "")
+      const notes = sanitizeTaskMultiline(rendered.notes ?? "") || null
+      if (!title || title.length > 160) throw new Error("The rendered appointment title must contain 1 to 160 characters.")
+      if (notes && notes.length > 4_000) throw new Error("The rendered appointment notes must contain 4,000 characters or fewer.")
+      const startAt = await resolveAutomationAppointmentStart(prismaTx, {
+        tenantId,
+        contactId,
+        startAt: config.startAt,
+        tenantTimezone: catalog.timezone,
+        occurredAt,
+        automationValues,
+        executionContext: templateContext,
+      })
+      if (startAt.getTime() <= Date.now()) throw new Error("The appointment start time must be in the future.")
+      const tenant = await prismaTx.tenant.findUnique({
+        where: { id: tenantId },
+        select: { calendarMeetingDurationMinutes: true },
+      })
+      const durationMinutes = getSafeCalendarSlotDuration(tenant?.calendarMeetingDurationMinutes)
+      const endAt = new Date(startAt.getTime() + durationMinutes * 60_000)
+      const assigneeLabel = membership.user.name?.trim() || membership.user.email || "teammate"
+      const result = await createAppointmentInTransaction(prismaTx, {
+        tenantId,
+        contactId,
+        serviceId: config.linkedService?.id ?? null,
+        bookedByUserId: null,
+        actorDisplayName: `Automation · ${automationName}`,
+        assignedToUserId,
+        assignedToLabel: assigneeLabel,
+        title,
+        notes,
+        startAt,
+        endAt,
+        isAllDay: false,
+        automationEvent: {
+          chainId: eventContext.chainId,
+          parentEventId: eventContext.eventId,
+          chainDepth: (eventContext.chainDepth ?? 0) + 1,
+          sourceAutomationId: automationId,
+          sourceAutomationName: automationName,
+          sourceNodeKey: action.nodeKey,
+          causationKey: runId ? `automation-run:${runId}:appointment-created:${action.nodeKey}` : null,
+        },
+      })
+      if (!result.ok) throw new Error(`The appointment time is unavailable. ${result.availability.reasons.join(" ")}`)
+      return {
+        details: `Created appointment “${title}” for ${assigneeLabel} at ${new Intl.DateTimeFormat("en-US", { timeZone: catalog.timezone, dateStyle: "medium", timeStyle: "short" }).format(startAt)}.`,
+        queuedRunCount: result.automation.queuedAutomationCount,
       }
     } else if (action.type === "SEND_INTERNAL_NOTIFICATION") {
       const config: AutomationInternalNotificationConfig = action.internalNotificationConfig
@@ -7356,7 +7508,11 @@ async function resumeAutomationRun(
       console.error("Could not emit automation notification", error)
     })
     await deleteAutomationContactFileObjects(result.fileCleanupCandidates)
-    if (result.queuedRunCount > 0) kickAutomationRunWorker({ queueOpportunityEvent })
+    if (result.queuedRunCount > 0) {
+      kickAutomationRunWorker({ queueOpportunityEvent })
+      const { kickAutomationEventWorker } = await import("./automation-event-worker.js")
+      kickAutomationEventWorker()
+    }
     return { status: result.status }
   } catch (error) {
     await recordAutomationRunFailure(prismaClient, runId, leaseToken, error)

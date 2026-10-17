@@ -349,6 +349,12 @@ Scheduling can use the current date, a relative date, a contact date field, a cu
 
 Task content is resolved when the action executes. A task created before a Wait remains committed even if a later segment fails.
 
+### Create appointment
+
+Create appointment books a Scheduled, timed appointment for the current contact. Authors give the action a name, add a required title template and optional notes template, choose the contact's live assignee or a specific active teammate, and optionally select an active service. The start date can be fixed, today, relative to execution, read from a safe contact or custom date field, or supplied by an earlier DATE automation value available on every route; authors also choose the local time.
+
+The action uses the tenant's current meeting duration and the same locked availability check as manual booking. Missing data, a past or nonexistent local time, an inactive reference, or an unavailable slot fails the action without creating an appointment. The audit log attributes a successful booking to `Automation · [workflow name]`; the booked-by user is empty. The appointment-created event is queued in the same transaction and follows the existing automation-chain loop protection. Later actions continue on the original contact, and the action produces no automation value.
+
 ### Add contact note
 
 Add contact note creates a standard contact note with a required title and body.

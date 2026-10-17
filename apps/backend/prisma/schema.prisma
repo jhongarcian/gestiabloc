@@ -358,6 +358,7 @@ enum AutomationActionType {
   ADD_CONTACT_NOTE
   CREATE_CONTACT
   CREATE_TASK
+  CREATE_APPOINTMENT
   SEND_INTERNAL_NOTIFICATION
   FORMAT_DATE_TIME
   FORMAT_NUMBER
@@ -1614,6 +1615,7 @@ model AutomationAction {
   noteBody                   String?
   createContactConfig        Json?
   taskConfig                 Json?
+  appointmentConfig          Json?
   internalNotificationConfig Json?
   dateTimeFormatterConfig    Json?
   numberFormatterConfig      Json?
@@ -2122,7 +2124,7 @@ model Appointment {
   tenantId         String
   contactId        String
   serviceId        String?
-  bookedByUserId   String
+  bookedByUserId   String?
   assignedToUserId String?
   status           AppointmentStatus @default(SCHEDULED)
   title            String
@@ -2134,7 +2136,7 @@ model Appointment {
   tenant     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact    Contact               @relation(fields: [contactId], references: [id], onDelete: Cascade)
   service    Service?              @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  bookedBy   User                  @relation("AppointmentBookedBy", fields: [bookedByUserId], references: [id], onDelete: Restrict)
+  bookedBy   User?                 @relation("AppointmentBookedBy", fields: [bookedByUserId], references: [id], onDelete: SetNull)
   assignedTo User?                 @relation("AppointmentAssignedTo", fields: [assignedToUserId], references: [id], onDelete: SetNull)
   auditLogs  AppointmentAuditLog[]
 

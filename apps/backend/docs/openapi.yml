@@ -6966,6 +6966,7 @@ components:
             - ADD_CONTACT_NOTE
             - CREATE_CONTACT
             - CREATE_TASK
+            - CREATE_APPOINTMENT
             - SEND_INTERNAL_NOTIFICATION
             - FORMAT_DATE_TIME
             - FORMAT_NUMBER
@@ -7025,6 +7026,8 @@ components:
           $ref: "#/components/schemas/AutomationCreateContactConfig"
         taskConfig:
           $ref: "#/components/schemas/AutomationTaskConfig"
+        appointmentConfig:
+          $ref: "#/components/schemas/AutomationAppointmentConfig"
         internalNotificationConfig:
           $ref: "#/components/schemas/AutomationInternalNotificationConfig"
         dateTimeFormatterConfig:
@@ -7548,6 +7551,73 @@ components:
               type: string
               maxLength: 500
               nullable: true
+    AutomationAppointmentConfig:
+      type: object
+      additionalProperties: false
+      required: [actionName, titleTemplate, assignee, startAt]
+      description: >-
+        Books a Scheduled appointment for the current contact. The tenant's current
+        meeting duration and availability rules apply. An unavailable time fails the
+        action. Automated bookings have no booked-by user; the audit log identifies
+        the automation.
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        titleTemplate:
+          type: string
+          minLength: 1
+          maxLength: 160
+        notesTemplate:
+          type: string
+          maxLength: 4000
+          nullable: true
+        assignee:
+          oneOf:
+            - type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [CONTACT_ASSIGNEE]
+            - type: object
+              required: [mode, userId]
+              properties:
+                mode:
+                  type: string
+                  enum: [SPECIFIC_USER]
+                userId:
+                  type: string
+        linkedService:
+          type: object
+          nullable: true
+          required: [id, nameSnapshot]
+          properties:
+            id:
+              type: string
+            nameSnapshot:
+              type: string
+              maxLength: 120
+        startAt:
+          type: object
+          required: [source, time]
+          properties:
+            source:
+              oneOf:
+                - $ref: "#/components/schemas/AutomationTaskDateSource"
+                - type: object
+                  required: [type, key]
+                  properties:
+                    type:
+                      type: string
+                      enum: [AUTOMATION_VALUE]
+                    key:
+                      type: string
+                      description: DATE output available on every route before this action.
+            time:
+              type: string
+              pattern: "^([01]\\d|2[0-3]):[0-5]\\d$"
     AutomationInternalNotificationConfig:
       type: object
       additionalProperties: false

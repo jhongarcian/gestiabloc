@@ -258,6 +258,20 @@ export type AutomationTaskConfig = {
   } | null
 }
 
+export type AutomationAppointmentConfig = {
+  actionName: string
+  titleTemplate: string
+  notesTemplate?: string | null
+  assignee:
+    | { mode: "CONTACT_ASSIGNEE" }
+    | { mode: "SPECIFIC_USER"; userId: string }
+  linkedService?: { id: string; nameSnapshot: string } | null
+  startAt: {
+    source: AutomationFormatterDateSource
+    time: string
+  }
+}
+
 export type AutomationInternalNotificationConfig = {
   actionName: string
   recipient:
@@ -392,6 +406,7 @@ export type AutomationAction = {
     | "ADD_CONTACT_NOTE"
     | "CREATE_CONTACT"
     | "CREATE_TASK"
+    | "CREATE_APPOINTMENT"
     | "SEND_INTERNAL_NOTIFICATION"
     | "FORMAT_DATE_TIME"
     | "FORMAT_NUMBER"
@@ -415,6 +430,7 @@ export type AutomationAction = {
   noteBody?: string | null
   createContactConfig?: AutomationCreateContactConfig | null
   taskConfig?: AutomationTaskConfig | null
+  appointmentConfig?: AutomationAppointmentConfig | null
   internalNotificationConfig?: AutomationInternalNotificationConfig | null
   dateTimeFormatterConfig?: AutomationDateTimeFormatterConfig | null
   numberFormatterConfig?: AutomationNumberFormatterConfig | null

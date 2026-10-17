@@ -1,7 +1,7 @@
 import { Prisma, type AppointmentStatus, type PrismaClient } from "../generated/prisma/index.js"
 
 import { prisma } from "./prisma.js"
-import { queueAppointmentCreatedAutomationEvent, queueAppointmentStatusChangedAutomationEvent } from "./automation-event-queue.js"
+import { queueAppointmentCreatedAutomationEvent, queueAppointmentStatusChangedAutomationEvent, type AppointmentCreatedAutomationEvent } from "./automation-event-queue.js"
 
 const DEFAULT_TIMEZONE = "America/Chicago"
 const CALENDAR_SLOT_DURATION_OPTIONS = [15, 30, 45, 60, 120] as const
@@ -24,7 +24,7 @@ type CreateAppointmentAtomicallyParams = {
   tenantId: string
   contactId: string
   serviceId: string | null
-  bookedByUserId: string
+  bookedByUserId: string | null
   actorDisplayName: string
   assignedToUserId: string
   assignedToLabel: string
@@ -33,6 +33,9 @@ type CreateAppointmentAtomicallyParams = {
   startAt: Date
   endAt: Date
   isAllDay: boolean
+  automationEvent?: Pick<AppointmentCreatedAutomationEvent,
+    "chainId" | "parentEventId" | "chainDepth" | "sourceAutomationId" | "sourceAutomationName" | "sourceNodeKey" | "causationKey"
+  >
 }
 
 type UpdateAppointmentAtomicallyParams = {
@@ -1319,92 +1322,89 @@ export async function buildAppointmentSlots(
   }
 }
 
-export async function createAppointmentAtomically(
+export async function createAppointmentInTransaction(
+  tx: Prisma.TransactionClient,
   params: CreateAppointmentAtomicallyParams,
 ) {
-  const tenant = await prisma.tenant.findUnique({
+  const tenant = await tx.tenant.findUnique({
     where: { id: params.tenantId },
     select: { timezone: true },
   })
-
   const timezone = getSafeTimezone(tenant?.timezone)
   const startParts = getTimezoneDateParts(params.startAt, timezone)
   const localDate = toLocalDateKey(startParts)
+  await acquireBookingLocks(tx, {
+    tenantId: params.tenantId,
+    localDate,
+    assigneeUserId: params.assignedToUserId,
+    contactId: params.contactId,
+  })
 
+  const availability = await evaluateAvailability(tx, {
+    tenantId: params.tenantId,
+    contactId: params.contactId,
+    assignedToUserId: params.assignedToUserId,
+    startAt: params.startAt,
+    endAt: params.endAt,
+  })
+
+  if (!availability.available) {
+    return { ok: false as const, availability }
+  }
+
+  const appointment = await tx.appointment.create({
+    data: {
+      tenantId: params.tenantId,
+      contactId: params.contactId,
+      serviceId: params.serviceId,
+      bookedByUserId: params.bookedByUserId,
+      assignedToUserId: params.assignedToUserId,
+      title: params.title,
+      notes: params.notes,
+      startAt: params.startAt,
+      endAt: params.endAt,
+      isAllDay: params.isAllDay,
+      status: "SCHEDULED",
+    },
+    select: {
+      id: true,
+      title: true,
+      startAt: true,
+      endAt: true,
+      status: true,
+      assignedToUserId: true,
+      contactId: true,
+      serviceId: true,
+    },
+  })
+
+  await createAppointmentAuditLog(tx, {
+    tenantId: params.tenantId,
+    appointmentId: appointment.id,
+    actorUserId: params.bookedByUserId,
+    actorDisplayName: params.actorDisplayName,
+    action: "CREATED",
+    message: `${params.actorDisplayName} created this appointment and assigned it to ${params.assignedToLabel} for ${formatAuditDateTimeRange(params.startAt, params.endAt, timezone)}.`,
+  })
+
+  const automation = await queueAppointmentCreatedAutomationEvent(tx, {
+    tenantId: params.tenantId,
+    contactId: params.contactId,
+    appointmentId: appointment.id,
+    actorUserId: params.bookedByUserId,
+    ...params.automationEvent,
+  })
+
+  return { ok: true as const, appointment, automation }
+}
+
+export async function createAppointmentAtomically(
+  params: CreateAppointmentAtomicallyParams,
+) {
   for (let attempt = 0; attempt < BOOKING_TRANSACTION_RETRY_LIMIT; attempt += 1) {
     try {
       return await prisma.$transaction(
-        async (tx) => {
-          await acquireBookingLocks(tx, {
-            tenantId: params.tenantId,
-            localDate,
-            assigneeUserId: params.assignedToUserId,
-            contactId: params.contactId,
-          })
-
-          const availability = await evaluateAvailability(tx, {
-            tenantId: params.tenantId,
-            contactId: params.contactId,
-            assignedToUserId: params.assignedToUserId,
-            startAt: params.startAt,
-            endAt: params.endAt,
-          })
-
-          if (!availability.available) {
-            return {
-              ok: false as const,
-              availability,
-            }
-          }
-
-          const appointment = await tx.appointment.create({
-            data: {
-              tenantId: params.tenantId,
-              contactId: params.contactId,
-              serviceId: params.serviceId,
-              bookedByUserId: params.bookedByUserId,
-              assignedToUserId: params.assignedToUserId,
-              title: params.title,
-              notes: params.notes,
-              startAt: params.startAt,
-              endAt: params.endAt,
-              isAllDay: params.isAllDay,
-              status: "SCHEDULED",
-            },
-            select: {
-              id: true,
-              title: true,
-              startAt: true,
-              endAt: true,
-              status: true,
-              assignedToUserId: true,
-              contactId: true,
-              serviceId: true,
-            },
-          })
-
-          await createAppointmentAuditLog(tx, {
-            tenantId: params.tenantId,
-            appointmentId: appointment.id,
-            actorUserId: params.bookedByUserId,
-            actorDisplayName: params.actorDisplayName,
-            action: "CREATED",
-            message: `${params.actorDisplayName} created this appointment and assigned it to ${params.assignedToLabel} for ${formatAuditDateTimeRange(params.startAt, params.endAt, timezone)}.`,
-          })
-
-          const automation = await queueAppointmentCreatedAutomationEvent(tx, {
-            tenantId: params.tenantId,
-            contactId: params.contactId,
-            appointmentId: appointment.id,
-            actorUserId: params.bookedByUserId,
-          })
-
-          return {
-            ok: true as const,
-            appointment,
-            automation,
-          }
-        },
+        (tx) => createAppointmentInTransaction(tx, params),
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         },

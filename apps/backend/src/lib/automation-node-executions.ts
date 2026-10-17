@@ -50,6 +50,7 @@ const ACTION_LABELS: Record<string, string> = {
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_CONTACT: "Create contact",
   CREATE_TASK: "Create task",
+  CREATE_APPOINTMENT: "Create appointment",
   SEND_INTERNAL_NOTIFICATION: "Internal notification",
   FORMAT_DATE_TIME: "Date/Time formatter",
   FORMAT_NUMBER: "Number formatter",
@@ -80,6 +81,7 @@ export function getAutomationActionNodeLabel(action: {
   addToWorkflowConfig?: unknown
   removeFromWorkflowConfig?: unknown
   createContactConfig?: unknown
+  appointmentConfig?: unknown
   internalNotificationConfig?: unknown
 }) {
   if (action.type === "FORMAT_TEXT") {
@@ -134,6 +136,13 @@ export function getAutomationActionNodeLabel(action: {
   if (action.type === "CREATE_CONTACT") {
     const config = action.createContactConfig && typeof action.createContactConfig === "object"
       ? action.createContactConfig as Record<string, unknown>
+      : null
+    const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
+    if (actionName) return actionName.slice(0, 120)
+  }
+  if (action.type === "CREATE_APPOINTMENT") {
+    const config = action.appointmentConfig && typeof action.appointmentConfig === "object"
+      ? action.appointmentConfig as Record<string, unknown>
       : null
     const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
     if (actionName) return actionName.slice(0, 120)

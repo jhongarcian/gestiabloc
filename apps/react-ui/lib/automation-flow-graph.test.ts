@@ -14,6 +14,7 @@ const labels = {
   REMOVE_CONTACT_TAG: "Remove contact tag",
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_TASK: "Create task",
+  CREATE_APPOINTMENT: "Create appointment",
   SEND_INTERNAL_NOTIFICATION: "Internal notification",
   FORMAT_DATE_TIME: "Date/Time formatter",
   FORMAT_NUMBER: "Number formatter",
@@ -115,6 +116,28 @@ describe("buildAutomationFlowGraph", () => {
     const node = graph.nodes.find((candidate) => candidate.id === "action-create-contact-node")
     assert.equal(node?.data.label, "Create household member")
     assert.equal(node?.data.subtitle, "Create contact")
+  })
+
+  test("shows the custom Create appointment label and subtitle", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-1",
+      targetStageId: "",
+      conditions: [],
+      actions: [{
+        nodeKey: "appointment-node",
+        type: "CREATE_APPOINTMENT",
+        appointmentConfig: {
+          actionName: "Book policy review",
+          titleTemplate: "Review with {contact.name}",
+          assignee: { mode: "CONTACT_ASSIGNEE" },
+          startAt: { source: { type: "RELATIVE_DATE", amount: 1, unit: "DAYS" }, time: "09:00" },
+        },
+      }],
+    }, null, labels)
+    const node = graph.nodes.find((candidate) => candidate.id === "action-appointment-node")
+    assert.equal(node?.data.label, "Book policy review")
+    assert.equal(node?.data.subtitle, "Create appointment")
   })
 
   test("shows the custom Internal notification label and recipient", () => {

@@ -159,6 +159,7 @@ import { AutomationWaitingRunsSheet } from "./automation-waiting-runs-sheet"
 import type {
   AppointmentAutomationStatus,
   AutomationAction,
+  AutomationAppointmentConfig,
   AutomationCatalog,
   AutomationCondition,
   AutomationContactChangeRule,
@@ -662,18 +663,25 @@ const ACTION_DEFINITIONS = {
     order: 10,
     icon: ListTodo,
   },
+  CREATE_APPOINTMENT: {
+    label: "Create appointment",
+    description: "Book an available calendar appointment for this contact.",
+    group: "INTERNAL",
+    order: 11,
+    icon: CalendarClock,
+  },
   SEND_INTERNAL_NOTIFICATION: {
     label: "Internal notification",
     description: "Notify the contact assignee or a specific teammate.",
     group: "INTERNAL",
-    order: 11,
+    order: 12,
     icon: BellRing,
   },
   ADD_CONTACT_NOTE: {
     label: "Add contact note",
     description: "Add a note using live contact information.",
     group: "INTERNAL",
-    order: 12,
+    order: 13,
     icon: StickyNote,
   },
   UPDATE_OPPORTUNITY: {
@@ -1357,6 +1365,20 @@ function actionDefaults(
       },
     }
   }
+  if (type === "CREATE_APPOINTMENT") {
+    return {
+      nodeKey,
+      type,
+      appointmentConfig: {
+        actionName: "Create appointment",
+        titleTemplate: "",
+        notesTemplate: "",
+        assignee: { mode: "CONTACT_ASSIGNEE" },
+        linkedService: null,
+        startAt: { source: { type: "RELATIVE_DATE", amount: 1, unit: "DAYS" }, time: "09:00" },
+      },
+    }
+  }
   if (type === "SEND_INTERNAL_NOTIFICATION") {
     return {
       nodeKey,
@@ -1921,6 +1943,19 @@ function isActionReady(
       if (optionalTemplateError(config.reminder.messageTemplate, 500, catalog, availableOutputs)) return false
     }
     return true
+  }
+  if (action.type === "CREATE_APPOINTMENT") {
+    const config = action.appointmentConfig
+    if (!config || !config.actionName.trim() || config.actionName.trim().length > 120) return false
+    if (noteTemplateError(config.titleTemplate, 160, catalog, availableOutputs)) return false
+    if (optionalTemplateError(config.notesTemplate, 4_000, catalog, availableOutputs)) return false
+    if (config.assignee.mode === "SPECIFIC_USER") {
+      const userId = config.assignee.userId
+      if (!catalog.users.some((user) => user.id === userId)) return false
+    }
+    if (config.linkedService && !catalog.services.some((service) => service.id === config.linkedService?.id)) return false
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(config.startAt.time)) return false
+    return isFormatterSourceReady(config.startAt.source, catalog, availableOutputs)
   }
   if (action.type === "SEND_INTERNAL_NOTIFICATION") {
     const config = action.internalNotificationConfig
@@ -4335,6 +4370,17 @@ function ActionEditor({
           />
         ) : null}
 
+        {action.type === "CREATE_APPOINTMENT" && action.appointmentConfig ? (
+          <AppointmentActionEditor
+            actionKey={action.nodeKey ?? "create-appointment"}
+            config={action.appointmentConfig}
+            catalog={catalog}
+            timezone={timezone}
+            automationOutputs={availableAutomationOutputs}
+            onChange={(appointmentConfig) => onChange({ ...action, appointmentConfig })}
+          />
+        ) : null}
+
         {action.type === "SEND_INTERNAL_NOTIFICATION" && action.internalNotificationConfig ? (
           <InternalNotificationActionEditor
             actionKey={action.nodeKey ?? "internal-notification"}
@@ -6332,6 +6378,170 @@ function TaskDateTimeEditor({
   )
 }
 
+function AppointmentActionEditor({
+  actionKey,
+  config,
+  catalog,
+  timezone,
+  automationOutputs,
+  onChange,
+}: {
+  actionKey: string
+  config: AutomationAppointmentConfig
+  catalog: AutomationCatalog
+  timezone?: string | null
+  automationOutputs: AutomationValueDefinition[]
+  onChange: (config: AutomationAppointmentConfig) => void
+}) {
+  const [assigneePickerOpen, setAssigneePickerOpen] = useState(false)
+  const specificUserId = config.assignee.mode === "SPECIFIC_USER" ? config.assignee.userId : null
+  const selectedUser = catalog.users.find((user) => user.id === specificUserId)
+  const titleError = noteTemplateError(config.titleTemplate, 160, catalog, automationOutputs)
+  const notesError = optionalTemplateError(config.notesTemplate, 4_000, catalog, automationOutputs)
+  const dateReady = /^([01]\d|2[0-3]):[0-5]\d$/.test(config.startAt.time) &&
+    isFormatterSourceReady(config.startAt.source, catalog, automationOutputs)
+
+  return (
+    <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-start gap-2.5">
+        <CalendarClock className="mt-0.5 size-4 shrink-0 text-sky-600" aria-hidden="true" />
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-slate-950">Create appointment</p>
+          <p className="text-xs leading-4 text-slate-600">Books the current contact using the calendar&apos;s meeting duration and availability rules.</p>
+        </div>
+      </div>
+
+      <Field className="gap-1.5" data-invalid={!config.actionName.trim() || config.actionName.trim().length > 120}>
+        <FieldLabel htmlFor={`${actionKey}-appointment-action-name`}>Action name</FieldLabel>
+        <Input
+          id={`${actionKey}-appointment-action-name`}
+          value={config.actionName}
+          maxLength={120}
+          onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+          placeholder="Create appointment"
+        />
+        {!config.actionName.trim() ? <p className="text-xs text-rose-600">Enter an action name.</p> : null}
+      </Field>
+
+      <ContactTemplateInput
+        id={`${actionKey}-appointment-title`}
+        label="Title"
+        value={config.titleTemplate}
+        maxLength={160}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={titleError}
+        onChange={(titleTemplate) => onChange({ ...config, titleTemplate })}
+        placeholder="Meeting with {contact.name}"
+      />
+      <ContactTemplateInput
+        id={`${actionKey}-appointment-notes`}
+        label="Notes (optional)"
+        value={config.notesTemplate ?? ""}
+        maxLength={4_000}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={notesError}
+        onChange={(notesTemplate) => onChange({ ...config, notesTemplate })}
+        multiline
+        placeholder="Add appointment details"
+      />
+
+      <Field className="gap-2">
+        <FieldLabel htmlFor={`${actionKey}-appointment-assignee-mode`}>Assignee</FieldLabel>
+        <Select
+          value={config.assignee.mode}
+          onValueChange={(mode: AutomationAppointmentConfig["assignee"]["mode"]) => onChange({
+            ...config,
+            assignee: mode === "CONTACT_ASSIGNEE"
+              ? { mode }
+              : { mode, userId: catalog.users[0]?.id ?? "" },
+          })}
+        >
+          <SelectTrigger id={`${actionKey}-appointment-assignee-mode`} className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="CONTACT_ASSIGNEE">Contact assignee</SelectItem>
+            <SelectItem value="SPECIFIC_USER">Specific teammate</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      {config.assignee.mode === "SPECIFIC_USER" ? (
+        <Field className="gap-2">
+          <FieldLabel>Teammate</FieldLabel>
+          <Popover open={assigneePickerOpen} onOpenChange={setAssigneePickerOpen}>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="outline" role="combobox" aria-expanded={assigneePickerOpen} className="h-9 w-full justify-between bg-white px-3 font-normal">
+                <span className="truncate">{selectedUser ? `${selectedUser.name} · ${selectedUser.email}` : "Select teammate"}</span>
+                <ChevronsUpDown className="size-4 shrink-0 text-slate-400" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+              <Command>
+                <CommandInput placeholder="Search teammates…" />
+                <CommandList>
+                  <CommandEmpty>No active teammates found.</CommandEmpty>
+                  <CommandGroup>
+                    {catalog.users.map((user) => (
+                      <CommandItem key={user.id} value={`${user.name} ${user.email} ${user.id}`} onSelect={() => {
+                        onChange({ ...config, assignee: { mode: "SPECIFIC_USER", userId: user.id } })
+                        setAssigneePickerOpen(false)
+                      }}>
+                        <Check className={cn("size-4", user.id === specificUserId ? "opacity-100" : "opacity-0")} />
+                        <span className="min-w-0 flex-1 truncate">{user.name}</span>
+                        <span className="truncate text-xs text-slate-500">{user.email}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+          {!selectedUser ? <p className="text-xs text-rose-600">Select an active teammate.</p> : null}
+        </Field>
+      ) : (
+        <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">The contact must have an active assignee when this action runs.</p>
+      )}
+
+      <Field className="gap-2">
+        <FieldLabel htmlFor={`${actionKey}-appointment-service`}>Service (optional)</FieldLabel>
+        <Select value={config.linkedService?.id ?? "__none__"} onValueChange={(id) => {
+          const service = catalog.services.find((item) => item.id === id)
+          onChange({ ...config, linkedService: service ? { id: service.id, nameSnapshot: service.name } : null })
+        }}>
+          <SelectTrigger id={`${actionKey}-appointment-service`} className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">No service</SelectItem>
+            {catalog.services.map((service) => <SelectItem key={service.id} value={service.id}>{service.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        {config.linkedService && !catalog.services.some((service) => service.id === config.linkedService?.id)
+          ? <p className="text-xs text-rose-600">Select an active service.</p> : null}
+      </Field>
+
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+        <p className="text-xs font-semibold text-slate-700">Start date and time</p>
+        <ContactDateValueInput
+          idPrefix={`${actionKey}-appointment-date`}
+          value={config.startAt.source}
+          onChange={(source) => onChange({ ...config, startAt: { ...config.startAt, source } })}
+          catalog={catalog}
+          timezone={timezone}
+          allowRelative
+          automationValues={automationOutputs.filter((output) => output.valueKind === "DATE").map(({ key, label }) => ({ key, label }))}
+        />
+        <Field className="gap-1.5">
+          <FieldLabel htmlFor={`${actionKey}-appointment-time`}>Time</FieldLabel>
+          <Input id={`${actionKey}-appointment-time`} type="time" value={config.startAt.time} className="h-8 rounded-full" onChange={(event) => onChange({ ...config, startAt: { ...config.startAt, time: event.target.value } })} />
+        </Field>
+        {!dateReady ? <p className="text-xs text-rose-600">Select an available date source and time.</p> : null}
+      </div>
+      <p className="text-xs leading-4 text-slate-600">The action fails if the selected time is past or unavailable. The appointment starts as Scheduled.</p>
+    </section>
+  )
+}
+
 function InternalNotificationActionEditor({
   actionKey,
   config,
@@ -6724,6 +6934,7 @@ function TaskActionEditor({
 
 function goToDestinationLabel(action: AutomationAction) {
   if (action.type === "CREATE_CONTACT") return action.createContactConfig?.actionName.trim() || "Create contact"
+  if (action.type === "CREATE_APPOINTMENT") return action.appointmentConfig?.actionName.trim() || "Create appointment"
   if (action.type === "SEND_INTERNAL_NOTIFICATION") return action.internalNotificationConfig?.actionName.trim() || "Internal notification"
   if (action.type === "FORMAT_TEXT") return action.textFormatterConfig?.actionName.trim() || "Text formatter"
   if (action.type === "UPDATE_OPPORTUNITY") return action.opportunityConfig?.actionName.trim() || "Update/create opportunity"

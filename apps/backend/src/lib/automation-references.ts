@@ -6,6 +6,7 @@ import {
   AutomationTaskConfigSchema,
   taskConfigCustomFieldKeys,
 } from "./automation-task.js"
+import { AutomationAppointmentConfigSchema } from "./automation-appointment.js"
 import {
   AutomationCustomFieldUpdatesSchema,
   AutomationDeleteOpportunityConfigSchema,
@@ -188,7 +189,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_CONTACT", "CREATE_TASK", "SEND_INTERNAL_NOTIFICATION", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "DELETE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
+          type: { in: ["CREATE_CONTACT", "CREATE_TASK", "CREATE_APPOINTMENT", "SEND_INTERNAL_NOTIFICATION", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "DELETE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
         },
       },
     },
@@ -206,6 +207,7 @@ export async function findEnabledAutomationReference(
           noteBody: true,
           createContactConfig: true,
           taskConfig: true,
+          appointmentConfig: true,
           internalNotificationConfig: true,
           customFieldUpdates: true,
           dateTimeFormatterConfig: true,
@@ -320,6 +322,21 @@ export async function findEnabledAutomationReference(
           notification.data.recipient.mode === "SPECIFIC_USER" &&
           notification.data.recipient.userId === reference.id
         ) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
+      }
+      if (action.type === "CREATE_APPOINTMENT") {
+        const appointment = AutomationAppointmentConfigSchema.safeParse(action.appointmentConfig)
+        if (!appointment.success) continue
+        const config = appointment.data
+        if (reference.kind === "user" && config.assignee.mode === "SPECIFIC_USER" && config.assignee.userId === reference.id) {
+          return { id: automation.id, name: automation.name }
+        }
+        if (reference.kind === "customField" && customField?.key && (
+          config.startAt.source.type === "CUSTOM_FIELD" && config.startAt.source.key === customField.key ||
+          [config.titleTemplate, config.notesTemplate ?? ""].flatMap(contactTemplateCustomFieldKeys).includes(customField.key)
+        )) {
           return { id: automation.id, name: automation.name }
         }
         continue

@@ -962,6 +962,8 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
   }))
   if (result.queuedRunCount > 0) {
     kickAutomationRunWorker({ queueOpportunityEvent: queueOpportunityAutomationEvent })
+    const { kickAutomationEventWorker } = await import("./automation-event-worker.js")
+    kickAutomationEventWorker()
   }
   return result
 }

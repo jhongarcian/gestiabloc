@@ -40,7 +40,7 @@ const TaskNameTemplateSchema = templateSchema(160, true)
 const TaskDescriptionTemplateSchema = templateSchema(4_000, false, true)
 const TaskReminderMessageTemplateSchema = templateSchema(500, false, true)
 
-const TaskDateSourceSchema = z.discriminatedUnion("type", [
+export const TaskDateSourceSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("CURRENT_DATE") }).strict(),
   z.object({
     type: z.literal("RELATIVE_DATE"),

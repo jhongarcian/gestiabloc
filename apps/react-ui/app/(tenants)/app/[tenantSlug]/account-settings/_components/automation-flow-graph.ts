@@ -268,6 +268,8 @@ export function buildAutomationFlowGraph(
       ? `Note: ${action.noteTitle?.trim() || "Add a title"}`
       : action.type === "CREATE_CONTACT"
         ? "Create contact"
+      : action.type === "CREATE_APPOINTMENT"
+        ? "Create appointment"
       : action.type === "SEND_INTERNAL_NOTIFICATION"
         ? action.internalNotificationConfig?.recipient.mode === "CONTACT_ASSIGNEE"
           ? "Notify contact assignee"
@@ -336,6 +338,8 @@ export function buildAutomationFlowGraph(
     return {
       label: action.type === "CREATE_CONTACT"
         ? action.createContactConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "CREATE_APPOINTMENT"
+          ? action.appointmentConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "SEND_INTERNAL_NOTIFICATION"
           ? action.internalNotificationConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "FORMAT_TEXT"

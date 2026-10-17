@@ -1218,6 +1218,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
       createdResult.automation.queuedRunCount > 0
     ) {
       kickAutomationRunWorker({ queueOpportunityEvent: queueOpportunityAutomationEvent })
+      kickAutomationEventWorker()
     }
 
     if (!createdResult.opportunity && !createdResult.automation.contactDeleted) {
@@ -1407,6 +1408,7 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
         moveResult.automation.queuedRunCount > 0
       ) {
         kickAutomationRunWorker({ queueOpportunityEvent: queueOpportunityAutomationEvent })
+        kickAutomationEventWorker()
       }
 
       if (moveResult.concurrent) {
@@ -1545,6 +1547,7 @@ router.patch("/:tenantId/:opportunityId", requireAuth, async (req, res, next) =>
       closeResult.automation.queuedRunCount > 0
     ) {
       kickAutomationRunWorker({ queueOpportunityEvent: queueOpportunityAutomationEvent })
+      kickAutomationEventWorker()
     }
     if (closeResult.concurrent) {
       return res.status(409).json({ error: "OPPORTUNITY_CHANGED_CONCURRENTLY" })

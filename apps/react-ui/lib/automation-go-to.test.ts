@@ -163,5 +163,36 @@ describe("automation Go To graph validation", () => {
       automationGoToTargetIssue(createContactActions, "go", "create-contact") ?? "",
       /not available/,
     )
+
+    const appointmentActions = [split([
+      {
+        branchKey: "route-a",
+        name: "Route A",
+        actions: [{ nodeKey: "go", type: "GO_TO", goToConfig: { targetNodeKey: "appointment" } }],
+      },
+      {
+        branchKey: "route-b",
+        name: "Route B",
+        actions: [
+          {
+            nodeKey: "date-value",
+            type: "MATH_OPERATION",
+            mathOperationConfig: {
+              mode: "DATE", source: { type: "CONTACT_FIELD", key: "lead_date" },
+              operation: "ADD", amount: 1, unit: "DAYS", outputKey: "review_date",
+            },
+          },
+          {
+            nodeKey: "appointment",
+            type: "CREATE_APPOINTMENT",
+            appointmentConfig: {
+              actionName: "Book review", titleTemplate: "Review", assignee: { mode: "CONTACT_ASSIGNEE" },
+              startAt: { source: { type: "AUTOMATION_VALUE", key: "review_date" }, time: "09:00" },
+            },
+          },
+        ],
+      },
+    ])]
+    assert.match(automationGoToTargetIssue(appointmentActions, "go", "appointment") ?? "", /not available/)
   })
 })
