@@ -25,6 +25,7 @@ import {
   renderContactNoteTemplates,
   renderContactTemplates,
   CONTACT_TEMPLATE_REGULAR_FIELDS,
+  regularContactValue,
   isValidTemplateDate,
   validateContactTemplate,
   createContactTemplateExecutionContext,
@@ -38,6 +39,12 @@ import {
   sanitizeTaskSingleLine,
   type AutomationTaskConfig,
 } from "./automation-task.js"
+import {
+  AutomationAppointmentConfigSchema,
+  resolveAutomationAppointmentStart,
+  type AutomationAppointmentConfig,
+} from "./automation-appointment.js"
+import { changeAppointmentStatusInTransaction, createAppointmentInTransaction, formatAppointmentStatusLabel, getSafeCalendarSlotDuration } from "./appointment-booking.js"
 import {
   AutomationDateTimeFormatterConfigSchema,
   resolveAutomationDateTimeFormatter,
@@ -73,6 +80,15 @@ import { getTaskPriorityFromDueDate, isCompletedStatusName } from "./task-priori
 import { evaluateWorkflowOperator } from "./service-followup-runtime.js"
 
 export const AUTOMATION_TRIGGER_TYPES = [
+  "CONTACT_CREATED",
+  "CONTACT_CHANGED",
+  "CONTACT_TAG",
+  "CONTACT_NOTE_ADDED",
+  "TASK_ADDED",
+  "TASK_COMPLETED",
+  "APPOINTMENT_CREATED",
+  "APPOINTMENT_STATUS_CHANGED",
+  "BIRTHDAY_REMINDER",
   "OPPORTUNITY_CREATED",
   "OPPORTUNITY_STAGE_CHANGED",
   "OPPORTUNITY_CHANGED",
@@ -109,6 +125,8 @@ export const AUTOMATION_ACTION_TYPES = [
   "ADD_CONTACT_NOTE",
   "CREATE_CONTACT",
   "CREATE_TASK",
+  "CREATE_APPOINTMENT",
+  "UPDATE_APPOINTMENT_STATUS",
   "SEND_INTERNAL_NOTIFICATION",
   "FORMAT_DATE_TIME",
   "FORMAT_NUMBER",
@@ -235,6 +253,13 @@ const opportunityValueConditionSchema = z.object({
   compareValue: z.unknown().nullable().optional(),
 })
 
+const contactFieldConditionSchema = z.object({
+  source: z.literal("CONTACT_FIELD"),
+  operator: operatorSchema,
+  fieldKey: z.string().trim().min(1),
+  compareValue: z.unknown().nullable().optional(),
+})
+
 const contactStatusConditionSchema = z.object({
   source: z.literal("CONTACT_STATUS"),
   operator: operatorSchema,
@@ -248,6 +273,20 @@ const customFieldConditionSchema = z.object({
   customFieldId: idSchema,
   compareValue: z.unknown().nullable().optional(),
 })
+
+const taskFieldConditionSchema = z.object({
+  source: z.literal("TASK_FIELD"),
+  fieldKey: z.enum(["name", "description", "statusConfigId", "assignedToUserId", "startedAt", "dueDate", "priority", "linkedEntityName", "linkedEntityType"]),
+  operator: operatorSchema,
+  compareValue: z.unknown().nullable().optional(),
+}).strict()
+
+const appointmentFieldConditionSchema = z.object({
+  source: z.literal("APPOINTMENT_FIELD"),
+  fieldKey: z.enum(["serviceId", "title", "notes", "assignedToUserId", "bookedByUserId", "startAt", "endAt", "isAllDay"]),
+  operator: operatorSchema,
+  compareValue: z.unknown().nullable().optional(),
+}).strict()
 
 const contactAssigneeConditionSchema = z.object({
   source: z.literal("CONTACT_ASSIGNEE"),
@@ -310,11 +349,35 @@ export const AutomationCustomFieldUpdatesSchema = z
   })
 
 export const AutomationConditionInputSchema = z.discriminatedUnion("source", [
+  contactFieldConditionSchema,
+  taskFieldConditionSchema,
+  appointmentFieldConditionSchema,
   opportunityValueConditionSchema,
   contactStatusConditionSchema,
   customFieldConditionSchema,
   contactAssigneeConditionSchema,
   contactTagsConditionSchema,
+])
+
+export const AutomationAppointmentStatusConfigSchema = z.object({
+  actionName: z.string().trim().min(1).max(120),
+  targetMode: z.enum(["TRIGGERING_APPOINTMENT", "NEXT_UPCOMING"]),
+  status: z.enum(["SCHEDULED", "CONFIRMED", "SHOW", "NO_SHOW", "CANCELED", "COMPLETED"]),
+  filters: z.array(z.discriminatedUnion("source", [
+    contactFieldConditionSchema,
+    customFieldConditionSchema,
+    contactTagsConditionSchema,
+  ])).max(20).default([]),
+}).strict()
+
+export type AutomationAppointmentStatusConfig = z.infer<typeof AutomationAppointmentStatusConfigSchema>
+
+export const AutomationContactChangeRuleSchema = z.discriminatedUnion("source", [
+  z.object({ source: z.literal("CONTACT_FIELD"), operator: z.enum(["HAS_CHANGED", "HAS_CHANGED_TO"]), fieldKey: z.string().trim().min(1), value: z.unknown().optional() }).strict(),
+  z.object({ source: z.literal("CONTACT_CUSTOM_FIELD"), operator: z.enum(["HAS_CHANGED", "HAS_CHANGED_TO"]), customFieldId: idSchema, value: z.unknown().optional() }).strict(),
+  z.object({ source: z.literal("CONTACT_STATUS"), operator: z.enum(["HAS_CHANGED", "HAS_CHANGED_TO"]), statusConfigId: idSchema.optional() }).strict(),
+  z.object({ source: z.literal("CONTACT_ASSIGNEE"), operator: z.enum(["HAS_CHANGED", "HAS_CHANGED_TO"]), assignedUserId: idSchema.nullable().optional() }).strict(),
+  z.object({ source: z.literal("CONTACT_TAGS"), operator: z.enum(["ADDED", "REMOVED"]), tagId: idSchema.nullable().optional() }).strict(),
 ])
 
 const automationOpportunityConfigBase = {
@@ -430,6 +493,16 @@ const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("CREATE_TASK"),
     nodeKey: actionNodeKeySchema,
     taskConfig: AutomationTaskConfigSchema,
+  }),
+  z.object({
+    type: z.literal("CREATE_APPOINTMENT"),
+    nodeKey: actionNodeKeySchema,
+    appointmentConfig: AutomationAppointmentConfigSchema,
+  }),
+  z.object({
+    type: z.literal("UPDATE_APPOINTMENT_STATUS"),
+    nodeKey: actionNodeKeySchema,
+    appointmentStatusConfig: AutomationAppointmentStatusConfigSchema,
   }),
   z.object({
     type: z.literal("SEND_INTERNAL_NOTIFICATION"),
@@ -591,6 +664,8 @@ const legacyRoutingActionNullFields = {
   noteBody: z.null().optional(),
   createContactConfig: z.null().optional(),
   taskConfig: z.null().optional(),
+  appointmentConfig: z.null().optional(),
+  appointmentStatusConfig: z.null().optional(),
   internalNotificationConfig: z.null().optional(),
   dateTimeFormatterConfig: z.null().optional(),
   numberFormatterConfig: z.null().optional(),
@@ -649,6 +724,15 @@ export const AutomationUpsertSchema = z
     folderId: idSchema.nullable().optional(),
     isEnabled: z.boolean().default(false),
     trigger: z.discriminatedUnion("type", [
+      z.object({ type: z.literal("CONTACT_CREATED") }).strict(),
+      z.object({ type: z.literal("CONTACT_CHANGED"), changes: z.array(AutomationContactChangeRuleSchema).min(1).max(20) }).strict(),
+      z.object({ type: z.literal("CONTACT_TAG"), tagId: idSchema, change: z.enum(["ADDED", "REMOVED"]) }).strict(),
+      z.object({ type: z.literal("CONTACT_NOTE_ADDED") }).strict(),
+      z.object({ type: z.literal("TASK_ADDED") }).strict(),
+      z.object({ type: z.literal("TASK_COMPLETED") }).strict(),
+      z.object({ type: z.literal("APPOINTMENT_CREATED") }).strict(),
+      z.object({ type: z.literal("APPOINTMENT_STATUS_CHANGED"), status: z.enum(["SCHEDULED", "CONFIRMED", "SHOW", "NO_SHOW", "CANCELED", "COMPLETED"]) }).strict(),
+      z.object({ type: z.literal("BIRTHDAY_REMINDER"), localTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Choose a time in HH:mm format.") }).strict(),
       z.object({
         type: z.literal("OPPORTUNITY_CREATED"),
         pipelineId: idSchema,
@@ -811,6 +895,28 @@ const ARRAY_OPERATORS = new Set<AutomationOperator>([
   "IS_EMPTY",
   "IS_NOT_EMPTY",
 ])
+
+const TASK_FILTER_FIELDS: Record<string, { label: string; valueType: ValueType; operators: ReadonlySet<AutomationOperator>; options?: string[]; required?: boolean }> = {
+  name: { label: "Task name", valueType: "string", operators: STRING_OPERATORS, required: true },
+  description: { label: "Task description", valueType: "string", operators: STRING_OPERATORS },
+  statusConfigId: { label: "Task status", valueType: "string", operators: new Set<AutomationOperator>(["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]) },
+  assignedToUserId: { label: "Task assignee", valueType: "stringArray", operators: new Set<AutomationOperator>(["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"]) },
+  startedAt: { label: "Task start date", valueType: "date", operators: new Set([...NUMBER_OPERATORS].filter((operator) => !EMPTY_OPERATORS.has(operator))) },
+  dueDate: { label: "Task due date", valueType: "date", operators: NUMBER_OPERATORS },
+  priority: { label: "Task priority", valueType: "string", operators: new Set<AutomationOperator>(["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]), options: ["HIGH", "MEDIUM", "LOW"] },
+  linkedEntityName: { label: "Linked service or product", valueType: "string", operators: STRING_OPERATORS },
+  linkedEntityType: { label: "Linked item type", valueType: "string", operators: new Set<AutomationOperator>(["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]), options: ["SERVICE", "PRODUCT"] },
+}
+const APPOINTMENT_FILTER_FIELDS: Record<string, { label: string; valueType: ValueType; operators: ReadonlySet<AutomationOperator>; required?: boolean }> = {
+  serviceId: { label: "Service", valueType: "stringArray", operators: new Set<AutomationOperator>(["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"]) },
+  title: { label: "Appointment title", valueType: "string", operators: STRING_OPERATORS, required: true },
+  notes: { label: "Appointment notes", valueType: "string", operators: STRING_OPERATORS },
+  assignedToUserId: { label: "Assigned user", valueType: "stringArray", operators: new Set<AutomationOperator>(["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"]), required: true },
+  bookedByUserId: { label: "Booked by", valueType: "stringArray", operators: new Set<AutomationOperator>(["INCLUDES_ANY"]), required: true },
+  startAt: { label: "Start date and time", valueType: "date", operators: new Set([...NUMBER_OPERATORS].filter((operator) => !EMPTY_OPERATORS.has(operator))), required: true },
+  endAt: { label: "End date and time", valueType: "date", operators: new Set([...NUMBER_OPERATORS].filter((operator) => !EMPTY_OPERATORS.has(operator))), required: true },
+  isAllDay: { label: "All-day appointment", valueType: "boolean", operators: new Set<AutomationOperator>(["IS_TRUE", "IS_FALSE"]) },
+}
 const BOOLEAN_OPERATORS = new Set<AutomationOperator>([
   "IS_TRUE",
   "IS_FALSE",
@@ -879,6 +985,10 @@ function automationValueRequirements(action: AutomationControlFlowAction) {
     addTemplate(record.taskConfig?.nameTemplate)
     addTemplate(record.taskConfig?.descriptionTemplate)
     addTemplate(record.taskConfig?.reminder?.messageTemplate)
+  } else if (record.type === "CREATE_APPOINTMENT") {
+    addTemplate(record.appointmentConfig?.titleTemplate)
+    addTemplate(record.appointmentConfig?.notesTemplate)
+    addSource(record.appointmentConfig?.startAt?.source)
   } else if (record.type === "SEND_INTERNAL_NOTIFICATION") {
     addTemplate(record.internalNotificationConfig?.titleTemplate)
     addTemplate(record.internalNotificationConfig?.bodyTemplate)
@@ -1288,6 +1398,8 @@ export async function validateAutomationConfiguration(
   input: AutomationInput,
   options: { sourceAutomationId?: string | null } = {},
 ) {
+  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED" || input.trigger.type === "TASK_COMPLETED" || input.trigger.type === "APPOINTMENT_CREATED" || input.trigger.type === "APPOINTMENT_STATUS_CHANGED" || input.trigger.type === "BIRTHDAY_REMINDER"
+  const triggerPipelineId = "pipelineId" in input.trigger ? input.trigger.pipelineId : null
   const [pipelines, fields, statuses, taskStatuses, memberships, tags, services, publishedAutomations] = await Promise.all([
     prismaClient.opportunityPipeline.findMany
       ? prismaClient.opportunityPipeline.findMany({
@@ -1299,7 +1411,7 @@ export async function validateAutomationConfiguration(
           },
         })
       : prismaClient.opportunityPipeline.findUnique({
-          where: { tenantId_id: { tenantId, id: input.trigger.pipelineId } },
+          where: { tenantId_id: { tenantId, id: triggerPipelineId ?? "" } },
           select: {
             id: true,
             name: true,
@@ -1361,9 +1473,11 @@ export async function validateAutomationConfiguration(
       : Promise.resolve([]),
   ])
 
-  const pipeline = pipelines.find((item: any) => item.id === input.trigger.pipelineId)
-  if (!pipeline) throw new AutomationConfigurationError("PIPELINE_NOT_FOUND", "The selected pipeline no longer exists.")
-  const stageIds = new Set(pipeline.stages.map((stage: { id: string }) => stage.id))
+  const pipeline = triggerPipelineId
+    ? pipelines.find((item: any) => item.id === triggerPipelineId)
+    : null
+  if (!contactTrigger && !pipeline) throw new AutomationConfigurationError("PIPELINE_NOT_FOUND", "The selected pipeline no longer exists.")
+  const stageIds = new Set((pipeline?.stages ?? []).map((stage: { id: string }) => stage.id))
   const configuredStageId = input.trigger.type === "OPPORTUNITY_STAGE_CHANGED"
     ? input.trigger.targetStageId
     : input.trigger.type === "OPPORTUNITY_CHANGED" && input.trigger.change.type === "STAGE_ENTERED"
@@ -1383,12 +1497,175 @@ export async function validateAutomationConfiguration(
   const tagIds = new Set(tags.map((item: any) => item.id))
   const serviceMap = new Map<string, string>(services.map((item: any) => [item.id, item.name]))
   const opportunityPipelineMap = new Map<string, any>(pipelines.map((item: any) => [item.id, item]))
+  if (input.trigger.type === "CONTACT_TAG" && !tagIds.has(input.trigger.tagId)) {
+    throw new AutomationConfigurationError("INVALID_TAG", "Select an existing contact tag.")
+  }
+  const changeRules = input.trigger.type === "CONTACT_TAG"
+    ? [{ tenantId, source: "CONTACT_TAGS" as const, operator: input.trigger.change, tagId: input.trigger.tagId, sortOrder: 10 }]
+    : input.trigger.type === "CONTACT_CHANGED"
+    ? input.trigger.changes.map((rule, index) => {
+        const base = { tenantId, source: rule.source, operator: rule.operator, sortOrder: (index + 1) * 10 }
+        if (rule.source === "CONTACT_FIELD") {
+          const field = AUTOMATION_CONTACT_UPDATE_FIELD_MAP.get(rule.fieldKey as any)
+          if (!field) throw new AutomationConfigurationError("INVALID_CONTACT_FIELD", "Select an editable contact field.")
+          if (rule.operator === "HAS_CHANGED") return { ...base, fieldKey: field.key }
+          if (!Object.hasOwn(rule, "value") || (rule.value === null && field.isRequired)) {
+            throw new AutomationConfigurationError("INVALID_CHANGE_VALUE", `Select a target value for ${field.label}.`)
+          }
+          if (rule.value === null) return { ...base, fieldKey: field.key, compareValue: null }
+          const normalized = normalizeAutomationContactFieldValue(field, rule.value)
+          if (!normalized.ok) throw new AutomationConfigurationError("INVALID_CHANGE_VALUE", normalized.message)
+          return { ...base, fieldKey: field.key, compareValue: normalized.value }
+        }
+        if (rule.source === "CONTACT_CUSTOM_FIELD") {
+          const field = fieldMap.get(rule.customFieldId)
+          if (!field || !field.isActive || field.isEncrypted || field.isSensitive) {
+            throw new AutomationConfigurationError("INVALID_CUSTOM_FIELD", "Select an active, non-sensitive custom field.")
+          }
+          if (rule.operator === "HAS_CHANGED") return { ...base, customFieldId: field.id }
+          if (!Object.hasOwn(rule, "value") || (rule.value === null && field.isRequired)) {
+            throw new AutomationConfigurationError("INVALID_CHANGE_VALUE", `Select a target value for ${field.label}.`)
+          }
+          if (rule.value === null) return { ...base, customFieldId: field.id, compareValue: null }
+          const normalized = normalizeCustomFieldValue({ ...field, options: fieldOptions(field) }, rule.value)
+          if (!normalized.ok || normalized.value === null) {
+            throw new AutomationConfigurationError("INVALID_CHANGE_VALUE", normalized.ok ? `Select a target value for ${field.label}.` : normalized.message)
+          }
+          return { ...base, customFieldId: field.id, compareValue: normalized.value }
+        }
+        if (rule.source === "CONTACT_STATUS") {
+          if (rule.operator === "HAS_CHANGED") return base
+          if (!rule.statusConfigId || !activeStatusIds.has(rule.statusConfigId)) {
+            throw new AutomationConfigurationError("INVALID_STATUS_CONFIG", "Select an active contact status.")
+          }
+          return { ...base, statusConfigId: rule.statusConfigId }
+        }
+        if (rule.source === "CONTACT_ASSIGNEE") {
+          if (rule.operator === "HAS_CHANGED") return base
+          if (!Object.hasOwn(rule, "assignedUserId") || (rule.assignedUserId && !activeUserIds.has(rule.assignedUserId))) {
+            throw new AutomationConfigurationError("INVALID_ASSIGNEE", "Select an active user or Unassigned.")
+          }
+          return { ...base, assignedUserId: rule.assignedUserId ?? null }
+        }
+        if (rule.tagId && !tagIds.has(rule.tagId)) throw new AutomationConfigurationError("INVALID_TAG", "Select a tenant tag or Any tag.")
+        return { ...base, tagId: rule.tagId ?? null }
+      })
+    : []
   const publishedAutomationMap = new Map<string, { id: string; name: string; actions: any[] }>(
     publishedAutomations.map((automation: any) => [automation.id, automation]),
   )
 
   const conditions = input.conditions.map((condition, index) => {
+    if (input.trigger.type === "CONTACT_NOTE_ADDED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Note added filters can use contact fields, custom fields, or tags.")
+    }
+    if (input.trigger.type === "TASK_COMPLETED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Task completed filters can use contact fields, custom fields, or tags.")
+    }
+    if (input.trigger.type === "APPOINTMENT_STATUS_CHANGED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Appointment status changed filters can use contact fields, custom fields, or tags.")
+    }
+    if (input.trigger.type === "BIRTHDAY_REMINDER" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Birthday reminder filters can use contact fields, custom fields, or tags.")
+    }
+    if (input.trigger.type === "TASK_ADDED" && !["TASK_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Task added filters can use task details, contact fields, custom fields, or tags.")
+    }
+    if (input.trigger.type === "APPOINTMENT_CREATED" && !["APPOINTMENT_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Appointment created filters can use appointment details, contact fields, custom fields, or tags.")
+    }
+    if (condition.source === "APPOINTMENT_FIELD") {
+      if (input.trigger.type !== "APPOINTMENT_CREATED") throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Appointment filters are only available for Appointment created.")
+      const field = APPOINTMENT_FILTER_FIELDS[condition.fieldKey]
+      if (!field || !field.operators.has(condition.operator) || (field.required && EMPTY_OPERATORS.has(condition.operator))) {
+        throw new AutomationConfigurationError("INVALID_APPOINTMENT_FILTER", "Select an available appointment field and operator.")
+      }
+      let compareValue = normalizeCompareValue(condition.operator, condition.compareValue, field.valueType)
+      if (!EMPTY_OPERATORS.has(condition.operator)) {
+        if (condition.fieldKey === "serviceId" && (!(compareValue instanceof Array) || compareValue.some((id) => !serviceMap.has(id)))) {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_FILTER", "Select active services from this tenant.")
+        }
+        if (["assignedToUserId", "bookedByUserId"].includes(condition.fieldKey) && (!(compareValue instanceof Array) || compareValue.some((id) => !activeUserIds.has(id)))) {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_FILTER", "Select active team members.")
+        }
+        if (field.valueType === "date") {
+          const canonicalDate = (value: unknown) => {
+            if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) || Number.isNaN(Date.parse(value))) {
+              throw new AutomationConfigurationError("INVALID_APPOINTMENT_FILTER", "Enter an appointment date and time with a timezone.")
+            }
+            return new Date(value).toISOString()
+          }
+          if (condition.operator === "BETWEEN") {
+            const range = compareValue as { min: unknown; max: unknown }
+            const min = canonicalDate(range.min)
+            const max = canonicalDate(range.max)
+            if (min > max) throw new AutomationConfigurationError("INVALID_APPOINTMENT_FILTER", "The appointment date range must start before it ends.")
+            compareValue = { min, max }
+          } else compareValue = canonicalDate(compareValue)
+        }
+      }
+      return { tenantId, source: condition.source, fieldKey: condition.fieldKey, operator: condition.operator, compareValue, sortOrder: (index + 1) * 10 }
+    }
+    if (condition.source === "TASK_FIELD") {
+      if (input.trigger.type !== "TASK_ADDED") {
+        throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Task filters are only available for Task added.")
+      }
+      const field = TASK_FILTER_FIELDS[condition.fieldKey]
+      if (!field || !field.operators.has(condition.operator) || (field.required && EMPTY_OPERATORS.has(condition.operator))) {
+        throw new AutomationConfigurationError("INVALID_TASK_FILTER", "Select an available task field and operator.")
+      }
+      let compareValue = normalizeCompareValue(condition.operator, condition.compareValue, field.valueType)
+      if (!EMPTY_OPERATORS.has(condition.operator)) {
+        if (condition.fieldKey === "statusConfigId" && !activeTaskStatusIds.has(String(compareValue))) {
+          throw new AutomationConfigurationError("INVALID_TASK_FILTER", "Select an active task status.")
+        }
+        if (condition.fieldKey === "assignedToUserId" && (!(compareValue instanceof Array) || compareValue.some((id) => !activeUserIds.has(id)))) {
+          throw new AutomationConfigurationError("INVALID_TASK_FILTER", "Select active task assignees.")
+        }
+        if (field.options && !field.options.includes(String(compareValue))) {
+          throw new AutomationConfigurationError("INVALID_TASK_FILTER", `Select an available ${field.label.toLowerCase()}.`)
+        }
+        if (field.valueType === "date") {
+          const canonicalDate = (value: unknown) => {
+            if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) || Number.isNaN(Date.parse(value))) {
+              throw new AutomationConfigurationError("INVALID_TASK_FILTER", "Enter a task date and time with a timezone.")
+            }
+            return new Date(value).toISOString()
+          }
+          if (condition.operator === "BETWEEN") {
+            const range = compareValue as { min: unknown; max: unknown }
+            const min = canonicalDate(range.min)
+            const max = canonicalDate(range.max)
+            if (min > max) throw new AutomationConfigurationError("INVALID_TASK_FILTER", "The task date range must start before it ends.")
+            compareValue = { min, max }
+          } else {
+            compareValue = canonicalDate(compareValue)
+          }
+        }
+      }
+      return { tenantId, source: condition.source, fieldKey: condition.fieldKey, operator: condition.operator, compareValue, sortOrder: (index + 1) * 10 }
+    }
+    if (condition.source === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === condition.fieldKey)
+      if (!field || ["status", "assigned_to", "tags"].includes(field.key)) {
+        throw new AutomationConfigurationError("INVALID_CONTACT_FIELD", "Select an available contact field.")
+      }
+      if (!getAutomationOperatorsForFieldType(field.fieldType).includes(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_CONDITION_OPERATOR", `The selected operator is not available for ${field.label}.`)
+      }
+      return {
+        tenantId,
+        source: condition.source,
+        operator: condition.operator,
+        fieldKey: field.key,
+        compareValue: normalizeCompareValue(condition.operator, condition.compareValue, valueTypeForCustomField(field.fieldType)),
+        sortOrder: (index + 1) * 10,
+      }
+    }
     if (condition.source === "OPPORTUNITY_VALUE") {
+      if (contactTrigger) {
+        throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Opportunity value is unavailable for a contact trigger.")
+      }
       if (!NUMBER_OPERATORS.has(condition.operator) || EMPTY_OPERATORS.has(condition.operator)) {
         throw new AutomationConfigurationError("INVALID_CONDITION_OPERATOR", "The selected operator is not available for opportunity value.")
       }
@@ -1486,6 +1763,48 @@ export async function validateAutomationConfiguration(
       sortOrder: (index + 1) * 10,
     }
   })
+
+  const normalizeAppointmentStatusFilter = (condition: AutomationAppointmentStatusConfig["filters"][number]) => {
+    if (condition.source === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === condition.fieldKey)
+      if (!field || ["status", "assigned_to", "tags"].includes(field.key)) {
+        throw new AutomationConfigurationError("INVALID_CONTACT_FIELD", "Select an available contact field.")
+      }
+      if (!getAutomationOperatorsForFieldType(field.fieldType).includes(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_CONDITION_OPERATOR", `The selected operator is not available for ${field.label}.`)
+      }
+      return {
+        source: condition.source,
+        fieldKey: field.key,
+        operator: condition.operator,
+        compareValue: normalizeCompareValue(condition.operator, condition.compareValue, valueTypeForCustomField(field.fieldType)),
+      }
+    }
+    if (condition.source === "CONTACT_TAGS") {
+      if (!["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"].includes(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_CONDITION_OPERATOR", "The selected operator is not available for contact tags.")
+      }
+      const needsTag = condition.operator === "EQUALS" || condition.operator === "NOT_EQUALS"
+      if (needsTag && (!condition.tagId || !tagIds.has(condition.tagId))) {
+        throw new AutomationConfigurationError("INVALID_TAG", "Select a tenant tag.")
+      }
+      return { source: condition.source, operator: condition.operator, tagId: needsTag ? condition.tagId : null }
+    }
+    const field = fieldMap.get(condition.customFieldId)
+    if (!field || !field.isActive || field.isEncrypted || field.isSensitive) {
+      throw new AutomationConfigurationError("INVALID_CUSTOM_FIELD", "Select an active, non-sensitive custom field.")
+    }
+    if (!getAutomationOperatorsForFieldType(field.fieldType).includes(condition.operator)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_OPERATOR", `The selected operator is not available for ${field.label}.`)
+    }
+    const compareValue = normalizeCompareValue(condition.operator, condition.compareValue, valueTypeForCustomField(field.fieldType))
+    const options = fieldOptions(field)
+    const comparisonValues = Array.isArray(compareValue) ? compareValue : [compareValue]
+    if (options.length > 0 && !EMPTY_OPERATORS.has(condition.operator) && comparisonValues.some((value) => typeof value === "string" && !options.includes(value))) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_VALUE", `${field.label} has an invalid option.`)
+    }
+    return { source: condition.source, customFieldId: field.id, operator: condition.operator, compareValue }
+  }
 
   const actionNodeKeys = new Set<string>()
   let totalActionCount = 0
@@ -2315,6 +2634,65 @@ export async function validateAutomationConfiguration(
         },
       }
     }
+    if (action.type === "CREATE_APPOINTMENT") {
+      const config = action.appointmentConfig
+      for (const template of [config.titleTemplate, config.notesTemplate ?? ""]) {
+        const issue = validateContactTemplate(template, fields, [...automationOutputs.keys()]).issues[0]
+        if (issue) throw new AutomationConfigurationError("INVALID_APPOINTMENT_TEMPLATE", issue.message)
+      }
+      if (config.assignee.mode === "SPECIFIC_USER" && !activeUserIds.has(config.assignee.userId)) {
+        throw new AutomationConfigurationError("INVALID_APPOINTMENT_ASSIGNEE", "Select an active appointment assignee.")
+      }
+      if (config.linkedService && !serviceMap.has(config.linkedService.id)) {
+        throw new AutomationConfigurationError("INVALID_APPOINTMENT_SERVICE", "Select an active appointment service.")
+      }
+      const source = config.startAt.source
+      if (source.type === "CONTACT_FIELD") {
+        const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((item) => item.key === source.key)
+        if (!field || field.fieldType !== "DATE") {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_DATE", "Select an available contact date field.")
+        }
+      } else if (source.type === "CUSTOM_FIELD") {
+        const field = fieldKeyMap.get(source.key)
+        if (!field || field.fieldType !== "DATE" || !field.isActive || field.isSensitive || field.isEncrypted) {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_DATE", "Select an active, non-sensitive custom date field.")
+        }
+      } else if (source.type === "AUTOMATION_VALUE") {
+        if (automationOutputs.get(source.key) !== "DATE") {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_DATE", "Select an earlier date value available on every route.")
+        }
+      } else if (source.type === "SPECIFIC_DATE") {
+        try {
+          new Intl.DateTimeFormat("en-US", { timeZone: source.timezone }).format(new Date())
+        } catch {
+          throw new AutomationConfigurationError("INVALID_APPOINTMENT_TIMEZONE", "Select a valid appointment timezone.")
+        }
+      }
+      return {
+        ...base,
+        appointmentConfig: {
+          ...config,
+          linkedService: config.linkedService
+            ? { id: config.linkedService.id, nameSnapshot: serviceMap.get(config.linkedService.id)! }
+            : null,
+          notesTemplate: config.notesTemplate?.trim() ? config.notesTemplate : null,
+        },
+      }
+    }
+    if (action.type === "UPDATE_APPOINTMENT_STATUS") {
+      const config = action.appointmentStatusConfig
+      if (config.targetMode === "TRIGGERING_APPOINTMENT" &&
+        input.trigger.type !== "APPOINTMENT_CREATED" && input.trigger.type !== "APPOINTMENT_STATUS_CHANGED") {
+        throw new AutomationConfigurationError("INVALID_APPOINTMENT_TARGET", "Triggering appointment is only available for appointment automations.")
+      }
+      return {
+        ...base,
+        appointmentStatusConfig: {
+          ...config,
+          filters: config.filters.map(normalizeAppointmentStatusFilter),
+        },
+      }
+    }
     if (action.type === "SEND_INTERNAL_NOTIFICATION") {
       const config = action.internalNotificationConfig
       const availableOutputs = [...automationOutputs.keys()]
@@ -2462,7 +2840,9 @@ export async function validateAutomationConfiguration(
     name: input.name,
     isEnabled: input.isEnabled,
     triggerType: input.trigger.type === "OPPORTUNITY_STAGE_CHANGED" ? "OPPORTUNITY_CHANGED" as const : input.trigger.type,
-    pipelineId: input.trigger.pipelineId,
+    birthdayLocalTime: input.trigger.type === "BIRTHDAY_REMINDER" ? input.trigger.localTime : null,
+    appointmentTargetStatus: input.trigger.type === "APPOINTMENT_STATUS_CHANGED" ? input.trigger.status : null,
+    pipelineId: "pipelineId" in input.trigger ? input.trigger.pipelineId : null,
     sourceStageId: null,
     targetStageId: configuredStageId,
     targetResult:
@@ -2470,6 +2850,7 @@ export async function validateAutomationConfiguration(
         ? input.trigger.change.result
         : null,
     conditions,
+    changeRules,
     actions,
   }
 }
@@ -2477,7 +2858,7 @@ export async function validateAutomationConfiguration(
 export type OpportunityAutomationEvent = {
   tenantId: string
   actorUserId: string | null
-  triggerType: AutomationTriggerType
+  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER">
   opportunityId: string
   contactId: string
   pipelineId: string
@@ -2543,14 +2924,59 @@ function operatorExpectation(operator: AutomationOperator, expected: unknown, fo
   return `expected ${descriptions[operator] ?? operator.toLocaleLowerCase()} ${expectedLabel}, found ${foundLabel}`
 }
 
+export const CONTACT_AUTOMATION_SNAPSHOT_SELECT = {
+  id: true,
+  firstName: true,
+  middleName: true,
+  lastName: true,
+  phone: true,
+  secondaryPhone: true,
+  email: true,
+  addressLine1: true,
+  addressLine2: true,
+  city: true,
+  state: true,
+  postalCode: true,
+  country: true,
+  mailingAddressLine1: true,
+  mailingAddressLine2: true,
+  mailingCity: true,
+  mailingState: true,
+  mailingPostalCode: true,
+  mailingCountry: true,
+  emergencyContactName: true,
+  emergencyContactPhone: true,
+  emergencyContactRelationship: true,
+  dateOfBirth: true,
+  gender: true,
+  height: true,
+  weight: true,
+  deceasedAt: true,
+  medicarePartA: true,
+  medicarePartB: true,
+  smokerStatus: true,
+  leadDate: true,
+  leadSource: true,
+  leadOtherSource: true,
+  createdAt: true,
+  updatedAt: true,
+  statusConfigId: true,
+  assignedToUserId: true,
+  tags: { select: { tagId: true } },
+  customFieldValues: { select: { fieldId: true, value: true } },
+  servicingAgentMembership: { select: { user: { select: { name: true, email: true } } } },
+  additionalAgentMembership: { select: { user: { select: { name: true, email: true } } } },
+} as const
+
 export function evaluateAutomationConditions(
   automation: any,
-  event: OpportunityAutomationEvent,
+  event: OpportunityAutomationEvent | { valueCents: number | null },
   contact: {
     statusConfigId: string | null
     assignedToUserId: string | null
     tags: Array<{ tagId: string }>
     customFieldValues: Array<{ fieldId: string; value: unknown }>
+    [key: string]: unknown
   },
   catalog: AutomationRuntimeCatalog,
 ) {
@@ -2564,7 +2990,18 @@ export function evaluateAutomationConditions(
     let currentValue: unknown = null
     let expectedValue: unknown = condition.compareValue
 
-    if (condition.source === "OPPORTUNITY_VALUE") {
+    if (condition.source === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === condition.fieldKey)
+      label = field?.label ?? "Contact field"
+      currentValue = field ? regularContactValue(contact, field.key) : null
+      if (field?.fieldType === "DATE" && currentValue instanceof Date) currentValue = currentValue.toISOString().slice(0, 10)
+      matches = Boolean(field) && evaluateAutomationOperator(
+        condition.operator,
+        currentValue,
+        condition.compareValue,
+        field ? valueTypeForCustomField(field.fieldType) : "string",
+      )
+    } else if (condition.source === "OPPORTUNITY_VALUE") {
       label = "Opportunity value"
       currentValue = event.valueCents
       matches = evaluateAutomationOperator(condition.operator, currentValue, condition.compareValue, "number")
@@ -2623,6 +3060,44 @@ export function evaluateAutomationConditions(
     }
   }
 
+  return { matches: failures.length === 0, failures }
+}
+
+export function evaluateAutomationTaskConditions(automation: any, task: Record<string, unknown>) {
+  const failures: string[] = []
+  for (const condition of automation.conditions) {
+    if (condition.source !== "TASK_FIELD") continue
+    const field = TASK_FILTER_FIELDS[condition.fieldKey]
+    if (!field) {
+      failures.push("Task field is unavailable.")
+      continue
+    }
+    let currentValue = task[condition.fieldKey]
+    if (condition.fieldKey === "assignedToUserId") currentValue = currentValue ? [currentValue] : []
+    if (field.valueType === "date" && currentValue instanceof Date) currentValue = currentValue.toISOString()
+    if (!evaluateAutomationOperator(condition.operator, currentValue, condition.compareValue, field.valueType)) {
+      failures.push(`${field.label} did not match the task filter.`)
+    }
+  }
+  return { matches: failures.length === 0, failures }
+}
+
+export function evaluateAutomationAppointmentConditions(automation: any, appointment: Record<string, unknown>) {
+  const failures: string[] = []
+  for (const condition of automation.conditions) {
+    if (condition.source !== "APPOINTMENT_FIELD") continue
+    const field = APPOINTMENT_FILTER_FIELDS[condition.fieldKey]
+    if (!field) {
+      failures.push("Appointment field is unavailable.")
+      continue
+    }
+    let currentValue = appointment[condition.fieldKey]
+    if (field.valueType === "stringArray") currentValue = currentValue ? [currentValue] : []
+    if (field.valueType === "date" && currentValue instanceof Date) currentValue = currentValue.toISOString()
+    if (!evaluateAutomationOperator(condition.operator, currentValue, condition.compareValue, field.valueType)) {
+      failures.push(`${field.label} did not match the appointment filter.`)
+    }
+  }
   return { matches: failures.length === 0, failures }
 }
 
@@ -2895,6 +3370,8 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
         noteBody: action.noteBody,
         createContactConfig: action.createContactConfig,
         taskConfig: action.taskConfig,
+        appointmentConfig: action.appointmentConfig,
+        appointmentStatusConfig: action.appointmentStatusConfig,
         internalNotificationConfig: action.internalNotificationConfig,
         dateTimeFormatterConfig: action.dateTimeFormatterConfig,
         numberFormatterConfig: action.numberFormatterConfig,
@@ -3023,6 +3500,14 @@ export async function executeCreateContactAction(
     occurredAt: Date
     automationValues: Record<string, unknown>
     templateContext?: ContactTemplateExecutionContext
+    creationEvent?: {
+      actorUserId: string | null
+      automationId: string | null
+      automationName: string
+      nodeKey: string
+      runId: string | null
+      eventContext: AutomationOpportunityEventContext
+    }
   },
 ) {
   const { config } = params
@@ -3031,6 +3516,13 @@ export async function executeCreateContactAction(
   }
   if (config.assignedToUserId && !params.catalog.activeUserIds.has(config.assignedToUserId)) {
     throw new Error("The configured contact assignee is no longer available.")
+  }
+  if (params.creationEvent?.runId && prismaTx.automationEvent?.findUnique) {
+    const existingEvent = await prismaTx.automationEvent.findUnique({
+      where: { causationKey: `automation-run:${params.creationEvent.runId}:contact:${params.creationEvent.nodeKey}` },
+      select: { id: true },
+    })
+    if (existingEvent) return "Skipped creating contact because this action already completed."
   }
 
   const customTemplateEntries = config.customFieldValues.flatMap((assignment, index) =>
@@ -3150,6 +3642,11 @@ export async function executeCreateContactAction(
     }
   }
 
+  const nextChainDepth = (params.creationEvent?.eventContext.chainDepth ?? 0) + 1
+  if (params.creationEvent && nextChainDepth > 20) {
+    throw new Error("Creating this contact would exceed the maximum automation chain depth.")
+  }
+
   const created = await prismaTx.contact.create({
     data: {
       tenantId: params.tenantId,
@@ -3172,6 +3669,23 @@ export async function executeCreateContactAction(
         fieldId: item.fieldId,
         value: item.value,
       })),
+    })
+  }
+
+  if (params.creationEvent) {
+    const { queueContactCreatedAutomationEvent } = await import("./automation-event-queue.js")
+    const source = params.creationEvent
+    await queueContactCreatedAutomationEvent(prismaTx, {
+      tenantId: params.tenantId,
+      contactId: created.id,
+      actorUserId: source.actorUserId,
+      chainId: source.eventContext.chainId,
+      parentEventId: source.eventContext.eventId,
+      chainDepth: nextChainDepth,
+      sourceAutomationId: source.automationId,
+      sourceAutomationName: source.automationName,
+      sourceNodeKey: source.nodeKey,
+      causationKey: source.runId ? `automation-run:${source.runId}:contact:${source.nodeKey}` : null,
     })
   }
 
@@ -3254,7 +3768,7 @@ async function removeContactFromWorkflowRuns(
       processId: null,
       opportunityId: dispatch.event.opportunityId,
       attemptId: dispatch.attemptId,
-      eventSource: dispatch.event.triggerType,
+      eventSource: dispatch.triggerType,
       nodeKind: "ACTION" as const,
       nodeOrder,
       nodeKey: action.nodeKey,
@@ -3422,7 +3936,38 @@ async function removeContactFromWorkflowRuns(
   return { targetName: target.name, removedCount, exitCurrentRun, details }
 }
 
-async function applyAutomationAction(
+function validateAppointmentStatusRuntimeFilters(
+  filters: AutomationAppointmentStatusConfig["filters"],
+  catalog: AutomationRuntimeCatalog,
+) {
+  for (const filter of filters) {
+    if (filter.source === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === filter.fieldKey)
+      if (!field || ["status", "assigned_to", "tags"].includes(field.key) ||
+        !getAutomationOperatorsForFieldType(field.fieldType).includes(filter.operator)) {
+        throw new Error("A configured appointment contact filter is unavailable.")
+      }
+    } else if (filter.source === "CONTACT_CUSTOM_FIELD") {
+      const field = catalog.fieldMap.get(filter.customFieldId)
+      if (!field || !field.isActive || field.isEncrypted || field.isSensitive ||
+        !getAutomationOperatorsForFieldType(field.fieldType).includes(filter.operator)) {
+        throw new Error("A configured appointment custom-field filter is unavailable.")
+      }
+      const options = fieldOptions(field)
+      const values = Array.isArray(filter.compareValue) ? filter.compareValue : [filter.compareValue]
+      if (options.length > 0 && !EMPTY_OPERATORS.has(filter.operator) &&
+        values.some((value) => typeof value === "string" && !options.includes(value))) {
+        throw new Error("A configured appointment custom-field option is unavailable.")
+      }
+    } else if (!["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"].includes(filter.operator) ||
+      ((filter.operator === "EQUALS" || filter.operator === "NOT_EQUALS") &&
+        (!filter.tagId || !catalog.tagIds.has(filter.tagId)))) {
+      throw new Error("A configured appointment tag filter is unavailable.")
+    }
+  }
+}
+
+async function applyAutomationActionInner(
   prismaTx: any,
   params: {
     action: RuntimeAutomationAction
@@ -3606,7 +4151,7 @@ async function applyAutomationAction(
       if (!body.success) {
         throw new Error("The rendered contact note body must contain 1 to 5,000 characters.")
       }
-      await prismaTx.contactNote.create({
+      const note = await prismaTx.contactNote.create({
         data: {
           tenantId,
           contactId,
@@ -3616,6 +4161,19 @@ async function applyAutomationAction(
           body: body.data,
           createdById: null,
         },
+      })
+      const { queueContactNoteAddedAutomationEvent } = await import("./automation-event-queue.js")
+      await queueContactNoteAddedAutomationEvent(prismaTx, {
+        tenantId,
+        contactId,
+        actorUserId: actorUserId ?? null,
+        chainId: eventContext.chainId,
+        parentEventId: eventContext.eventId,
+        chainDepth: (eventContext.chainDepth ?? 0) + 1,
+        sourceAutomationId: automationId,
+        sourceAutomationName: automationName,
+        sourceNodeKey: action.nodeKey,
+        causationKey: runId ? `automation-run:${runId}:note-added:${action.nodeKey}` : note?.id ? `contact-note:${note.id}:added` : null,
       })
       return `Added contact note “${title.data}”.`
     } else if (action.type === "CREATE_CONTACT") {
@@ -3627,6 +4185,14 @@ async function applyAutomationAction(
         occurredAt,
         automationValues,
         templateContext,
+        creationEvent: {
+          actorUserId: actorUserId ?? null,
+          automationId,
+          automationName,
+          nodeKey: action.nodeKey,
+          runId: runId ?? null,
+          eventContext,
+        },
       })
     } else if (action.type === "CREATE_TASK") {
       const config: AutomationTaskConfig = action.taskConfig
@@ -3784,6 +4350,21 @@ async function applyAutomationAction(
         notificationIds.push(notification.id)
       }
 
+      const { queueTaskAddedAutomationEvent } = await import("./automation-event-queue.js")
+      await queueTaskAddedAutomationEvent(prismaTx, {
+        tenantId,
+        contactId,
+        taskId: task.id,
+        actorUserId: actorUserId ?? null,
+        chainId: eventContext.chainId,
+        parentEventId: eventContext.eventId,
+        chainDepth: (eventContext.chainDepth ?? 0) + 1,
+        sourceAutomationId: automationId,
+        sourceAutomationName: automationName,
+        sourceNodeKey: action.nodeKey,
+        causationKey: runId ? `automation-run:${runId}:task-added:${action.nodeKey}` : `task:${task.id}:added`,
+      })
+
       const assignee = assignedToUserId
         ? catalog.userMap.get(assignedToUserId) ?? "an active teammate"
         : "Unassigned"
@@ -3798,6 +4379,148 @@ async function applyAutomationAction(
         details: `Created task “${name}” · ${assignee}${dueLabel ? ` · Due ${dueLabel}` : ""}.`,
         notificationIds,
       }
+    } else if (action.type === "CREATE_APPOINTMENT") {
+      const config: AutomationAppointmentConfig = action.appointmentConfig
+      const source = config.startAt.source
+      if (source.type === "CUSTOM_FIELD") {
+        const field = catalog.fieldKeyMap.get(source.key)
+        if (!field || field.fieldType !== "DATE") throw new Error("The configured appointment date field is unavailable.")
+      }
+      if (source.type === "CONTACT_FIELD" && !CONTACT_TEMPLATE_REGULAR_FIELDS.some((field) => field.key === source.key && field.fieldType === "DATE")) {
+        throw new Error("The configured appointment date field is unavailable.")
+      }
+      const contact = await prismaTx.contact.findFirst({
+        where: { tenantId, id: contactId },
+        select: { assignedToUserId: true },
+      })
+      if (!contact) throw new Error("The contact for this appointment is unavailable.")
+      const assignedToUserId = config.assignee.mode === "CONTACT_ASSIGNEE"
+        ? contact.assignedToUserId
+        : config.assignee.userId
+      if (!assignedToUserId) throw new Error("The contact does not have an active appointment assignee.")
+      const membership = await prismaTx.membership.findUnique({
+        where: { userId_tenantId: { tenantId, userId: assignedToUserId } },
+        select: { status: true, user: { select: { name: true, email: true } } },
+      })
+      if (!membership || membership.status !== "ACTIVE") throw new Error("The configured appointment assignee is no longer active.")
+      if (config.linkedService) {
+        const service = await prismaTx.service.findFirst({
+          where: { tenantId, id: config.linkedService.id, isActive: true },
+          select: { id: true },
+        })
+        if (!service) throw new Error("The configured appointment service is no longer active.")
+      }
+      const rendered = await renderContactTemplates(prismaTx, {
+        tenantId,
+        contactId,
+        templates: { title: config.titleTemplate, notes: config.notesTemplate ?? "" },
+        timezone: catalog.timezone,
+        occurredAt,
+        automationValues,
+        executionContext: templateContext,
+      })
+      const title = sanitizeTaskSingleLine(rendered.title ?? "")
+      const notes = sanitizeTaskMultiline(rendered.notes ?? "") || null
+      if (!title || title.length > 160) throw new Error("The rendered appointment title must contain 1 to 160 characters.")
+      if (notes && notes.length > 4_000) throw new Error("The rendered appointment notes must contain 4,000 characters or fewer.")
+      const startAt = await resolveAutomationAppointmentStart(prismaTx, {
+        tenantId,
+        contactId,
+        startAt: config.startAt,
+        tenantTimezone: catalog.timezone,
+        occurredAt,
+        automationValues,
+        executionContext: templateContext,
+      })
+      if (startAt.getTime() <= Date.now()) throw new Error("The appointment start time must be in the future.")
+      const tenant = await prismaTx.tenant.findUnique({
+        where: { id: tenantId },
+        select: { calendarMeetingDurationMinutes: true },
+      })
+      const durationMinutes = getSafeCalendarSlotDuration(tenant?.calendarMeetingDurationMinutes)
+      const endAt = new Date(startAt.getTime() + durationMinutes * 60_000)
+      const assigneeLabel = membership.user.name?.trim() || membership.user.email || "teammate"
+      const result = await createAppointmentInTransaction(prismaTx, {
+        tenantId,
+        contactId,
+        serviceId: config.linkedService?.id ?? null,
+        bookedByUserId: null,
+        actorDisplayName: `Automation · ${automationName}`,
+        assignedToUserId,
+        assignedToLabel: assigneeLabel,
+        title,
+        notes,
+        startAt,
+        endAt,
+        isAllDay: false,
+        automationEvent: {
+          chainId: eventContext.chainId,
+          parentEventId: eventContext.eventId,
+          chainDepth: (eventContext.chainDepth ?? 0) + 1,
+          sourceAutomationId: automationId,
+          sourceAutomationName: automationName,
+          sourceNodeKey: action.nodeKey,
+          causationKey: runId ? `automation-run:${runId}:appointment-created:${action.nodeKey}` : null,
+        },
+      })
+      if (!result.ok) throw new Error(`The appointment time is unavailable. ${result.availability.reasons.join(" ")}`)
+      return {
+        details: `Created appointment “${title}” for ${assigneeLabel} at ${new Intl.DateTimeFormat("en-US", { timeZone: catalog.timezone, dateStyle: "medium", timeStyle: "short" }).format(startAt)}.`,
+        queuedRunCount: result.automation.queuedAutomationCount,
+      }
+    } else if (action.type === "UPDATE_APPOINTMENT_STATUS") {
+      const config: AutomationAppointmentStatusConfig = action.appointmentStatusConfig
+      validateAppointmentStatusRuntimeFilters(config.filters, catalog)
+      if (config.filters.length > 0) {
+        const contact = await prismaTx.contact.findFirst({
+          where: { tenantId, id: contactId },
+          select: CONTACT_AUTOMATION_SNAPSHOT_SELECT,
+        })
+        if (!contact) throw new Error("The contact for this appointment is unavailable.")
+        const evaluation = evaluateAutomationConditions({ conditions: config.filters }, { valueCents: null }, contact, catalog)
+        if (!evaluation.matches) return "Skipped updating appointment status because the contact filters did not match."
+      }
+
+      const targetLabel = config.targetMode === "TRIGGERING_APPOINTMENT" ? "triggering appointment" : "next upcoming appointment"
+      const maxAttempts = config.targetMode === "NEXT_UPCOMING" ? 3 : 1
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const appointmentId = config.targetMode === "TRIGGERING_APPOINTMENT"
+          ? eventContext.appointmentId
+          : (await prismaTx.appointment.findFirst({
+              where: { tenantId, contactId, startAt: { gt: new Date() } },
+              orderBy: [{ startAt: "asc" }, { id: "asc" }],
+              select: { id: true },
+            }))?.id
+        if (!appointmentId) return `No ${targetLabel} was available; no status change was needed.`
+        const result = await changeAppointmentStatusInTransaction(prismaTx, {
+          tenantId,
+          contactId,
+          appointmentId,
+          status: config.status,
+          actorDisplayName: `Automation · ${automationName}`,
+          requireFuture: config.targetMode === "NEXT_UPCOMING",
+          automationEvent: {
+            chainId: eventContext.chainId,
+            parentEventId: eventContext.eventId,
+            chainDepth: (eventContext.chainDepth ?? 0) + 1,
+            sourceAutomationId: automationId,
+            sourceAutomationName: automationName,
+            sourceNodeKey: action.nodeKey,
+          },
+        })
+        if (!result.ok && result.error === "APPOINTMENT_NOT_FOUND") {
+          if (config.targetMode === "NEXT_UPCOMING") continue
+          return `No ${targetLabel} was available; no status change was needed.`
+        }
+        if (!result.ok) throw new Error(`The appointment time is unavailable. ${result.reasons.join(" ")}`)
+        const statusLabel = formatAppointmentStatusLabel(config.status)
+        if (!result.changed) return `The ${targetLabel} is already ${statusLabel}; no status change was needed.`
+        return {
+          details: `Changed the ${targetLabel} to ${statusLabel}.`,
+          queuedRunCount: result.automation?.queuedAutomationCount ?? 0,
+        }
+      }
+      return "No next upcoming appointment was available after selection; no status change was needed."
     } else if (action.type === "SEND_INTERNAL_NOTIFICATION") {
       const config: AutomationInternalNotificationConfig = action.internalNotificationConfig
       let recipientUserId: string
@@ -4301,7 +5024,7 @@ async function applyAutomationAction(
             processId: null,
             opportunityId: dispatch.event.opportunityId,
             attemptId: dispatch.attemptId,
-            eventSource: dispatch.event.triggerType,
+            eventSource: dispatch.triggerType,
             nodeKind: "ACTION" as const,
             nodeOrder: queuedIndex + 1,
             nodeKey: queuedAction.nodeKey,
@@ -4520,6 +5243,36 @@ async function applyAutomationAction(
   }
 }
 
+async function applyAutomationAction(
+  prismaTx: any,
+  params: Parameters<typeof applyAutomationActionInner>[1],
+) {
+  const contactAction = new Set([
+    "UPDATE_CONTACT_CUSTOM_FIELDS", "SET_CONTACT_CUSTOM_FIELD", "CLEAR_CONTACT_CUSTOM_FIELD",
+    "SET_CONTACT_STATUS", "SET_CONTACT_ASSIGNEE", "CLEAR_CONTACT_ASSIGNEE",
+    "ADD_CONTACT_TAG", "REMOVE_CONTACT_TAG",
+  ]).has(params.action.type)
+  if (!contactAction) return applyAutomationActionInner(prismaTx, params)
+  const { captureContactChangeSnapshot, queueContactChangedAutomationEvent } = await import("./automation-event-queue.js")
+  const before = await captureContactChangeSnapshot(prismaTx, params.tenantId, params.contactId)
+  const result = await applyAutomationActionInner(prismaTx, params)
+  if (before) await queueContactChangedAutomationEvent(prismaTx, {
+    tenantId: params.tenantId,
+    contactId: params.contactId,
+    actorUserId: params.actorUserId ?? null,
+    before,
+    chainId: params.eventContext?.chainId,
+    parentEventId: params.eventContext?.eventId,
+    chainDepth: (params.eventContext?.chainDepth ?? 0) + 1,
+    transitionHistory: params.eventContext?.transitionHistory,
+    sourceAutomationId: params.automationId,
+    sourceAutomationName: params.automationName,
+    sourceNodeKey: params.action.nodeKey,
+    causationKey: params.runId ? `automation-run:${params.runId}:contact-change:${params.action.nodeKey}` : null,
+  })
+  return result
+}
+
 export async function applyAutomationActions(
   prismaTx: any,
   params: { automation: any; tenantId: string; contactId: string; catalog: AutomationRuntimeCatalog },
@@ -4720,6 +5473,7 @@ type AutomationOpportunityEventContext = {
   targetResult?: "OPEN" | "WON" | "LOST" | null
   occurredAt?: string | null
   eventId?: string | null
+  appointmentId?: string | null
   chainId?: string | null
   chainDepth?: number
   transitionHistory?: OpportunityAutomationTransition[]
@@ -4772,6 +5526,7 @@ function normalizeOpportunityEventContext(value: unknown): AutomationOpportunity
       : null,
     occurredAt: typeof record.occurredAt === "string" ? record.occurredAt : null,
     eventId: typeof record.eventId === "string" ? record.eventId : null,
+    appointmentId: typeof record.appointmentId === "string" ? record.appointmentId : null,
     chainId: typeof record.chainId === "string" ? record.chainId : null,
     chainDepth: typeof record.chainDepth === "number" && Number.isInteger(record.chainDepth)
       ? record.chainDepth
@@ -6303,10 +7058,14 @@ export async function executeOpportunityAutomations(
     }
   }
 
+  const needsContactFields = automations.some((automation: any) =>
+    automation.conditions.some((condition: any) => condition.source === "CONTACT_FIELD"),
+  )
+
   const [contact, catalog] = await Promise.all([
     prismaTx.contact.findFirst({
       where: { tenantId: event.tenantId, id: event.contactId },
-      select: {
+      select: needsContactFields ? CONTACT_AUTOMATION_SNAPSHOT_SELECT : {
         id: true,
         firstName: true,
         middleName: true,
@@ -6912,7 +7671,11 @@ async function resumeAutomationRun(
       console.error("Could not emit automation notification", error)
     })
     await deleteAutomationContactFileObjects(result.fileCleanupCandidates)
-    if (result.queuedRunCount > 0) kickAutomationRunWorker({ queueOpportunityEvent })
+    if (result.queuedRunCount > 0) {
+      kickAutomationRunWorker({ queueOpportunityEvent })
+      const { kickAutomationEventWorker } = await import("./automation-event-worker.js")
+      kickAutomationEventWorker()
+    }
     return { status: result.status }
   } catch (error) {
     await recordAutomationRunFailure(prismaClient, runId, leaseToken, error)

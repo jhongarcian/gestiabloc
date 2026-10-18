@@ -11,6 +11,10 @@ export function isCompletedStatusName(statusName?: string | null) {
   return statusName?.trim().toLowerCase() === "completed"
 }
 
+export function hasTaskEnteredCompletedStatus(previousStatusName?: string | null, nextStatusName?: string | null) {
+  return !isCompletedStatusName(previousStatusName) && isCompletedStatusName(nextStatusName)
+}
+
 function getLocalDateParts(date: Date, timezone?: string | null) {
   const formatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: getSafeTimezone(timezone),

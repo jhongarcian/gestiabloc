@@ -17,6 +17,7 @@ import appointmentsRoutes from "./routes/appointments.routes"
 import opportunitiesRoutes from "./routes/opportunities.routes"
 import automationsRoutes from "./routes/automations.routes"
 import automationProcessesRoutes from "./routes/automation-processes.routes"
+import contactImportsRoutes from "./routes/contact-imports.routes"
 import onboardingRoutes from "./routes/onboarding.routes"
 import servicesProductsRoutes from "./routes/services-products.routes"
 import servicesRoutes from "./routes/services.routes"
@@ -37,6 +38,7 @@ import { getAllowedWebOrigins } from "./lib/security"
 import { runAutomationProcessQueue } from "./lib/automation-process-worker"
 import { resumeDueAutomationRuns } from "./lib/opportunity-automations"
 import { queueOpportunityAutomationEvent } from "./lib/automation-event-queue"
+import { runBirthdayReminderScanOnce } from "./lib/automation-birthday-scheduler"
 import {
   AUTOMATION_EVENT_WORKER_CONFIG,
   reportAutomationQueueMetrics,
@@ -102,6 +104,7 @@ app.use("/api/files", filesRoutes);
 app.use("/api/account-settings", automationsRoutes);
 app.use("/api/account-settings", accountSettingsRoutes);
 app.use("/api/automation-processes", automationProcessesRoutes);
+app.use("/api/contact-imports", contactImportsRoutes);
 app.use("/api/contacts", contactsRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/tasks", tasksRoutes);
@@ -311,6 +314,16 @@ const start = async () => {
     })
   }, AUTOMATION_EVENT_WORKER_CONFIG.pollMs)
   automationEventInterval.unref?.()
+
+  void runBirthdayReminderScanOnce().catch((error) => {
+    console.error("Failed to scan birthday reminders on startup:", error)
+  })
+  const birthdayReminderInterval = setInterval(() => {
+    void runBirthdayReminderScanOnce().catch((error) => {
+      console.error("Failed to scan birthday reminders:", error)
+    })
+  }, 60_000)
+  birthdayReminderInterval.unref?.()
 
   const automationSideEffectInterval = setInterval(() => {
     void runAutomationSideEffectWorkerOnce().catch((error) => {

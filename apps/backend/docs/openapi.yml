@@ -13,6 +13,7 @@ tags:
   - name: Account Settings
   - name: Calendar
   - name: Contacts
+  - name: Contact Imports
   - name: Notifications
   - name: Tasks
   - name: Services
@@ -453,6 +454,136 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/contact-imports/{tenantId}:
+    post:
+      tags: [Contact Imports]
+      summary: Create a contact import draft and signed private upload
+      description: Tenant-admin only. Upload the CSV directly to the returned storage target, then preview it. Maximum 500 MB.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fileName, fileSize]
+              properties:
+                fileName: { type: string, example: contacts.csv }
+                fileSize: { type: integer, minimum: 1, maximum: 524288000 }
+      responses:
+        "201": { description: Import draft, signed upload path, token, and bucket }
+        "403": { description: Tenant administrator required }
+    get:
+      tags: [Contact Imports]
+      summary: List recent queued and finished imports
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+      responses:
+        "200": { description: Import jobs, 25 per page }
+  /api/contact-imports/{tenantId}/{importId}:
+    get:
+      tags: [Contact Imports]
+      summary: Get import progress and counters
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: importId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Import state and row counts }
+        "404": { description: Import not found }
+  /api/contact-imports/{tenantId}/{importId}/preview:
+    post:
+      tags: [Contact Imports]
+      summary: Read headers and a bounded 50-row sample
+      description: Tenant-admin only. Returns standard and custom-field choices and suggested mappings.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: importId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Headers, sample rows, field catalog, and suggestions }
+        "400": { description: Invalid CSV, encoding, or headers }
+  /api/contact-imports/{tenantId}/{importId}/queue:
+    post:
+      tags: [Contact Imports]
+      summary: Validate mapping and enqueue the import
+      description: Tenant-admin only. One active import per tenant. Full-file validation and row processing happen in the worker.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: importId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mappings, settings]
+              properties:
+                mappings:
+                  type: array
+                  description: One mapping per source header, ordered by sourceIndex. Targets are CONTACT_FIELD, CUSTOM_FIELD, or IGNORE.
+                  items: { type: object }
+                settings:
+                  type: object
+                  required: [dateFormat, phoneCountry, multiSelectSeparator, defaultStatusConfigId]
+                  properties:
+                    dateFormat: { type: string, enum: [YYYY-MM-DD, MM/DD/YYYY, DD/MM/YYYY], description: "Format for CSV slash dates; ISO YYYY-MM-DD is always accepted." }
+                    phoneCountry: { type: string, example: US, description: "Country used to interpret national phone numbers before normalizing them to E.164." }
+                    multiSelectSeparator: { type: string, example: ";" }
+                    defaultStatusConfigId: { type: string, format: uuid }
+      responses:
+        "200": { description: Queued import }
+        "409": { description: Another import is active for the tenant }
+  /api/contact-imports/{tenantId}/{importId}/cancel:
+    post:
+      tags: [Contact Imports]
+      summary: Request cancellation after the current batch
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: importId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Updated import state }
+  /api/contact-imports/{tenantId}/{importId}/report-url:
+    post:
+      tags: [Contact Imports]
+      summary: Get a 60-second private issue-report URL
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: importId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Signed download URL }
+        "404": { description: No issue report available }
   /api/contacts/{tenantId}/statuses:
     get:
       tags: [Contacts]
@@ -624,7 +755,7 @@ paths:
     post:
       tags: [Contacts]
       summary: Create a contact
-      description: Creates a new contact in the tenant and applies selected status or the default Active status.
+      description: Creates a new contact in the tenant, applies the selected or default Active status, and evaluates contact-created automations against values saved in this creation request.
       security:
         - cookieAuth: []
       parameters:
@@ -6575,6 +6706,129 @@ components:
       oneOf:
         - type: object
           additionalProperties: false
+          required: [type]
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_CREATED]
+        - type: object
+          additionalProperties: false
+          required: [type]
+          description: Runs when a note is added to a contact. Optional filters may use contact fields, active non-sensitive custom fields, and tags, evaluated after the note is saved.
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_NOTE_ADDED]
+        - type: object
+          additionalProperties: false
+          required: [type]
+          description: Runs when a task is created for a contact. Optional task and contact filters are evaluated against creation-time values. Each Task added automation can enroll once per automation chain.
+          properties:
+            type:
+              type: string
+              enum: [TASK_ADDED]
+        - type: object
+          additionalProperties: false
+          required: [type]
+          description: Runs when an existing contact-linked task changes from a non-completed status to Completed. Optional contact field, active non-sensitive custom field, and tag filters use the contact state at completion. Each Task completed automation can enroll once per chain.
+          properties:
+            type:
+              type: string
+              enum: [TASK_COMPLETED]
+        - type: object
+          additionalProperties: false
+          required: [type]
+          description: Runs when a contact appointment is booked. Optional appointment and contact filters use booking-time values. Service filters match the appointment's service ID, can include several services, or match no service. Each automation can enroll once per chain.
+          properties:
+            type:
+              type: string
+              enum: [APPOINTMENT_CREATED]
+        - type: object
+          additionalProperties: false
+          required: [type, status]
+          description: Runs when an existing appointment actually changes to the selected status, from any previous status. Optional contact field, active non-sensitive custom field, and tag filters use the contact state at the time of the change. Each automation can enroll once per chain.
+          properties:
+            type:
+              type: string
+              enum: [APPOINTMENT_STATUS_CHANGED]
+            status:
+              type: string
+              enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED, COMPLETED]
+        - type: object
+          additionalProperties: false
+          required: [type, localTime]
+          description: Runs once per contact per tenant-local calendar year on their birthday. Uses the tenant timezone, excludes deceased contacts, and evaluates optional contact field, active non-sensitive custom field, and tag filters when queued. February 29 birthdays use February 28 in non-leap years.
+          properties:
+            type:
+              type: string
+              enum: [BIRTHDAY_REMINDER]
+            localTime:
+              type: string
+              pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+              example: '09:00'
+        - type: object
+          additionalProperties: false
+          required: [type, tagId, change]
+          description: Runs when the selected tag is added to or removed from a contact. Optional contact filters evaluate the resulting contact state.
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_TAG]
+            tagId:
+              type: string
+              format: uuid
+              description: One existing tag in the tenant.
+            change:
+              type: string
+              enum: [ADDED, REMOVED]
+        - type: object
+          additionalProperties: false
+          required: [type, changes]
+          properties:
+            type:
+              type: string
+              enum: [CONTACT_CHANGED]
+            changes:
+              type: array
+              minItems: 1
+              maxItems: 20
+              description: All rules must match during one contact update. Optional contact filters evaluate the resulting state.
+              items:
+                oneOf:
+                  - type: object
+                    required: [source, operator, fieldKey]
+                    properties:
+                      source: { type: string, enum: [CONTACT_FIELD] }
+                      operator: { type: string, enum: [HAS_CHANGED, HAS_CHANGED_TO] }
+                      fieldKey: { type: string }
+                      value: { nullable: true, description: Required for HAS_CHANGED_TO; null means cleared. }
+                  - type: object
+                    required: [source, operator, customFieldId]
+                    properties:
+                      source: { type: string, enum: [CONTACT_CUSTOM_FIELD] }
+                      operator: { type: string, enum: [HAS_CHANGED, HAS_CHANGED_TO] }
+                      customFieldId: { type: string, format: uuid }
+                      value: { nullable: true, description: Required for HAS_CHANGED_TO; null means cleared. }
+                  - type: object
+                    required: [source, operator]
+                    properties:
+                      source: { type: string, enum: [CONTACT_STATUS] }
+                      operator: { type: string, enum: [HAS_CHANGED, HAS_CHANGED_TO] }
+                      statusConfigId: { type: string, format: uuid, description: Required for HAS_CHANGED_TO. }
+                  - type: object
+                    required: [source, operator]
+                    properties:
+                      source: { type: string, enum: [CONTACT_ASSIGNEE] }
+                      operator: { type: string, enum: [HAS_CHANGED, HAS_CHANGED_TO] }
+                      assignedUserId: { type: string, format: uuid, nullable: true, description: Required for HAS_CHANGED_TO; null means unassigned. }
+                  - type: object
+                    required: [source, operator]
+                    properties:
+                      source: { type: string, enum: [CONTACT_TAGS] }
+                      operator: { type: string, enum: [ADDED, REMOVED] }
+                      tagId: { type: string, format: uuid, nullable: true, description: Omit or set null for any tag. }
+        - type: object
+          additionalProperties: false
           required: [type, pipelineId]
           properties:
             type:
@@ -6712,6 +6966,8 @@ components:
             - ADD_CONTACT_NOTE
             - CREATE_CONTACT
             - CREATE_TASK
+            - CREATE_APPOINTMENT
+            - UPDATE_APPOINTMENT_STATUS
             - SEND_INTERNAL_NOTIFICATION
             - FORMAT_DATE_TIME
             - FORMAT_NUMBER
@@ -6771,6 +7027,10 @@ components:
           $ref: "#/components/schemas/AutomationCreateContactConfig"
         taskConfig:
           $ref: "#/components/schemas/AutomationTaskConfig"
+        appointmentConfig:
+          $ref: "#/components/schemas/AutomationAppointmentConfig"
+        appointmentStatusConfig:
+          $ref: "#/components/schemas/AutomationAppointmentStatusConfig"
         internalNotificationConfig:
           $ref: "#/components/schemas/AutomationInternalNotificationConfig"
         dateTimeFormatterConfig:
@@ -7079,6 +7339,7 @@ components:
           type: string
           enum:
             - CONTACT_FIELD
+            - TASK_FIELD
             - CONTACT_CUSTOM_FIELD
             - CONTACT_STATUS
             - CONTACT_ASSIGNEE
@@ -7293,6 +7554,137 @@ components:
               type: string
               maxLength: 500
               nullable: true
+    AutomationAppointmentStatusFilter:
+      oneOf:
+        - type: object
+          required: [source, fieldKey, operator]
+          properties:
+            source:
+              type: string
+              enum: [CONTACT_FIELD]
+            fieldKey:
+              type: string
+            operator:
+              type: string
+            compareValue:
+              nullable: true
+        - type: object
+          required: [source, customFieldId, operator]
+          properties:
+            source:
+              type: string
+              enum: [CONTACT_CUSTOM_FIELD]
+            customFieldId:
+              type: string
+            operator:
+              type: string
+            compareValue:
+              nullable: true
+        - type: object
+          required: [source, operator]
+          properties:
+            source:
+              type: string
+              enum: [CONTACT_TAGS]
+            operator:
+              type: string
+              enum: [EQUALS, NOT_EQUALS, IS_EMPTY, IS_NOT_EMPTY]
+            tagId:
+              type: string
+              nullable: true
+    AutomationAppointmentStatusConfig:
+      type: object
+      additionalProperties: false
+      required: [actionName, targetMode, status, filters]
+      description: >-
+        Updates one appointment for the current contact. A missing appointment or
+        nonmatching contact filter skips this action. The next upcoming target is
+        the earliest future appointment regardless of its current status.
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        targetMode:
+          type: string
+          enum: [TRIGGERING_APPOINTMENT, NEXT_UPCOMING]
+          description: Triggering appointment requires an appointment-created or appointment-status-changed trigger.
+        status:
+          type: string
+          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED, COMPLETED]
+        filters:
+          type: array
+          maxItems: 20
+          description: Contact field, active non-sensitive custom field, or tag conditions combined with AND.
+          items:
+            $ref: "#/components/schemas/AutomationAppointmentStatusFilter"
+    AutomationAppointmentConfig:
+      type: object
+      additionalProperties: false
+      required: [actionName, titleTemplate, assignee, startAt]
+      description: >-
+        Books a Scheduled appointment for the current contact. The tenant's current
+        meeting duration and availability rules apply. An unavailable time fails the
+        action. Automated bookings have no booked-by user; the audit log identifies
+        the automation.
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        titleTemplate:
+          type: string
+          minLength: 1
+          maxLength: 160
+        notesTemplate:
+          type: string
+          maxLength: 4000
+          nullable: true
+        assignee:
+          oneOf:
+            - type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [CONTACT_ASSIGNEE]
+            - type: object
+              required: [mode, userId]
+              properties:
+                mode:
+                  type: string
+                  enum: [SPECIFIC_USER]
+                userId:
+                  type: string
+        linkedService:
+          type: object
+          nullable: true
+          required: [id, nameSnapshot]
+          properties:
+            id:
+              type: string
+            nameSnapshot:
+              type: string
+              maxLength: 120
+        startAt:
+          type: object
+          required: [source, time]
+          properties:
+            source:
+              oneOf:
+                - $ref: "#/components/schemas/AutomationTaskDateSource"
+                - type: object
+                  required: [type, key]
+                  properties:
+                    type:
+                      type: string
+                      enum: [AUTOMATION_VALUE]
+                    key:
+                      type: string
+                      description: DATE output available on every route before this action.
+            time:
+              type: string
+              pattern: "^([01]\\d|2[0-3]):[0-5]\\d$"
     AutomationInternalNotificationConfig:
       type: object
       additionalProperties: false
@@ -7761,6 +8153,9 @@ components:
         source:
           type: string
           enum:
+            - CONTACT_FIELD
+            - TASK_FIELD
+            - APPOINTMENT_FIELD
             - OPPORTUNITY_VALUE
             - CONTACT_STATUS
             - CONTACT_CUSTOM_FIELD
@@ -7788,6 +8183,10 @@ components:
         customFieldId:
           type: string
           nullable: true
+        fieldKey:
+          type: string
+          nullable: true
+          description: Standard contact field key for CONTACT_FIELD; task fields for TASK_FIELD; or serviceId, title, notes, assignedToUserId, bookedByUserId, startAt, endAt, isAllDay for APPOINTMENT_FIELD. Appointment service and user INCLUDES_ANY use arrays of tenant IDs. IS_EMPTY on serviceId matches appointments with no service. Date comparisons use ISO date-times with an offset.
         statusConfigId:
           type: string
           nullable: true
@@ -9213,6 +9612,23 @@ components:
           nullable: true
         statusConfigId:
           type: string
+        tagIds:
+          type: array
+          maxItems: 100
+          description: Tenant tag ids assigned before contact-created filters are evaluated.
+          items:
+            type: string
+        customFieldValues:
+          type: array
+          maxItems: 100
+          description: Active, non-sensitive, unencrypted custom field values saved before contact-created filters are evaluated.
+          items:
+            type: object
+            required: [fieldId, value]
+            properties:
+              fieldId:
+                type: string
+              value: {}
     CreateContactResponse:
       type: object
       properties:
@@ -12920,7 +13336,7 @@ components:
           nullable: true
         status:
           type: string
-          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED]
+          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED, COMPLETED]
     CalendarEventsResponse:
       type: object
       properties:
@@ -13120,7 +13536,7 @@ components:
               format: date-time
             status:
               type: string
-              enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED]
+              enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED, COMPLETED]
             assignedToUserId:
               type: string
               nullable: true
@@ -13157,7 +13573,7 @@ components:
           type: boolean
         status:
           type: string
-          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED]
+          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED, COMPLETED]
     CalendarAppointmentConflictResponse:
       type: object
       properties:

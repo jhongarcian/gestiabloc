@@ -6,6 +6,8 @@ import {
   encryptCustomFieldValue,
 } from "../lib/contact-custom-field-encryption.js"
 import { buildContactAssigneeUpdate } from "../lib/contact-assignee-update.js"
+import { loadContactChangeSnapshot, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent } from "../lib/automation-event-queue.js"
+import { kickAutomationEventWorker } from "../lib/automation-event-worker.js"
 import { normalizeCustomFieldValue } from "../lib/contact-custom-field-values.js"
 import { summarizeVisibleContactFollowUpServices } from "../lib/contact-followup-visibility.js"
 import {
@@ -291,6 +293,11 @@ const CreateContactSchema = z.object({
   phone: optionalPhoneField(),
   email: optionalEmailField(),
   statusConfigId: optionalStringField(80),
+  tagIds: z.array(z.string().trim().min(1)).max(100).optional(),
+  customFieldValues: z.array(z.object({
+    fieldId: z.string().trim().min(1),
+    value: z.unknown(),
+  })).max(100).optional(),
 })
 
 const UpdateContactSchema = z.object({
@@ -2972,7 +2979,7 @@ router.post(
           payload.followUpTemplateId ?? contactService.followUpTemplateId ?? null
       }
 
-      const created = await prisma.$transaction(async (tx) => {
+      const { created, automation } = await prisma.$transaction(async (tx) => {
         const txWithContacts = tx as any
         const note = await txWithContacts.contactNote.create({
           data: {
@@ -3046,8 +3053,15 @@ router.post(
           },
         })
 
-        return note
+        const automation = await queueContactNoteAddedAutomationEvent(tx, {
+          tenantId,
+          contactId,
+          actorUserId: authed.user.id,
+          causationKey: `contact-note:${note.id}:added`,
+        })
+        return { created: note, automation }
       })
+      if (automation.automationEventId) kickAutomationEventWorker()
 
       return res.status(201).json({
         ok: true,
@@ -3498,36 +3512,84 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
       resolvedStatusConfigId = defaultStatus.id
     }
 
-    const created = await prisma.contact.create({
-      data: {
-        tenantId,
-        firstName: payload.firstName,
-        middleName: payload.middleName ?? null,
-        lastName: payload.lastName,
-        phone: payload.phone ?? null,
-        email: payload.email ?? null,
-        dateOfBirth: payload.dateOfBirth ? new Date(payload.dateOfBirth) : null,
-        statusConfigId: resolvedStatusConfigId,
-      },
-      select: {
-        id: true,
-        firstName: true,
-        middleName: true,
-        lastName: true,
-        dateOfBirth: true,
-        phone: true,
-        email: true,
-        statusConfig: {
-          select: {
-            id: true,
-            name: true,
-            bgColor: true,
-            textColor: true,
-          },
+    const tagIds = payload.tagIds ?? []
+    const customFieldValues = payload.customFieldValues ?? []
+    if (new Set(tagIds).size !== tagIds.length ||
+        new Set(customFieldValues.map((item) => item.fieldId)).size !== customFieldValues.length) {
+      return res.status(400).json({ error: "DUPLICATE_CONTACT_CREATE_VALUE" })
+    }
+    const [tags, fields] = await Promise.all([
+      tagIds.length > 0
+        ? prismaWithContacts.tenantTag.findMany({ where: { tenantId, id: { in: tagIds } }, select: { id: true } })
+        : Promise.resolve([]),
+      customFieldValues.length > 0
+        ? prismaWithContacts.contactCustomField.findMany({
+            where: { tenantId, id: { in: customFieldValues.map((item) => item.fieldId) } },
+            select: { id: true, label: true, fieldType: true, isRequired: true, isActive: true, isEncrypted: true, isSensitive: true, options: true },
+          })
+        : Promise.resolve([]),
+    ])
+    if (tags.length !== tagIds.length) return res.status(400).json({ error: "INVALID_TAG" })
+    const fieldMap = new Map<string, any>(fields.map((field: any) => [field.id, field]))
+    const normalizedValues: Array<{ fieldId: string; value: unknown }> = []
+    for (const item of customFieldValues) {
+      const field = fieldMap.get(item.fieldId)
+      if (!field || !field.isActive || field.isEncrypted || field.isSensitive) {
+        return res.status(400).json({ error: "INVALID_CUSTOM_FIELD" })
+      }
+      const normalized = normalizeCustomFieldValue({
+        id: field.id,
+        label: field.label,
+        fieldType: field.fieldType,
+        isRequired: field.isRequired,
+        options: Array.isArray(field.options) ? field.options : [],
+      }, item.value)
+      if (!normalized.ok) return res.status(400).json({
+        error: "INVALID_CUSTOM_FIELD_VALUE",
+        details: [{ path: `customFieldValues.${field.id}`, message: normalized.message }],
+      })
+      if (normalized.value !== null) normalizedValues.push({ fieldId: field.id, value: normalized.value })
+    }
+
+    const { created, automation } = await prisma.$transaction(async (tx) => {
+      const txContacts = tx as any
+      const created = await tx.contact.create({
+        data: {
+          tenantId,
+          firstName: payload.firstName,
+          middleName: payload.middleName ?? null,
+          lastName: payload.lastName,
+          phone: payload.phone ?? null,
+          email: payload.email ?? null,
+          dateOfBirth: payload.dateOfBirth ? new Date(payload.dateOfBirth) : null,
+          statusConfigId: resolvedStatusConfigId,
         },
-        createdAt: true,
-      },
+        select: {
+          id: true,
+          firstName: true,
+          middleName: true,
+          lastName: true,
+          dateOfBirth: true,
+          phone: true,
+          email: true,
+          statusConfig: { select: { id: true, name: true, bgColor: true, textColor: true } },
+          createdAt: true,
+        },
+      })
+      if (tagIds.length > 0) await txContacts.contactTag.createMany({
+        data: tagIds.map((tagId) => ({ tenantId, contactId: created.id, tagId })),
+      })
+      if (normalizedValues.length > 0) await txContacts.contactCustomFieldValue.createMany({
+        data: normalizedValues.map((item) => ({ tenantId, contactId: created.id, fieldId: item.fieldId, value: item.value })),
+      })
+      const automation = await queueContactCreatedAutomationEvent(txContacts, {
+        tenantId,
+        contactId: created.id,
+        actorUserId: authed.user.id,
+      })
+      return { created, automation }
     })
+    if (automation.automationEventId) kickAutomationEventWorker()
 
     return res.status(201).json({
       ok: true,
@@ -3670,13 +3732,13 @@ router.post("/:tenantId/:contactId/tags", requireAuth, async (req, res, next) =>
       return res.status(409).json({ error: "CONTACT_TAG_ALREADY_EXISTS" })
     }
 
-    await prismaWithContacts.contactTag.create({
-      data: {
-        tenantId,
-        contactId,
-        tagId,
-      },
+    const automation = await prisma.$transaction(async (tx) => {
+      const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
+      if (!before) throw new Error("Contact not found while adding a tag.")
+      await (tx as any).contactTag.create({ data: { tenantId, contactId, tagId } })
+      return queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
     })
+    if (automation.automationEventId) kickAutomationEventWorker()
 
     return res.status(201).json({
       ok: true,
@@ -3709,9 +3771,13 @@ router.delete("/:tenantId/:contactId/tags/:tagId", requireAuth, async (req, res,
       return res.status(404).json({ error: "CONTACT_TAG_NOT_FOUND" })
     }
 
-    await prismaWithContacts.contactTag.delete({
-      where: { id: existingAssignment.id },
+    const automation = await prisma.$transaction(async (tx) => {
+      const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
+      if (!before) throw new Error("Contact not found while removing a tag.")
+      await (tx as any).contactTag.delete({ where: { id: existingAssignment.id } })
+      return queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
     })
+    if (automation.automationEventId) kickAutomationEventWorker()
 
     return res.json({ ok: true })
   } catch (error) {
@@ -3764,7 +3830,10 @@ router.patch("/:tenantId/:contactId/assignee", requireAuth, async (req, res, nex
       }
     }
 
-    const updatedContact = await prisma.contact.update({
+    const { updatedContact, automation } = await prisma.$transaction(async (tx) => {
+      const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
+      if (!before) throw new Error("Contact not found while assigning a user.")
+      const updatedContact = await tx.contact.update({
       where: { id: contactId },
       data: {
         assignedToUserId: resolvedAssignedToUserId,
@@ -3784,7 +3853,11 @@ router.patch("/:tenantId/:contactId/assignee", requireAuth, async (req, res, nex
           },
         },
       },
+      })
+      const automation = await queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
+      return { updatedContact, automation }
     })
+    if (automation.automationEventId) kickAutomationEventWorker()
 
     return res.json({
       ok: true,
@@ -3846,7 +3919,10 @@ router.patch("/:tenantId/:contactId/status", requireAuth, async (req, res, next)
       return res.status(400).json({ error: "INVALID_STATUS_CONFIG" })
     }
 
-    const updatedContact = await prisma.contact.update({
+    const { updatedContact, automation } = await prisma.$transaction(async (tx) => {
+      const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
+      if (!before) throw new Error("Contact not found while updating status.")
+      const updatedContact = await tx.contact.update({
       where: { id: contactId },
       data: {
         statusConfigId: resolvedStatusConfigId,
@@ -3862,7 +3938,11 @@ router.patch("/:tenantId/:contactId/status", requireAuth, async (req, res, next)
           },
         },
       },
+      })
+      const automation = await queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
+      return { updatedContact, automation }
     })
+    if (automation.automationEventId) kickAutomationEventWorker()
 
     return res.json({
       ok: true,
@@ -4174,6 +4254,8 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
 
     const updated = await prisma.$transaction(async (tx) => {
       const txContacts = tx as any
+      const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
+      if (!before) throw new Error("Contact not found while updating.")
       const updatedContact = await tx.contact.update({
         where: { id: contactId },
         data: {
@@ -4364,8 +4446,10 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
         )
       }
 
-      return { updatedContact }
+      const automation = await queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
+      return { updatedContact, automation }
     })
+    if (updated.automation.automationEventId) kickAutomationEventWorker()
 
     const tags = await prismaWithContacts.contactTag.findMany({
       where: { tenantId, contactId },

@@ -7,6 +7,31 @@ process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
 
 const bookingModule = import("./appointment-booking.js")
 
+test("appointment status audit records real changes and preserves canceled history", async () => {
+  const { recordAppointmentStatusChange } = await bookingModule
+  const logs: any[] = []
+  const tx = {
+    appointmentAuditLog: { create: async ({ data }: any) => {
+      const log = { ...data, id: `audit-${logs.length + 1}`, createdAt: new Date("2026-10-20T16:00:00Z") }
+      logs.push(log)
+      return log
+    } },
+    automation: { findMany: async () => [] },
+  } as any
+  const base = {
+    tenantId: "tenant-1", appointmentId: "appointment-1", contactId: "contact-1",
+    actorUserId: "user-1", actorDisplayName: "Jane", previousStatus: "CONFIRMED" as const,
+  }
+  assert.equal(await recordAppointmentStatusChange(tx, { ...base, status: "CONFIRMED" }), null)
+  assert.equal(logs.length, 0)
+  await recordAppointmentStatusChange(tx, { ...base, status: "COMPLETED" })
+  assert.equal(logs[0].action, "STATUS_CHANGED")
+  assert.equal(logs[0].message, "Jane changed the appointment status from Confirmed to Completed.")
+  await recordAppointmentStatusChange(tx, { ...base, previousStatus: "NO_SHOW", status: "CANCELED" })
+  assert.equal(logs[1].action, "CANCELED")
+  assert.match(logs[1].message, /No Show to Canceled/)
+})
+
 type AvailabilityRule = {
   id: string
   tenantId: string

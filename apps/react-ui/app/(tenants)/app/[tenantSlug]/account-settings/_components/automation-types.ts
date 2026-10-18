@@ -1,4 +1,12 @@
-export type AutomationTriggerType = "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
+export type AutomationTriggerType = "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
+export type AppointmentAutomationStatus = "SCHEDULED" | "CONFIRMED" | "SHOW" | "NO_SHOW" | "CANCELED" | "COMPLETED"
+
+export type AutomationContactChangeRule =
+  | { source: "CONTACT_FIELD"; operator: "HAS_CHANGED" | "HAS_CHANGED_TO"; fieldKey: string; value?: unknown }
+  | { source: "CONTACT_CUSTOM_FIELD"; operator: "HAS_CHANGED" | "HAS_CHANGED_TO"; customFieldId: string; value?: unknown }
+  | { source: "CONTACT_STATUS"; operator: "HAS_CHANGED" | "HAS_CHANGED_TO"; statusConfigId?: string }
+  | { source: "CONTACT_ASSIGNEE"; operator: "HAS_CHANGED" | "HAS_CHANGED_TO"; assignedUserId?: string | null }
+  | { source: "CONTACT_TAGS"; operator: "ADDED" | "REMOVED"; tagId?: string | null }
 export type AutomationOperator =
   | "EQUALS"
   | "NOT_EQUALS"
@@ -20,12 +28,16 @@ export type AutomationOperator =
 export type AutomationCondition = {
   id?: string
   source:
+    | "CONTACT_FIELD"
+    | "TASK_FIELD"
+    | "APPOINTMENT_FIELD"
     | "OPPORTUNITY_VALUE"
     | "CONTACT_STATUS"
     | "CONTACT_CUSTOM_FIELD"
     | "CONTACT_ASSIGNEE"
     | "CONTACT_TAGS"
   operator: AutomationOperator
+  fieldKey?: string | null
   customFieldId?: string | null
   statusConfigId?: string | null
   assignedUserId?: string | null
@@ -246,6 +258,27 @@ export type AutomationTaskConfig = {
   } | null
 }
 
+export type AutomationAppointmentConfig = {
+  actionName: string
+  titleTemplate: string
+  notesTemplate?: string | null
+  assignee:
+    | { mode: "CONTACT_ASSIGNEE" }
+    | { mode: "SPECIFIC_USER"; userId: string }
+  linkedService?: { id: string; nameSnapshot: string } | null
+  startAt: {
+    source: AutomationFormatterDateSource
+    time: string
+  }
+}
+
+export type AutomationAppointmentStatusConfig = {
+  actionName: string
+  targetMode: "TRIGGERING_APPOINTMENT" | "NEXT_UPCOMING"
+  status: AppointmentAutomationStatus
+  filters: AutomationCondition[]
+}
+
 export type AutomationInternalNotificationConfig = {
   actionName: string
   recipient:
@@ -380,6 +413,8 @@ export type AutomationAction = {
     | "ADD_CONTACT_NOTE"
     | "CREATE_CONTACT"
     | "CREATE_TASK"
+    | "CREATE_APPOINTMENT"
+    | "UPDATE_APPOINTMENT_STATUS"
     | "SEND_INTERNAL_NOTIFICATION"
     | "FORMAT_DATE_TIME"
     | "FORMAT_NUMBER"
@@ -403,6 +438,8 @@ export type AutomationAction = {
   noteBody?: string | null
   createContactConfig?: AutomationCreateContactConfig | null
   taskConfig?: AutomationTaskConfig | null
+  appointmentConfig?: AutomationAppointmentConfig | null
+  appointmentStatusConfig?: AutomationAppointmentStatusConfig | null
   internalNotificationConfig?: AutomationInternalNotificationConfig | null
   dateTimeFormatterConfig?: AutomationDateTimeFormatterConfig | null
   numberFormatterConfig?: AutomationNumberFormatterConfig | null
@@ -425,6 +462,15 @@ export type AutomationRecord = {
   folderId: string | null
   librarySortOrder: number
   trigger:
+    | { type: "CONTACT_CREATED" }
+    | { type: "CONTACT_CHANGED"; changes: AutomationContactChangeRule[] }
+    | { type: "CONTACT_TAG"; tagId: string; change: "ADDED" | "REMOVED" }
+    | { type: "CONTACT_NOTE_ADDED" }
+    | { type: "TASK_ADDED" }
+    | { type: "TASK_COMPLETED" }
+    | { type: "APPOINTMENT_CREATED" }
+    | { type: "APPOINTMENT_STATUS_CHANGED"; status: AppointmentAutomationStatus }
+    | { type: "BIRTHDAY_REMINDER"; localTime: string }
     | { type: "OPPORTUNITY_CREATED"; pipelineId: string }
     | {
         type: "OPPORTUNITY_CHANGED"
@@ -522,7 +568,7 @@ export type AutomationNodeExecutionStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | 
 export type AutomationNodeExecution = {
   id: string
   attemptId: string
-  eventSource: "MANUAL_ENROLLMENT" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
+  eventSource: "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
   contact: {
     id: string | null
     name: string

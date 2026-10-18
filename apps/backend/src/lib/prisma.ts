@@ -4,7 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg"
 
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL missing")
 
-const configuredPoolSize = Number(process.env.PRISMA_POOL_MAX ?? "20")
+const configuredPoolSize = Number(process.env.PRISMA_POOL_MAX ?? (process.env.CONTACT_IMPORT_WORKER === "true" ? "5" : "20"))
 if (!Number.isInteger(configuredPoolSize) || configuredPoolSize < 5 || configuredPoolSize > 100) {
   throw new Error("PRISMA_POOL_MAX must be an integer between 5 and 100.")
 }

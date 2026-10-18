@@ -6,10 +6,12 @@ import {
   AutomationTaskConfigSchema,
   taskConfigCustomFieldKeys,
 } from "./automation-task.js"
+import { AutomationAppointmentConfigSchema } from "./automation-appointment.js"
 import {
   AutomationCustomFieldUpdatesSchema,
   AutomationDeleteOpportunityConfigSchema,
   AutomationInternalNotificationConfigSchema,
+  AutomationAppointmentStatusConfigSchema,
   AutomationOpportunityConfigSchema,
 } from "./opportunity-automations.js"
 import { contactTemplateCustomFieldKeys } from "./contact-templates.js"
@@ -78,6 +80,7 @@ export async function findEnabledAutomationReference(
     referenceWhere = {
       OR: [
         { conditions: { some: { customFieldId: reference.id } } },
+        { changeRules: { some: { customFieldId: reference.id } } },
         { actions: { some: { customFieldId: reference.id } } },
         ...(noteTemplateReference ? [noteTemplateReference] : []),
       ],
@@ -86,6 +89,7 @@ export async function findEnabledAutomationReference(
     referenceWhere = {
       OR: [
         { conditions: { some: { statusConfigId: reference.id } } },
+        { changeRules: { some: { statusConfigId: reference.id } } },
         { actions: { some: { statusConfigId: reference.id } } },
       ],
     }
@@ -95,6 +99,7 @@ export async function findEnabledAutomationReference(
     referenceWhere = {
       OR: [
         { conditions: { some: { tagId: reference.id } } },
+        { changeRules: { some: { tagId: reference.id } } },
         { actions: { some: { tagId: reference.id } } },
       ],
     }
@@ -102,6 +107,7 @@ export async function findEnabledAutomationReference(
     referenceWhere = {
       OR: [
         { conditions: { some: { assignedUserId: reference.id } } },
+        { changeRules: { some: { assignedUserId: reference.id } } },
         { actions: { some: { assignedUserId: reference.id } } },
       ],
     }
@@ -112,6 +118,53 @@ export async function findEnabledAutomationReference(
     select: { id: true, name: true },
   })
   if (directReference) return directReference
+
+  if (reference.kind === "taskStatus" || reference.kind === "user") {
+    const fieldKey = reference.kind === "taskStatus" ? "statusConfigId" : "assignedToUserId"
+    const taskAutomations = await prismaClient.automation.findMany({
+      where: {
+        tenantId,
+        isEnabled: true,
+        triggerType: "TASK_ADDED",
+        conditions: { some: { source: "TASK_FIELD", fieldKey } },
+      },
+      select: {
+        id: true,
+        name: true,
+        conditions: { where: { source: "TASK_FIELD", fieldKey }, select: { compareValue: true } },
+      },
+    })
+    const taskFilterReference = taskAutomations.find((automation: any) =>
+      (automation.conditions ?? []).some((condition: any) =>
+        reference.kind === "user"
+          ? Array.isArray(condition.compareValue) && condition.compareValue.includes(reference.id)
+          : condition.compareValue === reference.id,
+      ),
+    )
+    if (taskFilterReference) return { id: taskFilterReference.id, name: taskFilterReference.name }
+  }
+
+  if (reference.kind === "user") {
+    const appointmentAutomations = await prismaClient.automation.findMany({
+      where: {
+        tenantId,
+        isEnabled: true,
+        triggerType: "APPOINTMENT_CREATED",
+        conditions: { some: { source: "APPOINTMENT_FIELD", fieldKey: { in: ["assignedToUserId", "bookedByUserId"] } } },
+      },
+      select: {
+        id: true,
+        name: true,
+        conditions: { where: { source: "APPOINTMENT_FIELD", fieldKey: { in: ["assignedToUserId", "bookedByUserId"] } }, select: { compareValue: true } },
+      },
+    })
+    const appointmentFilterReference = appointmentAutomations.find((automation: any) =>
+      (automation.conditions ?? []).some((condition: any) =>
+        Array.isArray(condition.compareValue) && condition.compareValue.includes(reference.id),
+      ),
+    )
+    if (appointmentFilterReference) return { id: appointmentFilterReference.id, name: appointmentFilterReference.name }
+  }
 
   if (
     reference.kind !== "customField" &&
@@ -137,7 +190,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_CONTACT", "CREATE_TASK", "SEND_INTERNAL_NOTIFICATION", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "DELETE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
+          type: { in: ["CREATE_CONTACT", "CREATE_TASK", "CREATE_APPOINTMENT", "UPDATE_APPOINTMENT_STATUS", "SEND_INTERNAL_NOTIFICATION", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "DELETE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
         },
       },
     },
@@ -155,6 +208,8 @@ export async function findEnabledAutomationReference(
           noteBody: true,
           createContactConfig: true,
           taskConfig: true,
+          appointmentConfig: true,
+          appointmentStatusConfig: true,
           internalNotificationConfig: true,
           customFieldUpdates: true,
           dateTimeFormatterConfig: true,
@@ -271,6 +326,30 @@ export async function findEnabledAutomationReference(
         ) {
           return { id: automation.id, name: automation.name }
         }
+        continue
+      }
+      if (action.type === "CREATE_APPOINTMENT") {
+        const appointment = AutomationAppointmentConfigSchema.safeParse(action.appointmentConfig)
+        if (!appointment.success) continue
+        const config = appointment.data
+        if (reference.kind === "user" && config.assignee.mode === "SPECIFIC_USER" && config.assignee.userId === reference.id) {
+          return { id: automation.id, name: automation.name }
+        }
+        if (reference.kind === "customField" && customField?.key && (
+          config.startAt.source.type === "CUSTOM_FIELD" && config.startAt.source.key === customField.key ||
+          [config.titleTemplate, config.notesTemplate ?? ""].flatMap(contactTemplateCustomFieldKeys).includes(customField.key)
+        )) {
+          return { id: automation.id, name: automation.name }
+        }
+        continue
+      }
+      if (action.type === "UPDATE_APPOINTMENT_STATUS") {
+        const appointmentStatus = AutomationAppointmentStatusConfigSchema.safeParse(action.appointmentStatusConfig)
+        if (!appointmentStatus.success) continue
+        if (appointmentStatus.data.filters.some((filter) =>
+          reference.kind === "customField" && filter.source === "CONTACT_CUSTOM_FIELD" && filter.customFieldId === reference.id ||
+          reference.kind === "tag" && filter.source === "CONTACT_TAGS" && filter.tagId === reference.id,
+        )) return { id: automation.id, name: automation.name }
         continue
       }
       if (action.type === "UPDATE_OPPORTUNITY") {

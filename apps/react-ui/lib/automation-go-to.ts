@@ -103,6 +103,10 @@ function requiredAutomationValues(action: AutomationAction) {
     addTemplate(action.taskConfig?.nameTemplate)
     addTemplate(action.taskConfig?.descriptionTemplate)
     addTemplate(action.taskConfig?.reminder?.messageTemplate)
+  } else if (action.type === "CREATE_APPOINTMENT") {
+    addTemplate(action.appointmentConfig?.titleTemplate)
+    addTemplate(action.appointmentConfig?.notesTemplate)
+    addSource(action.appointmentConfig?.startAt.source)
   } else if (action.type === "SEND_INTERNAL_NOTIFICATION") {
     addTemplate(action.internalNotificationConfig?.titleTemplate)
     addTemplate(action.internalNotificationConfig?.bodyTemplate)

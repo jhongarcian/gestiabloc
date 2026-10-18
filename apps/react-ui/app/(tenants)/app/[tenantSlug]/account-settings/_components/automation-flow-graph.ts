@@ -2,7 +2,7 @@ import type { Edge, Node } from "@xyflow/react"
 
 import { formatDateTimeForDisplay } from "@/lib/date-time"
 
-import type { AutomationAction, AutomationCatalog, AutomationCondition, AutomationTriggerType } from "./automation-types"
+import type { AppointmentAutomationStatus, AutomationAction, AutomationCatalog, AutomationCondition, AutomationContactChangeRule, AutomationTriggerType } from "./automation-types"
 
 export type AutomationFlowNodeData = {
   kind: "trigger" | "action" | "add" | "branch" | "complete" | "route-bound"
@@ -41,6 +41,9 @@ export type AutomationFlowDraft = {
   pipelineId: string
   changeType?: "" | "STAGE_ENTERED" | "RESULT_WON" | "RESULT_LOST"
   targetStageId: string
+  birthdayLocalTime?: string
+  appointmentTargetStatus?: AppointmentAutomationStatus | ""
+  changes?: AutomationContactChangeRule[]
   conditions: AutomationCondition[]
   actions: AutomationAction[]
 }
@@ -179,11 +182,30 @@ export function buildAutomationFlowGraph(
   const pipeline = catalog?.pipelines.find((item) => item.id === draft.pipelineId)
   const target = pipeline?.stages.find((item) => item.id === draft.targetStageId)
   const changeType = draft.triggerType === "OPPORTUNITY_STAGE_CHANGED" ? "STAGE_ENTERED" : draft.changeType
+  const tagChangeRule = draft.changes?.[0]?.source === "CONTACT_TAGS" ? draft.changes[0] : null
   const rootWidth = automationPathWidth(draft.actions)
   const rootCenterX = Math.max(FLOW_CENTER_X, FLOW_SIDE_PADDING + rootWidth / 2)
   const triggerSubtitle =
     draft.triggerType === null
       ? "Click to choose what starts this automation"
+      : draft.triggerType === "CONTACT_CREATED"
+        ? "Starts when a new contact is added"
+      : draft.triggerType === "CONTACT_NOTE_ADDED"
+        ? "Starts when a note is added to a contact"
+      : draft.triggerType === "TASK_ADDED"
+        ? "Starts when a task is added to a contact"
+      : draft.triggerType === "TASK_COMPLETED"
+        ? "Starts when a contact task is completed"
+      : draft.triggerType === "APPOINTMENT_CREATED"
+        ? "Starts when a contact appointment is booked"
+      : draft.triggerType === "APPOINTMENT_STATUS_CHANGED"
+        ? `Changes to ${draft.appointmentTargetStatus ? draft.appointmentTargetStatus.replaceAll("_", " ").toLowerCase() : "select a status"}`
+      : draft.triggerType === "BIRTHDAY_REMINDER"
+        ? `Runs on each birthday at ${draft.birthdayLocalTime ?? "09:00"}`
+      : draft.triggerType === "CONTACT_CHANGED"
+        ? `All ${draft.changes?.length ?? 0} change rule${draft.changes?.length === 1 ? "" : "s"} in one update`
+      : draft.triggerType === "CONTACT_TAG"
+        ? `${tagChangeRule?.operator === "REMOVED" ? "Removed" : "Added"}: ${catalog?.tags.find((tag) => tag.id === tagChangeRule?.tagId)?.name ?? "Select a tag"}`
       : draft.triggerType === "OPPORTUNITY_CREATED"
         ? `Created in ${pipeline?.name ?? "Select a pipeline"}`
         : changeType === "STAGE_ENTERED"
@@ -203,6 +225,24 @@ export function buildAutomationFlowGraph(
         label:
           draft.triggerType === null
             ? "Select a trigger"
+            : draft.triggerType === "CONTACT_CREATED"
+              ? "Contact created"
+            : draft.triggerType === "CONTACT_NOTE_ADDED"
+              ? "Note added"
+            : draft.triggerType === "TASK_ADDED"
+              ? "Task added"
+            : draft.triggerType === "TASK_COMPLETED"
+              ? "Task completed"
+            : draft.triggerType === "APPOINTMENT_CREATED"
+              ? "Appointment created"
+            : draft.triggerType === "APPOINTMENT_STATUS_CHANGED"
+              ? "Appointment status changed"
+            : draft.triggerType === "BIRTHDAY_REMINDER"
+              ? "Birthday reminder"
+            : draft.triggerType === "CONTACT_CHANGED"
+              ? "Contact changed"
+            : draft.triggerType === "CONTACT_TAG"
+              ? "Contact tag"
             : draft.triggerType === "OPPORTUNITY_CREATED"
               ? "Opportunity created"
               : draft.triggerType === "OPPORTUNITY_STAGE_CHANGED"
@@ -228,6 +268,10 @@ export function buildAutomationFlowGraph(
       ? `Note: ${action.noteTitle?.trim() || "Add a title"}`
       : action.type === "CREATE_CONTACT"
         ? "Create contact"
+      : action.type === "CREATE_APPOINTMENT"
+        ? "Create appointment"
+      : action.type === "UPDATE_APPOINTMENT_STATUS"
+        ? `${action.appointmentStatusConfig?.targetMode === "TRIGGERING_APPOINTMENT" ? "Triggering appointment" : "Next upcoming appointment"} · ${({ SCHEDULED: "Scheduled", CONFIRMED: "Confirmed", SHOW: "Show", NO_SHOW: "No show", CANCELED: "Canceled", COMPLETED: "Completed" })[action.appointmentStatusConfig?.status ?? "CONFIRMED"]}`
       : action.type === "SEND_INTERNAL_NOTIFICATION"
         ? action.internalNotificationConfig?.recipient.mode === "CONTACT_ASSIGNEE"
           ? "Notify contact assignee"
@@ -296,6 +340,10 @@ export function buildAutomationFlowGraph(
     return {
       label: action.type === "CREATE_CONTACT"
         ? action.createContactConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "CREATE_APPOINTMENT"
+          ? action.appointmentConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "UPDATE_APPOINTMENT_STATUS"
+          ? action.appointmentStatusConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "SEND_INTERNAL_NOTIFICATION"
           ? action.internalNotificationConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "FORMAT_TEXT"

@@ -99,6 +99,7 @@ export default async function ContactsPage({
       <ContactsTable
         tenantSlug={tenantSlug}
         tenantId={membership.tenant.id}
+        canImport={membership.role === "TENANT_ADMIN"}
         statusOptions={statusOptions}
         tagOptions={tagOptions}
       />

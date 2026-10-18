@@ -101,6 +101,23 @@ enum ContactCustomFieldType {
   CHECKBOX
 }
 
+enum ContactImportStatus {
+  DRAFT
+  QUEUED
+  PROCESSING
+  CANCEL_REQUESTED
+  CANCELED
+  COMPLETED
+  COMPLETED_WITH_ISSUES
+  FAILED
+}
+
+enum ContactImportPhase {
+  VALIDATING
+  IMPORTING
+  REPORTING
+}
+
 enum ServiceProfessionalKind {
   INTERNAL_USER
   EXTERNAL
@@ -237,6 +254,7 @@ enum AppointmentStatus {
   SHOW
   NO_SHOW
   CANCELED
+  COMPLETED
 }
 
 enum AppointmentAuditAction {
@@ -244,6 +262,7 @@ enum AppointmentAuditAction {
   REASSIGNED
   RESCHEDULED
   CANCELED
+  STATUS_CHANGED
 }
 
 enum CalendarScheduleScope {
@@ -276,12 +295,24 @@ enum OpportunityResult {
 }
 
 enum AutomationTriggerType {
+  CONTACT_CREATED
+  CONTACT_CHANGED
+  CONTACT_TAG
+  CONTACT_NOTE_ADDED
+  TASK_ADDED
+  TASK_COMPLETED
+  APPOINTMENT_CREATED
+  APPOINTMENT_STATUS_CHANGED
+  BIRTHDAY_REMINDER
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
   OPPORTUNITY_CHANGED
 }
 
 enum AutomationConditionSource {
+  CONTACT_FIELD
+  TASK_FIELD
+  APPOINTMENT_FIELD
   OPPORTUNITY_VALUE
   CONTACT_STATUS
   CONTACT_CUSTOM_FIELD
@@ -308,6 +339,13 @@ enum AutomationOperator {
   IS_NOT_EMPTY
 }
 
+enum AutomationChangeOperator {
+  HAS_CHANGED
+  HAS_CHANGED_TO
+  ADDED
+  REMOVED
+}
+
 enum AutomationActionType {
   UPDATE_CONTACT_CUSTOM_FIELDS
   SET_CONTACT_CUSTOM_FIELD
@@ -320,6 +358,8 @@ enum AutomationActionType {
   ADD_CONTACT_NOTE
   CREATE_CONTACT
   CREATE_TASK
+  CREATE_APPOINTMENT
+  UPDATE_APPOINTMENT_STATUS
   SEND_INTERNAL_NOTIFICATION
   FORMAT_DATE_TIME
   FORMAT_NUMBER
@@ -402,6 +442,15 @@ enum AutomationRunStatus {
 
 enum AutomationNodeEventSource {
   MANUAL_ENROLLMENT
+  CONTACT_CREATED
+  CONTACT_CHANGED
+  CONTACT_TAG
+  CONTACT_NOTE_ADDED
+  TASK_ADDED
+  TASK_COMPLETED
+  APPOINTMENT_CREATED
+  APPOINTMENT_STATUS_CHANGED
+  BIRTHDAY_REMINDER
   OPPORTUNITY_CREATED
   OPPORTUNITY_STAGE_CHANGED
   OPPORTUNITY_CHANGED
@@ -670,7 +719,10 @@ model Tenant {
   automationRuns                    AutomationRun[]
   automationEvents                  AutomationEvent[]
   automationDispatches              AutomationDispatch[]
+  automationTriggerChainClaims      AutomationTriggerChainClaim[]
+  automationBirthdayClaims          AutomationBirthdayClaim[]
   automationSideEffects             AutomationSideEffect[]
+  contactImports                    ContactImport[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1461,7 +1513,9 @@ model Automation {
   name          String
   isEnabled     Boolean               @default(false)
   triggerType   AutomationTriggerType
-  pipelineId    String
+  birthdayLocalTime String?
+  appointmentTargetStatus AppointmentStatus?
+  pipelineId    String?
   sourceStageId String?
   targetStageId String?
   targetResult  OpportunityResult?
@@ -1472,6 +1526,7 @@ model Automation {
   tenant         Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   folder         AutomationFolder?         @relation(fields: [tenantId, folderId], references: [tenantId, id], onDelete: Restrict)
   conditions     AutomationCondition[]
+  changeRules    AutomationContactChangeRule[]
   actions        AutomationAction[]
   executions     AutomationExecution[]
   processes      AutomationProcess[]
@@ -1494,12 +1549,36 @@ model Automation {
   @@index([tenantId, folderId, librarySortOrder])
 }
 
+model AutomationContactChangeRule {
+  id             String   @id @default(uuid())
+  tenantId       String
+  automationId   String
+  source         AutomationConditionSource
+  operator       AutomationChangeOperator
+  fieldKey       String?
+  customFieldId  String?
+  statusConfigId String?
+  assignedUserId String?
+  tagId          String?
+  compareValue   Json?
+  sortOrder      Int      @default(0)
+
+  automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, automationId, sortOrder])
+}
+
 model AutomationCondition {
   id             String                    @id @default(uuid())
   tenantId       String
   automationId   String
   source         AutomationConditionSource
   operator       AutomationOperator
+  fieldKey       String?
   customFieldId  String?
   statusConfigId String?
   assignedUserId String?
@@ -1537,6 +1616,8 @@ model AutomationAction {
   noteBody                   String?
   createContactConfig        Json?
   taskConfig                 Json?
+  appointmentConfig          Json?
+  appointmentStatusConfig    Json?
   internalNotificationConfig Json?
   dateTimeFormatterConfig    Json?
   numberFormatterConfig      Json?
@@ -1700,19 +1781,25 @@ model AutomationEvent {
   contactId             String?
   contactName           String
   opportunityId         String?
-  opportunitySnapshotId String
+  opportunitySnapshotId String?
+  taskId                String?
+  taskSnapshot          Json?
+  appointmentId         String?
+  appointmentSnapshot   Json?
+  contactSnapshot       Json?
+  birthdaySnapshot      Json?
   actorUserId           String?
   actorName             String?
   triggerType           AutomationTriggerType
-  pipelineId            String
-  pipelineName          String
+  pipelineId            String?
+  pipelineName          String?
   sourceStageId         String?
   sourceStageName       String?
-  targetStageId         String
-  targetStageName       String
+  targetStageId         String?
+  targetStageName       String?
   sourceResult          OpportunityResult?
   targetResult          OpportunityResult?
-  valueCents            Int
+  valueCents            Int?
   status                AutomationEventStatus @default(QUEUED)
   dispatchCount         Int                   @default(0)
   completedCount        Int                   @default(0)
@@ -1746,6 +1833,8 @@ model AutomationEvent {
 
   @@unique([tenantId, id])
   @@index([tenantId, contactId, createdAt])
+  @@index([tenantId, taskId])
+  @@index([tenantId, appointmentId])
   @@index([tenantId, chainId, chainDepth])
   @@index([tenantId, status, availableAt, createdAt])
   @@index([status, leaseExpiresAt])
@@ -1786,6 +1875,31 @@ model AutomationDispatch {
   @@unique([eventId, automationSnapshotId])
   @@index([tenantId, eventId, automationOrder])
   @@index([tenantId, status, createdAt])
+}
+
+model AutomationTriggerChainClaim {
+  tenantId     String
+  chainId      String
+  automationId String
+  createdAt    DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, chainId, automationId])
+}
+
+model AutomationBirthdayClaim {
+  tenantId       String
+  automationId   String
+  contactId      String
+  occurrenceYear Int
+  localDate      String
+  createdAt      DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, automationId, contactId, occurrenceYear])
+  @@index([tenantId, occurrenceYear])
 }
 
 model AutomationSideEffect {
@@ -2012,7 +2126,7 @@ model Appointment {
   tenantId         String
   contactId        String
   serviceId        String?
-  bookedByUserId   String
+  bookedByUserId   String?
   assignedToUserId String?
   status           AppointmentStatus @default(SCHEDULED)
   title            String
@@ -2024,7 +2138,7 @@ model Appointment {
   tenant     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact    Contact               @relation(fields: [contactId], references: [id], onDelete: Cascade)
   service    Service?              @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  bookedBy   User                  @relation("AppointmentBookedBy", fields: [bookedByUserId], references: [id], onDelete: Restrict)
+  bookedBy   User?                 @relation("AppointmentBookedBy", fields: [bookedByUserId], references: [id], onDelete: SetNull)
   assignedTo User?                 @relation("AppointmentAssignedTo", fields: [assignedToUserId], references: [id], onDelete: SetNull)
   auditLogs  AppointmentAuditLog[]
 
@@ -2167,6 +2281,62 @@ model ContactCustomFieldValue {
   @@unique([tenantId, contactId, fieldId])
   @@index([tenantId, contactId])
   @@index([tenantId, fieldId])
+}
+
+model ContactImport {
+  id                 String               @id @default(uuid())
+  tenantId           String
+  requestedByUserId  String
+  sourceKey          String
+  fileName           String
+  fileSize           Int
+  status             ContactImportStatus  @default(DRAFT)
+  phase              ContactImportPhase?
+  headers            Json?
+  mappings           Json?
+  settings           Json?
+  totalRows          Int                  @default(0)
+  processedRows      Int                  @default(0)
+  createdRows        Int                  @default(0)
+  duplicateRows      Int                  @default(0)
+  invalidRows        Int                  @default(0)
+  lastCommittedRow   Int                  @default(0)
+  attemptCount       Int                  @default(0)
+  availableAt        DateTime             @default(now())
+  leaseToken         String?
+  leaseExpiresAt     DateTime?
+  reportKey          String?
+  sourceDeletedAt    DateTime?
+  issuesDeletedAt    DateTime?
+  cancelRequestedAt  DateTime?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  lastError          String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  tenant             Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issues             ContactImportIssue[]
+
+  @@unique([tenantId, id])
+  @@index([status, availableAt, createdAt])
+  @@index([status, leaseExpiresAt])
+  @@index([tenantId, createdAt])
+}
+
+model ContactImportIssue {
+  id          String        @id @default(uuid())
+  tenantId    String
+  importId    String
+  rowNumber   Int
+  code        String
+  message     String
+  createdAt   DateTime      @default(now())
+
+  import      ContactImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, rowNumber])
+  @@index([tenantId, importId, rowNumber])
 }
 
 model Contact {

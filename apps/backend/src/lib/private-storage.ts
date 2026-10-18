@@ -79,3 +79,19 @@ export async function deletePrivateObject(params: { path: string }) {
     throw error
   }
 }
+
+export async function uploadPrivateObject(params: {
+  path: string
+  body: NodeJS.ReadableStream
+  contentType: string
+}) {
+  const client = getSupabaseStorageClient()
+  const { error } = await client.storage
+    .from(getPrivateStorageBucket())
+    .upload(params.path, params.body, {
+      contentType: params.contentType,
+      upsert: true,
+    })
+
+  if (error) throw error
+}

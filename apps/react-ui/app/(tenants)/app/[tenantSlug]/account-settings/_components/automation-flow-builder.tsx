@@ -47,6 +47,7 @@ import {
   BellRing,
   Calculator,
   CalendarClock,
+  CalendarCheck2,
   Check,
   ChevronsUpDown,
   Clock3,
@@ -157,9 +158,13 @@ import { AutomationExecutionLogsTab } from "./automation-execution-logs-tab"
 import { AutomationFieldPicker } from "./automation-field-picker"
 import { AutomationWaitingRunsSheet } from "./automation-waiting-runs-sheet"
 import type {
+  AppointmentAutomationStatus,
   AutomationAction,
+  AutomationAppointmentConfig,
+  AutomationAppointmentStatusConfig,
   AutomationCatalog,
   AutomationCondition,
+  AutomationContactChangeRule,
   AutomationCreateContactConfig,
   AutomationCreateContactTypedSource,
   AutomationCreateContactValueSource,
@@ -208,6 +213,9 @@ type Draft = {
   pipelineId: string
   changeType: AutomationChangeType
   targetStageId: string
+  birthdayLocalTime: string
+  appointmentTargetStatus: AppointmentAutomationStatus | ""
+  changes: AutomationContactChangeRule[]
   conditions: AutomationCondition[]
   actions: AutomationAction[]
 }
@@ -225,6 +233,9 @@ const EMPTY_DRAFT: Draft = {
   pipelineId: "",
   changeType: "",
   targetStageId: "",
+  birthdayLocalTime: "09:00",
+  appointmentTargetStatus: "",
+  changes: [],
   conditions: [],
   actions: [],
 }
@@ -303,9 +314,11 @@ function draftSnapshot(draft: Draft) {
     pipelineId: draft.pipelineId,
     changeType: draft.changeType,
     targetStageId: draft.targetStageId,
+    changes: draft.changes,
     conditions: draft.conditions.map((condition) => ({
       source: condition.source,
       operator: condition.operator,
+      fieldKey: condition.fieldKey,
       customFieldId: condition.customFieldId,
       statusConfigId: condition.statusConfigId,
       assignedUserId: condition.assignedUserId,
@@ -349,6 +362,59 @@ const NUMERIC_OPERATORS: AutomationOperator[] = [
   "BETWEEN",
 ]
 const STATUS_OPERATORS: AutomationOperator[] = ["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"]
+const TEXT_OPERATORS: AutomationOperator[] = ["EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_CONTAINS", "IS_EMPTY", "IS_NOT_EMPTY"]
+const DATE_OPERATORS: AutomationOperator[] = [...NUMERIC_OPERATORS, "IS_EMPTY", "IS_NOT_EMPTY"]
+const BOOLEAN_OPERATORS: AutomationOperator[] = ["IS_TRUE", "IS_FALSE", "IS_EMPTY", "IS_NOT_EMPTY"]
+const TASK_FILTER_FIELDS = {
+  name: { label: "Task name", kind: "text", operators: ["EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_CONTAINS"] as AutomationOperator[] },
+  description: { label: "Description", kind: "text", operators: TEXT_OPERATORS },
+  statusConfigId: { label: "Status", kind: "status", operators: STATUS_OPERATORS },
+  assignedToUserId: { label: "Assigned user", kind: "assignee", operators: ["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[] },
+  startedAt: { label: "Start date and time", kind: "date", operators: NUMERIC_OPERATORS },
+  dueDate: { label: "Due date and time", kind: "date", operators: DATE_OPERATORS },
+  priority: { label: "Priority", kind: "priority", operators: STATUS_OPERATORS },
+  linkedEntityName: { label: "Linked service or product", kind: "text", operators: TEXT_OPERATORS },
+  linkedEntityType: { label: "Linked item type", kind: "linkedType", operators: STATUS_OPERATORS },
+} as const
+const APPOINTMENT_FILTER_FIELDS = {
+  serviceId: { label: "Service", kind: "service", operators: ["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[] },
+  title: { label: "Appointment title", kind: "text", operators: ["EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_CONTAINS"] as AutomationOperator[] },
+  notes: { label: "Notes", kind: "text", operators: TEXT_OPERATORS },
+  assignedToUserId: { label: "Assigned user", kind: "person", operators: ["INCLUDES_ANY", "IS_EMPTY", "IS_NOT_EMPTY"] as AutomationOperator[] },
+  bookedByUserId: { label: "Booked by", kind: "person", operators: ["INCLUDES_ANY"] as AutomationOperator[] },
+  startAt: { label: "Start date and time", kind: "date", operators: NUMERIC_OPERATORS },
+  endAt: { label: "End date and time", kind: "date", operators: NUMERIC_OPERATORS },
+  isAllDay: { label: "All day", kind: "boolean", operators: ["IS_TRUE", "IS_FALSE"] as AutomationOperator[] },
+} as const
+type AppointmentFilterFieldKey = keyof typeof APPOINTMENT_FILTER_FIELDS
+function appointmentFilterField(key: string | null | undefined) {
+  return key && Object.hasOwn(APPOINTMENT_FILTER_FIELDS, key) ? APPOINTMENT_FILTER_FIELDS[key as AppointmentFilterFieldKey] : null
+}
+function appointmentFilterDefault(key: AppointmentFilterFieldKey, catalog: AutomationCatalog): Pick<AutomationCondition, "operator" | "compareValue"> {
+  if (key === "serviceId") return { operator: "INCLUDES_ANY", compareValue: catalog.services[0] ? [catalog.services[0].id] : [] }
+  if (key === "assignedToUserId" || key === "bookedByUserId") return { operator: "INCLUDES_ANY", compareValue: catalog.users[0] ? [catalog.users[0].id] : [] }
+  if (key === "startAt" || key === "endAt") return { operator: "GREATER_THAN_OR_EQUAL", compareValue: "" }
+  if (key === "isAllDay") return { operator: "IS_TRUE", compareValue: null }
+  return { operator: key === "title" ? "CONTAINS" : "IS_NOT_EMPTY", compareValue: key === "title" ? "" : null }
+}
+type TaskFilterFieldKey = keyof typeof TASK_FILTER_FIELDS
+function taskFilterField(key: string | null | undefined) {
+  return key && Object.hasOwn(TASK_FILTER_FIELDS, key) ? TASK_FILTER_FIELDS[key as TaskFilterFieldKey] : null
+}
+function taskFilterDefault(key: TaskFilterFieldKey, catalog: AutomationCatalog): Pick<AutomationCondition, "operator" | "compareValue"> {
+  if (key === "assignedToUserId") return { operator: "INCLUDES_ANY", compareValue: catalog.users[0] ? [catalog.users[0].id] : [] }
+  if (key === "statusConfigId") return { operator: "EQUALS", compareValue: catalog.taskStatuses[0]?.id ?? "" }
+  if (key === "priority") return { operator: "EQUALS", compareValue: "HIGH" }
+  if (key === "linkedEntityType") return { operator: "EQUALS", compareValue: "SERVICE" }
+  if (key === "startedAt") return { operator: "GREATER_THAN_OR_EQUAL", compareValue: "" }
+  if (key === "dueDate") return { operator: "IS_NOT_EMPTY", compareValue: null }
+  return { operator: key === "name" ? "CONTAINS" : "IS_NOT_EMPTY", compareValue: key === "name" ? "" : null }
+}
+function contactFieldOperators(fieldType: AutomationCatalog["templateFields"]["contact"][number]["fieldType"]): AutomationOperator[] {
+  if (fieldType === "DATE" || fieldType === "NUMBER" || fieldType === "CURRENCY") return DATE_OPERATORS
+  if (fieldType === "CHECKBOX") return BOOLEAN_OPERATORS
+  return TEXT_OPERATORS
+}
 const VALUELESS_OPERATORS = new Set<AutomationOperator>(["IS_EMPTY", "IS_NOT_EMPTY", "IS_TRUE", "IS_FALSE"])
 
 type AutomationActionGroupId = "INTERNAL" | "OPPORTUNITY" | "CONTACT" | "COMMUNICATION"
@@ -385,7 +451,7 @@ const ACTION_GROUPS: ReadonlyArray<{
   },
 ]
 
-const ACTION_GROUP_STYLES: Record<AutomationActionGroupId, {
+const ACTION_GROUP_STYLES: Record<AutomationActionGroupId | "APPOINTMENT", {
   section: string
   icon: string
   actionIcon: string
@@ -409,11 +475,115 @@ const ACTION_GROUP_STYLES: Record<AutomationActionGroupId, {
     actionIcon: "bg-slate-50 text-blue-700",
     actionHover: "hover:border-slate-300 hover:bg-slate-50",
   },
+  APPOINTMENT: {
+    section: "border-slate-200 bg-white",
+    icon: "bg-slate-50 text-cyan-800 ring-slate-200",
+    actionIcon: "bg-slate-50 text-cyan-800",
+    actionHover: "hover:border-slate-300 hover:bg-slate-50",
+  },
   COMMUNICATION: {
     section: "border-slate-200 bg-white",
     icon: "bg-slate-50 text-emerald-700 ring-slate-200",
     actionIcon: "bg-slate-50 text-emerald-700",
     actionHover: "hover:border-slate-300 hover:bg-slate-50",
+  },
+}
+
+const TRIGGER_GROUPS = [
+  {
+    id: "CONTACT",
+    label: "Contact triggers",
+    description: "Start when a contact, birthday, tag, note, or task changes.",
+    icon: ContactRound,
+    triggers: ["CONTACT_CREATED", "CONTACT_CHANGED", "BIRTHDAY_REMINDER", "CONTACT_TAG", "CONTACT_NOTE_ADDED", "TASK_ADDED", "TASK_COMPLETED"],
+  },
+  {
+    id: "APPOINTMENT",
+    label: "Appointment triggers",
+    description: "Start when an appointment is booked.",
+    icon: CalendarClock,
+    triggers: ["APPOINTMENT_CREATED", "APPOINTMENT_STATUS_CHANGED"],
+  },
+  {
+    id: "OPPORTUNITY",
+    label: "Opportunity triggers",
+    description: "Start when an opportunity is created or changes.",
+    icon: Kanban,
+    triggers: ["OPPORTUNITY_CREATED", "OPPORTUNITY_CHANGED"],
+  },
+] as const
+
+const TRIGGER_DEFINITIONS: Record<AutomationBuilderTriggerType, {
+  label: string
+  description: string
+  icon: LucideIcon
+  group: "CONTACT" | "APPOINTMENT" | "OPPORTUNITY"
+}> = {
+  CONTACT_CREATED: {
+    label: "Contact created",
+    description: "When a new contact is added.",
+    icon: UserRoundPlus,
+    group: "CONTACT",
+  },
+  CONTACT_CHANGED: {
+    label: "Contact changed",
+    description: "When selected contact details change.",
+    icon: ContactRound,
+    group: "CONTACT",
+  },
+  CONTACT_TAG: {
+    label: "Contact tag",
+    description: "When a selected tag is added or removed.",
+    icon: Tags,
+    group: "CONTACT",
+  },
+  CONTACT_NOTE_ADDED: {
+    label: "Note added",
+    description: "When a note is added to a contact.",
+    icon: StickyNote,
+    group: "CONTACT",
+  },
+  TASK_ADDED: {
+    label: "Task added",
+    description: "When a task is added to a contact.",
+    icon: ListTodo,
+    group: "CONTACT",
+  },
+  TASK_COMPLETED: {
+    label: "Task completed",
+    description: "When a contact task is marked Completed.",
+    icon: CheckCircle2,
+    group: "CONTACT",
+  },
+  APPOINTMENT_CREATED: {
+    label: "Appointment created",
+    description: "When a contact appointment is booked.",
+    icon: CalendarClock,
+    group: "APPOINTMENT",
+  },
+  APPOINTMENT_STATUS_CHANGED: {
+    label: "Appointment status changed",
+    description: "When an appointment changes to a selected status.",
+    icon: BadgeCheck,
+    group: "APPOINTMENT",
+  },
+  BIRTHDAY_REMINDER: {
+    label: "Birthday reminder",
+    description: "Each year on a contact's birthday at your chosen time.",
+    icon: CalendarClock,
+    group: "CONTACT",
+  },
+  OPPORTUNITY_CREATED: {
+    label: "Opportunity created",
+    description: "When a new opportunity is added.",
+    icon: Kanban,
+    group: "OPPORTUNITY",
+  },
+  OPPORTUNITY_CHANGED: {
+    label: "Opportunity changed",
+    description: "When an opportunity enters a stage or changes result.",
+    icon: GitBranch,
+    group: "OPPORTUNITY",
   },
 }
 
@@ -495,18 +665,32 @@ const ACTION_DEFINITIONS = {
     order: 10,
     icon: ListTodo,
   },
+  CREATE_APPOINTMENT: {
+    label: "Create appointment",
+    description: "Book an available calendar appointment for this contact.",
+    group: "INTERNAL",
+    order: 11,
+    icon: CalendarClock,
+  },
+  UPDATE_APPOINTMENT_STATUS: {
+    label: "Update appointment status",
+    description: "Change the triggering or next upcoming appointment after checking contact filters.",
+    group: "INTERNAL",
+    order: 11.5,
+    icon: CalendarCheck2,
+  },
   SEND_INTERNAL_NOTIFICATION: {
     label: "Internal notification",
     description: "Notify the contact assignee or a specific teammate.",
     group: "INTERNAL",
-    order: 11,
+    order: 12,
     icon: BellRing,
   },
   ADD_CONTACT_NOTE: {
     label: "Add contact note",
     description: "Add a note using live contact information.",
     group: "INTERNAL",
-    order: 12,
+    order: 13,
     icon: StickyNote,
   },
   UPDATE_OPPORTUNITY: {
@@ -1128,6 +1312,7 @@ function actionDefaults(
   catalog: AutomationCatalog,
   existingNodeKey?: string,
   sourceAutomationId?: string,
+  triggerType?: AutomationBuilderTriggerType | null,
 ): AutomationAction {
   const nodeKey = existingNodeKey ?? crypto.randomUUID()
   if (type === "CREATE_CONTACT") {
@@ -1187,6 +1372,33 @@ function actionDefaults(
         linkedService: null,
         dueAt: null,
         reminder: null,
+      },
+    }
+  }
+  if (type === "CREATE_APPOINTMENT") {
+    return {
+      nodeKey,
+      type,
+      appointmentConfig: {
+        actionName: "Create appointment",
+        titleTemplate: "",
+        notesTemplate: "",
+        assignee: { mode: "CONTACT_ASSIGNEE" },
+        linkedService: null,
+        startAt: { source: { type: "RELATIVE_DATE", amount: 1, unit: "DAYS" }, time: "09:00" },
+      },
+    }
+  }
+  if (type === "UPDATE_APPOINTMENT_STATUS") {
+    return {
+      nodeKey,
+      type,
+      appointmentStatusConfig: {
+        actionName: "Update appointment status",
+        targetMode: triggerType === "APPOINTMENT_CREATED" || triggerType === "APPOINTMENT_STATUS_CHANGED"
+          ? "TRIGGERING_APPOINTMENT" : "NEXT_UPCOMING",
+        status: "CONFIRMED",
+        filters: [],
       },
     }
   }
@@ -1624,12 +1836,42 @@ function isBranchConditionReady(
   return true
 }
 
+function isAppointmentStatusFilterReady(condition: AutomationCondition, catalog: AutomationCatalog): boolean {
+  if (!["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) return false
+  if (condition.source === "CONTACT_FIELD") {
+    const field = catalog.templateFields.contact.find((item) => item.key === condition.fieldKey && !["status", "assigned_to", "tags"].includes(item.key))
+    if (!field || !contactFieldOperators(field.fieldType).includes(condition.operator)) return false
+  }
+  if (condition.source === "CONTACT_CUSTOM_FIELD") {
+    const field = catalog.customFields.find((item) => item.id === condition.customFieldId)
+    if (!field || !field.operators.includes(condition.operator)) return false
+    if (!VALUELESS_OPERATORS.has(condition.operator) && field.options.length > 0) {
+      const values = Array.isArray(condition.compareValue) ? condition.compareValue : [condition.compareValue]
+      if (values.some((value) => typeof value === "string" && !field.options.includes(value))) return false
+    }
+  }
+  if (condition.source === "CONTACT_TAGS") {
+    if (!["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"].includes(condition.operator)) return false
+    if (!VALUELESS_OPERATORS.has(condition.operator) && !catalog.tags.some((tag) => tag.id === condition.tagId)) return false
+  }
+  if (!VALUELESS_OPERATORS.has(condition.operator)) {
+    if (condition.operator === "BETWEEN") {
+      const range = condition.compareValue as { min?: unknown; max?: unknown } | null
+      return range?.min !== "" && range?.min !== undefined && range?.max !== "" && range?.max !== undefined
+    }
+    if (condition.source !== "CONTACT_TAGS" && (condition.compareValue === null || condition.compareValue === undefined || condition.compareValue === "")) return false
+    if (Array.isArray(condition.compareValue) && condition.compareValue.length === 0) return false
+  }
+  return true
+}
+
 function isIfElseReady(
   action: AutomationAction,
   catalog: AutomationCatalog,
   previousActions: AutomationAction[],
   depth = 1,
   requireBranchActions = true,
+  triggerType?: AutomationBuilderTriggerType | null,
 ): boolean {
   const config = action.ifElseConfig
   if (!config || !config.actionName.trim() || config.actionName.trim().length > 120 || depth > 3) return false
@@ -1655,14 +1897,15 @@ function isIfElseReady(
       if ((branchAction.type === "IF_ELSE" || branchAction.type === "SPLIT" || branchAction.type === "GO_TO") && index !== branch.actions.length - 1) return false
       if (branchAction.type === "DELETE_CONTACT" && index !== branch.actions.length - 1) return false
       return branchAction.type === "IF_ELSE"
-        ? isIfElseReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1, requireBranchActions)
+        ? isIfElseReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1, requireBranchActions, triggerType)
         : branchAction.type === "SPLIT"
-          ? isSplitReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1)
+          ? isSplitReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1, triggerType)
         : isActionReady(
             branchAction,
             catalog,
             branch.actions.slice(index + 1),
             [...previousActions, ...branch.actions.slice(0, index)],
+            triggerType,
           )
     })
   })
@@ -1673,6 +1916,7 @@ function isSplitReady(
   catalog: AutomationCatalog,
   previousActions: AutomationAction[],
   depth = 1,
+  triggerType?: AutomationBuilderTriggerType | null,
 ): boolean {
   const config = action.splitConfig
   if (!config || !config.actionName.trim() || config.actionName.trim().length > 120 || depth > 3) return false
@@ -1690,14 +1934,15 @@ function isSplitReady(
       index !== route.actions.length - 1
     ) return false
     return routeAction.type === "IF_ELSE"
-      ? isIfElseReady(routeAction, catalog, [...previousActions, ...route.actions.slice(0, index)], depth + 1)
+      ? isIfElseReady(routeAction, catalog, [...previousActions, ...route.actions.slice(0, index)], depth + 1, true, triggerType)
       : routeAction.type === "SPLIT"
-        ? isSplitReady(routeAction, catalog, [...previousActions, ...route.actions.slice(0, index)], depth + 1)
+        ? isSplitReady(routeAction, catalog, [...previousActions, ...route.actions.slice(0, index)], depth + 1, triggerType)
         : isActionReady(
             routeAction,
             catalog,
             route.actions.slice(index + 1),
             [...previousActions, ...route.actions.slice(0, index)],
+            triggerType,
           )
   }))
 }
@@ -1707,6 +1952,7 @@ function isActionReady(
   catalog: AutomationCatalog,
   targetActions: AutomationAction[] = [],
   previousActions: AutomationAction[] = [],
+  triggerType?: AutomationBuilderTriggerType | null,
 ) {
   if (!action) return false
   const availableOutputs = formatterOutputs(previousActions)
@@ -1754,6 +2000,28 @@ function isActionReady(
       if (optionalTemplateError(config.reminder.messageTemplate, 500, catalog, availableOutputs)) return false
     }
     return true
+  }
+  if (action.type === "CREATE_APPOINTMENT") {
+    const config = action.appointmentConfig
+    if (!config || !config.actionName.trim() || config.actionName.trim().length > 120) return false
+    if (noteTemplateError(config.titleTemplate, 160, catalog, availableOutputs)) return false
+    if (optionalTemplateError(config.notesTemplate, 4_000, catalog, availableOutputs)) return false
+    if (config.assignee.mode === "SPECIFIC_USER") {
+      const userId = config.assignee.userId
+      if (!catalog.users.some((user) => user.id === userId)) return false
+    }
+    if (config.linkedService && !catalog.services.some((service) => service.id === config.linkedService?.id)) return false
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(config.startAt.time)) return false
+    return isFormatterSourceReady(config.startAt.source, catalog, availableOutputs)
+  }
+  if (action.type === "UPDATE_APPOINTMENT_STATUS") {
+    const config = action.appointmentStatusConfig
+    if (!config || !config.actionName.trim() || config.actionName.trim().length > 120) return false
+    if (config.targetMode === "TRIGGERING_APPOINTMENT" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED") return false
+    if (config.targetMode !== "TRIGGERING_APPOINTMENT" && config.targetMode !== "NEXT_UPCOMING") return false
+    if (!["SCHEDULED", "CONFIRMED", "SHOW", "NO_SHOW", "CANCELED", "COMPLETED"].includes(config.status)) return false
+    if (config.filters.length > 20) return false
+    return config.filters.every((filter) => isAppointmentStatusFilterReady(filter, catalog))
   }
   if (action.type === "SEND_INTERNAL_NOTIFICATION") {
     const config = action.internalNotificationConfig
@@ -1838,10 +2106,10 @@ function isActionReady(
       !(config.operation === "DIVIDE" && config.operand === 0)
   }
   if (action.type === "IF_ELSE") {
-    return targetActions.length === 0 && isIfElseReady(action, catalog, previousActions)
+    return targetActions.length === 0 && isIfElseReady(action, catalog, previousActions, 1, true, triggerType)
   }
   if (action.type === "SPLIT") {
-    return targetActions.length === 0 && isSplitReady(action, catalog, previousActions)
+    return targetActions.length === 0 && isSplitReady(action, catalog, previousActions, 1, triggerType)
   }
   if (action.type === "GO_TO") {
     return targetActions.length === 0 && Boolean(action.goToConfig?.targetNodeKey)
@@ -1897,6 +2165,12 @@ function conditionDefaults(
   source: AutomationCondition["source"],
   catalog: AutomationCatalog,
 ): AutomationCondition {
+  if (source === "TASK_FIELD") return { source, fieldKey: "name", operator: "CONTAINS", compareValue: "" }
+  if (source === "APPOINTMENT_FIELD") return { source, fieldKey: "serviceId", operator: "IS_NOT_EMPTY", compareValue: null }
+  if (source === "CONTACT_FIELD") {
+    const field = catalog.templateFields.contact.find((candidate) => !["status", "assigned_to", "tags"].includes(candidate.key))
+    return { source, operator: "EQUALS", fieldKey: field?.key ?? null, compareValue: "" }
+  }
   if (source === "CONTACT_CUSTOM_FIELD") {
     const field = catalog.customFields[0]
     const operator = field?.operators[0] ?? "EQUALS"
@@ -1939,7 +2213,10 @@ function conditionDefaults(
   return { source, operator: "GREATER_THAN_OR_EQUAL", compareValue: 0 }
 }
 
-function defaultCondition(catalog: AutomationCatalog) {
+function defaultCondition(catalog: AutomationCatalog, triggerType?: AutomationBuilderTriggerType | null) {
+  if (triggerType === "TASK_ADDED") return conditionDefaults("TASK_FIELD", catalog)
+  if (triggerType === "APPOINTMENT_CREATED") return conditionDefaults("APPOINTMENT_FIELD", catalog)
+  if (triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_STATUS_CHANGED" || triggerType === "BIRTHDAY_REMINDER") return conditionDefaults("CONTACT_FIELD", catalog)
   if (catalog.customFields.length > 0) return conditionDefaults("CONTACT_CUSTOM_FIELD", catalog)
   if (catalog.statuses.length > 0) return conditionDefaults("CONTACT_STATUS", catalog)
   if (catalog.users.length > 0) return conditionDefaults("CONTACT_ASSIGNEE", catalog)
@@ -1956,7 +2233,37 @@ function apiError(error: unknown) {
 function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   if (!draft.name.trim()) return "Enter an automation name."
   if (!draft.triggerType) return "Select a trigger."
-  if (!draft.pipelineId) return "Select a pipeline."
+  if (draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "APPOINTMENT_STATUS_CHANGED" && draft.triggerType !== "BIRTHDAY_REMINDER" && !draft.pipelineId) return "Select a pipeline."
+  if (draft.triggerType === "BIRTHDAY_REMINDER" && !isAutomationTriggerReady(draft)) return "Choose a valid birthday reminder time."
+  if (draft.triggerType === "APPOINTMENT_STATUS_CHANGED" && !isAutomationTriggerReady(draft)) return "Select an appointment status."
+  if (draft.triggerType === "CONTACT_CHANGED" && !isAutomationTriggerReady(draft)) return "Complete at least one contact change rule."
+  if (draft.triggerType === "CONTACT_TAG" && !isAutomationTriggerReady(draft)) return "Select a tag and whether it is added or removed."
+  if (draft.triggerType === "TASK_ADDED") {
+    for (const condition of draft.conditions) {
+      if (condition.source !== "TASK_FIELD") continue
+      const field = taskFilterField(condition.fieldKey)
+      if (!field || !field.operators.includes(condition.operator)) return "Complete each task filter."
+      if (VALUELESS_OPERATORS.has(condition.operator)) continue
+      if (field.kind === "assignee" && (!Array.isArray(condition.compareValue) || condition.compareValue.length === 0)) return "Select at least one task assignee."
+      if (field.kind === "date" && (condition.operator === "BETWEEN"
+        ? !condition.compareValue || typeof condition.compareValue !== "object" || Object.values(condition.compareValue).length !== 2 || Object.values(condition.compareValue).some((value) => typeof value !== "string" || !value)
+        : typeof condition.compareValue !== "string" || !condition.compareValue)) return "Complete each task date and time filter."
+      if (field.kind !== "date" && field.kind !== "assignee" && !condition.compareValue) return "Complete each task filter."
+    }
+  }
+  if (draft.triggerType === "APPOINTMENT_CREATED") {
+    for (const condition of draft.conditions) {
+      if (condition.source !== "APPOINTMENT_FIELD") continue
+      const field = appointmentFilterField(condition.fieldKey)
+      if (!field || !field.operators.includes(condition.operator)) return "Complete each appointment filter."
+      if (VALUELESS_OPERATORS.has(condition.operator)) continue
+      if ((field.kind === "service" || field.kind === "person") && (!Array.isArray(condition.compareValue) || condition.compareValue.length === 0)) return "Select at least one service or team member."
+      if (field.kind === "date" && (condition.operator === "BETWEEN"
+        ? !condition.compareValue || typeof condition.compareValue !== "object" || Object.values(condition.compareValue).length !== 2 || Object.values(condition.compareValue).some((value) => typeof value !== "string" || !value)
+        : typeof condition.compareValue !== "string" || !condition.compareValue)) return "Complete each appointment date and time filter."
+      if (field.kind === "text" && !condition.compareValue) return "Complete each appointment filter."
+    }
+  }
   if (draft.triggerType === "OPPORTUNITY_CHANGED" && !draft.changeType) return "Select a change to listen for."
   if (draft.triggerType === "OPPORTUNITY_CHANGED" && draft.changeType === "STAGE_ENTERED" && !draft.targetStageId) return "Select a stage."
   if (draft.actions.length === 0) return "Add at least one action."
@@ -1974,7 +2281,7 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
       if ((action.type === "DELETE_CONTACT" || action.type === "IF_ELSE" || action.type === "SPLIT" || action.type === "GO_TO") && index !== actions.length - 1) {
         return `${ACTION_LABELS[action.type]} can only be the final action in its path.`
       }
-      if (!isActionReady(action, catalog, actions.slice(index + 1), [...inherited, ...actions.slice(0, index)])) {
+      if (!isActionReady(action, catalog, actions.slice(index + 1), [...inherited, ...actions.slice(0, index)], draft.triggerType)) {
         return `Finish configuring ${ACTION_LABELS[action.type]}.`
       }
       if (action.type === "IF_ELSE") {
@@ -2001,15 +2308,23 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
     name: draft.name.trim(),
     isEnabled,
     trigger,
-    conditions: draft.conditions.map((condition) => ({
-      source: condition.source,
-      operator: condition.operator,
-      customFieldId: condition.customFieldId,
-      statusConfigId: condition.statusConfigId,
-      assignedUserId: condition.assignedUserId,
-      tagId: condition.tagId,
-      compareValue: condition.compareValue,
-    })),
+    conditions: draft.conditions.map((condition) => condition.source === "TASK_FIELD" || condition.source === "APPOINTMENT_FIELD"
+      ? {
+          source: condition.source,
+          operator: condition.operator,
+          fieldKey: condition.fieldKey,
+          compareValue: condition.compareValue,
+        }
+      : {
+          source: condition.source,
+          operator: condition.operator,
+          fieldKey: condition.fieldKey,
+          customFieldId: condition.customFieldId,
+          statusConfigId: condition.statusConfigId,
+          assignedUserId: condition.assignedUserId,
+          tagId: condition.tagId,
+          compareValue: condition.compareValue,
+        }),
     actions: draft.actions.map(serializeAutomationAction),
   }
 }
@@ -2053,10 +2368,14 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
         setCatalog(nextCatalog)
         if (automationResponse) {
           const record = automationResponse.data.automation
+          const hydratedTrigger = hydrateAutomationTrigger(record.trigger)
           const loadedDraft: Draft = {
             name: record.name,
             isEnabled: record.isEnabled,
-            ...hydrateAutomationTrigger(record.trigger),
+            ...hydratedTrigger,
+            birthdayLocalTime: hydratedTrigger.birthdayLocalTime ?? "09:00",
+            appointmentTargetStatus: hydratedTrigger.appointmentTargetStatus ?? "",
+            changes: hydratedTrigger.changes ?? [],
             conditions: record.conditions,
             actions: record.actions,
           }
@@ -2131,6 +2450,17 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
         ]
       }),
   ), [automationId, draft.actions, savedWaitNodeKeys, waitNodeCountState, waitNodeCounts])
+
+  const showNoteAddedActionNotice = draft.triggerType === "CONTACT_NOTE_ADDED" && (
+    flattenDraftActions(draft.actions).some((action) => action.type === "ADD_CONTACT_NOTE") ||
+    (selected?.kind === "new-action" && pendingAction?.type === "ADD_CONTACT_NOTE") ||
+    (selected?.kind === "action" && editingAction?.type === "ADD_CONTACT_NOTE")
+  )
+  const showTaskAddedActionNotice = draft.triggerType === "TASK_ADDED" && (
+    flattenDraftActions(draft.actions).some((action) => action.type === "CREATE_TASK") ||
+    (selected?.kind === "new-action" && pendingAction?.type === "CREATE_TASK") ||
+    (selected?.kind === "action" && editingAction?.type === "CREATE_TASK")
+  )
 
   const goToPreviewDraft = useMemo(() => {
     if (selected?.kind === "action" && editingAction?.type === "GO_TO") {
@@ -2602,6 +2932,19 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
         </Tabs>
       </div>
 
+      {activeTab === "builder" && showNoteAddedActionNotice ? (
+        <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-5 text-amber-950">
+          <span className="font-semibold">Note added and Add contact note:</span>{" "}
+          A note created here won’t restart this automation. Other Note added automations can respond once to the same sequence.
+        </div>
+      ) : null}
+      {activeTab === "builder" && showTaskAddedActionNotice ? (
+        <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-5 text-amber-950">
+          <span className="font-semibold">Task added and Create task:</span>{" "}
+          A task created here won’t restart this automation. Other Task added automations can respond once to the same sequence.
+        </div>
+      ) : null}
+
       {activeTab === "builder" ? (
         <section className="flex min-h-0 flex-1 gap-3 overflow-hidden">
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm">
@@ -2692,6 +3035,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     isPickingGoTo={goToPicking}
                     onPickGoToOnCanvas={() => setGoToPicking(true)}
                     sourceAutomationId={automationId}
+                    triggerType={draft.triggerType}
                     management={{
                       index: selected.index,
                       total: selectedPathActions.length,
@@ -2735,12 +3079,14 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     isPickingGoTo={goToPicking}
                     onPickGoToOnCanvas={() => setGoToPicking(true)}
                     sourceAutomationId={automationId}
+                    triggerType={draft.triggerType}
                   />
                 ) : selected.kind === "trigger" && triggerEditorDraft ? (
                   <TriggerEditor
                     draft={triggerEditorDraft}
                     pipeline={triggerPipeline}
                     catalog={catalog}
+                    timezone={timezone}
                     onChange={setTriggerEditorDraft}
                   />
                 ) : null}
@@ -2768,6 +3114,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                             ],
                             selected.path.length + 1,
                             false,
+                            draft.triggerType,
                           )
                         : editingAction?.type === "SPLIT"
                           ? !editingIfElseWrapIssue && isSplitReady(
@@ -2780,6 +3127,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                                 ...selectedPathActions.slice(0, selected.index),
                               ],
                               selected.path.length + 1,
+                              draft.triggerType,
                             )
                         : isActionReady(
                             editingAction,
@@ -2789,6 +3137,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                               ...ancestorActionsForPath(draft.actions, selected.path),
                               ...selectedPathActions.slice(0, selected.index),
                             ],
+                            draft.triggerType,
                           )) || !actionPanelHasChanges}
                       onClick={() => {
                         if (!editingAction) return
@@ -2847,6 +3196,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                             ],
                             selected.path.length + 1,
                             false,
+                            draft.triggerType,
                           )
                         : pendingAction?.type === "SPLIT"
                           ? !pendingIfElseWrapIssue && isSplitReady(
@@ -2857,6 +3207,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                                 ...selectedPathActions.slice(0, selected.insertionIndex),
                               ],
                               selected.path.length + 1,
+                              draft.triggerType,
                             )
                         : isActionReady(
                             pendingAction,
@@ -2866,6 +3217,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                               ...ancestorActionsForPath(draft.actions, selected.path),
                               ...selectedPathActions.slice(0, selected.insertionIndex),
                             ],
+                            draft.triggerType,
                           ))}
                       onClick={() => {
                         if (!pendingAction) return
@@ -2923,13 +3275,16 @@ function TriggerEditor({
   draft,
   pipeline,
   catalog,
+  timezone,
   onChange,
 }: {
   draft: Draft
   pipeline?: AutomationCatalog["pipelines"][number]
   catalog: AutomationCatalog
+  timezone?: string | null
   onChange: (draft: Draft) => void
 }) {
+  const [isChoosingTrigger, setIsChoosingTrigger] = useState(false)
   const setConditions = (conditions: AutomationCondition[]) => onChange({ ...draft, conditions })
   const updateCondition = (index: number, patch: Partial<AutomationCondition>) => {
     setConditions(
@@ -2938,6 +3293,38 @@ function TriggerEditor({
       ),
     )
   }
+  const chooseTrigger = (triggerType: AutomationBuilderTriggerType) => {
+    if (triggerType === draft.triggerType) {
+      setIsChoosingTrigger(false)
+      return
+    }
+    onChange({
+      ...draft,
+      triggerType,
+      pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_CREATED" || triggerType === "APPOINTMENT_STATUS_CHANGED" || triggerType === "BIRTHDAY_REMINDER" ? "" : draft.pipelineId,
+      changeType: "",
+      targetStageId: "",
+      conditions: triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_STATUS_CHANGED" || triggerType === "BIRTHDAY_REMINDER"
+        ? draft.conditions.filter((condition) => ["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
+        : triggerType === "TASK_ADDED"
+          ? draft.conditions.filter((condition) => ["TASK_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
+        : triggerType === "APPOINTMENT_CREATED"
+          ? draft.conditions.filter((condition) => ["APPOINTMENT_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
+        : triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG"
+          ? draft.conditions.filter((condition) => condition.source !== "OPPORTUNITY_VALUE" && condition.source !== "TASK_FIELD" && condition.source !== "APPOINTMENT_FIELD")
+          : draft.conditions.filter((condition) => condition.source !== "TASK_FIELD" && condition.source !== "APPOINTMENT_FIELD"),
+      changes: triggerType === "CONTACT_TAG"
+        ? [{ source: "CONTACT_TAGS", operator: "ADDED", tagId: "" }]
+        : triggerType === "CONTACT_CHANGED" && (draft.changes.length === 0 || draft.changes[0]?.source === "CONTACT_TAGS" && draft.changes.length === 1)
+          ? [{ source: "CONTACT_FIELD", operator: "HAS_CHANGED", fieldKey: catalog.contactUpdateFields[0]?.key ?? "" }]
+          : draft.changes,
+      appointmentTargetStatus: triggerType === "APPOINTMENT_STATUS_CHANGED" ? draft.appointmentTargetStatus : "",
+    })
+    setIsChoosingTrigger(false)
+  }
+
+  const selectedTrigger = draft.triggerType ? TRIGGER_DEFINITIONS[draft.triggerType] : null
+  const SelectedTriggerIcon = selectedTrigger?.icon ?? Zap
 
   return (
     <div className="flex flex-col gap-4">
@@ -2956,36 +3343,171 @@ function TriggerEditor({
       </section>
 
       <Separator />
-      <section>
-        <Field>
-          <FieldLabel htmlFor="automation-trigger">Trigger</FieldLabel>
-          <Select
-            value={draft.triggerType ?? undefined}
-            onValueChange={(value) => {
-              const triggerType = value as AutomationBuilderTriggerType
-              onChange({
-                ...draft,
-                triggerType,
-                changeType: "",
-                targetStageId: "",
-              })
-            }}
-          >
-            <SelectTrigger id="automation-trigger" className={COMPACT_SELECT_TRIGGER_CLASS}>
-              <SelectValue placeholder="Select a trigger" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectItem value="OPPORTUNITY_CREATED">Opportunity created</SelectItem>
-                <SelectItem value="OPPORTUNITY_CHANGED">Opportunity changed</SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </Field>
-      </section>
+      {isChoosingTrigger || !selectedTrigger ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <p className="text-sm font-semibold text-slate-950">Choose a trigger</p>
+              <p className="text-xs leading-4 text-slate-500">Select the event that starts this workflow.</p>
+            </div>
+            {selectedTrigger ? (
+              <Button type="button" variant="outline" className={COMPACT_SECONDARY_BUTTON_CLASS} onClick={() => setIsChoosingTrigger(false)}>
+                Cancel
+              </Button>
+            ) : null}
+          </div>
+          {TRIGGER_GROUPS.map((group) => {
+            const GroupIcon = group.icon
+            const groupStyle = ACTION_GROUP_STYLES[group.id]
+            return (
+              <section key={group.id} className={cn("flex flex-col gap-2 rounded-xl border p-3", groupStyle.section)}>
+                <div className="flex items-start gap-2.5">
+                  <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg ring-1", groupStyle.icon)}>
+                    <GroupIcon aria-hidden="true" className="size-4" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-slate-800">{group.label}</p>
+                    <p className="text-xs leading-4 text-slate-500">{group.description}</p>
+                  </div>
+                </div>
+                <Separator />
+                <div className="flex flex-col gap-2">
+                  {group.triggers.map((value) => {
+                    const definition = TRIGGER_DEFINITIONS[value]
+                    const TriggerIcon = definition.icon
+                    return (
+                      <Button
+                        key={value}
+                        type="button"
+                        variant="outline"
+                        aria-pressed={draft.triggerType === value}
+                        className={cn(
+                          "h-auto w-full cursor-pointer items-start justify-start gap-3 whitespace-normal rounded-lg border-slate-200 bg-white px-3 py-2.5 text-left shadow-none transition",
+                          groupStyle.actionHover,
+                          draft.triggerType === value && "border-blue-300 bg-blue-50",
+                        )}
+                        onClick={() => chooseTrigger(value)}
+                      >
+                        <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", groupStyle.actionIcon)}>
+                          <TriggerIcon aria-hidden="true" className="size-4" />
+                        </span>
+                        <span className="min-w-0 text-left">
+                          <span className="block text-sm font-medium text-slate-900">{definition.label}</span>
+                          <span className="mt-0.5 block text-xs font-normal leading-4 text-slate-500">{definition.description}</span>
+                        </span>
+                      </Button>
+                    )
+                  })}
+                </div>
+              </section>
+            )
+          })}
+        </div>
+      ) : (
+        <div className={cn("flex items-center justify-between gap-3 rounded-xl border p-2.5", ACTION_GROUP_STYLES[selectedTrigger.group].section)}>
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-xl", ACTION_GROUP_STYLES[selectedTrigger.group].actionIcon)}>
+              <SelectedTriggerIcon aria-hidden="true" className="size-4.5" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-xs text-slate-500">Trigger</p>
+              <p className="truncate text-sm font-semibold text-slate-950">{selectedTrigger.label}</p>
+              <p className="text-xs leading-4 text-slate-500">{selectedTrigger.description}</p>
+            </div>
+          </div>
+          <Button type="button" variant="outline" className={COMPACT_SECONDARY_BUTTON_CLASS} onClick={() => setIsChoosingTrigger(true)}>
+            Change
+          </Button>
+        </div>
+      )}
 
-      {draft.triggerType ? (
+      {draft.triggerType && !isChoosingTrigger ? (
         <>
+          {draft.triggerType === "CONTACT_CHANGED" ? <>
+            <Separator />
+            <ContactChangeRulesEditor draft={draft} catalog={catalog} onChange={onChange} />
+          </> : null}
+
+          {draft.triggerType === "CONTACT_TAG" ? <>
+            <Separator />
+            <FieldGroup className="gap-3">
+              <Field>
+                <FieldLabel htmlFor="automation-tag-change">Tag change</FieldLabel>
+                <Select
+                  value={draft.changes[0]?.source === "CONTACT_TAGS" ? draft.changes[0].operator : "ADDED"}
+                  onValueChange={(operator: "ADDED" | "REMOVED") => onChange({
+                    ...draft,
+                    changes: [{ source: "CONTACT_TAGS", operator, tagId: draft.changes[0]?.source === "CONTACT_TAGS" ? draft.changes[0].tagId : "" }],
+                  })}
+                >
+                  <SelectTrigger id="automation-tag-change" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ADDED">Added</SelectItem>
+                    <SelectItem value="REMOVED">Removed</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="automation-trigger-tag">Tag</FieldLabel>
+                <Select
+                  value={draft.changes[0]?.source === "CONTACT_TAGS" ? draft.changes[0].tagId ?? "" : ""}
+                  onValueChange={(tagId) => onChange({
+                    ...draft,
+                    changes: [{ source: "CONTACT_TAGS", operator: draft.changes[0]?.source === "CONTACT_TAGS" ? draft.changes[0].operator : "ADDED", tagId }],
+                  })}
+                >
+                  <SelectTrigger id="automation-trigger-tag" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select one tag" /></SelectTrigger>
+                  <SelectContent>
+                    {catalog.tags.map((tag) => <SelectItem key={tag.id} value={tag.id}>{tag.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Field>
+            </FieldGroup>
+          </> : null}
+
+          {draft.triggerType === "BIRTHDAY_REMINDER" ? <>
+            <Separator />
+            <FieldGroup className="gap-3">
+              <Field>
+                <FieldLabel htmlFor="automation-birthday-time">Run at</FieldLabel>
+                <Input
+                  id="automation-birthday-time"
+                  type="time"
+                  value={draft.birthdayLocalTime}
+                  onChange={(event) => onChange({ ...draft, birthdayLocalTime: event.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">Uses the tenant&apos;s timezone{timezone ? ` (${timezone})` : ""}. Runs once per contact each year. February 29 birthdays run on February 28 in other years.</p>
+              </Field>
+            </FieldGroup>
+          </> : null}
+
+          {draft.triggerType === "APPOINTMENT_STATUS_CHANGED" ? <>
+            <Separator />
+            <FieldGroup className="gap-3">
+              <Field>
+                <FieldLabel htmlFor="automation-appointment-target-status">Run when status changes to</FieldLabel>
+                <Select
+                  value={draft.appointmentTargetStatus}
+                  onValueChange={(status) => onChange({ ...draft, appointmentTargetStatus: status as AppointmentAutomationStatus })}
+                >
+                  <SelectTrigger id="automation-appointment-target-status" className={COMPACT_SELECT_TRIGGER_CLASS}>
+                    <SelectValue placeholder="Select a status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="SCHEDULED">Scheduled</SelectItem>
+                    <SelectItem value="CONFIRMED">Confirmed</SelectItem>
+                    <SelectItem value="SHOW">Show</SelectItem>
+                    <SelectItem value="NO_SHOW">No Show</SelectItem>
+                    <SelectItem value="CANCELED">Canceled</SelectItem>
+                    <SelectItem value="COMPLETED">Completed</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">Runs only when an existing appointment changes to this status.</p>
+              </Field>
+            </FieldGroup>
+          </> : null}
+
+          {draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "APPOINTMENT_STATUS_CHANGED" && draft.triggerType !== "BIRTHDAY_REMINDER" ? <>
           <Separator />
           <section>
             <FieldGroup className="gap-3">
@@ -3064,17 +3586,19 @@ function TriggerEditor({
               ) : null}
             </FieldGroup>
           </section>
+          </> : null}
 
           <Separator />
           <section className="flex flex-col gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-foreground">Contact filters</h3>
+              <h3 className="text-sm font-semibold text-foreground">{draft.triggerType === "TASK_ADDED" ? "Task and contact filters" : draft.triggerType === "APPOINTMENT_CREATED" ? "Appointment and contact filters" : "Contact filters"}</h3>
               <p className="text-xs text-muted-foreground">Optional · all filters must match</p>
             </div>
             <ConditionsEditor
               compact
               draft={draft}
               catalog={catalog}
+              timezone={timezone}
               onChange={setConditions}
               updateCondition={updateCondition}
             />
@@ -3085,15 +3609,98 @@ function TriggerEditor({
   )
 }
 
+function defaultChangeRule(source: AutomationContactChangeRule["source"], catalog: AutomationCatalog): AutomationContactChangeRule {
+  if (source === "CONTACT_FIELD") return { source, operator: "HAS_CHANGED", fieldKey: catalog.contactUpdateFields[0]?.key ?? "" }
+  if (source === "CONTACT_CUSTOM_FIELD") return { source, operator: "HAS_CHANGED", customFieldId: catalog.customFields[0]?.id ?? "" }
+  if (source === "CONTACT_STATUS") return { source, operator: "HAS_CHANGED" }
+  if (source === "CONTACT_ASSIGNEE") return { source, operator: "HAS_CHANGED" }
+  return { source, operator: "ADDED", tagId: null }
+}
+
+function ContactChangeRulesEditor({ draft, catalog, onChange }: {
+  draft: Draft
+  catalog: AutomationCatalog
+  onChange: (draft: Draft) => void
+}) {
+  const setRules = (changes: AutomationContactChangeRule[]) => onChange({ ...draft, changes })
+  const updateRule = (index: number, rule: AutomationContactChangeRule) =>
+    setRules(draft.changes.map((current, currentIndex) => currentIndex === index ? rule : current))
+  return <section className="flex flex-col gap-3">
+    <div>
+      <h3 className="text-sm font-semibold text-slate-950">Changes to listen for</h3>
+      <p className="text-xs leading-4 text-slate-500">All rules must happen in the same update.</p>
+    </div>
+    {draft.changes.map((rule, index) => {
+      const field = rule.source === "CONTACT_FIELD"
+        ? catalog.contactUpdateFields.find((item) => item.key === rule.fieldKey)
+        : rule.source === "CONTACT_CUSTOM_FIELD"
+          ? catalog.customFields.find((item) => item.id === rule.customFieldId)
+          : null
+      const target = rule.source === "CONTACT_FIELD" || rule.source === "CONTACT_CUSTOM_FIELD" ? rule.value : undefined
+      const updateTarget = (value: unknown) => updateRule(index, { ...rule, value } as AutomationContactChangeRule)
+      const canClear = Boolean(field && !field.isRequired)
+      const RuleIcon = rule.source === "CONTACT_TAGS" ? Tags
+        : rule.source === "CONTACT_ASSIGNEE" ? UserRound
+          : rule.source === "CONTACT_STATUS" ? BadgeCheck
+            : ListChecks
+      return <div key={index} className="space-y-3 rounded-2xl border border-slate-200 p-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="flex size-7 items-center justify-center rounded-lg bg-slate-100 text-slate-600"><RuleIcon aria-hidden="true" className="size-4" /></span>
+            <span className="text-sm font-semibold text-slate-900">Change {index + 1}</span>
+          </div>
+          <Button type="button" variant="ghost" size="icon" className="text-rose-600" aria-label={`Remove change ${index + 1}`} onClick={() => setRules(draft.changes.filter((_, currentIndex) => currentIndex !== index))}><Trash2 className="h-4 w-4" /></Button>
+        </div>
+        <div className="space-y-2">
+          <Label>Watch</Label>
+          <Select value={rule.source} onValueChange={(source) => updateRule(index, defaultChangeRule(source as AutomationContactChangeRule["source"], catalog))}>
+            <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="CONTACT_FIELD" disabled={catalog.contactUpdateFields.length === 0}>Contact field</SelectItem>
+              <SelectItem value="CONTACT_CUSTOM_FIELD" disabled={catalog.customFields.length === 0}>Custom field</SelectItem>
+              <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem>
+              <SelectItem value="CONTACT_ASSIGNEE">Assigned user</SelectItem>
+              <SelectItem value="CONTACT_TAGS">Tags</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {rule.source === "CONTACT_FIELD" ? <div className="space-y-2"><Label>Contact field</Label><Select value={rule.fieldKey} onValueChange={(fieldKey) => updateRule(index, { source: rule.source, operator: rule.operator, fieldKey })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select field" /></SelectTrigger><SelectContent>{catalog.contactUpdateFields.map((item) => <SelectItem key={item.key} value={item.key}>{item.label}</SelectItem>)}</SelectContent></Select></div> : null}
+        {rule.source === "CONTACT_CUSTOM_FIELD" ? <div className="space-y-2"><Label>Custom field</Label><Select value={rule.customFieldId} onValueChange={(customFieldId) => updateRule(index, { source: rule.source, operator: rule.operator, customFieldId })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select field" /></SelectTrigger><SelectContent>{catalog.customFields.map((item) => <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>)}</SelectContent></Select></div> : null}
+        <div className="space-y-2"><Label>Change</Label><Select value={rule.operator} onValueChange={(operator) => {
+          if (rule.source === "CONTACT_TAGS") updateRule(index, { ...rule, operator: operator as "ADDED" | "REMOVED" })
+          else if (rule.source === "CONTACT_FIELD") updateRule(index, { source: rule.source, fieldKey: rule.fieldKey, operator: operator as "HAS_CHANGED" | "HAS_CHANGED_TO" })
+          else if (rule.source === "CONTACT_CUSTOM_FIELD") updateRule(index, { source: rule.source, customFieldId: rule.customFieldId, operator: operator as "HAS_CHANGED" | "HAS_CHANGED_TO" })
+          else if (rule.source === "CONTACT_STATUS") updateRule(index, { source: rule.source, operator: operator as "HAS_CHANGED" | "HAS_CHANGED_TO" })
+          else updateRule(index, { source: rule.source, operator: operator as "HAS_CHANGED" | "HAS_CHANGED_TO" })
+        }}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger><SelectContent>{rule.source === "CONTACT_TAGS" ? <><SelectItem value="ADDED">Added</SelectItem><SelectItem value="REMOVED">Removed</SelectItem></> : <><SelectItem value="HAS_CHANGED">Has changed</SelectItem><SelectItem value="HAS_CHANGED_TO">Has changed to</SelectItem></>}</SelectContent></Select></div>
+        {rule.source === "CONTACT_TAGS" ? <div className="space-y-2"><Label>Tag</Label><Select value={rule.tagId ?? "__ANY__"} onValueChange={(value) => updateRule(index, { ...rule, tagId: value === "__ANY__" ? null : value })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__ANY__">Any tag</SelectItem>{catalog.tags.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div> : null}
+        {rule.source === "CONTACT_STATUS" && rule.operator === "HAS_CHANGED_TO" ? <div className="space-y-2"><Label>New status</Label><Select value={rule.statusConfigId ?? ""} onValueChange={(statusConfigId) => updateRule(index, { ...rule, statusConfigId })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.statuses.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div> : null}
+        {rule.source === "CONTACT_ASSIGNEE" && rule.operator === "HAS_CHANGED_TO" ? <div className="space-y-2"><Label>New assignee</Label><Select value={rule.assignedUserId === undefined ? "" : rule.assignedUserId ?? "__UNASSIGNED__"} onValueChange={(value) => updateRule(index, { ...rule, assignedUserId: value === "__UNASSIGNED__" ? null : value })}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select assignee" /></SelectTrigger><SelectContent><SelectItem value="__UNASSIGNED__">Unassigned</SelectItem>{catalog.users.map((item) => <SelectItem key={item.id} value={item.id}>{item.name} · {item.email}</SelectItem>)}</SelectContent></Select></div> : null}
+        {(rule.source === "CONTACT_FIELD" || rule.source === "CONTACT_CUSTOM_FIELD") && rule.operator === "HAS_CHANGED_TO" ? <div className="space-y-2">
+          <Label>New value</Label>
+          {canClear ? <Select value={target === undefined ? "" : target === null ? "EMPTY" : "VALUE"} onValueChange={(mode) => updateTarget(mode === "EMPTY" ? null : field?.fieldType === "CHECKBOX" ? false : field?.fieldType === "MULTI_SELECT" ? [] : field?.fieldType === "NUMBER" || field?.fieldType === "CURRENCY" ? 0 : "")}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Choose value or empty" /></SelectTrigger><SelectContent><SelectItem value="VALUE">Specific value</SelectItem><SelectItem value="EMPTY">Empty / cleared</SelectItem></SelectContent></Select> : null}
+          {target !== null && field?.fieldType === "CHECKBOX" ? <Select value={typeof target === "boolean" ? String(target) : ""} onValueChange={(value) => updateTarget(value === "true")}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select true or false" /></SelectTrigger><SelectContent><SelectItem value="true">True</SelectItem><SelectItem value="false">False</SelectItem></SelectContent></Select> : null}
+          {target !== null && field && (field.fieldType === "SELECT" || field.fieldType === "RADIO") ? <Select value={typeof target === "string" ? target : ""} onValueChange={updateTarget}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select value" /></SelectTrigger><SelectContent>{field.options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select> : null}
+          {target !== null && field?.fieldType === "MULTI_SELECT" ? <div className="space-y-1">{field.options.map((option) => <label key={option} className="flex items-center gap-2 text-sm"><Checkbox checked={Array.isArray(target) && target.includes(option)} onCheckedChange={(checked) => updateTarget(checked ? [...(Array.isArray(target) ? target : []), option] : (Array.isArray(target) ? target : []).filter((value) => value !== option))} />{option}</label>)}</div> : null}
+          {target !== null && field && !["CHECKBOX", "SELECT", "RADIO", "MULTI_SELECT"].includes(field.fieldType) ? <Input type={field.fieldType === "DATE" ? "date" : field.fieldType === "NUMBER" || field.fieldType === "CURRENCY" ? "number" : "text"} value={target === undefined ? "" : String(target)} onChange={(event) => updateTarget(field.fieldType === "NUMBER" || field.fieldType === "CURRENCY" ? event.target.value === "" ? "" : Number(event.target.value) : event.target.value)} placeholder="Enter target value" /> : null}
+        </div> : null}
+      </div>
+    })}
+    <Button type="button" variant="outline" className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full")} disabled={draft.changes.length >= 20} onClick={() => setRules([...draft.changes, defaultChangeRule("CONTACT_FIELD", catalog)])}><Plus data-icon="inline-start" />Add change</Button>
+  </section>
+}
+
 function ConditionsEditor({
   draft,
   catalog,
+  timezone,
   onChange,
   updateCondition,
   compact = false,
 }: {
   draft: Draft
   catalog: AutomationCatalog
+  timezone?: string | null
   onChange: (conditions: AutomationCondition[]) => void
   updateCondition: (index: number, patch: Partial<AutomationCondition>) => void
   compact?: boolean
@@ -3102,12 +3709,12 @@ function ConditionsEditor({
     return (
       <div className={compact ? "flex items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 p-2.5" : "py-10 text-center"}>
         {compact ? null : <ListChecks className="mx-auto size-7 text-slate-300" />}
-        <p className={compact ? "text-xs text-slate-600" : "mt-2 text-sm text-slate-600"}>No contact filters</p>
+        <p className={compact ? "text-xs text-slate-600" : "mt-2 text-sm text-slate-600"}>No filters</p>
         <Button
           type="button"
           variant="outline"
           className={compact ? COMPACT_SECONDARY_BUTTON_CLASS : "mt-3"}
-          onClick={() => onChange([defaultCondition(catalog)])}
+          onClick={() => onChange([defaultCondition(catalog, draft.triggerType)])}
         >
           <Plus data-icon="inline-start" /> Add filter
         </Button>
@@ -3123,6 +3730,8 @@ function ConditionsEditor({
           condition={condition}
           index={index}
           catalog={catalog}
+          timezone={timezone}
+          triggerType={draft.triggerType}
           onChange={(patch) => updateCondition(index, patch)}
           onDelete={() => onChange(draft.conditions.filter((_, itemIndex) => itemIndex !== index))}
         />
@@ -3131,7 +3740,7 @@ function ConditionsEditor({
         type="button"
         variant="outline"
         className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full")}
-        onClick={() => onChange([...draft.conditions, defaultCondition(catalog)])}
+        onClick={() => onChange([...draft.conditions, defaultCondition(catalog, draft.triggerType)])}
       >
         <Plus data-icon="inline-start" /> Add filter
       </Button>
@@ -3143,24 +3752,45 @@ function ConditionCard({
   condition,
   index,
   catalog,
+  timezone,
+  triggerType,
   onChange,
   onDelete,
 }: {
   condition: AutomationCondition
   index: number
   catalog: AutomationCatalog
+  timezone?: string | null
+  triggerType: AutomationBuilderTriggerType | null
   onChange: (patch: Partial<AutomationCondition>) => void
   onDelete: () => void
 }) {
-  const field = catalog.customFields.find((item) => item.id === condition.customFieldId)
+  const regularField = condition.source === "CONTACT_FIELD"
+    ? catalog.templateFields.contact.find((item) => item.key === condition.fieldKey)
+    : undefined
+  const field = condition.source === "CONTACT_FIELD"
+    ? regularField ? { ...regularField, options: [] as string[] } : undefined
+    : catalog.customFields.find((item) => item.id === condition.customFieldId)
+  const taskField = condition.source === "TASK_FIELD" ? taskFilterField(condition.fieldKey) : null
+  const appointmentField = condition.source === "APPOINTMENT_FIELD" ? appointmentFilterField(condition.fieldKey) : null
   const operators =
     condition.source === "OPPORTUNITY_VALUE"
       ? NUMERIC_OPERATORS
-      : condition.source === "CONTACT_CUSTOM_FIELD"
-        ? field?.operators ?? []
+      : condition.source === "TASK_FIELD"
+        ? taskField?.operators ?? []
+      : condition.source === "APPOINTMENT_FIELD"
+        ? appointmentField?.operators ?? []
+      : condition.source === "CONTACT_FIELD"
+        ? regularField ? contactFieldOperators(regularField.fieldType) : []
+        : condition.source === "CONTACT_CUSTOM_FIELD"
+          ? catalog.customFields.find((item) => item.id === condition.customFieldId)?.operators ?? []
         : STATUS_OPERATORS
   const sourceIcon =
-    condition.source === "CONTACT_ASSIGNEE" ? (
+    condition.source === "TASK_FIELD" ? (
+      <ListTodo className="h-4 w-4" />
+    ) : condition.source === "APPOINTMENT_FIELD" ? (
+      <CalendarClock className="h-4 w-4" />
+    ) : condition.source === "CONTACT_ASSIGNEE" ? (
       <UserRound className="h-4 w-4" />
     ) : condition.source === "CONTACT_TAGS" ? (
       <Tags className="h-4 w-4" />
@@ -3175,6 +3805,11 @@ function ConditionCard({
     if (condition.source === "CONTACT_TAGS" && operator === "NOT_EQUALS") return "Does not have tag"
     if (condition.source === "CONTACT_ASSIGNEE" && operator === "EQUALS") return "Is assigned to"
     if (condition.source === "CONTACT_ASSIGNEE" && operator === "NOT_EQUALS") return "Is not assigned to"
+    if (condition.source === "TASK_FIELD" && condition.fieldKey === "assignedToUserId" && operator === "INCLUDES_ANY") return "Assigned to any"
+    if (condition.source === "APPOINTMENT_FIELD" && condition.fieldKey === "serviceId" && operator === "INCLUDES_ANY") return "Is one of"
+    if (condition.source === "APPOINTMENT_FIELD" && condition.fieldKey === "serviceId" && operator === "IS_EMPTY") return "No service"
+    if (condition.source === "APPOINTMENT_FIELD" && condition.fieldKey === "serviceId" && operator === "IS_NOT_EMPTY") return "Has a service"
+    if (condition.source === "APPOINTMENT_FIELD" && (condition.fieldKey === "assignedToUserId" || condition.fieldKey === "bookedByUserId") && operator === "INCLUDES_ANY") return "Is one of"
     return OPERATOR_LABELS[operator]
   }
 
@@ -3195,6 +3830,7 @@ function ConditionCard({
           value={condition.source}
           onValueChange={(source: AutomationCondition["source"]) =>
             onChange({
+              fieldKey: null,
               customFieldId: null,
               statusConfigId: null,
               assignedUserId: null,
@@ -3204,16 +3840,56 @@ function ConditionCard({
             })
           }
         >
-          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
           <SelectContent>
+            {triggerType === "TASK_ADDED" ? <SelectItem value="TASK_FIELD">Task field</SelectItem> : null}
+            {triggerType === "APPOINTMENT_CREATED" ? <SelectItem value="APPOINTMENT_FIELD">Appointment field</SelectItem> : null}
+            <SelectItem value="CONTACT_FIELD">Contact field</SelectItem>
             <SelectItem value="CONTACT_CUSTOM_FIELD" disabled={catalog.customFields.length === 0}>Custom field</SelectItem>
-            <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem>
-            <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem>
+            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem> : null}
+            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem> : null}
             <SelectItem value="CONTACT_TAGS" disabled={catalog.tags.length === 0}>Tags</SelectItem>
-            <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem>
+            {triggerType !== "CONTACT_CREATED" && triggerType !== "CONTACT_CHANGED" && triggerType !== "CONTACT_TAG" && triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
           </SelectContent>
         </Select>
       </div>
+      {condition.source === "TASK_FIELD" ? <div className="space-y-2">
+        <Label>Task field</Label>
+        <Select value={condition.fieldKey ?? ""} onValueChange={(fieldKey: TaskFilterFieldKey) => onChange({ fieldKey, ...taskFilterDefault(fieldKey, catalog) })}>
+          <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select task field" /></SelectTrigger>
+          <SelectContent>{Object.entries(TASK_FILTER_FIELDS).map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}</SelectContent>
+        </Select>
+      </div> : null}
+      {condition.source === "APPOINTMENT_FIELD" ? <div className="space-y-2">
+        <Label>Appointment field</Label>
+        <Select value={condition.fieldKey ?? ""} onValueChange={(fieldKey: AppointmentFilterFieldKey) => onChange({ fieldKey, ...appointmentFilterDefault(fieldKey, catalog) })}>
+          <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select appointment field" /></SelectTrigger>
+          <SelectContent>{Object.entries(APPOINTMENT_FILTER_FIELDS).map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}</SelectContent>
+        </Select>
+      </div> : null}
+      {condition.source === "CONTACT_FIELD" ? (
+        <div className="space-y-2">
+          <Label>Contact field</Label>
+          <Select
+            value={condition.fieldKey ?? ""}
+            onValueChange={(fieldKey) => {
+              const selected = catalog.templateFields.contact.find((item) => item.key === fieldKey)
+              onChange({
+                fieldKey,
+                operator: selected?.fieldType === "CHECKBOX" ? "IS_TRUE" : "EQUALS",
+                compareValue: selected?.fieldType === "CHECKBOX" ? null : "",
+              })
+            }}
+          >
+            <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select field" /></SelectTrigger>
+            <SelectContent>
+              {catalog.templateFields.contact
+                .filter((item) => !["status", "assigned_to", "tags"].includes(item.key))
+                .map((item) => <SelectItem key={item.key} value={item.key}>{item.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
       {condition.source === "CONTACT_CUSTOM_FIELD" ? (
         <div className="space-y-2">
           <Label>Custom field</Label>
@@ -3233,7 +3909,7 @@ function ConditionCard({
               onChange({ customFieldId, operator, compareValue })
             }}
           >
-            <SelectTrigger><SelectValue placeholder="Select field" /></SelectTrigger>
+            <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select field" /></SelectTrigger>
             <SelectContent>
               {catalog.customFields.map((item) => <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>)}
             </SelectContent>
@@ -3246,9 +3922,19 @@ function ConditionCard({
           value={condition.operator}
           onValueChange={(operator: AutomationOperator) => {
             const valueless = VALUELESS_OPERATORS.has(operator)
+            const taskDefault = condition.source === "TASK_FIELD" && condition.fieldKey && taskFilterField(condition.fieldKey)
+              ? taskFilterDefault(condition.fieldKey as TaskFilterFieldKey, catalog).compareValue
+              : null
+            const appointmentDefault = condition.source === "APPOINTMENT_FIELD" && condition.fieldKey && appointmentFilterField(condition.fieldKey)
+              ? appointmentFilterDefault(condition.fieldKey as AppointmentFilterFieldKey, catalog).compareValue
+              : null
             onChange({
               operator,
-              compareValue: valueless ? null : condition.compareValue,
+              compareValue: valueless ? null : condition.source === "TASK_FIELD"
+                ? operator === "BETWEEN" ? { min: "", max: "" } : condition.compareValue ?? taskDefault
+                : condition.source === "APPOINTMENT_FIELD"
+                  ? operator === "BETWEEN" ? { min: "", max: "" } : condition.compareValue ?? appointmentDefault
+                : condition.compareValue,
               ...(condition.source === "CONTACT_STATUS"
                 ? { statusConfigId: valueless ? null : condition.statusConfigId ?? catalog.statuses[0]?.id ?? null }
                 : {}),
@@ -3261,7 +3947,7 @@ function ConditionCard({
             })
           }}
         >
-          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
           <SelectContent>
             {operators.map((operator) => <SelectItem key={operator} value={operator}>{operatorLabel(operator)}</SelectItem>)}
           </SelectContent>
@@ -3271,6 +3957,7 @@ function ConditionCard({
         condition={condition}
         field={field}
         catalog={catalog}
+        timezone={timezone}
         onChange={(compareValue) => onChange({ compareValue })}
         onStatusChange={(statusConfigId) => onChange({ statusConfigId })}
         onAssigneeChange={(assignedUserId) => onChange({ assignedUserId })}
@@ -3284,28 +3971,32 @@ function ConditionValueInput({
   condition,
   field,
   catalog,
+  timezone,
   onChange,
   onStatusChange,
   onAssigneeChange,
   onTagChange,
 }: {
   condition: AutomationCondition
-  field?: AutomationCatalog["customFields"][number]
+  field?: { fieldType: AutomationCatalog["templateFields"]["contact"][number]["fieldType"]; options: string[] }
   catalog: AutomationCatalog
+  timezone?: string | null
   onChange: (value: unknown) => void
   onStatusChange: (value: string) => void
   onAssigneeChange: (value: string) => void
   onTagChange: (value: string) => void
 }) {
   if (VALUELESS_OPERATORS.has(condition.operator)) return null
+  if (condition.source === "TASK_FIELD") return <TaskConditionValueInput condition={condition} catalog={catalog} timezone={timezone} onChange={onChange} />
+  if (condition.source === "APPOINTMENT_FIELD") return <AppointmentConditionValueInput condition={condition} catalog={catalog} timezone={timezone} onChange={onChange} />
   if (condition.source === "CONTACT_STATUS") {
-    return <div className="space-y-2"><Label>Status</Label><Select value={condition.statusConfigId ?? ""} onValueChange={onStatusChange}><SelectTrigger><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.statuses.map((status) => <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>)}</SelectContent></Select></div>
+    return <div className="space-y-2"><Label>Status</Label><Select value={condition.statusConfigId ?? ""} onValueChange={onStatusChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.statuses.map((status) => <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>)}</SelectContent></Select></div>
   }
   if (condition.source === "CONTACT_ASSIGNEE") {
-    return <div className="space-y-2"><Label>Assigned to</Label><Select value={condition.assignedUserId ?? ""} onValueChange={onAssigneeChange}><SelectTrigger><SelectValue placeholder="Select team member" /></SelectTrigger><SelectContent>{catalog.users.map((user) => <SelectItem key={user.id} value={user.id}>{user.name} · {user.email}</SelectItem>)}</SelectContent></Select></div>
+    return <div className="space-y-2"><Label>Assigned to</Label><Select value={condition.assignedUserId ?? ""} onValueChange={onAssigneeChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select team member" /></SelectTrigger><SelectContent>{catalog.users.map((user) => <SelectItem key={user.id} value={user.id}>{user.name} · {user.email}</SelectItem>)}</SelectContent></Select></div>
   }
   if (condition.source === "CONTACT_TAGS") {
-    return <div className="space-y-2"><Label>Tag</Label><Select value={condition.tagId ?? ""} onValueChange={onTagChange}><SelectTrigger><SelectValue placeholder="Select tag" /></SelectTrigger><SelectContent>{catalog.tags.map((tag) => <SelectItem key={tag.id} value={tag.id}>{tag.name}</SelectItem>)}</SelectContent></Select></div>
+    return <div className="space-y-2"><Label>Tag</Label><Select value={condition.tagId ?? ""} onValueChange={onTagChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select tag" /></SelectTrigger><SelectContent>{catalog.tags.map((tag) => <SelectItem key={tag.id} value={tag.id}>{tag.name}</SelectItem>)}</SelectContent></Select></div>
   }
   if (condition.operator === "BETWEEN") {
     const range = (condition.compareValue ?? {}) as { min?: unknown; max?: unknown }
@@ -3313,7 +4004,7 @@ function ConditionValueInput({
     return <div className="grid grid-cols-2 gap-2"><div className="space-y-2"><Label>Minimum</Label><Input type={type} value={String(range.min ?? "")} onChange={(event) => onChange({ ...range, min: type === "number" ? Number(event.target.value) : event.target.value })} /></div><div className="space-y-2"><Label>Maximum</Label><Input type={type} value={String(range.max ?? "")} onChange={(event) => onChange({ ...range, max: type === "number" ? Number(event.target.value) : event.target.value })} /></div></div>
   }
   if (field && (field.fieldType === "SELECT" || field.fieldType === "RADIO")) {
-    return <div className="space-y-2"><Label>Value</Label><Select value={String(condition.compareValue ?? "")} onValueChange={onChange}><SelectTrigger><SelectValue placeholder="Select value" /></SelectTrigger><SelectContent>{field.options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div>
+    return <div className="space-y-2"><Label>Value</Label><Select value={String(condition.compareValue ?? "")} onValueChange={onChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select value" /></SelectTrigger><SelectContent>{field.options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div>
   }
   if (field?.fieldType === "MULTI_SELECT") {
     return <div className="space-y-2"><Label>Values</Label><Input value={Array.isArray(condition.compareValue) ? condition.compareValue.join(", ") : ""} onChange={(event) => onChange(event.target.value.split(",").map((item) => item.trim()).filter(Boolean))} placeholder="Option A, Option B" /></div>
@@ -3322,6 +4013,68 @@ function ConditionValueInput({
   const type = field?.fieldType === "DATE" ? "date" : field?.fieldType === "NUMBER" || field?.fieldType === "CURRENCY" || isOpportunityValue ? "number" : "text"
   const shownValue = isOpportunityValue ? Number(condition.compareValue ?? 0) / 100 : condition.compareValue ?? ""
   return <div className="space-y-2"><Label>{isOpportunityValue ? "Value (USD)" : "Value"}</Label><Input type={type} value={String(shownValue)} onChange={(event) => onChange(isOpportunityValue ? Math.round(Number(event.target.value) * 100) : type === "number" ? Number(event.target.value) : event.target.value)} /></div>
+}
+
+function TaskFilterDateInput({ value, onChange, timezone }: { value: unknown; onChange: (value: string) => void; timezone?: string | null }) {
+  const [draft, setDraft] = useState<DateTimeDraft>(() => typeof value === "string" && value ? formatUtcIsoToDateTimeDraft(value, timezone) : { date: "", time: "" })
+  return <DateTimeInput value={draft} onValueChange={(next) => {
+    setDraft(next)
+    onChange(dateTimeDraftToUtcIso(next, timezone) ?? "")
+  }} timezone={timezone} />
+}
+
+function TaskConditionValueInput({ condition, catalog, timezone, onChange }: {
+  condition: AutomationCondition
+  catalog: AutomationCatalog
+  timezone?: string | null
+  onChange: (value: unknown) => void
+}) {
+  const field = taskFilterField(condition.fieldKey)
+  if (!field) return null
+  if (field.kind === "assignee") {
+    const selected = Array.isArray(condition.compareValue) ? condition.compareValue as string[] : []
+    return <div className="space-y-2"><Label>Assigned to any of</Label><div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/40 p-2">
+      {catalog.users.map((user) => <label key={user.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white"><Checkbox checked={selected.includes(user.id)} onCheckedChange={(checked) => onChange(checked ? [...selected, user.id] : selected.filter((id) => id !== user.id))} /><span>{user.name} · {user.email}</span></label>)}
+      {catalog.users.length === 0 ? <p className="px-2 py-1 text-xs text-slate-500">No active users</p> : null}
+    </div></div>
+  }
+  if (field.kind === "status") return <div className="space-y-2"><Label>Task status</Label><Select value={String(condition.compareValue ?? "")} onValueChange={onChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent>{catalog.taskStatuses.map((status) => <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>)}</SelectContent></Select></div>
+  if (field.kind === "priority") return <div className="space-y-2"><Label>Priority at creation</Label><Select value={String(condition.compareValue ?? "")} onValueChange={onChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="HIGH">High</SelectItem><SelectItem value="MEDIUM">Medium</SelectItem><SelectItem value="LOW">Low</SelectItem></SelectContent></Select></div>
+  if (field.kind === "linkedType") return <div className="space-y-2"><Label>Linked item type</Label><Select value={String(condition.compareValue ?? "")} onValueChange={onChange}><SelectTrigger className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="SERVICE">Service</SelectItem><SelectItem value="PRODUCT">Product</SelectItem></SelectContent></Select></div>
+  if (field.kind === "date") {
+    if (condition.operator === "BETWEEN") {
+      const range = condition.compareValue && typeof condition.compareValue === "object" ? condition.compareValue as { min?: unknown; max?: unknown } : {}
+      return <div className="space-y-3"><div className="space-y-2"><Label>From</Label><TaskFilterDateInput key={`min-${String(range.min ?? "")}`} value={range.min} onChange={(min) => onChange({ ...range, min })} timezone={timezone} /></div><div className="space-y-2"><Label>Through</Label><TaskFilterDateInput key={`max-${String(range.max ?? "")}`} value={range.max} onChange={(max) => onChange({ ...range, max })} timezone={timezone} /></div></div>
+    }
+    return <div className="space-y-2"><Label>Date and time</Label><TaskFilterDateInput key={String(condition.compareValue ?? "")} value={condition.compareValue} onChange={onChange} timezone={timezone} /></div>
+  }
+  return <div className="space-y-2"><Label>Text</Label><Input value={String(condition.compareValue ?? "")} onChange={(event) => onChange(event.target.value)} placeholder="Enter text" /></div>
+}
+
+function AppointmentConditionValueInput({ condition, catalog, timezone, onChange }: {
+  condition: AutomationCondition
+  catalog: AutomationCatalog
+  timezone?: string | null
+  onChange: (value: unknown) => void
+}) {
+  const field = appointmentFilterField(condition.fieldKey)
+  if (!field) return null
+  if (field.kind === "service" || field.kind === "person") {
+    const selected = Array.isArray(condition.compareValue) ? condition.compareValue as string[] : []
+    const options = field.kind === "service" ? catalog.services : catalog.users
+    return <div className="space-y-2"><Label>{field.kind === "service" ? "Match any selected service" : "Match any selected team member"}</Label><div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/40 p-2">
+      {options.map((option) => <label key={option.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white"><Checkbox checked={selected.includes(option.id)} onCheckedChange={(checked) => onChange(checked ? [...selected, option.id] : selected.filter((id) => id !== option.id))} /><span>{option.name}</span></label>)}
+      {options.length === 0 ? <p className="px-2 py-1 text-xs text-slate-500">{field.kind === "service" ? "No active services" : "No active team members"}</p> : null}
+    </div></div>
+  }
+  if (field.kind === "date") {
+    if (condition.operator === "BETWEEN") {
+      const range = condition.compareValue && typeof condition.compareValue === "object" ? condition.compareValue as { min?: unknown; max?: unknown } : {}
+      return <div className="space-y-3"><div className="space-y-2"><Label>From</Label><TaskFilterDateInput key={`appointment-min-${String(range.min ?? "")}`} value={range.min} onChange={(min) => onChange({ ...range, min })} timezone={timezone} /></div><div className="space-y-2"><Label>Through</Label><TaskFilterDateInput key={`appointment-max-${String(range.max ?? "")}`} value={range.max} onChange={(max) => onChange({ ...range, max })} timezone={timezone} /></div></div>
+    }
+    return <div className="space-y-2"><Label>Date and time</Label><TaskFilterDateInput key={`appointment-${String(condition.compareValue ?? "")}`} value={condition.compareValue} onChange={onChange} timezone={timezone} /></div>
+  }
+  return <div className="space-y-2"><Label>Text</Label><Input value={String(condition.compareValue ?? "")} onChange={(event) => onChange(event.target.value)} placeholder="Enter text" /></div>
 }
 
 function NewActionEditor({
@@ -3338,6 +4091,7 @@ function NewActionEditor({
   isPickingGoTo,
   onPickGoToOnCanvas,
   sourceAutomationId,
+  triggerType,
 }: {
   action: AutomationAction | null
   catalog: AutomationCatalog
@@ -3352,6 +4106,7 @@ function NewActionEditor({
   isPickingGoTo: boolean
   onPickGoToOnCanvas: () => void
   sourceAutomationId?: string
+  triggerType?: AutomationBuilderTriggerType | null
 }) {
   if (action) {
     const definition = ACTION_DEFINITIONS[action.type]
@@ -3395,6 +4150,7 @@ function NewActionEditor({
           isPickingGoTo={isPickingGoTo}
           onPickGoToOnCanvas={onPickGoToOnCanvas}
           sourceAutomationId={sourceAutomationId}
+          triggerType={triggerType}
         />
       </div>
     )
@@ -3446,7 +4202,7 @@ function NewActionEditor({
                         catalog.customFields.length === 0) ||
                       ((value === "DELETE_CONTACT" || value === "GO_TO") && targetActions.length > 0)
                     }
-                    onClick={() => onChange(actionDefaults(value, catalog, undefined, sourceAutomationId))}
+                    onClick={() => onChange(actionDefaults(value, catalog, undefined, sourceAutomationId, triggerType))}
                   >
                     <span className={cn(
                       "flex size-8 shrink-0 items-center justify-center rounded-lg",
@@ -3487,6 +4243,7 @@ function ActionEditor({
   isPickingGoTo = false,
   onPickGoToOnCanvas,
   sourceAutomationId,
+  triggerType,
 }: {
   action: AutomationAction
   catalog: AutomationCatalog
@@ -3502,6 +4259,7 @@ function ActionEditor({
   isPickingGoTo?: boolean
   onPickGoToOnCanvas?: () => void
   sourceAutomationId?: string
+  triggerType?: AutomationBuilderTriggerType | null
   management?: {
     index: number
     total: number
@@ -3525,7 +4283,7 @@ function ActionEditor({
             <FieldLabel htmlFor="action-type">Action type</FieldLabel>
             <Select
               value={action.type}
-              onValueChange={(type: AutomationAction["type"]) => onChange(actionDefaults(type, catalog, action.nodeKey, sourceAutomationId))}
+              onValueChange={(type: AutomationAction["type"]) => onChange(actionDefaults(type, catalog, action.nodeKey, sourceAutomationId, triggerType))}
             >
               <SelectTrigger id="action-type" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -3688,6 +4446,28 @@ function ActionEditor({
             timezone={timezone}
             automationOutputs={availableAutomationOutputs}
             onChange={(taskConfig) => onChange({ ...action, taskConfig })}
+          />
+        ) : null}
+
+        {action.type === "CREATE_APPOINTMENT" && action.appointmentConfig ? (
+          <AppointmentActionEditor
+            actionKey={action.nodeKey ?? "create-appointment"}
+            config={action.appointmentConfig}
+            catalog={catalog}
+            timezone={timezone}
+            automationOutputs={availableAutomationOutputs}
+            onChange={(appointmentConfig) => onChange({ ...action, appointmentConfig })}
+          />
+        ) : null}
+
+        {action.type === "UPDATE_APPOINTMENT_STATUS" && action.appointmentStatusConfig ? (
+          <AppointmentStatusActionEditor
+            actionKey={action.nodeKey ?? "update-appointment-status"}
+            config={action.appointmentStatusConfig}
+            catalog={catalog}
+            timezone={timezone}
+            triggerType={triggerType}
+            onChange={(appointmentStatusConfig) => onChange({ ...action, appointmentStatusConfig })}
           />
         ) : null}
 
@@ -5688,6 +6468,246 @@ function TaskDateTimeEditor({
   )
 }
 
+function AppointmentStatusActionEditor({
+  actionKey,
+  config,
+  catalog,
+  timezone,
+  triggerType,
+  onChange,
+}: {
+  actionKey: string
+  config: AutomationAppointmentStatusConfig
+  catalog: AutomationCatalog
+  timezone?: string | null
+  triggerType?: AutomationBuilderTriggerType | null
+  onChange: (config: AutomationAppointmentStatusConfig) => void
+}) {
+  const appointmentTrigger = triggerType === "APPOINTMENT_CREATED" || triggerType === "APPOINTMENT_STATUS_CHANGED"
+  const statuses: Array<{ value: AutomationAppointmentStatusConfig["status"]; label: string }> = [
+    { value: "SCHEDULED", label: "Scheduled" },
+    { value: "CONFIRMED", label: "Confirmed" },
+    { value: "SHOW", label: "Show" },
+    { value: "NO_SHOW", label: "No show" },
+    { value: "CANCELED", label: "Canceled" },
+    { value: "COMPLETED", label: "Completed" },
+  ]
+  return <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-3">
+    <div className="flex items-start gap-2.5">
+      <CalendarCheck2 className="mt-0.5 size-4 shrink-0 text-sky-600" aria-hidden="true" />
+      <div className="space-y-1">
+        <p className="text-sm font-semibold text-slate-950">Update appointment status</p>
+        <p className="text-xs leading-4 text-slate-600">Updates one appointment for this contact. All filters must match the contact when this action runs.</p>
+      </div>
+    </div>
+    <Field className="gap-1.5" data-invalid={!config.actionName.trim() || config.actionName.trim().length > 120}>
+      <FieldLabel htmlFor={`${actionKey}-status-action-name`}>Action name</FieldLabel>
+      <Input id={`${actionKey}-status-action-name`} value={config.actionName} maxLength={120} onChange={(event) => onChange({ ...config, actionName: event.target.value })} placeholder="Update appointment status" />
+      {!config.actionName.trim() ? <p className="text-xs text-rose-600">Enter an action name.</p> : null}
+    </Field>
+    <Field className="gap-1.5">
+      <FieldLabel htmlFor={`${actionKey}-status-target`}>Appointment</FieldLabel>
+      <Select value={config.targetMode} onValueChange={(targetMode: AutomationAppointmentStatusConfig["targetMode"]) => onChange({ ...config, targetMode })}>
+        <SelectTrigger id={`${actionKey}-status-target`} className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="TRIGGERING_APPOINTMENT" disabled={!appointmentTrigger}>Triggering appointment</SelectItem>
+          <SelectItem value="NEXT_UPCOMING">Next upcoming appointment</SelectItem>
+        </SelectContent>
+      </Select>
+      {config.targetMode === "TRIGGERING_APPOINTMENT" && !appointmentTrigger ? <p className="text-xs text-rose-600">Choose an appointment trigger or select the next upcoming appointment.</p> : null}
+      {config.targetMode === "NEXT_UPCOMING" ? <p className="text-xs text-slate-600">Uses the earliest future appointment, including one currently Canceled or Completed.</p> : null}
+    </Field>
+    <Field className="gap-1.5">
+      <FieldLabel htmlFor={`${actionKey}-status-value`}>New status</FieldLabel>
+      <Select value={config.status} onValueChange={(status: AutomationAppointmentStatusConfig["status"]) => onChange({ ...config, status })}>
+        <SelectTrigger id={`${actionKey}-status-value`} className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+        <SelectContent>{statuses.map((status) => <SelectItem key={status.value} value={status.value}>{status.label}</SelectItem>)}</SelectContent>
+      </Select>
+    </Field>
+    <div className="space-y-3">
+      <div><p className="text-sm font-medium text-slate-900">Contact filters (optional)</p><p className="text-xs text-slate-600">If any filter does not match, this action skips and the workflow continues.</p></div>
+      {config.filters.map((filter, index) => <div key={index}>
+        <ConditionCard
+          condition={filter}
+          index={index}
+          catalog={catalog}
+          timezone={timezone}
+          triggerType="APPOINTMENT_STATUS_CHANGED"
+          onChange={(patch) => onChange({ ...config, filters: config.filters.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) })}
+          onDelete={() => onChange({ ...config, filters: config.filters.filter((_, itemIndex) => itemIndex !== index) })}
+        />
+        {!isAppointmentStatusFilterReady(filter, catalog) ? <p className="mt-1 text-xs text-rose-600">Complete this filter with an available field, operator, and value.</p> : null}
+      </div>)}
+      <Button type="button" variant="outline" className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full")} disabled={config.filters.length >= 20} onClick={() => onChange({ ...config, filters: [...config.filters, defaultCondition(catalog, "APPOINTMENT_STATUS_CHANGED")] })}><Plus data-icon="inline-start" />Add filter</Button>
+    </div>
+    <p className="text-xs leading-4 text-slate-600">A missing appointment skips this action. Changing status to Scheduled checks calendar availability; a conflict fails the action.</p>
+  </section>
+}
+
+function AppointmentActionEditor({
+  actionKey,
+  config,
+  catalog,
+  timezone,
+  automationOutputs,
+  onChange,
+}: {
+  actionKey: string
+  config: AutomationAppointmentConfig
+  catalog: AutomationCatalog
+  timezone?: string | null
+  automationOutputs: AutomationValueDefinition[]
+  onChange: (config: AutomationAppointmentConfig) => void
+}) {
+  const [assigneePickerOpen, setAssigneePickerOpen] = useState(false)
+  const specificUserId = config.assignee.mode === "SPECIFIC_USER" ? config.assignee.userId : null
+  const selectedUser = catalog.users.find((user) => user.id === specificUserId)
+  const titleError = noteTemplateError(config.titleTemplate, 160, catalog, automationOutputs)
+  const notesError = optionalTemplateError(config.notesTemplate, 4_000, catalog, automationOutputs)
+  const dateReady = /^([01]\d|2[0-3]):[0-5]\d$/.test(config.startAt.time) &&
+    isFormatterSourceReady(config.startAt.source, catalog, automationOutputs)
+
+  return (
+    <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-start gap-2.5">
+        <CalendarClock className="mt-0.5 size-4 shrink-0 text-sky-600" aria-hidden="true" />
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-slate-950">Create appointment</p>
+          <p className="text-xs leading-4 text-slate-600">Books the current contact using the calendar&apos;s meeting duration and availability rules.</p>
+        </div>
+      </div>
+
+      <Field className="gap-1.5" data-invalid={!config.actionName.trim() || config.actionName.trim().length > 120}>
+        <FieldLabel htmlFor={`${actionKey}-appointment-action-name`}>Action name</FieldLabel>
+        <Input
+          id={`${actionKey}-appointment-action-name`}
+          value={config.actionName}
+          maxLength={120}
+          onChange={(event) => onChange({ ...config, actionName: event.target.value })}
+          placeholder="Create appointment"
+        />
+        {!config.actionName.trim() ? <p className="text-xs text-rose-600">Enter an action name.</p> : null}
+      </Field>
+
+      <ContactTemplateInput
+        id={`${actionKey}-appointment-title`}
+        label="Title"
+        value={config.titleTemplate}
+        maxLength={160}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={titleError}
+        onChange={(titleTemplate) => onChange({ ...config, titleTemplate })}
+        placeholder="Meeting with {contact.name}"
+      />
+      <ContactTemplateInput
+        id={`${actionKey}-appointment-notes`}
+        label="Notes (optional)"
+        value={config.notesTemplate ?? ""}
+        maxLength={4_000}
+        catalog={catalog}
+        timezone={timezone}
+        automationOutputs={automationOutputs}
+        error={notesError}
+        onChange={(notesTemplate) => onChange({ ...config, notesTemplate })}
+        multiline
+        placeholder="Add appointment details"
+      />
+
+      <Field className="gap-2">
+        <FieldLabel htmlFor={`${actionKey}-appointment-assignee-mode`}>Assignee</FieldLabel>
+        <Select
+          value={config.assignee.mode}
+          onValueChange={(mode: AutomationAppointmentConfig["assignee"]["mode"]) => onChange({
+            ...config,
+            assignee: mode === "CONTACT_ASSIGNEE"
+              ? { mode }
+              : { mode, userId: catalog.users[0]?.id ?? "" },
+          })}
+        >
+          <SelectTrigger id={`${actionKey}-appointment-assignee-mode`} className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="CONTACT_ASSIGNEE">Contact assignee</SelectItem>
+            <SelectItem value="SPECIFIC_USER">Specific teammate</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      {config.assignee.mode === "SPECIFIC_USER" ? (
+        <Field className="gap-2">
+          <FieldLabel>Teammate</FieldLabel>
+          <Popover open={assigneePickerOpen} onOpenChange={setAssigneePickerOpen}>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="outline" role="combobox" aria-expanded={assigneePickerOpen} className="h-9 w-full justify-between bg-white px-3 font-normal">
+                <span className="truncate">{selectedUser ? `${selectedUser.name} · ${selectedUser.email}` : "Select teammate"}</span>
+                <ChevronsUpDown className="size-4 shrink-0 text-slate-400" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+              <Command>
+                <CommandInput placeholder="Search teammates…" />
+                <CommandList>
+                  <CommandEmpty>No active teammates found.</CommandEmpty>
+                  <CommandGroup>
+                    {catalog.users.map((user) => (
+                      <CommandItem key={user.id} value={`${user.name} ${user.email} ${user.id}`} onSelect={() => {
+                        onChange({ ...config, assignee: { mode: "SPECIFIC_USER", userId: user.id } })
+                        setAssigneePickerOpen(false)
+                      }}>
+                        <Check className={cn("size-4", user.id === specificUserId ? "opacity-100" : "opacity-0")} />
+                        <span className="min-w-0 flex-1 truncate">{user.name}</span>
+                        <span className="truncate text-xs text-slate-500">{user.email}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+          {!selectedUser ? <p className="text-xs text-rose-600">Select an active teammate.</p> : null}
+        </Field>
+      ) : (
+        <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">The contact must have an active assignee when this action runs.</p>
+      )}
+
+      <Field className="gap-2">
+        <FieldLabel htmlFor={`${actionKey}-appointment-service`}>Service (optional)</FieldLabel>
+        <Select value={config.linkedService?.id ?? "__none__"} onValueChange={(id) => {
+          const service = catalog.services.find((item) => item.id === id)
+          onChange({ ...config, linkedService: service ? { id: service.id, nameSnapshot: service.name } : null })
+        }}>
+          <SelectTrigger id={`${actionKey}-appointment-service`} className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">No service</SelectItem>
+            {catalog.services.map((service) => <SelectItem key={service.id} value={service.id}>{service.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        {config.linkedService && !catalog.services.some((service) => service.id === config.linkedService?.id)
+          ? <p className="text-xs text-rose-600">Select an active service.</p> : null}
+      </Field>
+
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+        <p className="text-xs font-semibold text-slate-700">Start date and time</p>
+        <ContactDateValueInput
+          idPrefix={`${actionKey}-appointment-date`}
+          value={config.startAt.source}
+          onChange={(source) => onChange({ ...config, startAt: { ...config.startAt, source } })}
+          catalog={catalog}
+          timezone={timezone}
+          allowRelative
+          automationValues={automationOutputs.filter((output) => output.valueKind === "DATE").map(({ key, label }) => ({ key, label }))}
+        />
+        <Field className="gap-1.5">
+          <FieldLabel htmlFor={`${actionKey}-appointment-time`}>Time</FieldLabel>
+          <Input id={`${actionKey}-appointment-time`} type="time" value={config.startAt.time} className="h-8 rounded-full" onChange={(event) => onChange({ ...config, startAt: { ...config.startAt, time: event.target.value } })} />
+        </Field>
+        {!dateReady ? <p className="text-xs text-rose-600">Select an available date source and time.</p> : null}
+      </div>
+      <p className="text-xs leading-4 text-slate-600">The action fails if the selected time is past or unavailable. The appointment starts as Scheduled.</p>
+    </section>
+  )
+}
+
 function InternalNotificationActionEditor({
   actionKey,
   config,
@@ -6080,6 +7100,8 @@ function TaskActionEditor({
 
 function goToDestinationLabel(action: AutomationAction) {
   if (action.type === "CREATE_CONTACT") return action.createContactConfig?.actionName.trim() || "Create contact"
+  if (action.type === "CREATE_APPOINTMENT") return action.appointmentConfig?.actionName.trim() || "Create appointment"
+  if (action.type === "UPDATE_APPOINTMENT_STATUS") return action.appointmentStatusConfig?.actionName.trim() || "Update appointment status"
   if (action.type === "SEND_INTERNAL_NOTIFICATION") return action.internalNotificationConfig?.actionName.trim() || "Internal notification"
   if (action.type === "FORMAT_TEXT") return action.textFormatterConfig?.actionName.trim() || "Text formatter"
   if (action.type === "UPDATE_OPPORTUNITY") return action.opportunityConfig?.actionName.trim() || "Update/create opportunity"

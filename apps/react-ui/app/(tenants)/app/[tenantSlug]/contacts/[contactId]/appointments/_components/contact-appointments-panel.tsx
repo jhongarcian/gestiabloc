@@ -51,6 +51,7 @@ const APPOINTMENT_STATUS_OPTIONS = [
   { value: "SHOW", label: "Show" },
   { value: "NO_SHOW", label: "No Show" },
   { value: "CANCELED", label: "Canceled" },
+  { value: "COMPLETED", label: "Completed" },
 ] as const
 
 type ContactAppointmentsPanelProps = {
@@ -86,6 +87,7 @@ function formatAppointmentStatus(status: string) {
   if (normalized === "SHOW") return "Show"
   if (normalized === "NO_SHOW") return "No Show"
   if (normalized === "CANCELED") return "Canceled"
+  if (normalized === "COMPLETED") return "Completed"
   if (normalized === "CONFIRMED") return "Confirmed"
   if (normalized === "SCHEDULED") return "Scheduled"
 
@@ -105,6 +107,10 @@ function getAppointmentStatusClass(status: string) {
 
   if (normalized === "NO_SHOW") {
     return "border-amber-200 bg-amber-50 text-amber-700"
+  }
+
+  if (normalized === "COMPLETED") {
+    return "border-teal-200 bg-teal-50 text-teal-800"
   }
 
   if (normalized === "SHOW") {

@@ -55,6 +55,7 @@ export type AppointmentStatus =
   | "SHOW"
   | "NO_SHOW"
   | "CANCELED"
+  | "COMPLETED"
 
 export type AppointmentSlotsResponse = {
   ok: boolean
@@ -113,7 +114,7 @@ export type CalendarBlockedPeriodItem = {
 
 export type AppointmentAuditLogItem = {
   id: string
-  action: "CREATED" | "REASSIGNED" | "RESCHEDULED" | "CANCELED"
+  action: "CREATED" | "REASSIGNED" | "RESCHEDULED" | "CANCELED" | "STATUS_CHANGED"
   actorDisplayName: string
   message: string
   createdAt: string

@@ -11,6 +11,7 @@
     "dev": "npm run dev -ws",
     "dev:ui": "npm run dev -w react-ui",
     "dev:backend": "npm run dev -w backend",
+    "dev:contact-import-worker": "npm run worker:contact-imports:dev -w backend",
     "build": "npm run build -ws"
   },
   "author": "John Garcia",

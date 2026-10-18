@@ -1,6 +1,15 @@
 export type AutomationNodeLogStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | "FAILED" | "WAITING"
 export type AutomationNodeEventSource =
   | "MANUAL_ENROLLMENT"
+  | "CONTACT_CREATED"
+  | "CONTACT_CHANGED"
+  | "CONTACT_TAG"
+  | "CONTACT_NOTE_ADDED"
+  | "TASK_ADDED"
+  | "TASK_COMPLETED"
+  | "APPOINTMENT_CREATED"
+  | "APPOINTMENT_STATUS_CHANGED"
+  | "BIRTHDAY_REMINDER"
   | "OPPORTUNITY_CREATED"
   | "OPPORTUNITY_STAGE_CHANGED"
   | "OPPORTUNITY_CHANGED"
@@ -41,6 +50,8 @@ const ACTION_LABELS: Record<string, string> = {
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_CONTACT: "Create contact",
   CREATE_TASK: "Create task",
+  CREATE_APPOINTMENT: "Create appointment",
+  UPDATE_APPOINTMENT_STATUS: "Update appointment status",
   SEND_INTERNAL_NOTIFICATION: "Internal notification",
   FORMAT_DATE_TIME: "Date/Time formatter",
   FORMAT_NUMBER: "Number formatter",
@@ -71,6 +82,8 @@ export function getAutomationActionNodeLabel(action: {
   addToWorkflowConfig?: unknown
   removeFromWorkflowConfig?: unknown
   createContactConfig?: unknown
+  appointmentConfig?: unknown
+  appointmentStatusConfig?: unknown
   internalNotificationConfig?: unknown
 }) {
   if (action.type === "FORMAT_TEXT") {
@@ -129,6 +142,20 @@ export function getAutomationActionNodeLabel(action: {
     const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
     if (actionName) return actionName.slice(0, 120)
   }
+  if (action.type === "CREATE_APPOINTMENT") {
+    const config = action.appointmentConfig && typeof action.appointmentConfig === "object"
+      ? action.appointmentConfig as Record<string, unknown>
+      : null
+    const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
+    if (actionName) return actionName.slice(0, 120)
+  }
+  if (action.type === "UPDATE_APPOINTMENT_STATUS") {
+    const config = action.appointmentStatusConfig && typeof action.appointmentStatusConfig === "object"
+      ? action.appointmentStatusConfig as Record<string, unknown>
+      : null
+    const actionName = typeof config?.actionName === "string" ? config.actionName.trim() : ""
+    if (actionName) return actionName.slice(0, 120)
+  }
   if (action.type === "SEND_INTERNAL_NOTIFICATION") {
     const config = action.internalNotificationConfig && typeof action.internalNotificationConfig === "object"
       ? action.internalNotificationConfig as Record<string, unknown>
@@ -140,6 +167,15 @@ export function getAutomationActionNodeLabel(action: {
 }
 
 export function getAutomationTriggerLabel(triggerType: string) {
+  if (triggerType === "CONTACT_CREATED") return "Contact created"
+  if (triggerType === "CONTACT_CHANGED") return "Contact changed"
+  if (triggerType === "CONTACT_TAG") return "Contact tag"
+  if (triggerType === "CONTACT_NOTE_ADDED") return "Note added"
+  if (triggerType === "TASK_ADDED") return "Task added"
+  if (triggerType === "TASK_COMPLETED") return "Task completed"
+  if (triggerType === "APPOINTMENT_CREATED") return "Appointment created"
+  if (triggerType === "APPOINTMENT_STATUS_CHANGED") return "Appointment status changed"
+  if (triggerType === "BIRTHDAY_REMINDER") return "Birthday reminder"
   if (triggerType === "OPPORTUNITY_CREATED") return "Opportunity created"
   return "Opportunity changed"
 }

@@ -8,6 +8,70 @@ import {
 } from "./automation-trigger.js"
 
 describe("automation trigger payloads", () => {
+  test("contact creation needs no pipeline and round trips through the builder", () => {
+    const draft = { triggerType: "CONTACT_CREATED" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes: [] }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "CONTACT_CREATED" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "CONTACT_CREATED" }), draft)
+  })
+  test("note added needs no pipeline and preserves optional contact filters separately", () => {
+    const draft = { triggerType: "CONTACT_NOTE_ADDED" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes: [] }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "CONTACT_NOTE_ADDED" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "CONTACT_NOTE_ADDED" }), draft)
+  })
+  test("task added needs no pipeline and round trips through the builder", () => {
+    const draft = { triggerType: "TASK_ADDED" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes: [] }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "TASK_ADDED" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "TASK_ADDED" }), draft)
+  })
+  test("task completed needs no pipeline and round trips through the builder", () => {
+    const draft = { triggerType: "TASK_COMPLETED" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes: [] }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "TASK_COMPLETED" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "TASK_COMPLETED" }), draft)
+  })
+  test("appointment created needs no pipeline and round trips through the builder", () => {
+    const draft = { triggerType: "APPOINTMENT_CREATED" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes: [] }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "APPOINTMENT_CREATED" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "APPOINTMENT_CREATED" }), draft)
+  })
+  test("appointment status changed requires one destination status and round trips", () => {
+    const draft = { triggerType: "APPOINTMENT_STATUS_CHANGED" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes: [], appointmentTargetStatus: "COMPLETED" as const }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "APPOINTMENT_STATUS_CHANGED", status: "COMPLETED" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "APPOINTMENT_STATUS_CHANGED", status: "COMPLETED" }), draft)
+    assert.equal(isAutomationTriggerReady({ ...draft, appointmentTargetStatus: "" }), false)
+  })
+  test("birthday reminder keeps its chosen local time", () => {
+    const draft = { triggerType: "BIRTHDAY_REMINDER" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes: [], birthdayLocalTime: "14:30" }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "BIRTHDAY_REMINDER", localTime: "14:30" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "BIRTHDAY_REMINDER", localTime: "14:30" }), draft)
+    assert.equal(isAutomationTriggerReady({ ...draft, birthdayLocalTime: "25:00" }), false)
+  })
+  test("contact changes require rules and preserve their target values", () => {
+    const changes = [
+      { source: "CONTACT_ASSIGNEE" as const, operator: "HAS_CHANGED_TO" as const, assignedUserId: null },
+      { source: "CONTACT_TAGS" as const, operator: "ADDED" as const, tagId: null },
+    ]
+    const draft = { triggerType: "CONTACT_CHANGED" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "CONTACT_CHANGED", changes })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "CONTACT_CHANGED", changes }), draft)
+    assert.equal(isAutomationTriggerReady({ ...draft, changes: [] }), false)
+  })
+  test("contact tag requires exactly one selected tag and round trips", () => {
+    const changes = [{ source: "CONTACT_TAGS" as const, operator: "REMOVED" as const, tagId: "tag-1" }]
+    const draft = { triggerType: "CONTACT_TAG" as const, pipelineId: "", changeType: "" as const, targetStageId: "", changes }
+    assert.equal(isAutomationTriggerReady(draft), true)
+    assert.deepEqual(serializeAutomationTrigger(draft), { type: "CONTACT_TAG", tagId: "tag-1", change: "REMOVED" })
+    assert.deepEqual(hydrateAutomationTrigger({ type: "CONTACT_TAG", tagId: "tag-1", change: "REMOVED" }), draft)
+    assert.equal(isAutomationTriggerReady({ ...draft, changes: [{ ...changes[0], tagId: "" }] }), false)
+    assert.equal(isAutomationTriggerReady({ ...draft, changes: [...changes, ...changes] }), false)
+  })
   test("serializes stage, Won, and Lost listeners", () => {
     assert.deepEqual(serializeAutomationTrigger({
       triggerType: "OPPORTUNITY_CHANGED",

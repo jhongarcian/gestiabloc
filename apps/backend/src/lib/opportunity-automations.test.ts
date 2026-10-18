@@ -441,6 +441,31 @@ describe("Create contact automation action", () => {
     ],
   }
 
+  test("does not recreate a contact when the causal creation event already exists", async () => {
+    let attemptedCreate = false
+    const result = await executeCreateContactAction({
+      automationEvent: { findUnique: async () => ({ id: "existing-event" }) },
+      contact: { create: async () => { attemptedCreate = true } },
+    }, {
+      config,
+      tenantId: "tenant-1",
+      sourceContactId: "source-contact",
+      catalog: { activeStatusIds: new Set(["active"]), activeUserIds: new Set(["user-1"]) } as any,
+      occurredAt: new Date("2026-10-02T12:00:00.000Z"),
+      automationValues: {},
+      creationEvent: {
+        actorUserId: "user-1",
+        automationId: "automation-1",
+        automationName: "Create a contact",
+        nodeKey: "node-1",
+        runId: "run-1",
+        eventContext: {},
+      },
+    })
+    assert.match(result, /already completed/)
+    assert.equal(attemptedCreate, false)
+  })
+
   test("validates tenant fields, status, templates, and fixed typed values", async () => {
     const prismaClient = {
       opportunityPipeline: { findUnique: async () => ({ id: "pipeline-1", stages: [] }) },
@@ -1828,6 +1853,270 @@ describe("deleteAutomationContactFileObjects", () => {
 })
 
 describe("AutomationUpsertSchema", () => {
+  test("appointment-created validates service and appointment filters with safe contact filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [
+        { id: "field-safe", key: "source", label: "Source", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: null },
+        { id: "field-secret", key: "secret", label: "Secret", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: true, isSensitive: true, options: null },
+      ] },
+      contactStatusConfig: { findMany: async () => [] },
+      taskStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [{ userId: "user-a", status: "ACTIVE" }, { userId: "user-b", status: "ACTIVE" }] },
+      tenantTag: { findMany: async () => [{ id: "tag-a" }] },
+      service: { findMany: async () => [{ id: "service-a", name: "A" }, { id: "service-b", name: "B" }] },
+    }
+    const base = {
+      name: "Appointment created", isEnabled: false, trigger: { type: "APPOINTMENT_CREATED" },
+      conditions: [
+        { source: "APPOINTMENT_FIELD", fieldKey: "serviceId", operator: "INCLUDES_ANY", compareValue: ["service-a", "service-b"] },
+        { source: "APPOINTMENT_FIELD", fieldKey: "assignedToUserId", operator: "INCLUDES_ANY", compareValue: ["user-a", "user-b"] },
+        { source: "APPOINTMENT_FIELD", fieldKey: "bookedByUserId", operator: "INCLUDES_ANY", compareValue: ["user-a"] },
+        { source: "APPOINTMENT_FIELD", fieldKey: "startAt", operator: "GREATER_THAN", compareValue: "2026-10-20T09:00:00-05:00" },
+        { source: "APPOINTMENT_FIELD", fieldKey: "isAllDay", operator: "IS_FALSE" },
+        { source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" },
+        { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-safe", operator: "EQUALS", compareValue: "Referral" },
+        { source: "CONTACT_TAGS", tagId: "tag-a", operator: "EQUALS" },
+      ],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "APPOINTMENT_CREATED")
+    assert.equal(normalized.pipelineId, null)
+    assert.deepEqual(normalized.conditions[0]?.compareValue, ["service-a", "service-b"])
+    assert.equal(normalized.conditions[3]?.compareValue, "2026-10-20T14:00:00.000Z")
+    assert.equal(normalized.conditions[4]?.compareValue, null)
+    const emptyService = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "APPOINTMENT_FIELD", fieldKey: "serviceId", operator: "IS_EMPTY" }] }))
+    assert.equal(emptyService.conditions[0]?.compareValue, null)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "APPOINTMENT_FIELD", fieldKey: "serviceId", operator: "INCLUDES_ANY", compareValue: ["other-tenant"] }] })), /active services from this tenant/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "APPOINTMENT_FIELD", fieldKey: "startAt", operator: "EQUALS", compareValue: "2026-10-20" }] })), /timezone/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-secret", operator: "EQUALS", compareValue: "secret" }] })), /non-sensitive custom field/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "name", operator: "CONTAINS", compareValue: "call" }] })), /Appointment created filters/)
+    const statusBase = {
+      ...base,
+      trigger: { type: "APPOINTMENT_STATUS_CHANGED", status: "COMPLETED" },
+      conditions: base.conditions.filter((condition) => condition.source !== "APPOINTMENT_FIELD"),
+    }
+    const statusNormalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(statusBase))
+    assert.equal(statusNormalized.triggerType, "APPOINTMENT_STATUS_CHANGED")
+    assert.equal(statusNormalized.appointmentTargetStatus, "COMPLETED")
+    assert.equal(statusNormalized.conditions.length, 3)
+    assert.equal(AutomationUpsertSchema.safeParse({ ...statusBase, trigger: { type: "APPOINTMENT_STATUS_CHANGED", status: "OTHER" } }).success, false)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...statusBase, conditions: [base.conditions[0]] })), /Appointment status changed filters/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...statusBase, conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-secret", operator: "EQUALS", compareValue: "secret" }] })), /non-sensitive custom field/)
+  })
+  test("task-added validates task fields and safe contact filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [
+        { id: "field-safe", key: "source", label: "Source", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: null },
+        { id: "field-secret", key: "secret", label: "Secret", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: true, isSensitive: true, options: null },
+      ] },
+      contactStatusConfig: { findMany: async () => [] },
+      taskStatusConfig: { findMany: async () => [{ id: "todo", name: "To Do", isActive: true }] },
+      membership: { findMany: async () => [{ userId: "user-a", status: "ACTIVE" }, { userId: "user-b", status: "ACTIVE" }] },
+      tenantTag: { findMany: async () => [{ id: "tag-a" }] },
+    }
+    const base = {
+      name: "Task added", isEnabled: false, trigger: { type: "TASK_ADDED" },
+      conditions: [
+        { source: "TASK_FIELD", fieldKey: "statusConfigId", operator: "EQUALS", compareValue: "todo" },
+        { source: "TASK_FIELD", fieldKey: "assignedToUserId", operator: "INCLUDES_ANY", compareValue: ["user-a", "user-b"] },
+        { source: "TASK_FIELD", fieldKey: "dueDate", operator: "GREATER_THAN", compareValue: "2026-10-15T09:00:00-05:00" },
+        { source: "TASK_FIELD", fieldKey: "description", operator: "IS_EMPTY" },
+        { source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" },
+        { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-safe", operator: "EQUALS", compareValue: "Referral" },
+        { source: "CONTACT_TAGS", tagId: "tag-a", operator: "EQUALS" },
+      ],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "TASK_ADDED")
+    assert.equal(normalized.pipelineId, null)
+    assert.deepEqual(normalized.conditions[1]?.compareValue, ["user-a", "user-b"])
+    assert.equal(normalized.conditions[2]?.compareValue, "2026-10-15T14:00:00.000Z")
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "assignedToUserId", operator: "INCLUDES_ANY", compareValue: ["inactive"] }] })), /active task assignees/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-secret", operator: "EQUALS", compareValue: "secret" }] })), /non-sensitive custom field/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "dueDate", operator: "EQUALS", compareValue: "2026-10-15" }] })), /timezone/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "dueDate", operator: "BETWEEN", compareValue: { min: "2026-10-16T09:00:00-05:00", max: "2026-10-15T09:00:00-05:00" } }] })), /start before it ends/)
+  })
+  test("task-completed accepts only safe contact field, custom field, and tag filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [
+        { id: "field-safe", key: "source", label: "Source", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: null },
+        { id: "field-secret", key: "secret", label: "Secret", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: true, isSensitive: true, options: null },
+      ] },
+      contactStatusConfig: { findMany: async () => [] },
+      taskStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "tag-a" }] },
+    }
+    const base = {
+      name: "Task completed", isEnabled: false, trigger: { type: "TASK_COMPLETED" },
+      conditions: [
+        { source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" },
+        { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-safe", operator: "EQUALS", compareValue: "Referral" },
+        { source: "CONTACT_TAGS", tagId: "tag-a", operator: "EQUALS" },
+      ],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "TASK_COMPLETED")
+    assert.equal(normalized.pipelineId, null)
+    assert.deepEqual(normalized.conditions.map((condition: any) => condition.source), ["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"])
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "name", operator: "CONTAINS", compareValue: "Call" }] })), /Task completed filters/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-secret", operator: "EQUALS", compareValue: "secret" }] })), /non-sensitive custom field/)
+  })
+  test("birthday reminder validates local time and only safe contact filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [
+        { id: "field-safe", key: "source", label: "Source", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: null },
+        { id: "field-secret", key: "secret", label: "Secret", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: true, isSensitive: true, options: null },
+      ] },
+      contactStatusConfig: { findMany: async () => [] },
+      taskStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "tag-a" }] },
+    }
+    const base = {
+      name: "Birthday reminder", isEnabled: true,
+      trigger: { type: "BIRTHDAY_REMINDER", localTime: "09:00" },
+      conditions: [
+        { source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" },
+        { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-safe", operator: "EQUALS", compareValue: "Referral" },
+        { source: "CONTACT_TAGS", tagId: "tag-a", operator: "EQUALS" },
+      ],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "BIRTHDAY_REMINDER")
+    assert.equal(normalized.birthdayLocalTime, "09:00")
+    assert.equal(normalized.pipelineId, null)
+    assert.equal(AutomationUpsertSchema.safeParse({ ...base, trigger: { type: "BIRTHDAY_REMINDER", localTime: "24:00" } }).success, false)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "TASK_FIELD", fieldKey: "name", operator: "EQUALS", compareValue: "Call" }] })), /Birthday reminder filters/)
+    await assert.rejects(validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-secret", operator: "EQUALS", compareValue: "secret" }] })), /non-sensitive custom field/)
+  })
+  test("note-added accepts only contact field, custom field, and tag filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [{ id: "field-source", key: "source", label: "Source", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: null }] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "tag-a" }] },
+    }
+    const base = {
+      name: "Note added",
+      isEnabled: false,
+      trigger: { type: "CONTACT_NOTE_ADDED" },
+      conditions: [
+        { source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" },
+        { source: "CONTACT_CUSTOM_FIELD", customFieldId: "field-source", operator: "EQUALS", compareValue: "Referral" },
+        { source: "CONTACT_TAGS", tagId: "tag-a", operator: "EQUALS" },
+      ],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "CONTACT_NOTE_ADDED")
+    assert.equal(normalized.pipelineId, null)
+    assert.deepEqual(normalized.conditions.map((condition: any) => condition.source), ["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"])
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, conditions: [{ source: "CONTACT_STATUS", operator: "EQUALS", statusConfigId: "active" }] })),
+      /Note added filters/,
+    )
+  })
+  test("validates contact change rules separately from contact filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [
+        { id: "field-safe", key: "source", label: "Source", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: false, isSensitive: false, options: null },
+        { id: "field-private", key: "secret", label: "Secret", fieldType: "TEXT", isRequired: false, isActive: true, isEncrypted: true, isSensitive: true, options: null },
+      ] },
+      contactStatusConfig: { findMany: async () => [{ id: "active", isActive: true }] },
+      membership: { findMany: async () => [{ userId: "user-a", status: "ACTIVE" }] },
+      tenantTag: { findMany: async () => [{ id: "tag-a" }] },
+    }
+    const base = {
+      name: "Contact changed",
+      isEnabled: false,
+      conditions: [{ source: "CONTACT_STATUS", operator: "EQUALS", statusConfigId: "active" }],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const changes = [
+      { source: "CONTACT_FIELD", operator: "HAS_CHANGED_TO", fieldKey: "firstName", value: "Maria" },
+      { source: "CONTACT_CUSTOM_FIELD", operator: "HAS_CHANGED_TO", customFieldId: "field-safe", value: null },
+      { source: "CONTACT_ASSIGNEE", operator: "HAS_CHANGED_TO", assignedUserId: null },
+      { source: "CONTACT_TAGS", operator: "ADDED", tagId: null },
+    ]
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, trigger: { type: "CONTACT_CHANGED", changes } }))
+    assert.equal(normalized.triggerType, "CONTACT_CHANGED")
+    assert.equal(normalized.pipelineId, null)
+    assert.equal(normalized.changeRules.length, 4)
+    assert.equal(normalized.conditions.length, 1)
+    assert.equal("compareValue" in normalized.changeRules[1]!, true)
+    assert.equal((normalized.changeRules[1] as { compareValue: unknown }).compareValue, null)
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, trigger: { type: "CONTACT_CHANGED", changes: [{ source: "CONTACT_CUSTOM_FIELD", operator: "HAS_CHANGED", customFieldId: "field-private" }] } })),
+      /non-sensitive custom field/,
+    )
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, trigger: { type: "CONTACT_CHANGED", changes: [{ source: "CONTACT_FIELD", operator: "HAS_CHANGED_TO", fieldKey: "firstName", value: null }] } })),
+      /target value/,
+    )
+  })
+  test("accepts a contact-created trigger without a pipeline and validates standard field filters", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [] },
+    }
+    const base = {
+      name: "New contact",
+      isEnabled: false,
+      trigger: { type: "CONTACT_CREATED" },
+      conditions: [{ source: "CONTACT_FIELD", fieldKey: "email", operator: "CONTAINS", compareValue: "@example.com" }],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "CONTACT_CREATED")
+    assert.equal(normalized.pipelineId, null)
+    assert.equal(normalized.conditions[0].fieldKey, "email")
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({
+        ...base,
+        conditions: [{ source: "OPPORTUNITY_VALUE", operator: "EQUALS", compareValue: 100 }],
+      })),
+      /Opportunity value is unavailable/,
+    )
+  })
+  test("contact tag requires one existing tag and preserves the selected change", async () => {
+    const prismaClient = {
+      opportunityPipeline: { findMany: async () => [] },
+      contactCustomField: { findMany: async () => [] },
+      contactStatusConfig: { findMany: async () => [] },
+      membership: { findMany: async () => [] },
+      tenantTag: { findMany: async () => [{ id: "tag-1" }] },
+    }
+    const base = {
+      name: "Tag removed",
+      isEnabled: false,
+      trigger: { type: "CONTACT_TAG", tagId: "tag-1", change: "REMOVED" },
+      conditions: [],
+      actions: [{ type: "DELETE_CONTACT" }],
+    }
+    const normalized = await validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse(base))
+    assert.equal(normalized.triggerType, "CONTACT_TAG")
+    assert.equal(normalized.pipelineId, null)
+    assert.deepEqual(normalized.changeRules, [{ tenantId: "tenant-1", source: "CONTACT_TAGS", operator: "REMOVED", tagId: "tag-1", sortOrder: 10 }])
+    await assert.rejects(
+      validateAutomationConfiguration(prismaClient, "tenant-1", AutomationUpsertSchema.parse({ ...base, trigger: { type: "CONTACT_TAG", tagId: "tag-2", change: "ADDED" } })),
+      /existing contact tag/,
+    )
+    assert.equal(AutomationUpsertSchema.safeParse({ ...base, trigger: { type: "CONTACT_TAG", tagId: "tag-1", change: "ADDED", otherTagId: "tag-2" } }).success, false)
+  })
   test("accepts up to 100 action nodes in one path", () => {
     const base = {
       name: "Long automation",
@@ -4488,6 +4777,9 @@ describe("executeOpportunityAutomations", () => {
   })
 
   test("creates a contact-linked task with live templates, reminder, and notification", async () => {
+    let taskTriggerQueries = 0
+    const queuedTaskEvents: Array<Record<string, unknown>> = []
+    let queuedTaskDispatches: Array<Record<string, unknown>> = []
     const created: {
       task?: Record<string, unknown>
       activity?: Record<string, unknown>
@@ -4496,7 +4788,12 @@ describe("executeOpportunityAutomations", () => {
     } = {}
     const prismaTx = {
       automation: {
-        findMany: async () => [{
+        findMany: async ({ where }: { where?: { triggerType?: string } }) => {
+          if (where?.triggerType === "TASK_ADDED") {
+            taskTriggerQueries += 1
+            return [{ id: "task-trigger", name: "Task added", triggerType: "TASK_ADDED", conditions: [], actions: [] }]
+          }
+          return [{
           id: "automation-1",
           name: "Appointment follow-up",
           triggerType: "OPPORTUNITY_CREATED",
@@ -4533,10 +4830,26 @@ describe("executeOpportunityAutomations", () => {
               },
             },
           }],
-        }],
+          }]
+        },
       },
       contact: {
         findFirst: async (args: { select?: Record<string, unknown> }) => {
+          if (args.select?.tags) {
+            return {
+              id: "contact-1",
+              firstName: "Taylor",
+              middleName: null,
+              lastName: "Reed",
+              email: "taylor@example.com",
+              statusConfigId: "active",
+              statusConfig: { name: "Active" },
+              assignedToUserId: "user-john",
+              assignedToMembership: { user: { name: "John", email: "john@example.com" } },
+              tags: [],
+              customFieldValues: [],
+            }
+          }
           if (args.select?.email) {
             return {
               firstName: "Taylor",
@@ -4581,7 +4894,14 @@ describe("executeOpportunityAutomations", () => {
           created.task = data
           return { id: "task-1" }
         },
+        findFirst: async () => created.task ? { id: "task-1", ...created.task } : null,
       },
+      automationTriggerChainClaim: { createManyAndReturn: async () => [{ automationId: "task-trigger" }] },
+      automationEvent: {
+        findUnique: async () => null,
+        create: async ({ data }: { data: Record<string, unknown> }) => { queuedTaskEvents.push(data) },
+      },
+      automationDispatch: { createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { queuedTaskDispatches = data } },
       taskActivity: {
         create: async ({ data }: { data: Record<string, unknown> }) => { created.activity = data },
       },
@@ -4630,6 +4950,10 @@ describe("executeOpportunityAutomations", () => {
     assert.equal(created.reminder?.createdById, null)
     assert.equal(created.reminder?.message, "Reminder for Taylor")
     assert.equal(created.notification?.type, "TASK_ASSIGNED")
+    assert.equal(taskTriggerQueries, 1)
+    assert.equal(queuedTaskEvents[0]?.taskId, "task-1")
+    assert.equal((queuedTaskEvents[0]?.taskSnapshot as Record<string, unknown>)?.name, "Call Taylor Reed")
+    assert.deepEqual(queuedTaskDispatches.map((dispatch) => [dispatch.automationId, dispatch.decision]), [["task-trigger", "RUN"]])
   })
 
   test("renders values changed by an earlier action in the same segment", async () => {

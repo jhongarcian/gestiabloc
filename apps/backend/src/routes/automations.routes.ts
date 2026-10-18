@@ -95,6 +95,7 @@ const writeMiddlewares = [
 
 const automationInclude = {
   conditions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+  changeRules: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
   actions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
   executions: { orderBy: { createdAt: "desc" }, take: 1 },
 } as const
@@ -140,7 +141,34 @@ function serializeAutomation(record: any) {
     folderId: record.folderId,
     librarySortOrder: record.librarySortOrder,
     trigger:
-      record.triggerType === "OPPORTUNITY_CREATED"
+      record.triggerType === "CONTACT_CREATED"
+        ? { type: "CONTACT_CREATED" as const }
+        : record.triggerType === "CONTACT_NOTE_ADDED"
+        ? { type: "CONTACT_NOTE_ADDED" as const }
+        : record.triggerType === "TASK_ADDED"
+        ? { type: "TASK_ADDED" as const }
+        : record.triggerType === "TASK_COMPLETED"
+        ? { type: "TASK_COMPLETED" as const }
+        : record.triggerType === "APPOINTMENT_CREATED"
+        ? { type: "APPOINTMENT_CREATED" as const }
+        : record.triggerType === "APPOINTMENT_STATUS_CHANGED"
+        ? { type: "APPOINTMENT_STATUS_CHANGED" as const, status: record.appointmentTargetStatus }
+        : record.triggerType === "BIRTHDAY_REMINDER"
+        ? { type: "BIRTHDAY_REMINDER" as const, localTime: record.birthdayLocalTime ?? "09:00" }
+        : record.triggerType === "CONTACT_TAG"
+        ? { type: "CONTACT_TAG" as const, tagId: record.changeRules[0]?.tagId ?? "", change: record.changeRules[0]?.operator }
+        : record.triggerType === "CONTACT_CHANGED"
+        ? { type: "CONTACT_CHANGED" as const, changes: record.changeRules.map((rule: any) => ({
+            source: rule.source,
+            operator: rule.operator,
+            ...(rule.fieldKey ? { fieldKey: rule.fieldKey } : {}),
+            ...(rule.customFieldId ? { customFieldId: rule.customFieldId } : {}),
+            ...(rule.operator === "HAS_CHANGED_TO" && rule.source === "CONTACT_STATUS" ? { statusConfigId: rule.statusConfigId } : {}),
+            ...(rule.operator === "HAS_CHANGED_TO" && rule.source === "CONTACT_ASSIGNEE" ? { assignedUserId: rule.assignedUserId } : {}),
+            ...(rule.source === "CONTACT_TAGS" ? { tagId: rule.tagId } : {}),
+            ...(rule.operator === "HAS_CHANGED_TO" && (rule.source === "CONTACT_FIELD" || rule.source === "CONTACT_CUSTOM_FIELD") ? { value: rule.compareValue } : {}),
+          })) }
+        : record.triggerType === "OPPORTUNITY_CREATED"
         ? { type: record.triggerType, pipelineId: record.pipelineId }
         : {
             type: "OPPORTUNITY_CHANGED" as const,
@@ -153,6 +181,7 @@ function serializeAutomation(record: any) {
       id: condition.id,
       source: condition.source,
       operator: condition.operator,
+      fieldKey: condition.fieldKey,
       customFieldId: condition.customFieldId,
       statusConfigId: condition.statusConfigId,
       assignedUserId: condition.assignedUserId,
@@ -180,6 +209,8 @@ function serializeAutomation(record: any) {
         noteBody: action.noteBody,
         createContactConfig: action.createContactConfig,
         taskConfig: action.taskConfig,
+        appointmentConfig: action.appointmentConfig,
+        appointmentStatusConfig: action.appointmentStatusConfig,
         internalNotificationConfig: action.internalNotificationConfig,
         dateTimeFormatterConfig: action.dateTimeFormatterConfig,
         numberFormatterConfig: action.numberFormatterConfig,
@@ -848,6 +879,8 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
         name: normalized.name,
         isEnabled: normalized.isEnabled,
         triggerType: normalized.triggerType,
+        birthdayLocalTime: normalized.birthdayLocalTime,
+        appointmentTargetStatus: normalized.appointmentTargetStatus,
         pipelineId: normalized.pipelineId,
         sourceStageId: normalized.sourceStageId,
         targetStageId: normalized.targetStageId,
@@ -856,6 +889,7 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
         folderId: payload.folderId ?? null,
         librarySortOrder: (libraryLast?.librarySortOrder ?? 0) + 10,
         conditions: { create: normalized.conditions },
+        changeRules: { create: normalized.changeRules },
         actions: { create: normalized.actions },
       },
       include: automationInclude,
@@ -892,6 +926,7 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
     const record = await prismaWithAutomations.$transaction(async (tx: any) => {
       await Promise.all([
         tx.automationCondition.deleteMany({ where: { tenantId, automationId } }),
+        tx.automationContactChangeRule.deleteMany({ where: { tenantId, automationId } }),
         tx.automationAction.deleteMany({ where: { tenantId, automationId } }),
       ])
       return tx.automation.update({
@@ -900,11 +935,14 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
           name: normalized.name,
           isEnabled: normalized.isEnabled,
           triggerType: normalized.triggerType,
+          birthdayLocalTime: normalized.birthdayLocalTime,
+          appointmentTargetStatus: normalized.appointmentTargetStatus,
           pipelineId: normalized.pipelineId,
           sourceStageId: normalized.sourceStageId,
           targetStageId: normalized.targetStageId,
           targetResult: normalized.targetResult,
           conditions: { create: normalized.conditions },
+          changeRules: { create: normalized.changeRules },
           actions: { create: normalized.actions },
         },
         include: automationInclude,

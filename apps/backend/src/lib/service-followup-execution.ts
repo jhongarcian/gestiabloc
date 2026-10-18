@@ -549,7 +549,7 @@ async function applyContactFieldUpdate(
   })
 }
 
-export async function executeActionNode(params: {
+async function executeActionNodeInner(params: {
   prismaTx: PrismaTx
   tenantId: string
   templateId: string
@@ -834,7 +834,7 @@ export async function executeActionNode(params: {
         typeof item.fileId === "string" && item.fileId.length > 0,
     )
 
-    await prismaTx.contactNote.create({
+    const note = await prismaTx.contactNote.create({
       data: {
         tenantId,
         contactId: contactService.contactId,
@@ -854,6 +854,14 @@ export async function executeActionNode(params: {
             }
           : undefined,
       },
+    })
+    const { queueContactNoteAddedAutomationEvent } = await import("./automation-event-queue.js")
+    await queueContactNoteAddedAutomationEvent(prismaTx, {
+      tenantId,
+      contactId: contactService.contactId,
+      actorUserId,
+      sourceNodeKey: node.id,
+      causationKey: runId ? `follow-up-run:${runId}:note-added:${node.id}` : note?.id ? `contact-note:${note.id}:added` : null,
     })
     await createActionExecutionLog({
       prismaTx,
@@ -907,6 +915,15 @@ export async function executeActionNode(params: {
       actorUserId,
       type: "CREATED",
       title: "Task created by follow-up workflow",
+    })
+    const { queueTaskAddedAutomationEvent } = await import("./automation-event-queue.js")
+    await queueTaskAddedAutomationEvent(prismaTx, {
+      tenantId,
+      contactId: contactService.contactId,
+      taskId: task.id,
+      actorUserId,
+      sourceNodeKey: node.id,
+      causationKey: runId ? `follow-up-run:${runId}:task-added:${node.id}` : `task:${task.id}:added`,
     })
     await createActionExecutionLog({
       prismaTx,
@@ -1026,6 +1043,26 @@ export async function executeActionNode(params: {
   }
 
   return false
+}
+
+export async function executeActionNode(params: Parameters<typeof executeActionNodeInner>[0]): Promise<boolean> {
+  const kind = params.node.data?.kind
+  const changesContact = ["assign", "removeUser", "tagAdd", "tagRemove", "statusUpdate", "contactFieldUpdate"].includes(kind ?? "")
+  if (!changesContact) return executeActionNodeInner(params)
+  const { captureContactChangeSnapshot, queueContactChangedAutomationEvent } = await import("./automation-event-queue.js")
+  const before = await captureContactChangeSnapshot(params.prismaTx, params.tenantId, params.contactService.contactId)
+  const executed = await executeActionNodeInner(params)
+  if (executed && before) {
+    await queueContactChangedAutomationEvent(params.prismaTx, {
+      tenantId: params.tenantId,
+      contactId: params.contactService.contactId,
+      actorUserId: params.actorUserId,
+      before,
+      sourceNodeKey: params.node.id,
+      causationKey: params.runId ? `follow-up-run:${params.runId}:contact-change:${params.node.id}` : null,
+    })
+  }
+  return executed
 }
 
 export async function syncContactServiceActiveStep(params: {

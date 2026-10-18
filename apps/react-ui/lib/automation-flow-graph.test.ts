@@ -14,6 +14,8 @@ const labels = {
   REMOVE_CONTACT_TAG: "Remove contact tag",
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_TASK: "Create task",
+  CREATE_APPOINTMENT: "Create appointment",
+  UPDATE_APPOINTMENT_STATUS: "Update appointment status",
   SEND_INTERNAL_NOTIFICATION: "Internal notification",
   FORMAT_DATE_TIME: "Date/Time formatter",
   FORMAT_NUMBER: "Number formatter",
@@ -31,6 +33,80 @@ const labels = {
 } as const
 
 describe("buildAutomationFlowGraph", () => {
+  test("shows the appointment status target and custom action name", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "APPOINTMENT_CREATED", pipelineId: "", targetStageId: "", conditions: [],
+      actions: [{ nodeKey: "status-1", type: "UPDATE_APPOINTMENT_STATUS", appointmentStatusConfig: {
+        actionName: "Confirm visit", targetMode: "TRIGGERING_APPOINTMENT", status: "CONFIRMED", filters: [],
+      } }],
+    }, null, labels)
+    const node = graph.nodes.find((candidate) => candidate.id === "action-status-1")
+    assert.equal(node?.data.label, "Confirm visit")
+    assert.equal(node?.data.subtitle, "Triggering appointment · Confirmed")
+  })
+
+  test("labels a contact-created trigger without a pipeline", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "CONTACT_CREATED",
+      pipelineId: "",
+      targetStageId: "",
+      conditions: [],
+      actions: [],
+    }, null, labels)
+    const trigger = graph.nodes.find((node) => node.id === "trigger")
+    assert.equal(trigger?.data.label, "Contact created")
+    assert.equal(trigger?.data.subtitle, "Starts when a new contact is added")
+  })
+  test("labels the note-added trigger", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "CONTACT_NOTE_ADDED",
+      pipelineId: "",
+      targetStageId: "",
+      conditions: [],
+      actions: [],
+    }, null, labels)
+    const trigger = graph.nodes.find((node) => node.id === "trigger")
+    assert.equal(trigger?.data.label, "Note added")
+    assert.equal(trigger?.data.subtitle, "Starts when a note is added to a contact")
+  })
+  test("labels an appointment-created trigger at booking time", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "APPOINTMENT_CREATED",
+      pipelineId: "",
+      targetStageId: "",
+      conditions: [],
+      actions: [],
+    }, null, labels)
+    const trigger = graph.nodes.find((node) => node.id === "trigger")
+    assert.equal(trigger?.data.label, "Appointment created")
+    assert.equal(trigger?.data.subtitle, "Starts when a contact appointment is booked")
+  })
+  test("shows the selected contact change rules", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "CONTACT_CHANGED",
+      pipelineId: "",
+      targetStageId: "",
+      changes: [{ source: "CONTACT_FIELD", operator: "HAS_CHANGED", fieldKey: "firstName" }, { source: "CONTACT_TAGS", operator: "ADDED", tagId: null }],
+      conditions: [],
+      actions: [],
+    }, null, labels)
+    const trigger = graph.nodes.find((node) => node.id === "trigger")
+    assert.equal(trigger?.data.label, "Contact changed")
+    assert.equal(trigger?.data.subtitle, "All 2 change rules in one update")
+  })
+  test("shows the selected tag and change in the trigger node", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "CONTACT_TAG",
+      pipelineId: "",
+      targetStageId: "",
+      changes: [{ source: "CONTACT_TAGS", operator: "REMOVED", tagId: "tag-1" }],
+      conditions: [],
+      actions: [],
+    }, { pipelines: [], tags: [{ id: "tag-1", name: "Renewal" }] } as unknown as AutomationCatalog, labels)
+    const trigger = graph.nodes.find((node) => node.id === "trigger")
+    assert.equal(trigger?.data.label, "Contact tag")
+    assert.equal(trigger?.data.subtitle, "Removed: Renewal")
+  })
   test("shows the custom Create contact label and subtitle", () => {
     const graph = buildAutomationFlowGraph({
       triggerType: "OPPORTUNITY_CREATED",
@@ -53,6 +129,28 @@ describe("buildAutomationFlowGraph", () => {
     const node = graph.nodes.find((candidate) => candidate.id === "action-create-contact-node")
     assert.equal(node?.data.label, "Create household member")
     assert.equal(node?.data.subtitle, "Create contact")
+  })
+
+  test("shows the custom Create appointment label and subtitle", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "OPPORTUNITY_CREATED",
+      pipelineId: "pipeline-1",
+      targetStageId: "",
+      conditions: [],
+      actions: [{
+        nodeKey: "appointment-node",
+        type: "CREATE_APPOINTMENT",
+        appointmentConfig: {
+          actionName: "Book policy review",
+          titleTemplate: "Review with {contact.name}",
+          assignee: { mode: "CONTACT_ASSIGNEE" },
+          startAt: { source: { type: "RELATIVE_DATE", amount: 1, unit: "DAYS" }, time: "09:00" },
+        },
+      }],
+    }, null, labels)
+    const node = graph.nodes.find((candidate) => candidate.id === "action-appointment-node")
+    assert.equal(node?.data.label, "Book policy review")
+    assert.equal(node?.data.subtitle, "Create appointment")
   })
 
   test("shows the custom Internal notification label and recipient", () => {

@@ -5,6 +5,33 @@ import { serializeAutomationAction } from "./automation-action-payload.js"
 import type { AutomationAction } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types.js"
 
 describe("serializeAutomationAction", () => {
+  test("serializes the appointment status action and its contact filters", () => {
+    const appointmentStatusConfig = {
+      actionName: "Confirm next visit",
+      targetMode: "NEXT_UPCOMING" as const,
+      status: "CONFIRMED" as const,
+      filters: [{ source: "CONTACT_TAGS" as const, operator: "EQUALS" as const, tagId: "tag-1" }],
+    }
+    assert.deepEqual(serializeAutomationAction({
+      nodeKey: "status-1", type: "UPDATE_APPOINTMENT_STATUS", appointmentStatusConfig,
+      statusConfigId: null,
+    }), { nodeKey: "status-1", type: "UPDATE_APPOINTMENT_STATUS", appointmentStatusConfig })
+  })
+
+  test("serializes a Create appointment configuration", () => {
+    const appointmentConfig = {
+      actionName: "Book policy review",
+      titleTemplate: "Review with {contact.name}",
+      notesTemplate: "Bring documents",
+      assignee: { mode: "CONTACT_ASSIGNEE" as const },
+      linkedService: null,
+      startAt: { source: { type: "RELATIVE_DATE" as const, amount: 1, unit: "DAYS" as const }, time: "09:00" },
+    }
+    assert.deepEqual(serializeAutomationAction({
+      nodeKey: "appointment-1", type: "CREATE_APPOINTMENT", appointmentConfig, statusConfigId: null,
+    }), { nodeKey: "appointment-1", type: "CREATE_APPOINTMENT", appointmentConfig })
+  })
+
   test("serializes only the Update/create opportunity configuration", () => {
     assert.deepEqual(
       serializeAutomationAction({
