@@ -27,6 +27,8 @@ export function serializeAutomationAction(action: AutomationAction): AutomationA
       return { ...base, taskConfig: action.taskConfig }
     case "CREATE_APPOINTMENT":
       return { ...base, appointmentConfig: action.appointmentConfig }
+    case "UPDATE_APPOINTMENT_STATUS":
+      return { ...base, appointmentStatusConfig: action.appointmentStatusConfig }
     case "SEND_INTERNAL_NOTIFICATION":
       return { ...base, internalNotificationConfig: action.internalNotificationConfig }
     case "FORMAT_DATE_TIME":

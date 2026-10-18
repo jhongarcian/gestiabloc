@@ -47,6 +47,7 @@ import {
   BellRing,
   Calculator,
   CalendarClock,
+  CalendarCheck2,
   Check,
   ChevronsUpDown,
   Clock3,
@@ -160,6 +161,7 @@ import type {
   AppointmentAutomationStatus,
   AutomationAction,
   AutomationAppointmentConfig,
+  AutomationAppointmentStatusConfig,
   AutomationCatalog,
   AutomationCondition,
   AutomationContactChangeRule,
@@ -669,6 +671,13 @@ const ACTION_DEFINITIONS = {
     group: "INTERNAL",
     order: 11,
     icon: CalendarClock,
+  },
+  UPDATE_APPOINTMENT_STATUS: {
+    label: "Update appointment status",
+    description: "Change the triggering or next upcoming appointment after checking contact filters.",
+    group: "INTERNAL",
+    order: 11.5,
+    icon: CalendarCheck2,
   },
   SEND_INTERNAL_NOTIFICATION: {
     label: "Internal notification",
@@ -1303,6 +1312,7 @@ function actionDefaults(
   catalog: AutomationCatalog,
   existingNodeKey?: string,
   sourceAutomationId?: string,
+  triggerType?: AutomationBuilderTriggerType | null,
 ): AutomationAction {
   const nodeKey = existingNodeKey ?? crypto.randomUUID()
   if (type === "CREATE_CONTACT") {
@@ -1376,6 +1386,19 @@ function actionDefaults(
         assignee: { mode: "CONTACT_ASSIGNEE" },
         linkedService: null,
         startAt: { source: { type: "RELATIVE_DATE", amount: 1, unit: "DAYS" }, time: "09:00" },
+      },
+    }
+  }
+  if (type === "UPDATE_APPOINTMENT_STATUS") {
+    return {
+      nodeKey,
+      type,
+      appointmentStatusConfig: {
+        actionName: "Update appointment status",
+        targetMode: triggerType === "APPOINTMENT_CREATED" || triggerType === "APPOINTMENT_STATUS_CHANGED"
+          ? "TRIGGERING_APPOINTMENT" : "NEXT_UPCOMING",
+        status: "CONFIRMED",
+        filters: [],
       },
     }
   }
@@ -1813,12 +1836,42 @@ function isBranchConditionReady(
   return true
 }
 
+function isAppointmentStatusFilterReady(condition: AutomationCondition, catalog: AutomationCatalog): boolean {
+  if (!["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) return false
+  if (condition.source === "CONTACT_FIELD") {
+    const field = catalog.templateFields.contact.find((item) => item.key === condition.fieldKey && !["status", "assigned_to", "tags"].includes(item.key))
+    if (!field || !contactFieldOperators(field.fieldType).includes(condition.operator)) return false
+  }
+  if (condition.source === "CONTACT_CUSTOM_FIELD") {
+    const field = catalog.customFields.find((item) => item.id === condition.customFieldId)
+    if (!field || !field.operators.includes(condition.operator)) return false
+    if (!VALUELESS_OPERATORS.has(condition.operator) && field.options.length > 0) {
+      const values = Array.isArray(condition.compareValue) ? condition.compareValue : [condition.compareValue]
+      if (values.some((value) => typeof value === "string" && !field.options.includes(value))) return false
+    }
+  }
+  if (condition.source === "CONTACT_TAGS") {
+    if (!["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"].includes(condition.operator)) return false
+    if (!VALUELESS_OPERATORS.has(condition.operator) && !catalog.tags.some((tag) => tag.id === condition.tagId)) return false
+  }
+  if (!VALUELESS_OPERATORS.has(condition.operator)) {
+    if (condition.operator === "BETWEEN") {
+      const range = condition.compareValue as { min?: unknown; max?: unknown } | null
+      return range?.min !== "" && range?.min !== undefined && range?.max !== "" && range?.max !== undefined
+    }
+    if (condition.source !== "CONTACT_TAGS" && (condition.compareValue === null || condition.compareValue === undefined || condition.compareValue === "")) return false
+    if (Array.isArray(condition.compareValue) && condition.compareValue.length === 0) return false
+  }
+  return true
+}
+
 function isIfElseReady(
   action: AutomationAction,
   catalog: AutomationCatalog,
   previousActions: AutomationAction[],
   depth = 1,
   requireBranchActions = true,
+  triggerType?: AutomationBuilderTriggerType | null,
 ): boolean {
   const config = action.ifElseConfig
   if (!config || !config.actionName.trim() || config.actionName.trim().length > 120 || depth > 3) return false
@@ -1844,14 +1897,15 @@ function isIfElseReady(
       if ((branchAction.type === "IF_ELSE" || branchAction.type === "SPLIT" || branchAction.type === "GO_TO") && index !== branch.actions.length - 1) return false
       if (branchAction.type === "DELETE_CONTACT" && index !== branch.actions.length - 1) return false
       return branchAction.type === "IF_ELSE"
-        ? isIfElseReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1, requireBranchActions)
+        ? isIfElseReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1, requireBranchActions, triggerType)
         : branchAction.type === "SPLIT"
-          ? isSplitReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1)
+          ? isSplitReady(branchAction, catalog, [...previousActions, ...branch.actions.slice(0, index)], depth + 1, triggerType)
         : isActionReady(
             branchAction,
             catalog,
             branch.actions.slice(index + 1),
             [...previousActions, ...branch.actions.slice(0, index)],
+            triggerType,
           )
     })
   })
@@ -1862,6 +1916,7 @@ function isSplitReady(
   catalog: AutomationCatalog,
   previousActions: AutomationAction[],
   depth = 1,
+  triggerType?: AutomationBuilderTriggerType | null,
 ): boolean {
   const config = action.splitConfig
   if (!config || !config.actionName.trim() || config.actionName.trim().length > 120 || depth > 3) return false
@@ -1879,14 +1934,15 @@ function isSplitReady(
       index !== route.actions.length - 1
     ) return false
     return routeAction.type === "IF_ELSE"
-      ? isIfElseReady(routeAction, catalog, [...previousActions, ...route.actions.slice(0, index)], depth + 1)
+      ? isIfElseReady(routeAction, catalog, [...previousActions, ...route.actions.slice(0, index)], depth + 1, true, triggerType)
       : routeAction.type === "SPLIT"
-        ? isSplitReady(routeAction, catalog, [...previousActions, ...route.actions.slice(0, index)], depth + 1)
+        ? isSplitReady(routeAction, catalog, [...previousActions, ...route.actions.slice(0, index)], depth + 1, triggerType)
         : isActionReady(
             routeAction,
             catalog,
             route.actions.slice(index + 1),
             [...previousActions, ...route.actions.slice(0, index)],
+            triggerType,
           )
   }))
 }
@@ -1896,6 +1952,7 @@ function isActionReady(
   catalog: AutomationCatalog,
   targetActions: AutomationAction[] = [],
   previousActions: AutomationAction[] = [],
+  triggerType?: AutomationBuilderTriggerType | null,
 ) {
   if (!action) return false
   const availableOutputs = formatterOutputs(previousActions)
@@ -1956,6 +2013,15 @@ function isActionReady(
     if (config.linkedService && !catalog.services.some((service) => service.id === config.linkedService?.id)) return false
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(config.startAt.time)) return false
     return isFormatterSourceReady(config.startAt.source, catalog, availableOutputs)
+  }
+  if (action.type === "UPDATE_APPOINTMENT_STATUS") {
+    const config = action.appointmentStatusConfig
+    if (!config || !config.actionName.trim() || config.actionName.trim().length > 120) return false
+    if (config.targetMode === "TRIGGERING_APPOINTMENT" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED") return false
+    if (config.targetMode !== "TRIGGERING_APPOINTMENT" && config.targetMode !== "NEXT_UPCOMING") return false
+    if (!["SCHEDULED", "CONFIRMED", "SHOW", "NO_SHOW", "CANCELED", "COMPLETED"].includes(config.status)) return false
+    if (config.filters.length > 20) return false
+    return config.filters.every((filter) => isAppointmentStatusFilterReady(filter, catalog))
   }
   if (action.type === "SEND_INTERNAL_NOTIFICATION") {
     const config = action.internalNotificationConfig
@@ -2040,10 +2106,10 @@ function isActionReady(
       !(config.operation === "DIVIDE" && config.operand === 0)
   }
   if (action.type === "IF_ELSE") {
-    return targetActions.length === 0 && isIfElseReady(action, catalog, previousActions)
+    return targetActions.length === 0 && isIfElseReady(action, catalog, previousActions, 1, true, triggerType)
   }
   if (action.type === "SPLIT") {
-    return targetActions.length === 0 && isSplitReady(action, catalog, previousActions)
+    return targetActions.length === 0 && isSplitReady(action, catalog, previousActions, 1, triggerType)
   }
   if (action.type === "GO_TO") {
     return targetActions.length === 0 && Boolean(action.goToConfig?.targetNodeKey)
@@ -2215,7 +2281,7 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
       if ((action.type === "DELETE_CONTACT" || action.type === "IF_ELSE" || action.type === "SPLIT" || action.type === "GO_TO") && index !== actions.length - 1) {
         return `${ACTION_LABELS[action.type]} can only be the final action in its path.`
       }
-      if (!isActionReady(action, catalog, actions.slice(index + 1), [...inherited, ...actions.slice(0, index)])) {
+      if (!isActionReady(action, catalog, actions.slice(index + 1), [...inherited, ...actions.slice(0, index)], draft.triggerType)) {
         return `Finish configuring ${ACTION_LABELS[action.type]}.`
       }
       if (action.type === "IF_ELSE") {
@@ -2969,6 +3035,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     isPickingGoTo={goToPicking}
                     onPickGoToOnCanvas={() => setGoToPicking(true)}
                     sourceAutomationId={automationId}
+                    triggerType={draft.triggerType}
                     management={{
                       index: selected.index,
                       total: selectedPathActions.length,
@@ -3012,6 +3079,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                     isPickingGoTo={goToPicking}
                     onPickGoToOnCanvas={() => setGoToPicking(true)}
                     sourceAutomationId={automationId}
+                    triggerType={draft.triggerType}
                   />
                 ) : selected.kind === "trigger" && triggerEditorDraft ? (
                   <TriggerEditor
@@ -3046,6 +3114,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                             ],
                             selected.path.length + 1,
                             false,
+                            draft.triggerType,
                           )
                         : editingAction?.type === "SPLIT"
                           ? !editingIfElseWrapIssue && isSplitReady(
@@ -3058,6 +3127,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                                 ...selectedPathActions.slice(0, selected.index),
                               ],
                               selected.path.length + 1,
+                              draft.triggerType,
                             )
                         : isActionReady(
                             editingAction,
@@ -3067,6 +3137,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                               ...ancestorActionsForPath(draft.actions, selected.path),
                               ...selectedPathActions.slice(0, selected.index),
                             ],
+                            draft.triggerType,
                           )) || !actionPanelHasChanges}
                       onClick={() => {
                         if (!editingAction) return
@@ -3125,6 +3196,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                             ],
                             selected.path.length + 1,
                             false,
+                            draft.triggerType,
                           )
                         : pendingAction?.type === "SPLIT"
                           ? !pendingIfElseWrapIssue && isSplitReady(
@@ -3135,6 +3207,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                                 ...selectedPathActions.slice(0, selected.insertionIndex),
                               ],
                               selected.path.length + 1,
+                              draft.triggerType,
                             )
                         : isActionReady(
                             pendingAction,
@@ -3144,6 +3217,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
                               ...ancestorActionsForPath(draft.actions, selected.path),
                               ...selectedPathActions.slice(0, selected.insertionIndex),
                             ],
+                            draft.triggerType,
                           ))}
                       onClick={() => {
                         if (!pendingAction) return
@@ -4017,6 +4091,7 @@ function NewActionEditor({
   isPickingGoTo,
   onPickGoToOnCanvas,
   sourceAutomationId,
+  triggerType,
 }: {
   action: AutomationAction | null
   catalog: AutomationCatalog
@@ -4031,6 +4106,7 @@ function NewActionEditor({
   isPickingGoTo: boolean
   onPickGoToOnCanvas: () => void
   sourceAutomationId?: string
+  triggerType?: AutomationBuilderTriggerType | null
 }) {
   if (action) {
     const definition = ACTION_DEFINITIONS[action.type]
@@ -4074,6 +4150,7 @@ function NewActionEditor({
           isPickingGoTo={isPickingGoTo}
           onPickGoToOnCanvas={onPickGoToOnCanvas}
           sourceAutomationId={sourceAutomationId}
+          triggerType={triggerType}
         />
       </div>
     )
@@ -4125,7 +4202,7 @@ function NewActionEditor({
                         catalog.customFields.length === 0) ||
                       ((value === "DELETE_CONTACT" || value === "GO_TO") && targetActions.length > 0)
                     }
-                    onClick={() => onChange(actionDefaults(value, catalog, undefined, sourceAutomationId))}
+                    onClick={() => onChange(actionDefaults(value, catalog, undefined, sourceAutomationId, triggerType))}
                   >
                     <span className={cn(
                       "flex size-8 shrink-0 items-center justify-center rounded-lg",
@@ -4166,6 +4243,7 @@ function ActionEditor({
   isPickingGoTo = false,
   onPickGoToOnCanvas,
   sourceAutomationId,
+  triggerType,
 }: {
   action: AutomationAction
   catalog: AutomationCatalog
@@ -4181,6 +4259,7 @@ function ActionEditor({
   isPickingGoTo?: boolean
   onPickGoToOnCanvas?: () => void
   sourceAutomationId?: string
+  triggerType?: AutomationBuilderTriggerType | null
   management?: {
     index: number
     total: number
@@ -4204,7 +4283,7 @@ function ActionEditor({
             <FieldLabel htmlFor="action-type">Action type</FieldLabel>
             <Select
               value={action.type}
-              onValueChange={(type: AutomationAction["type"]) => onChange(actionDefaults(type, catalog, action.nodeKey, sourceAutomationId))}
+              onValueChange={(type: AutomationAction["type"]) => onChange(actionDefaults(type, catalog, action.nodeKey, sourceAutomationId, triggerType))}
             >
               <SelectTrigger id="action-type" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -4378,6 +4457,17 @@ function ActionEditor({
             timezone={timezone}
             automationOutputs={availableAutomationOutputs}
             onChange={(appointmentConfig) => onChange({ ...action, appointmentConfig })}
+          />
+        ) : null}
+
+        {action.type === "UPDATE_APPOINTMENT_STATUS" && action.appointmentStatusConfig ? (
+          <AppointmentStatusActionEditor
+            actionKey={action.nodeKey ?? "update-appointment-status"}
+            config={action.appointmentStatusConfig}
+            catalog={catalog}
+            timezone={timezone}
+            triggerType={triggerType}
+            onChange={(appointmentStatusConfig) => onChange({ ...action, appointmentStatusConfig })}
           />
         ) : null}
 
@@ -6378,6 +6468,82 @@ function TaskDateTimeEditor({
   )
 }
 
+function AppointmentStatusActionEditor({
+  actionKey,
+  config,
+  catalog,
+  timezone,
+  triggerType,
+  onChange,
+}: {
+  actionKey: string
+  config: AutomationAppointmentStatusConfig
+  catalog: AutomationCatalog
+  timezone?: string | null
+  triggerType?: AutomationBuilderTriggerType | null
+  onChange: (config: AutomationAppointmentStatusConfig) => void
+}) {
+  const appointmentTrigger = triggerType === "APPOINTMENT_CREATED" || triggerType === "APPOINTMENT_STATUS_CHANGED"
+  const statuses: Array<{ value: AutomationAppointmentStatusConfig["status"]; label: string }> = [
+    { value: "SCHEDULED", label: "Scheduled" },
+    { value: "CONFIRMED", label: "Confirmed" },
+    { value: "SHOW", label: "Show" },
+    { value: "NO_SHOW", label: "No show" },
+    { value: "CANCELED", label: "Canceled" },
+    { value: "COMPLETED", label: "Completed" },
+  ]
+  return <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-3">
+    <div className="flex items-start gap-2.5">
+      <CalendarCheck2 className="mt-0.5 size-4 shrink-0 text-sky-600" aria-hidden="true" />
+      <div className="space-y-1">
+        <p className="text-sm font-semibold text-slate-950">Update appointment status</p>
+        <p className="text-xs leading-4 text-slate-600">Updates one appointment for this contact. All filters must match the contact when this action runs.</p>
+      </div>
+    </div>
+    <Field className="gap-1.5" data-invalid={!config.actionName.trim() || config.actionName.trim().length > 120}>
+      <FieldLabel htmlFor={`${actionKey}-status-action-name`}>Action name</FieldLabel>
+      <Input id={`${actionKey}-status-action-name`} value={config.actionName} maxLength={120} onChange={(event) => onChange({ ...config, actionName: event.target.value })} placeholder="Update appointment status" />
+      {!config.actionName.trim() ? <p className="text-xs text-rose-600">Enter an action name.</p> : null}
+    </Field>
+    <Field className="gap-1.5">
+      <FieldLabel htmlFor={`${actionKey}-status-target`}>Appointment</FieldLabel>
+      <Select value={config.targetMode} onValueChange={(targetMode: AutomationAppointmentStatusConfig["targetMode"]) => onChange({ ...config, targetMode })}>
+        <SelectTrigger id={`${actionKey}-status-target`} className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="TRIGGERING_APPOINTMENT" disabled={!appointmentTrigger}>Triggering appointment</SelectItem>
+          <SelectItem value="NEXT_UPCOMING">Next upcoming appointment</SelectItem>
+        </SelectContent>
+      </Select>
+      {config.targetMode === "TRIGGERING_APPOINTMENT" && !appointmentTrigger ? <p className="text-xs text-rose-600">Choose an appointment trigger or select the next upcoming appointment.</p> : null}
+      {config.targetMode === "NEXT_UPCOMING" ? <p className="text-xs text-slate-600">Uses the earliest future appointment, including one currently Canceled or Completed.</p> : null}
+    </Field>
+    <Field className="gap-1.5">
+      <FieldLabel htmlFor={`${actionKey}-status-value`}>New status</FieldLabel>
+      <Select value={config.status} onValueChange={(status: AutomationAppointmentStatusConfig["status"]) => onChange({ ...config, status })}>
+        <SelectTrigger id={`${actionKey}-status-value`} className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
+        <SelectContent>{statuses.map((status) => <SelectItem key={status.value} value={status.value}>{status.label}</SelectItem>)}</SelectContent>
+      </Select>
+    </Field>
+    <div className="space-y-3">
+      <div><p className="text-sm font-medium text-slate-900">Contact filters (optional)</p><p className="text-xs text-slate-600">If any filter does not match, this action skips and the workflow continues.</p></div>
+      {config.filters.map((filter, index) => <div key={index}>
+        <ConditionCard
+          condition={filter}
+          index={index}
+          catalog={catalog}
+          timezone={timezone}
+          triggerType="APPOINTMENT_STATUS_CHANGED"
+          onChange={(patch) => onChange({ ...config, filters: config.filters.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) })}
+          onDelete={() => onChange({ ...config, filters: config.filters.filter((_, itemIndex) => itemIndex !== index) })}
+        />
+        {!isAppointmentStatusFilterReady(filter, catalog) ? <p className="mt-1 text-xs text-rose-600">Complete this filter with an available field, operator, and value.</p> : null}
+      </div>)}
+      <Button type="button" variant="outline" className={cn(COMPACT_SECONDARY_BUTTON_CLASS, "w-full")} disabled={config.filters.length >= 20} onClick={() => onChange({ ...config, filters: [...config.filters, defaultCondition(catalog, "APPOINTMENT_STATUS_CHANGED")] })}><Plus data-icon="inline-start" />Add filter</Button>
+    </div>
+    <p className="text-xs leading-4 text-slate-600">A missing appointment skips this action. Changing status to Scheduled checks calendar availability; a conflict fails the action.</p>
+  </section>
+}
+
 function AppointmentActionEditor({
   actionKey,
   config,
@@ -6935,6 +7101,7 @@ function TaskActionEditor({
 function goToDestinationLabel(action: AutomationAction) {
   if (action.type === "CREATE_CONTACT") return action.createContactConfig?.actionName.trim() || "Create contact"
   if (action.type === "CREATE_APPOINTMENT") return action.appointmentConfig?.actionName.trim() || "Create appointment"
+  if (action.type === "UPDATE_APPOINTMENT_STATUS") return action.appointmentStatusConfig?.actionName.trim() || "Update appointment status"
   if (action.type === "SEND_INTERNAL_NOTIFICATION") return action.internalNotificationConfig?.actionName.trim() || "Internal notification"
   if (action.type === "FORMAT_TEXT") return action.textFormatterConfig?.actionName.trim() || "Text formatter"
   if (action.type === "UPDATE_OPPORTUNITY") return action.opportunityConfig?.actionName.trim() || "Update/create opportunity"

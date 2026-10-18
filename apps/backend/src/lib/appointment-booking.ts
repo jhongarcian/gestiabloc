@@ -1,7 +1,7 @@
 import { Prisma, type AppointmentStatus, type PrismaClient } from "../generated/prisma/index.js"
 
 import { prisma } from "./prisma.js"
-import { queueAppointmentCreatedAutomationEvent, queueAppointmentStatusChangedAutomationEvent, type AppointmentCreatedAutomationEvent } from "./automation-event-queue.js"
+import { queueAppointmentCreatedAutomationEvent, queueAppointmentStatusChangedAutomationEvent, type AppointmentCreatedAutomationEvent, type AppointmentStatusChangedAutomationEvent } from "./automation-event-queue.js"
 
 const DEFAULT_TIMEZONE = "America/Chicago"
 const CALENDAR_SLOT_DURATION_OPTIONS = [15, 30, 45, 60, 120] as const
@@ -691,6 +691,9 @@ export async function recordAppointmentStatusChange(
     actorDisplayName: string
     previousStatus: AppointmentStatus
     status: AppointmentStatus
+    automationEvent?: Pick<AppointmentStatusChangedAutomationEvent,
+      "chainId" | "parentEventId" | "chainDepth" | "sourceAutomationId" | "sourceAutomationName" | "sourceNodeKey"
+    >
   },
 ) {
   if (params.previousStatus === params.status) return null
@@ -710,8 +713,89 @@ export async function recordAppointmentStatusChange(
     previousStatus: params.previousStatus,
     status: params.status,
     changedAt: audit.createdAt,
+    ...params.automationEvent,
     causationKey: `appointment-status-audit:${audit.id}`,
   })
+}
+
+export async function changeAppointmentStatusInTransaction(
+  tx: Prisma.TransactionClient,
+  params: {
+    tenantId: string
+    contactId: string
+    appointmentId: string
+    status: AppointmentStatus
+    actorDisplayName: string
+    automationEvent?: Pick<AppointmentStatusChangedAutomationEvent,
+      "chainId" | "parentEventId" | "chainDepth" | "sourceAutomationId" | "sourceAutomationName" | "sourceNodeKey"
+    >
+    requireFuture?: boolean
+  },
+) {
+  await tx.$queryRawUnsafe(
+    'SELECT id FROM "Appointment" WHERE "tenantId" = $1 AND id = $2 FOR UPDATE',
+    params.tenantId,
+    params.appointmentId,
+  )
+  const existing = await tx.appointment.findFirst({
+    where: { tenantId: params.tenantId, contactId: params.contactId, id: params.appointmentId },
+    select: { id: true, contactId: true, assignedToUserId: true, startAt: true, endAt: true, status: true },
+  })
+  if (!existing || (params.requireFuture && existing.startAt.getTime() <= Date.now())) {
+    return { ok: false as const, error: "APPOINTMENT_NOT_FOUND" as const }
+  }
+  if (existing.status === params.status) {
+    return { ok: true as const, changed: false as const, appointment: existing, automation: null }
+  }
+
+  if (params.status === "SCHEDULED") {
+    if (!existing.assignedToUserId || existing.startAt.getTime() <= Date.now()) {
+      return { ok: false as const, error: "APPOINTMENT_TIME_UNAVAILABLE" as const, reasons: ["The appointment needs an active assignee and a future start time."] }
+    }
+    const membership = await tx.membership.findUnique({
+      where: { userId_tenantId: { tenantId: params.tenantId, userId: existing.assignedToUserId } },
+      select: { status: true },
+    })
+    if (!membership || membership.status !== "ACTIVE") {
+      return { ok: false as const, error: "APPOINTMENT_TIME_UNAVAILABLE" as const, reasons: ["The appointment assignee is no longer active."] }
+    }
+    const tenant = await tx.tenant.findUnique({ where: { id: params.tenantId }, select: { timezone: true } })
+    const localDate = toLocalDateKey(getTimezoneDateParts(existing.startAt, getSafeTimezone(tenant?.timezone)))
+    await acquireBookingLocks(tx, {
+      tenantId: params.tenantId,
+      localDate,
+      assigneeUserId: existing.assignedToUserId,
+      contactId: params.contactId,
+    })
+    const availability = await evaluateAvailability(tx, {
+      tenantId: params.tenantId,
+      contactId: params.contactId,
+      assignedToUserId: existing.assignedToUserId,
+      startAt: existing.startAt,
+      endAt: existing.endAt,
+      appointmentId: existing.id,
+    })
+    if (!availability.available) {
+      return { ok: false as const, error: "APPOINTMENT_TIME_UNAVAILABLE" as const, reasons: availability.reasons }
+    }
+  }
+
+  const appointment = await tx.appointment.update({
+    where: { id: existing.id },
+    data: { status: params.status },
+    select: { id: true, contactId: true, assignedToUserId: true, startAt: true, endAt: true, status: true },
+  })
+  const automation = await recordAppointmentStatusChange(tx, {
+    tenantId: params.tenantId,
+    appointmentId: existing.id,
+    contactId: params.contactId,
+    actorUserId: null,
+    actorDisplayName: params.actorDisplayName,
+    previousStatus: existing.status,
+    status: params.status,
+    automationEvent: params.automationEvent,
+  })
+  return { ok: true as const, changed: true as const, appointment, automation }
 }
 
 async function acquireBookingLocks(

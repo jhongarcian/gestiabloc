@@ -355,6 +355,12 @@ Create appointment books a Scheduled, timed appointment for the current contact.
 
 The action uses the tenant's current meeting duration and the same locked availability check as manual booking. Missing data, a past or nonexistent local time, an inactive reference, or an unavailable slot fails the action without creating an appointment. The audit log attributes a successful booking to `Automation · [workflow name]`; the booked-by user is empty. The appointment-created event is queued in the same transaction and follows the existing automation-chain loop protection. Later actions continue on the original contact, and the action produces no automation value.
 
+### Update appointment status
+
+Update appointment status changes one appointment for the current contact to Scheduled, Confirmed, Show, No show, Canceled, or Completed. Authors name the action and choose either the triggering appointment (for appointment-created or appointment-status-changed triggers) or the next upcoming appointment. The latter is the earliest future appointment by start time and ID, regardless of its current status.
+
+Up to 20 optional contact-field, safe custom-field, and tag filters are combined with AND and evaluated against the contact's live state. A filter mismatch or missing appointment skips this action and the workflow continues. An unchanged status is recorded without an audit entry or event. A successful change records `Automation · [workflow name]` in appointment history and queues an appointment-status-changed event in the same transaction with chain context. Changing to Scheduled also requires a future time, active assignee, and available calendar slot; a conflict fails the action.
+
 ### Add contact note
 
 Add contact note creates a standard contact note with a required title and body.

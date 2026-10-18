@@ -270,6 +270,8 @@ export function buildAutomationFlowGraph(
         ? "Create contact"
       : action.type === "CREATE_APPOINTMENT"
         ? "Create appointment"
+      : action.type === "UPDATE_APPOINTMENT_STATUS"
+        ? `${action.appointmentStatusConfig?.targetMode === "TRIGGERING_APPOINTMENT" ? "Triggering appointment" : "Next upcoming appointment"} · ${({ SCHEDULED: "Scheduled", CONFIRMED: "Confirmed", SHOW: "Show", NO_SHOW: "No show", CANCELED: "Canceled", COMPLETED: "Completed" })[action.appointmentStatusConfig?.status ?? "CONFIRMED"]}`
       : action.type === "SEND_INTERNAL_NOTIFICATION"
         ? action.internalNotificationConfig?.recipient.mode === "CONTACT_ASSIGNEE"
           ? "Notify contact assignee"
@@ -340,6 +342,8 @@ export function buildAutomationFlowGraph(
         ? action.createContactConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "CREATE_APPOINTMENT"
           ? action.appointmentConfig?.actionName.trim() || actionLabels[action.type]
+        : action.type === "UPDATE_APPOINTMENT_STATUS"
+          ? action.appointmentStatusConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "SEND_INTERNAL_NOTIFICATION"
           ? action.internalNotificationConfig?.actionName.trim() || actionLabels[action.type]
         : action.type === "FORMAT_TEXT"

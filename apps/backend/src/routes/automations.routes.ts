@@ -210,6 +210,7 @@ function serializeAutomation(record: any) {
         createContactConfig: action.createContactConfig,
         taskConfig: action.taskConfig,
         appointmentConfig: action.appointmentConfig,
+        appointmentStatusConfig: action.appointmentStatusConfig,
         internalNotificationConfig: action.internalNotificationConfig,
         dateTimeFormatterConfig: action.dateTimeFormatterConfig,
         numberFormatterConfig: action.numberFormatterConfig,

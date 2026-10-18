@@ -15,6 +15,7 @@ const labels = {
   ADD_CONTACT_NOTE: "Add contact note",
   CREATE_TASK: "Create task",
   CREATE_APPOINTMENT: "Create appointment",
+  UPDATE_APPOINTMENT_STATUS: "Update appointment status",
   SEND_INTERNAL_NOTIFICATION: "Internal notification",
   FORMAT_DATE_TIME: "Date/Time formatter",
   FORMAT_NUMBER: "Number formatter",
@@ -32,6 +33,18 @@ const labels = {
 } as const
 
 describe("buildAutomationFlowGraph", () => {
+  test("shows the appointment status target and custom action name", () => {
+    const graph = buildAutomationFlowGraph({
+      triggerType: "APPOINTMENT_CREATED", pipelineId: "", targetStageId: "", conditions: [],
+      actions: [{ nodeKey: "status-1", type: "UPDATE_APPOINTMENT_STATUS", appointmentStatusConfig: {
+        actionName: "Confirm visit", targetMode: "TRIGGERING_APPOINTMENT", status: "CONFIRMED", filters: [],
+      } }],
+    }, null, labels)
+    const node = graph.nodes.find((candidate) => candidate.id === "action-status-1")
+    assert.equal(node?.data.label, "Confirm visit")
+    assert.equal(node?.data.subtitle, "Triggering appointment · Confirmed")
+  })
+
   test("labels a contact-created trigger without a pipeline", () => {
     const graph = buildAutomationFlowGraph({
       triggerType: "CONTACT_CREATED",

@@ -6967,6 +6967,7 @@ components:
             - CREATE_CONTACT
             - CREATE_TASK
             - CREATE_APPOINTMENT
+            - UPDATE_APPOINTMENT_STATUS
             - SEND_INTERNAL_NOTIFICATION
             - FORMAT_DATE_TIME
             - FORMAT_NUMBER
@@ -7028,6 +7029,8 @@ components:
           $ref: "#/components/schemas/AutomationTaskConfig"
         appointmentConfig:
           $ref: "#/components/schemas/AutomationAppointmentConfig"
+        appointmentStatusConfig:
+          $ref: "#/components/schemas/AutomationAppointmentStatusConfig"
         internalNotificationConfig:
           $ref: "#/components/schemas/AutomationInternalNotificationConfig"
         dateTimeFormatterConfig:
@@ -7551,6 +7554,70 @@ components:
               type: string
               maxLength: 500
               nullable: true
+    AutomationAppointmentStatusFilter:
+      oneOf:
+        - type: object
+          required: [source, fieldKey, operator]
+          properties:
+            source:
+              type: string
+              enum: [CONTACT_FIELD]
+            fieldKey:
+              type: string
+            operator:
+              type: string
+            compareValue:
+              nullable: true
+        - type: object
+          required: [source, customFieldId, operator]
+          properties:
+            source:
+              type: string
+              enum: [CONTACT_CUSTOM_FIELD]
+            customFieldId:
+              type: string
+            operator:
+              type: string
+            compareValue:
+              nullable: true
+        - type: object
+          required: [source, operator]
+          properties:
+            source:
+              type: string
+              enum: [CONTACT_TAGS]
+            operator:
+              type: string
+              enum: [EQUALS, NOT_EQUALS, IS_EMPTY, IS_NOT_EMPTY]
+            tagId:
+              type: string
+              nullable: true
+    AutomationAppointmentStatusConfig:
+      type: object
+      additionalProperties: false
+      required: [actionName, targetMode, status, filters]
+      description: >-
+        Updates one appointment for the current contact. A missing appointment or
+        nonmatching contact filter skips this action. The next upcoming target is
+        the earliest future appointment regardless of its current status.
+      properties:
+        actionName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        targetMode:
+          type: string
+          enum: [TRIGGERING_APPOINTMENT, NEXT_UPCOMING]
+          description: Triggering appointment requires an appointment-created or appointment-status-changed trigger.
+        status:
+          type: string
+          enum: [SCHEDULED, CONFIRMED, SHOW, NO_SHOW, CANCELED, COMPLETED]
+        filters:
+          type: array
+          maxItems: 20
+          description: Contact field, active non-sensitive custom field, or tag conditions combined with AND.
+          items:
+            $ref: "#/components/schemas/AutomationAppointmentStatusFilter"
     AutomationAppointmentConfig:
       type: object
       additionalProperties: false

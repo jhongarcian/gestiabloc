@@ -11,6 +11,7 @@ import {
   AutomationCustomFieldUpdatesSchema,
   AutomationDeleteOpportunityConfigSchema,
   AutomationInternalNotificationConfigSchema,
+  AutomationAppointmentStatusConfigSchema,
   AutomationOpportunityConfigSchema,
 } from "./opportunity-automations.js"
 import { contactTemplateCustomFieldKeys } from "./contact-templates.js"
@@ -189,7 +190,7 @@ export async function findEnabledAutomationReference(
       isEnabled: true,
       actions: {
         some: {
-          type: { in: ["CREATE_CONTACT", "CREATE_TASK", "CREATE_APPOINTMENT", "SEND_INTERNAL_NOTIFICATION", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "DELETE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
+          type: { in: ["CREATE_CONTACT", "CREATE_TASK", "CREATE_APPOINTMENT", "UPDATE_APPOINTMENT_STATUS", "SEND_INTERNAL_NOTIFICATION", "UPDATE_CONTACT_CUSTOM_FIELDS", "FORMAT_DATE_TIME", "FORMAT_NUMBER", "FORMAT_TEXT", "MATH_OPERATION", "UPDATE_OPPORTUNITY", "DELETE_OPPORTUNITY", "IF_ELSE", "SPLIT"] },
         },
       },
     },
@@ -208,6 +209,7 @@ export async function findEnabledAutomationReference(
           createContactConfig: true,
           taskConfig: true,
           appointmentConfig: true,
+          appointmentStatusConfig: true,
           internalNotificationConfig: true,
           customFieldUpdates: true,
           dateTimeFormatterConfig: true,
@@ -339,6 +341,15 @@ export async function findEnabledAutomationReference(
         )) {
           return { id: automation.id, name: automation.name }
         }
+        continue
+      }
+      if (action.type === "UPDATE_APPOINTMENT_STATUS") {
+        const appointmentStatus = AutomationAppointmentStatusConfigSchema.safeParse(action.appointmentStatusConfig)
+        if (!appointmentStatus.success) continue
+        if (appointmentStatus.data.filters.some((filter) =>
+          reference.kind === "customField" && filter.source === "CONTACT_CUSTOM_FIELD" && filter.customFieldId === reference.id ||
+          reference.kind === "tag" && filter.source === "CONTACT_TAGS" && filter.tagId === reference.id,
+        )) return { id: automation.id, name: automation.name }
         continue
       }
       if (action.type === "UPDATE_OPPORTUNITY") {

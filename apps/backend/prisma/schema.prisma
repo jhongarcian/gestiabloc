@@ -359,6 +359,7 @@ enum AutomationActionType {
   CREATE_CONTACT
   CREATE_TASK
   CREATE_APPOINTMENT
+  UPDATE_APPOINTMENT_STATUS
   SEND_INTERNAL_NOTIFICATION
   FORMAT_DATE_TIME
   FORMAT_NUMBER
@@ -1616,6 +1617,7 @@ model AutomationAction {
   createContactConfig        Json?
   taskConfig                 Json?
   appointmentConfig          Json?
+  appointmentStatusConfig    Json?
   internalNotificationConfig Json?
   dateTimeFormatterConfig    Json?
   numberFormatterConfig      Json?

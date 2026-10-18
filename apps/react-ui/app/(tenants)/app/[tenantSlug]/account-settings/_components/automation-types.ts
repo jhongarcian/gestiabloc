@@ -272,6 +272,13 @@ export type AutomationAppointmentConfig = {
   }
 }
 
+export type AutomationAppointmentStatusConfig = {
+  actionName: string
+  targetMode: "TRIGGERING_APPOINTMENT" | "NEXT_UPCOMING"
+  status: AppointmentAutomationStatus
+  filters: AutomationCondition[]
+}
+
 export type AutomationInternalNotificationConfig = {
   actionName: string
   recipient:
@@ -407,6 +414,7 @@ export type AutomationAction = {
     | "CREATE_CONTACT"
     | "CREATE_TASK"
     | "CREATE_APPOINTMENT"
+    | "UPDATE_APPOINTMENT_STATUS"
     | "SEND_INTERNAL_NOTIFICATION"
     | "FORMAT_DATE_TIME"
     | "FORMAT_NUMBER"
@@ -431,6 +439,7 @@ export type AutomationAction = {
   createContactConfig?: AutomationCreateContactConfig | null
   taskConfig?: AutomationTaskConfig | null
   appointmentConfig?: AutomationAppointmentConfig | null
+  appointmentStatusConfig?: AutomationAppointmentStatusConfig | null
   internalNotificationConfig?: AutomationInternalNotificationConfig | null
   dateTimeFormatterConfig?: AutomationDateTimeFormatterConfig | null
   numberFormatterConfig?: AutomationNumberFormatterConfig | null

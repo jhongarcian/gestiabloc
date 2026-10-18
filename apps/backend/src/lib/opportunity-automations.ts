@@ -44,7 +44,7 @@ import {
   resolveAutomationAppointmentStart,
   type AutomationAppointmentConfig,
 } from "./automation-appointment.js"
-import { createAppointmentInTransaction, getSafeCalendarSlotDuration } from "./appointment-booking.js"
+import { changeAppointmentStatusInTransaction, createAppointmentInTransaction, formatAppointmentStatusLabel, getSafeCalendarSlotDuration } from "./appointment-booking.js"
 import {
   AutomationDateTimeFormatterConfigSchema,
   resolveAutomationDateTimeFormatter,
@@ -126,6 +126,7 @@ export const AUTOMATION_ACTION_TYPES = [
   "CREATE_CONTACT",
   "CREATE_TASK",
   "CREATE_APPOINTMENT",
+  "UPDATE_APPOINTMENT_STATUS",
   "SEND_INTERNAL_NOTIFICATION",
   "FORMAT_DATE_TIME",
   "FORMAT_NUMBER",
@@ -358,6 +359,19 @@ export const AutomationConditionInputSchema = z.discriminatedUnion("source", [
   contactTagsConditionSchema,
 ])
 
+export const AutomationAppointmentStatusConfigSchema = z.object({
+  actionName: z.string().trim().min(1).max(120),
+  targetMode: z.enum(["TRIGGERING_APPOINTMENT", "NEXT_UPCOMING"]),
+  status: z.enum(["SCHEDULED", "CONFIRMED", "SHOW", "NO_SHOW", "CANCELED", "COMPLETED"]),
+  filters: z.array(z.discriminatedUnion("source", [
+    contactFieldConditionSchema,
+    customFieldConditionSchema,
+    contactTagsConditionSchema,
+  ])).max(20).default([]),
+}).strict()
+
+export type AutomationAppointmentStatusConfig = z.infer<typeof AutomationAppointmentStatusConfigSchema>
+
 export const AutomationContactChangeRuleSchema = z.discriminatedUnion("source", [
   z.object({ source: z.literal("CONTACT_FIELD"), operator: z.enum(["HAS_CHANGED", "HAS_CHANGED_TO"]), fieldKey: z.string().trim().min(1), value: z.unknown().optional() }).strict(),
   z.object({ source: z.literal("CONTACT_CUSTOM_FIELD"), operator: z.enum(["HAS_CHANGED", "HAS_CHANGED_TO"]), customFieldId: idSchema, value: z.unknown().optional() }).strict(),
@@ -484,6 +498,11 @@ const NonBranchAutomationActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("CREATE_APPOINTMENT"),
     nodeKey: actionNodeKeySchema,
     appointmentConfig: AutomationAppointmentConfigSchema,
+  }),
+  z.object({
+    type: z.literal("UPDATE_APPOINTMENT_STATUS"),
+    nodeKey: actionNodeKeySchema,
+    appointmentStatusConfig: AutomationAppointmentStatusConfigSchema,
   }),
   z.object({
     type: z.literal("SEND_INTERNAL_NOTIFICATION"),
@@ -646,6 +665,7 @@ const legacyRoutingActionNullFields = {
   createContactConfig: z.null().optional(),
   taskConfig: z.null().optional(),
   appointmentConfig: z.null().optional(),
+  appointmentStatusConfig: z.null().optional(),
   internalNotificationConfig: z.null().optional(),
   dateTimeFormatterConfig: z.null().optional(),
   numberFormatterConfig: z.null().optional(),
@@ -1744,6 +1764,48 @@ export async function validateAutomationConfiguration(
     }
   })
 
+  const normalizeAppointmentStatusFilter = (condition: AutomationAppointmentStatusConfig["filters"][number]) => {
+    if (condition.source === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === condition.fieldKey)
+      if (!field || ["status", "assigned_to", "tags"].includes(field.key)) {
+        throw new AutomationConfigurationError("INVALID_CONTACT_FIELD", "Select an available contact field.")
+      }
+      if (!getAutomationOperatorsForFieldType(field.fieldType).includes(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_CONDITION_OPERATOR", `The selected operator is not available for ${field.label}.`)
+      }
+      return {
+        source: condition.source,
+        fieldKey: field.key,
+        operator: condition.operator,
+        compareValue: normalizeCompareValue(condition.operator, condition.compareValue, valueTypeForCustomField(field.fieldType)),
+      }
+    }
+    if (condition.source === "CONTACT_TAGS") {
+      if (!["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"].includes(condition.operator)) {
+        throw new AutomationConfigurationError("INVALID_CONDITION_OPERATOR", "The selected operator is not available for contact tags.")
+      }
+      const needsTag = condition.operator === "EQUALS" || condition.operator === "NOT_EQUALS"
+      if (needsTag && (!condition.tagId || !tagIds.has(condition.tagId))) {
+        throw new AutomationConfigurationError("INVALID_TAG", "Select a tenant tag.")
+      }
+      return { source: condition.source, operator: condition.operator, tagId: needsTag ? condition.tagId : null }
+    }
+    const field = fieldMap.get(condition.customFieldId)
+    if (!field || !field.isActive || field.isEncrypted || field.isSensitive) {
+      throw new AutomationConfigurationError("INVALID_CUSTOM_FIELD", "Select an active, non-sensitive custom field.")
+    }
+    if (!getAutomationOperatorsForFieldType(field.fieldType).includes(condition.operator)) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_OPERATOR", `The selected operator is not available for ${field.label}.`)
+    }
+    const compareValue = normalizeCompareValue(condition.operator, condition.compareValue, valueTypeForCustomField(field.fieldType))
+    const options = fieldOptions(field)
+    const comparisonValues = Array.isArray(compareValue) ? compareValue : [compareValue]
+    if (options.length > 0 && !EMPTY_OPERATORS.has(condition.operator) && comparisonValues.some((value) => typeof value === "string" && !options.includes(value))) {
+      throw new AutomationConfigurationError("INVALID_CONDITION_VALUE", `${field.label} has an invalid option.`)
+    }
+    return { source: condition.source, customFieldId: field.id, operator: condition.operator, compareValue }
+  }
+
   const actionNodeKeys = new Set<string>()
   let totalActionCount = 0
   let automationOutputs = new Map<string, AutomationValueKind>()
@@ -2617,6 +2679,20 @@ export async function validateAutomationConfiguration(
         },
       }
     }
+    if (action.type === "UPDATE_APPOINTMENT_STATUS") {
+      const config = action.appointmentStatusConfig
+      if (config.targetMode === "TRIGGERING_APPOINTMENT" &&
+        input.trigger.type !== "APPOINTMENT_CREATED" && input.trigger.type !== "APPOINTMENT_STATUS_CHANGED") {
+        throw new AutomationConfigurationError("INVALID_APPOINTMENT_TARGET", "Triggering appointment is only available for appointment automations.")
+      }
+      return {
+        ...base,
+        appointmentStatusConfig: {
+          ...config,
+          filters: config.filters.map(normalizeAppointmentStatusFilter),
+        },
+      }
+    }
     if (action.type === "SEND_INTERNAL_NOTIFICATION") {
       const config = action.internalNotificationConfig
       const availableOutputs = [...automationOutputs.keys()]
@@ -3295,6 +3371,7 @@ export function automationActionSnapshot(action: any): RuntimeAutomationAction {
         createContactConfig: action.createContactConfig,
         taskConfig: action.taskConfig,
         appointmentConfig: action.appointmentConfig,
+        appointmentStatusConfig: action.appointmentStatusConfig,
         internalNotificationConfig: action.internalNotificationConfig,
         dateTimeFormatterConfig: action.dateTimeFormatterConfig,
         numberFormatterConfig: action.numberFormatterConfig,
@@ -3859,6 +3936,37 @@ async function removeContactFromWorkflowRuns(
   return { targetName: target.name, removedCount, exitCurrentRun, details }
 }
 
+function validateAppointmentStatusRuntimeFilters(
+  filters: AutomationAppointmentStatusConfig["filters"],
+  catalog: AutomationRuntimeCatalog,
+) {
+  for (const filter of filters) {
+    if (filter.source === "CONTACT_FIELD") {
+      const field = CONTACT_TEMPLATE_REGULAR_FIELDS.find((candidate) => candidate.key === filter.fieldKey)
+      if (!field || ["status", "assigned_to", "tags"].includes(field.key) ||
+        !getAutomationOperatorsForFieldType(field.fieldType).includes(filter.operator)) {
+        throw new Error("A configured appointment contact filter is unavailable.")
+      }
+    } else if (filter.source === "CONTACT_CUSTOM_FIELD") {
+      const field = catalog.fieldMap.get(filter.customFieldId)
+      if (!field || !field.isActive || field.isEncrypted || field.isSensitive ||
+        !getAutomationOperatorsForFieldType(field.fieldType).includes(filter.operator)) {
+        throw new Error("A configured appointment custom-field filter is unavailable.")
+      }
+      const options = fieldOptions(field)
+      const values = Array.isArray(filter.compareValue) ? filter.compareValue : [filter.compareValue]
+      if (options.length > 0 && !EMPTY_OPERATORS.has(filter.operator) &&
+        values.some((value) => typeof value === "string" && !options.includes(value))) {
+        throw new Error("A configured appointment custom-field option is unavailable.")
+      }
+    } else if (!["EQUALS", "NOT_EQUALS", "IS_EMPTY", "IS_NOT_EMPTY"].includes(filter.operator) ||
+      ((filter.operator === "EQUALS" || filter.operator === "NOT_EQUALS") &&
+        (!filter.tagId || !catalog.tagIds.has(filter.tagId)))) {
+      throw new Error("A configured appointment tag filter is unavailable.")
+    }
+  }
+}
+
 async function applyAutomationActionInner(
   prismaTx: any,
   params: {
@@ -4360,6 +4468,59 @@ async function applyAutomationActionInner(
         details: `Created appointment “${title}” for ${assigneeLabel} at ${new Intl.DateTimeFormat("en-US", { timeZone: catalog.timezone, dateStyle: "medium", timeStyle: "short" }).format(startAt)}.`,
         queuedRunCount: result.automation.queuedAutomationCount,
       }
+    } else if (action.type === "UPDATE_APPOINTMENT_STATUS") {
+      const config: AutomationAppointmentStatusConfig = action.appointmentStatusConfig
+      validateAppointmentStatusRuntimeFilters(config.filters, catalog)
+      if (config.filters.length > 0) {
+        const contact = await prismaTx.contact.findFirst({
+          where: { tenantId, id: contactId },
+          select: CONTACT_AUTOMATION_SNAPSHOT_SELECT,
+        })
+        if (!contact) throw new Error("The contact for this appointment is unavailable.")
+        const evaluation = evaluateAutomationConditions({ conditions: config.filters }, { valueCents: null }, contact, catalog)
+        if (!evaluation.matches) return "Skipped updating appointment status because the contact filters did not match."
+      }
+
+      const targetLabel = config.targetMode === "TRIGGERING_APPOINTMENT" ? "triggering appointment" : "next upcoming appointment"
+      const maxAttempts = config.targetMode === "NEXT_UPCOMING" ? 3 : 1
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const appointmentId = config.targetMode === "TRIGGERING_APPOINTMENT"
+          ? eventContext.appointmentId
+          : (await prismaTx.appointment.findFirst({
+              where: { tenantId, contactId, startAt: { gt: new Date() } },
+              orderBy: [{ startAt: "asc" }, { id: "asc" }],
+              select: { id: true },
+            }))?.id
+        if (!appointmentId) return `No ${targetLabel} was available; no status change was needed.`
+        const result = await changeAppointmentStatusInTransaction(prismaTx, {
+          tenantId,
+          contactId,
+          appointmentId,
+          status: config.status,
+          actorDisplayName: `Automation · ${automationName}`,
+          requireFuture: config.targetMode === "NEXT_UPCOMING",
+          automationEvent: {
+            chainId: eventContext.chainId,
+            parentEventId: eventContext.eventId,
+            chainDepth: (eventContext.chainDepth ?? 0) + 1,
+            sourceAutomationId: automationId,
+            sourceAutomationName: automationName,
+            sourceNodeKey: action.nodeKey,
+          },
+        })
+        if (!result.ok && result.error === "APPOINTMENT_NOT_FOUND") {
+          if (config.targetMode === "NEXT_UPCOMING") continue
+          return `No ${targetLabel} was available; no status change was needed.`
+        }
+        if (!result.ok) throw new Error(`The appointment time is unavailable. ${result.reasons.join(" ")}`)
+        const statusLabel = formatAppointmentStatusLabel(config.status)
+        if (!result.changed) return `The ${targetLabel} is already ${statusLabel}; no status change was needed.`
+        return {
+          details: `Changed the ${targetLabel} to ${statusLabel}.`,
+          queuedRunCount: result.automation?.queuedAutomationCount ?? 0,
+        }
+      }
+      return "No next upcoming appointment was available after selection; no status change was needed."
     } else if (action.type === "SEND_INTERNAL_NOTIFICATION") {
       const config: AutomationInternalNotificationConfig = action.internalNotificationConfig
       let recipientUserId: string
@@ -5312,6 +5473,7 @@ type AutomationOpportunityEventContext = {
   targetResult?: "OPEN" | "WON" | "LOST" | null
   occurredAt?: string | null
   eventId?: string | null
+  appointmentId?: string | null
   chainId?: string | null
   chainDepth?: number
   transitionHistory?: OpportunityAutomationTransition[]
@@ -5364,6 +5526,7 @@ function normalizeOpportunityEventContext(value: unknown): AutomationOpportunity
       : null,
     occurredAt: typeof record.occurredAt === "string" ? record.occurredAt : null,
     eventId: typeof record.eventId === "string" ? record.eventId : null,
+    appointmentId: typeof record.appointmentId === "string" ? record.appointmentId : null,
     chainId: typeof record.chainId === "string" ? record.chainId : null,
     chainDepth: typeof record.chainDepth === "number" && Number.isInteger(record.chainDepth)
       ? record.chainDepth

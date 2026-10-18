@@ -920,6 +920,7 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
           targetResult: event.targetResult,
           occurredAt: event.createdAt instanceof Date ? event.createdAt.toISOString() : String(event.createdAt),
           eventId: event.id,
+          appointmentId: event.appointmentId,
           chainId: event.chainId,
           chainDepth: event.chainDepth,
           transitionHistory: event.transitionHistory,
@@ -1073,6 +1074,7 @@ async function recordDispatchFailure(prismaClient: any, dispatchId: string, erro
             ? dispatch.event.createdAt.toISOString()
             : String(dispatch.event.createdAt),
           eventId: dispatch.event.id,
+          appointmentId: dispatch.event.appointmentId,
           chainId: dispatch.event.chainId,
           chainDepth: dispatch.event.chainDepth,
           transitionHistory: dispatch.event.transitionHistory,
