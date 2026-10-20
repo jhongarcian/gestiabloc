@@ -4814,7 +4814,7 @@ paths:
     post:
       tags: [Services]
       summary: Create contact service process from template
-      description: Enrolls an active offering under an active parent. Resolves billing, checklist, and professional sections transactionally. Stores an immutable billing snapshot including price, currency, tax policy, deposit, and installment terms. Later parent or child billing edits never recalculate this purchase or its payment requirements.
+      description: Enrolls an active offering under an active parent. Resolves billing, checklist, professionals, and steps transactionally. Captures configuration and attribution snapshots. When steps are configured and no legacy template is explicitly selected, creates independent enrolled step definitions and the first entry occurrence with a deadline measured from actual entry. Stores an immutable billing snapshot including price, currency, tax policy, deposit, and installment terms. Later parent or child billing edits never recalculate this purchase or its payment requirements.
       security:
         - cookieAuth: []
       parameters:
@@ -10765,6 +10765,80 @@ components:
         sortOrder:
           type: integer
           minimum: 0
+    ServiceStepInput:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        instructions: { type: string, nullable: true, maxLength: 10000 }
+        completionDuration: { type: integer, minimum: 1, maximum: 5256000, default: 3 }
+        completionUnit: { type: string, enum: [MINUTES, HOURS, DAYS], default: DAYS }
+      description: A positive whole-number completion timeframe, limited to ten years after converting units. The clock starts on actual entry, not the service start date.
+    ServiceStepUpdateInput:
+      allOf:
+        - $ref: "#/components/schemas/ServiceStepInput"
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: Active step owned by this service. Omit for new steps. Foreign, duplicate, unknown, and archived IDs are rejected atomically.
+    ServiceStep:
+      allOf:
+        - $ref: "#/components/schemas/ServiceStepUpdateInput"
+        - type: object
+          properties:
+            sortOrder: { type: integer }
+    ServiceStepOccurrence:
+      type: object
+      properties:
+        id: { type: string }
+        occurrenceNumber: { type: integer, minimum: 1 }
+        entryKey: { type: string }
+        status: { type: string, enum: [ACTIVE, COMPLETED, SKIPPED, CANCELED] }
+        enteredAt: { type: string, format: date-time }
+        dueAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+        resolutionReason: { type: string, nullable: true }
+      description: A saved entry into an enrolled step. Revisits create new occurrences. Unentered steps have no occurrence or deadline. Only one occurrence can be active per enrollment.
+    EnrolledServiceStep:
+      allOf:
+        - $ref: "#/components/schemas/ServiceStep"
+        - type: object
+          properties:
+            sourceStepId: { type: string }
+            occurrences:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceStepOccurrence"
+      description: An independent step definition captured at enrollment; id identifies the enrolled definition and sourceStepId retains the configuration attribution.
+    ServiceWorkflowKind:
+      type: string
+      enum: [LEGACY_TEMPLATE, SERVICE_STEPS, NONE]
+    EnrollmentConfigurationSnapshot:
+      type: object
+      readOnly: true
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        service: { type: object }
+        inheritance: { type: object }
+        billing: { type: object }
+        workflowKind:
+          $ref: "#/components/schemas/ServiceWorkflowKind"
+        checklistItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceCatalogChecklistItem"
+        professionals:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceCatalogProfessional"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceStep"
+        followUpTemplateVersionId: { type: string, nullable: true }
+      description: Internal resolved setup saved at purchase. Catalog edits do not replace this snapshot or enrolled work. Earlier purchases freeze available legacy details during migration.
     ServiceSectionMode:
       type: string
       enum: [INHERIT, CUSTOM]
@@ -10781,6 +10855,8 @@ components:
     ServiceInheritance:
       type: object
       properties:
+        steps:
+          $ref: "#/components/schemas/ServiceSectionSource"
         billing:
           $ref: "#/components/schemas/ServiceSectionSource"
         checklist:
@@ -10806,6 +10882,14 @@ components:
       type: object
       required: [name, basePriceCents]
       properties:
+        stepsMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
+        steps:
+          type: array
+          maxItems: 100
+          description: Complete active step collection in canonical order. Saves retain existing IDs and archive omissions. Inherited sections are read-only; change stepsMode in a separate request to customize or restore defaults. Configuration saves do not advance enrollments or dispatch automations.
+          items:
+            $ref: "#/components/schemas/ServiceStepInput"
         billingMode:
           $ref: "#/components/schemas/ServiceSectionMode"
         checklistMode:
@@ -10891,6 +10975,14 @@ components:
       description: Updates configuration. kind and parentServiceId may be echoed unchanged but cannot be changed after creation. Change a section mode in a separate request without section values. CUSTOM copies current effective settings into independent records with new collection IDs. INHERIT restores current parent defaults and archives local collection records while preserving enrollment history. Inherited sections reject direct edits. Mode changes and all other updates are atomic. Billing edits apply only to future purchases.
       type: object
       properties:
+        stepsMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
+        steps:
+          type: array
+          maxItems: 100
+          description: Complete active step collection in canonical order. Saves retain existing IDs and archive omissions. Inherited sections are read-only; change stepsMode in a separate request to customize or restore defaults. Configuration saves do not advance enrollments or dispatch automations.
+          items:
+            $ref: "#/components/schemas/ServiceStepUpdateInput"
         billingMode:
           $ref: "#/components/schemas/ServiceSectionMode"
         checklistMode:
@@ -10955,6 +11047,14 @@ components:
     AccountSettingsServiceTemplateItem:
       type: object
       properties:
+        stepsMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
+        steps:
+          type: array
+          maxItems: 100
+          description: Complete active step collection in canonical order. Saves retain existing IDs and archive omissions. Inherited sections are read-only; change stepsMode in a separate request to customize or restore defaults. Configuration saves do not advance enrollments or dispatch automations.
+          items:
+            $ref: "#/components/schemas/ServiceStep"
         billingMode:
           $ref: "#/components/schemas/ServiceSectionMode"
         checklistMode:
@@ -11557,6 +11657,12 @@ components:
           description: Responses contain effective billing, checklistItems, and professionals after resolving section inheritance. Collection IDs belong to the source service; customize before editing inherited items. Update responses include canonical active collections with their persisted IDs. Clients must use these IDs in subsequent saves. Duplicate, unknown, foreign-service, foreign-tenant, or archived IDs are rejected atomically.
           type: object
           properties:
+            stepsMode:
+              $ref: "#/components/schemas/ServiceSectionMode"
+            steps:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceStep"
             billingMode:
               $ref: "#/components/schemas/ServiceSectionMode"
             checklistMode:
@@ -12050,6 +12156,15 @@ components:
     ContactServiceListItem:
       type: object
       properties:
+        workflowKind:
+          $ref: "#/components/schemas/ServiceWorkflowKind"
+        configurationSnapshot:
+          $ref: "#/components/schemas/EnrollmentConfigurationSnapshot"
+        serviceSteps:
+          type: array
+          description: Saved definitions with occurrence history, returned by enrollment workspace views.
+          items:
+            $ref: "#/components/schemas/EnrolledServiceStep"
         id:
           type: string
         status:
@@ -12559,7 +12674,7 @@ components:
                   properties:
                     professionals:
                       type: array
-                      description: Available internal and external professionals configured for this service, in display order.
+                      description: Available professionals from the enrollment snapshot, retaining captured labels and excluding archived records from new assignments.
                       items:
                         $ref: "#/components/schemas/ServiceCatalogProfessional"
                 contactId:
@@ -12726,7 +12841,7 @@ components:
           type: string
           nullable: true
           minLength: 1
-          description: Active ServiceProfessional ID from the enrollment's effective professional section, including inherited parent professionals. The currently assigned archived professional may be retained unchanged, but archived professionals cannot be newly assigned. Null clears the assignment; omission leaves it unchanged. A real change creates a SERVICE_PROFESSIONAL_CHANGED Activity entry with previous/new IDs and names and the authenticated actor.
+          description: Active ServiceProfessional ID from the enrollment's saved professional list. Later catalog additions do not become assignment choices without an explicit configuration update. The currently assigned archived professional may be retained unchanged, but archived professionals cannot be newly assigned. Null clears the assignment; omission leaves it unchanged. A real change creates a SERVICE_PROFESSIONAL_CHANGED Activity entry with previous/new IDs and names and the authenticated actor.
         status:
           type: string
           enum: [PENDING, IN_PROGRESS, COMPLETED, CANCELED]

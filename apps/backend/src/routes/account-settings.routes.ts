@@ -3780,9 +3780,9 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
         skip,
         take: pageSize,
         select: {
-          id: true,
           ...serviceHierarchySelect,
           ...serviceConfigurationSelect,
+
           name: true,
           description: true,
           basePriceCents: true,
@@ -3873,9 +3873,9 @@ router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, n
       },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       select: {
-        id: true,
         ...serviceHierarchySelect,
         ...serviceConfigurationSelect,
+
         name: true,
         isActive: true,
         sortOrder: true,
@@ -3901,6 +3901,7 @@ router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, n
         isActive: item.isActive,
         sortOrder: item.sortOrder,
         checklistCount: item.checklistItems.length,
+        stepsCount: item.steps.length,
         followUpTemplateStepsCount: item.followUpTemplateSteps.length,
         followUpTemplatesCount: item.followUpTemplates.length,
         professionalsCount: item.professionals.length,
@@ -4792,10 +4793,9 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
     let service = await prismaWithContacts.service.findUnique({
       where: { id: recordId },
       select: {
-        id: true,
-        tenantId: true,
         ...serviceHierarchySelect,
         ...serviceConfigurationSelect,
+        tenantId: true,
         name: true,
         description: true,
         fitProfile: true,

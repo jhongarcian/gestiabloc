@@ -17,8 +17,7 @@ Names retain the existing account-wide uniqueness rule. Searches for a sub-servi
 
 Existing flat service records are preserved under an automatically created Existing services group
 per tenant. Original IDs, configuration, prices, and enrollment links remain unchanged; an available
-suffix is used if that group name is already taken. Billing, checklist, and professional inheritance are implemented below. Steps inheritance remains
-part of Chunk 7.
+suffix is used if that group name is already taken. Billing, checklist, and professional inheritance are implemented below. Steps inheritance and enrollment snapshots are implemented in Chunks 7–8 below.
 
 API additions:
 
@@ -50,13 +49,52 @@ and creates enrolled checklist records within the purchase transaction. Billing 
 currency, tax policy, deposit requirements, and installment terms. Existing purchases keep their total,
 payment policy, and displayed billing terms after configuration or tenant tax edits. The migration
 freezes available billing terms for earlier purchases while retaining recorded totals/currency/policy.
-Checklist label and professional attribution snapshots remain part of Chunk 8.
+Checklist label and professional attribution snapshots are implemented in Chunk 8 below.
 
 API mode fields are `billingMode`, `checklistMode`, and `professionalsMode`. GET/list/mutation responses
 contain effective values and an `inheritance` object with each section's mode and parent source ID.
 PATCH mode changes copy/archive records atomically with other submitted changes. A request cannot
 change a section's mode and submit values for that same section. Foreign, archived, or parent-owned
 IDs cannot be saved into an offering's custom collections.
+
+## Service-owned steps and enrollment snapshots (Chunks 7–8)
+
+The Steps tab is available for both parent defaults and sub-services. A step has a stable ID,
+name, instructions, order, and a positive integer completion timeframe in minutes, hours, or days
+(up to ten years). Admins can add, edit, drag, move up/down, or remove a step without a template.
+Step collection saves preserve IDs and archive omissions. New offerings inherit Steps by default;
+existing offerings retain CUSTOM. Customizing copies the current parent steps into independent IDs,
+and restoring parent steps archives local records. Configuration edits never advance an enrollment
+or run an automation.
+
+Each purchase captures an internal configuration snapshot containing service identity, section
+sources, billing terms, checklist details, professional attribution, step definitions, and the selected
+legacy template version when applicable. Enrolled checklist labels, descriptions, required flags, and
+order are read from captured columns. Reads no longer append catalog checklist items to a captured
+enrollment. Assignment choices use its saved professional list while still excluding archived records
+from new assignments. The existing assigned person keeps their captured attribution; explicit
+reassignment captures the selected attribution. Legacy records freeze the available details during
+migration, preserving their IDs, statuses, timestamps, template runs, and billing snapshots.
+
+When service-owned steps are configured and no legacy template is explicitly requested, enrollment
+uses SERVICE_STEPS. It copies the resolved step definitions and enters only the first step. The first
+entry uses the actual enrollment creation time; backdating the service's startedAt does not backdate
+the step clock. Future steps have no occurrence or deadline until entered. Every entry has an immutable
+occurrence number, entry key, entry timestamp, deadline, status, and resolution details. An idempotent,
+enrollment-locked entry primitive preserves earlier entries on a revisit and prevents concurrent
+active occurrences. Source IDs are retained as attribution, so archiving configuration does not remove
+enrolled definitions or occurrence history.
+
+Enrollment overview and follow-up views display the saved service steps and entry history. Existing
+legacy template execution continues for legacy enrollments. Legacy step-mutation APIs reject
+SERVICE_STEPS enrollments. Completion, movement, scheduling overrides, and automation dispatch are
+implemented in later chunks; this change establishes their saved definitions and entry history.
+
+API: POST/PATCH account-settings service accepts `steps` and `stepsMode`. Collection array order is
+canonical; new entries omit IDs and saved entries retain IDs. Responses contain effective steps and
+Steps inheritance metadata. Enrollment workspace responses expose `workflowKind`, `serviceSteps`
+(with occurrences), and a read-only `configurationSnapshot`. The purchase catalog returns no legacy
+template choices when service-owned steps are available.
 
 ## 1. Scope
 

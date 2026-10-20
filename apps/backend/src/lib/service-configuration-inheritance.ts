@@ -27,7 +27,11 @@ export const billingSelect = {
 } satisfies Prisma.ServiceSelect
 const sectionSelect = {
   ...billingSelect,
-  steps: { where: { archivedAt: null }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }], select: serviceStepSelect },
+  steps: {
+    where: { archivedAt: null },
+    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+    select: serviceStepSelect,
+  },
   checklistItems: {
     where: { archivedAt: null },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
@@ -40,7 +44,9 @@ const sectionSelect = {
   },
 } satisfies Prisma.ServiceSelect
 export const serviceConfigurationSelect = {
-  id: true, name: true, description: true,
+  id: true,
+  name: true,
+  description: true,
   ...sectionSelect,
   kind: true,
   billingMode: true,
@@ -78,7 +84,10 @@ export function resolveServiceConfiguration<T extends Configuration>(service: T)
       : service.professionals,
     parentService: parent ? { id: parent.id, name: parent.name, isActive: parent.isActive } : null,
     inheritance: {
-      steps: { mode: service.stepsMode, sourceServiceId: inherited(service.stepsMode) ? parent!.id : null },
+      steps: {
+        mode: service.stepsMode,
+        sourceServiceId: inherited(service.stepsMode) ? parent!.id : null,
+      },
       billing: {
         mode: service.billingMode,
         sourceServiceId: inherited(service.billingMode) ? parent!.id : null,
@@ -172,8 +181,12 @@ export async function prepareServiceSectionsTx(
           next === "CUSTOM" ? effective.professionals.map(({ id, user, ...item }) => item) : [],
       })
     } else {
-      await saveServiceStepsTx(tx, tenantId, serviceId,
-        next === "CUSTOM" ? effective.steps.map(({ id, ...step }) => step) : [])
+      await saveServiceStepsTx(
+        tx,
+        tenantId,
+        serviceId,
+        next === "CUSTOM" ? effective.steps.map(({ id, ...step }) => step) : [],
+      )
     }
   }
   return data

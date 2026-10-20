@@ -76,6 +76,8 @@ import {
 import { ServiceSectionInheritance, type ServiceSectionMode } from "./service-section-inheritance"
 import { ServicesConfigPanel } from "./services-config-panel"
 
+import { ServiceStepsPanel, type ServiceStepItem } from "./service-steps-panel"
+
 export type ServiceDetailsPanelProps = {
   tenantId: string
   tenantSlug: string
@@ -85,6 +87,8 @@ export type ServiceDetailsPanelProps = {
     billingMode: ServiceSectionMode
     checklistMode: ServiceSectionMode
     professionalsMode: ServiceSectionMode
+    stepsMode: ServiceSectionMode
+    steps: ServiceStepItem[]
     parentServiceId: string | null
     parentService: { id: string; name: string; isActive: boolean } | null
     name: string
@@ -392,6 +396,7 @@ function parseTextareaList(value: string, maxItems: number) {
 
 export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDetailsPanelProps) {
   const isGroup = service.kind === "GROUP"
+  const [configuredSteps, setConfiguredSteps] = useState(service.steps)
   const [sectionModes, setSectionModes] = useState({
     billingMode: service.billingMode,
     checklistMode: service.checklistMode,
@@ -409,6 +414,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     | "follow-up-templates"
     | "professionals"
     | "sub-services"
+    | "steps"
   >(service.kind === "GROUP" ? "sub-services" : "overview")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const saveInFlight = useRef(false)
@@ -527,7 +533,9 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
   const requiredChecklistCount = checklistItems.filter((item) => item.isRequired).length
   const optionalChecklistCount = checklistItems.length - requiredChecklistCount
   const followUpsComplete =
-    service.followUpTemplates.length > 0 || service.followUpTemplateSteps.length > 0
+    configuredSteps.length > 0 ||
+    service.followUpTemplates.length > 0 ||
+    service.followUpTemplateSteps.length > 0
   const totalTemplateNodes = useMemo(
     () =>
       service.followUpTemplates.reduce(
@@ -653,6 +661,14 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         isComplete: checklistComplete,
       },
       {
+        key: "steps" as const,
+        label: "Steps",
+        value: configuredSteps.length,
+        hint: configuredSteps.length ? "Workflow configured" : "No steps yet",
+        icon: Route,
+        isComplete: configuredSteps.length > 0,
+      },
+      {
         key: "follow-up-templates" as const,
         label: "Follow-Up Templates",
         value: service.followUpTemplates.length,
@@ -671,6 +687,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     ],
     [
       allowPartialPayments,
+      configuredSteps.length,
       checklistComplete,
       checklistItems.length,
       followUpsComplete,
@@ -1182,7 +1199,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
             <h2 className="text-2xl font-semibold text-slate-950">{name}</h2>
             <p className="text-sm text-slate-600">
               {isGroup
-                ? "Set the billing, checklist, and professional defaults your sub-services can inherit."
+                ? "Set the billing, checklist, step, and professional defaults your sub-services can inherit."
                 : "Configure overview, checklist, follow-up templates, and professionals from one workspace."}
             </p>
           </div>
@@ -1217,7 +1234,9 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       <section className="rounded-[20px] border border-slate-200 bg-white p-4 md:p-5">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {summaryItems
-            .filter((item) => !isGroup || item.key !== "follow-up-templates")
+            .filter(
+              (item) => item.key !== "follow-up-templates" || (!isGroup && !configuredSteps.length),
+            )
             .map((item) => {
               const Icon = item.icon
 
@@ -1274,7 +1293,8 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               | "checklists"
               | "follow-up-templates"
               | "professionals"
-              | "sub-services",
+              | "sub-services"
+              | "steps",
           )
         }
         className="space-y-5"
@@ -1302,6 +1322,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
             >
               Checklists
             </TabsTrigger>
+            <TabsTrigger value="steps">Steps</TabsTrigger>
             {!isGroup ? (
               <TabsTrigger
                 value="follow-up-templates"
@@ -1328,6 +1349,17 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
             />
           </TabsContent>
         ) : null}
+        <TabsContent value="steps">
+          <ServiceStepsPanel
+            tenantId={tenantId}
+            tenantSlug={tenantSlug}
+            serviceId={service.id}
+            parentService={service.parentService}
+            initialSteps={configuredSteps}
+            initialMode={service.stepsMode}
+            onSaved={setConfiguredSteps}
+          />
+        </TabsContent>
         <TabsContent value="overview" className="mt-0 space-y-5">
           <section className="rounded-[20px] border border-slate-200 bg-white p-5">
             <div className="space-y-1">

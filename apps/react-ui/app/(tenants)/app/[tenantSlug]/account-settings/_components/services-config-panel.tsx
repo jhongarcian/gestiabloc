@@ -74,6 +74,7 @@ type ServiceItem = {
   followUpTemplateSteps: Array<{ id: string }>
   followUpTemplates?: Array<{ id: string }>
   professionals: Array<{ id: string }>
+  steps: Array<{ id: string }>
 }
 type ServicesResponse = {
   items: ServiceItem[]
@@ -229,7 +230,9 @@ function ServiceRow({
   const ready =
     service.checklistItems.length > 0 &&
     service.professionals.length > 0 &&
-    ((service.followUpTemplates?.length ?? 0) > 0 || service.followUpTemplateSteps.length > 0)
+    (service.steps.length > 0 ||
+      (service.followUpTemplates?.length ?? 0) > 0 ||
+      service.followUpTemplateSteps.length > 0)
   return (
     <TableRow
       ref={setNodeRef}

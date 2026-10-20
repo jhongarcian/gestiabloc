@@ -224,7 +224,11 @@ type ServiceProfessional = {
   } | null
 }
 
+import { ServiceStepSnapshot, type EnrolledServiceStep } from "./service-step-snapshot"
+
 type ContactServiceDetails = {
+  workflowKind?: "LEGACY_TEMPLATE" | "SERVICE_STEPS" | "NONE"
+  serviceSteps?: EnrolledServiceStep[]
   id: string
   contactId: string
   contactName?: string
@@ -3739,6 +3743,8 @@ export function ContactServiceDetailsPanel({
           id="service-workspace-content"
           className="min-h-0 min-w-0 flex-1 scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] bg-background px-4 py-5 md:px-5 md:py-6"
         >
+        {serviceData.workflowKind === "SERVICE_STEPS" && (activeView === "overview" || activeView === "follow-up") ?
+          <ServiceStepSnapshot steps={serviceData.serviceSteps ?? []} timezone={serviceData.timezone} /> : null}
         {activeView === "overview" ? (
           <section aria-labelledby="service-overview-title">
             <h2 id="service-overview-title" className="sr-only">Service overview</h2>
@@ -4162,7 +4168,7 @@ export function ContactServiceDetailsPanel({
           </section>
         ) : null}
 
-        {activeView === "follow-up" ? (
+        {activeView === "follow-up" && serviceData.workflowKind !== "SERVICE_STEPS" ? (
         <section
           id="service-follow-ups"
           className="scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)]"

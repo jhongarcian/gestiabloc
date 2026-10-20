@@ -1,8 +1,8 @@
-Status: Chunks 1–6 implemented. Chunk 7 is next.
+Status: Chunks 1–8 implemented. Chunk 9 is next.
 
 # Build the transition in small, reviewable chunks
 
-Keep each chunk focused on one behavior, include its relevant tests, and finish its acceptance check before moving on. **Next: Chunk 7.**
+Keep each chunk focused on one behavior, include its relevant tests, and finish its acceptance check before moving on. **Next: Chunk 9.**
 
 The agreed direction stays the same: parent services group enrollable sub-services; configuration inherits by section; Automations handles actions; active enrollments receive reviewed updates. No customer-data backfill is needed.
 

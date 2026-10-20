@@ -221,6 +221,7 @@ type ServiceDetailsResponse = {
       isRequired: boolean
       sortOrder: number
     }>
+    steps: Array<{ id: string; title: string }>
     followUpTemplates: Array<{
       id: string
       name: string
@@ -2326,73 +2327,90 @@ export function ContactServicesPanel({
                     Set up the service follow-up
                   </h3>
                   <p className="text-sm leading-6 text-slate-600">
-                    Choose which follow-up template should start and who should be in charge of the follow-up work.
+                    {(createServiceDetails?.steps.length ?? 0) > 0
+                      ? "Review the service steps and choose who should coordinate the follow-up work."
+                      : "Choose which follow-up template should start and who should be in charge of the follow-up work."}
                   </p>
                 </div>
 
                 <FlowStepCard
                   stepNumber="1"
-                  title="Which follow-up plan should start?"
-                  description="Use the default published template or choose a different published template for this transaction."
+                  title={
+                    (createServiceDetails?.steps.length ?? 0) > 0
+                      ? "Service steps"
+                      : "Which follow-up plan should start?"
+                  }
+                  description={
+                    (createServiceDetails?.steps.length ?? 0) > 0
+                      ? "This enrollment keeps its own copy of the service steps and instructions."
+                      : "Use the default published template or choose a different published template for this transaction."
+                  }
                   disabled={!createServiceId}
                 >
-                  <Field
-                    data-invalid={Boolean(createErrors.templateId)}
-                    data-disabled={!createServiceDetails || isSaving}
-                    className="gap-2"
-                  >
-                    <FieldLabel htmlFor="contact-service-transaction-template">
-                      Follow-up template
-                    </FieldLabel>
-                    <Select
-                      value={createTemplateId || "default"}
-                      onValueChange={(value) => {
-                        clearCreateError("templateId")
-                        setCreateTemplateId(value === "default" ? "" : value)
-                      }}
-                      disabled={!createServiceDetails || isSaving}
+                  {(createServiceDetails?.steps.length ?? 0) > 0 ? (
+                    <p className="text-sm text-slate-600">
+                      {createServiceDetails?.steps.length} saved steps will be included. The first step
+                      starts when the enrollment is created.
+                    </p>
+                  ) : (
+                    <Field
+                      data-invalid={Boolean(createErrors.templateId)}
+                      data-disabled={!createServiceDetails || isSaving}
+                      className="gap-2"
                     >
-                      <SelectTrigger
-                        id="contact-service-transaction-template"
-                        aria-invalid={Boolean(createErrors.templateId)}
-                        className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none data-[size=default]:h-11"
+                      <FieldLabel htmlFor="contact-service-transaction-template">
+                        Follow-up template
+                      </FieldLabel>
+                      <Select
+                        value={createTemplateId || "default"}
+                        onValueChange={(value) => {
+                          clearCreateError("templateId")
+                          setCreateTemplateId(value === "default" ? "" : value)
+                        }}
+                        disabled={!createServiceDetails || isSaving}
                       >
-                        <SelectValue placeholder="Use default template selection" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value="default" className="cursor-pointer">
-                            Use default published template
-                          </SelectItem>
-                          {(createServiceDetails?.followUpTemplates ?? []).map((template) => (
-                            <SelectItem key={template.id} value={template.id} className="cursor-pointer">
-                              {template.name}
+                        <SelectTrigger
+                          id="contact-service-transaction-template"
+                          aria-invalid={Boolean(createErrors.templateId)}
+                          className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none data-[size=default]:h-11"
+                        >
+                          <SelectValue placeholder="Use default template selection" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value="default" className="cursor-pointer">
+                              Use default published template
                             </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    {!createServiceId ? (
-                      <FieldDescription>
-                        Choose a service first to load its available follow-up templates.
-                      </FieldDescription>
-                    ) : (createServiceDetails?.followUpTemplates.length ?? 0) === 0 ? (
-                      <FieldDescription>
-                        No published templates are available for this service. The transaction can still proceed if the service has default follow-up steps.
-                      </FieldDescription>
-                    ) : (
-                      <FieldDescription>
-                        Leaving this on default uses the service&apos;s standard published template.
-                      </FieldDescription>
-                    )}
-                    <FieldError>{createErrors.templateId}</FieldError>
-                  </Field>
+                            {(createServiceDetails?.followUpTemplates ?? []).map((template) => (
+                              <SelectItem key={template.id} value={template.id} className="cursor-pointer">
+                                {template.name}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      {!createServiceId ? (
+                        <FieldDescription>
+                          Choose a service first to load its available follow-up templates.
+                        </FieldDescription>
+                      ) : (createServiceDetails?.followUpTemplates.length ?? 0) === 0 ? (
+                        <FieldDescription>
+                          No published templates are available for this service. The transaction can still proceed if the service has default follow-up steps.
+                        </FieldDescription>
+                      ) : (
+                        <FieldDescription>
+                          Leaving this on default uses the service&apos;s standard published template.
+                        </FieldDescription>
+                      )}
+                      <FieldError>{createErrors.templateId}</FieldError>
+                    </Field>
+                  )}
                 </FlowStepCard>
 
                 <FlowStepCard
                   stepNumber="2"
                   title="Who should be in charge of the follow up?"
-                  description="Optional. This user will be assigned to the follow-up steps created from the selected template."
+                  description="Optional. Choose the person responsible for coordinating this enrollment’s follow-up work."
                   disabled={!createServiceId}
                 >
                   <Field

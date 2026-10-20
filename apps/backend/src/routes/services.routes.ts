@@ -1,3 +1,7 @@
+import { createServiceStepOccurrenceTx, enrolledServiceStepsSelect } from "../lib/service-steps.js"
+import { captureEnrollmentConfiguration, readEnrollmentConfiguration, readProfessionalSnapshot,
+  professionalSnapshot, enrollmentProfessionalOptions, enrolledChecklistSnapshotSelect,
+  serializeEnrolledChecklistItem } from "../lib/service-enrollment-snapshots.js"
 import {
   serviceConfigurationSelect,
   resolveServiceConfiguration,
@@ -904,6 +908,11 @@ function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
 
 const contactServiceWorkspaceBaseSelect = {
   id: true,
+  tenantId: true,
+  workflowKind: true,
+  configurationSnapshot: true,
+  assignedProfessionalSnapshot: true,
+  serviceSteps: enrolledServiceStepsSelect,
   contactId: true,
   status: true,
   startedAt: true,
@@ -995,13 +1004,19 @@ const contactServiceWorkspaceBaseSelect = {
   },
 } as const
 
-function resolveEnrollmentConfiguration(item: any) {
+async function resolveEnrollmentConfiguration(item: any) {
   const effective = resolveServiceConfiguration(item.service)
   const billing = readBillingSnapshot(item.billingSnapshot)
+  const configuration = readEnrollmentConfiguration(item.configurationSnapshot)
+  const attribution = readProfessionalSnapshot(item.assignedProfessionalSnapshot)
+  const professionals = await enrollmentProfessionalOptions(prisma, item.tenantId, item.configurationSnapshot, effective.professionals)
   return {
     ...item,
+    assignedProfessional: attribution?.id === item.assignedProfessional?.id ? attribution : item.assignedProfessional,
     service: {
       ...effective,
+      ...(configuration ? { name: configuration.service.name, description: configuration.service.description } : {}),
+      professionals,
       ...(billing ? pickBilling(billing) : {}),
       tenant: {
         ...item.service.tenant,
@@ -1017,10 +1032,13 @@ function resolveEnrollmentConfiguration(item: any) {
   }
 }
 
-function serializeContactServiceWorkspaceBase(item: any, paidCents: number) {
-  item = resolveEnrollmentConfiguration(item)
+async function serializeContactServiceWorkspaceBase(item: any, paidCents: number) {
+  item = await resolveEnrollmentConfiguration(item)
   return {
     id: item.id,
+    workflowKind: item.workflowKind,
+    serviceSteps: item.serviceSteps ?? [],
+    configurationSnapshot: item.configurationSnapshot,
     contactId: item.contactId,
     status: item.status,
     startedAt: item.startedAt,
@@ -1766,6 +1784,7 @@ async function reconcileContactServiceCompletionFromFollowUps(
     },
     select: {
       id: true,
+      workflowKind: true,
       status: true,
       completedAt: true,
       totalPriceCents: true,
@@ -1779,7 +1798,7 @@ async function reconcileContactServiceCompletionFromFollowUps(
     },
   })
 
-  if (!contactService || contactService.status === "CANCELED") {
+  if (!contactService || contactService.status === "CANCELED" || contactService.workflowKind === "SERVICE_STEPS") {
     return contactService
   }
 
@@ -1987,7 +2006,8 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
         installmentFrequency: service.installmentFrequency,
         isActive: service.isActive,
         checklistItems: service.checklistItems,
-        followUpTemplates: service.followUpTemplates.map((template: any) => ({
+        steps: service.steps,
+        followUpTemplates: (service.steps.length ? [] : service.followUpTemplates).map((template: any) => ({
           id: template.id,
           name: template.name,
           isPublished: template.isPublished,
@@ -3358,6 +3378,8 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           id: true,
           status: true,
           purchasedAt: true,
+          tenantId: true, workflowKind: true, configurationSnapshot: true,
+          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect,
           totalPriceCents: true,
           currency: true,
           followUpCoordinatorUserId: true,
@@ -3435,6 +3457,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               checklistItemId: true,
+              ...enrolledChecklistSnapshotSelect,
               status: true,
               completedAt: true,
               checklistItem: {
@@ -3448,6 +3471,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               },
             },
             orderBy: [
+              { sortOrderSnapshot: "asc" },
               { checklistItem: { sortOrder: "asc" } },
               { createdAt: "asc" },
             ],
@@ -3469,7 +3493,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         })
         if (activatedId) activatedIds.push(activatedId)
 
-        const serviceChecklistItemIds = (item.service?.checklistItems ?? []).map(
+        const serviceChecklistItemIds = (item.configurationSnapshot ? [] : item.service?.checklistItems ?? []).map(
           (checklistItem: { id: string }) => checklistItem.id,
         )
         const existingChecklistItemIds = new Set(
@@ -3520,6 +3544,8 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           id: true,
           status: true,
           purchasedAt: true,
+          tenantId: true, workflowKind: true, configurationSnapshot: true,
+          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect,
           totalPriceCents: true,
           currency: true,
           followUpCoordinatorUserId: true,
@@ -3597,6 +3623,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               checklistItemId: true,
+              ...enrolledChecklistSnapshotSelect,
               status: true,
               completedAt: true,
               checklistItem: {
@@ -3610,6 +3637,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               },
             },
             orderBy: [
+              { sortOrderSnapshot: "asc" },
               { checklistItem: { sortOrder: "asc" } },
               { createdAt: "asc" },
             ],
@@ -3846,21 +3874,29 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
       }
       const activeChecklist = effective.checklistItems
+      const usesServiceSteps = !payload.followUpTemplateId && effective.steps.length > 0
+      const workflowKind = usesServiceSteps ? "SERVICE_STEPS" : selectedPublishedTemplate || templateStepsForEnrollment.length ? "LEGACY_TEMPLATE" : "NONE"
+      const billingSnapshot = { schemaVersion: 1, sourceServiceId: effective.inheritance.billing.sourceServiceId ?? payload.serviceId,
+        ...pickBilling(effective), ...tenantBilling, totalPriceCents }
+      const selectedProfessional = effective.professionals.find(p => p.id === payload.assignedProfessionalId) ?? null
       const contactService = await prismaTx.contactService.create({
         data: {
           tenantId,
           contactId: payload.contactId,
           serviceId: payload.serviceId,
-          followUpTemplateId: selectedPublishedTemplate?.id ?? null,
-          followUpTemplateVersionId: selectedPublishedTemplate?.activeVersion?.id ?? null,
+          workflowKind,
+          followUpTemplateId: usesServiceSteps ? null : selectedPublishedTemplate?.id ?? null,
+          followUpTemplateVersionId: usesServiceSteps ? null : selectedPublishedTemplate?.activeVersion?.id ?? null,
+          configurationSnapshot: captureEnrollmentConfiguration({ service: effective, billing: billingSnapshot, workflowKind,
+            followUpTemplateVersionId: usesServiceSteps ? null : selectedPublishedTemplate?.activeVersion?.id ?? null }),
+          assignedProfessionalSnapshot: selectedProfessional ? professionalSnapshot(selectedProfessional) : Prisma.DbNull,
           followUpCoordinatorUserId: payload.followUpAssignedToUserId ?? null,
           assignedProfessionalId: payload.assignedProfessionalId ?? null,
           status: "IN_PROGRESS",
           startedAt,
           purchasedAt,
           totalPriceCents,
-          billingSnapshot: { schemaVersion: 1, sourceServiceId: effective.inheritance.billing.sourceServiceId ?? payload.serviceId,
-            ...pickBilling(effective), ...tenantBilling, totalPriceCents },
+          billingSnapshot,
           currency: effective.currency,
           allowPartialPayments: effective.allowPartialPayments,
           notes: payload.notes ?? null,
@@ -3886,16 +3922,25 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
 
       if (activeChecklist.length) {
         await prismaTx.contactServiceChecklistItem.createMany({
-          data: activeChecklist.map((item: { id: string }) => ({
+          data: activeChecklist.map(item => ({
             tenantId,
             contactServiceId: contactService.id,
             checklistItemId: item.id,
+            labelSnapshot: item.label, descriptionSnapshot: item.description,
+            isRequiredSnapshot: item.isRequired, sortOrderSnapshot: item.sortOrder,
           })),
         })
       }
 
       let followUpRunId: string | null = null
-      if (selectedPublishedTemplate?.activeVersion) {
+      if (usesServiceSteps) {
+        const definitions = await tx.contactServiceStep.createManyAndReturn({
+          data: effective.steps.map(({ id, ...step }) => ({ ...step, sourceStepId: id, tenantId, contactServiceId: contactService.id })),
+        })
+        const first = definitions.sort((a, b) => a.sortOrder - b.sortOrder)[0]
+        await createServiceStepOccurrenceTx(tx, { tenantId, contactServiceId: contactService.id,
+          stepId: first.id, entryKey: "enrollment", enteredAt: new Date(), enteredByUserId: authed.user.id })
+      } else if (selectedPublishedTemplate?.activeVersion) {
         const run = await createFollowUpRunTx({
           prismaTx,
           tenantId,
@@ -3929,7 +3974,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         })
       }
 
-      if (selectedPublishedTemplate?.id && !selectedPublishedTemplate.activeVersion) {
+      if (!usesServiceSteps && selectedPublishedTemplate?.id && !selectedPublishedTemplate.activeVersion) {
         await executeFollowUpFromStart({
           prismaTx,
           tenantId,
@@ -3989,6 +4034,8 @@ router.get(
             status: true,
             startedAt: true,
             purchasedAt: true,
+          tenantId: true, workflowKind: true, configurationSnapshot: true,
+          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect,
             completedAt: true,
             canceledAt: true,
             totalPriceCents: true,
@@ -4121,6 +4168,7 @@ router.get(
               select: {
                 id: true,
                 checklistItemId: true,
+              ...enrolledChecklistSnapshotSelect,
                 status: true,
                 completedAt: true,
                 checklistItem: {
@@ -4133,7 +4181,8 @@ router.get(
                 },
               },
               orderBy: [
-                { checklistItem: { sortOrder: "asc" } },
+                { sortOrderSnapshot: "asc" },
+              { checklistItem: { sortOrder: "asc" } },
                 { createdAt: "asc" },
               ],
             },
@@ -4154,7 +4203,7 @@ router.get(
           contactServiceId: item.id,
         })
 
-        const serviceChecklistItemIds = (item.service?.checklistItems ?? []).map(
+        const serviceChecklistItemIds = (item.configurationSnapshot ? [] : item.service?.checklistItems ?? []).map(
           (checklistItem: { id: string }) => checklistItem.id,
         )
         const existingChecklistItemIds = new Set(
@@ -4266,7 +4315,7 @@ router.get(
       return res.json({
         ok: true,
         contactService: {
-          ...serializeContactServiceWorkspaceBase(item, paidCents),
+          ...(await serializeContactServiceWorkspaceBase(item, paidCents)),
           nextFollowUp,
           followUpSummary: {
             totalCount: item.followUpSteps.length,
@@ -4281,16 +4330,7 @@ router.get(
             receivedCount: checklistSummary.received,
             missingCount: checklistSummary.missing,
             informedCount: checklistSummary.informed,
-            items: item.checklistItems.map((checklistItem: any) => ({
-              id: checklistItem.id,
-              checklistItemId: checklistItem.checklistItemId,
-              status: checklistItem.status,
-              completedAt: checklistItem.completedAt,
-              label: checklistItem.checklistItem?.label ?? "",
-              description: checklistItem.checklistItem?.description ?? null,
-              isRequired: Boolean(checklistItem.checklistItem?.isRequired),
-              sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
-            })),
+            items: item.checklistItems.map((checklistItem: any) => serializeEnrolledChecklistItem(checklistItem)),
           },
           paymentSummary: {
             latestPaidAt: paymentAggregate._max.paidAt ?? null,
@@ -4493,7 +4533,7 @@ router.get(
       return res.json({
         ok: true,
         contactService: {
-          ...serializeContactServiceWorkspaceBase(item, paidCents),
+          ...(await serializeContactServiceWorkspaceBase(item, paidCents)),
           payments: item.payments,
           followUpSteps: [],
           checklistItems: [],
@@ -4619,7 +4659,7 @@ router.get(
       return res.json({
         ok: true,
         contactService: {
-          ...serializeContactServiceWorkspaceBase(item, paidCents),
+          ...(await serializeContactServiceWorkspaceBase(item, paidCents)),
           ...serializeVersionedFollowUpMetadata(
             item,
             getSafeTimezone(item.service.tenant.timezone),
@@ -4677,6 +4717,8 @@ router.get(
             status: true,
             startedAt: true,
             purchasedAt: true,
+          tenantId: true, workflowKind: true, configurationSnapshot: true,
+          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect,
             completedAt: true,
             canceledAt: true,
             totalPriceCents: true,
@@ -4896,6 +4938,7 @@ router.get(
               select: {
                 id: true,
                 checklistItemId: true,
+              ...enrolledChecklistSnapshotSelect,
                 status: true,
                 completedAt: true,
                 checklistItem: {
@@ -4909,7 +4952,8 @@ router.get(
                 },
               },
               orderBy: [
-                { checklistItem: { sortOrder: "asc" } },
+                { sortOrderSnapshot: "asc" },
+              { checklistItem: { sortOrder: "asc" } },
                 { createdAt: "asc" },
               ],
             },
@@ -4930,7 +4974,7 @@ router.get(
           contactServiceId: item.id,
         })
 
-        const serviceChecklistItemIds = (item.service?.checklistItems ?? []).map(
+        const serviceChecklistItemIds = (item.configurationSnapshot ? [] : item.service?.checklistItems ?? []).map(
           (checklistItem: { id: string }) => checklistItem.id,
         )
         const existingChecklistItemIds = new Set(
@@ -4979,7 +5023,7 @@ router.get(
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
 
-      item = resolveEnrollmentConfiguration(item)
+      item = await resolveEnrollmentConfiguration(item)
       const paidCents = item.payments.reduce(
         (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
         0,
@@ -4993,6 +5037,9 @@ router.get(
         ok: true,
         contactService: {
           id: item.id,
+          workflowKind: item.workflowKind,
+          configurationSnapshot: item.configurationSnapshot,
+          serviceSteps: item.serviceSteps ?? [],
           contactId: item.contactId,
           status: item.status,
           startedAt: item.startedAt,
@@ -5048,16 +5095,7 @@ router.get(
             createdAt: activity.createdAt,
             actor: activity.actor,
           })),
-          checklistItems: item.checklistItems.map((checklistItem: any) => ({
-            id: checklistItem.id,
-            checklistItemId: checklistItem.checklistItemId,
-            status: checklistItem.status,
-            completedAt: checklistItem.completedAt,
-            label: checklistItem.checklistItem?.label ?? "",
-            description: checklistItem.checklistItem?.description ?? null,
-            isRequired: Boolean(checklistItem.checklistItem?.isRequired),
-            sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
-          })),
+          checklistItems: item.checklistItems.map((checklistItem: any) => serializeEnrolledChecklistItem(checklistItem)),
         },
       })
     } catch (error) {
@@ -5195,10 +5233,10 @@ router.get(
       return res.json({
         ok: true,
         contactService: {
-          ...serializeContactServiceWorkspaceBase(
+          ...(await serializeContactServiceWorkspaceBase(
             enrollment,
             paymentAggregate._sum.amountCents ?? 0,
-          ),
+          )),
           followUpSteps: [],
           checklistItems: [],
         },
@@ -5821,6 +5859,8 @@ router.patch(
           contactId: true,
           followUpTemplateId: true,
           assignedProfessionalId: true,
+          configurationSnapshot: true,
+          assignedProfessionalSnapshot: true,
           assignedProfessional: {
             select: {
               id: true,
@@ -5867,10 +5907,13 @@ router.patch(
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
 
+      const eligibleProfessionals = await enrollmentProfessionalOptions(prisma, tenantId, existing.configurationSnapshot,
+        resolveServiceConfiguration(existing.service).professionals)
+      const previousAttribution = readProfessionalSnapshot(existing.assignedProfessionalSnapshot)
       const professionalChange = resolveServiceProfessionalChange({
         assignedProfessionalId: payload.assignedProfessionalId,
-        previousProfessional: existing.assignedProfessional,
-        professionals: resolveServiceConfiguration(existing.service).professionals,
+        previousProfessional: previousAttribution?.id === existing.assignedProfessional?.id ? previousAttribution : existing.assignedProfessional,
+        professionals: eligibleProfessionals,
       })
       if (!professionalChange.valid) {
         return res.status(400).json({ error: "INVALID_ASSIGNED_SERVICE_PROFESSIONAL" })
@@ -5928,10 +5971,12 @@ router.patch(
         await lockServiceHierarchyTx(tx, tenantId, existing.service.id)
         const effective = await loadEffectiveServiceConfiguration(tx, tenantId, existing.service.id)
         const current = await tx.contactService.findUniqueOrThrow({
-          where: { id: contactServiceId, tenantId }, select: { assignedProfessionalId: true },
+          where: { id: contactServiceId, tenantId }, select: { assignedProfessionalId: true, configurationSnapshot: true },
         })
+        const currentOptions = await enrollmentProfessionalOptions(tx, tenantId, current.configurationSnapshot, effective.professionals)
+        const nextAttribution = currentOptions.find(p => p.id === payload.assignedProfessionalId) ?? null
         if (payload.assignedProfessionalId && payload.assignedProfessionalId !== current.assignedProfessionalId &&
-            !effective.professionals.some(p => p.id === payload.assignedProfessionalId)) {
+            !currentOptions.some(p => p.id === payload.assignedProfessionalId)) {
           throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
         }
         return tx.contactService.update({
@@ -5948,7 +5993,9 @@ router.patch(
               ? { notes: payload.notes }
               : {}),
             ...(payload.assignedProfessionalId !== undefined
-              ? { assignedProfessionalId: payload.assignedProfessionalId }
+              ? { assignedProfessionalId: payload.assignedProfessionalId,
+                  ...(payload.assignedProfessionalId !== current.assignedProfessionalId
+                    ? { assignedProfessionalSnapshot: nextAttribution ? professionalSnapshot(nextAttribution) : Prisma.DbNull } : {}) }
               : {}),
             ...(executionLogs.length ? { executionLogs: { create: executionLogs } } : {}),
           },
@@ -5962,6 +6009,7 @@ router.patch(
             totalPriceCents: true,
             notes: true,
             assignedProfessionalId: true,
+            assignedProfessionalSnapshot: true,
             assignedProfessional: {
               select: {
                 id: true,
@@ -5984,7 +6032,7 @@ router.patch(
 
       return res.json({
         ok: true,
-        contactService: updated,
+        contactService: { ...updated, assignedProfessional: readProfessionalSnapshot(updated.assignedProfessionalSnapshot) ?? updated.assignedProfessional },
       })
     } catch (error) {
       if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
@@ -6065,6 +6113,7 @@ router.patch(
           select: {
             id: true,
             checklistItemId: true,
+              ...enrolledChecklistSnapshotSelect,
             status: true,
             completedAt: true,
             checklistItem: {
@@ -6101,6 +6150,7 @@ router.patch(
           select: {
             id: true,
             checklistItemId: true,
+              ...enrolledChecklistSnapshotSelect,
             status: true,
             completedAt: true,
             checklistItem: {
@@ -6119,7 +6169,7 @@ router.patch(
             tenantId,
             contactServiceId,
             contactServiceChecklistItemId: existing.id,
-            itemLabel: existing.checklistItem?.label ?? "Checklist item",
+            itemLabel: serializeEnrolledChecklistItem(existing).label || "Checklist item",
             previousStatus: existing.status,
             status: nextStatus,
             actorUserId: authed.user.id,
@@ -6151,16 +6201,7 @@ router.patch(
 
       return res.json({
         ok: true,
-        checklistItem: {
-          id: updated.id,
-          checklistItemId: updated.checklistItemId,
-          status: updated.status,
-          completedAt: updated.completedAt,
-          label: updated.checklistItem?.label ?? "",
-          description: updated.checklistItem?.description ?? null,
-          isRequired: Boolean(updated.checklistItem?.isRequired),
-          sortOrder: updated.checklistItem?.sortOrder ?? 0,
-        },
+        checklistItem: serializeEnrolledChecklistItem(updated),
         activity: result.activity
           ? {
               id: result.activity.id,
@@ -6178,6 +6219,17 @@ router.patch(
     }
   },
 )
+
+router.use("/:tenantId/contact-services/:contactServiceId/follow-up-steps", requireAuth, async (req, res, next) => {
+  if (!["POST", "PATCH", "DELETE"].includes(req.method)) return next()
+  try {
+    const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+    if (!await requireActiveMembership(req as AuthedRequest, res, tenantId)) return
+    const enrollment = await prisma.contactService.findFirst({ where: { tenantId, id: contactServiceId }, select: { workflowKind: true } })
+    if (enrollment?.workflowKind === "SERVICE_STEPS") return res.status(409).json({ error: "SERVICE_STEP_WORKFLOW_REQUIRES_SERVICE_ACTIONS" })
+    return next()
+  } catch (error) { return next(error) }
+})
 
 router.patch(
   "/:tenantId/contact-services/:contactServiceId/follow-up-steps/:followUpStepId",

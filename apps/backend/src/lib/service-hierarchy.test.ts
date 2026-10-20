@@ -8,6 +8,7 @@ import express from "express"
 import cookieParser from "cookie-parser"
 import { Pool } from "pg"
 import { PrismaClient } from "../generated/prisma/index.js"
+import { ServiceStepInputSchema, createServiceStepOccurrenceTx } from "./service-steps.js"
 import { ServiceHierarchyInputSchema, assertServiceEnrollableTx } from "./service-hierarchy.js"
 
 test("hierarchy input accepts groups and child offerings but rejects a third level shape", () => {
@@ -20,6 +21,28 @@ test("hierarchy input accepts groups and child offerings but rejects a third lev
   assert.equal(
     ServiceHierarchyInputSchema.parse({ kind: "OFFERING", parentServiceId: randomUUID() }).kind,
     "OFFERING",
+  )
+})
+
+test("service step timeframes accept minutes, hours, and days and reject invalid durations", () => {
+  for (const completionUnit of ["MINUTES", "HOURS", "DAYS"])
+    assert.equal(
+      ServiceStepInputSchema.safeParse({ title: "Review", completionDuration: 2, completionUnit })
+        .success,
+      true,
+    )
+  for (const completionDuration of [0, -1, 1.5, 6000000])
+    assert.equal(
+      ServiceStepInputSchema.safeParse({ title: "Review", completionDuration }).success,
+      false,
+    )
+  assert.equal(
+    ServiceStepInputSchema.safeParse({
+      title: "Review",
+      completionDuration: 3651,
+      completionUnit: "DAYS",
+    }).success,
+    false,
   )
 })
 
@@ -441,8 +464,15 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
           assignedProfessionalId: localProfessional.id,
         })
       ).status,
-      200,
+      400,
     )
+    const localEnrollment = await request(path, "POST", {
+      contactId: contact.id,
+      serviceId: child.id,
+      assignedProfessionalId: localProfessional.id,
+    })
+    assert.equal(localEnrollment.status, 201)
+    const localEnrollmentId = localEnrollment.data.contactService.id
     const restore = await request(`${settingsPath()}/${child.id}`, "PATCH", {
       checklistMode: "INHERIT",
       professionalsMode: "INHERIT",
@@ -465,13 +495,13 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     assert.equal(history.status, "RECEIVED")
     assert.ok(history.completedAt)
     assert.equal(
-      (await db.contactService.findUniqueOrThrow({ where: { id: enrollmentId } }))
+      (await db.contactService.findUniqueOrThrow({ where: { id: localEnrollmentId } }))
         .assignedProfessionalId,
       localProfessional.id,
     )
     assert.equal(
       (
-        await request(`${path}/${enrollmentId}`, "PATCH", {
+        await request(`${path}/${localEnrollmentId}`, "PATCH", {
           assignedProfessionalId: localProfessional.id,
         })
       ).status,
@@ -558,6 +588,303 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     })
     assert.equal(invalid.data.error, "PAYMENT_BELOW_MINIMUM")
     assert.equal(await db.contactService.count({ where: { tenantId } }), 2)
+  })
+
+  test("service-owned steps save by stable ID, archive removals, inherit, copy, and restore", async () => {
+    const parent = await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      steps: [
+        {
+          title: "Review documents",
+          instructions: "Read each document.",
+          completionDuration: 10,
+          completionUnit: "MINUTES",
+        },
+        {
+          title: "Submit",
+          instructions: "Submit the application.",
+          completionDuration: 2,
+          completionUnit: "HOURS",
+        },
+      ],
+    })
+    assert.equal(parent.status, 200, JSON.stringify(parent.data))
+    const original = parent.data.service.steps
+    const child = (await createChild()).data.service
+    assert.equal(child.stepsMode, "INHERIT")
+    assert.deepEqual(
+      child.steps.map((step: any) => step.id),
+      original.map((step: any) => step.id),
+    )
+    const denied = await request(`${settingsPath()}/${child.id}`, "PATCH", {
+      name: "Should roll back",
+      steps: [],
+    })
+    assert.equal(denied.data.error, "INHERITED_SECTION_READ_ONLY")
+    assert.equal((await db.service.findUniqueOrThrow({ where: { id: child.id } })).name, child.name)
+    const reordered = await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      steps: [original[1], { ...original[0], title: "Review updated" }],
+    })
+    assert.deepEqual(
+      reordered.data.service.steps.map((step: any) => step.id),
+      [original[1].id, original[0].id],
+    )
+    const duplicate = await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      steps: [original[0], original[0]],
+      description: "Should roll back",
+    })
+    assert.equal(duplicate.data.error, "DUPLICATE_SERVICE_STEP_ID")
+    assert.equal(
+      (await db.service.findUniqueOrThrow({ where: { id: parentId } })).description,
+      null,
+    )
+    const copy = await request(`${settingsPath()}/${child.id}`, "PATCH", { stepsMode: "CUSTOM" })
+    assert.notEqual(copy.data.service.steps[0].id, original[1].id)
+    assert.equal(copy.data.service.steps[0].completionUnit, "HOURS")
+    const foreign = await request(`${settingsPath()}/${child.id}`, "PATCH", { steps: original })
+    assert.equal(foreign.data.error, "INVALID_SERVICE_STEP_ID")
+    const changed = await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      steps: [{ ...original[0], title: "Parent changed" }],
+    })
+    assert.equal(changed.status, 200)
+    assert.ok(
+      (await db.serviceStep.findUniqueOrThrow({ where: { id: original[1].id } })).archivedAt,
+    )
+    assert.equal(
+      (await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [original[1]] })).data
+        .error,
+      "INVALID_SERVICE_STEP_ID",
+    )
+    assert.equal((await request(`${settingsPath()}/${child.id}`)).data.service.steps.length, 2)
+    const restored = await request(`${settingsPath()}/${child.id}`, "PATCH", {
+      stepsMode: "INHERIT",
+    })
+    assert.equal(restored.data.service.steps[0].title, "Parent changed")
+    assert.equal(
+      await db.serviceStep.count({ where: { tenantId, serviceId: child.id, archivedAt: null } }),
+      0,
+    )
+    assert.equal(
+      (await request(`${settingsPath()}/${parentId}`, "PATCH", { stepsMode: "INHERIT" })).data
+        .error,
+      "PARENT_SECTION_CANNOT_INHERIT",
+    )
+  })
+
+  test("enrollment freezes step definitions, checklist details, and professional attribution through later edits", async () => {
+    const parent = await configureParent()
+    const saved = await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      steps: [
+        {
+          title: "Review",
+          instructions: "Original instructions",
+          completionDuration: 2,
+          completionUnit: "HOURS",
+        },
+        { title: "Submit", instructions: null, completionDuration: 3, completionUnit: "DAYS" },
+      ],
+    })
+    const child = (await createChild()).data.service
+    const contact = await createContact()
+    const path = `/api/services/${tenantId}/contact-services`
+    const startedAt = "2026-10-20T10:00:00.000Z"
+    const beforeEnrollmentAt = Date.now()
+    const enrollment = await request(path, "POST", {
+      serviceId: child.id,
+      contactId: contact.id,
+      startedAt,
+      assignedProfessionalId: parent.professionals[0].id,
+    })
+    assert.equal(enrollment.status, 201, JSON.stringify(enrollment.data))
+    const enrollmentId = enrollment.data.contactService.id
+    const before = await request(`${path}/${enrollmentId}/overview`)
+    assert.equal(before.status, 200, JSON.stringify(before.data))
+    const setup = before.data.contactService
+    assert.equal(setup.workflowKind, "SERVICE_STEPS")
+    assert.equal(setup.status, "IN_PROGRESS")
+    assert.equal(setup.serviceSteps.length, 2)
+    const entered = new Date(setup.serviceSteps[0].occurrences[0].enteredAt).getTime()
+    assert.ok(entered >= beforeEnrollmentAt && entered <= Date.now())
+    assert.equal(
+      new Date(setup.serviceSteps[0].occurrences[0].dueAt).getTime() - entered,
+      2 * 60 * 60 * 1000,
+    )
+    assert.equal(setup.serviceSteps[1].occurrences.length, 0)
+    assert.equal(
+      await db.contactServiceFollowUpStep.count({ where: { contactServiceId: enrollmentId } }),
+      0,
+    )
+    await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      steps: [
+        { ...saved.data.service.steps[1], title: "Parent second first", completionDuration: 10 },
+        { ...saved.data.service.steps[0], instructions: "Changed instructions" },
+      ],
+      checklistItems: [
+        {
+          ...parent.checklistItems[0],
+          label: "Renamed requirement",
+          description: null,
+          isRequired: false,
+        },
+        { label: "New requirement" },
+      ],
+      professionals: [
+        {
+          ...parent.professionals[0],
+          externalProfessionalName: "Renamed specialist",
+          externalContact: "Changed contact",
+        },
+      ],
+    })
+    for (const suffix of ["/overview", "", "/transaction", "/follow-up"]) {
+      const view = await request(`${path}/${enrollmentId}${suffix}`)
+      assert.equal(view.status, 200, JSON.stringify(view.data))
+      assert.equal(
+        view.data.contactService.assignedProfessional.externalProfessionalName,
+        "Parent specialist",
+      )
+      assert.equal(view.data.contactService.serviceSteps[0].instructions, "Original instructions")
+      assert.equal(
+        view.data.contactService.serviceSteps[0].occurrences[0].id,
+        setup.serviceSteps[0].occurrences[0].id,
+      )
+      if (suffix === "/overview") {
+        assert.equal(view.data.contactService.checklistSummary.items.length, 1)
+        assert.equal(view.data.contactService.checklistSummary.items[0].label, "Consent")
+        assert.equal(view.data.contactService.checklistSummary.items[0].description, "Signed form")
+        assert.equal(view.data.contactService.checklistSummary.items[0].isRequired, true)
+      }
+    }
+    const item = setup.checklistSummary.items[0]
+    const status = await request(`${path}/${enrollmentId}/checklist-items/${item.id}`, "PATCH", {
+      status: "RECEIVED",
+    })
+    assert.equal(status.status, 200)
+    assert.equal(status.data.checklistItem.label, "Consent")
+    assert.equal(status.data.activity.label, "Consent")
+    const listed = await request(`${path}?contactId=${contact.id}`)
+    assert.equal(listed.status, 200)
+    assert.equal(
+      await db.contactServiceChecklistItem.count({ where: { contactServiceId: enrollmentId } }),
+      1,
+    )
+    const fresh = await request(path, "POST", { serviceId: child.id, contactId: contact.id })
+    const latest = await request(`${path}/${fresh.data.contactService.id}/overview`)
+    assert.equal(latest.data.contactService.serviceSteps[0].title, "Parent second first")
+    assert.equal(latest.data.contactService.checklistSummary.items.length, 2)
+    const legacyAdd = await request(`${path}/${enrollmentId}/follow-up-steps`, "POST", {
+      title: "Legacy step",
+    })
+    assert.equal(legacyAdd.status, 409)
+    const snapshotBefore = await db.contactService.findUniqueOrThrow({
+      where: { id: enrollmentId },
+      select: { configurationSnapshot: true },
+    })
+    await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      steps: [],
+      checklistItems: [],
+      professionals: [],
+    })
+    assert.deepEqual(
+      (
+        await db.contactService.findUniqueOrThrow({
+          where: { id: enrollmentId },
+          select: { configurationSnapshot: true },
+        })
+      ).configurationSnapshot,
+      snapshotBefore.configurationSnapshot,
+    )
+    assert.equal(
+      (await request(`${path}/${enrollmentId}/overview`)).data.contactService.serviceSteps.length,
+      2,
+    )
+  })
+
+  test("step entry is isolated, idempotent, serialized, and retains history on a revisit", async () => {
+    await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      steps: [{ title: "Review", completionDuration: 30, completionUnit: "MINUTES" }],
+    })
+    const child = (await createChild()).data.service
+    const contact = await createContact()
+    const path = `/api/services/${tenantId}/contact-services`
+    const enrolled = await request(path, "POST", {
+      serviceId: child.id,
+      contactId: contact.id,
+      startedAt: "2026-10-20T10:00:00.000Z",
+    })
+    const enrollmentId = enrolled.data.contactService.id
+    const definition = await db.contactServiceStep.findFirstOrThrow({
+      where: { contactServiceId: enrollmentId },
+    })
+    const first = await db.serviceStepOccurrence.findFirstOrThrow({
+      where: { contactServiceId: enrollmentId },
+    })
+    assert.equal(first.dueAt.getTime() - first.enteredAt.getTime(), 30 * 60 * 1000)
+    const duplicate = await db.$transaction((tx) =>
+      createServiceStepOccurrenceTx(tx, {
+        tenantId,
+        contactServiceId: enrollmentId,
+        stepId: definition.id,
+        entryKey: "enrollment",
+        enteredAt: new Date(),
+      }),
+    )
+    assert.equal(duplicate.id, first.id)
+    await assert.rejects(
+      db.$transaction((tx) =>
+        createServiceStepOccurrenceTx(tx, {
+          tenantId,
+          contactServiceId: enrollmentId,
+          stepId: definition.id,
+          entryKey: "blocked",
+          enteredAt: new Date(),
+        }),
+      ),
+      /CURRENT_SERVICE_STEP_UNRESOLVED/,
+    )
+    await db.serviceStepOccurrence.update({
+      where: { id: first.id },
+      data: {
+        status: "COMPLETED",
+        resolvedAt: new Date(first.enteredAt.getTime() + 60 * 60 * 1000),
+        resolutionReason: "Reviewed",
+      },
+    })
+    const attempts = await Promise.allSettled(
+      ["revisit-a", "revisit-b"].map((entryKey) =>
+        db.$transaction((tx) =>
+          createServiceStepOccurrenceTx(tx, {
+            tenantId,
+            contactServiceId: enrollmentId,
+            stepId: definition.id,
+            entryKey,
+            enteredAt: new Date(first.enteredAt.getTime() + 26 * 60 * 60 * 1000),
+          }),
+        ),
+      ),
+    )
+    assert.equal(attempts.filter((result) => result.status === "fulfilled").length, 1)
+    const history = await db.serviceStepOccurrence.findMany({
+      where: { stepId: definition.id },
+      orderBy: { occurrenceNumber: "asc" },
+    })
+    assert.equal(history.length, 2)
+    assert.equal(history[0].status, "COMPLETED")
+    assert.equal(history[0].resolutionReason, "Reviewed")
+    assert.equal(history[1].occurrenceNumber, 2)
+    assert.equal(history[1].dueAt.getTime(), first.enteredAt.getTime() + (26 * 60 + 30) * 60 * 1000)
+    const other = await request(path, "POST", { serviceId: child.id, contactId: contact.id })
+    await assert.rejects(
+      db.$transaction((tx) =>
+        createServiceStepOccurrenceTx(tx, {
+          tenantId,
+          contactServiceId: other.data.contactService.id,
+          stepId: definition.id,
+          entryKey: "foreign-step",
+          enteredAt: new Date(),
+        }),
+      ),
+      /INVALID_ENROLLED_SERVICE_STEP/,
+    )
   })
 
   test("migration groups old services without changing IDs, names, prices, or enrollment links", async () => {
