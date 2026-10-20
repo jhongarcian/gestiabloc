@@ -27,6 +27,11 @@ export function resolveServiceProfessionalChange({
   professionals: ServiceProfessional[]
 }) {
   if (assignedProfessionalId === undefined) return { valid: true, activity: null } as const
+  // An archived professional can remain on an existing enrollment, but cannot
+  // be chosen for a different enrollment through the active options list.
+  if (assignedProfessionalId && assignedProfessionalId === previousProfessional?.id) {
+    return { valid: true, activity: null } as const
+  }
 
   const professional = professionals.find((option) => option.id === assignedProfessionalId) ?? null
   if (assignedProfessionalId !== null && !professional) return { valid: false } as const

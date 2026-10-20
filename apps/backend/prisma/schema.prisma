@@ -746,9 +746,16 @@ model TenantLinkedEntity {
   @@index([tenantId, type, sortOrder])
 }
 
+enum ServiceKind {
+  GROUP
+  OFFERING
+}
+
 model Service {
   id                         String                @id @default(uuid())
   tenantId                   String
+  kind                       ServiceKind           @default(GROUP)
+  parentServiceId            String?
   name                       String
   description                String?
   fitProfile                 Json?
@@ -763,6 +770,8 @@ model Service {
   sortOrder                  Int                   @default(0)
 
   tenant                Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  parentService         Service?                      @relation("ServiceHierarchy", fields: [tenantId, parentServiceId], references: [tenantId, id], onDelete: Restrict, onUpdate: Cascade)
+  subServices           Service[]                     @relation("ServiceHierarchy")
   checklistItems        ServiceChecklistItem[]
   followUpTemplates     ServiceFollowUpTemplate[]
   followUpTemplateSteps ServiceFollowUpTemplateStep[]
@@ -777,6 +786,8 @@ model Service {
   @@unique([tenantId, name])
   @@index([tenantId, sortOrder])
   @@index([tenantId, isActive, sortOrder])
+  @@index([tenantId, kind, parentServiceId, sortOrder])
+  @@index([tenantId, parentServiceId, sortOrder])
 }
 
 model ServiceChecklistItem {
@@ -787,6 +798,7 @@ model ServiceChecklistItem {
   description String?
   isRequired  Boolean @default(true)
   sortOrder   Int     @default(0)
+  archivedAt  DateTime?
 
   tenant                Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   service               Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
@@ -797,6 +809,7 @@ model ServiceChecklistItem {
 
   @@unique([tenantId, id])
   @@index([tenantId, serviceId, sortOrder])
+  @@index([tenantId, serviceId, archivedAt, sortOrder])
 }
 
 model ServiceFollowUpTemplate {
@@ -890,6 +903,7 @@ model ServiceProfessional {
   externalContact          String?
   notes                    String?
   sortOrder                Int                     @default(0)
+  archivedAt               DateTime?
 
   tenant                  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   service                 Service          @relation(fields: [serviceId], references: [id], onDelete: Cascade)
@@ -901,6 +915,7 @@ model ServiceProfessional {
 
   @@unique([tenantId, id])
   @@index([tenantId, serviceId, sortOrder])
+  @@index([tenantId, serviceId, archivedAt, sortOrder])
   @@index([tenantId, userId])
 }
 

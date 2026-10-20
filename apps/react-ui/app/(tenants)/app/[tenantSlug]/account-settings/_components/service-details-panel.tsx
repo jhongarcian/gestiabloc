@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   closestCenter,
   DndContext,
@@ -83,6 +83,9 @@ export type ServiceDetailsPanelProps = {
   tenantSlug: string
   service: {
     id: string
+    kind: "GROUP" | "OFFERING"
+    parentServiceId: string | null
+    parentService: { id: string; name: string; isActive: boolean } | null
     name: string
     description: string | null
     fitProfile?: ServiceFitProfileDraft | null
@@ -153,6 +156,7 @@ type UsersResponse = {
 }
 
 type ChecklistItemDraft = {
+  persistedId?: string
   id: string
   label: string
   description: string
@@ -166,6 +170,7 @@ type ChecklistCreateDraft = {
 }
 
 type ProfessionalDraft = {
+  persistedId?: string
   id: string
   kind: "INTERNAL_USER" | "EXTERNAL"
   userId: string
@@ -390,6 +395,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     "overview" | "fit-rules" | "checklists" | "follow-up-templates" | "professionals"
   >("overview")
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const saveInFlight = useRef(false)
   const [isChecklistSaving, setIsChecklistSaving] = useState(false)
   const [isProfessionalsSaving, setIsProfessionalsSaving] = useState(false)
   const [isDeletingService, setIsDeletingService] = useState(false)
@@ -430,14 +436,16 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
   const [checklistItems, setChecklistItems] = useState<ChecklistItemDraft[]>(
     service.checklistItems.map((item) => ({
       id: item.id,
+      persistedId: item.id,
       label: item.label,
       description: item.description ?? "",
       isRequired: item.isRequired,
     })),
   )
-  const [professionals, setProfessionals] = useState(
+  const [professionals, setProfessionals] = useState<ProfessionalDraft[]>(
     service.professionals.map((entry) => ({
       id: entry.id,
+      persistedId: entry.id,
       kind: entry.kind,
       userId: entry.userId ?? "",
       externalProfessionalName: entry.externalProfessionalName ?? "",
@@ -669,32 +677,37 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     ],
   )
 
+  const isCollectionSaving = isChecklistSaving || isProfessionalsSaving || isSubmitting || isDeletingService
+
   const persistChecklistItems = useCallback(
     async (nextItems: ChecklistItemDraft[]) => {
+      if (saveInFlight.current) return false
+      saveInFlight.current = true
       setIsChecklistSaving(true)
       try {
-        await api.patch(`/api/account-settings/${tenantId}/services/${service.id}`, {
-          checklistItems: nextItems
-            .filter((item) => item.label.trim())
-            .map((item, index) => ({
-              label: item.label.trim(),
-              description: item.description.trim() || null,
-              isRequired: item.isRequired,
-              sortOrder: (index + 1) * 10,
-            })),
+        const { data } = await api.patch<{
+          service: { checklistItems: ServiceDetailsPanelProps["service"]["checklistItems"] }
+        }>(`/api/account-settings/${tenantId}/services/${service.id}`, {
+          checklistItems: nextItems.map((item, index) => ({
+            id: item.persistedId,
+            label: item.label.trim(),
+            description: item.description.trim() || null,
+            isRequired: item.isRequired,
+            sortOrder: (index + 1) * 10,
+          })),
         })
+        setChecklistItems(data.service.checklistItems.map((item) => ({
+          id: item.id, persistedId: item.id, label: item.label,
+          description: item.description ?? "", isRequired: item.isRequired,
+        })))
+        return true
       } catch (error) {
-        if (isAxiosError(error)) {
-          const backendError = error.response?.data?.error
-          toast.error(
-            typeof backendError === "string"
-              ? backendError.replace(/_/g, " ")
-              : "Could not save checklist.",
-          )
-        } else {
-          toast.error("Could not save checklist.")
-        }
+        const backendError = isAxiosError(error) ? error.response?.data?.error : null
+        toast.error(typeof backendError === "string"
+          ? backendError.replace(/_/g, " ") : "Could not save checklist.")
+        return false
       } finally {
+        saveInFlight.current = false
         setIsChecklistSaving(false)
       }
     },
@@ -703,10 +716,15 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
 
   const persistProfessionals = useCallback(
     async (nextItems: ProfessionalDraft[]) => {
+      if (saveInFlight.current) return false
+      saveInFlight.current = true
       setIsProfessionalsSaving(true)
       try {
-        await api.patch(`/api/account-settings/${tenantId}/services/${service.id}`, {
+        const { data } = await api.patch<{
+          service: { professionals: ServiceDetailsPanelProps["service"]["professionals"] }
+        }>(`/api/account-settings/${tenantId}/services/${service.id}`, {
           professionals: nextItems.map((entry, index) => ({
+            id: entry.persistedId,
             kind: entry.kind,
             userId: entry.kind === "INTERNAL_USER" ? entry.userId || null : null,
             externalProfessionalName:
@@ -717,18 +735,19 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
             sortOrder: (index + 1) * 10,
           })),
         })
+        setProfessionals(data.service.professionals.map((entry) => ({
+          id: entry.id, persistedId: entry.id, kind: entry.kind, userId: entry.userId ?? "",
+          externalProfessionalName: entry.externalProfessionalName ?? "",
+          externalContact: entry.externalContact ?? "", notes: entry.notes ?? "",
+        })))
+        return true
       } catch (error) {
-        if (isAxiosError(error)) {
-          const backendError = error.response?.data?.error
-          toast.error(
-            typeof backendError === "string"
-              ? backendError.replace(/_/g, " ")
-              : "Could not save professionals.",
-          )
-        } else {
-          toast.error("Could not save professionals.")
-        }
+        const backendError = isAxiosError(error) ? error.response?.data?.error : null
+        toast.error(typeof backendError === "string"
+          ? backendError.replace(/_/g, " ") : "Could not save professionals.")
+        return false
       } finally {
+        saveInFlight.current = false
         setIsProfessionalsSaving(false)
       }
     },
@@ -737,6 +756,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
 
   const handleChecklistDragEnd = useCallback(
     (event: DragEndEvent) => {
+      if (saveInFlight.current) return
       const { active, over } = event
       if (!over || active.id === over.id) return
 
@@ -744,7 +764,6 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       const newIndex = checklistItems.findIndex((item) => item.id === over.id)
       if (oldIndex < 0 || newIndex < 0) return
       const next = arrayMove(checklistItems, oldIndex, newIndex)
-      setChecklistItems(next)
       void persistChecklistItems(next)
     },
     [checklistItems, persistChecklistItems],
@@ -752,6 +771,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
 
   const handleProfessionalsDragEnd = useCallback(
     (event: DragEndEvent) => {
+      if (saveInFlight.current) return
       const { active, over } = event
       if (!over || active.id === over.id) return
 
@@ -760,13 +780,12 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       if (oldIndex < 0 || newIndex < 0) return
 
       const next = arrayMove(professionals, oldIndex, newIndex)
-      setProfessionals(next)
       void persistProfessionals(next)
     },
     [persistProfessionals, professionals],
   )
 
-  const addChecklistItemFromDialog = () => {
+  const addChecklistItemFromDialog = async () => {
     if (!checklistDraft.label.trim()) {
       toast.error("Checklist item label is required.")
       return
@@ -781,14 +800,14 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         isRequired: checklistDraft.isRequired,
       },
     ]
-    setChecklistItems(next)
-    void persistChecklistItems(next)
+    if (!await persistChecklistItems(next)) return
 
     setChecklistDraft({ label: "", description: "", isRequired: true })
     setIsChecklistDialogOpen(false)
   }
 
   const openCreateProfessionalDialog = () => {
+    if (saveInFlight.current) return
     setEditingProfessionalId(null)
     setProfessionalDraft({
       id: createDraftId("professional"),
@@ -802,6 +821,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
   }
 
   const openEditProfessionalDialog = (professionalId: string) => {
+    if (saveInFlight.current) return
     const entry = professionals.find((item) => item.id === professionalId)
     if (!entry) return
     setEditingProfessionalId(professionalId)
@@ -809,7 +829,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     setIsProfessionalDialogOpen(true)
   }
 
-  const saveProfessionalDialog = () => {
+  const saveProfessionalDialog = async () => {
     if (professionalDraft.kind === "INTERNAL_USER" && !professionalDraft.userId) {
       toast.error("Select an internal user.")
       return
@@ -822,32 +842,25 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       return
     }
 
-    if (editingProfessionalId === null) {
-      const next = [...professionals, { ...professionalDraft }]
-      setProfessionals(next)
-      void persistProfessionals(next)
-    } else {
-      const next = professionals.map((entry) =>
-        entry.id === editingProfessionalId ? { ...professionalDraft } : entry,
-      )
-      setProfessionals(next)
-      void persistProfessionals(next)
-    }
+    const next = editingProfessionalId === null
+      ? [...professionals, { ...professionalDraft }]
+      : professionals.map((entry) => entry.id === editingProfessionalId ? { ...professionalDraft } : entry)
+    if (!await persistProfessionals(next)) return
 
     setIsProfessionalDialogOpen(false)
     setEditingProfessionalId(null)
   }
 
-  const deleteProfessionalFromDialog = () => {
+  const deleteProfessionalFromDialog = async () => {
     if (editingProfessionalId === null) return
     const next = professionals.filter((entry) => entry.id !== editingProfessionalId)
-    setProfessionals(next)
-    void persistProfessionals(next)
+    if (!await persistProfessionals(next)) return
     setIsProfessionalDialogOpen(false)
     setEditingProfessionalId(null)
   }
 
   const openChecklistEditDialog = (item: ChecklistItemDraft) => {
+    if (saveInFlight.current) return
     setEditingChecklistItemId(item.id)
     setEditingChecklistDraft({
       label: item.label,
@@ -856,7 +869,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     })
   }
 
-  const saveChecklistEdit = () => {
+  const saveChecklistEdit = async () => {
     if (!editingChecklistItemId) return
     if (!editingChecklistDraft.label.trim()) {
       toast.error("Checklist item label is required.")
@@ -873,20 +886,19 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
           }
         : item,
     )
-    setChecklistItems(next)
-    void persistChecklistItems(next)
+    if (!await persistChecklistItems(next)) return
     setEditingChecklistItemId(null)
   }
 
-  const deleteChecklistItem = () => {
+  const deleteChecklistItem = async () => {
     if (!editingChecklistItemId) return
     const next = checklistItems.filter((item) => item.id !== editingChecklistItemId)
-    setChecklistItems(next)
-    void persistChecklistItems(next)
+    if (!await persistChecklistItems(next)) return
     setEditingChecklistItemId(null)
   }
 
   const onSubmit = async () => {
+    if (saveInFlight.current) return
     const basePriceCents = dollarsToCents(basePrice)
     if (!name.trim()) {
       toast.error("Service name is required.")
@@ -944,6 +956,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       return
     }
 
+    saveInFlight.current = true
     setIsSubmitting(true)
 
     try {
@@ -959,23 +972,6 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         installmentCount: allowPartialPayments ? nextInstallmentCount : null,
         installmentFrequency: allowPartialPayments ? installmentFrequency : null,
         isActive,
-        checklistItems: checklistItems
-          .filter((item) => item.label.trim())
-          .map((item, index) => ({
-            label: item.label.trim(),
-            description: item.description.trim() || null,
-            isRequired: item.isRequired,
-            sortOrder: (index + 1) * 10,
-          })),
-        professionals: professionals.map((entry, index) => ({
-          kind: entry.kind,
-          userId: entry.kind === "INTERNAL_USER" ? entry.userId || null : null,
-          externalProfessionalName:
-            entry.kind === "EXTERNAL" ? entry.externalProfessionalName.trim() || null : null,
-          externalContact: entry.kind === "EXTERNAL" ? entry.externalContact.trim() || null : null,
-          notes: entry.notes.trim() || null,
-          sortOrder: (index + 1) * 10,
-        })),
       })
 
       toast.success("Service updated.")
@@ -992,16 +988,19 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         toast.error("Could not update service.")
       }
     } finally {
+      saveInFlight.current = false
       setIsSubmitting(false)
     }
   }
 
   const onDeleteService = async () => {
+    if (saveInFlight.current) return
     const confirmed = window.confirm(
       "Delete this service? Existing process records remain but this service configuration will be removed.",
     )
     if (!confirmed) return
 
+    saveInFlight.current = true
     setIsDeletingService(true)
 
     try {
@@ -1021,16 +1020,21 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         toast.error("Could not delete service.")
       }
     } finally {
+      saveInFlight.current = false
       setIsDeletingService(false)
     }
   }
 
   return (
     <div className="space-y-5">
+      {service.parentService ? <div className="flex flex-col gap-2">
+        <Link href={`/app/${tenantSlug}/account-settings/services/${service.parentService.id}`} className="w-fit text-sm text-muted-foreground hover:text-foreground hover:underline">← Back to {service.parentService.name}</Link>
+        {!service.parentService.isActive ? <p role="status" className="text-sm text-muted-foreground">{service.parentService.name} is inactive. New enrollments into this sub-service are paused.</p> : null}
+      </div> : null}
       <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_45%,#fff7ed_100%)] p-5 md:p-6">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Service Setup</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Sub-service setup</p>
             <h2 className="text-2xl font-semibold text-slate-950">{name}</h2>
             <p className="text-sm text-slate-600">
               Configure overview, checklist, follow-up templates, and professionals from one workspace.
@@ -1053,7 +1057,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               variant="outline"
               className="cursor-pointer border-rose-200 text-rose-700 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-800"
               onClick={onDeleteService}
-              disabled={isDeletingService}
+              disabled={isDeletingService || isCollectionSaving}
             >
               {isDeletingService ? "Deleting..." : "Delete service"}
             </Button>
@@ -1641,6 +1645,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
             <Dialog
               open={isChecklistDialogOpen}
               onOpenChange={(open) => {
+                if (saveInFlight.current) return
                 setIsChecklistDialogOpen(open)
                 if (!open) {
                   setChecklistDraft({ label: "", description: "", isRequired: true })
@@ -1652,12 +1657,13 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                   type="button"
                   size="sm"
                   className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
-                  disabled={isChecklistSaving}
+                  disabled={isCollectionSaving}
                 >
                   Add item
                 </Button>
               </DialogTrigger>
               <DialogContent className="sm:max-w-lg">
+              <fieldset disabled={isCollectionSaving} className="contents">
                 <DialogHeader>
                   <DialogTitle>Create checklist item</DialogTitle>
                 </DialogHeader>
@@ -1715,12 +1721,13 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                     type="button"
                     className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
                     onClick={addChecklistItemFromDialog}
-                    disabled={isChecklistSaving}
+                    disabled={isCollectionSaving}
                   >
                     {isChecklistSaving ? "Saving..." : "Add checklist item"}
                   </Button>
                 </DialogFooter>
-              </DialogContent>
+              </fieldset>
+            </DialogContent>
             </Dialog>
           </div>
         </div>
@@ -1792,12 +1799,14 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         <Dialog
           open={Boolean(editingChecklistItemId)}
           onOpenChange={(open) => {
+            if (saveInFlight.current) return
             if (!open) {
               setEditingChecklistItemId(null)
             }
           }}
         >
           <DialogContent className="sm:max-w-lg">
+              <fieldset disabled={isCollectionSaving} className="contents">
             <DialogHeader>
               <DialogTitle>Edit checklist item</DialogTitle>
             </DialogHeader>
@@ -1843,7 +1852,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                 variant="destructive"
                 className="cursor-pointer bg-rose-600 text-white hover:bg-rose-700"
                 onClick={deleteChecklistItem}
-                disabled={isChecklistSaving}
+                disabled={isCollectionSaving}
               >
                 Delete item
               </Button>
@@ -1852,6 +1861,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                   type="button"
                   variant="outline"
                   className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
+                  disabled={isCollectionSaving}
                   onClick={() => setEditingChecklistItemId(null)}
                 >
                   Cancel
@@ -1860,13 +1870,14 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                   type="button"
                   className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
                   onClick={saveChecklistEdit}
-                  disabled={isChecklistSaving}
+                  disabled={isCollectionSaving}
                 >
                   {isChecklistSaving ? "Saving..." : "Save changes"}
                 </Button>
               </div>
             </DialogFooter>
-          </DialogContent>
+          </fieldset>
+            </DialogContent>
         </Dialog>
       </section>
         </TabsContent>
@@ -2025,7 +2036,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               size="sm"
               className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
               onClick={openCreateProfessionalDialog}
-              disabled={isProfessionalsSaving}
+              disabled={isCollectionSaving}
             >
               Add professional
             </Button>
@@ -2136,6 +2147,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         <Dialog
           open={isProfessionalDialogOpen}
           onOpenChange={(open) => {
+            if (saveInFlight.current) return
             setIsProfessionalDialogOpen(open)
             if (!open) {
               setEditingProfessionalId(null)
@@ -2143,6 +2155,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
           }}
         >
           <DialogContent className="sm:max-w-xl">
+              <fieldset disabled={isCollectionSaving} className="contents">
             <DialogHeader>
               <DialogTitle>
                 {editingProfessionalId === null ? "Add professional" : "Edit professional"}
@@ -2249,7 +2262,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                     variant="destructive"
                     className="cursor-pointer bg-rose-600 text-white hover:bg-rose-700"
                     onClick={deleteProfessionalFromDialog}
-                    disabled={isProfessionalsSaving}
+                    disabled={isCollectionSaving}
                   >
                     Delete professional
                   </Button>
@@ -2261,6 +2274,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                   variant="outline"
                   className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
                   onClick={() => {
+                    if (saveInFlight.current) return
                     setIsProfessionalDialogOpen(false)
                     setEditingProfessionalId(null)
                   }}
@@ -2271,13 +2285,14 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                   type="button"
                   className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
                   onClick={saveProfessionalDialog}
-                  disabled={isProfessionalsSaving}
+                  disabled={isCollectionSaving}
                 >
                   {isProfessionalsSaving ? "Saving..." : "Save professional"}
                 </Button>
               </div>
             </DialogFooter>
-          </DialogContent>
+          </fieldset>
+            </DialogContent>
         </Dialog>
       </section>
         </TabsContent>
@@ -2285,7 +2300,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
 
       <div className="sticky bottom-4 z-10 flex justify-end">
         <div className="rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-lg backdrop-blur">
-          <Button type="button" className="cursor-pointer" onClick={onSubmit} disabled={isSubmitting}>
+          <Button type="button" className="cursor-pointer" onClick={onSubmit} disabled={isCollectionSaving}>
           <Save className="h-4 w-4" />
           {isSubmitting ? "Saving..." : "Save service"}
           </Button>

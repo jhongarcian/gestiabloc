@@ -48,6 +48,23 @@ import {
   type WorkflowDefinitionAny,
 } from "../lib/service-followup-v3-definition.js";
 
+import {
+  ServiceChecklistItemInputSchema,
+  ServiceChecklistItemUpdateSchema,
+  ServiceProfessionalInputSchema,
+  ServiceProfessionalUpdateSchema,
+  ServiceCollectionError,
+  saveServiceCollectionsTx,
+  lockServiceConfigurationTx,
+  serviceChecklistItemSelect,
+  serviceProfessionalSelect,
+} from "../lib/service-configuration-collections.js";
+
+import {
+  ServiceKindSchema, ServiceHierarchyInputSchema, serviceHierarchySelect,
+  validateServiceParentTx, enrollableServiceWhere,
+} from "../lib/service-hierarchy.js";
+
 const router = Router();
 const prismaWithContacts = prisma as any;
 
@@ -607,6 +624,8 @@ const UpsertOpportunityPipelineSchema = z.object({
 });
 
 const ServicesPaginationQuerySchema = z.object({
+  kind: ServiceKindSchema.optional(),
+  parentServiceId: z.string().uuid().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z
     .coerce
@@ -645,6 +664,7 @@ const ReorderOpportunityPipelinesSchema = z.object({
   position: z.enum(["before", "after"]),
 });
 const ServiceOptionsQuerySchema = z.object({
+  kind: ServiceKindSchema.default("OFFERING"),
   includeInactive: z
     .union([z.enum(["true", "false"]), z.boolean()])
     .optional()
@@ -664,15 +684,7 @@ const FollowUpTemplatesPaginationQuerySchema = z.object({
   serviceId: z.string().trim().min(1).optional(),
 });
 
-const ServiceProfessionalKindSchema = z.enum(["INTERNAL_USER", "EXTERNAL"]);
 const InstallmentFrequencySchema = z.enum(["WEEKLY", "BIWEEKLY", "MONTHLY"]);
-
-const ServiceChecklistItemInputSchema = z.object({
-  label: z.string().trim().min(1).max(200),
-  description: optionalStringField(1000),
-  isRequired: z.boolean().default(true),
-  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
-});
 
 const ServiceFollowUpTemplateStepInputSchema = z.object({
   title: z.string().trim().min(1).max(200),
@@ -697,15 +709,6 @@ const ServiceFollowUpTemplatePatchSchema = z.object({
   flowEdges: z.array(z.unknown()).optional(),
   draftDefinition: WorkflowDefinitionAnySchema.optional(),
   steps: z.array(ServiceFollowUpTemplateStepInputSchema).optional(),
-});
-
-const ServiceProfessionalInputSchema = z.object({
-  kind: ServiceProfessionalKindSchema,
-  userId: optionalStringField(120),
-  externalProfessionalName: optionalStringField(160),
-  externalContact: optionalStringField(160),
-  notes: optionalStringField(500),
-  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
 });
 
 const ServiceFitRuleSourceSchema = z.enum(SERVICE_FIT_RULE_SOURCES);
@@ -801,9 +804,11 @@ const CreateServiceSchema = z.object({
     .max(100)
     .default([]),
   professionals: z.array(ServiceProfessionalInputSchema).max(100).default([]),
-});
+}).and(ServiceHierarchyInputSchema);
 
 const UpdateServiceSchema = z.object({
+  kind: ServiceKindSchema.optional(),
+  parentServiceId: z.string().uuid().nullable().optional(),
   name: z.string().trim().min(1).max(120).optional(),
   description: optionalStringField(2000),
   fitProfile: ServiceFitProfileSchema.optional(),
@@ -822,12 +827,12 @@ const UpdateServiceSchema = z.object({
   installmentFrequency: InstallmentFrequencySchema.nullable().optional(),
   isActive: z.boolean().optional(),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
-  checklistItems: z.array(ServiceChecklistItemInputSchema).max(100).optional(),
+  checklistItems: z.array(ServiceChecklistItemUpdateSchema).max(100).optional(),
   followUpTemplateSteps: z
     .array(ServiceFollowUpTemplateStepInputSchema)
     .max(100)
     .optional(),
-  professionals: z.array(ServiceProfessionalInputSchema).max(100).optional(),
+  professionals: z.array(ServiceProfessionalUpdateSchema).max(100).optional(),
 });
 
 const ContactCustomFieldTypeSchema = z.enum([
@@ -3737,17 +3742,20 @@ router.delete(
 router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
-    const { page, pageSize, search, isActive } = ServicesPaginationQuerySchema.parse(req.query);
+    const { page, pageSize, search, isActive, kind, parentServiceId } = ServicesPaginationQuerySchema.parse(req.query);
     const skip = (page - 1) * pageSize;
 
     const where = {
       tenantId,
+      ...(kind ? { kind } : {}),
+      ...(parentServiceId ? { parentServiceId } : {}),
       ...(typeof isActive === "boolean" ? { isActive } : {}),
       ...(search
         ? {
             OR: [
               { name: { contains: search, mode: "insensitive" as const } },
               { description: { contains: search, mode: "insensitive" as const } },
+              { subServices: { some: { name: { contains: search, mode: "insensitive" as const } } } },
             ],
           }
         : {}),
@@ -3762,6 +3770,7 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
         take: pageSize,
         select: {
           id: true,
+          ...serviceHierarchySelect,
           name: true,
           description: true,
           basePriceCents: true,
@@ -3771,6 +3780,7 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
           isActive: true,
           sortOrder: true,
           checklistItems: {
+            where: { archivedAt: null },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: {
               id: true,
@@ -3799,6 +3809,7 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
             },
           },
           professionals: {
+            where: { archivedAt: null },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: {
               id: true,
@@ -3841,20 +3852,22 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
 router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
-    const { includeInactive } = ServiceOptionsQuerySchema.parse(req.query);
+    const { includeInactive, kind } = ServiceOptionsQuerySchema.parse(req.query);
 
     const items = await prismaWithContacts.service.findMany({
       where: {
         tenantId,
-        ...(includeInactive ? {} : { isActive: true }),
+        ...(includeInactive ? { kind } : kind === "OFFERING" ? enrollableServiceWhere : { kind, isActive: true }),
       },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       select: {
         id: true,
+        ...serviceHierarchySelect,
         name: true,
         isActive: true,
         sortOrder: true,
         checklistItems: {
+          where: { archivedAt: null },
           select: { id: true },
         },
         followUpTemplateSteps: {
@@ -3864,6 +3877,7 @@ router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, n
           select: { id: true },
         },
         professionals: {
+          where: { archivedAt: null },
           select: { id: true },
         },
       },
@@ -3873,6 +3887,9 @@ router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, n
       ok: true,
       items: items.map((item: any) => ({
         id: item.id,
+        kind: item.kind,
+        parentServiceId: item.parentServiceId,
+        parentService: item.parentService,
         name: item.name,
         isActive: item.isActive,
         sortOrder: item.sortOrder,
@@ -4720,6 +4737,7 @@ router.get("/:tenantId/service-professionals", ...readMiddlewares, async (req, r
         id: true,
         name: true,
         professionals: {
+          where: { archivedAt: null },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
             id: true,
@@ -4769,6 +4787,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
       select: {
         id: true,
         tenantId: true,
+        ...serviceHierarchySelect,
         name: true,
         description: true,
         fitProfile: true,
@@ -4789,6 +4808,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
           },
         },
         checklistItems: {
+          where: { archivedAt: null },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
             id: true,
@@ -4821,6 +4841,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
           },
         },
         professionals: {
+          where: { archivedAt: null },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
             id: true,
@@ -4851,6 +4872,10 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
       service: {
         id: service.id,
         tenantId: service.tenantId,
+        kind: service.kind,
+        parentServiceId: service.parentServiceId,
+        parentService: service.parentService,
+        subServiceCount: service._count.subServices,
         name: service.name,
         description: service.description,
         fitProfile: normalizeServiceFitProfile(service.fitProfile),
@@ -4987,12 +5012,16 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
     });
     const nextSortOrder = (maxSortOrderRecord?.sortOrder ?? 0) + 10;
 
-    const created = await prismaWithContacts.service.create({
+    const created = await prisma.$transaction(async (tx) => {
+      await validateServiceParentTx(tx, tenantId, payload.kind, payload.parentServiceId);
+      return tx.service.create({
       data: {
         tenantId,
+        kind: payload.kind,
+        parentServiceId: payload.parentServiceId ?? null,
         name: normalizedName,
         description: normalizedPayload.description ?? null,
-        fitProfile,
+        fitProfile: fitProfile as unknown as Prisma.InputJsonValue,
         basePriceCents: payload.basePriceCents,
         currency: normalizedPayload.currency || "USD",
         isTaxExempt: payload.isTaxExempt,
@@ -5042,6 +5071,7 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
         },
       },
       select: {
+        ...serviceHierarchySelect,
         id: true,
         name: true,
         description: true,
@@ -5056,6 +5086,7 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
         isActive: true,
         sortOrder: true,
       },
+      });
     });
 
     return res.status(201).json({
@@ -5066,6 +5097,7 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
       },
     });
   } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code });
     return next(error);
   }
 });
@@ -5086,6 +5118,8 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
       select: {
         id: true,
         tenantId: true,
+        kind: true,
+        parentServiceId: true,
         basePriceCents: true,
         isTaxExempt: true,
         allowPartialPayments: true,
@@ -5100,6 +5134,13 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
 
     if (!existing || existing.tenantId !== tenantId) {
       return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
+    }
+
+    if (payload.kind !== undefined && payload.kind !== existing.kind) {
+      return res.status(400).json({ error: "SERVICE_KIND_CANNOT_CHANGE" });
+    }
+    if (payload.parentServiceId !== undefined && payload.parentServiceId !== existing.parentServiceId) {
+      return res.status(400).json({ error: "SERVICE_PARENT_CANNOT_CHANGE" });
     }
 
     if (payload.name) {
@@ -5169,26 +5210,10 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
     const updated = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any;
 
-      if (payload.checklistItems) {
-        await prismaTx.serviceChecklistItem.deleteMany({
-          where: {
-            tenantId,
-            serviceId: recordId,
-          },
-        });
-      }
+      await saveServiceCollectionsTx(tx, tenantId, recordId, payload);
 
       if (payload.followUpTemplateSteps) {
         await prismaTx.serviceFollowUpTemplateStep.deleteMany({
-          where: {
-            tenantId,
-            serviceId: recordId,
-          },
-        });
-      }
-
-      if (payload.professionals) {
-        await prismaTx.serviceProfessional.deleteMany({
           where: {
             tenantId,
             serviceId: recordId,
@@ -5235,19 +5260,6 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
             : {}),
           ...(payload.isActive !== undefined ? { isActive: payload.isActive } : {}),
           ...(payload.sortOrder !== undefined ? { sortOrder: payload.sortOrder } : {}),
-          ...(payload.checklistItems
-            ? {
-                checklistItems: {
-                  create: payload.checklistItems.map((item, index) => ({
-                    label: item.label.trim(),
-                    description: item.description ?? null,
-                    isRequired: item.isRequired,
-                    sortOrder: item.sortOrder ?? (index + 1) * 10,
-                    tenantId,
-                  })),
-                },
-              }
-            : {}),
           ...(payload.followUpTemplateSteps
             ? {
                 followUpTemplateSteps: {
@@ -5261,32 +5273,9 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
                 },
               }
             : {}),
-          ...(payload.professionals
-            ? {
-                professionals: {
-                  create: payload.professionals.map((professional, index) => ({
-                    kind: professional.kind,
-                    userId:
-                      professional.kind === "INTERNAL_USER"
-                        ? professional.userId ?? null
-                        : null,
-                    externalProfessionalName:
-                      professional.kind === "EXTERNAL"
-                        ? professional.externalProfessionalName ?? null
-                        : null,
-                    externalContact:
-                      professional.kind === "EXTERNAL"
-                        ? professional.externalContact ?? null
-                        : null,
-                    notes: professional.notes ?? null,
-                    sortOrder: professional.sortOrder ?? (index + 1) * 10,
-                    tenantId,
-                  })),
-                },
-              }
-            : {}),
         },
         select: {
+          ...serviceHierarchySelect,
           id: true,
           name: true,
           description: true,
@@ -5300,6 +5289,16 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
           installmentFrequency: true,
           isActive: true,
           sortOrder: true,
+          checklistItems: {
+            where: { archivedAt: null },
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: serviceChecklistItemSelect,
+          },
+          professionals: {
+            where: { archivedAt: null },
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: serviceProfessionalSelect,
+          },
         },
       });
     });
@@ -5312,6 +5311,9 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
       },
     });
   } catch (error) {
+    if (error instanceof ServiceCollectionError) {
+      return res.status(error.status).json({ error: error.code });
+    }
     return next(error);
   }
 });
@@ -5334,12 +5336,17 @@ router.delete("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, 
       return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
     }
 
-    await prismaWithContacts.service.delete({
-      where: { id: recordId },
+    await prisma.$transaction(async (tx) => {
+      await lockServiceConfigurationTx(tx, tenantId, recordId);
+      if (await tx.service.count({ where: { tenantId, parentServiceId: recordId } })) {
+        throw new ServiceCollectionError("SERVICE_HAS_SUB_SERVICES", 409);
+      }
+      await tx.service.delete({ where: { id: recordId, tenantId } });
     });
 
     return res.json({ ok: true });
   } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code });
     return next(error);
   }
 });

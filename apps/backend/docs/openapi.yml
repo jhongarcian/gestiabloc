@@ -2283,14 +2283,23 @@ paths:
   /api/account-settings/{tenantId}/services:
     get:
       tags: [Account Settings]
-      summary: List tenant service templates
-      description: Returns paginated services with billing rules, checklist template, follow-up template, and professionals.
+      summary: List parent services and sub-services
+      description: Returns paginated services with ancestry and sub-service counts. Filter kind=GROUP for the parent catalog or parentServiceId for a parent's offerings. Search also matches sub-service names. Existing configuration collections exclude archived records.
       security:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
         - $ref: "#/components/parameters/AccountSettingsPageQueryParam"
         - $ref: "#/components/parameters/AccountSettingsPageSizeQueryParam"
+        - in: query
+          name: kind
+          schema:
+            $ref: "#/components/schemas/ServiceKind"
+        - in: query
+          name: parentServiceId
+          schema:
+            type: string
+            format: uuid
         - in: query
           name: search
           required: false
@@ -2323,7 +2332,7 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
     post:
       tags: [Account Settings]
-      summary: Create a service template
+      summary: Create a parent service or sub-service
       security:
         - cookieAuth: []
       parameters:
@@ -2643,6 +2652,21 @@ paths:
               schema:
                 $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateExecutionLogsResponse"
   /api/account-settings/{tenantId}/services/{recordId}:
+    get:
+      tags: [Account Settings]
+      summary: Get a parent service or sub-service
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
+      responses:
+        "200":
+          description: Configuration including kind, parentServiceId, parentService, subServiceCount, and readiness details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSettingsServiceMutationResponse"
     patch:
       tags: [Account Settings]
       summary: Update a service template
@@ -2696,13 +2720,19 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
     delete:
       tags: [Account Settings]
-      summary: Delete a service template
+      summary: Delete an empty parent or a sub-service
       security:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
         - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
       responses:
+        "409":
+          description: SERVICE_HAS_SUB_SERVICES. Delete or relocate the offerings before deleting a parent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "200":
           description: Service template deleted
           content:
@@ -10735,10 +10765,32 @@ components:
         sortOrder:
           type: integer
           minimum: 0
+    ServiceKind:
+      type: string
+      enum: [GROUP, OFFERING]
+      description: GROUP is a parent service. OFFERING is an enrollable sub-service with exactly one parent.
+    ServiceParentSummary:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        isActive:
+          type: boolean
     AccountSettingsServiceCreateRequest:
+      description: Create GROUP with no parent or OFFERING with a same-tenant parent. Kind defaults to GROUP. Send basePriceCents=0 when creating a parent. Only offerings are enrollable.
       type: object
       required: [name, basePriceCents]
       properties:
+        kind:
+          $ref: "#/components/schemas/ServiceKind"
+        parentServiceId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Required for OFFERING; must identify a GROUP in the same tenant. Null for GROUP.
         name:
           type: string
           minLength: 1
@@ -10789,9 +10841,35 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AccountSettingsServiceProfessionalInput"
+    AccountSettingsServiceChecklistItemUpdateInput:
+      allOf:
+        - $ref: "#/components/schemas/AccountSettingsServiceChecklistItemInput"
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: Existing active item ID belonging to this service. Omit only for new items.
+    AccountSettingsServiceProfessionalUpdateInput:
+      allOf:
+        - $ref: "#/components/schemas/AccountSettingsServiceProfessionalInput"
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: Existing active professional ID belonging to this service. Omit only for new professionals.
     AccountSettingsServiceUpdateRequest:
+      description: Updates configuration. kind and parentServiceId may be echoed unchanged but cannot be changed after creation.
       type: object
       properties:
+        kind:
+          $ref: "#/components/schemas/ServiceKind"
+        parentServiceId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Required for OFFERING; must identify a GROUP in the same tenant. Null for GROUP.
         name:
           type: string
           minLength: 1
@@ -10827,20 +10905,36 @@ components:
           type: integer
           minimum: 0
         checklistItems:
+          description: Replaces the active configuration list. Existing IDs are updated; omitted records are archived. Enrolled checklist statuses, completion dates, and history are preserved. Omit this property to leave the collection unchanged.
           type: array
           items:
-            $ref: "#/components/schemas/AccountSettingsServiceChecklistItemInput"
+            $ref: "#/components/schemas/AccountSettingsServiceChecklistItemUpdateInput"
         followUpTemplateSteps:
           type: array
           items:
             $ref: "#/components/schemas/AccountSettingsServiceFollowUpTemplateStepInput"
         professionals:
+          description: Replaces the active professional list. Omitted records are archived without clearing assignments. Changing kind or internal user creates a replacement ID while existing enrollments retain the original professional. Omit this property to leave the collection unchanged.
           type: array
           items:
-            $ref: "#/components/schemas/AccountSettingsServiceProfessionalInput"
+            $ref: "#/components/schemas/AccountSettingsServiceProfessionalUpdateInput"
     AccountSettingsServiceTemplateItem:
       type: object
       properties:
+        parentService:
+          $ref: "#/components/schemas/ServiceParentSummary"
+        _count:
+          type: object
+          properties:
+            subServices:
+              type: integer
+        kind:
+          $ref: "#/components/schemas/ServiceKind"
+        parentServiceId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Required for OFFERING; must identify a GROUP in the same tenant. Null for GROUP.
         id:
           type: string
         name:
@@ -11418,8 +11512,20 @@ components:
           type: boolean
           example: true
         service:
+          description: Update responses include canonical active checklistItems and professionals with their persisted IDs. Clients must use these IDs in subsequent saves. Duplicate, unknown, foreign-service, foreign-tenant, or archived IDs are rejected atomically.
           type: object
           properties:
+            kind:
+              $ref: "#/components/schemas/ServiceKind"
+            parentServiceId:
+              type: string
+              nullable: true
+            parentService:
+              $ref: "#/components/schemas/ServiceParentSummary"
+            checklistItems:
+              $ref: "#/components/schemas/AccountSettingsServiceTemplateItem/properties/checklistItems"
+            professionals:
+              $ref: "#/components/schemas/AccountSettingsServiceTemplateItem/properties/professionals"
             id:
               type: string
             name:
@@ -12570,7 +12676,7 @@ components:
           type: string
           nullable: true
           minLength: 1
-          description: ServiceProfessional ID configured for this enrollment's service. Null clears the assignment; omission leaves it unchanged. A real change creates a SERVICE_PROFESSIONAL_CHANGED Activity entry with previous/new IDs and names and the authenticated actor.
+          description: Active ServiceProfessional ID configured for this enrollment's service. The currently assigned archived professional may be retained unchanged, but archived professionals cannot be newly assigned. Null clears the assignment; omission leaves it unchanged. A real change creates a SERVICE_PROFESSIONAL_CHANGED Activity entry with previous/new IDs and names and the authenticated actor.
         status:
           type: string
           enum: [PENDING, IN_PROGRESS, COMPLETED, CANCELED]

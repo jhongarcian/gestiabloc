@@ -1,3 +1,5 @@
+import { assertServiceEnrollableTx, enrollableServiceWhere } from "../lib/service-hierarchy.js"
+import { lockServiceConfigurationTx, ServiceCollectionError } from "../lib/service-configuration-collections.js"
 import { randomUUID } from "node:crypto"
 
 import { type Response, Router } from "express"
@@ -947,6 +949,7 @@ const contactServiceWorkspaceBaseSelect = {
       installmentCount: true,
       installmentFrequency: true,
       professionals: {
+        where: { archivedAt: null },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
         select: {
           id: true,
@@ -1549,6 +1552,7 @@ async function evaluateServiceFitScan(params: {
     loadServiceFitContactSnapshot(tenantId, contactId),
     prismaWithServices.service.findMany({
       where: {
+        ...enrollableServiceWhere,
         tenantId,
         isActive: true,
         ...(serviceId ? { id: serviceId } : {}),
@@ -1833,6 +1837,7 @@ router.get("/:tenantId/options", requireAuth, async (req, res, next) => {
 
     const items = await prismaWithServices.service.findMany({
       where: {
+        ...enrollableServiceWhere,
         tenantId,
         isActive: true,
       },
@@ -1859,6 +1864,7 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
 
     const service = await prismaWithServices.service.findFirst({
       where: {
+        ...enrollableServiceWhere,
         id: serviceId,
         tenantId,
         isActive: true,
@@ -1883,6 +1889,7 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
           },
         },
         checklistItems: {
+          where: { archivedAt: null },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
             id: true,
@@ -1905,6 +1912,7 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
           },
         },
         professionals: {
+          where: { archivedAt: null },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
             id: true,
@@ -2115,6 +2123,7 @@ router.get("/:tenantId/catalog/:serviceId/summary", requireAuth, async (req, res
 
     const service = await prismaWithServices.service.findFirst({
       where: {
+        ...enrollableServiceWhere,
         id: serviceId,
         tenantId,
         isActive: true,
@@ -3330,6 +3339,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               id: true,
               name: true,
               checklistItems: {
+                where: { archivedAt: null },
                 select: {
                   id: true,
                 },
@@ -3491,6 +3501,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               id: true,
               name: true,
               checklistItems: {
+                where: { archivedAt: null },
                 select: {
                   id: true,
                 },
@@ -3668,6 +3679,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         },
         select: {
           id: true,
+          kind: true,
           basePriceCents: true,
           currency: true,
           isTaxExempt: true,
@@ -3683,11 +3695,13 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
             },
           },
           professionals: {
+            where: { archivedAt: null },
             select: {
               id: true,
             },
           },
           checklistItems: {
+            where: { archivedAt: null },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: { id: true },
           },
@@ -3734,6 +3748,10 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
 
     if (!service) {
       return res.status(400).json({ error: "INVALID_SERVICE" })
+    }
+
+    if (service.kind !== "OFFERING") {
+      return res.status(400).json({ error: "SUB_SERVICE_REQUIRED" })
     }
 
     const selectedPublishedTemplate = payload.followUpTemplateId
@@ -3809,6 +3827,16 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
     }
     const created = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any
+      await assertServiceEnrollableTx(tx, tenantId, payload.serviceId)
+      const activeChecklist = await tx.serviceChecklistItem.findMany({
+        where: { tenantId, serviceId: payload.serviceId, archivedAt: null }, select: { id: true },
+      })
+      if (payload.assignedProfessionalId && !await tx.serviceProfessional.findFirst({
+        where: { id: payload.assignedProfessionalId, tenantId, serviceId: payload.serviceId, archivedAt: null },
+        select: { id: true },
+      })) {
+        throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
+      }
 
       const contactService = await prismaTx.contactService.create({
         data: {
@@ -3846,9 +3874,9 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         })
       }
 
-      if (service.checklistItems.length) {
+      if (activeChecklist.length) {
         await prismaTx.contactServiceChecklistItem.createMany({
-          data: service.checklistItems.map((item: { id: string }) => ({
+          data: activeChecklist.map((item: { id: string }) => ({
             tenantId,
             contactServiceId: contactService.id,
             checklistItemId: item.id,
@@ -3923,6 +3951,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       contactService: created.contactService,
     })
   } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
     return next(error)
   }
 })
@@ -3999,6 +4028,7 @@ router.get(
                 installmentCount: true,
                 installmentFrequency: true,
                 professionals: {
+                  where: { archivedAt: null },
                   orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
                   select: {
                     id: true,
@@ -4025,6 +4055,7 @@ router.get(
                   },
                 },
                 checklistItems: {
+                  where: { archivedAt: null },
                   select: {
                     id: true,
                   },
@@ -4683,6 +4714,7 @@ router.get(
                 installmentCount: true,
                 installmentFrequency: true,
                 professionals: {
+                  where: { archivedAt: null },
                   orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
                   select: {
                     id: true,
@@ -4709,6 +4741,7 @@ router.get(
                   },
                 },
                 checklistItems: {
+                  where: { archivedAt: null },
                   select: {
                     id: true,
                     label: true,
@@ -5791,6 +5824,7 @@ router.patch(
               id: true,
               name: true,
               professionals: {
+                where: { archivedAt: null },
                 select: {
                   id: true,
                   kind: true,
@@ -5845,7 +5879,7 @@ router.patch(
                   canceledAt: null,
                 }
 
-      const executionLogs = []
+      const executionLogs: Prisma.ServiceFollowUpExecutionLogUncheckedCreateWithoutContactServiceInput[] = []
       if (payload.status !== undefined && payload.status !== existing.status && existing.followUpTemplateId) {
         executionLogs.push({
           tenantId,
@@ -5872,51 +5906,64 @@ router.patch(
       }
 
       // Nested activity creation and the enrollment update commit or roll back together.
-      const updated = await prisma.contactService.update({
-        where: { id: contactServiceId, tenantId },
-        data: {
-          ...statusUpdate,
-          ...(payload.startedAt !== undefined
-            ? { startedAt: payload.startedAt ? new Date(payload.startedAt) : null }
-            : {}),
-          ...(payload.purchasedAt !== undefined
-            ? { purchasedAt: payload.purchasedAt ? new Date(payload.purchasedAt) : null }
-            : {}),
-          ...(payload.notes !== undefined
-            ? { notes: payload.notes }
-            : {}),
-          ...(payload.assignedProfessionalId !== undefined
-            ? { assignedProfessionalId: payload.assignedProfessionalId }
-            : {}),
-          ...(executionLogs.length ? { executionLogs: { create: executionLogs } } : {}),
-        },
-        select: {
-          id: true,
-          status: true,
-          startedAt: true,
-          purchasedAt: true,
-          completedAt: true,
-          canceledAt: true,
-          totalPriceCents: true,
-          notes: true,
-          assignedProfessionalId: true,
-          assignedProfessional: {
-            select: {
-              id: true,
-              kind: true,
-              userId: true,
-              externalProfessionalName: true,
-              externalContact: true,
-              user: {
-                select: {
-                  name: true,
-                  email: true,
-                  image: true,
+      const updated = await prisma.$transaction(async (tx) => {
+        await lockServiceConfigurationTx(tx, tenantId, existing.service.id)
+        const current = await tx.contactService.findUniqueOrThrow({
+          where: { id: contactServiceId, tenantId }, select: { assignedProfessionalId: true },
+        })
+        if (payload.assignedProfessionalId && payload.assignedProfessionalId !== current.assignedProfessionalId &&
+            !await tx.serviceProfessional.findFirst({
+              where: { id: payload.assignedProfessionalId, tenantId, serviceId: existing.service.id, archivedAt: null },
+              select: { id: true },
+            })) {
+          throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
+        }
+        return tx.contactService.update({
+          where: { id: contactServiceId, tenantId },
+          data: {
+            ...statusUpdate,
+            ...(payload.startedAt !== undefined
+              ? { startedAt: payload.startedAt ? new Date(payload.startedAt) : null }
+              : {}),
+            ...(payload.purchasedAt !== undefined
+              ? { purchasedAt: payload.purchasedAt ? new Date(payload.purchasedAt) : null }
+              : {}),
+            ...(payload.notes !== undefined
+              ? { notes: payload.notes }
+              : {}),
+            ...(payload.assignedProfessionalId !== undefined
+              ? { assignedProfessionalId: payload.assignedProfessionalId }
+              : {}),
+            ...(executionLogs.length ? { executionLogs: { create: executionLogs } } : {}),
+          },
+          select: {
+            id: true,
+            status: true,
+            startedAt: true,
+            purchasedAt: true,
+            completedAt: true,
+            canceledAt: true,
+            totalPriceCents: true,
+            notes: true,
+            assignedProfessionalId: true,
+            assignedProfessional: {
+              select: {
+                id: true,
+                kind: true,
+                userId: true,
+                externalProfessionalName: true,
+                externalContact: true,
+                user: {
+                  select: {
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
                 },
               },
             },
           },
-        },
+        })
       })
 
       return res.json({
@@ -5924,6 +5971,7 @@ router.patch(
         contactService: updated,
       })
     } catch (error) {
+      if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
       return next(error)
     }
   },

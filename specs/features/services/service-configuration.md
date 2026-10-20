@@ -1,5 +1,34 @@
 # Service Configuration Feature Spec
 
+## Service hierarchy (implemented in Chunks 3–4)
+
+The catalog has exactly two levels:
+
+- Parent services (`GROUP`), such as Medicare, organize the catalog.
+- Sub-services (`OFFERING`), such as Medicare Advantage, belong to one parent in the same tenant.
+- Contacts enroll only into active sub-services whose parent is also active.
+- Deactivating a parent pauses new enrollments without changing existing enrollment records.
+- A parent with sub-services cannot be deleted. Kind and parent are fixed after creation in this phase.
+
+The service list shows parent services and their offering counts. Opening a parent shows editable
+name/description/status and a paginated, searchable sub-service list with a Create sub-service action.
+Opening a sub-service uses the existing configuration workspace and provides a link back to its parent.
+Names retain the existing account-wide uniqueness rule. Searches for a sub-service also find its parent.
+
+Existing flat service records are preserved under an automatically created Existing services group
+per tenant. Original IDs, configuration, prices, and enrollment links remain unchanged; an available
+suffix is used if that group name is already taken. Billing/checklist/step/professional inheritance is
+planned for subsequent chunks and is not applied by this change.
+
+API additions:
+
+- Service payloads include `kind`, `parentServiceId`, and `parentService` (ID, name, active status).
+- Create requests default to `GROUP`; `OFFERING` requires a parent ID.
+- List requests accept `kind` and `parentServiceId`. Parent detail responses include `subServiceCount`;
+  list items include `_count.subServices`.
+- Service option lists default to offerings; `kind=GROUP` requests parent choices explicitly.
+- Enrollment rejects a group with `SUB_SERVICE_REQUIRED` and an unavailable offering with `SERVICE_NOT_AVAILABLE`.
+
 ## 1. Scope
 
 This spec documents the account-settings service configuration experience for:

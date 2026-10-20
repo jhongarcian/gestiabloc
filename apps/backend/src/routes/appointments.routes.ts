@@ -1,3 +1,4 @@
+import { enrollableServiceWhere } from "../lib/service-hierarchy.js"
 import { type Response, Router } from "express"
 import { z } from "zod"
 
@@ -491,7 +492,7 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
       prisma.service.findMany({
         where: {
           tenantId,
-          isActive: true,
+          ...enrollableServiceWhere,
         },
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
         select: {
