@@ -2,8 +2,6 @@
 
 import dynamic from "next/dynamic"
 
-import { ServiceGroupPanel } from "../../../_components/service-group-panel"
-
 import type { ServiceDetailsPanelProps } from "../../../_components/service-details-panel"
 
 const ServiceDetailsPanel = dynamic(
@@ -22,7 +20,5 @@ const ServiceDetailsPanel = dynamic(
 )
 
 export function ServiceDetailsPanelClient(props: ServiceDetailsPanelProps) {
-  return props.service.kind === "GROUP"
-    ? <ServiceGroupPanel key={props.service.id} {...props} />
-    : <ServiceDetailsPanel key={props.service.id} {...props} />
+  return <ServiceDetailsPanel key={props.service.id} {...props} />
 }

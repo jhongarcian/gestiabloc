@@ -17,8 +17,8 @@ Names retain the existing account-wide uniqueness rule. Searches for a sub-servi
 
 Existing flat service records are preserved under an automatically created Existing services group
 per tenant. Original IDs, configuration, prices, and enrollment links remain unchanged; an available
-suffix is used if that group name is already taken. Billing/checklist/step/professional inheritance is
-planned for subsequent chunks and is not applied by this change.
+suffix is used if that group name is already taken. Billing, checklist, and professional inheritance are implemented below. Steps inheritance remains
+part of Chunk 7.
 
 API additions:
 
@@ -28,6 +28,35 @@ API additions:
   list items include `_count.subServices`.
 - Service option lists default to offerings; `kind=GROUP` requests parent choices explicitly.
 - Enrollment rejects a group with `SUB_SERVICE_REQUIRED` and an unavailable offering with `SERVICE_NOT_AVAILABLE`.
+
+## Section inheritance (implemented in Chunks 5–6)
+
+Parent services now expose their billing, checklist, and professional defaults in the configuration
+workspace. Each offering independently chooses `INHERIT` or `CUSTOM` for those three whole sections.
+New offerings inherit all three by default. The migration retains `CUSTOM` for every existing service
+so current configurations remain unchanged.
+
+- Inherited sections display **Inherited from [parent]** and read-only effective values.
+- **Customize this section** copies the parent's current effective section into independent local
+  settings. Checklist items and professionals receive new IDs; their labels, details, and order are copied.
+- **Restore parent settings** switches to current parent defaults and archives local collection records.
+  Existing enrolled checklist items and professional assignments retain their original relationships.
+- Modes are changed separately from editing values. Direct writes to inherited sections are rejected.
+- Parent services always own their defaults and cannot inherit.
+- Catalog prices, readiness counts, purchase configuration, and assignment options use resolved sections.
+
+Enrollment locks the parent and offering, resolves configuration, validates the selected professional,
+and creates enrolled checklist records within the purchase transaction. Billing snapshots store price,
+currency, tax policy, deposit requirements, and installment terms. Existing purchases keep their total,
+payment policy, and displayed billing terms after configuration or tenant tax edits. The migration
+freezes available billing terms for earlier purchases while retaining recorded totals/currency/policy.
+Checklist label and professional attribution snapshots remain part of Chunk 8.
+
+API mode fields are `billingMode`, `checklistMode`, and `professionalsMode`. GET/list/mutation responses
+contain effective values and an `inheritance` object with each section's mode and parent source ID.
+PATCH mode changes copy/archive records atomically with other submitted changes. A request cannot
+change a section's mode and submit values for that same section. Foreign, archived, or parent-owned
+IDs cannot be saved into an offering's custom collections.
 
 ## 1. Scope
 

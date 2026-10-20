@@ -751,11 +751,39 @@ enum ServiceKind {
   OFFERING
 }
 
+enum ServiceSectionMode {
+  INHERIT
+  CUSTOM
+}
+
+enum ServiceStepTimeUnit {
+  MINUTES
+  HOURS
+  DAYS
+}
+
+enum ServiceWorkflowKind {
+  LEGACY_TEMPLATE
+  SERVICE_STEPS
+  NONE
+}
+
+enum ServiceStepOccurrenceStatus {
+  ACTIVE
+  COMPLETED
+  SKIPPED
+  CANCELED
+}
+
 model Service {
   id                         String                @id @default(uuid())
   tenantId                   String
   kind                       ServiceKind           @default(GROUP)
   parentServiceId            String?
+  billingMode                ServiceSectionMode    @default(CUSTOM)
+  checklistMode              ServiceSectionMode    @default(CUSTOM)
+  professionalsMode          ServiceSectionMode    @default(CUSTOM)
+  stepsMode                  ServiceSectionMode    @default(CUSTOM)
   name                       String
   description                String?
   fitProfile                 Json?
@@ -776,6 +804,7 @@ model Service {
   followUpTemplates     ServiceFollowUpTemplate[]
   followUpTemplateSteps ServiceFollowUpTemplateStep[]
   professionals         ServiceProfessional[]
+  steps                 ServiceStep[]
   contactServices       ContactService[]
   appointments          Appointment[]
 
@@ -788,6 +817,24 @@ model Service {
   @@index([tenantId, isActive, sortOrder])
   @@index([tenantId, kind, parentServiceId, sortOrder])
   @@index([tenantId, parentServiceId, sortOrder])
+}
+
+model ServiceStep {
+  id                 String              @id @default(uuid())
+  tenantId           String
+  serviceId          String
+  title              String
+  instructions       String?
+  completionDuration Int                 @default(3)
+  completionUnit     ServiceStepTimeUnit @default(DAYS)
+  sortOrder          Int                 @default(0)
+  archivedAt         DateTime?
+  service            Service             @relation(fields: [tenantId, serviceId], references: [tenantId, id], onDelete: Cascade)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, archivedAt, sortOrder], map: "ServiceStep_configuration_idx")
 }
 
 model ServiceChecklistItem {
@@ -934,6 +981,10 @@ model ContactService {
   completedAt               DateTime?
   canceledAt                DateTime?
   totalPriceCents           Int
+  billingSnapshot           Json?
+  configurationSnapshot     Json?
+  assignedProfessionalSnapshot Json?
+  workflowKind              ServiceWorkflowKind @default(LEGACY_TEMPLATE)
   currency                  String               @default("USD")
   allowPartialPayments      Boolean              @default(false)
   notes                     String?
@@ -948,6 +999,7 @@ model ContactService {
   assignedProfessional    ServiceProfessional?              @relation("ContactServiceAssignedProfessional", fields: [assignedProfessionalId], references: [id], onDelete: SetNull)
   payments                ContactServicePayment[]
   followUpSteps           ContactServiceFollowUpStep[]
+  serviceSteps            ContactServiceStep[]
   checklistItems          ContactServiceChecklistItem[]
   checklistActivities     ContactServiceChecklistActivity[]
   serviceNotes            ContactServiceNote[]
@@ -969,6 +1021,47 @@ model ContactService {
   @@index([tenantId, purchasedAt])
 }
 
+model ContactServiceStep {
+  id                 String              @id @default(uuid())
+  tenantId           String
+  contactServiceId   String
+  sourceStepId       String
+  title              String
+  instructions       String?
+  completionDuration Int
+  completionUnit     ServiceStepTimeUnit
+  sortOrder          Int
+  contactService     ContactService      @relation(fields: [tenantId, contactServiceId], references: [tenantId, id], onDelete: Cascade)
+  occurrences        ServiceStepOccurrence[]
+  createdAt          DateTime            @default(now())
+
+  @@unique([tenantId, contactServiceId, id])
+  @@unique([tenantId, contactServiceId, sourceStepId])
+  @@index([tenantId, contactServiceId, sortOrder])
+}
+
+model ServiceStepOccurrence {
+  id                 String                      @id @default(uuid())
+  tenantId           String
+  contactServiceId   String
+  stepId             String
+  entryKey           String
+  occurrenceNumber   Int
+  status             ServiceStepOccurrenceStatus @default(ACTIVE)
+  enteredAt          DateTime
+  dueAt              DateTime
+  resolvedAt         DateTime?
+  resolutionReason   String?
+  enteredByUserId    String?
+  step               ContactServiceStep @relation(fields: [tenantId, contactServiceId, stepId], references: [tenantId, contactServiceId, id], onDelete: Cascade)
+  createdAt          DateTime @default(now())
+
+  @@unique([tenantId, contactServiceId, entryKey])
+  @@unique([tenantId, stepId, occurrenceNumber])
+  @@index([tenantId, contactServiceId, status])
+  @@index([tenantId, status, dueAt])
+}
+
 model ContactServiceChecklistItem {
   id               String                        @id @default(uuid())
   tenantId         String
@@ -976,6 +1069,10 @@ model ContactServiceChecklistItem {
   checklistItemId  String
   status           ContactServiceChecklistStatus @default(NOT_RECEIVED)
   completedAt      DateTime?
+  labelSnapshot       String?
+  descriptionSnapshot String?
+  isRequiredSnapshot  Boolean?
+  sortOrderSnapshot   Int?
 
   tenant              Tenant                            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contactService      ContactService                    @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)

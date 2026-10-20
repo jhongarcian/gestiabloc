@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "ServiceChecklistItem_tenantId_serviceId_archivedAt_sortOrder_id" RENAME TO "ServiceChecklistItem_tenantId_serviceId_archivedAt_sortOrde_idx";

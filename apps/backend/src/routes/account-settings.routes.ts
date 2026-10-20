@@ -65,6 +65,13 @@ import {
   validateServiceParentTx, enrollableServiceWhere,
 } from "../lib/service-hierarchy.js";
 
+import {
+  serviceSectionModesSchema, serviceConfigurationSelect, resolveServiceConfiguration,
+  prepareServiceSectionsTx,
+} from "../lib/service-configuration-inheritance.js";
+
+import { ServiceStepInputSchema, ServiceStepUpdateSchema, saveServiceStepsTx } from "../lib/service-steps.js";
+
 const router = Router();
 const prismaWithContacts = prisma as any;
 
@@ -780,6 +787,8 @@ const ServiceFitProfileSchema = z.object({
 });
 
 const CreateServiceSchema = z.object({
+  ...serviceSectionModesSchema.shape,
+  steps: z.array(ServiceStepInputSchema).max(100).default([]),
   name: z.string().trim().min(1).max(120),
   description: optionalStringField(2000),
   fitProfile: ServiceFitProfileSchema.optional(),
@@ -807,6 +816,8 @@ const CreateServiceSchema = z.object({
 }).and(ServiceHierarchyInputSchema);
 
 const UpdateServiceSchema = z.object({
+  ...serviceSectionModesSchema.shape,
+  steps: z.array(ServiceStepUpdateSchema).max(100).optional(),
   kind: ServiceKindSchema.optional(),
   parentServiceId: z.string().uuid().nullable().optional(),
   name: z.string().trim().min(1).max(120).optional(),
@@ -3771,6 +3782,7 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
         select: {
           id: true,
           ...serviceHierarchySelect,
+          ...serviceConfigurationSelect,
           name: true,
           description: true,
           basePriceCents: true,
@@ -3836,7 +3848,7 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
 
     return res.json({
       ok: true,
-      items: services,
+      items: services.map((item: any) => resolveServiceConfiguration(item)),
       pagination: {
         page,
         pageSize,
@@ -3863,29 +3875,24 @@ router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, n
       select: {
         id: true,
         ...serviceHierarchySelect,
+        ...serviceConfigurationSelect,
         name: true,
         isActive: true,
         sortOrder: true,
-        checklistItems: {
-          where: { archivedAt: null },
-          select: { id: true },
-        },
+        checklistItems: serviceConfigurationSelect.checklistItems,
         followUpTemplateSteps: {
           select: { id: true },
         },
         followUpTemplates: {
           select: { id: true },
         },
-        professionals: {
-          where: { archivedAt: null },
-          select: { id: true },
-        },
+        professionals: serviceConfigurationSelect.professionals,
       },
     });
 
     return res.json({
       ok: true,
-      items: items.map((item: any) => ({
+      items: items.map((raw: any) => { const item = resolveServiceConfiguration(raw); return ({
         id: item.id,
         kind: item.kind,
         parentServiceId: item.parentServiceId,
@@ -3897,7 +3904,7 @@ router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, n
         followUpTemplateStepsCount: item.followUpTemplateSteps.length,
         followUpTemplatesCount: item.followUpTemplates.length,
         professionalsCount: item.professionals.length,
-      })),
+      }); }),
     });
   } catch (error) {
     return next(error);
@@ -4782,12 +4789,13 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
   try {
     const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
 
-    const service = await prismaWithContacts.service.findUnique({
+    let service = await prismaWithContacts.service.findUnique({
       where: { id: recordId },
       select: {
         id: true,
         tenantId: true,
         ...serviceHierarchySelect,
+        ...serviceConfigurationSelect,
         name: true,
         description: true,
         fitProfile: true,
@@ -4867,9 +4875,16 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
       return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
     }
 
+    service = resolveServiceConfiguration(service);
     return res.json({
       ok: true,
       service: {
+        billingMode: service.billingMode,
+        checklistMode: service.checklistMode,
+        professionalsMode: service.professionalsMode,
+        stepsMode: service.stepsMode,
+        steps: service.steps,
+        inheritance: service.inheritance,
         id: service.id,
         tenantId: service.tenantId,
         kind: service.kind,
@@ -4912,7 +4927,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
                 service.installmentFrequency !== null)),
           checklistComplete: service.checklistItems.length > 0,
           followUpsComplete:
-            service.followUpTemplates.length > 0 ||
+            service.kind === "GROUP" || service.steps.length > 0 || service.followUpTemplates.length > 0 ||
             service.followUpTemplateSteps.length > 0,
           professionalsComplete: service.professionals.length > 0,
           isComplete:
@@ -4924,7 +4939,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
                 service.installmentCount !== null &&
                 service.installmentFrequency !== null)) &&
             service.checklistItems.length > 0 &&
-            (service.followUpTemplates.length > 0 ||
+            (service.kind === "GROUP" || service.steps.length > 0 || service.followUpTemplates.length > 0 ||
               service.followUpTemplateSteps.length > 0) &&
             service.professionals.length > 0,
         },
@@ -5012,11 +5027,28 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
     });
     const nextSortOrder = (maxSortOrderRecord?.sortOrder ?? 0) + 10;
 
+    const defaultMode = payload.kind === "OFFERING" ? "INHERIT" : "CUSTOM";
+    const modes = {
+      billingMode: payload.billingMode ?? defaultMode,
+      checklistMode: payload.checklistMode ?? defaultMode,
+      professionalsMode: payload.professionalsMode ?? defaultMode,
+      stepsMode: payload.stepsMode ?? defaultMode,
+    };
+    if (payload.kind === "GROUP" && Object.values(modes).includes("INHERIT")) {
+      return res.status(400).json({ error: "PARENT_SECTION_CANNOT_INHERIT" });
+    }
+    if ((modes.checklistMode === "INHERIT" && payload.checklistItems.length) ||
+        (modes.professionalsMode === "INHERIT" && payload.professionals.length) ||
+        (modes.stepsMode === "INHERIT" && payload.steps.length)) {
+      return res.status(400).json({ error: "INHERITED_SECTION_READ_ONLY" });
+    }
     const created = await prisma.$transaction(async (tx) => {
       await validateServiceParentTx(tx, tenantId, payload.kind, payload.parentServiceId);
       return tx.service.create({
       data: {
         tenantId,
+        ...modes,
+        steps: { create: payload.steps.map((step, index) => ({ ...step, tenantId, sortOrder: (index + 1) * 10 })) },
         kind: payload.kind,
         parentServiceId: payload.parentServiceId ?? null,
         name: normalizedName,
@@ -5072,6 +5104,7 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
       },
       select: {
         ...serviceHierarchySelect,
+        ...serviceConfigurationSelect,
         id: true,
         name: true,
         description: true,
@@ -5092,7 +5125,7 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
     return res.status(201).json({
       ok: true,
       service: {
-        ...created,
+        ...resolveServiceConfiguration(created),
         fitProfile: normalizeServiceFitProfile(created.fitProfile),
       },
     });
@@ -5175,42 +5208,13 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
       nextFitProfile = validation.profile;
     }
 
-    const nextBasePriceCents = payload.basePriceCents ?? existing.basePriceCents;
-    const nextIsTaxExempt = payload.isTaxExempt ?? existing.isTaxExempt;
     const nextAllowPartialPayments = payload.allowPartialPayments ?? existing.allowPartialPayments;
-    const nextMinimumPartial =
-      payload.minimumPartialPaymentCents === undefined
-        ? undefined
-        : payload.minimumPartialPaymentCents;
-    const maxAllowedDepositCents = getServiceTotalWithTaxCents({
-      basePriceCents: nextBasePriceCents,
-      isTaxExempt: nextIsTaxExempt,
-      taxEnabled: existing.tenant.taxEnabled,
-      defaultTaxRateBps: existing.tenant.defaultTaxRateBps,
-    });
-
-    if (
-      nextAllowPartialPayments &&
-      nextMinimumPartial !== undefined &&
-      nextMinimumPartial !== null &&
-      nextMinimumPartial > maxAllowedDepositCents
-    ) {
-      return res.status(400).json({ error: "MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE" });
-    }
-
-    if (
-      nextAllowPartialPayments &&
-      payload.installmentCount !== undefined &&
-      payload.installmentCount !== null &&
-      payload.installmentCount < 2
-    ) {
-      return res.status(400).json({ error: "INVALID_INSTALLMENT_COUNT" });
-    }
-
     const updated = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any;
 
+      const sectionChanges = await prepareServiceSectionsTx(tx, tenantId, recordId, payload);
       await saveServiceCollectionsTx(tx, tenantId, recordId, payload);
+      if (payload.steps !== undefined) await saveServiceStepsTx(tx, tenantId, recordId, payload.steps);
 
       if (payload.followUpTemplateSteps) {
         await prismaTx.serviceFollowUpTemplateStep.deleteMany({
@@ -5221,9 +5225,10 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
         });
       }
 
-      return prismaTx.service.update({
+      const saved = await prismaTx.service.update({
         where: { id: recordId },
         data: {
+          ...sectionChanges,
           ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
           ...(payload.description !== undefined ? { description: payload.description ?? null } : {}),
           ...(payload.fitProfile !== undefined ? { fitProfile: nextFitProfile } : {}),
@@ -5276,6 +5281,7 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
         },
         select: {
           ...serviceHierarchySelect,
+          ...serviceConfigurationSelect,
           id: true,
           name: true,
           description: true,
@@ -5301,12 +5307,20 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
           },
         },
       });
+      const effective = resolveServiceConfiguration(saved);
+      const maxDeposit = getServiceTotalWithTaxCents({ ...effective,
+        taxEnabled: existing.tenant.taxEnabled, defaultTaxRateBps: existing.tenant.defaultTaxRateBps });
+      if (effective.allowPartialPayments && effective.minimumPartialPaymentCents !== null &&
+          effective.minimumPartialPaymentCents > maxDeposit) {
+        throw new ServiceCollectionError("MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE");
+      }
+      return saved;
     });
 
     return res.json({
       ok: true,
       service: {
-        ...updated,
+        ...resolveServiceConfiguration(updated),
         fitProfile: normalizeServiceFitProfile(updated.fitProfile),
       },
     });

@@ -2284,7 +2284,7 @@ paths:
     get:
       tags: [Account Settings]
       summary: List parent services and sub-services
-      description: Returns paginated services with ancestry and sub-service counts. Filter kind=GROUP for the parent catalog or parentServiceId for a parent's offerings. Search also matches sub-service names. Existing configuration collections exclude archived records.
+      description: Returns paginated services with ancestry and sub-service counts. Filter kind=GROUP for the parent catalog or parentServiceId for a parent's offerings. Search also matches sub-service names. Billing and configuration collections are resolved through section inheritance and exclude archived records.
       security:
         - cookieAuth: []
       parameters:
@@ -4814,7 +4814,7 @@ paths:
     post:
       tags: [Services]
       summary: Create contact service process from template
-      description: Creates a contact-specific service record and copies service follow-up template steps into per-contact follow-up records.
+      description: Enrolls an active offering under an active parent. Resolves billing, checklist, and professional sections transactionally. Stores an immutable billing snapshot including price, currency, tax policy, deposit, and installment terms. Later parent or child billing edits never recalculate this purchase or its payment requirements.
       security:
         - cookieAuth: []
       parameters:
@@ -10765,6 +10765,28 @@ components:
         sortOrder:
           type: integer
           minimum: 0
+    ServiceSectionMode:
+      type: string
+      enum: [INHERIT, CUSTOM]
+      description: INHERIT uses the parent section. CUSTOM owns the entire section independently. Parent services always use CUSTOM. New offerings default to INHERIT; existing offerings retain CUSTOM.
+    ServiceSectionSource:
+      type: object
+      properties:
+        mode:
+          $ref: "#/components/schemas/ServiceSectionMode"
+        sourceServiceId:
+          type: string
+          nullable: true
+          description: Parent ID for an inherited section; null for owned settings.
+    ServiceInheritance:
+      type: object
+      properties:
+        billing:
+          $ref: "#/components/schemas/ServiceSectionSource"
+        checklist:
+          $ref: "#/components/schemas/ServiceSectionSource"
+        professionals:
+          $ref: "#/components/schemas/ServiceSectionSource"
     ServiceKind:
       type: string
       enum: [GROUP, OFFERING]
@@ -10780,10 +10802,16 @@ components:
         isActive:
           type: boolean
     AccountSettingsServiceCreateRequest:
-      description: Create GROUP with no parent or OFFERING with a same-tenant parent. Kind defaults to GROUP. Send basePriceCents=0 when creating a parent. Only offerings are enrollable.
+      description: Create GROUP with no parent or OFFERING with a same-tenant parent. Kind defaults to GROUP. Parents can define billing, checklist, and professional defaults. Only offerings are enrollable. New offerings default to INHERIT for each section; billing values supplied for an inherited section are unused. Nonempty inherited collections are rejected.
       type: object
       required: [name, basePriceCents]
       properties:
+        billingMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
+        checklistMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
+        professionalsMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
         kind:
           $ref: "#/components/schemas/ServiceKind"
         parentServiceId:
@@ -10860,9 +10888,15 @@ components:
               format: uuid
               description: Existing active professional ID belonging to this service. Omit only for new professionals.
     AccountSettingsServiceUpdateRequest:
-      description: Updates configuration. kind and parentServiceId may be echoed unchanged but cannot be changed after creation.
+      description: Updates configuration. kind and parentServiceId may be echoed unchanged but cannot be changed after creation. Change a section mode in a separate request without section values. CUSTOM copies current effective settings into independent records with new collection IDs. INHERIT restores current parent defaults and archives local collection records while preserving enrollment history. Inherited sections reject direct edits. Mode changes and all other updates are atomic. Billing edits apply only to future purchases.
       type: object
       properties:
+        billingMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
+        checklistMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
+        professionalsMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
         kind:
           $ref: "#/components/schemas/ServiceKind"
         parentServiceId:
@@ -10921,6 +10955,14 @@ components:
     AccountSettingsServiceTemplateItem:
       type: object
       properties:
+        billingMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
+        checklistMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
+        professionalsMode:
+          $ref: "#/components/schemas/ServiceSectionMode"
+        inheritance:
+          $ref: "#/components/schemas/ServiceInheritance"
         parentService:
           $ref: "#/components/schemas/ServiceParentSummary"
         _count:
@@ -11512,9 +11554,17 @@ components:
           type: boolean
           example: true
         service:
-          description: Update responses include canonical active checklistItems and professionals with their persisted IDs. Clients must use these IDs in subsequent saves. Duplicate, unknown, foreign-service, foreign-tenant, or archived IDs are rejected atomically.
+          description: Responses contain effective billing, checklistItems, and professionals after resolving section inheritance. Collection IDs belong to the source service; customize before editing inherited items. Update responses include canonical active collections with their persisted IDs. Clients must use these IDs in subsequent saves. Duplicate, unknown, foreign-service, foreign-tenant, or archived IDs are rejected atomically.
           type: object
           properties:
+            billingMode:
+              $ref: "#/components/schemas/ServiceSectionMode"
+            checklistMode:
+              $ref: "#/components/schemas/ServiceSectionMode"
+            professionalsMode:
+              $ref: "#/components/schemas/ServiceSectionMode"
+            inheritance:
+              $ref: "#/components/schemas/ServiceInheritance"
             kind:
               $ref: "#/components/schemas/ServiceKind"
             parentServiceId:
@@ -12676,7 +12726,7 @@ components:
           type: string
           nullable: true
           minLength: 1
-          description: Active ServiceProfessional ID configured for this enrollment's service. The currently assigned archived professional may be retained unchanged, but archived professionals cannot be newly assigned. Null clears the assignment; omission leaves it unchanged. A real change creates a SERVICE_PROFESSIONAL_CHANGED Activity entry with previous/new IDs and names and the authenticated actor.
+          description: Active ServiceProfessional ID from the enrollment's effective professional section, including inherited parent professionals. The currently assigned archived professional may be retained unchanged, but archived professionals cannot be newly assigned. Null clears the assignment; omission leaves it unchanged. A real change creates a SERVICE_PROFESSIONAL_CHANGED Activity entry with previous/new IDs and names and the authenticated actor.
         status:
           type: string
           enum: [PENDING, IN_PROGRESS, COMPLETED, CANCELED]

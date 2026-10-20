@@ -102,18 +102,12 @@ function ServiceCreateDialog({
   const [isSaving, setIsSaving] = useState(false)
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
-  const [price, setPrice] = useState("0.00")
-  const [currency, setCurrency] = useState("USD")
   const saving = useRef(false)
   const label = parentService ? "sub-service" : "service"
 
   const save = async () => {
     if (saving.current) return
     if (!name.trim()) return toast.error("Enter a name.")
-    const amount = Number(price)
-    if (parentService && (!price.trim() || !Number.isFinite(amount) || amount < 0)) {
-      return toast.error("Enter a valid price of zero or more.")
-    }
     saving.current = true
     setIsSaving(true)
     try {
@@ -124,8 +118,7 @@ function ServiceCreateDialog({
           description: description.trim() || null,
           kind: parentService ? "OFFERING" : "GROUP",
           parentServiceId: parentService?.id ?? null,
-          basePriceCents: parentService ? Math.round(amount * 100) : 0,
-          currency: currency.trim().toUpperCase(),
+          basePriceCents: 0,
           isActive: true,
         },
       )
@@ -149,8 +142,6 @@ function ServiceCreateDialog({
         if (!value) {
           setName("")
           setDescription("")
-          setPrice("0.00")
-          setCurrency("USD")
         }
       }}
     >
@@ -194,29 +185,10 @@ function ServiceCreateDialog({
               />
             </Field>
             {parentService ? (
-              <FieldGroup className="grid gap-4 sm:grid-cols-2">
-                <Field>
-                  <FieldLabel htmlFor="service-create-price">Base price</FieldLabel>
-                  <Input
-                    id="service-create-price"
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={price}
-                    onChange={(event) => setPrice(event.target.value)}
-                  />
-                </Field>
-                <Field>
-                  <FieldLabel htmlFor="service-create-currency">Currency</FieldLabel>
-                  <Input
-                    id="service-create-currency"
-                    minLength={3}
-                    maxLength={3}
-                    value={currency}
-                    onChange={(event) => setCurrency(event.target.value)}
-                  />
-                </Field>
-              </FieldGroup>
+              <p className="text-sm leading-6 text-muted-foreground">
+                Billing, checklist, and professionals start with {parentService.name}’s settings.
+                You can customize each section after creating this sub-service.
+              </p>
             ) : null}
           </FieldGroup>
         </fieldset>
@@ -450,7 +422,8 @@ export function ServicesConfigPanel({
             <div>
               <CardTitle>{parentService ? "Offerings" : "Parent services"}</CardTitle>
               <CardDescription>
-                {total} {parentService ? "sub-service" : "service"}{total === 1 ? "" : "s"}
+                {total} {parentService ? "sub-service" : "service"}
+                {total === 1 ? "" : "s"}
               </CardDescription>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">

@@ -1,5 +1,13 @@
+import {
+  serviceConfigurationSelect,
+  resolveServiceConfiguration,
+  loadEffectiveServiceConfiguration,
+  lockServiceHierarchyTx,
+  pickBilling,
+  readBillingSnapshot,
+} from "../lib/service-configuration-inheritance.js"
 import { assertServiceEnrollableTx, enrollableServiceWhere } from "../lib/service-hierarchy.js"
-import { lockServiceConfigurationTx, ServiceCollectionError } from "../lib/service-configuration-collections.js"
+import { ServiceCollectionError } from "../lib/service-configuration-collections.js"
 import { randomUUID } from "node:crypto"
 
 import { type Response, Router } from "express"
@@ -903,6 +911,7 @@ const contactServiceWorkspaceBaseSelect = {
   completedAt: true,
   canceledAt: true,
   totalPriceCents: true,
+  billingSnapshot: true,
   currency: true,
   allowPartialPayments: true,
   notes: true,
@@ -940,6 +949,7 @@ const contactServiceWorkspaceBaseSelect = {
   },
   service: {
     select: {
+      ...serviceConfigurationSelect,
       id: true,
       name: true,
       description: true,
@@ -985,7 +995,30 @@ const contactServiceWorkspaceBaseSelect = {
   },
 } as const
 
+function resolveEnrollmentConfiguration(item: any) {
+  const effective = resolveServiceConfiguration(item.service)
+  const billing = readBillingSnapshot(item.billingSnapshot)
+  return {
+    ...item,
+    service: {
+      ...effective,
+      ...(billing ? pickBilling(billing) : {}),
+      tenant: {
+        ...item.service.tenant,
+        ...(billing
+          ? {
+              taxEnabled: billing.taxEnabled,
+              taxLabel: billing.taxLabel,
+              defaultTaxRateBps: billing.defaultTaxRateBps,
+            }
+          : {}),
+      },
+    },
+  }
+}
+
 function serializeContactServiceWorkspaceBase(item: any, paidCents: number) {
+  item = resolveEnrollmentConfiguration(item)
   return {
     id: item.id,
     contactId: item.contactId,
@@ -1862,7 +1895,7 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    const service = await prismaWithServices.service.findFirst({
+    let service = await prismaWithServices.service.findFirst({
       where: {
         ...enrollableServiceWhere,
         id: serviceId,
@@ -1870,6 +1903,7 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
         isActive: true,
       },
       select: {
+        ...serviceConfigurationSelect,
         id: true,
         name: true,
         description: true,
@@ -1937,6 +1971,7 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
       return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
     }
 
+    service = resolveServiceConfiguration(service)
     return res.json({
       ok: true,
       service: {
@@ -3772,16 +3807,6 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       return res.status(400).json({ error: "FOLLOW_UP_TEMPLATE_HAS_NO_STEPS" })
     }
 
-    const selectedAssignedProfessional = payload.assignedProfessionalId
-      ? service.professionals.find(
-          (item: { id: string }) => item.id === payload.assignedProfessionalId,
-        ) ?? null
-      : null
-
-    if (payload.assignedProfessionalId && !selectedAssignedProfessional) {
-      return res.status(400).json({ error: "INVALID_ASSIGNED_SERVICE_PROFESSIONAL" })
-    }
-
     if (payload.followUpAssignedToUserId) {
       const assigneeMembership = await prisma.membership.findUnique({
         where: {
@@ -3802,42 +3827,25 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
 
     const purchasedAt = payload.purchasedAt ? new Date(payload.purchasedAt) : new Date()
     const startedAt = payload.startedAt ? new Date(payload.startedAt) : new Date()
-    const totalPriceCents = getServiceTotalWithTaxCents({
-      basePriceCents: service.basePriceCents,
-      isTaxExempt: service.isTaxExempt,
-      taxEnabled: service.tenant.taxEnabled,
-      defaultTaxRateBps: service.tenant.defaultTaxRateBps ?? null,
-    })
     const initialPaymentCents = payload.initialPaymentCents ?? 0
-
-    const initialPaymentError = getServiceTransactionPaymentValidationError({
-      totalPriceCents,
-      alreadyPaidCents: 0,
-      paymentAmountCents: initialPaymentCents,
-      allowPartialPayments: service.allowPartialPayments,
-      minimumPartialPaymentCents: service.minimumPartialPaymentCents,
-    })
-    if (initialPaymentError) {
-      return res.status(400).json({
-        error:
-          initialPaymentError === "PAYMENT_EXCEEDS_SERVICE_TOTAL"
-            ? "INVALID_INITIAL_PAYMENT"
-            : initialPaymentError,
-      })
-    }
     const created = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any
       await assertServiceEnrollableTx(tx, tenantId, payload.serviceId)
-      const activeChecklist = await tx.serviceChecklistItem.findMany({
-        where: { tenantId, serviceId: payload.serviceId, archivedAt: null }, select: { id: true },
+      const effective = await loadEffectiveServiceConfiguration(tx, tenantId, payload.serviceId)
+      const tenantBilling = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId },
+        select: { taxEnabled: true, taxLabel: true, defaultTaxRateBps: true } })
+      const totalPriceCents = getServiceTotalWithTaxCents({ ...effective, ...tenantBilling })
+      const initialPaymentError = getServiceTransactionPaymentValidationError({
+        totalPriceCents, alreadyPaidCents: 0, paymentAmountCents: initialPaymentCents,
+        allowPartialPayments: effective.allowPartialPayments,
+        minimumPartialPaymentCents: effective.minimumPartialPaymentCents,
       })
-      if (payload.assignedProfessionalId && !await tx.serviceProfessional.findFirst({
-        where: { id: payload.assignedProfessionalId, tenantId, serviceId: payload.serviceId, archivedAt: null },
-        select: { id: true },
-      })) {
+      if (initialPaymentError) throw new ServiceCollectionError(
+        initialPaymentError === "PAYMENT_EXCEEDS_SERVICE_TOTAL" ? "INVALID_INITIAL_PAYMENT" : initialPaymentError)
+      if (payload.assignedProfessionalId && !effective.professionals.some(p => p.id === payload.assignedProfessionalId)) {
         throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
       }
-
+      const activeChecklist = effective.checklistItems
       const contactService = await prismaTx.contactService.create({
         data: {
           tenantId,
@@ -3846,13 +3854,15 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           followUpTemplateId: selectedPublishedTemplate?.id ?? null,
           followUpTemplateVersionId: selectedPublishedTemplate?.activeVersion?.id ?? null,
           followUpCoordinatorUserId: payload.followUpAssignedToUserId ?? null,
-          assignedProfessionalId: selectedAssignedProfessional?.id ?? null,
+          assignedProfessionalId: payload.assignedProfessionalId ?? null,
           status: "IN_PROGRESS",
           startedAt,
           purchasedAt,
           totalPriceCents,
-          currency: service.currency,
-          allowPartialPayments: service.allowPartialPayments,
+          billingSnapshot: { schemaVersion: 1, sourceServiceId: effective.inheritance.billing.sourceServiceId ?? payload.serviceId,
+            ...pickBilling(effective), ...tenantBilling, totalPriceCents },
+          currency: effective.currency,
+          allowPartialPayments: effective.allowPartialPayments,
           notes: payload.notes ?? null,
         },
         select: {
@@ -3982,6 +3992,7 @@ router.get(
             completedAt: true,
             canceledAt: true,
             totalPriceCents: true,
+            billingSnapshot: true,
             currency: true,
             allowPartialPayments: true,
             notes: true,
@@ -4019,6 +4030,7 @@ router.get(
             },
             service: {
               select: {
+                ...serviceConfigurationSelect,
                 id: true,
                 name: true,
                 description: true,
@@ -4668,6 +4680,7 @@ router.get(
             completedAt: true,
             canceledAt: true,
             totalPriceCents: true,
+            billingSnapshot: true,
             currency: true,
             allowPartialPayments: true,
             notes: true,
@@ -4705,6 +4718,7 @@ router.get(
             },
             service: {
               select: {
+                ...serviceConfigurationSelect,
                 id: true,
                 name: true,
                 description: true,
@@ -4965,6 +4979,7 @@ router.get(
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
 
+      item = resolveEnrollmentConfiguration(item)
       const paidCents = item.payments.reduce(
         (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
         0,
@@ -5503,6 +5518,7 @@ router.post(
         select: {
           id: true,
           totalPriceCents: true,
+          billingSnapshot: true,
           allowPartialPayments: true,
           service: {
             select: {
@@ -5536,7 +5552,7 @@ router.post(
         paymentAmountCents: payload.amountCents,
         allowPartialPayments: contactService.allowPartialPayments,
         minimumPartialPaymentCents:
-          contactService.service.minimumPartialPaymentCents,
+          (readBillingSnapshot(contactService.billingSnapshot) ?? contactService.service).minimumPartialPaymentCents,
       })
       if (paymentError) {
         return res.status(400).json({ error: paymentError })
@@ -5629,6 +5645,7 @@ router.patch(
         },
         select: {
           totalPriceCents: true,
+          billingSnapshot: true,
           allowPartialPayments: true,
           service: {
             select: {
@@ -5665,7 +5682,7 @@ router.patch(
         paymentAmountCents: nextAmountCents,
         allowPartialPayments: contactService.allowPartialPayments,
         minimumPartialPaymentCents:
-          contactService.service.minimumPartialPaymentCents,
+          (readBillingSnapshot(contactService.billingSnapshot) ?? contactService.service).minimumPartialPaymentCents,
       })
       if (paymentError) {
         return res.status(400).json({ error: paymentError })
@@ -5821,6 +5838,7 @@ router.patch(
           },
           service: {
             select: {
+              ...serviceConfigurationSelect,
               id: true,
               name: true,
               professionals: {
@@ -5852,7 +5870,7 @@ router.patch(
       const professionalChange = resolveServiceProfessionalChange({
         assignedProfessionalId: payload.assignedProfessionalId,
         previousProfessional: existing.assignedProfessional,
-        professionals: existing.service.professionals,
+        professionals: resolveServiceConfiguration(existing.service).professionals,
       })
       if (!professionalChange.valid) {
         return res.status(400).json({ error: "INVALID_ASSIGNED_SERVICE_PROFESSIONAL" })
@@ -5907,15 +5925,13 @@ router.patch(
 
       // Nested activity creation and the enrollment update commit or roll back together.
       const updated = await prisma.$transaction(async (tx) => {
-        await lockServiceConfigurationTx(tx, tenantId, existing.service.id)
+        await lockServiceHierarchyTx(tx, tenantId, existing.service.id)
+        const effective = await loadEffectiveServiceConfiguration(tx, tenantId, existing.service.id)
         const current = await tx.contactService.findUniqueOrThrow({
           where: { id: contactServiceId, tenantId }, select: { assignedProfessionalId: true },
         })
         if (payload.assignedProfessionalId && payload.assignedProfessionalId !== current.assignedProfessionalId &&
-            !await tx.serviceProfessional.findFirst({
-              where: { id: payload.assignedProfessionalId, tenantId, serviceId: existing.service.id, archivedAt: null },
-              select: { id: true },
-            })) {
+            !effective.professionals.some(p => p.id === payload.assignedProfessionalId)) {
           throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
         }
         return tx.contactService.update({

@@ -264,6 +264,302 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     assert.equal(await db.service.count({ where: { tenantId } }), 2)
   })
 
+  async function configureParent() {
+    const saved = await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      basePriceCents: 12000,
+      currency: "USD",
+      isTaxExempt: false,
+      allowPartialPayments: true,
+      minimumPartialPaymentCents: 2000,
+      installmentCount: 4,
+      installmentFrequency: "MONTHLY",
+      checklistItems: [{ label: "Consent", description: "Signed form", isRequired: true }],
+      professionals: [{ kind: "EXTERNAL", externalProfessionalName: "Parent specialist" }],
+    })
+    assert.equal(saved.status, 200, JSON.stringify(saved.data))
+    return saved.data.service
+  }
+  async function createContact() {
+    const status = await db.contactStatusConfig.create({
+      data: { tenantId, name: randomUUID(), bgColor: "#fff", textColor: "#000" },
+    })
+    return db.contact.create({
+      data: { tenantId, firstName: "Inheritance", lastName: "Tester", statusConfigId: status.id },
+    })
+  }
+
+  test("billing inherits the whole section, customizes by copying, and restores current parent terms", async () => {
+    await configureParent()
+    const child = (await createChild()).data.service
+    assert.equal(child.billingMode, "INHERIT")
+    assert.equal(child.basePriceCents, 12000)
+    assert.equal(child.installmentFrequency, "MONTHLY")
+    const custom = await request(`${settingsPath()}/${child.id}`, "PATCH", {
+      billingMode: "CUSTOM",
+    })
+    assert.equal(custom.status, 200)
+    assert.equal(custom.data.service.minimumPartialPaymentCents, 2000)
+    assert.equal(
+      (await request(`${settingsPath()}/${child.id}`, "PATCH", { basePriceCents: 15000 })).status,
+      200,
+    )
+    assert.equal(
+      (
+        await request(`${settingsPath()}/${parentId}`, "PATCH", {
+          basePriceCents: 22000,
+          minimumPartialPaymentCents: 5000,
+        })
+      ).status,
+      200,
+    )
+    let detail = await request(`${settingsPath()}/${child.id}`)
+    assert.equal(detail.data.service.basePriceCents, 15000)
+    assert.equal(detail.data.service.minimumPartialPaymentCents, 2000)
+    const restored = await request(`${settingsPath()}/${child.id}`, "PATCH", {
+      billingMode: "INHERIT",
+    })
+    assert.equal(restored.data.service.basePriceCents, 22000)
+    assert.equal(restored.data.service.minimumPartialPaymentCents, 5000)
+    const invalid = await request(`${settingsPath()}/${child.id}`, "PATCH", {
+      name: "Should roll back",
+      basePriceCents: 3,
+    })
+    assert.equal(invalid.data.error, "INHERITED_SECTION_READ_ONLY")
+    assert.equal((await db.service.findUniqueOrThrow({ where: { id: child.id } })).name, child.name)
+    assert.equal(
+      (await request(`${settingsPath()}/${parentId}`, "PATCH", { billingMode: "INHERIT" })).data
+        .error,
+      "PARENT_SECTION_CANNOT_INHERIT",
+    )
+    assert.equal(
+      (
+        await request(`${settingsPath()}/${child.id}`, "PATCH", {
+          billingMode: "CUSTOM",
+          currency: "EUR",
+        })
+      ).data.error,
+      "SECTION_MODE_CHANGE_WITH_VALUES",
+    )
+    const invalidDeposit = await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      basePriceCents: 10,
+    })
+    assert.equal(invalidDeposit.data.error, "MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE")
+    assert.equal(
+      (await db.service.findUniqueOrThrow({ where: { id: parentId } })).basePriceCents,
+      22000,
+    )
+  })
+
+  test("checklist and professional sections inherit independently and restore without losing enrollment records", async () => {
+    const parent = await configureParent()
+    const child = (await createChild()).data.service
+    const sibling = (await createChild("Medicare Part A")).data.service
+    const contact = await createContact()
+    const path = `/api/services/${tenantId}/contact-services`
+    const enrolled = await request(path, "POST", {
+      contactId: contact.id,
+      serviceId: child.id,
+      assignedProfessionalId: parent.professionals[0].id,
+    })
+    assert.equal(enrolled.status, 201, JSON.stringify(enrolled.data))
+    const enrollmentId = enrolled.data.contactService.id
+    const enrolledItem = await db.contactServiceChecklistItem.findFirstOrThrow({
+      where: { contactServiceId: enrollmentId },
+    })
+    await db.contactServiceChecklistItem.update({
+      where: { id: enrolledItem.id },
+      data: { status: "RECEIVED", completedAt: new Date() },
+    })
+    const rejectedCopy = await request(`${settingsPath()}/${child.id}`, "PATCH", {
+      checklistMode: "CUSTOM",
+      professionalsMode: "CUSTOM",
+      professionals: [],
+    })
+    assert.equal(rejectedCopy.data.error, "SECTION_MODE_CHANGE_WITH_VALUES")
+    assert.equal(
+      await db.serviceChecklistItem.count({ where: { tenantId, serviceId: child.id } }),
+      0,
+    )
+    assert.equal(
+      (await db.service.findUniqueOrThrow({ where: { id: child.id } })).checklistMode,
+      "INHERIT",
+    )
+    const checklistCopy = await request(`${settingsPath()}/${child.id}`, "PATCH", {
+      checklistMode: "CUSTOM",
+    })
+    const localItem = checklistCopy.data.service.checklistItems[0]
+    assert.notEqual(localItem.id, parent.checklistItems[0].id)
+    assert.equal(localItem.description, "Signed form")
+    assert.equal(
+      (
+        await request(`${settingsPath()}/${child.id}`, "PATCH", {
+          checklistItems: [{ ...localItem, label: "Own consent" }],
+        })
+      ).status,
+      200,
+    )
+    const professionalCopy = await request(`${settingsPath()}/${child.id}`, "PATCH", {
+      professionalsMode: "CUSTOM",
+    })
+    const localProfessional = professionalCopy.data.service.professionals[0]
+    assert.notEqual(localProfessional.id, parent.professionals[0].id)
+    const changedParent = await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      checklistItems: [{ label: "New parent requirement" }],
+      professionals: [{ kind: "EXTERNAL", externalProfessionalName: "New parent specialist" }],
+    })
+    const inheritedSibling = (await request(`${settingsPath()}/${sibling.id}`)).data.service
+    assert.equal(inheritedSibling.checklistItems[0].label, "New parent requirement")
+    assert.equal(
+      inheritedSibling.professionals[0].externalProfessionalName,
+      "New parent specialist",
+    )
+    const own = (await request(`${settingsPath()}/${child.id}`)).data.service
+    assert.equal(own.checklistItems[0].label, "Own consent")
+    assert.equal(own.professionals[0].externalProfessionalName, "Parent specialist")
+    // Original archived parent assignment may remain, but cannot be assigned elsewhere.
+    assert.equal(
+      (
+        await request(`${path}/${enrollmentId}`, "PATCH", {
+          assignedProfessionalId: parent.professionals[0].id,
+        })
+      ).status,
+      200,
+    )
+    assert.equal(
+      (
+        await request(path, "POST", {
+          contactId: contact.id,
+          serviceId: sibling.id,
+          assignedProfessionalId: parent.professionals[0].id,
+        })
+      ).data.error,
+      "INVALID_ASSIGNED_SERVICE_PROFESSIONAL",
+    )
+    assert.equal(
+      (
+        await request(`${path}/${enrollmentId}`, "PATCH", {
+          assignedProfessionalId: localProfessional.id,
+        })
+      ).status,
+      200,
+    )
+    const restore = await request(`${settingsPath()}/${child.id}`, "PATCH", {
+      checklistMode: "INHERIT",
+      professionalsMode: "INHERIT",
+    })
+    assert.equal(restore.status, 200)
+    assert.equal(
+      restore.data.service.checklistItems[0].id,
+      changedParent.data.service.checklistItems[0].id,
+    )
+    assert.ok(
+      (await db.serviceProfessional.findUniqueOrThrow({ where: { id: localProfessional.id } }))
+        .archivedAt,
+    )
+    assert.ok(
+      (await db.serviceChecklistItem.findUniqueOrThrow({ where: { id: localItem.id } })).archivedAt,
+    )
+    const history = await db.contactServiceChecklistItem.findUniqueOrThrow({
+      where: { id: enrolledItem.id },
+    })
+    assert.equal(history.status, "RECEIVED")
+    assert.ok(history.completedAt)
+    assert.equal(
+      (await db.contactService.findUniqueOrThrow({ where: { id: enrollmentId } }))
+        .assignedProfessionalId,
+      localProfessional.id,
+    )
+    assert.equal(
+      (
+        await request(`${path}/${enrollmentId}`, "PATCH", {
+          assignedProfessionalId: localProfessional.id,
+        })
+      ).status,
+      200,
+    )
+    const catalog = await request(`/api/services/${tenantId}/catalog/${child.id}`)
+    assert.equal(
+      catalog.data.service.professionals[0].id,
+      changedParent.data.service.professionals[0].id,
+    )
+    const options = await request(`${settingsPath()}/options`)
+    assert.equal(options.data.items.find((item: any) => item.id === child.id).checklistCount, 1)
+    assert.equal(
+      (await request(`${settingsPath()}/${child.id}`, "PATCH", { checklistItems: [] })).data.error,
+      "INHERITED_SECTION_READ_ONLY",
+    )
+    // Parent IDs cannot be submitted as owned IDs after customization.
+    await request(`${settingsPath()}/${child.id}`, "PATCH", { checklistMode: "CUSTOM" })
+    assert.equal(
+      (
+        await request(`${settingsPath()}/${child.id}`, "PATCH", {
+          checklistItems: [changedParent.data.service.checklistItems[0]],
+        })
+      ).data.error,
+      "INVALID_CHECKLIST_ITEM_ID",
+    )
+  })
+
+  test("enrollment snapshots inherited billing for later payment validation and purchase displays", async () => {
+    await configureParent()
+    await db.tenant.update({
+      where: { id: tenantId },
+      data: { taxEnabled: true, defaultTaxRateBps: 1000, taxLabel: "Sales tax" },
+    })
+    const child = (await createChild()).data.service
+    const contact = await createContact()
+    const path = `/api/services/${tenantId}/contact-services`
+    const old = await request(path, "POST", {
+      contactId: contact.id,
+      serviceId: child.id,
+      initialPaymentCents: 2000,
+    })
+    assert.equal(old.status, 201, JSON.stringify(old.data))
+    const oldId = old.data.contactService.id
+    const stored = await db.contactService.findUniqueOrThrow({ where: { id: oldId } })
+    assert.equal(stored.totalPriceCents, 13200)
+    assert.equal((stored.billingSnapshot as any).installmentCount, 4)
+    await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      basePriceCents: 30000,
+      minimumPartialPaymentCents: 9000,
+      installmentCount: 6,
+      installmentFrequency: "WEEKLY",
+    })
+    await db.tenant.update({
+      where: { id: tenantId },
+      data: { taxEnabled: false, defaultTaxRateBps: 0 },
+    })
+    const fresh = await request(path, "POST", {
+      contactId: contact.id,
+      serviceId: child.id,
+      initialPaymentCents: 9000,
+    })
+    assert.equal(fresh.status, 201, JSON.stringify(fresh.data))
+    assert.equal(
+      (await db.contactService.findUniqueOrThrow({ where: { id: fresh.data.contactService.id } }))
+        .totalPriceCents,
+      30000,
+    )
+    assert.equal(
+      (await request(`${path}/${oldId}/payments`, "POST", { amountCents: 2000 })).status,
+      201,
+    )
+    const overview = await request(`${path}/${oldId}/overview`)
+    assert.equal(overview.status, 200, JSON.stringify(overview.data))
+    assert.equal(overview.data.contactService.totalPriceCents, 13200)
+    assert.equal(overview.data.contactService.service.basePriceCents, 12000)
+    assert.equal(overview.data.contactService.service.minimumPartialPaymentCents, 2000)
+    assert.equal(overview.data.contactService.service.installmentFrequency, "MONTHLY")
+    assert.equal(overview.data.contactService.tenantBilling.defaultTaxRatePercent, 10)
+    const invalid = await request(path, "POST", {
+      contactId: contact.id,
+      serviceId: child.id,
+      initialPaymentCents: 2000,
+    })
+    assert.equal(invalid.data.error, "PAYMENT_BELOW_MINIMUM")
+    assert.equal(await db.contactService.count({ where: { tenantId } }), 2)
+  })
+
   test("migration groups old services without changing IDs, names, prices, or enrollment links", async () => {
     const pool = new Pool({ connectionString: databaseUrl! })
     const client = await pool.connect()
