@@ -2728,7 +2728,7 @@ paths:
         - $ref: "#/components/parameters/AccountSettingsRecordIdPathParam"
       responses:
         "409":
-          description: SERVICE_HAS_SUB_SERVICES. Delete or relocate the offerings before deleting a parent.
+          description: SERVICE_HAS_SUB_SERVICES. Remove the sub-services before deleting a parent.
           content:
             application/json:
               schema:
