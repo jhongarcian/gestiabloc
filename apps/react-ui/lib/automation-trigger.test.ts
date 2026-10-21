@@ -145,3 +145,33 @@ describe("automation trigger payloads", () => {
     }), /change to listen for/)
   })
 })
+
+
+test("service step entry triggers retain their selected step and legacy shared scope", () => {
+  const trigger = { type: "SERVICE_STEP_ENTERED" as const, serviceStepId: "step-1", serviceOfferingId: null }
+  const draft = hydrateAutomationTrigger(trigger)
+  assert.equal(isAutomationTriggerReady(draft), true)
+  assert.deepEqual(serializeAutomationTrigger(draft), trigger)
+  assert.equal(isAutomationTriggerReady({ ...draft, serviceStepId: undefined }), false)
+  assert.throws(() => serializeAutomationTrigger({ ...draft, serviceStepId: undefined }), /Select a service/)
+})
+
+ test("completion trigger keeps its step binding through editing", () => {
+  const trigger = { type: "SERVICE_STEP_COMPLETED" as const, serviceStepId: "completion-step", serviceOfferingId: null }
+  const draft = hydrateAutomationTrigger(trigger)
+  assert.equal(isAutomationTriggerReady(draft), true)
+  assert.deepEqual(serializeAutomationTrigger(draft), trigger)
+  assert.equal(isAutomationTriggerReady({ ...draft, serviceStepId: "" }), false)
+})
+
+
+test("new service-step triggers require a sub-service and preserve its scope", () => {
+  const draft = { triggerType: "SERVICE_STEP_ENTERED" as const, serviceStepId: "step", pipelineId: "", changeType: "" as const, targetStageId: "" }
+  assert.equal(isAutomationTriggerReady(draft), false)
+  assert.throws(() => serializeAutomationTrigger(draft), /sub-service/)
+  for (const type of ["SERVICE_STEP_ENTERED", "SERVICE_STEP_COMPLETED"] as const) {
+    const trigger = { type, serviceStepId: "step", serviceOfferingId: "offering" }
+    assert.deepEqual(serializeAutomationTrigger(hydrateAutomationTrigger(trigger)), trigger)
+    assert.equal(isAutomationTriggerReady(hydrateAutomationTrigger(trigger)), true)
+  }
+})

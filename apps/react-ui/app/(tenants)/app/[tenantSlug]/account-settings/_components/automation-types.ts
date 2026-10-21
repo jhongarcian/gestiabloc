@@ -1,4 +1,4 @@
-export type AutomationTriggerType = "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
+export type AutomationTriggerType = "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
 export type AppointmentAutomationStatus = "SCHEDULED" | "CONFIRMED" | "SHOW" | "NO_SHOW" | "CANCELED" | "COMPLETED"
 
 export type AutomationContactChangeRule =
@@ -461,7 +461,11 @@ export type AutomationRecord = {
   sortOrder: number
   folderId: string | null
   librarySortOrder: number
+  serviceOffering?: { id: string; name: string; parentServiceId: string | null } | null
+  serviceStep?: { id: string; title: string; serviceId: string; service: { name: string } } | null
   trigger:
+    | { type: "SERVICE_STEP_ENTERED"; serviceStepId: string; serviceOfferingId?: string | null }
+  | { type: "SERVICE_STEP_COMPLETED"; serviceStepId: string; serviceOfferingId?: string | null }
     | { type: "CONTACT_CREATED" }
     | { type: "CONTACT_CHANGED"; changes: AutomationContactChangeRule[] }
     | { type: "CONTACT_TAG"; tagId: string; change: "ADDED" | "REMOVED" }
@@ -542,6 +546,7 @@ export type AutomationCatalog = {
   }>
   tags: Array<{ id: string; name: string; bgColor: string; textColor: string }>
   services: Array<{ id: string; name: string }>
+  serviceStepServices?: Array<{ id: string; name: string; subServices: Array<{ id: string; name: string; steps: Array<{ id: string; title: string }> }> }>
   workflowAutomations: Array<{
     id: string
     name: string
@@ -565,10 +570,19 @@ export type AutomationExecution = {
 
 export type AutomationNodeExecutionStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | "FAILED" | "WAITING"
 
+export type AutomationServiceContext = {
+  contactServiceId: string
+  serviceId: string
+  contactServiceStepId: string | null
+  serviceStepId: string | null
+  serviceStepOccurrenceId: string | null
+}
+
 export type AutomationNodeExecution = {
+  serviceContext?: AutomationServiceContext | null
   id: string
   attemptId: string
-  eventSource: "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
+  eventSource: "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" | "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
   contact: {
     id: string | null
     name: string
@@ -604,6 +618,7 @@ export type AutomationWaitNodeCount = {
 }
 
 export type AutomationWaitingRun = {
+  serviceContext?: AutomationServiceContext | null
   runId: string
   contact: {
     id: string | null

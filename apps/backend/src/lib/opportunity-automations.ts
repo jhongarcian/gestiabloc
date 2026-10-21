@@ -1,6 +1,16 @@
+import { lockServiceStepRuntimeTx } from "./service-step-runtime.js"
+import { Prisma } from "../generated/prisma/index.js"
+import { settleServiceStepCompletionEventTx, settleServiceStepCompletionRunTx } from "./service-step-progression.js"
 import { createHash, randomUUID } from "node:crypto"
 
 import { z } from "zod"
+
+import {
+  AutomationServiceContextError,
+  automationServiceContextData,
+  validateAutomationServiceContextTx,
+  type AutomationServiceContext,
+} from "./automation-service-context.js"
 
 import {
   getAutomationActionNodeLabel,
@@ -80,6 +90,8 @@ import { getTaskPriorityFromDueDate, isCompletedStatusName } from "./task-priori
 import { evaluateWorkflowOperator } from "./service-followup-runtime.js"
 
 export const AUTOMATION_TRIGGER_TYPES = [
+  "SERVICE_STEP_ENTERED",
+  "SERVICE_STEP_COMPLETED",
   "CONTACT_CREATED",
   "CONTACT_CHANGED",
   "CONTACT_TAG",
@@ -724,6 +736,7 @@ export const AutomationUpsertSchema = z
     folderId: idSchema.nullable().optional(),
     isEnabled: z.boolean().default(false),
     trigger: z.discriminatedUnion("type", [
+      z.object({ type: z.enum(["SERVICE_STEP_ENTERED", "SERVICE_STEP_COMPLETED"]), serviceStepId: z.uuid(), serviceOfferingId: z.uuid().nullable().optional() }).strict(),
       z.object({ type: z.literal("CONTACT_CREATED") }).strict(),
       z.object({ type: z.literal("CONTACT_CHANGED"), changes: z.array(AutomationContactChangeRuleSchema).min(1).max(20) }).strict(),
       z.object({ type: z.literal("CONTACT_TAG"), tagId: idSchema, change: z.enum(["ADDED", "REMOVED"]) }).strict(),
@@ -758,7 +771,11 @@ export const AutomationUpsertSchema = z
       }).strict(),
     ]),
     conditions: z.array(AutomationConditionInputSchema).max(20).default([]),
-    actions: z.array(AutomationActionInputSchema).min(1).max(MAX_AUTOMATION_ACTION_NODES),
+    actions: z.array(AutomationActionInputSchema).max(MAX_AUTOMATION_ACTION_NODES),
+  }).superRefine((input, context) => {
+    if (!input.actions.length && (input.isEnabled || !["SERVICE_STEP_ENTERED", "SERVICE_STEP_COMPLETED"].includes(input.trigger.type))) {
+      context.addIssue({ code: "custom", path: ["actions"], message: "Add at least one action before enabling this automation." })
+    }
   })
   .strict()
 
@@ -1398,7 +1415,27 @@ export async function validateAutomationConfiguration(
   input: AutomationInput,
   options: { sourceAutomationId?: string | null } = {},
 ) {
-  const contactTrigger = input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED" || input.trigger.type === "TASK_COMPLETED" || input.trigger.type === "APPOINTMENT_CREATED" || input.trigger.type === "APPOINTMENT_STATUS_CHANGED" || input.trigger.type === "BIRTHDAY_REMINDER"
+  const contactTrigger = (input.trigger.type === "SERVICE_STEP_ENTERED" || input.trigger.type === "SERVICE_STEP_COMPLETED") || input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED" || input.trigger.type === "TASK_COMPLETED" || input.trigger.type === "APPOINTMENT_CREATED" || input.trigger.type === "APPOINTMENT_STATUS_CHANGED" || input.trigger.type === "BIRTHDAY_REMINDER"
+  if ((input.trigger.type === "SERVICE_STEP_ENTERED" || input.trigger.type === "SERVICE_STEP_COMPLETED")) {
+    const selectedStepId = input.trigger.serviceStepId
+    if (input.trigger.serviceOfferingId) {
+      const offering = await prismaClient.service.findFirst({
+        where: { tenantId, id: input.trigger.serviceOfferingId, kind: "OFFERING", isActive: true, parentService: { isActive: true } },
+        select: { stepsMode: true, steps: { where: { archivedAt: null }, select: { id: true } }, parentService: { select: { steps: { where: { archivedAt: null }, select: { id: true } } } } },
+      })
+      const steps = offering?.stepsMode === "INHERIT" ? offering.parentService?.steps : offering?.steps
+      if (!steps?.some((step: { id: string }) => step.id === selectedStepId)) {
+        throw new AutomationConfigurationError("INVALID_SERVICE_STEP", "Select an active sub-service and one of its steps.")
+      }
+    } else {
+      // Existing shared workflows keep their original scope until a sub-service is selected.
+      const linked = options.sourceAutomationId ? await prismaClient.automation.findFirst({
+        where: { tenantId, id: options.sourceAutomationId, serviceStepId: input.trigger.serviceStepId, serviceOfferingId: null },
+        select: { id: true },
+      }) : null
+      if (!linked) throw new AutomationConfigurationError("SERVICE_OFFERING_REQUIRED", "Select a service, sub-service, and step.")
+    }
+  }
   const triggerPipelineId = "pipelineId" in input.trigger ? input.trigger.pipelineId : null
   const [pipelines, fields, statuses, taskStatuses, memberships, tags, services, publishedAutomations] = await Promise.all([
     prismaClient.opportunityPipeline.findMany
@@ -1455,7 +1492,7 @@ export async function validateAutomationConfiguration(
       : Promise.resolve([]),
     prismaClient.automation?.findMany
       ? prismaClient.automation.findMany({
-          where: { tenantId, isEnabled: true },
+          where: { tenantId, isEnabled: true, serviceStepId: null },
           select: {
             id: true,
             name: true,
@@ -1556,7 +1593,7 @@ export async function validateAutomationConfiguration(
   )
 
   const conditions = input.conditions.map((condition, index) => {
-    if (input.trigger.type === "CONTACT_NOTE_ADDED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+    if (((input.trigger.type === "SERVICE_STEP_ENTERED" || input.trigger.type === "SERVICE_STEP_COMPLETED") || input.trigger.type === "CONTACT_NOTE_ADDED") && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
       throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Note added filters can use contact fields, custom fields, or tags.")
     }
     if (input.trigger.type === "TASK_COMPLETED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
@@ -2839,6 +2876,8 @@ export async function validateAutomationConfiguration(
   return {
     name: input.name,
     isEnabled: input.isEnabled,
+    serviceStepId: "serviceStepId" in input.trigger ? input.trigger.serviceStepId : null,
+    serviceOfferingId: "serviceOfferingId" in input.trigger ? input.trigger.serviceOfferingId ?? null : null,
     triggerType: input.trigger.type === "OPPORTUNITY_STAGE_CHANGED" ? "OPPORTUNITY_CHANGED" as const : input.trigger.type,
     birthdayLocalTime: input.trigger.type === "BIRTHDAY_REMINDER" ? input.trigger.localTime : null,
     appointmentTargetStatus: input.trigger.type === "APPOINTMENT_STATUS_CHANGED" ? input.trigger.status : null,
@@ -2856,9 +2895,10 @@ export async function validateAutomationConfiguration(
 }
 
 export type OpportunityAutomationEvent = {
+  serviceContext?: AutomationServiceContext | null
   tenantId: string
   actorUserId: string | null
-  triggerType: Exclude<AutomationTriggerType, "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER">
+  triggerType: Exclude<AutomationTriggerType, "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER">
   opportunityId: string
   contactId: string
   pipelineId: string
@@ -3731,6 +3771,7 @@ async function removeContactFromWorkflowRuns(
       })
     : []
   for (const dispatch of queuedDispatches) {
+    await lockServiceStepRuntimeTx(prismaTx, dispatch.event)
     const canceled = await prismaTx.automationDispatch.updateMany({
       where: { id: dispatch.id, status: "QUEUED" },
       data: {
@@ -3741,6 +3782,9 @@ async function removeContactFromWorkflowRuns(
       },
     })
     if (canceled.count !== 1) continue
+    if (dispatch.triggerType === "SERVICE_STEP_COMPLETED") await settleServiceStepCompletionEventTx(prismaTx, {
+      tenantId: params.tenantId, eventId: dispatch.event.id, status: "EXITED", message: details,
+    })
     removedCount += 1
     await prismaTx.automationNodeExecution.updateMany({
       where: { id: dispatch.triggerExecutionId, status: "QUEUED" },
@@ -3767,6 +3811,7 @@ async function removeContactFromWorkflowRuns(
       actorUserId: params.actorUserId ?? dispatch.event.actorUserId,
       processId: null,
       opportunityId: dispatch.event.opportunityId,
+      ...automationServiceContextData(dispatch.event),
       attemptId: dispatch.attemptId,
       eventSource: dispatch.triggerType,
       nodeKind: "ACTION" as const,
@@ -3795,6 +3840,7 @@ async function removeContactFromWorkflowRuns(
     : []
 
   for (const run of activeRuns) {
+    await lockServiceStepRuntimeTx(prismaTx, run)
     if (run.status === "RUNNING") {
       const requested = await prismaTx.automationRun.updateMany({
         where: { id: run.id, status: "RUNNING" },
@@ -3838,6 +3884,7 @@ async function removeContactFromWorkflowRuns(
       continue
     }
     removedCount += 1
+    if (run.eventSource === "SERVICE_STEP_COMPLETED") await settleServiceStepCompletionRunTx(prismaTx, run.id)
 
     await prismaTx.automationNodeExecution.updateMany({
       where: {
@@ -3895,6 +3942,7 @@ async function removeContactFromWorkflowRuns(
         actorUserId: params.actorUserId ?? run.actorUserId,
         processId: null,
         opportunityId: run.opportunityId,
+        ...automationServiceContextData(run),
         attemptId: run.attemptId,
         eventSource: run.eventSource,
         nodeKind: "ACTION" as const,
@@ -3918,6 +3966,7 @@ async function removeContactFromWorkflowRuns(
         triggerType: run.triggerType,
         status: "EXITED",
         opportunityId: run.opportunityId,
+        ...automationServiceContextData(run),
         contactId: params.contactId,
         sourceStageId: run.sourceStageId,
         targetStageId: run.targetStageId,
@@ -4173,6 +4222,7 @@ async function applyAutomationActionInner(
         sourceAutomationId: automationId,
         sourceAutomationName: automationName,
         sourceNodeKey: action.nodeKey,
+        ...automationServiceContextData(eventContext),
         causationKey: runId ? `automation-run:${runId}:note-added:${action.nodeKey}` : note?.id ? `contact-note:${note.id}:added` : null,
       })
       return `Added contact note “${title.data}”.`
@@ -4362,6 +4412,7 @@ async function applyAutomationActionInner(
         sourceAutomationId: automationId,
         sourceAutomationName: automationName,
         sourceNodeKey: action.nodeKey,
+        ...automationServiceContextData(eventContext),
         causationKey: runId ? `automation-run:${runId}:task-added:${action.nodeKey}` : `task:${task.id}:added`,
       })
 
@@ -4460,6 +4511,7 @@ async function applyAutomationActionInner(
           sourceAutomationId: automationId,
           sourceAutomationName: automationName,
           sourceNodeKey: action.nodeKey,
+          ...automationServiceContextData(eventContext),
           causationKey: runId ? `automation-run:${runId}:appointment-created:${action.nodeKey}` : null,
         },
       })
@@ -4506,6 +4558,7 @@ async function applyAutomationActionInner(
             sourceAutomationId: automationId,
             sourceAutomationName: automationName,
             sourceNodeKey: action.nodeKey,
+            ...automationServiceContextData(eventContext),
           },
         })
         if (!result.ok && result.error === "APPOINTMENT_NOT_FOUND") {
@@ -4792,6 +4845,7 @@ async function applyAutomationActionInner(
           sourceAutomationId: automationId,
           sourceAutomationName: automationName,
           sourceNodeKey: action.nodeKey,
+          ...automationServiceContextData(eventContext),
           causationKey: runId ? `automation-run:${runId}:node:${action.nodeKey}` : null,
         })
       }
@@ -4862,6 +4916,7 @@ async function applyAutomationActionInner(
           tenantId,
           id: config.targetAutomationId,
           isEnabled: true,
+          serviceStepId: null,
         },
         select: {
           id: true,
@@ -4911,6 +4966,7 @@ async function applyAutomationActionInner(
             contactName,
             actorUserId: actorUserId ?? null,
             opportunityId: opportunityId ?? null,
+            ...automationServiceContextData(eventContext),
             attemptId,
             causationKey,
             eventSource: "AUTOMATION_ACTION",
@@ -4945,6 +5001,7 @@ async function applyAutomationActionInner(
             actorUserId: actorUserId ?? null,
             processId: null,
             opportunityId: opportunityId ?? null,
+            ...automationServiceContextData(eventContext),
             attemptId,
             eventSource: "AUTOMATION_ACTION",
             nodeKind: "TRIGGER",
@@ -5023,6 +5080,7 @@ async function applyAutomationActionInner(
             actorUserId: dispatch.event.actorUserId,
             processId: null,
             opportunityId: dispatch.event.opportunityId,
+            ...automationServiceContextData(dispatch.event),
             attemptId: dispatch.attemptId,
             eventSource: dispatch.triggerType,
             nodeKind: "ACTION" as const,
@@ -5111,6 +5169,7 @@ async function applyAutomationActionInner(
               actorUserId: queuedRun.actorUserId,
               processId: null,
               opportunityId: queuedRun.opportunityId,
+              ...automationServiceContextData(queuedRun),
               attemptId: queuedRun.attemptId,
               eventSource: queuedRun.eventSource,
               nodeKind: "ACTION" as const,
@@ -5135,6 +5194,7 @@ async function applyAutomationActionInner(
             triggerType: queuedRun.triggerType,
             status: "EXITED" as const,
             opportunityId: queuedRun.opportunityId,
+            ...automationServiceContextData(queuedRun),
             contactId,
             sourceStageId: queuedRun.sourceStageId,
             targetStageId: queuedRun.targetStageId,
@@ -5268,6 +5328,7 @@ async function applyAutomationAction(
     sourceAutomationId: params.automationId,
     sourceAutomationName: params.automationName,
     sourceNodeKey: params.action.nodeKey,
+    ...automationServiceContextData(params.eventContext ?? {}),
     causationKey: params.runId ? `automation-run:${params.runId}:contact-change:${params.action.nodeKey}` : null,
   })
   return result
@@ -5465,6 +5526,7 @@ export function selectAutomationSplitRoute(
 }
 
 type AutomationOpportunityEventContext = {
+  serviceContext?: AutomationServiceContext | null
   pipelineId?: string | null
   valueCents?: number | null
   sourceStageId?: string | null
@@ -5702,6 +5764,7 @@ function failureLogsForSegment(
 }
 
 export type SegmentRun = {
+  serviceContext?: unknown
   id: string
   tenantId: string
   automationId: string | null
@@ -5799,6 +5862,7 @@ async function finishAutomationRunAsExited(
     },
   })
   if (exited.count === 1) {
+    if (params.run.eventSource === "SERVICE_STEP_COMPLETED") await settleServiceStepCompletionRunTx(prismaTx, params.run.id)
     await prismaTx.automationExecution.create({
       data: {
         tenantId: params.run.tenantId,
@@ -5807,6 +5871,7 @@ async function finishAutomationRunAsExited(
         triggerType: params.run.triggerType,
         status: "EXITED",
         opportunityId: params.run.opportunityId,
+        ...automationServiceContextData(params.run),
         contactId: params.run.contactId,
         sourceStageId: params.run.sourceStageId,
         targetStageId: params.run.targetStageId,
@@ -6009,6 +6074,7 @@ async function executeBranchedAutomationSegmentTx(
     actorUserId: run.actorUserId,
     processId: null,
     opportunityId: run.opportunityId,
+    ...automationServiceContextData(run),
     attemptId: run.attemptId,
     eventSource: run.eventSource,
     occurredAt: now,
@@ -6019,7 +6085,10 @@ async function executeBranchedAutomationSegmentTx(
   let queuedRunCount = 0
   const automationValues = normalizeAutomationVariables(run.variables)
   const branchDecisions = normalizeBranchDecisions(run.branchDecisions)
-  const eventContext = normalizeOpportunityEventContext(run.eventContext)
+  const eventContext = {
+    ...normalizeOpportunityEventContext(run.eventContext),
+    ...automationServiceContextData(run),
+  }
   const templateContext = createContactTemplateExecutionContext()
   let directContactPromise: Promise<{ statusConfigId: string | null; assignedToUserId: string | null; tagIds: string[] }> | null = null
   const directContactContext = () => {
@@ -6426,6 +6495,7 @@ async function executeBranchedAutomationSegmentTx(
             triggerType: run.triggerType,
             status: "EXITED",
             opportunityId: run.opportunityId,
+            ...automationServiceContextData(run),
             contactId: run.contactId,
             sourceStageId: run.sourceStageId,
             targetStageId: run.targetStageId,
@@ -6583,6 +6653,7 @@ async function executeBranchedAutomationSegmentTx(
       triggerType: run.triggerType,
       status: "SUCCEEDED",
       opportunityId: run.opportunityId,
+      ...automationServiceContextData(run),
       contactId: run.contactId,
       sourceStageId: run.sourceStageId,
       targetStageId: run.targetStageId,
@@ -6603,6 +6674,28 @@ async function executeBranchedAutomationSegmentTx(
 }
 
 export async function executeAutomationSegmentTx(
+  prismaTx: any,
+  params: Parameters<typeof executeAutomationSegmentInnerTx>[1],
+) {
+  await validateAutomationServiceContextTx(prismaTx, params.run)
+  const serviceState = await lockServiceStepRuntimeTx(prismaTx, params.run)
+  if (serviceState?.superseded) {
+    await finishAutomationRunAsExited(prismaTx, {
+      run: params.run,
+      request: { requestedAt: params.occurredAt ?? new Date(), reasonCode: "SERVICE_STEP_MOVED", details: "Stopped because the enrollment moved to another step." },
+      occurredAt: params.occurredAt ?? new Date(), actionCount: 0,
+      cursorIndex: params.startIndex, variables: normalizeAutomationVariables(params.run.variables),
+    })
+    return { logs: [] as AutomationNodeLogData[], notificationIds: [] as string[], fileCleanupCandidates: [] as AutomationFileCleanupCandidate[], queuedRunCount: 0, status: "EXITED" as const, contactDeleted: false }
+  }
+  const result = await executeAutomationSegmentInnerTx(prismaTx, params)
+  if (params.run.eventSource === "SERVICE_STEP_COMPLETED" && result.status === "SUCCEEDED") {
+    await settleServiceStepCompletionRunTx(prismaTx, params.run.id)
+  }
+  return result
+}
+
+async function executeAutomationSegmentInnerTx(
   prismaTx: any,
   params: {
     run: SegmentRun
@@ -6632,6 +6725,7 @@ export async function executeAutomationSegmentTx(
     actorUserId: run.actorUserId,
     processId: null,
     opportunityId: run.opportunityId,
+    ...automationServiceContextData(run),
     attemptId: run.attemptId,
     eventSource: run.eventSource,
     occurredAt: now,
@@ -6641,7 +6735,10 @@ export async function executeAutomationSegmentTx(
   const fileCleanupCandidates: AutomationFileCleanupCandidate[] = []
   let queuedRunCount = 0
   const automationValues = normalizeAutomationVariables(run.variables)
-  const eventContext = normalizeOpportunityEventContext(run.eventContext)
+  const eventContext = {
+    ...normalizeOpportunityEventContext(run.eventContext),
+    ...automationServiceContextData(run),
+  }
   const templateContext = createContactTemplateExecutionContext()
   let contactDeleted = false
 
@@ -6756,6 +6853,7 @@ export async function executeAutomationSegmentTx(
             triggerType: run.triggerType,
             status: "EXITED",
             opportunityId: run.opportunityId,
+            ...automationServiceContextData(run),
             contactId: run.contactId,
             sourceStageId: run.sourceStageId,
             targetStageId: run.targetStageId,
@@ -6915,6 +7013,7 @@ export async function executeAutomationSegmentTx(
       triggerType: run.triggerType,
       status: "SUCCEEDED",
       opportunityId: run.opportunityId,
+      ...automationServiceContextData(run),
       contactId: run.contactId,
       sourceStageId: run.sourceStageId,
       targetStageId: run.targetStageId,
@@ -7035,6 +7134,7 @@ export async function executeOpportunityAutomations(
   event: OpportunityAutomationEvent,
   options: { queueOpportunityEvent?: QueueOpportunityAutomationEvent } = {},
 ) {
+  await validateAutomationServiceContextTx(prismaTx, event)
   const automations = await prismaTx.automation.findMany({
     where: {
       tenantId: event.tenantId,
@@ -7118,6 +7218,7 @@ export async function executeOpportunityAutomations(
       actorUserId: event.actorUserId,
       processId: null,
       opportunityId: event.opportunityId,
+      ...automationServiceContextData(event),
       attemptId,
       eventSource: event.triggerType,
       occurredAt,
@@ -7169,6 +7270,7 @@ export async function executeOpportunityAutomations(
           contactName,
           actorUserId: event.actorUserId,
           opportunityId: event.opportunityId,
+          ...automationServiceContextData(event),
           attemptId: triggerLog.attemptId,
           eventSource: event.triggerType,
           triggerType: event.triggerType,
@@ -7286,6 +7388,7 @@ export async function recordAutomationFailure(prismaClient: any, event: Opportun
           contactName: error.contactName,
           actorUserId: event.actorUserId,
           opportunityId,
+          ...automationServiceContextData(event),
           attemptId: error.attemptId,
           eventSource: error.eventSource ?? event.triggerType,
           triggerType: event.triggerType,
@@ -7326,6 +7429,7 @@ export async function recordAutomationFailure(prismaClient: any, event: Opportun
         triggerType: event.triggerType,
         status: "FAILED",
         opportunityId,
+        ...automationServiceContextData(event),
         contactId: event.contactId,
         sourceStageId: event.sourceStageId,
         targetStageId: event.targetStageId,
@@ -7342,6 +7446,7 @@ export async function recordAutomationFailure(prismaClient: any, event: Opportun
         data: error.nodeExecutions.map((item) => ({
           ...item,
           opportunityId,
+          ...automationServiceContextData(event),
         })),
       })
     }
@@ -7374,6 +7479,7 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
         contactId: run.contactId,
         message: cause instanceof Error ? cause.message : "The automation run could not be resumed.",
       })
+  if (cause instanceof AutomationServiceContextError) error.code = cause.code
   const now = new Date()
   const base = {
     tenantId: run.tenantId,
@@ -7384,6 +7490,7 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
     actorUserId: run.actorUserId,
     processId: null,
     opportunityId: run.opportunityId,
+    ...automationServiceContextData(run),
     attemptId: run.attemptId,
     eventSource: run.eventSource,
     occurredAt: now,
@@ -7419,6 +7526,11 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
   const requestedExit = exitRequestFromRun(run)
 
   await prismaClient.$transaction(async (transaction: any) => {
+    const serviceState = await lockServiceStepRuntimeTx(transaction, run)
+    if ((serviceState || run.eventSource === "SERVICE_STEP_COMPLETED") && typeof transaction.$queryRaw === "function") {
+      await transaction.$queryRaw(Prisma.sql`SELECT id FROM "AutomationRun" WHERE id=${runId} FOR UPDATE`)
+      if (!await transaction.automationRun.findFirst({ where: { id: runId, status: "RUNNING", leaseToken } })) return
+    }
     if (run.eventSource === "AUTOMATION_ACTION") {
       const workflowContext = normalizeOpportunityEventContext(run.eventContext)
       await transaction.automationNodeExecution.updateMany({
@@ -7548,6 +7660,7 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
       if (exitLogs.length > 0) await transaction.automationNodeExecution.createMany({ data: exitLogs })
       return
     }
+    if (run.eventSource === "SERVICE_STEP_COMPLETED") await settleServiceStepCompletionRunTx(transaction, run.id)
     await transaction.automationExecution.create({
       data: {
         tenantId: run.tenantId,
@@ -7556,6 +7669,7 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
         triggerType: run.triggerType,
         status: "FAILED",
         opportunityId: run.opportunityId,
+        ...automationServiceContextData(run),
         contactId: run.contactId,
         sourceStageId: run.sourceStageId,
         targetStageId: run.targetStageId,
@@ -7571,7 +7685,7 @@ async function recordAutomationRunFailure(prismaClient: any, runId: string, leas
   })
 }
 
-async function resumeAutomationRun(
+export async function resumeAutomationRun(
   prismaClient: any,
   runId: string,
   leaseToken: string,
@@ -7579,6 +7693,11 @@ async function resumeAutomationRun(
 ) {
   try {
     const result = await prismaClient.$transaction(async (transaction: any) => {
+      const candidate = await transaction.automationRun.findFirst({ where: { id: runId, status: "RUNNING", leaseToken } })
+      if (candidate) await lockServiceStepRuntimeTx(transaction, candidate)
+      if (typeof transaction.$queryRaw === "function") {
+        await transaction.$queryRaw(Prisma.sql`SELECT id FROM "AutomationRun" WHERE id=${runId} AND ("serviceContext" IS NOT NULL OR "eventSource" = 'SERVICE_STEP_COMPLETED') FOR UPDATE`)
+      }
       const run = await transaction.automationRun.findFirst({
         where: { id: runId, status: "RUNNING", leaseToken },
       })

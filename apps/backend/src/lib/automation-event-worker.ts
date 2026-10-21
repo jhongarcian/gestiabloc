@@ -62,17 +62,17 @@ async function recoverExpiredLeases() {
   }
 }
 
-async function claimEvents(): Promise<ClaimedEvent[]> {
+export async function claimAutomationEvents(prismaClient: any = prisma): Promise<ClaimedEvent[]> {
   const config = AUTOMATION_EVENT_WORKER_CONFIG
   const leaseToken = randomUUID()
   const leaseExpiresAt = new Date(Date.now() + config.leaseMs)
   const limit = config.claimSize
-  return prisma.$queryRawUnsafe<ClaimedEvent[]>(`
+  return prismaClient.$queryRawUnsafe(`
     WITH running AS (
       SELECT "tenantId", COUNT(*)::int AS count
       FROM "AutomationEvent"
       WHERE status = 'PROCESSING'
-        AND "leaseExpiresAt" > NOW()
+        AND "leaseExpiresAt" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       GROUP BY "tenantId"
     ), ranked AS (
       SELECT e.id,
@@ -82,12 +82,12 @@ async function claimEvents(): Promise<ClaimedEvent[]> {
       FROM "AutomationEvent" e
       LEFT JOIN running r ON r."tenantId" = e."tenantId"
       WHERE e.status = 'QUEUED'
-        AND e."availableAt" <= NOW()
+        AND e."availableAt" <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
         AND NOT EXISTS (
           SELECT 1
           FROM "AutomationEvent" active
           WHERE active.status = 'PROCESSING'
-            AND active."leaseExpiresAt" > NOW()
+            AND active."leaseExpiresAt" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
             AND active."tenantId" = e."tenantId"
             AND active."contactId" IS NOT DISTINCT FROM e."contactId"
         )
@@ -105,9 +105,9 @@ async function claimEvents(): Promise<ClaimedEvent[]> {
     SET status = 'PROCESSING',
         "leaseToken" = $3,
         "leaseExpiresAt" = $4,
-        "processingStartedAt" = COALESCE(e."processingStartedAt", NOW()),
+        "processingStartedAt" = COALESCE(e."processingStartedAt", (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')),
         "attemptCount" = e."attemptCount" + 1,
-        "updatedAt" = NOW()
+        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
     FROM candidates
     WHERE e.id = candidates.id
     RETURNING e.id, e."tenantId", e."actorUserId", e."leaseToken"
@@ -178,7 +178,7 @@ export async function runAutomationEventWorkerOnce() {
   running = true
   try {
     await recoverExpiredLeases()
-    const claims = await claimEvents()
+    const claims = await claimAutomationEvents()
     let cursor = 0
     const workers = Array.from({ length: Math.min(
       AUTOMATION_EVENT_WORKER_CONFIG.concurrency,
@@ -212,9 +212,9 @@ async function claimSideEffects() {
       SELECT id
       FROM "AutomationSideEffect"
       WHERE (
-        status = 'PENDING' AND "availableAt" <= NOW()
+        status = 'PENDING' AND "availableAt" <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       ) OR (
-        status = 'PROCESSING' AND "leaseExpiresAt" < NOW()
+        status = 'PROCESSING' AND "leaseExpiresAt" < (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       )
       ORDER BY "availableAt", "createdAt"
       FOR UPDATE SKIP LOCKED
@@ -225,7 +225,7 @@ async function claimSideEffects() {
         "leaseToken" = $1,
         "leaseExpiresAt" = $2,
         "attemptCount" = effect."attemptCount" + 1,
-        "updatedAt" = NOW()
+        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
     FROM candidates
     WHERE effect.id = candidates.id
     RETURNING effect.id, effect.type, effect.payload, effect."attemptCount"

@@ -34,7 +34,7 @@ type CreateAppointmentAtomicallyParams = {
   endAt: Date
   isAllDay: boolean
   automationEvent?: Pick<AppointmentCreatedAutomationEvent,
-    "chainId" | "parentEventId" | "chainDepth" | "sourceAutomationId" | "sourceAutomationName" | "sourceNodeKey" | "causationKey"
+    "serviceContext" | "chainId" | "parentEventId" | "chainDepth" | "sourceAutomationId" | "sourceAutomationName" | "sourceNodeKey" | "causationKey"
   >
 }
 
@@ -692,7 +692,7 @@ export async function recordAppointmentStatusChange(
     previousStatus: AppointmentStatus
     status: AppointmentStatus
     automationEvent?: Pick<AppointmentStatusChangedAutomationEvent,
-      "chainId" | "parentEventId" | "chainDepth" | "sourceAutomationId" | "sourceAutomationName" | "sourceNodeKey"
+      "serviceContext" | "chainId" | "parentEventId" | "chainDepth" | "sourceAutomationId" | "sourceAutomationName" | "sourceNodeKey"
     >
   },
 ) {
@@ -727,7 +727,7 @@ export async function changeAppointmentStatusInTransaction(
     status: AppointmentStatus
     actorDisplayName: string
     automationEvent?: Pick<AppointmentStatusChangedAutomationEvent,
-      "chainId" | "parentEventId" | "chainDepth" | "sourceAutomationId" | "sourceAutomationName" | "sourceNodeKey"
+      "serviceContext" | "chainId" | "parentEventId" | "chainDepth" | "sourceAutomationId" | "sourceAutomationName" | "sourceNodeKey"
     >
     requireFuture?: boolean
   },

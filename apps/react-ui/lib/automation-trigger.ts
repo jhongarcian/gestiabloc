@@ -4,6 +4,9 @@ export type AutomationBuilderTriggerType = Exclude<AutomationTriggerType, "OPPOR
 export type AutomationChangeType = "" | "STAGE_ENTERED" | "RESULT_WON" | "RESULT_LOST"
 
 export type AutomationTriggerDraft = {
+  serviceOfferingId?: string | null
+  serviceGroupId?: string
+  serviceStepId?: string
   triggerType: AutomationBuilderTriggerType | null
   pipelineId: string
   changeType: AutomationChangeType
@@ -14,6 +17,8 @@ export type AutomationTriggerDraft = {
 }
 
 type SavedAutomationTrigger =
+  | { type: "SERVICE_STEP_ENTERED"; serviceStepId: string; serviceOfferingId?: string | null }
+  | { type: "SERVICE_STEP_COMPLETED"; serviceStepId: string; serviceOfferingId?: string | null }
   | { type: "CONTACT_CREATED" }
   | { type: "CONTACT_CHANGED"; changes: AutomationContactChangeRule[] }
   | { type: "CONTACT_TAG"; tagId: string; change: "ADDED" | "REMOVED" }
@@ -35,6 +40,7 @@ type SavedAutomationTrigger =
 
 export function isAutomationTriggerReady(draft: AutomationTriggerDraft | null) {
   if (!draft?.triggerType) return false
+  if ((draft.triggerType === "SERVICE_STEP_ENTERED" || draft.triggerType === "SERVICE_STEP_COMPLETED")) return Boolean(draft.serviceStepId) && (draft.serviceOfferingId === null || Boolean(draft.serviceOfferingId))
   if (draft.triggerType === "CONTACT_CREATED") return true
   if (draft.triggerType === "CONTACT_NOTE_ADDED") return true
   if (draft.triggerType === "TASK_ADDED") return true
@@ -68,6 +74,10 @@ function validTarget(value: unknown) {
 
 export function serializeAutomationTrigger(draft: AutomationTriggerDraft) {
   if (!draft.triggerType) throw new Error("Select a trigger.")
+  if ((draft.triggerType === "SERVICE_STEP_ENTERED" || draft.triggerType === "SERVICE_STEP_COMPLETED")) {
+    if (!isAutomationTriggerReady(draft)) throw new Error("Select a service, sub-service, and step.")
+    return { type: draft.triggerType, serviceStepId: draft.serviceStepId!, serviceOfferingId: draft.serviceOfferingId ?? null }
+  }
   if (draft.triggerType === "CONTACT_CREATED") return { type: "CONTACT_CREATED" as const }
   if (draft.triggerType === "CONTACT_NOTE_ADDED") return { type: "CONTACT_NOTE_ADDED" as const }
   if (draft.triggerType === "TASK_ADDED") return { type: "TASK_ADDED" as const }
@@ -106,6 +116,7 @@ export function serializeAutomationTrigger(draft: AutomationTriggerDraft) {
 }
 
 export function hydrateAutomationTrigger(trigger: SavedAutomationTrigger): AutomationTriggerDraft {
+  if ((trigger.type === "SERVICE_STEP_ENTERED" || trigger.type === "SERVICE_STEP_COMPLETED")) return { triggerType: trigger.type, serviceStepId: trigger.serviceStepId, serviceOfferingId: trigger.serviceOfferingId ?? null, pipelineId: "", changeType: "", targetStageId: "", changes: [] }
   if (trigger.type === "CONTACT_CREATED") {
     return { triggerType: "CONTACT_CREATED", pipelineId: "", changeType: "", targetStageId: "", changes: [] }
   }

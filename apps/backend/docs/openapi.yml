@@ -4938,6 +4938,193 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/step-occurrences/{occurrenceId}/complete:
+    post:
+      tags: [Services]
+      summary: Complete the active enrolled service step
+      description: >-
+        Requires an active tenant administrator or MEDIUM/MAX member. Locks the enrollment and
+        resolves exactly this active occurrence. Repeating a completed request returns its saved state.
+        With no enabled matching completion actions, enters the next saved step immediately.
+        Otherwise pins and queues the completion workflow; progression waits for successful completion
+        of all its actions, including waits. Failure or exit saves PAUSED and a visible message.
+        The final step completes a paid enrollment or leaves it PENDING_PAYMENT.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: occurrenceId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Completed occurrence and its current progression state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  occurrence:
+                    $ref: "#/components/schemas/ServiceStepOccurrence"
+        "401": { description: Not authenticated }
+        "403": { description: Tenant access or security level denied }
+        "404": { description: Enrollment or scoped occurrence not found }
+        "409": { description: Wrong workflow kind, inactive enrollment, or occurrence not active }
+  /api/services/{tenantId}/contact-services/{contactServiceId}/step-movements:
+    post:
+      tags: [Services]
+      summary: Move, skip, or revisit a saved enrollment step
+      description: >-
+        Requires an active tenant administrator or MEDIUM/MAX member and a movement reason.
+        MOVE enters targetStepId; SKIP enters the next saved step or finishes work.
+        Skips bypass completion actions. The destination starts a new occurrence and entry triggers.
+        Obsolete scoped work is stopped atomically. Completed history and payment requirements remain.
+        Identical requestId retries return the saved movement; stale sources and conflicting retries return 409.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: path, name: contactServiceId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requestId, expectedOccurrenceId, kind, reason]
+              properties:
+                requestId: { type: string, format: uuid }
+                expectedOccurrenceId: { type: string, format: uuid }
+                kind: { type: string, enum: [MOVE, SKIP] }
+                targetStepId: { type: string, format: uuid, description: Required only for MOVE; a saved step belonging to this enrollment. }
+                reason: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        "200":
+          description: Saved movement, also returned for an identical retry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  movement:
+                    $ref: "#/components/schemas/ServiceStepMovement"
+        "400": { description: Invalid reason, payload, or destination }
+        "401": { description: Not authenticated }
+        "403": { description: Tenant or security level denied }
+        "404": { description: Enrollment not found }
+        "409": { description: Source changed, duplicate request conflicts, or enrollment is inactive }
+  /api/services/{tenantId}/contact-services/{contactServiceId}/step-occurrences/{occurrenceId}/completion-wait:
+    get:
+      tags: [Services]
+      summary: Get all pending completion workflow waits for this exact occurrence
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: path, name: contactServiceId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: occurrenceId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Pending root completion waits; wait is the first result or null for compatibility.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  waits:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ServiceStepCompletionWait"
+                  wait:
+                    $ref: "#/components/schemas/ServiceStepCompletionWait"
+        "401": { description: Not authenticated }
+        "403": { description: Tenant access denied }
+        "404": { description: Scoped occurrence not found }
+  /api/services/{tenantId}/contact-services/{contactServiceId}/step-occurrences/{occurrenceId}/completion-wait/continue:
+    post:
+      tags: [Services]
+      summary: End the current completion wait and run the remaining actions
+      description: >-
+        Requires a tenant administrator or MEDIUM/MAX member. Atomically releases exactly the displayed
+        wait and wakes the existing worker. Does not skip remaining workflow actions. Concurrent or stale
+        requests cannot replay actions, bypass a later wait, or advance twice. Records the actor and schedule change.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: path, name: contactServiceId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: occurrenceId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceStepWaitTarget"
+      responses:
+        "200": { description: Current wait released; remaining completion actions queued to resume }
+        "400": { description: Invalid target input }
+        "401": { description: Not authenticated }
+        "403": { description: Tenant access or security level denied }
+        "404": { description: Scoped occurrence or root completion run not found }
+        "409": { description: Wait or schedule already changed, or enrollment no longer active }
+  /api/services/{tenantId}/contact-services/{contactServiceId}/step-occurrences/{occurrenceId}/completion-wait/reschedule:
+    post:
+      tags: [Services]
+      summary: Change only this enrollment's current completion wait
+      description: >-
+        Requires a tenant administrator or MEDIUM/MAX member. Changes the current wait while preserving
+        pinned actions, cursor and branch state. A claimed but unstarted worker is fenced out. An executing
+        worker finishes its transaction before this request revalidates its target; stale edits return 409.
+        Records actor, old/new schedules, occurrence and time. Source workflow and other enrollments are unchanged.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: path, name: contactServiceId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: occurrenceId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ServiceStepWaitTarget"
+                - type: object
+                  required: [schedule]
+                  properties:
+                    schedule:
+                      oneOf:
+                        - type: object
+                          additionalProperties: false
+                          required: [mode, amount, unit]
+                          properties:
+                            mode: { type: string, enum: [DURATION] }
+                            amount: { type: integer, minimum: 1, maximum: 315360000 }
+                            unit: { type: string, enum: [SECONDS, MINUTES, HOURS, DAYS] }
+                          description: Positive duration starting when saved; at most ten years after converting units.
+                        - type: object
+                          additionalProperties: false
+                          required: [mode, dateTime]
+                          properties:
+                            mode: { type: string, enum: [FIXED_DATE] }
+                            dateTime: { type: string, format: date-time }
+                          description: Future absolute date/time with UTC or numeric offset, at most ten years ahead.
+      responses:
+        "200": { description: Canonical wait returned after rescheduling }
+        "400": { description: Invalid target, duration, or future date/time }
+        "401": { description: Not authenticated }
+        "403": { description: Tenant access or security level denied }
+        "404": { description: Scoped occurrence or root completion run not found }
+        "409": { description: Wait or schedule already changed, or enrollment no longer active }
   /api/services/{tenantId}/contact-services/{contactServiceId}/overview:
     get:
       tags: [Services]
@@ -5816,7 +6003,8 @@ paths:
           description: >-
             Pipelines, stages, contact and task statuses, services, members, tags, eligible custom
             fields with immutable keys, and the safe regular contact fields and formatting options
-            supported by automation templates.
+            supported by automation templates. serviceStepServices contains active parent services with
+            subServices, each exposing its effective active steps as id/title pairs.
           content:
             application/json:
               schema:
@@ -6121,13 +6309,29 @@ paths:
             type: string
             maxLength: 120
         - in: query
+          name: contactServiceId
+          description: Limit logs to one exact service enrollment in this tenant.
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: serviceStepOccurrenceId
+          description: Limit logs to one exact step-entry occurrence; combines with enrollment filter using AND.
+          schema:
+            type: string
+            format: uuid
+        - in: query
           name: status
           schema:
             type: string
             enum: [QUEUED, EXECUTED, SKIPPED, FAILED, WAITING]
       responses:
         "200":
-          description: Node-level execution logs and pagination metadata
+          description: Node-level execution logs with immutable enrollment attribution and pagination metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationExecutionLogsResponse"
         "404":
           description: Automation not found in this tenant
   /api/opportunities/{tenantId}/automation-events/{eventId}:
@@ -6465,10 +6669,99 @@ components:
           type: integer
           minimum: 0
           description: Always zero in the initial asynchronous opportunity response.
+    AutomationServiceContext:
+      type: object
+      nullable: true
+      description: >-
+        Immutable enrollment attribution. Null for ordinary contact automations and older history.
+        Validated against the tenant and contact when queued and before every execution segment.
+        The saved enrollment step and source step must both be supplied together. An occurrence
+        requires its saved step. Context is retained across waits, branches, and chained workflows;
+        records are never inferred from a contact. Invalid ownership fails with INVALID_SERVICE_CONTEXT.
+      required: [contactServiceId, serviceId, contactServiceStepId, serviceStepId, serviceStepOccurrenceId]
+      additionalProperties: false
+      properties:
+        contactServiceId:
+          type: string
+          format: uuid
+        serviceId:
+          type: string
+          format: uuid
+          description: Enrolled sub-service ID, including when the step is inherited from a parent.
+        contactServiceStepId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Saved enrollment step definition ID.
+        serviceStepId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Original service configuration step ID; archival does not invalidate attribution.
+        serviceStepOccurrenceId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Exact step-entry occurrence ID; a revisit has its own ID.
+    AutomationExecutionLogsResponse:
+      type: object
+      required: [ok, items, pagination]
+      properties:
+        ok:
+          type: boolean
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, attemptId, eventSource, serviceContext, contact, node, status, details, occurredAt]
+            properties:
+              id:
+                type: string
+                format: uuid
+              attemptId:
+                type: string
+                format: uuid
+              eventSource:
+                type: string
+              serviceContext:
+                $ref: "#/components/schemas/AutomationServiceContext"
+              contact:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    nullable: true
+                  name:
+                    type: string
+              node:
+                type: object
+                additionalProperties: true
+              status:
+                type: string
+                enum: [QUEUED, EXECUTED, SKIPPED, FAILED, WAITING]
+              details:
+                type: string
+                nullable: true
+              occurredAt:
+                type: string
+                format: date-time
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            pageSize:
+              type: integer
+            total:
+              type: integer
+            totalPages:
+              type: integer
     AutomationEventStatusResponse:
       type: object
       required: [id, status, total, queued, running, completed, skipped, failed, createdAt]
       properties:
+        serviceContext:
+          $ref: "#/components/schemas/AutomationServiceContext"
         id:
           type: string
           format: uuid
@@ -6669,6 +6962,8 @@ components:
       type: object
       required: [runId, contact, enteredAt, nextActionAt]
       properties:
+        serviceContext:
+          $ref: "#/components/schemas/AutomationServiceContext"
         runId:
           type: string
           format: uuid
@@ -6734,6 +7029,27 @@ components:
           format: date-time
     AutomationTriggerRequest:
       oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, serviceStepId]
+          description: >-
+            Select an active sub-service and one of its effective active steps. Multiple automations
+            may target the same step/event. New automations require serviceOfferingId; existing shared
+            workflows may retain null scope. Published actions run once per occurrence. All matching
+            completion workflows must succeed before the next saved step starts. Contact field,
+            safe custom-field, and tag filters use event-time values.
+          properties:
+            type:
+              type: string
+              enum: [SERVICE_STEP_ENTERED, SERVICE_STEP_COMPLETED]
+            serviceStepId:
+              type: string
+              format: uuid
+            serviceOfferingId:
+              type: string
+              format: uuid
+              nullable: true
+              description: Required for new service-step triggers. Null retains the scope of an existing shared workflow.
         - type: object
           additionalProperties: false
           required: [type]
@@ -6922,9 +7238,9 @@ components:
             $ref: "#/components/schemas/AutomationConditionRequest"
         actions:
           type: array
-          minItems: 1
+          minItems: 0
           maxItems: 100
-          description: An automation may contain at most 100 action nodes across its complete branch tree.
+          description: At most 100 action nodes across the complete tree. Only a disabled SERVICE_STEP_ENTERED or SERVICE_STEP_COMPLETED draft may have zero actions. Publishing always requires at least one action. Linked step triggers cannot be changed or deleted; disable them instead.
           items:
             $ref: "#/components/schemas/AutomationActionRequest"
     AutomationFolderNameRequest:
@@ -10789,6 +11105,59 @@ components:
         - type: object
           properties:
             sortOrder: { type: integer }
+            automations:
+              type: array
+              readOnly: true
+              description: All entry and completion automations linked to this source step. Multiple workflows may target the same event, with optional sub-service scope. Starter drafts are disabled and empty.
+              items:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  name: { type: string }
+                  isEnabled: { type: boolean }
+                  triggerType: { type: string, enum: [SERVICE_STEP_ENTERED, SERVICE_STEP_COMPLETED] }
+                  _count:
+                    type: object
+                    properties:
+                      actions: { type: integer, minimum: 0 }
+    ServiceStepWaitTarget:
+      type: object
+      required: [runId, waitingNodeExecutionId, expectedResumeAt]
+      properties:
+        runId: { type: string, format: uuid }
+        waitingNodeExecutionId: { type: string, format: uuid }
+        expectedResumeAt: { type: string, format: date-time }
+      description: Exact wait and displayed schedule. All fields must still match when the request holds the run lock.
+    ServiceStepCompletionWait:
+      type: object
+      nullable: true
+      properties:
+        runId: { type: string, format: uuid }
+        automationId: { type: string, format: uuid, nullable: true }
+        automationName: { type: string }
+        waitingNodeExecutionId: { type: string, format: uuid }
+        resumeAt: { type: string, format: date-time }
+        status: { type: string, enum: [WAITING, RUNNING] }
+    ServiceStepMovement:
+      type: object
+      description: Durable movement history, returned as stepMovements on enrollment workspaces. Bypassed intermediate steps do not receive entry occurrences.
+      properties:
+        id: { type: string, format: uuid }
+        requestId: { type: string, format: uuid }
+        kind: { type: string, enum: [MOVE, SKIP] }
+        fromOccurrenceId: { type: string, format: uuid }
+        fromStepId: { type: string, format: uuid }
+        fromStepTitle: { type: string }
+        toOccurrenceId: { type: string, format: uuid, nullable: true }
+        toStepId: { type: string, format: uuid, nullable: true }
+        toStepTitle: { type: string, nullable: true }
+        skippedStepIds:
+          type: array
+          items: { type: string, format: uuid }
+        reason: { type: string }
+        actorUserId: { type: string, format: uuid }
+        actorName: { type: string }
+        createdAt: { type: string, format: date-time }
     ServiceStepOccurrence:
       type: object
       properties:
@@ -10800,6 +11169,12 @@ components:
         dueAt: { type: string, format: date-time }
         resolvedAt: { type: string, format: date-time, nullable: true }
         resolutionReason: { type: string, nullable: true }
+        supersededAt: { type: string, format: date-time, nullable: true }
+        completedByUserId: { type: string, nullable: true }
+        completionEventId: { type: string, nullable: true }
+        progressionStatus: { type: string, enum: [NONE, WAITING_AUTOMATION, PAUSED, SUPERSEDED, ADVANCED, FINISHED] }
+        progressionMessage: { type: string, nullable: true }
+        advancedAt: { type: string, format: date-time, nullable: true }
       description: A saved entry into an enrolled step. Revisits create new occurrences. Unentered steps have no occurrence or deadline. Only one occurrence can be active per enrollment.
     EnrolledServiceStep:
       allOf:

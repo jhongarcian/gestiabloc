@@ -1,6 +1,7 @@
 "use client"
 
 import { useRef, useState } from "react"
+import Link from "next/link"
 import { isAxiosError } from "axios"
 import { ArrowDown, ArrowUp, GripVertical, Pencil, Plus } from "lucide-react"
 import {
@@ -53,8 +54,17 @@ export type ServiceStepItem = {
   completionDuration: number
   completionUnit: "MINUTES" | "HOURS" | "DAYS"
   sortOrder: number
+  automations?: Array<{
+    serviceOfferingId?: string | null
+    serviceOffering?: { name: string } | null
+    triggerType: "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED"
+    id: string
+    name: string
+    isEnabled: boolean
+    _count: { actions: number }
+  }>
 }
-type StepDraft = Omit<ServiceStepItem, "id" | "sortOrder"> & { id?: string }
+type StepDraft = Omit<ServiceStepItem, "id" | "sortOrder" | "automations"> & { id?: string }
 const freshDraft = (): StepDraft => ({
   title: "",
   instructions: "",
@@ -69,11 +79,13 @@ function StepRow({
   disabled,
   onEdit,
   onMove,
+  tenantSlug,
 }: {
   step: ServiceStepItem
   index: number
   count: number
   disabled: boolean
+  tenantSlug: string
   onEdit: () => void
   onMove: (to: number) => void
 }) {
@@ -107,6 +119,23 @@ function StepRow({
         <p className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
           {step.instructions || "No instructions added."}
         </p>
+        {step.automations?.map((automation) => {
+          const kind = automation.triggerType === "SERVICE_STEP_COMPLETED" ? "completion" : "entry"
+          return (
+            <div key={automation.id} className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">{automation.isEnabled ? "Published" : "Draft"}</Badge>
+              <span className="text-xs text-muted-foreground">
+                {automation._count.actions} {kind} actions
+              </span>
+              <Button variant="outline" size="sm" asChild>
+                <Link href={`/app/${tenantSlug}/account-settings/automations/${automation.id}`}>
+                  {automation.name} · {kind}
+                  {automation.serviceOffering ? ` · ${automation.serviceOffering.name}` : ""}
+                </Link>
+              </Button>
+            </div>
+          )
+        })}
       </div>
       <div className="flex shrink-0 gap-1">
         <Button
@@ -175,7 +204,20 @@ export function ServiceStepsPanel({
     try {
       const { data } = await api.patch<{
         service: { steps: ServiceStepItem[]; stepsMode: ServiceSectionMode }
-      }>(`/api/account-settings/${tenantId}/services/${serviceId}`, payload)
+      }>(`/api/account-settings/${tenantId}/services/${serviceId}`, {
+        ...payload,
+        ...(payload.steps
+          ? {
+              steps: payload.steps.map((step) => ({
+                ...(step.id ? { id: step.id } : {}),
+                title: step.title,
+                instructions: step.instructions,
+                completionDuration: step.completionDuration,
+                completionUnit: step.completionUnit,
+              })),
+            }
+          : {}),
+      })
       setSteps(data.service.steps)
       setMode(data.service.stepsMode)
       onSaved(data.service.steps)
@@ -217,8 +259,12 @@ export function ServiceStepsPanel({
       toast.error("Enter a step name and a positive whole-number completion timeframe.")
       return
     }
-    const minutes = draft.completionDuration * ({ MINUTES: 1, HOURS: 60, DAYS: 1440 }[draft.completionUnit])
-    if (minutes > 5_256_000) { toast.error("Completion timeframe must be ten years or less."); return }
+    const minutes =
+      draft.completionDuration * { MINUTES: 1, HOURS: 60, DAYS: 1440 }[draft.completionUnit]
+    if (minutes > 5_256_000) {
+      toast.error("Completion timeframe must be ten years or less.")
+      return
+    }
     const next = draft.id
       ? steps.map((step) => (step.id === draft.id ? draft : step))
       : [...steps, draft]
@@ -264,9 +310,19 @@ export function ServiceStepsPanel({
                   {steps.map((step, index) => (
                     <StepRow
                       key={step.id}
-                      step={step}
+                      step={{
+                        ...step,
+                        automations: parentService
+                          ? step.automations?.filter(
+                              (automation) =>
+                                !automation.serviceOfferingId ||
+                                automation.serviceOfferingId === serviceId,
+                            )
+                          : step.automations,
+                      }}
                       index={index}
                       count={steps.length}
+                      tenantSlug={tenantSlug}
                       disabled={busy || inherited}
                       onEdit={() => setDraft({ ...step })}
                       onMove={(to) => move(index, to)}

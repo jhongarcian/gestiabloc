@@ -1,3 +1,9 @@
+import { enforceSameOrigin } from "../lib/security.js"
+import { moveServiceStepTx, MoveServiceStepSchema } from "../lib/service-step-movement.js"
+import { kickAutomationRunWorker } from "../lib/opportunity-automations.js"
+import { queueOpportunityAutomationEvent } from "../lib/automation-event-queue.js"
+import { getServiceStepCompletionWaits, changeServiceStepCompletionWaitTx, ContinueServiceStepWaitSchema, RescheduleServiceStepWaitSchema } from "../lib/service-step-waits.js"
+import { completeServiceStepOccurrenceTx, reconcileServiceStepEnrollmentTx } from "../lib/service-step-progression.js"
 import { createServiceStepOccurrenceTx, enrolledServiceStepsSelect } from "../lib/service-steps.js"
 import { captureEnrollmentConfiguration, readEnrollmentConfiguration, readProfessionalSnapshot,
   professionalSnapshot, enrollmentProfessionalOptions, enrolledChecklistSnapshotSelect,
@@ -913,6 +919,7 @@ const contactServiceWorkspaceBaseSelect = {
   configurationSnapshot: true,
   assignedProfessionalSnapshot: true,
   serviceSteps: enrolledServiceStepsSelect,
+  stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
   contactId: true,
   status: true,
   startedAt: true,
@@ -1038,6 +1045,7 @@ async function serializeContactServiceWorkspaceBase(item: any, paidCents: number
     id: item.id,
     workflowKind: item.workflowKind,
     serviceSteps: item.serviceSteps ?? [],
+    stepMovements: item.stepMovements ?? [],
     configurationSnapshot: item.configurationSnapshot,
     contactId: item.contactId,
     status: item.status,
@@ -1798,7 +1806,9 @@ async function reconcileContactServiceCompletionFromFollowUps(
     },
   })
 
-  if (!contactService || contactService.status === "CANCELED" || contactService.workflowKind === "SERVICE_STEPS") {
+  if (contactService?.workflowKind === "SERVICE_STEPS") return reconcileServiceStepEnrollmentTx(prismaTx, tenantId, contactServiceId)
+
+  if (!contactService || contactService.status === "CANCELED") {
     return contactService
   }
 
@@ -3379,7 +3389,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           status: true,
           purchasedAt: true,
           tenantId: true, workflowKind: true, configurationSnapshot: true,
-          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect,
+          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect, stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
           totalPriceCents: true,
           currency: true,
           followUpCoordinatorUserId: true,
@@ -3545,7 +3555,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           status: true,
           purchasedAt: true,
           tenantId: true, workflowKind: true, configurationSnapshot: true,
-          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect,
+          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect, stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
           totalPriceCents: true,
           currency: true,
           followUpCoordinatorUserId: true,
@@ -3935,7 +3945,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       let followUpRunId: string | null = null
       if (usesServiceSteps) {
         const definitions = await tx.contactServiceStep.createManyAndReturn({
-          data: effective.steps.map(({ id, ...step }) => ({ ...step, sourceStepId: id, tenantId, contactServiceId: contactService.id })),
+          data: effective.steps.map(({ id, automations: _automations, ...step }) => ({ ...step, sourceStepId: id, tenantId, contactServiceId: contactService.id })),
         })
         const first = definitions.sort((a, b) => a.sortOrder - b.sortOrder)[0]
         await createServiceStepOccurrenceTx(tx, { tenantId, contactServiceId: contactService.id,
@@ -4035,7 +4045,7 @@ router.get(
             startedAt: true,
             purchasedAt: true,
           tenantId: true, workflowKind: true, configurationSnapshot: true,
-          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect,
+          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect, stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
             completedAt: true,
             canceledAt: true,
             totalPriceCents: true,
@@ -4718,7 +4728,7 @@ router.get(
             startedAt: true,
             purchasedAt: true,
           tenantId: true, workflowKind: true, configurationSnapshot: true,
-          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect,
+          assignedProfessionalSnapshot: true, serviceSteps: enrolledServiceStepsSelect, stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
             completedAt: true,
             canceledAt: true,
             totalPriceCents: true,
@@ -5040,6 +5050,7 @@ router.get(
           workflowKind: item.workflowKind,
           configurationSnapshot: item.configurationSnapshot,
           serviceSteps: item.serviceSteps ?? [],
+          stepMovements: item.stepMovements ?? [],
           contactId: item.contactId,
           status: item.status,
           startedAt: item.startedAt,
@@ -6219,6 +6230,71 @@ router.patch(
     }
   },
 )
+
+router.post("/:tenantId/contact-services/:contactServiceId/step-occurrences/:occurrenceId/complete", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId, occurrenceId } = TenantContactServicePathSchema.extend({ occurrenceId: z.uuid() }).parse(req.params)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+    const occurrence = await prisma.$transaction(tx => completeServiceStepOccurrenceTx(tx, {
+      tenantId, contactServiceId, occurrenceId, actorUserId: authed.user.id,
+    }))
+    return res.json({ ok: true, occurrence })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
+
+router.post("/:tenantId/contact-services/:contactServiceId/step-movements", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = req as AuthedRequest
+    const path = TenantContactServicePathSchema.parse(req.params)
+    const payload = MoveServiceStepSchema.parse(req.body)
+    const membership = await requireActiveMembership(authed, res, path.tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+    const movement = await prisma.$transaction(tx => moveServiceStepTx(tx, { ...path, ...payload, actorUserId: authed.user.id }))
+    return res.json({ ok: true, movement })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
+
+const StepOccurrencePathSchema = TenantContactServicePathSchema.extend({ occurrenceId: z.uuid() })
+router.get("/:tenantId/contact-services/:contactServiceId/step-occurrences/:occurrenceId/completion-wait", requireAuth, async (req, res, next) => {
+  try {
+    const input = StepOccurrencePathSchema.parse(req.params)
+    if (!await requireActiveMembership(req as AuthedRequest, res, input.tenantId)) return
+    const waits = await getServiceStepCompletionWaits(prisma, input)
+    return res.json({ ok: true, waits, wait: waits[0] ?? null })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
+for (const type of ["CONTINUE", "RESCHEDULE"] as const) {
+  router.post(`/:tenantId/contact-services/:contactServiceId/step-occurrences/:occurrenceId/completion-wait/${type === "CONTINUE" ? "continue" : "reschedule"}`, requireAuth, async (req, res, next) => {
+    try {
+      const input = StepOccurrencePathSchema.parse(req.params)
+      const authed = req as AuthedRequest
+      const membership = await requireActiveMembership(authed, res, input.tenantId)
+      if (!membership) return
+      if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+      const change = type === "CONTINUE" ? { type, ...ContinueServiceStepWaitSchema.parse(req.body) } : { type, ...RescheduleServiceStepWaitSchema.parse(req.body) }
+      const wait = await prisma.$transaction(tx => changeServiceStepCompletionWaitTx(tx, { ...input, actorUserId: authed.user.id, change }))
+      if (type === "CONTINUE") kickAutomationRunWorker({ queueOpportunityEvent: queueOpportunityAutomationEvent })
+      return res.json({ ok: true, wait })
+    } catch (error) {
+      if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+      return next(error)
+    }
+  })
+}
 
 router.use("/:tenantId/contact-services/:contactServiceId/follow-up-steps", requireAuth, async (req, res, next) => {
   if (!["POST", "PATCH", "DELETE"].includes(req.method)) return next()

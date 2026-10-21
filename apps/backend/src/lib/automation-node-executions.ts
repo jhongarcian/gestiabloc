@@ -1,5 +1,9 @@
+import type { AutomationServiceContext } from "./automation-service-context.js"
+
 export type AutomationNodeLogStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | "FAILED" | "WAITING"
 export type AutomationNodeEventSource =
+  | "SERVICE_STEP_ENTERED"
+  | "SERVICE_STEP_COMPLETED"
   | "MANUAL_ENROLLMENT"
   | "CONTACT_CREATED"
   | "CONTACT_CHANGED"
@@ -16,6 +20,7 @@ export type AutomationNodeEventSource =
   | "AUTOMATION_ACTION"
 
 export type AutomationNodeLogData = {
+  serviceContext?: AutomationServiceContext
   id?: string
   tenantId: string
   automationId: string | null
@@ -167,6 +172,8 @@ export function getAutomationActionNodeLabel(action: {
 }
 
 export function getAutomationTriggerLabel(triggerType: string) {
+  if (triggerType === "SERVICE_STEP_COMPLETED") return "Step completed"
+  if (triggerType === "SERVICE_STEP_ENTERED") return "Step entered"
   if (triggerType === "CONTACT_CREATED") return "Contact created"
   if (triggerType === "CONTACT_CHANGED") return "Contact changed"
   if (triggerType === "CONTACT_TAG") return "Contact tag"

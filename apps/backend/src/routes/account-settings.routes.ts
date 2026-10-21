@@ -1,3 +1,4 @@
+import { ensureServiceStepAutomationsTx } from "../lib/service-step-automations.js";
 import { type NextFunction, type Request, type Response, Router } from "express";
 import argon2 from "argon2";
 import multer from "multer";
@@ -70,7 +71,7 @@ import {
   prepareServiceSectionsTx,
 } from "../lib/service-configuration-inheritance.js";
 
-import { ServiceStepInputSchema, ServiceStepUpdateSchema, saveServiceStepsTx } from "../lib/service-steps.js";
+import { serviceStepSelect, ServiceStepInputSchema, ServiceStepUpdateSchema, saveServiceStepsTx } from "../lib/service-steps.js";
 
 const router = Router();
 const prismaWithContacts = prisma as any;
@@ -5044,11 +5045,11 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
     }
     const created = await prisma.$transaction(async (tx) => {
       await validateServiceParentTx(tx, tenantId, payload.kind, payload.parentServiceId);
-      return tx.service.create({
+      const record = await tx.service.create({
       data: {
         tenantId,
         ...modes,
-        steps: { create: payload.steps.map((step, index) => ({ ...step, tenantId, sortOrder: (index + 1) * 10 })) },
+        steps: { create: payload.steps.map((step, index) => ({ ...step, sortOrder: (index + 1) * 10 })) },
         kind: payload.kind,
         parentServiceId: payload.parentServiceId ?? null,
         name: normalizedName,
@@ -5120,6 +5121,9 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
         sortOrder: true,
       },
       });
+      await ensureServiceStepAutomationsTx(tx, tenantId, record.id);
+      const steps = await tx.serviceStep.findMany({ where: { tenantId, serviceId: record.id, archivedAt: null }, orderBy: { sortOrder: "asc" }, select: serviceStepSelect });
+      return { ...record, steps };
     });
 
     return res.status(201).json({

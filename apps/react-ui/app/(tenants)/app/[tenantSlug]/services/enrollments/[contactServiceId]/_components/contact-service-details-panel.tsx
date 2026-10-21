@@ -1,5 +1,7 @@
 "use client"
 
+import type { StepMovement } from "@/lib/service-step-movement"
+
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react"
 import { isAxiosError } from "axios"
@@ -229,6 +231,7 @@ import { ServiceStepSnapshot, type EnrolledServiceStep } from "./service-step-sn
 type ContactServiceDetails = {
   workflowKind?: "LEGACY_TEMPLATE" | "SERVICE_STEPS" | "NONE"
   serviceSteps?: EnrolledServiceStep[]
+  stepMovements?: StepMovement[]
   id: string
   contactId: string
   contactName?: string
@@ -3744,7 +3747,7 @@ export function ContactServiceDetailsPanel({
           className="min-h-0 min-w-0 flex-1 scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] bg-background px-4 py-5 md:px-5 md:py-6"
         >
         {serviceData.workflowKind === "SERVICE_STEPS" && (activeView === "overview" || activeView === "follow-up") ?
-          <ServiceStepSnapshot steps={serviceData.serviceSteps ?? []} timezone={serviceData.timezone} /> : null}
+          <ServiceStepSnapshot steps={serviceData.serviceSteps ?? []} movements={serviceData.stepMovements ?? []} timezone={serviceData.timezone} tenantId={tenantId} contactServiceId={contactServiceId} canComplete={(membershipRole === "TENANT_ADMIN" || canManageSensitiveServiceActions) && serviceData.status !== "CANCELED" && serviceData.status !== "COMPLETED"} onRefresh={() => refreshData(Boolean(item))} /> : null}
         {activeView === "overview" ? (
           <section aria-labelledby="service-overview-title">
             <h2 id="service-overview-title" className="sr-only">Service overview</h2>

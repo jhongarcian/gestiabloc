@@ -107,6 +107,7 @@ import { DateTimeInput } from "@/components/ui/date-time-input"
 import { DateInput } from "@/components/ui/date-input"
 import {
   Field,
+  FieldDescription,
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field"
@@ -207,6 +208,9 @@ type AutomationFlowBuilderProps = {
 }
 
 type Draft = {
+  serviceOfferingId?: string | null
+  serviceGroupId?: string
+  serviceStepId?: string
   name: string
   isEnabled: boolean
   triggerType: AutomationBuilderTriggerType | null
@@ -311,6 +315,9 @@ function draftSnapshot(draft: Draft) {
     name: draft.name,
     isEnabled: draft.isEnabled,
     triggerType: draft.triggerType,
+    serviceStepId: draft.serviceStepId,
+    serviceOfferingId: draft.serviceOfferingId,
+    serviceGroupId: draft.serviceGroupId,
     pipelineId: draft.pipelineId,
     changeType: draft.changeType,
     targetStageId: draft.targetStageId,
@@ -492,6 +499,13 @@ const ACTION_GROUP_STYLES: Record<AutomationActionGroupId | "APPOINTMENT", {
 const TRIGGER_GROUPS = [
   {
     id: "CONTACT",
+    label: "Service triggers",
+    description: "Start when an enrollment enters or completes a service step.",
+    icon: Zap,
+    triggers: ["SERVICE_STEP_ENTERED"],
+  },
+  {
+    id: "CONTACT",
     label: "Contact triggers",
     description: "Start when a contact, birthday, tag, note, or task changes.",
     icon: ContactRound,
@@ -519,6 +533,18 @@ const TRIGGER_DEFINITIONS: Record<AutomationBuilderTriggerType, {
   icon: LucideIcon
   group: "CONTACT" | "APPOINTMENT" | "OPPORTUNITY"
 }> = {
+  SERVICE_STEP_COMPLETED: {
+    label: "Step completed",
+    description: "When the selected step is completed. All matching workflows finish before advancing.",
+    icon: Zap,
+    group: "CONTACT",
+  },
+  SERVICE_STEP_ENTERED: {
+    label: "Step entered",
+    description: "When an enrollment enters the selected service step.",
+    icon: Zap,
+    group: "CONTACT",
+  },
   CONTACT_CREATED: {
     label: "Contact created",
     description: "When a new contact is added.",
@@ -2216,7 +2242,7 @@ function conditionDefaults(
 function defaultCondition(catalog: AutomationCatalog, triggerType?: AutomationBuilderTriggerType | null) {
   if (triggerType === "TASK_ADDED") return conditionDefaults("TASK_FIELD", catalog)
   if (triggerType === "APPOINTMENT_CREATED") return conditionDefaults("APPOINTMENT_FIELD", catalog)
-  if (triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_STATUS_CHANGED" || triggerType === "BIRTHDAY_REMINDER") return conditionDefaults("CONTACT_FIELD", catalog)
+  if ((triggerType === "SERVICE_STEP_ENTERED" || triggerType === "SERVICE_STEP_COMPLETED") || triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_STATUS_CHANGED" || triggerType === "BIRTHDAY_REMINDER") return conditionDefaults("CONTACT_FIELD", catalog)
   if (catalog.customFields.length > 0) return conditionDefaults("CONTACT_CUSTOM_FIELD", catalog)
   if (catalog.statuses.length > 0) return conditionDefaults("CONTACT_STATUS", catalog)
   if (catalog.users.length > 0) return conditionDefaults("CONTACT_ASSIGNEE", catalog)
@@ -2233,7 +2259,7 @@ function apiError(error: unknown) {
 function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   if (!draft.name.trim()) return "Enter an automation name."
   if (!draft.triggerType) return "Select a trigger."
-  if (draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "APPOINTMENT_STATUS_CHANGED" && draft.triggerType !== "BIRTHDAY_REMINDER" && !draft.pipelineId) return "Select a pipeline."
+  if ((draft.triggerType !== "SERVICE_STEP_ENTERED" && draft.triggerType !== "SERVICE_STEP_COMPLETED") && draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "APPOINTMENT_STATUS_CHANGED" && draft.triggerType !== "BIRTHDAY_REMINDER" && !draft.pipelineId) return "Select a pipeline."
   if (draft.triggerType === "BIRTHDAY_REMINDER" && !isAutomationTriggerReady(draft)) return "Choose a valid birthday reminder time."
   if (draft.triggerType === "APPOINTMENT_STATUS_CHANGED" && !isAutomationTriggerReady(draft)) return "Select an appointment status."
   if (draft.triggerType === "CONTACT_CHANGED" && !isAutomationTriggerReady(draft)) return "Complete at least one contact change rule."
@@ -2266,7 +2292,7 @@ function draftValidationMessage(draft: Draft, catalog: AutomationCatalog) {
   }
   if (draft.triggerType === "OPPORTUNITY_CHANGED" && !draft.changeType) return "Select a change to listen for."
   if (draft.triggerType === "OPPORTUNITY_CHANGED" && draft.changeType === "STAGE_ENTERED" && !draft.targetStageId) return "Select a stage."
-  if (draft.actions.length === 0) return "Add at least one action."
+  if (draft.actions.length === 0 && (draft.isEnabled || (draft.triggerType !== "SERVICE_STEP_ENTERED" && draft.triggerType !== "SERVICE_STEP_COMPLETED"))) return "Add at least one action."
   const allActions = flattenDraftActions(draft.actions)
   if (allActions.length > MAX_AUTOMATION_ACTION_NODES) {
     return `An automation can contain at most ${MAX_AUTOMATION_ACTION_NODES} action nodes across all branches.`
@@ -2332,6 +2358,7 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
 export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, timezone, libraryQuery = "view=grid", newFolderId }: AutomationFlowBuilderProps) {
   const router = useRouter()
   const libraryHref = `/app/${tenantSlug}/account-settings/automations?${libraryQuery}`
+  const [linkedServiceStep, setLinkedServiceStep] = useState<AutomationRecord["serviceStep"]>(null)
   const [catalog, setCatalog] = useState<AutomationCatalog | null>(null)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
   const [lastSavedDraft, setLastSavedDraft] = useState<Draft>(EMPTY_DRAFT)
@@ -2368,11 +2395,13 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
         setCatalog(nextCatalog)
         if (automationResponse) {
           const record = automationResponse.data.automation
+          setLinkedServiceStep(record.serviceStep ?? null)
           const hydratedTrigger = hydrateAutomationTrigger(record.trigger)
           const loadedDraft: Draft = {
             name: record.name,
             isEnabled: record.isEnabled,
             ...hydratedTrigger,
+            serviceGroupId: nextCatalog.serviceStepServices?.find((group) => group.id === record.serviceOffering?.parentServiceId || group.id === record.serviceStep?.serviceId || group.subServices.some((offering) => offering.id === record.serviceStep?.serviceId))?.id,
             birthdayLocalTime: hydratedTrigger.birthdayLocalTime ?? "09:00",
             appointmentTargetStatus: hydratedTrigger.appointmentTargetStatus ?? "",
             changes: hydratedTrigger.changes ?? [],
@@ -2748,6 +2777,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
         savedAutomation = data.automation
         router.replace(`/app/${tenantSlug}/account-settings/automations/${data.automation.id}?${libraryQuery}`)
       }
+      setLinkedServiceStep(savedAutomation.serviceStep ?? null)
       const persistedDraft = {
         ...submittedDraft,
         isEnabled: savedAutomation.isEnabled,
@@ -2778,6 +2808,10 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     }
 
     const nextPublished = !lastSavedDraft.isEnabled
+    if (nextPublished && !lastSavedDraft.actions.length) {
+      toast.error("Add and save an action before publishing this automation.")
+      return
+    }
     if (nextPublished && hasUnsavedChanges) {
       toast.error("Save the automation changes before publishing it.")
       return
@@ -2789,6 +2823,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
         `/api/account-settings/${tenantId}/automations/${automationId}`,
         automationPayload(lastSavedDraft, nextPublished),
       )
+      setLinkedServiceStep(data.automation.serviceStep ?? null)
       const persistedDraft = {
         ...lastSavedDraft,
         isEnabled: data.automation.isEnabled,
@@ -2830,9 +2865,9 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     <div className="flex h-[calc(100dvh-var(--tenant-shell-header-height))] max-h-[calc(100dvh-var(--tenant-shell-header-height))] min-h-0 flex-col gap-3 overflow-hidden bg-slate-50 p-3 md:p-4">
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
         <div className="flex min-w-0 items-center gap-3">
-          <Button asChild size="icon" variant="ghost"><Link href={libraryHref} aria-label="Back to automations"><ArrowLeft className="h-4 w-4" /></Link></Button>
+          <Button asChild size="icon" variant="ghost"><Link href={linkedServiceStep ? `/app/${tenantSlug}/account-settings/services/${linkedServiceStep.serviceId}?tab=steps` : libraryHref} aria-label={linkedServiceStep ? "Back to service" : "Back to automations"}><ArrowLeft className="h-4 w-4" /></Link></Button>
           <div className="min-w-0">
-            <p className="text-xs font-semibold text-cyan-700">Opportunity automation</p>
+            <p className="text-xs font-semibold text-cyan-700">{linkedServiceStep ? "Service step automation" : "Automation"}</p>
             <h1 className="truncate text-lg font-semibold text-slate-950">{draft.name || "Untitled automation"}</h1>
           </div>
           <button
@@ -3304,7 +3339,7 @@ function TriggerEditor({
       pipelineId: triggerType === "CONTACT_CREATED" || triggerType === "CONTACT_CHANGED" || triggerType === "CONTACT_TAG" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_CREATED" || triggerType === "APPOINTMENT_STATUS_CHANGED" || triggerType === "BIRTHDAY_REMINDER" ? "" : draft.pipelineId,
       changeType: "",
       targetStageId: "",
-      conditions: triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_STATUS_CHANGED" || triggerType === "BIRTHDAY_REMINDER"
+      conditions: triggerType === "SERVICE_STEP_ENTERED" || triggerType === "SERVICE_STEP_COMPLETED" || triggerType === "CONTACT_NOTE_ADDED" || triggerType === "TASK_COMPLETED" || triggerType === "APPOINTMENT_STATUS_CHANGED" || triggerType === "BIRTHDAY_REMINDER"
         ? draft.conditions.filter((condition) => ["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
         : triggerType === "TASK_ADDED"
           ? draft.conditions.filter((condition) => ["TASK_FIELD", "CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source))
@@ -3323,6 +3358,11 @@ function TriggerEditor({
     setIsChoosingTrigger(false)
   }
 
+  const serviceGroups = catalog.serviceStepServices ?? []
+  const selectedService = serviceGroups.find((service) => service.id === draft.serviceGroupId)
+  const selectedOffering = selectedService?.subServices.find((offering) => offering.id === draft.serviceOfferingId)
+  const sharedSteps = Array.from(new Map((selectedService?.subServices ?? []).flatMap((offering) => offering.steps).map((step) => [step.id, step])).values())
+  const availableSteps = selectedOffering?.steps ?? (draft.serviceOfferingId === null ? sharedSteps.filter((step) => step.id === draft.serviceStepId) : [])
   const selectedTrigger = draft.triggerType ? TRIGGER_DEFINITIONS[draft.triggerType] : null
   const SelectedTriggerIcon = selectedTrigger?.icon ?? Zap
 
@@ -3360,7 +3400,7 @@ function TriggerEditor({
             const GroupIcon = group.icon
             const groupStyle = ACTION_GROUP_STYLES[group.id]
             return (
-              <section key={group.id} className={cn("flex flex-col gap-2 rounded-xl border p-3", groupStyle.section)}>
+              <section key={group.label} className={cn("flex flex-col gap-2 rounded-xl border p-3", groupStyle.section)}>
                 <div className="flex items-start gap-2.5">
                   <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg ring-1", groupStyle.icon)}>
                     <GroupIcon aria-hidden="true" className="size-4" />
@@ -3392,7 +3432,7 @@ function TriggerEditor({
                           <TriggerIcon aria-hidden="true" className="size-4" />
                         </span>
                         <span className="min-w-0 text-left">
-                          <span className="block text-sm font-medium text-slate-900">{definition.label}</span>
+                          <span className="block text-sm font-medium text-slate-900">{value === "SERVICE_STEP_ENTERED" ? "Service step" : definition.label}</span>
                           <span className="mt-0.5 block text-xs font-normal leading-4 text-slate-500">{definition.description}</span>
                         </span>
                       </Button>
@@ -3421,6 +3461,42 @@ function TriggerEditor({
         </div>
       )}
 
+      {(draft.triggerType === "SERVICE_STEP_ENTERED" || draft.triggerType === "SERVICE_STEP_COMPLETED") ? (
+        <FieldGroup className="gap-3">
+          <Field>
+            <FieldLabel htmlFor="automation-service">Service</FieldLabel>
+            <Select value={draft.serviceGroupId ?? ""} onValueChange={(serviceGroupId) => onChange({ ...draft, serviceGroupId, serviceOfferingId: "", serviceStepId: "" })}>
+              <SelectTrigger id="automation-service"><SelectValue placeholder="Select a service" /></SelectTrigger>
+              <SelectContent>{serviceGroups.map((service) => <SelectItem key={service.id} value={service.id}>{service.name}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="automation-sub-service">Sub-service</FieldLabel>
+            <Select value={draft.serviceOfferingId === null ? "shared" : draft.serviceOfferingId || ""} disabled={!selectedService} onValueChange={(serviceOfferingId) => onChange({ ...draft, serviceOfferingId, serviceStepId: "" })}>
+              <SelectTrigger id="automation-sub-service"><SelectValue placeholder="Select a sub-service" /></SelectTrigger>
+              <SelectContent>
+                {draft.serviceOfferingId === null ? <SelectItem value="shared">All sub-services using this step</SelectItem> : null}
+                {selectedService?.subServices.map((offering) => <SelectItem key={offering.id} value={offering.id}>{offering.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="automation-service-step">Step</FieldLabel>
+            <Select value={draft.serviceStepId || ""} disabled={!selectedOffering && draft.serviceOfferingId !== null} onValueChange={(serviceStepId) => onChange({ ...draft, serviceStepId })}>
+              <SelectTrigger id="automation-service-step"><SelectValue placeholder="Select a step" /></SelectTrigger>
+              <SelectContent>{availableSteps.map((step) => <SelectItem key={step.id} value={step.id}>{step.title}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="automation-step-event">Step event</FieldLabel>
+            <Select value={draft.triggerType} onValueChange={(triggerType: "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED") => onChange({ ...draft, triggerType })}>
+              <SelectTrigger id="automation-step-event"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="SERVICE_STEP_ENTERED">Entry step</SelectItem><SelectItem value="SERVICE_STEP_COMPLETED">Completed step</SelectItem></SelectContent>
+            </Select>
+            <FieldDescription>{draft.triggerType === "SERVICE_STEP_COMPLETED" ? "The next step starts after every matching completion automation finishes." : "Every matching automation runs when an enrollment enters this step."}</FieldDescription>
+          </Field>
+        </FieldGroup>
+      ) : null}
       {draft.triggerType && !isChoosingTrigger ? (
         <>
           {draft.triggerType === "CONTACT_CHANGED" ? <>
@@ -3507,7 +3583,7 @@ function TriggerEditor({
             </FieldGroup>
           </> : null}
 
-          {draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "APPOINTMENT_STATUS_CHANGED" && draft.triggerType !== "BIRTHDAY_REMINDER" ? <>
+          {(draft.triggerType !== "SERVICE_STEP_ENTERED" && draft.triggerType !== "SERVICE_STEP_COMPLETED") && draft.triggerType !== "CONTACT_CREATED" && draft.triggerType !== "CONTACT_CHANGED" && draft.triggerType !== "CONTACT_TAG" && draft.triggerType !== "CONTACT_NOTE_ADDED" && draft.triggerType !== "TASK_ADDED" && draft.triggerType !== "TASK_COMPLETED" && draft.triggerType !== "APPOINTMENT_CREATED" && draft.triggerType !== "APPOINTMENT_STATUS_CHANGED" && draft.triggerType !== "BIRTHDAY_REMINDER" ? <>
           <Separator />
           <section>
             <FieldGroup className="gap-3">
@@ -3846,10 +3922,10 @@ function ConditionCard({
             {triggerType === "APPOINTMENT_CREATED" ? <SelectItem value="APPOINTMENT_FIELD">Appointment field</SelectItem> : null}
             <SelectItem value="CONTACT_FIELD">Contact field</SelectItem>
             <SelectItem value="CONTACT_CUSTOM_FIELD" disabled={catalog.customFields.length === 0}>Custom field</SelectItem>
-            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem> : null}
-            {triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem> : null}
+            {(triggerType !== "SERVICE_STEP_ENTERED" && triggerType !== "SERVICE_STEP_COMPLETED") && triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_STATUS" disabled={catalog.statuses.length === 0}>Contact status</SelectItem> : null}
+            {(triggerType !== "SERVICE_STEP_ENTERED" && triggerType !== "SERVICE_STEP_COMPLETED") && triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="CONTACT_ASSIGNEE" disabled={catalog.users.length === 0}>Assigned to</SelectItem> : null}
             <SelectItem value="CONTACT_TAGS" disabled={catalog.tags.length === 0}>Tags</SelectItem>
-            {triggerType !== "CONTACT_CREATED" && triggerType !== "CONTACT_CHANGED" && triggerType !== "CONTACT_TAG" && triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
+            {(triggerType !== "SERVICE_STEP_ENTERED" && triggerType !== "SERVICE_STEP_COMPLETED") && triggerType !== "CONTACT_CREATED" && triggerType !== "CONTACT_CHANGED" && triggerType !== "CONTACT_TAG" && triggerType !== "CONTACT_NOTE_ADDED" && triggerType !== "TASK_ADDED" && triggerType !== "TASK_COMPLETED" && triggerType !== "APPOINTMENT_CREATED" && triggerType !== "APPOINTMENT_STATUS_CHANGED" && triggerType !== "BIRTHDAY_REMINDER" ? <SelectItem value="OPPORTUNITY_VALUE">Opportunity value</SelectItem> : null}
           </SelectContent>
         </Select>
       </div>

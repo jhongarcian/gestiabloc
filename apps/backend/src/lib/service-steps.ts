@@ -1,3 +1,7 @@
+import {
+  ensureServiceStepAutomationsTx,
+  serviceStepAutomationSelect,
+} from "./service-step-automations.js"
 import { z } from "zod"
 import { Prisma } from "../generated/prisma/index.js"
 import {
@@ -24,6 +28,7 @@ export const ServiceStepUpdateSchema = stepFields
   .extend({ id: z.string().uuid().optional() })
   .refine(withinLimit, durationError)
 export const serviceStepSelect = {
+  automations: serviceStepAutomationSelect,
   id: true,
   title: true,
   instructions: true,
@@ -66,6 +71,7 @@ export async function saveServiceStepsTx(
     if (step.id) await tx.serviceStep.update({ where: { id: step.id, tenantId, serviceId }, data })
     else await tx.serviceStep.create({ data: { tenantId, serviceId, ...data } })
   }
+  await ensureServiceStepAutomationsTx(tx, tenantId, serviceId)
 }
 
 export const enrolledServiceStepsSelect = {
@@ -73,7 +79,7 @@ export const enrolledServiceStepsSelect = {
   include: { occurrences: { orderBy: [{ occurrenceNumber: "asc" }] } },
 } satisfies Prisma.ContactService$serviceStepsArgs
 
-// This is the entry primitive for the upcoming automation/progression chunks.
+// Entry and its automation event commit together under the enrollment lock.
 // A revisit creates another occurrence; it never rewrites the previous entry.
 export async function createServiceStepOccurrenceTx(
   tx: Prisma.TransactionClient,
@@ -124,7 +130,7 @@ export async function createServiceStepOccurrenceTx(
     where: { tenantId, stepId },
     _max: { occurrenceNumber: true },
   })
-  return tx.serviceStepOccurrence.create({
+  const occurrence = await tx.serviceStepOccurrence.create({
     data: {
       tenantId,
       contactServiceId,
@@ -136,4 +142,24 @@ export async function createServiceStepOccurrenceTx(
       enteredByUserId: input.enteredByUserId ?? null,
     },
   })
+  const { queueServiceStepEnteredAutomationEvent } = await import("./automation-event-queue.js")
+  const { resolveAutomationServiceContextTx } = await import("./automation-service-context.js")
+  const enrollment = await tx.contactService.findFirstOrThrow({
+    where: { tenantId, id: contactServiceId },
+    select: { contactId: true },
+  })
+  const serviceContext = await resolveAutomationServiceContextTx(tx, {
+    tenantId,
+    contactId: enrollment.contactId,
+    contactServiceId,
+    contactServiceStepId: stepId,
+    serviceStepOccurrenceId: occurrence.id,
+  })
+  await queueServiceStepEnteredAutomationEvent(tx, {
+    tenantId,
+    contactId: enrollment.contactId,
+    actorUserId: input.enteredByUserId ?? null,
+    serviceContext,
+  })
+  return occurrence
 }

@@ -295,6 +295,8 @@ enum OpportunityResult {
 }
 
 enum AutomationTriggerType {
+  SERVICE_STEP_ENTERED
+  SERVICE_STEP_COMPLETED
   CONTACT_CREATED
   CONTACT_CHANGED
   CONTACT_TAG
@@ -441,6 +443,8 @@ enum AutomationRunStatus {
 }
 
 enum AutomationNodeEventSource {
+  SERVICE_STEP_ENTERED
+  SERVICE_STEP_COMPLETED
   MANUAL_ENROLLMENT
   CONTACT_CREATED
   CONTACT_CHANGED
@@ -805,6 +809,7 @@ model Service {
   followUpTemplateSteps ServiceFollowUpTemplateStep[]
   professionals         ServiceProfessional[]
   steps                 ServiceStep[]
+  stepAutomations       Automation[] @relation("ServiceOfferingAutomations")
   contactServices       ContactService[]
   appointments          Appointment[]
 
@@ -835,6 +840,7 @@ model ServiceStep {
 
   @@unique([tenantId, id])
   @@index([tenantId, serviceId, archivedAt, sortOrder], map: "ServiceStep_configuration_idx")
+  automations Automation[]
 }
 
 model ServiceChecklistItem {
@@ -1000,6 +1006,7 @@ model ContactService {
   payments                ContactServicePayment[]
   followUpSteps           ContactServiceFollowUpStep[]
   serviceSteps            ContactServiceStep[]
+  stepMovements ServiceStepMovement[]
   checklistItems          ContactServiceChecklistItem[]
   checklistActivities     ContactServiceChecklistActivity[]
   serviceNotes            ContactServiceNote[]
@@ -1040,6 +1047,15 @@ model ContactServiceStep {
   @@index([tenantId, contactServiceId, sortOrder])
 }
 
+enum ServiceStepProgressionStatus {
+  NONE
+  WAITING_AUTOMATION
+  PAUSED
+  SUPERSEDED
+  ADVANCED
+  FINISHED
+}
+
 model ServiceStepOccurrence {
   id                 String                      @id @default(uuid())
   tenantId           String
@@ -1052,7 +1068,13 @@ model ServiceStepOccurrence {
   dueAt              DateTime
   resolvedAt         DateTime?
   resolutionReason   String?
+  supersededAt       DateTime?
   enteredByUserId    String?
+  completedByUserId  String?
+  completionEventId  String? @unique
+  progressionStatus  ServiceStepProgressionStatus @default(NONE)
+  progressionMessage String?
+  advancedAt         DateTime?
   step               ContactServiceStep @relation(fields: [tenantId, contactServiceId, stepId], references: [tenantId, contactServiceId, id], onDelete: Cascade)
   createdAt          DateTime @default(now())
 
@@ -1060,6 +1082,29 @@ model ServiceStepOccurrence {
   @@unique([tenantId, stepId, occurrenceNumber])
   @@index([tenantId, contactServiceId, status])
   @@index([tenantId, status, dueAt])
+}
+
+model ServiceStepMovement {
+  id String @id @default(uuid())
+  tenantId String
+  contactServiceId String
+  requestId String
+  kind String
+  fromOccurrenceId String
+  fromStepId String
+  fromStepTitle String
+  toOccurrenceId String?
+  toStepId String?
+  toStepTitle String?
+  skippedStepIds String[] @default([])
+  reason String
+  actorUserId String
+  actorName String
+  createdAt DateTime @default(now())
+  contactService ContactService @relation(fields: [tenantId, contactServiceId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, contactServiceId, requestId])
+  @@index([tenantId, contactServiceId, createdAt])
 }
 
 model ContactServiceChecklistItem {
@@ -1624,6 +1669,10 @@ model Automation {
   tenantId      String
   name          String
   isEnabled     Boolean               @default(false)
+  serviceStepId String?
+  serviceOfferingId String?
+  serviceOffering Service? @relation("ServiceOfferingAutomations", fields: [tenantId, serviceOfferingId], references: [tenantId, id], onDelete: Restrict)
+  serviceStep ServiceStep? @relation(fields: [tenantId, serviceStepId], references: [tenantId, id], onDelete: Cascade)
   triggerType   AutomationTriggerType
   birthdayLocalTime String?
   appointmentTargetStatus AppointmentStatus?
@@ -1659,6 +1708,7 @@ model Automation {
   @@index([tenantId, targetStageId])
   @@index([tenantId, targetResult])
   @@index([tenantId, folderId, librarySortOrder])
+  @@index([tenantId, serviceStepId, triggerType, serviceOfferingId], map: "Automation_tenantId_serviceStepId_triggerType_serviceOffering_i")
 }
 
 model AutomationContactChangeRule {
@@ -1766,6 +1816,7 @@ model AutomationExecution {
   triggerType    AutomationTriggerType
   status         AutomationExecutionStatus
   opportunityId  String?
+  serviceContext Json?
   contactId      String?
   sourceStageId  String?
   targetStageId  String?
@@ -1801,6 +1852,7 @@ model AutomationNodeExecution {
   actorUserId    String?
   processId      String?
   opportunityId  String?
+  serviceContext Json?
   attemptId      String
   eventSource    AutomationNodeEventSource
   nodeKind       AutomationNodeKind
@@ -1838,6 +1890,7 @@ model AutomationRun {
   contactName            String
   actorUserId            String?
   opportunityId          String?
+  serviceContext Json?
   attemptId              String
   dispatchId             String?                   @unique
   causationKey           String?                   @unique
@@ -1893,6 +1946,7 @@ model AutomationEvent {
   contactId             String?
   contactName           String
   opportunityId         String?
+  serviceContext Json?
   opportunitySnapshotId String?
   taskId                String?
   taskSnapshot          Json?
