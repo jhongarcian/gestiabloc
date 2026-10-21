@@ -5566,7 +5566,12 @@ describe("resumeDueAutomationRuns", () => {
         statusConfigId: "inactive",
       },
     ]
+    let admissionReads = 0
+    const leases = { deleteMany: async () => ({ count: 1 }), count: async () => 0, create: async () => ({}) }
     const transaction = {
+      $queryRaw: async () => ++admissionReads === 2 ? [{ id: "run-1", tenantId: "tenant-1", actorUserId: "user-1", scopeKey: "tenant-1:contact:contact-1" }] : [],
+      automationExecutionLease: leases,
+      automationExecutionTenant: { upsert: async () => ({}) },
       automationRun: {
         findFirst: async () => ({
           id: "run-1",
@@ -5593,6 +5598,7 @@ describe("resumeDueAutomationRuns", () => {
         }),
         update: async ({ data }: { data: { status: string; variables?: Record<string, unknown> } }) => {
           runStatus = data.status
+          if ("leaseToken" in data) leaseToken = String(data.leaseToken)
           runVariables = data.variables ?? runVariables
         },
       },
@@ -5624,6 +5630,7 @@ describe("resumeDueAutomationRuns", () => {
       automationExecution: { create: async () => { summaryCount += 1 } },
     }
     const prismaClient = {
+      automationExecutionLease: leases,
       automationRun: {
         findMany: async () => [{ id: "run-1" }],
         updateMany: async ({ data }: { data: { leaseToken: string } }) => {

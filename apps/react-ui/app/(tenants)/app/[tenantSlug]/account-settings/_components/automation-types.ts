@@ -1,3 +1,4 @@
+import type { ServiceActionConfig, ServiceActionOffering, ServiceActionOptions, ServiceActionType } from "@/lib/service-automation-action"
 export type AutomationTriggerType = "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
 export type AppointmentAutomationStatus = "SCHEDULED" | "CONFIRMED" | "SHOW" | "NO_SHOW" | "CANCELED" | "COMPLETED"
 
@@ -429,6 +430,8 @@ export type AutomationAction = {
     | "DELETE_OPPORTUNITY"
     | "WAIT"
     | "DELETE_CONTACT"
+    | ServiceActionType
+  serviceConfig?: ServiceActionConfig | null
   customFieldUpdates?: AutomationFieldUpdate[] | null
   statusConfigId?: string | null
   assignedUserId?: string | null
@@ -504,6 +507,8 @@ export type AutomationFolder = {
 }
 
 export type AutomationCatalog = {
+  serviceActionOfferings?: ServiceActionOffering[]
+  serviceActionOptions?: ServiceActionOptions
   pipelines: Array<{
     id: string
     name: string

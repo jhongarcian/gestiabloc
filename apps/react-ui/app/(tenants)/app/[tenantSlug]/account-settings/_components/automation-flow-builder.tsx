@@ -1,5 +1,8 @@
 "use client"
 
+import { isServiceAutomationAction, SERVICE_ACTION_LABELS, serviceActionPickerOptions, serviceActionReady, terminalServiceAction } from "@/lib/service-automation-action"
+import { ServiceActionEditor } from "./service-action-editor"
+
 import "@xyflow/react/dist/style.css"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
@@ -424,7 +427,7 @@ function contactFieldOperators(fieldType: AutomationCatalog["templateFields"]["c
 }
 const VALUELESS_OPERATORS = new Set<AutomationOperator>(["IS_EMPTY", "IS_NOT_EMPTY", "IS_TRUE", "IS_FALSE"])
 
-type AutomationActionGroupId = "INTERNAL" | "OPPORTUNITY" | "CONTACT" | "COMMUNICATION"
+type AutomationActionGroupId = "SERVICE" | "INTERNAL" | "OPPORTUNITY" | "CONTACT" | "COMMUNICATION"
 
 const ACTION_GROUPS: ReadonlyArray<{
   id: AutomationActionGroupId
@@ -432,6 +435,7 @@ const ACTION_GROUPS: ReadonlyArray<{
   description: string
   icon: LucideIcon
 }> = [
+  { id: "SERVICE", label: "Service actions", description: "Update the enrollment and step that started this workflow.", icon: Workflow },
   {
     id: "INTERNAL",
     label: "Internal actions",
@@ -464,6 +468,7 @@ const ACTION_GROUP_STYLES: Record<AutomationActionGroupId | "APPOINTMENT", {
   actionIcon: string
   actionHover: string
 }> = {
+  SERVICE: { section: "border-slate-200 bg-white", icon: "bg-slate-50 text-teal-700 ring-slate-200", actionIcon: "bg-slate-50 text-teal-700", actionHover: "hover:border-slate-300 hover:bg-slate-50" },
   INTERNAL: {
     section: "border-slate-200 bg-white",
     icon: "bg-slate-50 text-violet-700 ring-slate-200",
@@ -614,6 +619,15 @@ const TRIGGER_DEFINITIONS: Record<AutomationBuilderTriggerType, {
 }
 
 const ACTION_DEFINITIONS = {
+  MOVE_SERVICE_STEP: { label: SERVICE_ACTION_LABELS.MOVE_SERVICE_STEP, description: "Move to step for the triggering enrollment.", group: "SERVICE", order: 0, icon: Workflow },
+  COMPLETE_SERVICE_STEP: { label: SERVICE_ACTION_LABELS.COMPLETE_SERVICE_STEP, description: "Complete step for the triggering enrollment.", group: "SERVICE", order: 1, icon: Workflow },
+  SKIP_SERVICE_STEP: { label: SERVICE_ACTION_LABELS.SKIP_SERVICE_STEP, description: "Skip step for the triggering enrollment.", group: "SERVICE", order: 2, icon: Workflow },
+  SCHEDULE_SERVICE_STEP: { label: SERVICE_ACTION_LABELS.SCHEDULE_SERVICE_STEP, description: "Schedule step for the triggering enrollment.", group: "SERVICE", order: 3, icon: Workflow },
+  SET_SERVICE_STEP_OWNER: { label: SERVICE_ACTION_LABELS.SET_SERVICE_STEP_OWNER, description: "Assign step owner for the triggering enrollment.", group: "SERVICE", order: 4, icon: Workflow },
+  SET_SERVICE_COORDINATOR: { label: SERVICE_ACTION_LABELS.SET_SERVICE_COORDINATOR, description: "Assign coordinator for the triggering enrollment.", group: "SERVICE", order: 5, icon: Workflow },
+  SET_SERVICE_PROFESSIONAL: { label: SERVICE_ACTION_LABELS.SET_SERVICE_PROFESSIONAL, description: "Assign professional for the triggering enrollment.", group: "SERVICE", order: 6, icon: Workflow },
+  SET_SERVICE_CHECKLIST_STATUS: { label: SERVICE_ACTION_LABELS.SET_SERVICE_CHECKLIST_STATUS, description: "Update checklist item for the triggering enrollment.", group: "SERVICE", order: 7, icon: Workflow },
+  SET_SERVICE_STATUS: { label: SERVICE_ACTION_LABELS.SET_SERVICE_STATUS, description: "Change service status for the triggering enrollment.", group: "SERVICE", order: 8, icon: Workflow },
   WAIT: {
     label: "Wait",
     description: "Pause the contact before the next action.",
@@ -801,12 +815,12 @@ const ACTION_LABELS = Object.fromEntries(
   Object.entries(ACTION_DEFINITIONS).map(([type, definition]) => [type, definition.label]),
 ) as Record<AutomationAction["type"], string>
 
-function actionsForGroup(groupId: AutomationActionGroupId) {
+function actionsForGroup(groupId: AutomationActionGroupId, triggerType?: AutomationBuilderTriggerType | null) {
   return (Object.entries(ACTION_DEFINITIONS) as Array<[
     AutomationAction["type"],
     (typeof ACTION_DEFINITIONS)[AutomationAction["type"]],
   ]>)
-    .filter(([, definition]) => definition.group === groupId)
+    .filter(([, definition]) => definition.group === groupId && (groupId !== "SERVICE" || triggerType?.startsWith("SERVICE_STEP_")))
     .sort((left, right) => left[1].order - right[1].order)
 }
 
@@ -1341,6 +1355,14 @@ function actionDefaults(
   triggerType?: AutomationBuilderTriggerType | null,
 ): AutomationAction {
   const nodeKey = existingNodeKey ?? crypto.randomUUID()
+  if (isServiceAutomationAction(type)) return { nodeKey, type, serviceConfig:
+    type === "SCHEDULE_SERVICE_STEP" ? { schedule: { mode: "DURATION", amount: 1, unit: "DAYS" } } :
+    type === "SET_SERVICE_CHECKLIST_STATUS" ? { checklistItemId: "", status: "NOT_RECEIVED" } :
+    type === "SET_SERVICE_STATUS" ? { status: "IN_PROGRESS" } :
+    type === "MOVE_SERVICE_STEP" ? { targetSourceStepId: "", reason: "" } :
+    type === "SKIP_SERVICE_STEP" ? { reason: "" } :
+    type === "SET_SERVICE_PROFESSIONAL" ? { professionalId: null } :
+    type === "SET_SERVICE_STEP_OWNER" || type === "SET_SERVICE_COORDINATOR" ? { assignedToUserId: null } : {} }
   if (type === "CREATE_CONTACT") {
     const defaultStatus = catalog.statuses.find((status) => status.name === "Active") ?? catalog.statuses[0]
     return {
@@ -1981,6 +2003,7 @@ function isActionReady(
   triggerType?: AutomationBuilderTriggerType | null,
 ) {
   if (!action) return false
+  if (isServiceAutomationAction(action.type)) return serviceActionReady(action, catalog.serviceActionOptions ?? { steps: [], checklistItems: [], professionals: [] }, triggerType) && (!terminalServiceAction(action) || targetActions.length === 0)
   const availableOutputs = formatterOutputs(previousActions)
   if (action.type === "CREATE_CONTACT") {
     return Boolean(
@@ -2359,8 +2382,9 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
   const router = useRouter()
   const libraryHref = `/app/${tenantSlug}/account-settings/automations?${libraryQuery}`
   const [linkedServiceStep, setLinkedServiceStep] = useState<AutomationRecord["serviceStep"]>(null)
-  const [catalog, setCatalog] = useState<AutomationCatalog | null>(null)
+  const [rawCatalog, setCatalog] = useState<AutomationCatalog | null>(null)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
+  const catalog = useMemo(() => rawCatalog ? { ...rawCatalog, serviceActionOptions: serviceActionPickerOptions(rawCatalog.serviceActionOfferings ?? [], draft.serviceStepId, draft.serviceOfferingId) } : null, [rawCatalog, draft.serviceStepId, draft.serviceOfferingId])
   const [lastSavedDraft, setLastSavedDraft] = useState<Draft>(EMPTY_DRAFT)
   const [selected, setSelected] = useState<SelectedPanel | null>(null)
   const [pendingAction, setPendingAction] = useState<AutomationAction | null>(null)
@@ -4240,7 +4264,7 @@ function NewActionEditor({
       </div>
       <div className="flex flex-col gap-3">
         {ACTION_GROUPS.map((group) => {
-          const actions = actionsForGroup(group.id)
+          const actions = actionsForGroup(group.id, triggerType)
           if (actions.length === 0) return null
           const GroupIcon = group.icon
           const groupStyle = ACTION_GROUP_STYLES[group.id]
@@ -4364,7 +4388,7 @@ function ActionEditor({
               <SelectTrigger id="action-type" className={COMPACT_SELECT_TRIGGER_CLASS}><SelectValue /></SelectTrigger>
               <SelectContent>
                 {ACTION_GROUPS.map((group) => {
-                  const actions = actionsForGroup(group.id)
+                  const actions = actionsForGroup(group.id, triggerType)
                   if (actions.length === 0) return null
                   return (
                     <SelectGroup key={group.id}>
@@ -4393,6 +4417,8 @@ function ActionEditor({
             </Select>
           </Field>
         ) : null}
+
+        {isServiceAutomationAction(action.type) ? <ServiceActionEditor action={action} catalog={catalog} onChange={onChange} timezone={timezone} /> : null}
 
         {action.type === "CREATE_CONTACT" && action.createContactConfig ? (
           <CreateContactActionEditor

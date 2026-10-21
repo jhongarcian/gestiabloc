@@ -103,6 +103,10 @@ async function advanceTx(
       entryKey: `after:${current.id}`,
       enteredAt: now,
       enteredByUserId: current.completedByUserId,
+      automationChain: current.completionEventId ? await (async () => {
+        const event = await tx.automationEvent.findUnique({ where: { id: current.completionEventId! } })
+        return event ? { chainId: event.chainId, parentEventId: event.id, chainDepth: event.chainDepth + 1 } : undefined
+      })() : undefined,
     })
   }
   const updated = await tx.serviceStepOccurrence.update({
@@ -123,7 +127,8 @@ export async function completeServiceStepOccurrenceTx(
     tenantId: string
     contactServiceId: string
     occurrenceId: string
-    actorUserId: string
+    actorUserId: string | null
+    automationChain?: import("./service-automation-actions.js").ServiceActionChain
     occurredAt?: Date
   },
 ) {
@@ -154,6 +159,7 @@ export async function completeServiceStepOccurrenceTx(
     tenantId,
     contactId: enrollment.contactId,
     actorUserId: input.actorUserId,
+    ...input.automationChain,
     serviceContext: context,
   })
   const completed = await tx.serviceStepOccurrence.update({

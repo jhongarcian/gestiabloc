@@ -49,7 +49,7 @@ export function buildContactServiceChecklistActivityData(input: {
   itemLabel: string
   previousStatus: ContactServiceChecklistStatus
   status: ContactServiceChecklistStatus
-  actorUserId: string
+  actorUserId: string | null
 }) {
   return { ...input }
 }

@@ -349,6 +349,15 @@ enum AutomationChangeOperator {
 }
 
 enum AutomationActionType {
+  MOVE_SERVICE_STEP
+  COMPLETE_SERVICE_STEP
+  SKIP_SERVICE_STEP
+  SCHEDULE_SERVICE_STEP
+  SET_SERVICE_STEP_OWNER
+  SET_SERVICE_COORDINATOR
+  SET_SERVICE_PROFESSIONAL
+  SET_SERVICE_CHECKLIST_STATUS
+  SET_SERVICE_STATUS
   UPDATE_CONTACT_CUSTOM_FIELDS
   SET_CONTACT_CUSTOM_FIELD
   CLEAR_CONTACT_CUSTOM_FIELD
@@ -484,6 +493,7 @@ enum AutomationProcessContactStatus {
 }
 
 model User {
+  serviceStepAssignments ContactServiceStep[] @relation("ServiceStepOwner")
   id           String       @id @default(uuid())
   email        String       @unique
   name         String
@@ -637,6 +647,9 @@ model PasswordResetToken {
 }
 
 model Tenant {
+  serviceActionResults ServiceAutomationActionResult[]
+  automationExecutionLeases AutomationExecutionLease[]
+  automationExecutionTenant AutomationExecutionTenant?
   id                                   String                         @id @default(uuid())
   name                                 String
   slug                                 String                         @unique
@@ -1029,6 +1042,8 @@ model ContactService {
 }
 
 model ContactServiceStep {
+  assignedToUserId String?
+  assignedTo User? @relation("ServiceStepOwner", fields: [assignedToUserId], references: [id], onDelete: SetNull)
   id                 String              @id @default(uuid())
   tenantId           String
   contactServiceId   String
@@ -1045,6 +1060,7 @@ model ContactServiceStep {
   @@unique([tenantId, contactServiceId, id])
   @@unique([tenantId, contactServiceId, sourceStepId])
   @@index([tenantId, contactServiceId, sortOrder])
+  @@index([tenantId, assignedToUserId], map: "ContactServiceStep_owner_idx")
 }
 
 enum ServiceStepProgressionStatus {
@@ -1066,6 +1082,10 @@ model ServiceStepOccurrence {
   status             ServiceStepOccurrenceStatus @default(ACTIVE)
   enteredAt          DateTime
   dueAt              DateTime
+  defaultDueAt       DateTime
+  deadlineOverride   Json?
+  deadlineRevision   Int @default(0)
+  deadlineChanges    ServiceStepDeadlineChange[]
   resolvedAt         DateTime?
   resolutionReason   String?
   supersededAt       DateTime?
@@ -1078,13 +1098,37 @@ model ServiceStepOccurrence {
   step               ContactServiceStep @relation(fields: [tenantId, contactServiceId, stepId], references: [tenantId, contactServiceId, id], onDelete: Cascade)
   createdAt          DateTime @default(now())
 
+  @@unique([tenantId, contactServiceId, id])
   @@unique([tenantId, contactServiceId, entryKey])
   @@unique([tenantId, stepId, occurrenceNumber])
   @@index([tenantId, contactServiceId, status])
   @@index([tenantId, status, dueAt])
 }
 
+model ServiceStepDeadlineChange {
+  automationSource Json?
+  id String @id @default(uuid())
+  tenantId String
+  contactServiceId String
+  occurrenceId String
+  requestId String
+  previousDueAt DateTime
+  dueAt DateTime
+  previousSchedule Json
+  schedule Json
+  previousRevision Int
+  revision Int
+  actorUserId String?
+  actorName String
+  createdAt DateTime @default(now())
+  occurrence ServiceStepOccurrence @relation(fields: [tenantId, contactServiceId, occurrenceId], references: [tenantId, contactServiceId, id], onDelete: Cascade, map: "ServiceStepDeadlineChange_occurrence_fkey")
+
+  @@unique([tenantId, occurrenceId, requestId])
+  @@index([tenantId, occurrenceId, revision])
+}
+
 model ServiceStepMovement {
+  automationSource Json?
   id String @id @default(uuid())
   tenantId String
   contactServiceId String
@@ -1098,7 +1142,7 @@ model ServiceStepMovement {
   toStepTitle String?
   skippedStepIds String[] @default([])
   reason String
-  actorUserId String
+  actorUserId String?
   actorName String
   createdAt DateTime @default(now())
   contactService ContactService @relation(fields: [tenantId, contactServiceId], references: [tenantId, id], onDelete: Cascade)
@@ -1762,6 +1806,7 @@ model AutomationCondition {
 }
 
 model AutomationAction {
+  serviceConfig Json?
   id                         String               @id @default(uuid())
   tenantId                   String
   automationId               String
@@ -1882,6 +1927,8 @@ model AutomationNodeExecution {
 }
 
 model AutomationRun {
+  availableAt DateTime @default(now())
+  retryCount Int @default(0)
   id                     String                    @id @default(uuid())
   tenantId               String
   automationId           String?
@@ -1937,6 +1984,7 @@ model AutomationRun {
   @@index([tenantId, automationId, status, waitingNodeKey, resumeAt], map: "AutomationRun_wait_monitoring_idx")
   @@index([tenantId, contactId, createdAt])
   @@index([status, resumeAt, leaseExpiresAt])
+  @@index([status, availableAt, updatedAt], map: "AutomationRun_available_claim_idx")
   @@index([status, createdAt, leaseExpiresAt], map: "AutomationRun_queue_claim_idx")
 }
 
@@ -2684,4 +2732,39 @@ model ContactNoteAttachment {
   @@unique([tenantId, noteId, fileId])
   @@index([tenantId, noteId])
   @@index([tenantId, fileId])
+}
+
+
+model ServiceAutomationActionResult {
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id String @id @default(uuid())
+  tenantId String
+  runId String
+  nodeKey String
+  contactServiceId String
+  occurrenceId String?
+  result Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, runId, nodeKey])
+  @@index([tenantId, contactServiceId, createdAt], map: "ServiceActionResult_enrollment_created_idx")
+}
+
+model AutomationExecutionLease {
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kind String
+  jobId String
+  tenantId String
+  scopeKey String
+  leaseToken String
+  expiresAt DateTime
+  @@id([kind, jobId])
+  @@unique([scopeKey])
+  @@index([expiresAt])
+  @@index([tenantId, expiresAt])
+}
+
+model AutomationExecutionTenant {
+  tenantId String @id
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lastAdmittedAt DateTime
 }

@@ -1,8 +1,8 @@
-Status: Chunks 1–13 implemented. Chunk 14 is next.
+Status: Chunks 1–15 implemented. Chunk 16 is next.
 
 # Build the transition in small, reviewable chunks
 
-Keep each chunk focused on one behavior, include its relevant tests, and finish its acceptance check before moving on. **Next: Chunk 14.**
+Keep each chunk focused on one behavior, include its relevant tests, and finish its acceptance check before moving on. **Next: Chunk 16.**
 
 The agreed direction stays the same: parent services group enrollable sub-services; configuration inherits by section; Automations handles actions; active enrollments receive reviewed updates. No customer-data backfill is needed.
 
@@ -117,10 +117,28 @@ and revisiting pending-payment work cannot be completed by a later payment while
 ### 14. Add contact-specific scheduling
 Start each step’s timeframe on entry. Allow staff to change its deadline using a duration or date/time and restore the default.
 
+**Implemented:** Every entry freezes its default deadline. Staff can set a duration from entry or a
+fixed date/time in the tenant's time zone and restore that saved default. Overrides and audit history
+belong to one occurrence; other contacts, later steps, service configuration and automation waits are
+unchanged. Completion, skips and moves preserve earlier deadlines, while revisits start a new default.
+Enrollment locks, revision checks and idempotent requests reject stale edits. Regression coverage
+includes 20-day isolation, configuration edits/archival, offset dates, restoration, revisits, automation
+waits, permissions, concurrent edits/movement, rollback and exact migration backfill.
+
 **Done when:** Changing one contact’s step to 20 days leaves other contacts and later steps unchanged.
 
 ### 15. Add urgency to the follow-up queue
 Show remaining time, overdue status, and a warning during the final 25% of the effective timeframe. Separate scheduled work from actionable work.
+
+**Implemented:** The follow-up queue includes service-owned steps alongside existing template work.
+Latest saved occurrences supply actionable deadlines; completion automation gates are Scheduled and
+paused progression is Needs attention. Finished work remains separate, including unpaid enrollments.
+Remaining time, overdue badges and a final-25% warning use the effective entry-to-deadline timeframe.
+Most urgent ordering and all date/queue filters apply before pagination. Overrides/restores are read
+on every request; focus/visibility refresh and a 30-second visible-page refresh keep the queue current.
+Revisits use their fresh entry, superseded history cannot determine urgency, and unentered steps never
+inherit a deadline. Regression checks cover boundaries, cross-page reorder, waits, paused progression,
+legacy work, moves, revisits, completion, cancellation, filters and tenant access.
 
 **Done when:** Deadline changes immediately update ordering and urgency; unentered steps never appear overdue.
 

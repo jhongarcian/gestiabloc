@@ -1,3 +1,4 @@
+import { transientAutomationFailure } from "./automation-execution-budget.js"
 import { lockServiceStepRuntimeTx } from "./service-step-runtime.js"
 import { settleServiceStepCompletionEventTx } from "./service-step-progression.js"
 import { randomUUID } from "node:crypto"
@@ -861,7 +862,7 @@ export async function claimQueuedAutomationDispatch(
   return claimed.count === 1
 }
 
-async function processDispatch(prismaClient: any, eventId: string, dispatchId: string) {
+async function processDispatch(prismaClient: any, eventId: string, dispatchId: string, leaseToken: string) {
   const transactionStartedAt = Date.now()
   const result = await prismaClient.$transaction(async (prismaTx: any) => {
     const dispatch = await prismaTx.automationDispatch.findUnique({
@@ -878,6 +879,11 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
       await prismaTx.automationDispatch.updateMany({ where: { id: dispatch.id, status: { in: ["QUEUED", "PROCESSING"] } }, data: { status: "CANCELED", completedAt: new Date(), errorCode: "SERVICE_STEP_MOVED", errorMessage: "The enrollment moved to another step." } })
       await prismaTx.automationNodeExecution.updateMany({ where: { id: dispatch.triggerExecutionId, status: "QUEUED" }, data: { status: "SKIPPED", reasonCode: "SERVICE_STEP_MOVED", details: "The enrollment moved to another step." } })
       return { terminal: true, contactDeleted: false, queuedRunCount: 0 }
+    }
+    if (typeof prismaTx.$queryRaw === "function") {
+      await prismaTx.$queryRaw(Prisma.sql`SELECT id FROM "AutomationEvent" WHERE id=${eventId} FOR UPDATE`)
+      const fenced = await prismaTx.automationEvent.findUnique({ where: { id: eventId } })
+      if (!fenced || fenced.leaseToken !== leaseToken || fenced.status !== "PROCESSING") return { terminal: true, contactDeleted: false, queuedRunCount: 0 }
     }
     const actions = parseActionSnapshot(dispatch.actionSnapshot)
     const now = new Date()
@@ -1028,16 +1034,7 @@ async function processDispatch(prismaClient: any, eventId: string, dispatchId: s
   return result
 }
 
-function isTransientQueueError(error: unknown) {
-  if (error instanceof AutomationExecutionError) {
-    return error.code === "OPPORTUNITY_CHANGED_CONCURRENTLY"
-  }
-  const value = error as { code?: string; message?: string }
-  if (["P1001", "P1008", "P1017", "P2028", "P2034"].includes(value?.code ?? "")) return true
-  return /deadlock|serializ|connection.*(?:closed|reset|terminated)|timed? out|expired transaction/i.test(
-    value?.message ?? "",
-  )
-}
+const isTransientQueueError = transientAutomationFailure
 
 async function recordDispatchFailure(prismaClient: any, dispatchId: string, error: unknown) {
   await prismaClient.$transaction(async (prismaTx: any) => {
@@ -1241,12 +1238,14 @@ export async function processClaimedAutomationEvent(
 
   for (const dispatch of event.dispatches) {
     if (["COMPLETED", "FAILED", "SKIPPED", "CANCELED"].includes(dispatch.status)) continue
-    await prismaClient.automationEvent.updateMany({
+    await prismaClient.automationExecutionLease?.updateMany({ where: { kind: "EVENT", jobId: event.id, leaseToken: params.leaseToken }, data: { expiresAt: new Date(Date.now() + 120000) } })
+    const renewed = await prismaClient.automationEvent.updateMany({
       where: { id: event.id, leaseToken: params.leaseToken, status: "PROCESSING" },
       data: { leaseExpiresAt: new Date(Date.now() + 120_000) },
     })
+    if (renewed.count === 0) return
     try {
-      const result = await processDispatch(prismaClient, event.id, dispatch.id)
+      const result = await processDispatch(prismaClient, event.id, dispatch.id, params.leaseToken)
       if (result?.contactDeleted) break
     } catch (error) {
       const nextAttempt = dispatch.attemptCount + 1

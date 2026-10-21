@@ -80,15 +80,15 @@ When service-owned steps are configured and no legacy template is explicitly req
 uses SERVICE_STEPS. It copies the resolved step definitions and enters only the first step. The first
 entry uses the actual enrollment creation time; backdating the service's startedAt does not backdate
 the step clock. Future steps have no occurrence or deadline until entered. Every entry has an immutable
-occurrence number, entry key, entry timestamp, deadline, status, and resolution details. An idempotent,
+occurrence number, entry key and entry timestamp, plus its effective deadline, status and resolution history. An idempotent,
 enrollment-locked entry primitive preserves earlier entries on a revisit and prevents concurrent
 active occurrences. Source IDs are retained as attribution, so archiving configuration does not remove
 enrolled definitions or occurrence history.
 
 Enrollment overview and follow-up views display the saved service steps and entry history. Existing
 legacy template execution continues for legacy enrollments. Legacy step-mutation APIs reject
-SERVICE_STEPS enrollments. Completion, movement, scheduling overrides, and automation dispatch are
-implemented in later chunks; this change establishes their saved definitions and entry history.
+SERVICE_STEPS enrollments. Completion, movement, entry-specific deadline overrides and automation
+dispatch use the saved occurrences and history described below.
 
 API: POST/PATCH account-settings service accepts `steps` and `stepsMode`. Collection array order is
 canonical; new entries omit IDs and saved entries retain IDs. Responses contain effective steps and
@@ -922,3 +922,77 @@ the dispatch/run. A claimed but unstarted worker loses its lease; an executing s
 and the waiting move revalidates its displayed source. Ownership and supersession are checked again
 before any later segment. History, cancellations and destination entry events commit or roll back
 together. Payment reconciliation cannot finish an enrollment while a revisited step is active.
+
+
+## Enrollment-specific step deadlines (Chunk 14)
+
+Each entered step saves `defaultDueAt` alongside its effective `dueAt`. The default is frozen from
+that enrollment's captured timeframe at entry. The migration copies existing due dates exactly;
+existing history and deadlines are not recalculated. Unentered steps have no occurrence or deadline.
+
+The enrollment offers **Change deadline** by duration (minutes, hours or days from entry) or date/time
+in the tenant's time zone, plus **Restore default** for an override. Restoring uses the frozen entry
+deadline, including when it is now overdue. A fixed date must follow entry and be within ten years;
+it may be in the past for overdue work. A duration is a positive whole number within ten years of
+entry. Invalid or nonexistent local times are rejected in the interface. The form previews the
+resulting deadline. Default and custom timeframes are labeled separately.
+
+`POST /api/services/:tenantId/contact-services/:contactServiceId/step-occurrences/:occurrenceId/deadline`
+accepts `requestId`, `expectedDeadlineRevision`, and `schedule`: `{mode: DURATION, amount, unit}`,
+`{mode: FIXED_DATE, dateTime}` with an explicit offset, or `{mode: DEFAULT}`. Responses return the
+canonical occurrence and `deadlineChanges`. The occurrence exposes `deadlineOverride` (null for the
+default) and `deadlineRevision`. Changes record the actor, timestamp, prior/new deadline and schedule.
+An identical request retry is idempotent; different inputs with the same request ID or stale revisions
+return 409. Unchanged saves do not increment the revision or add history.
+
+Only the current ACTIVE, non-superseded entry can change, with the same tenant admin or MEDIUM/MAX
+permissions as movement. Enrollment locking matches completion, movement and workers. A stale edit
+cannot update a moved, skipped, completed or revisited entry. Canceled/completed enrollments reject
+new changes. History and deadline updates commit or roll back together.
+
+Overrides affect only that occurrence. Other enrollments (including for the same contact), saved
+service/sub-service configuration, later steps and future enrollments are unchanged. Completion,
+skipping and manual movement retain earlier override history; each destination or revisit starts a
+fresh default with revision zero. Deadline edits do not fire entry/completion triggers, move steps,
+or alter any automation run, lease or resume time. Completion workflow waits continue to use their
+separate Continue now and Reschedule controls. Saved responses remain visible if workspace refresh
+fails, and edit dialogs retain their drafts after save errors.
+
+
+## Follow-up queue urgency (Chunk 15)
+
+`GET /api/services/:tenantId/follow-ups` combines service-owned step work and existing template
+follow-ups. It reads saved enrollment steps and only their latest entry, never live service definitions,
+old deadline changes or superseded occurrences. Canceled enrollments are excluded.
+
+- **Actionable:** An active entry. Its effective deadline is `dueAt`; elapsed time starts at `enteredAt`.
+- **Scheduled:** A completed step waiting on completion automations. The earliest current matching
+  root wait supplies `scheduledAt`; running/queued automation work may have no scheduled time yet.
+  Resume times are not step deadlines and cannot make the next, unentered step overdue. Entry
+  automation waits do not remove an otherwise active step from Actionable.
+- **Needs attention:** Paused progression or an enrollment missing its current entry. Shows the saved
+  progression message and no deadline urgency.
+- **Finished:** Step work is finished, including enrollments still waiting for payment. No urgency.
+
+`timing` contains `status` (NONE, ON_TRACK, DUE_SOON, OVERDUE), signed `remainingMs`, `timeframeMs`
+and `warningAt`. Only an entered, actionable step with a valid deadline has elapsed timing. The
+warning begins inclusively at `enteredAt + 0.75 * (dueAt - enteredAt)`; overdue begins at the deadline.
+Durations use elapsed milliseconds, matching Chunk 14, including daylight-saving transitions.
+Overrides and fixed dates change the effective timeframe; Restore default restores its original warning
+boundary. Future steps, completed entries, superseded entries and automation waits cannot be overdue.
+Legacy active/postponed work uses its available/start time; pending dates do not invent an entry clock.
+
+The default `sort=URGENCY` lists Actionable, Needs attention, Scheduled, then Finished, with earliest
+effective deadline/resume time first and undated rows last within each group. Other existing sort modes
+remain supported. Filtering/sorting across both workflow types precedes pagination. `queueState` can
+select one of those four groups; date presets also accept DUE_SOON. OVERDUE and DUE_SOON match
+only actionable elapsed deadlines. TODAY/NEXT_7_DAYS use the tenant's calendar for deadlines or
+scheduled resume times. NO_DUE_DATE matches work with no deadline/resume time. Summary counts
+cover unfinished work across the tenant, independent of list filters; overdue/due-today counts exclude
+scheduled work. Existing template and assignee filters remain supported; service-step owner assignment
+is part of Chunk 16.
+
+Each request reads a consistent database snapshot and computes all timing from the response's `asOf`.
+The client reloads on navigation/focus/visibility and every 30 seconds while visible, preserving filters
+and pagination. Older or canceled requests cannot overwrite a newer queue response. No stored urgency
+flags, notifications, new triggers, schema changes or background data backfill are needed.

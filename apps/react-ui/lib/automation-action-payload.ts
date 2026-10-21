@@ -1,3 +1,4 @@
+import { isServiceAutomationAction, serializeServiceConfig } from "./service-automation-action.js"
 import type { AutomationAction } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types.js"
 
 export function serializeAutomationAction(action: AutomationAction): AutomationAction {
@@ -5,6 +6,8 @@ export function serializeAutomationAction(action: AutomationAction): AutomationA
     nodeKey: action.nodeKey,
     type: action.type,
   }
+
+  if (isServiceAutomationAction(action.type)) return { ...base, serviceConfig: serializeServiceConfig(action.type, action.serviceConfig ?? {}) }
 
   switch (action.type) {
     case "UPDATE_CONTACT_CUSTOM_FIELDS":
@@ -78,4 +81,5 @@ export function serializeAutomationAction(action: AutomationAction): AutomationA
     case "DELETE_OPPORTUNITY":
       return { ...base, deleteOpportunityConfig: action.deleteOpportunityConfig }
   }
+  throw new Error(`Unknown automation action: ${action.type}`)
 }

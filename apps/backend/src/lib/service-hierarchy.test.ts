@@ -1,3 +1,4 @@
+import { changeServiceStepDeadlineTx } from "./service-step-deadlines.js"
 import { reconcileServiceStepEnrollmentTx } from "./service-step-progression.js"
 import { moveServiceStepTx } from "./service-step-movement.js"
 import { changeServiceStepCompletionWaitTx } from "./service-step-waits.js"
@@ -1114,10 +1115,8 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       data: { resumeAt: new Date(Date.now() - 1000) },
     })
     await resumeDueAutomationRuns(db)
-    assert.equal(
-      (await db.automationRun.findUniqueOrThrow({ where: { id: chained.id } })).status,
-      "SUCCEEDED",
-    )
+    const childFinished = await db.automationRun.findUniqueOrThrow({ where: { id: chained.id } })
+    assert.equal(childFinished.status, "SUCCEEDED", childFinished.failureMessage ?? undefined)
     const childLogs = await db.automationNodeExecution.findMany({
       where: { tenantId, attemptId: chained.attemptId },
     })
@@ -1354,9 +1353,10 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
         const claimed = await claimAutomationEvents(tx)
         assert.equal(claimed.length, 1)
         assert.equal(claimed[0]!.id, events[0]!.id)
+        await tx.automationExecutionLease.deleteMany({ where: { kind: "EVENT", jobId: claimed[0]!.id, leaseToken: claimed[0]!.leaseToken } })
         await tx.automationEvent.update({
           where: { id: claimed[0]!.id },
-          data: { status: "QUEUED", leaseToken: null, leaseExpiresAt: null },
+          data: { status: "QUEUED", leaseToken: null, leaseExpiresAt: null, updatedAt: events[0]!.updatedAt },
         })
       })
     }
@@ -1872,6 +1872,9 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       data: { resumeAt: new Date(Date.now() - 60000) },
     })
     await Promise.all([resumeDueAutomationRuns(db), resumeDueAutomationRuns(db)])
+    assert.equal((await db.serviceStepOccurrence.findUniqueOrThrow({ where: { id: second.occurrence.id } })).progressionStatus, "WAITING_AUTOMATION")
+    // One enrollment executes serially, even when worker passes overlap.
+    await resumeDueAutomationRuns(db)
     assert.equal(
       (await db.serviceStepOccurrence.findUniqueOrThrow({ where: { id: second.occurrence.id } }))
         .progressionStatus,
@@ -3077,6 +3080,590 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       1,
     )
   })
+
+  const deadlinePath = (id: string, occurrenceId: string) =>
+    `/api/services/${tenantId}/contact-services/${id}/step-occurrences/${occurrenceId}/deadline`
+  const deadlinePayload = (revision = 0, amount = 20) => ({
+    requestId: randomUUID(),
+    expectedDeadlineRevision: revision,
+    schedule: { mode: "DURATION" as const, amount, unit: "DAYS" as const },
+  })
+
+  test("twenty-day deadlines affect only the selected entry, without changing configuration or queueing automations", async () => {
+    const fixture = await completionFixture()
+    const sameContact = await fixture.enroll()
+    const otherContact = await createContact()
+    const purchased = await request(`/api/services/${tenantId}/contact-services`, "POST", {
+      serviceId: fixture.child.data.service.id,
+      contactId: otherContact.id,
+    })
+    assert.equal(purchased.status, 201)
+    const other = await db.serviceStepOccurrence.findFirstOrThrow({
+      where: { contactServiceId: purchased.data.contactService.id, status: "ACTIVE" },
+    })
+    const eventCount = await db.automationEvent.count({ where: { tenantId } })
+    const result = await request(
+      deadlinePath(fixture.id, fixture.occurrence.id),
+      "POST",
+      deadlinePayload(),
+    )
+    assert.equal(result.status, 200, JSON.stringify(result.data))
+    const changed = result.data.occurrence
+    assert.equal(
+      new Date(changed.dueAt).getTime() - fixture.occurrence.enteredAt.getTime(),
+      20 * 86400000,
+    )
+    assert.equal(changed.defaultDueAt, fixture.occurrence.dueAt.toISOString())
+    assert.deepEqual(changed.deadlineOverride, { mode: "DURATION", amount: 20, unit: "DAYS" })
+    assert.equal(changed.deadlineChanges.length, 1)
+    assert.equal(changed.deadlineChanges[0].actorName, "Hierarchy tester")
+    assert.equal(
+      (
+        await db.serviceStepOccurrence.findUniqueOrThrow({
+          where: { id: sameContact.occurrence.id },
+        })
+      ).dueAt.toISOString(),
+      sameContact.occurrence.dueAt.toISOString(),
+    )
+    assert.equal(
+      (
+        await db.serviceStepOccurrence.findUniqueOrThrow({ where: { id: other.id } })
+      ).dueAt.toISOString(),
+      other.dueAt.toISOString(),
+    )
+    assert.equal(
+      (await db.serviceStep.findUniqueOrThrow({ where: { id: fixture.source.id } }))
+        .completionDuration,
+      3,
+    )
+    assert.equal(
+      await db.serviceStepOccurrence.count({ where: { contactServiceId: fixture.id } }),
+      1,
+    )
+    assert.equal(await db.automationEvent.count({ where: { tenantId } }), eventCount)
+    const loaded = await request(`/api/services/${tenantId}/contact-services/${fixture.id}`)
+    assert.equal(loaded.data.contactService.serviceSteps[0].occurrences[0].deadlineRevision, 1)
+    assert.equal(
+      loaded.data.contactService.serviceSteps[0].occurrences[0].deadlineChanges.length,
+      1,
+    )
+  })
+
+  test("fixed deadlines normalize offsets and restore the frozen default after parent configuration changes", async () => {
+    const fixture = await completionFixture()
+    const dateTime = new Date(fixture.occurrence.enteredAt.getTime() + 5 * 86400000)
+      .toISOString()
+      .replace("Z", "+00:00")
+    const path = deadlinePath(fixture.id, fixture.occurrence.id)
+    const changed = await request(path, "POST", {
+      requestId: randomUUID(),
+      expectedDeadlineRevision: 0,
+      schedule: { mode: "FIXED_DATE", dateTime },
+    })
+    assert.equal(changed.status, 200)
+    assert.equal(changed.data.occurrence.dueAt, new Date(dateTime).toISOString())
+    const configured = (await request(`${settingsPath()}/${parentId}`)).data.service.steps
+    await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      steps: configured.map((step: any) => ({
+        id: step.id,
+        title: step.title,
+        completionDuration: 99,
+        completionUnit: "DAYS",
+      })),
+    })
+    const restored = await request(path, "POST", {
+      requestId: randomUUID(),
+      expectedDeadlineRevision: 1,
+      schedule: { mode: "DEFAULT" },
+    })
+    assert.equal(restored.status, 200)
+    assert.equal(restored.data.occurrence.dueAt, fixture.occurrence.dueAt.toISOString())
+    assert.equal(restored.data.occurrence.deadlineOverride, null)
+    assert.equal(restored.data.occurrence.deadlineRevision, 2)
+    assert.equal(restored.data.occurrence.deadlineChanges.length, 2)
+    const future = await fixture.enroll()
+    assert.equal(
+      future.occurrence.dueAt.getTime() - future.occurrence.enteredAt.getTime(),
+      99 * 86400000,
+    )
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [] })
+    const archived = await request(path, "POST", deadlinePayload(2))
+    assert.equal(archived.status, 200)
+    assert.equal(
+      archived.data.occurrence.defaultDueAt,
+      fixture.occurrence.defaultDueAt.toISOString(),
+    )
+  })
+
+  test("completion and revisits retain old deadline history and start later entries with their own default", async () => {
+    const fixture = await completionFixture()
+    const path = deadlinePath(fixture.id, fixture.occurrence.id)
+    const payload = deadlinePayload()
+    const changed = await request(path, "POST", payload)
+    const completed = await request(completePath(fixture.id, fixture.occurrence.id), "POST")
+    assert.equal(completed.status, 200)
+    const next = await db.serviceStepOccurrence.findFirstOrThrow({
+      where: { contactServiceId: fixture.id, status: "ACTIVE" },
+    })
+    assert.equal(next.dueAt.getTime() - next.enteredAt.getTime(), 3 * 86400000)
+    assert.equal(next.defaultDueAt.toISOString(), next.dueAt.toISOString())
+    const moved = await request(
+      movementPath(fixture.id),
+      "POST",
+      movementPayload(next.id, fixture.occurrence.stepId),
+    )
+    assert.equal(moved.status, 200)
+    const revisited = await db.serviceStepOccurrence.findUniqueOrThrow({
+      where: { id: moved.data.movement.toOccurrenceId },
+      include: { deadlineChanges: true },
+    })
+    assert.equal(revisited.occurrenceNumber, 2)
+    assert.equal(revisited.deadlineOverride, null)
+    assert.equal(revisited.deadlineRevision, 0)
+    assert.equal(revisited.deadlineChanges.length, 0)
+    assert.equal(revisited.dueAt.getTime() - revisited.enteredAt.getTime(), 3 * 86400000)
+    assert.equal((await request(path, "POST", deadlinePayload(1, 40))).status, 409)
+    assert.equal((await request(path, "POST", payload)).status, 200)
+    const original = await db.serviceStepOccurrence.findUniqueOrThrow({
+      where: { id: fixture.occurrence.id },
+    })
+    assert.equal(original.dueAt.toISOString(), changed.data.occurrence.dueAt)
+    assert.equal(original.status, "COMPLETED")
+  })
+
+  const queuePath = () => `/api/services/${tenantId}/follow-ups`
+
+  test("queue sorts effective deadlines across pages and reflects overrides and restores immediately", async () => {
+    const fixture = await completionFixture()
+    const entries = [{ id: fixture.id, occurrence: fixture.occurrence }]
+    for (let index = 1; index < 12; index++) entries.push(await fixture.enroll())
+    const now = Date.now()
+    for (const [index, enrollment] of entries.entries()) {
+      const dueAt = new Date(now + (index - 5) * 3600000)
+      await db.serviceStepOccurrence.update({ where: { id: enrollment.occurrence.id }, data: {
+        enteredAt: new Date(now - 2 * 86400000), dueAt, defaultDueAt: dueAt,
+      } })
+    }
+    const first = await request(queuePath())
+    assert.equal(first.status, 200, JSON.stringify(first.data))
+    assert.equal(first.data.pagination.total, 12)
+    assert.deepEqual(first.data.items.map((item: any) => item.id), entries.slice(0, 10).map(item => item.id))
+    assert.equal(first.data.items[0].timing.status, "OVERDUE")
+    assert.equal(first.data.items[0].queueState, "ACTIONABLE")
+    assert.equal(first.data.summary.overdueEnrollments, 6)
+    assert.equal(first.data.summary.dueSoon, 6)
+    assert.equal((await request(`${queuePath()}?dueDatePreset=DUE_SOON`)).data.pagination.total, 6)
+    assert.equal(first.data.items[0].progress.totalCount, 2)
+    assert.equal(first.data.items[0].progress.completedCount, 0)
+    assert.equal(first.data.items[0].parentService.id, parentId)
+    assert.equal((await request(deadlinePath(fixture.id, fixture.occurrence.id), "POST", deadlinePayload())).status, 200)
+    const changed = await request(queuePath())
+    assert.equal(changed.data.items[0].id, entries[1]!.id)
+    assert.equal(changed.data.summary.overdueEnrollments, 5)
+    const lastPage = await request(`${queuePath()}?page=2`)
+    assert.equal(lastPage.data.items[1].id, fixture.id)
+    assert.equal(lastPage.data.items[1].timing.status, "ON_TRACK")
+    assert.equal(lastPage.data.items[1].timing.timeframeMs, 20 * 86400000)
+    assert.equal((await request(deadlinePath(fixture.id, fixture.occurrence.id), "POST", {
+      requestId: randomUUID(), expectedDeadlineRevision: 1, schedule: { mode: "DEFAULT" },
+    })).status, 200)
+    assert.equal((await request(queuePath())).data.items[0].id, fixture.id)
+    assert.equal((await request(`${queuePath()}?dueDatePreset=OVERDUE`)).data.pagination.total, 6)
+    assert.equal((await request(`${queuePath()}?search=Medicare`)).data.pagination.total, 12)
+    assert.equal((await request(`${queuePath()}?queueState=INVALID`)).status, 400)
+    await db.contactService.update({ where: { id: fixture.id }, data: { status: "CANCELED" } })
+    assert.equal((await request(queuePath())).data.pagination.total, 11)
+    const foreign = await db.tenant.create({ data: { name: "Foreign queue", slug: randomUUID() } })
+    try { assert.equal((await request(`/api/services/${foreign.id}/follow-ups`)).status, 403) }
+    finally { await db.tenant.delete({ where: { id: foreign.id } }) }
+  })
+
+  test("queue separates completion waits and failed progression from actionable deadlines", async () => {
+    const nodeKey = randomUUID()
+    const fixture = await completionFixture([
+      { nodeKey, type: "WAIT", waitConfig: { mode: "DURATION", amount: 1, unit: "DAYS" } }, noteAction(),
+    ])
+    const now = Date.now()
+    await db.serviceStepOccurrence.update({ where: { id: fixture.occurrence.id }, data: {
+      enteredAt: new Date(now - 10 * 86400000), dueAt: new Date(now - 86400000),
+    } })
+    assert.equal((await request(queuePath())).data.items[0].overdue, true)
+    const completed = await request(completePath(fixture.id, fixture.occurrence.id), "POST")
+    await processCompletionEvent(completed.data.occurrence.completionEventId)
+    const run = await db.automationRun.findFirstOrThrow({ where: { tenantId, eventSource: "SERVICE_STEP_COMPLETED" } })
+    const scheduled = await request(`${queuePath()}?queueState=SCHEDULED`)
+    assert.equal(scheduled.data.pagination.total, 1)
+    const row = scheduled.data.items[0]
+    assert.equal(row.scheduledAt, run.resumeAt?.toISOString())
+    assert.equal(row.currentStep.occurrenceId, fixture.occurrence.id)
+    assert.equal(row.currentStep.effectiveDueAt, null)
+    assert.equal(row.timing.status, "NONE")
+    assert.equal(row.overdue, false)
+    assert.equal(scheduled.data.summary.overdueEnrollments, 0)
+    assert.equal((await request(`${queuePath()}?queueState=ACTIONABLE`)).data.pagination.total, 0)
+    assert.equal((await request(`${queuePath()}?dueDatePreset=OVERDUE`)).data.pagination.total, 0)
+    // An overdue resume time belongs to the automation worker, not an unentered step.
+    await db.automationRun.update({ where: { id: run.id }, data: { resumeAt: new Date(now - 1000) } })
+    assert.equal((await request(queuePath())).data.items[0].overdue, false)
+    await exitAutomationWaitingRun(db, { tenantId, automationId: fixture.automation.id, runId: run.id,
+      nodeKey, actorUserId: userId, actorDisplayName: "Tester" })
+    const paused = await request(`${queuePath()}?queueState=NEEDS_ATTENTION`)
+    assert.equal(paused.data.pagination.total, 1)
+    assert.equal(paused.data.items[0].overdue, false)
+    assert.equal(paused.data.items[0].scheduledAt, null)
+    assert.ok(paused.data.items[0].queueMessage)
+  })
+
+  test("queue retains legacy follow-ups and does not mark future pending work overdue", async () => {
+    const fixture = await completionFixture()
+    const legacy = await fixture.enroll()
+    const now = Date.now()
+    await db.contactService.update({ where: { id: legacy.id }, data: { workflowKind: "LEGACY_TEMPLATE" } })
+    const active = await db.contactServiceFollowUpStep.create({ data: {
+      tenantId, contactServiceId: legacy.id, title: "Legacy review", status: "ACTIVE",
+      availableAt: new Date(now - 4 * 3600000), dueAt: new Date(now - 3600000), assignedToUserId: userId,
+    } })
+    const pending = await db.contactServiceFollowUpStep.create({ data: {
+      tenantId, contactServiceId: legacy.id, title: "Future review", status: "PENDING", sortOrder: 1,
+      availableAt: new Date(now + 86400000), dueAt: new Date(now - 3600000),
+    } })
+    const mixed = (await request(queuePath())).data
+    assert.equal(mixed.pagination.total, 2)
+    assert.equal(mixed.items[0].id, legacy.id)
+    assert.equal(mixed.items[0].overdue, true)
+    assert.equal(mixed.items[0].currentStep.id, active.id)
+    const owned = (await request(`${queuePath()}?assignedToUserId=${userId}`)).data
+    assert.equal(owned.pagination.total, 1)
+    const future = (await request(`${queuePath()}?status=PENDING&queueState=SCHEDULED`)).data
+    assert.equal(future.pagination.total, 1)
+    assert.equal(future.items[0].currentStep.id, pending.id)
+    assert.equal(future.items[0].timing.status, "NONE")
+    assert.equal(future.items[0].scheduledAt, pending.availableAt?.toISOString())
+    assert.equal((await request(`${queuePath()}?status=PENDING&dueDatePreset=OVERDUE`)).data.pagination.total, 0)
+    await db.contactServiceFollowUpStep.update({ where: { id: active.id }, data: { status: "COMPLETED" } })
+    assert.equal((await request(`${queuePath()}?queueState=SCHEDULED`)).data.pagination.total, 1)
+    // A migrated/unentered service step has no occurrence clock, regardless of its old template rows.
+    await db.serviceStepOccurrence.deleteMany({ where: { contactServiceId: fixture.id } })
+    const unentered = (await request(`${queuePath()}?queueState=NEEDS_ATTENTION`)).data.items[0]
+    assert.equal(unentered.id, fixture.id)
+    assert.equal(unentered.currentStep, null)
+    assert.equal(unentered.overdue, false)
+    assert.equal(unentered.timing.remainingMs, null)
+  })
+
+  test("queue movement selects fresh entries and finished unpaid work has no urgency", async () => {
+    const fixture = await completionFixture()
+    const original = fixture.occurrence
+    await request(deadlinePath(fixture.id, original.id), "POST", deadlinePayload())
+    const steps = await db.contactServiceStep.findMany({ where: { contactServiceId: fixture.id }, orderBy: { sortOrder: "asc" } })
+    const moved = await request(movementPath(fixture.id), "POST", movementPayload(original.id, steps[1]!.id))
+    assert.equal(moved.status, 200, JSON.stringify(moved.data))
+    const forward = (await request(queuePath())).data.items[0]
+    assert.equal(forward.currentStep.id, steps[1]!.id)
+    assert.equal(forward.currentStep.occurrenceId, moved.data.movement.toOccurrenceId)
+    assert.equal(forward.timing.timeframeMs, 3 * 86400000)
+    const revisited = await request(movementPath(fixture.id), "POST", movementPayload(forward.currentStep.occurrenceId, steps[0]!.id))
+    assert.equal(revisited.status, 200)
+    const back = (await request(queuePath())).data.items[0]
+    assert.notEqual(back.currentStep.occurrenceId, original.id)
+    assert.equal(back.timing.timeframeMs, 3 * 86400000)
+    assert.equal(back.timing.status, "ON_TRACK")
+    await request(completePath(fixture.id, back.currentStep.occurrenceId), "POST")
+    const next = (await request(queuePath())).data.items[0]
+    await request(completePath(fixture.id, next.currentStep.occurrenceId), "POST")
+    const finished = (await request(`${queuePath()}?queueState=FINISHED`)).data
+    assert.equal(finished.pagination.total, 1)
+    assert.equal(finished.items[0].status, "PENDING_PAYMENT")
+    assert.equal(finished.items[0].timing.status, "NONE")
+    assert.equal(finished.items[0].progress.completionPercentage, 100)
+    assert.equal(finished.summary.servicesInProgress, 0)
+    assert.equal((await request(`${queuePath()}?queueState=ACTIONABLE`)).data.pagination.total, 0)
+  })
+
+  test("deadline changes leave scoped automation waits intact and cannot reschedule completion waits", async () => {
+    const wait = {
+      nodeKey: randomUUID(),
+      type: "WAIT",
+      waitConfig: { mode: "DURATION", amount: 1, unit: "DAYS" },
+    }
+    const fixture = await completionFixture([wait, noteAction("Completion after wait")])
+    const entry = await request(`/api/account-settings/${tenantId}/automations`, "POST", {
+      name: "Entry wait",
+      trigger: {
+        type: "SERVICE_STEP_ENTERED",
+        serviceStepId: fixture.source.id,
+        serviceOfferingId: fixture.child.data.service.id,
+      },
+      isEnabled: true,
+      conditions: [],
+      actions: [{ ...wait, nodeKey: randomUUID() }, noteAction("Entry after wait")],
+    })
+    assert.equal(entry.status, 201)
+    const enrollment = await fixture.enroll()
+    const event = await db.automationEvent.findFirstOrThrow({
+      where: {
+        tenantId,
+        triggerType: "SERVICE_STEP_ENTERED",
+        serviceContext: { path: ["contactServiceId"], equals: enrollment.id },
+      },
+    })
+    await processCompletionEvent(event.id)
+    const run = await db.automationRun.findFirstOrThrow({
+      where: { dispatch: { eventId: event.id } },
+    })
+    assert.equal(run.status, "WAITING")
+    const path = deadlinePath(enrollment.id, enrollment.occurrence.id)
+    assert.equal((await request(path, "POST", deadlinePayload())).status, 200)
+    const untouched = await db.automationRun.findUniqueOrThrow({ where: { id: run.id } })
+    assert.equal(untouched.resumeAt?.toISOString(), run.resumeAt?.toISOString())
+    assert.equal(untouched.status, "WAITING")
+    const completed = await request(completePath(enrollment.id, enrollment.occurrence.id), "POST")
+    await processCompletionEvent(completed.data.occurrence.completionEventId)
+    const completionRun = await db.automationRun.findFirstOrThrow({
+      where: { dispatch: { eventId: completed.data.occurrence.completionEventId } },
+    })
+    assert.equal(
+      (
+        await request(path, "POST", {
+          requestId: randomUUID(),
+          expectedDeadlineRevision: 1,
+          schedule: { mode: "DEFAULT" },
+        })
+      ).status,
+      409,
+    )
+    assert.equal(
+      (
+        await db.automationRun.findUniqueOrThrow({ where: { id: completionRun.id } })
+      ).resumeAt?.toISOString(),
+      completionRun.resumeAt?.toISOString(),
+    )
+  })
+
+  test("deadline revisions serialize concurrent edits and identical retries do not duplicate history", async () => {
+    const fixture = await completionFixture()
+    const path = deadlinePath(fixture.id, fixture.occurrence.id)
+    const payload = deadlinePayload()
+    assert.equal((await request(path, "POST", payload)).status, 200)
+    const retry = await request(path, "POST", payload)
+    assert.equal(retry.status, 200)
+    assert.equal(retry.data.occurrence.deadlineChanges.length, 1)
+    assert.equal(
+      (await request(path, "POST", { ...payload, schedule: { mode: "DEFAULT" } })).status,
+      409,
+    )
+    assert.equal((await request(path, "POST", deadlinePayload())).status, 409)
+    const results = await Promise.all([
+      request(path, "POST", deadlinePayload(1, 30)),
+      request(path, "POST", deadlinePayload(1, 40)),
+    ])
+    assert.deepEqual(results.map((item) => item.status).sort(), [200, 409])
+    const saved = results.find((item) => item.status === 200)!.data.occurrence
+    const unchanged = await request(path, "POST", {
+      requestId: randomUUID(),
+      expectedDeadlineRevision: saved.deadlineRevision,
+      schedule: saved.deadlineOverride,
+    })
+    assert.equal(unchanged.data.occurrence.deadlineRevision, 2)
+    assert.equal(await db.serviceStepDeadlineChange.count({ where: { tenantId } }), 2)
+    const restore = {
+      requestId: randomUUID(),
+      expectedDeadlineRevision: 2,
+      schedule: { mode: "DEFAULT" },
+    }
+    assert.equal((await request(path, "POST", restore)).status, 200)
+    assert.equal(
+      (
+        await request(path, "POST", {
+          ...restore,
+          requestId: randomUUID(),
+          expectedDeadlineRevision: 3,
+        })
+      ).data.occurrence.deadlineRevision,
+      3,
+    )
+  })
+
+  test("deadline validation, permissions, isolation and rollback preserve the complete entry", async () => {
+    const fixture = await completionFixture()
+    const other = await fixture.enroll()
+    const path = deadlinePath(fixture.id, fixture.occurrence.id)
+    assert.equal(
+      (await request(deadlinePath(other.id, fixture.occurrence.id), "POST", deadlinePayload()))
+        .status,
+      404,
+    )
+    assert.equal(
+      (await request(deadlinePath(fixture.id, randomUUID()), "POST", deadlinePayload())).status,
+      404,
+    )
+    for (const schedule of [
+      { mode: "DURATION", amount: 0, unit: "DAYS" },
+      { mode: "DURATION", amount: 3651, unit: "DAYS" },
+      { mode: "FIXED_DATE", dateTime: fixture.occurrence.enteredAt.toISOString() },
+    ])
+      assert.equal((await request(path, "POST", { ...deadlinePayload(), schedule })).status, 400)
+    await db.membership.update({
+      where: { userId_tenantId: { tenantId, userId } },
+      data: { role: "TENANT_USER", securityLevel: "LOW" },
+    })
+    assert.equal((await request(path, "POST", deadlinePayload())).status, 403)
+    await db.membership.update({
+      where: { userId_tenantId: { tenantId, userId } },
+      data: { securityLevel: "MEDIUM" },
+    })
+    assert.equal((await request(path, "POST", deadlinePayload())).status, 200)
+    await assert.rejects(
+      db.$transaction(async (tx) => {
+        await changeServiceStepDeadlineTx(tx, {
+          tenantId,
+          contactServiceId: fixture.id,
+          occurrenceId: fixture.occurrence.id,
+          actorUserId: userId,
+          ...deadlinePayload(1, 30),
+        })
+        throw new Error("Rollback deadline")
+      }),
+      /Rollback deadline/,
+    )
+    assert.equal(
+      (await db.serviceStepOccurrence.findUniqueOrThrow({ where: { id: fixture.occurrence.id } }))
+        .deadlineRevision,
+      1,
+    )
+    assert.equal(await db.serviceStepDeadlineChange.count({ where: { tenantId } }), 1)
+    await db.membership.update({
+      where: { userId_tenantId: { tenantId, userId } },
+      data: { status: "DISABLED" },
+    })
+    assert.equal((await request(path, "POST", deadlinePayload(1))).status, 403)
+    await db.membership.update({
+      where: { userId_tenantId: { tenantId, userId } },
+      data: { status: "ACTIVE" },
+    })
+    await db.contactService.update({ where: { id: fixture.id }, data: { status: "CANCELED" } })
+    assert.equal((await request(path, "POST", deadlinePayload(1))).status, 409)
+  })
+
+  test("a move holding the enrollment lock rejects a stale deadline edit without touching the destination", async () => {
+    const fixture = await completionFixture()
+    const destination = await db.contactServiceStep.findFirstOrThrow({
+      where: { contactServiceId: fixture.id, id: { not: fixture.occurrence.stepId } },
+    })
+    const entered = deferred()
+    const release = deferred()
+    const moving = db.$transaction((tx) =>
+      moveServiceStepTx(
+        new Proxy(tx, {
+          get(target, key) {
+            if (key !== "contactServiceStep") return Reflect.get(target, key)
+            return new Proxy(tx.contactServiceStep, {
+              get(target, key) {
+                if (key !== "findMany") return Reflect.get(target, key)
+                return async (args: any) => {
+                  entered.resolve()
+                  await release.promise
+                  return tx.contactServiceStep.findMany(args)
+                }
+              },
+            })
+          },
+        }),
+        {
+          tenantId,
+          contactServiceId: fixture.id,
+          actorUserId: userId,
+          ...movementPayload(fixture.occurrence.id, destination.id),
+        },
+      ),
+    )
+    await entered.promise
+    const attempted = deferred()
+    let finished = false
+    const editing = db
+      .$transaction((tx) =>
+        changeServiceStepDeadlineTx(
+          new Proxy(tx, {
+            get(target, key) {
+              if (key !== "$queryRaw") return Reflect.get(target, key)
+              return (...args: any[]) => {
+                attempted.resolve()
+                return (tx.$queryRaw as any)(...args)
+              }
+            },
+          }),
+          {
+            tenantId,
+            contactServiceId: fixture.id,
+            occurrenceId: fixture.occurrence.id,
+            actorUserId: userId,
+            ...deadlinePayload(),
+          },
+        ),
+      )
+      .then(
+        (value) => {
+          finished = true
+          return value
+        },
+        (error) => {
+          finished = true
+          return error
+        },
+      )
+    await attempted.promise
+    assert.equal(finished, false)
+    release.resolve()
+    const moved = await moving
+    assert.equal((await editing).code, "SERVICE_STEP_DEADLINE_CHANGED")
+    assert.equal(await db.serviceStepDeadlineChange.count({ where: { tenantId } }), 0)
+    const current = await db.serviceStepOccurrence.findUniqueOrThrow({
+      where: { id: moved.toOccurrenceId! },
+    })
+    assert.equal(current.dueAt.toISOString(), current.defaultDueAt.toISOString())
+    assert.equal(current.deadlineRevision, 0)
+  })
+
+  test("deadline migration freezes existing defaults without creating overrides or altering history", async () => {
+    const pool = new Pool({ connectionString: databaseUrl! })
+    const client = await pool.connect()
+    try {
+      await client.query("BEGIN")
+      const schema = `deadline_${randomUUID().replaceAll("-", "")}`
+      await client.query(`CREATE SCHEMA "${schema}"`)
+      await client.query(`SET LOCAL search_path TO "${schema}"`)
+      await client.query(
+        'CREATE TABLE "ServiceStepOccurrence" ("id" TEXT PRIMARY KEY, "tenantId" TEXT NOT NULL, "contactServiceId" TEXT NOT NULL, "dueAt" TIMESTAMP(3) NOT NULL)',
+      )
+      await client.query('INSERT INTO "ServiceStepOccurrence" VALUES ($1,$2,$3,$4)', [
+        "old-entry",
+        "tenant",
+        "enrollment",
+        "2026-01-21T12:00:00.123Z",
+      ])
+      await client.query(
+        readFileSync(
+          resolve(
+            __dirname,
+            "../../prisma/migrations/20261021000000_service_step_deadlines/migration.sql",
+          ),
+          "utf8",
+        ),
+      )
+      const row = (await client.query('SELECT * FROM "ServiceStepOccurrence"')).rows[0]
+      assert.equal(row.defaultDueAt.getTime(), row.dueAt.getTime())
+      assert.equal(row.deadlineOverride, null)
+      assert.equal(row.deadlineRevision, 0)
+      assert.equal(
+        (await client.query('SELECT COUNT(*) FROM "ServiceStepDeadlineChange"')).rows[0].count,
+        "0",
+      )
+    } finally {
+      await client.query("ROLLBACK")
+      client.release()
+      await pool.end()
+    }
+  })
   test("old wait controls cannot bypass a later wait in the same completion run", async () => {
     const fixture = await waitingFixture(false, [
       {
@@ -3338,6 +3925,202 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       await db.serviceStepOccurrence.count({ where: { contactServiceId: fixture.id } }),
       2,
     )
+  })
+
+  test("service actions save, pin, checkpoint, deduplicate and retain owners through revisits", async () => {
+    const configuration = await configureParent()
+    const fixture = await completionFixture()
+    const action = (type: string, serviceConfig: unknown) => ({ nodeKey: randomUUID(), type, serviceConfig })
+    const actions = [
+      action("SET_SERVICE_STEP_OWNER", { assignedToUserId: userId }),
+      action("SET_SERVICE_COORDINATOR", { assignedToUserId: userId }),
+      action("SET_SERVICE_PROFESSIONAL", { professionalId: configuration.professionals[0].id }),
+      action("SET_SERVICE_CHECKLIST_STATUS", { checklistItemId: configuration.checklistItems[0].id, status: "RECEIVED" }),
+      action("SCHEDULE_SERVICE_STEP", { schedule: { mode: "DURATION", amount: 2, unit: "HOURS" } }),
+      action("SCHEDULE_SERVICE_STEP", { schedule: { mode: "FIXED_DATE", dateTime: new Date(Date.now() + 86400000).toISOString() } }),
+      action("SCHEDULE_SERVICE_STEP", { schedule: { mode: "DEFAULT" } }),
+      action("SET_SERVICE_STATUS", { status: "IN_PROGRESS" }),
+      noteAction("After service checkpoints"),
+    ]
+    const entry = fixture.source.automations.find((item: any) => item.triggerType === "SERVICE_STEP_ENTERED")
+    const path = `/api/account-settings/${tenantId}/automations/${entry.id}`
+    const payload = { name: "Service updates", trigger: { type: "SERVICE_STEP_ENTERED", serviceStepId: fixture.source.id, serviceOfferingId: fixture.child.data.service.id }, isEnabled: true, conditions: [], actions }
+    const saved = await request(path, "PATCH", payload)
+    assert.equal(saved.status, 200, JSON.stringify(saved.data))
+    const reloaded = (await request(path)).data.automation.actions
+    assert.deepEqual(reloaded.map((item: any) => item.serviceConfig), actions.map((item: any) => item.serviceConfig ?? null))
+    const enrollment = await fixture.enroll()
+    const event = await db.automationEvent.findFirstOrThrow({ where: { tenantId, serviceContext: { path: ["contactServiceId"], equals: enrollment.id } }, include: { dispatches: true } })
+    assert.deepEqual((event.dispatches[0]!.actionSnapshot as any[])[0].serviceConfig, (actions[0] as any).serviceConfig)
+    // A later edit cannot change the pinned work.
+    assert.equal((await request(path, "PATCH", { ...payload, actions: [action("SET_SERVICE_STEP_OWNER", { assignedToUserId: null })] })).status, 200)
+    await processCompletionEvent(event.id)
+    let run = await db.automationRun.findFirstOrThrow({ where: { dispatchId: event.dispatches[0]!.id } })
+    assert.equal(run.status, "QUEUED")
+    assert.equal(run.cursorIndex, 1)
+    assert.equal(await db.serviceAutomationActionResult.count({ where: { runId: run.id } }), 1)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "After service checkpoints" } }), 0)
+    for (let pass = 0; pass < 80 && !["FAILED", "SUCCEEDED"].includes(run.status); pass++) {
+      await new Promise(resolve => setTimeout(resolve, 15))
+      await resumeDueAutomationRuns(db)
+      run = await db.automationRun.findUniqueOrThrow({ where: { id: run.id } })
+    }
+    assert.equal(run.status, "SUCCEEDED", run.failureMessage ?? undefined)
+    assert.equal(await db.serviceAutomationActionResult.count({ where: { runId: run.id } }), 8)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "After service checkpoints" } }), 1)
+    const ownerStep = await db.contactServiceStep.findUniqueOrThrow({ where: { id: enrollment.occurrence.stepId } })
+    assert.equal(ownerStep.assignedToUserId, userId)
+    const updated = await db.contactService.findUniqueOrThrow({ where: { id: enrollment.id } })
+    assert.equal(updated.followUpCoordinatorUserId, userId)
+    assert.equal(updated.assignedProfessionalId, configuration.professionals[0].id)
+    const checklist = await db.contactServiceChecklistItem.findFirstOrThrow({ where: { contactServiceId: enrollment.id } })
+    assert.equal(checklist.status, "RECEIVED")
+    assert.ok(checklist.completedAt)
+    assert.equal(await db.contactServiceChecklistActivity.count({ where: { contactServiceId: enrollment.id } }), 1)
+    const { executeServiceActionTx } = await import("./service-automation-actions.js")
+    await db.$transaction(tx => executeServiceActionTx(tx, { tenantId, contactId: fixture.contact.id, runId: run.id, automationId: entry.id, automationName: "Service updates", actorUserId: userId, action: actions[3] as any }))
+    assert.equal(await db.contactServiceChecklistActivity.count({ where: { contactServiceId: enrollment.id } }), 1)
+    const automationAudit = await db.serviceFollowUpExecutionLog.findFirstOrThrow({ where: { contactServiceId: enrollment.id, eventType: "SET_SERVICE_STEP_OWNER" } })
+    assert.equal(automationAudit.actorUserId, null)
+    assert.equal((automationAudit.payload as any).automationSource.runId, run.id)
+    assert.equal((await db.serviceStepOccurrence.findUniqueOrThrow({ where: { id: enrollment.occurrence.id } })).deadlineOverride, null)
+    const queue = await request(`/api/services/${tenantId}/follow-ups?assignedToUserId=${userId}`)
+    assert.ok(queue.data.items.some((item: any) => item.id === enrollment.id && item.currentStep.assignedToUserId === userId), JSON.stringify(queue.data))
+    const second = await db.contactServiceStep.findFirstOrThrow({ where: { contactServiceId: enrollment.id, id: { not: ownerStep.id } } })
+    const moved = await db.$transaction(tx => moveServiceStepTx(tx, { tenantId, contactServiceId: enrollment.id, actorUserId: userId, requestId: randomUUID(), expectedOccurrenceId: enrollment.occurrence.id, kind: "MOVE", targetStepId: second.id, reason: "Advance" }))
+    await db.$transaction(tx => moveServiceStepTx(tx, { tenantId, contactServiceId: enrollment.id, actorUserId: userId, requestId: randomUUID(), expectedOccurrenceId: moved.toOccurrenceId!, kind: "MOVE", targetStepId: ownerStep.id, reason: "Revisit" }))
+    assert.equal((await db.contactServiceStep.findUniqueOrThrow({ where: { id: ownerStep.id } })).assignedToUserId, userId)
+    const ownerPath = `/api/services/${tenantId}/contact-services/${enrollment.id}/service-steps/${ownerStep.id}/owner`
+    assert.equal((await request(ownerPath, "PATCH", { assignedToUserId: null })).status, 200)
+    assert.equal((await db.contactServiceStep.findUniqueOrThrow({ where: { id: ownerStep.id } })).assignedToUserId, null)
+    assert.equal((await request(ownerPath, "PATCH", { assignedToUserId: randomUUID() })).status, 400)
+    assert.equal((await request(`/api/services/${tenantId}/contact-services/${enrollment.id}/follow-up-coordinator`, "PATCH", { assignedToUserId: null })).status, 200)
+  })
+
+  for (const terminalType of ["MOVE_SERVICE_STEP", "SKIP_SERVICE_STEP", "COMPLETE_SERVICE_STEP", "SET_SERVICE_STATUS"]) {
+    test(`${terminalType} terminates its path and only affects the triggering enrollment`, async () => {
+      const fixture = await completionFixture()
+      const target = await db.contactServiceStep.findFirstOrThrow({ where: { contactServiceId: fixture.id, id: { not: fixture.occurrence.stepId } } })
+      const serviceConfig = terminalType === "MOVE_SERVICE_STEP" ? { targetSourceStepId: target.sourceStepId, reason: "Automation move" } : terminalType === "SKIP_SERVICE_STEP" ? { reason: "Automation skip" } : terminalType === "SET_SERVICE_STATUS" ? { status: "CANCELED" } : {}
+      const action = { nodeKey: randomUUID(), type: terminalType, serviceConfig }
+      const entry = fixture.source.automations.find((item: any) => item.triggerType === "SERVICE_STEP_ENTERED")
+      const path = `/api/account-settings/${tenantId}/automations/${entry.id}`
+      const payload = { name: terminalType, trigger: { type: "SERVICE_STEP_ENTERED", serviceStepId: fixture.source.id, serviceOfferingId: fixture.child.data.service.id }, isEnabled: true, conditions: [], actions: [action] }
+      assert.equal((await request(path, "PATCH", { ...payload, actions: [action, noteAction("Forbidden tail")] })).status, 400)
+      assert.equal((await request(path, "PATCH", { ...payload, trigger: { type: "CONTACT_CREATED" } })).status, 400)
+      assert.equal((await request(path, "PATCH", payload)).status, 200)
+      const enrollment = await fixture.enroll()
+      const event = await db.automationEvent.findFirstOrThrow({ where: { tenantId, serviceContext: { path: ["contactServiceId"], equals: enrollment.id } }, include: { dispatches: true } })
+      // A corrupted/older snapshot still cannot execute an action after a terminal action.
+      await db.automationDispatch.update({ where: { id: event.dispatches[0]!.id }, data: { actionSnapshot: [action, noteAction("Forbidden tail")] } })
+      await processCompletionEvent(event.id)
+      const run = await db.automationRun.findFirstOrThrow({ where: { dispatchId: event.dispatches[0]!.id } })
+      assert.equal(run.status, terminalType === "COMPLETE_SERVICE_STEP" ? "SUCCEEDED" : "EXITED", run.failureMessage ?? undefined)
+      assert.equal(await db.contactNote.count({ where: { tenantId, title: "Forbidden tail" } }), 0)
+      assert.equal((await db.serviceStepOccurrence.findUniqueOrThrow({ where: { id: fixture.occurrence.id } })).status, "ACTIVE")
+      assert.equal(await db.serviceAutomationActionResult.count({ where: { runId: run.id } }), 1)
+      assert.equal(await db.automationExecution.count({ where: { tenantId, automationName: terminalType } }), 1)
+      if (terminalType === "COMPLETE_SERVICE_STEP") {
+        const before = await db.automationEvent.count({ where: { tenantId, triggerType: "SERVICE_STEP_COMPLETED" } })
+        assert.equal((await request(completePath(enrollment.id, enrollment.occurrence.id), "POST")).status, 200)
+        assert.equal(await db.automationEvent.count({ where: { tenantId, triggerType: "SERVICE_STEP_COMPLETED" } }), before)
+      }
+    })
+  }
+
+  test("service mutations fail without saved context, reject missing snapshots and roll back fully", async () => {
+    const configuration = await configureParent()
+    const fixture = await completionFixture()
+    const { mutateEnrolledServiceTx, executeServiceActionTx } = await import("./service-automation-actions.js")
+    const mutation = (tx: Prisma.TransactionClient, action: any) => mutateEnrolledServiceTx(tx, { tenantId, contactServiceId: fixture.id, occurrenceId: fixture.occurrence.id, actor: { actorUserId: null, actorName: "Automation test" }, requestId: randomUUID(), action })
+    await assert.rejects(db.$transaction(async tx => {
+      await mutation(tx, { type: "SET_SERVICE_STEP_OWNER", serviceConfig: { assignedToUserId: userId } })
+      await mutation(tx, { type: "SET_SERVICE_CHECKLIST_STATUS", serviceConfig: { checklistItemId: randomUUID(), status: "RECEIVED" } })
+    }))
+    assert.equal((await db.contactServiceStep.findUniqueOrThrow({ where: { id: fixture.occurrence.stepId } })).assignedToUserId, null)
+    assert.equal(await db.serviceFollowUpExecutionLog.count({ where: { contactServiceId: fixture.id } }), 0)
+    const missing = await db.automationRun.create({ data: { tenantId, contactId: fixture.contact.id, contactName: "Test", automationName: "Contextless bulk enrollment", attemptId: randomUUID(), eventSource: "MANUAL_ENROLLMENT", triggerType: "SERVICE_STEP_ENTERED", actionSnapshot: [] } })
+    await assert.rejects(db.$transaction(tx => executeServiceActionTx(tx, { tenantId, contactId: fixture.contact.id, runId: missing.id, automationId: null, automationName: "Contextless", actorUserId: null, action: { nodeKey: randomUUID(), type: "COMPLETE_SERVICE_STEP", serviceConfig: {} } })))
+    await db.serviceProfessional.update({ where: { id: configuration.professionals[0].id }, data: { archivedAt: new Date() } })
+    await assert.rejects(db.$transaction(tx => mutation(tx, { type: "SET_SERVICE_PROFESSIONAL", serviceConfig: { professionalId: configuration.professionals[0].id } })))
+    // Archived checklist entries remain usable on an existing enrollment.
+    await db.serviceChecklistItem.update({ where: { id: configuration.checklistItems[0].id }, data: { archivedAt: new Date() } })
+    await db.$transaction(tx => mutation(tx, { type: "SET_SERVICE_CHECKLIST_STATUS", serviceConfig: { checklistItemId: configuration.checklistItems[0].id, status: "RECEIVED" } }))
+    const statusChange = await request(`/api/services/${tenantId}/contact-services/${fixture.id}`, "PATCH", { status: "COMPLETED" })
+    assert.equal(statusChange.status, 409)
+    assert.equal((await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })).status, "IN_PROGRESS")
+  })
+
+  test("service checkpoints persist routing, values and logs, and expired workers cannot replay mutations", async () => {
+    const fixture = await completionFixture()
+    const { claimAutomationExecutionJobs, releaseAutomationExecutionLease } = await import("./automation-execution-budget.js")
+    const context = await db.$transaction(tx => resolveAutomationServiceContextTx(tx, { tenantId, contactId: fixture.contact.id, contactServiceId: fixture.id, contactServiceStepId: fixture.occurrence.stepId, serviceStepOccurrenceId: fixture.occurrence.id }))
+    const actions = [...Array.from({ length: 10 }, (_, i) => noteAction(`Checkpoint prefix ${i}`)), { nodeKey: randomUUID(), type: "SPLIT", splitConfig: { actionName: "One route", routes: [1, 2].map(index => ({ branchKey: randomUUID(), name: `Route ${index}`, percentage: 50, actions: [{ nodeKey: randomUUID(), type: "SET_SERVICE_STEP_OWNER", serviceConfig: { assignedToUserId: userId } }, noteAction("After crash")] })) } }]
+    const run = await db.automationRun.create({ data: { tenantId, contactId: fixture.contact.id, contactName: "Checkpoint", automationName: "Recover checkpoints", attemptId: randomUUID(), eventSource: "SERVICE_STEP_ENTERED", triggerType: "SERVICE_STEP_ENTERED", serviceContext: context, variables: { retained_value: 42 }, actionSnapshot: actions, status: "QUEUED" } })
+    const claim = (await claimAutomationExecutionJobs(db, "RUN")).find(item => item.id === run.id)!
+    assert.ok(claim)
+    assert.equal((await resumeAutomationRun(db, run.id, claim.leaseToken)).status, "QUEUED")
+    await releaseAutomationExecutionLease(db, "RUN", run.id, claim.leaseToken)
+    let current = await db.automationRun.findUniqueOrThrow({ where: { id: run.id } })
+    assert.equal(current.cursorIndex, 10)
+    assert.equal(await db.contactNote.count({ where: { tenantId } }), 10)
+    const old = (await claimAutomationExecutionJobs(db, "RUN")).find(item => item.id === run.id)!
+    await db.automationRun.update({ where: { id: run.id }, data: { leaseExpiresAt: new Date(0) } })
+    await db.automationExecutionLease.update({ where: { kind_jobId: { kind: "RUN", jobId: run.id } }, data: { expiresAt: new Date(0) } })
+    const recovered = (await claimAutomationExecutionJobs(db, "RUN")).find(item => item.id === run.id)!
+    assert.ok(recovered)
+    assert.notEqual(recovered.leaseToken, old.leaseToken)
+    assert.equal((await resumeAutomationRun(db, run.id, old.leaseToken)).status, "NOT_CLAIMED")
+    assert.equal((await resumeAutomationRun(db, run.id, recovered.leaseToken)).status, "QUEUED")
+    await releaseAutomationExecutionLease(db, "RUN", run.id, recovered.leaseToken)
+    current = await db.automationRun.findUniqueOrThrow({ where: { id: run.id } })
+    const decisions = current.branchDecisions
+    assert.equal(await db.serviceAutomationActionResult.count({ where: { runId: run.id } }), 1)
+    await resumeDueAutomationRuns(db)
+    current = await db.automationRun.findUniqueOrThrow({ where: { id: run.id } })
+    assert.equal(current.status, "SUCCEEDED", current.failureMessage ?? undefined)
+    assert.deepEqual(current.branchDecisions, decisions)
+    assert.deepEqual(current.variables, { retained_value: 42 })
+    assert.equal(await db.contactNote.count({ where: { tenantId } }), 11)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "After crash" } }), 1)
+    assert.equal(await db.serviceFollowUpExecutionLog.count({ where: { contactServiceId: fixture.id, eventType: "SET_SERVICE_STEP_OWNER" } }), 1)
+  })
+
+  test("completion actions on completed triggers emit no duplicate event and queued checkpoints hold the gate", async () => {
+    const fixture = await completionFixture()
+    const actions = [{ nodeKey: randomUUID(), type: "SET_SERVICE_STEP_OWNER", serviceConfig: { assignedToUserId: userId } }, { nodeKey: randomUUID(), type: "COMPLETE_SERVICE_STEP", serviceConfig: {} }]
+    assert.equal((await request(fixture.automationPath, "PATCH", { ...fixture.payload, isEnabled: true, actions })).status, 200)
+    const completed = await request(completePath(fixture.id, fixture.occurrence.id), "POST")
+    const eventId = completed.data.occurrence.completionEventId
+    await processCompletionEvent(eventId)
+    assert.equal((await db.serviceStepOccurrence.findUniqueOrThrow({ where: { id: fixture.occurrence.id } })).progressionStatus, "WAITING_AUTOMATION")
+    await resumeDueAutomationRuns(db)
+    assert.equal((await db.serviceStepOccurrence.findUniqueOrThrow({ where: { id: fixture.occurrence.id } })).progressionStatus, "ADVANCED")
+    assert.equal(await db.automationEvent.count({ where: { tenantId, triggerType: "SERVICE_STEP_COMPLETED" } }), 1)
+    assert.equal(await db.serviceAutomationActionResult.count({ where: { tenantId } }), 2)
+  })
+
+  test("automated revisits carry their chain and stop repeated transitions", async () => {
+    const fixture = await completionFixture()
+    const steps = (await request(`${settingsPath()}/${parentId}`)).data.service.steps
+    for (const [index, source] of steps.entries()) {
+      const entry = source.automations.find((item: any) => item.triggerType === "SERVICE_STEP_ENTERED")
+      const target = steps[index === 0 ? 1 : 0]
+      const saved = await request(`/api/account-settings/${tenantId}/automations/${entry.id}`, "PATCH", { name: `Move from ${source.title}`, trigger: { type: "SERVICE_STEP_ENTERED", serviceStepId: source.id, serviceOfferingId: null }, isEnabled: true, conditions: [], actions: [{ nodeKey: randomUUID(), type: "MOVE_SERVICE_STEP", serviceConfig: { targetSourceStepId: target.id, reason: "Automatic routing" } }] })
+      assert.equal(saved.status, 200, JSON.stringify(saved.data))
+    }
+    const enrollment = await fixture.enroll()
+    for (let pass = 0; pass < 6; pass++) {
+      const event = await db.automationEvent.findFirst({ where: { tenantId, status: "QUEUED", serviceContext: { path: ["contactServiceId"], equals: enrollment.id } }, orderBy: { createdAt: "asc" } })
+      if (!event) break
+      await processCompletionEvent(event.id)
+    }
+    const events = await db.automationEvent.findMany({ where: { tenantId }, include: { dispatches: true } })
+    assert.equal(new Set(events.map(event => event.chainId)).size, 1)
+    assert.equal(events.length, 3)
+    assert.ok(events.some(event => event.dispatches.some(dispatch => dispatch.decision === "SKIP_TRIGGER")))
+    assert.equal(await db.serviceStepMovement.count({ where: { contactServiceId: enrollment.id } }), 2)
+    assert.equal(await db.serviceStepOccurrence.count({ where: { contactServiceId: enrollment.id } }), 3)
   })
 
   test("migration groups old services without changing IDs, names, prices, or enrollment links", async () => {

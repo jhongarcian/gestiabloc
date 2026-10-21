@@ -76,7 +76,13 @@ export async function saveServiceStepsTx(
 
 export const enrolledServiceStepsSelect = {
   orderBy: [{ sortOrder: "asc" }],
-  include: { occurrences: { orderBy: [{ occurrenceNumber: "asc" }] } },
+  include: {
+    assignedTo: { select: { id: true, name: true, email: true } },
+    occurrences: {
+      orderBy: [{ occurrenceNumber: "asc" }],
+      include: { deadlineChanges: { orderBy: { revision: "asc" } } },
+    },
+  },
 } satisfies Prisma.ContactService$serviceStepsArgs
 
 // Entry and its automation event commit together under the enrollment lock.
@@ -89,6 +95,7 @@ export async function createServiceStepOccurrenceTx(
     stepId: string
     entryKey: string
     enteredAt: Date
+    automationChain?: import("./service-automation-actions.js").ServiceActionChain
     enteredByUserId?: string | null
   },
 ) {
@@ -139,6 +146,7 @@ export async function createServiceStepOccurrenceTx(
       occurrenceNumber: (last._max.occurrenceNumber ?? 0) + 1,
       enteredAt,
       dueAt,
+      defaultDueAt: dueAt,
       enteredByUserId: input.enteredByUserId ?? null,
     },
   })
@@ -159,6 +167,7 @@ export async function createServiceStepOccurrenceTx(
     tenantId,
     contactId: enrollment.contactId,
     actorUserId: input.enteredByUserId ?? null,
+    ...input.automationChain,
     serviceContext,
   })
   return occurrence

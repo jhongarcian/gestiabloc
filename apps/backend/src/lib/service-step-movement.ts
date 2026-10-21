@@ -24,16 +24,18 @@ export const MoveServiceStepSchema = z
 
 // Called with the enrollment lock held. Scoped child workflows are obsolete too;
 // unrelated contact workflows and work for other enrollments keep running.
-async function supersedeStepWorkTx(
+export async function supersedeStepWorkTx(
   tx: Prisma.TransactionClient,
   tenantId: string,
   contactServiceId: string,
   now: Date,
   reason: string,
-  actorUserId: string,
+  actorUserId: string | null,
+  preserveRunId?: string,
 ) {
   const scope: Prisma.AutomationRunWhereInput = {
     tenantId,
+    ...(preserveRunId ? { id: { not: preserveRunId } } : {}),
     AND: [
       { serviceContext: { path: ["contactServiceId"], equals: contactServiceId } },
       { serviceContext: { path: ["serviceStepOccurrenceId"], not: Prisma.JsonNull } },
@@ -139,7 +141,10 @@ export async function moveServiceStepTx(
   input: z.infer<typeof MoveServiceStepSchema> & {
     tenantId: string
     contactServiceId: string
-    actorUserId: string
+    actorUserId: string | null
+    actorName?: string
+    automationSource?: Prisma.InputJsonValue
+    automationChain?: import("./service-automation-actions.js").ServiceActionChain
     occurredAt?: Date
   },
 ) {
@@ -240,6 +245,7 @@ export async function moveServiceStepTx(
     now,
     `Step moved: ${input.reason}`,
     input.actorUserId,
+    (input.automationSource as { runId?: string } | undefined)?.runId,
   )
   let destinationId: string | null = null
   if (target) {
@@ -254,6 +260,7 @@ export async function moveServiceStepTx(
       entryKey: `movement:${input.requestId}`,
       enteredAt: now,
       enteredByUserId: input.actorUserId,
+      automationChain: input.automationChain,
     })
     destinationId = destination.id
   } else {
@@ -275,10 +282,10 @@ export async function moveServiceStepTx(
       },
     })
   }
-  const actor = await tx.user.findUniqueOrThrow({
+  const actor = input.actorUserId ? await tx.user.findUnique({
     where: { id: input.actorUserId },
     select: { name: true, email: true },
-  })
+  }) : null
   return tx.serviceStepMovement.create({
     data: {
       tenantId,
@@ -294,7 +301,8 @@ export async function moveServiceStepTx(
       skippedStepIds,
       reason: input.reason,
       actorUserId: input.actorUserId,
-      actorName: actor.name || actor.email,
+      actorName: input.actorName || actor?.name || actor?.email || "Automation",
+      ...(input.automationSource ? { automationSource: input.automationSource } : {}),
       createdAt: now,
     },
   })

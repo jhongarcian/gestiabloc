@@ -71,6 +71,11 @@ const ACTION_LABELS: Record<string, string> = {
   REMOVE_FROM_WORKFLOW: "Remove from workflow",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
+  MOVE_SERVICE_STEP: "Move service step", COMPLETE_SERVICE_STEP: "Complete service step",
+  SKIP_SERVICE_STEP: "Skip service step", SCHEDULE_SERVICE_STEP: "Schedule service step",
+  SET_SERVICE_STEP_OWNER: "Assign step owner", SET_SERVICE_COORDINATOR: "Assign coordinator",
+  SET_SERVICE_PROFESSIONAL: "Assign professional", SET_SERVICE_CHECKLIST_STATUS: "Update service checklist",
+  SET_SERVICE_STATUS: "Change service status",
 }
 
 export function getAutomationActionLabel(actionType: string) {

@@ -1,3 +1,4 @@
+import { serviceActionCatalog } from "../lib/service-automation-actions.js"
 import { readAutomationServiceContext } from "../lib/automation-service-context.js"
 import { Router } from "express"
 import { randomUUID } from "node:crypto"
@@ -213,6 +214,7 @@ function serializeAutomation(record: any) {
         assignedUserId: action.assignedUserId,
         tagId: action.tagId,
         value: legacyCustomFieldUpdates ? null : action.value,
+        serviceConfig: action.serviceConfig,
         waitConfig: action.waitConfig,
         noteTitle: action.noteTitle,
         noteBody: action.noteBody,
@@ -400,6 +402,7 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
         taskStatuses,
         tags,
         services,
+        serviceActionOfferings: await serviceActionCatalog(prisma, tenantId),
         serviceStepServices: serviceGroups.map((group: any) => ({ id: group.id, name: group.name, subServices: group.subServices.map((offering: any) => ({ id: offering.id, name: offering.name, steps: offering.stepsMode === "INHERIT" ? group.steps : offering.steps })) })),
         workflowAutomations: workflowAutomations.map((automation: any) => ({
           id: automation.id,

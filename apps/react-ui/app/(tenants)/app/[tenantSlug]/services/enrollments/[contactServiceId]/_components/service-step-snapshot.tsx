@@ -29,12 +29,16 @@ import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { ServiceStepDeadline, ServiceStepDeadlineHistory } from "./service-step-deadline"
+import type { StepDeadlineSchedule, StepDeadlineChange } from "@/lib/service-step-deadline"
 import { ServiceStepCompletionWait } from "./service-step-completion-wait"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 export type EnrolledServiceStep = {
   id: string
+  assignedToUserId?: string | null
+  assignedTo?: { id: string; name: string; email: string } | null
   sourceStepId: string
   title: string
   instructions: string | null
@@ -48,6 +52,10 @@ export type EnrolledServiceStep = {
     occurrenceNumber: number
     enteredAt: string
     dueAt: string
+    defaultDueAt: string
+    deadlineOverride: Exclude<StepDeadlineSchedule, { mode: "DEFAULT" }> | null
+    deadlineRevision: number
+    deadlineChanges: StepDeadlineChange[]
     status: "ACTIVE" | "COMPLETED" | "SKIPPED" | "CANCELED"
     resolvedAt: string | null
     resolutionReason: string | null
@@ -65,6 +73,7 @@ export type EnrolledServiceStep = {
 export function ServiceStepSnapshot({
   steps,
   movements = [],
+  assignees = [],
   timezone,
   tenantId,
   contactServiceId,
@@ -72,6 +81,7 @@ export function ServiceStepSnapshot({
   onRefresh,
 }: {
   steps: EnrolledServiceStep[]
+  assignees?: Array<{ value: string; label: string }>
   movements?: StepMovement[]
   timezone?: string | null
   tenantId: string
@@ -148,6 +158,21 @@ export function ServiceStepSnapshot({
           /* Keep the saved request available. */
         }
       }
+    } finally {
+      savingRef.current = false
+      setSavingId(null)
+    }
+  }
+  const assignOwner = async (stepId: string, assignedToUserId: string | null) => {
+    if (savingRef.current) return
+    savingRef.current = true
+    setSavingId(`owner:${stepId}`)
+    try {
+      await api.patch(`/api/services/${tenantId}/contact-services/${contactServiceId}/service-steps/${stepId}/owner`, { assignedToUserId })
+      await onRefresh()
+      toast.success("Step owner updated")
+    } catch {
+      toast.error("Could not update the step owner. Refresh and try again.")
     } finally {
       savingRef.current = false
       setSavingId(null)
@@ -252,17 +277,28 @@ export function ServiceStepSnapshot({
                           : "Not entered"}
                   </Badge>
                 </div>
+                <Field className="max-w-sm">
+                  <FieldLabel htmlFor={`${formId}-owner-${step.id}`}>Step owner</FieldLabel>
+                  {canComplete ? <Select value={step.assignedToUserId ?? "unassigned"} disabled={savingId !== null} onValueChange={value => void assignOwner(step.id, value === "unassigned" ? null : value)}>
+                    <SelectTrigger id={`${formId}-owner-${step.id}`}><SelectValue placeholder="Unassigned" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="unassigned">Unassigned</SelectItem>
+                      {step.assignedToUserId && !assignees.some(user => user.value === step.assignedToUserId) ? <SelectItem value={step.assignedToUserId} disabled>{step.assignedTo?.name ?? "Inactive member"}</SelectItem> : null}
+                      {assignees.map(user => <SelectItem key={user.value} value={user.value}>{user.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select> : <p className="text-sm text-muted-foreground">{step.assignedTo?.name ?? "Unassigned"}</p>}
+                  <FieldDescription>Retained when this step is revisited.</FieldDescription>
+                </Field>
                 {step.instructions ? (
                   <p className="whitespace-pre-wrap text-sm leading-6">{step.instructions}</p>
                 ) : null}
                 <p className="text-sm text-muted-foreground">
-                  Completion timeframe: {step.completionDuration}{" "}
+                  Default timeframe: {step.completionDuration}{" "}
                   {step.completionUnit.toLowerCase()} from entry
                 </p>
                 {latest ? (
                   <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted-foreground">
                     <p>Entered {date(latest.enteredAt)}</p>
-                    <p>Deadline {date(latest.dueAt)}</p>
                   </div>
                 ) : (
                   <p className="text-sm text-muted-foreground">
@@ -271,6 +307,24 @@ export function ServiceStepSnapshot({
                       : "The deadline starts when this step is entered."}
                   </p>
                 )}
+                {latest ? (
+                  <ServiceStepDeadline
+                    occurrence={latest}
+                    stepTitle={step.title}
+                    defaultAmount={step.completionDuration}
+                    defaultUnit={step.completionUnit}
+                    timezone={timezone}
+                    tenantId={tenantId}
+                    contactServiceId={contactServiceId}
+                    canManage={canComplete}
+                    disabled={savingId !== null}
+                    mutationRef={savingRef}
+                    onSavingChange={(saving) =>
+                      setSavingId(saving ? `deadline:${latest.id}` : null)
+                    }
+                    onRefresh={onRefresh}
+                  />
+                ) : null}
                 {latest?.status === "ACTIVE" && canComplete ? (
                   <div className="flex flex-wrap gap-2">
                     <Button
@@ -338,11 +392,20 @@ export function ServiceStepSnapshot({
                   <div className="flex flex-col gap-2 border-t pt-3">
                     <p className="text-sm font-medium">Entry history</p>
                     {step.occurrences.map((entry) => (
-                      <p key={entry.id} className="text-sm text-muted-foreground">
-                        Entry {entry.occurrenceNumber}: {date(entry.enteredAt)} ·{" "}
-                        {entry.status.toLowerCase()}
-                        {entry.resolutionReason ? ` · ${entry.resolutionReason}` : ""}
-                      </p>
+                      <div key={entry.id} className="flex flex-col gap-2">
+                        <p className="text-sm text-muted-foreground">
+                          Entry {entry.occurrenceNumber}: {date(entry.enteredAt)} ·{" "}
+                          {entry.status.toLowerCase()}
+                          {entry.resolutionReason ? ` · ${entry.resolutionReason}` : ""}
+                          {entry.id !== latest?.id ? ` · Deadline ${date(entry.dueAt)}` : ""}
+                        </p>
+                        {entry.id !== latest?.id ? (
+                          <ServiceStepDeadlineHistory
+                            changes={entry.deadlineChanges}
+                            timezone={timezone}
+                          />
+                        ) : null}
+                      </div>
                     ))}
                   </div>
                 ) : null}

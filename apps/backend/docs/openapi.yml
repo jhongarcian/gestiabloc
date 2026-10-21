@@ -4850,6 +4850,64 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/follow-ups:
+    get:
+      tags: [Services]
+      summary: Follow-up queue with effective deadlines and urgency
+      description: >-
+        Includes service-owned steps and existing template work. Uses latest saved entries and a
+        consistent response asOf time. Filters and ordering apply before pagination. Scheduled
+        completion automation work is separate from actionable deadlines. Unentered, superseded,
+        completed and paused work cannot be overdue. Summary counts cover unfinished tenant work
+        independently of list filters. No configuration or workflow changes are made.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: query, name: page, schema: { type: integer, minimum: 1, maximum: 1000000, default: 1 } }
+        - { in: query, name: pageSize, schema: { type: integer, enum: [10, 25], default: 10 } }
+        - { in: query, name: search, schema: { type: string, maxLength: 200 } }
+        - { in: query, name: sort, schema: { type: string, enum: [URGENCY, UPDATED_DESC, STARTED_DESC, CONTACT_ASC, SERVICE_ASC], default: URGENCY } }
+        - { in: query, name: queueState, schema: { type: string, enum: [ACTIONABLE, SCHEDULED, NEEDS_ATTENTION, FINISHED] } }
+        - { in: query, name: status, schema: { type: string, enum: [PENDING, ACTIVE, COMPLETED, SKIPPED, POSTPONED] } }
+        - { in: query, name: dueDatePreset, schema: { type: string, enum: [OVERDUE, DUE_SOON, TODAY, NEXT_7_DAYS, NO_DUE_DATE] } }
+        - { in: query, name: followUpTemplateId, schema: { type: string, format: uuid } }
+        - { in: query, name: assignedToUserId, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Queue page ordered using the latest effective deadlines
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  asOf: { type: string, format: date-time }
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ServiceFollowUpQueueItem"
+                  pagination:
+                    type: object
+                    properties:
+                      page: { type: integer }
+                      pageSize: { type: integer }
+                      total: { type: integer }
+                      totalPages: { type: integer }
+                  summary:
+                    type: object
+                    properties:
+                      servicesInProgress: { type: integer }
+                      overdueEnrollments: { type: integer }
+                      dueToday: { type: integer }
+                      dueSoon: { type: integer }
+                      actionable: { type: integer }
+                      scheduled: { type: integer }
+                      needsAttention: { type: integer }
+                      averageProgress: { type: integer }
+        "400": { description: Invalid queue query }
+        "401": { description: Not authenticated }
+        "403": { description: Tenant access denied }
   /api/services/{tenantId}/contact-services/{contactServiceId}:
     get:
       tags: [Services]
@@ -5021,6 +5079,50 @@ paths:
         "403": { description: Tenant or security level denied }
         "404": { description: Enrollment not found }
         "409": { description: Source changed, duplicate request conflicts, or enrollment is inactive }
+  /api/services/{tenantId}/contact-services/{contactServiceId}/step-occurrences/{occurrenceId}/deadline:
+    post:
+      tags: [Services]
+      summary: Change or restore an enrollment step entry deadline
+      description: >-
+        Requires an active tenant admin or MEDIUM/MAX member. Only an ACTIVE non-superseded entry
+        can change. Durations count from entry. Fixed dates must follow entry and be within ten years,
+        but may be overdue. DEFAULT restores the frozen entry default. Does not move steps, fire
+        triggers, or reschedule automation waits. History and revisions commit atomically.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: path, name: contactServiceId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: occurrenceId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requestId, expectedDeadlineRevision, schedule]
+              properties:
+                requestId: { type: string, format: uuid }
+                expectedDeadlineRevision: { type: integer, minimum: 0, maximum: 2147483646 }
+                schedule:
+                  $ref: "#/components/schemas/ServiceStepDeadlineSchedule"
+      responses:
+        "200":
+          description: Canonical occurrence including frozen default, current override, revision and deadline history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  occurrence:
+                    $ref: "#/components/schemas/ServiceStepOccurrence"
+        "400": { description: Invalid duration, date, or payload }
+        "401": { description: Not authenticated }
+        "403": { description: Tenant access or security level denied }
+        "404": { description: Scoped enrollment or occurrence not found }
+        "409": { description: Stale deadline revision, conflicting retry, moved/completed entry, or inactive enrollment }
   /api/services/{tenantId}/contact-services/{contactServiceId}/step-occurrences/{occurrenceId}/completion-wait:
     get:
       tags: [Services]
@@ -11158,6 +11260,92 @@ components:
         actorUserId: { type: string, format: uuid }
         actorName: { type: string }
         createdAt: { type: string, format: date-time }
+    ServiceFollowUpQueueItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workflowKind: { type: string, enum: [SERVICE_STEPS, LEGACY_TEMPLATE, NONE] }
+        status: { type: string }
+        contactId: { type: string, format: uuid }
+        contactName: { type: string }
+        phoneNumber: { type: string, nullable: true }
+        serviceId: { type: string, format: uuid }
+        serviceName: { type: string }
+        parentService:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+        queueState: { type: string, enum: [ACTIONABLE, SCHEDULED, NEEDS_ATTENTION, FINISHED] }
+        queueMessage: { type: string, nullable: true }
+        scheduledAt: { type: string, format: date-time, nullable: true }
+        overdue: { type: boolean }
+        timing:
+          type: object
+          properties:
+            status: { type: string, enum: [NONE, ON_TRACK, DUE_SOON, OVERDUE] }
+            remainingMs: { type: number, nullable: true, description: Signed milliseconds until the effective deadline }
+            timeframeMs: { type: number, nullable: true, description: Elapsed timeframe from entry to effective deadline }
+            warningAt: { type: string, format: date-time, nullable: true }
+        currentStep:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            occurrenceId: { type: string, format: uuid, description: Present for service-owned steps }
+            title: { type: string }
+            status: { type: string }
+            availableAt: { type: string, format: date-time, nullable: true }
+            effectiveDueAt: { type: string, format: date-time, nullable: true }
+            effectiveDueSource: { type: string, nullable: true }
+            effectiveDueProjected: { type: boolean }
+            assignedToUserId: { type: string, nullable: true }
+            assignedToName: { type: string, nullable: true }
+            stepNumber: { type: integer, nullable: true }
+        progress:
+          type: object
+          properties:
+            completedCount: { type: integer }
+            totalCount: { type: integer }
+            remainingCount: { type: integer }
+            completionPercentage: { type: integer }
+    ServiceStepDeadlineSchedule:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: { type: string, enum: [DEFAULT] }
+        - type: object
+          additionalProperties: false
+          required: [mode, amount, unit]
+          properties:
+            mode: { type: string, enum: [DURATION] }
+            amount: { type: integer, minimum: 1, maximum: 5256000, description: Positive whole-number timeframe; combined unit duration must be ten years or less. }
+            unit: { type: string, enum: [MINUTES, HOURS, DAYS] }
+        - type: object
+          additionalProperties: false
+          required: [mode, dateTime]
+          properties:
+            mode: { type: string, enum: [FIXED_DATE] }
+            dateTime: { type: string, format: date-time, description: Explicit-offset instant after entry and within ten years. }
+    ServiceStepDeadlineChange:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        requestId: { type: string, format: uuid }
+        previousDueAt: { type: string, format: date-time }
+        dueAt: { type: string, format: date-time }
+        previousRevision: { type: integer }
+        revision: { type: integer }
+        previousSchedule:
+          $ref: "#/components/schemas/ServiceStepDeadlineSchedule"
+        schedule:
+          $ref: "#/components/schemas/ServiceStepDeadlineSchedule"
+        actorUserId: { type: string, format: uuid }
+        actorName: { type: string }
+        createdAt: { type: string, format: date-time }
     ServiceStepOccurrence:
       type: object
       properties:
@@ -11167,6 +11355,17 @@ components:
         status: { type: string, enum: [ACTIVE, COMPLETED, SKIPPED, CANCELED] }
         enteredAt: { type: string, format: date-time }
         dueAt: { type: string, format: date-time }
+        defaultDueAt: { type: string, format: date-time, description: Frozen default assigned on entry. }
+        deadlineRevision: { type: integer, minimum: 0 }
+        deadlineOverride:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/ServiceStepDeadlineSchedule"
+          description: Null uses the default; otherwise DURATION or FIXED_DATE.
+        deadlineChanges:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceStepDeadlineChange"
         resolvedAt: { type: string, format: date-time, nullable: true }
         resolutionReason: { type: string, nullable: true }
         supersededAt: { type: string, format: date-time, nullable: true }
@@ -11175,7 +11374,7 @@ components:
         progressionStatus: { type: string, enum: [NONE, WAITING_AUTOMATION, PAUSED, SUPERSEDED, ADVANCED, FINISHED] }
         progressionMessage: { type: string, nullable: true }
         advancedAt: { type: string, format: date-time, nullable: true }
-      description: A saved entry into an enrolled step. Revisits create new occurrences. Unentered steps have no occurrence or deadline. Only one occurrence can be active per enrollment.
+      description: A saved entry into an enrolled step. Revisits create new occurrences. Unentered steps have no occurrence or deadline. Deadline overrides apply only to this entry and retain audit history. Only one occurrence can be active per enrollment.
     EnrolledServiceStep:
       allOf:
         - $ref: "#/components/schemas/ServiceStep"

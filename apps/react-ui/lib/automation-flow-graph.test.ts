@@ -1,3 +1,4 @@
+import { SERVICE_ACTION_LABELS } from "./service-automation-action.js"
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
@@ -5,6 +6,7 @@ import { buildAutomationFlowGraph } from "../app/(tenants)/app/[tenantSlug]/acco
 import type { AutomationCatalog } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types.js"
 
 const labels = {
+  ...SERVICE_ACTION_LABELS,
   CREATE_CONTACT: "Create contact",
   UPDATE_CONTACT_CUSTOM_FIELDS: "Update contact fields",
   SET_CONTACT_STATUS: "Set contact status",

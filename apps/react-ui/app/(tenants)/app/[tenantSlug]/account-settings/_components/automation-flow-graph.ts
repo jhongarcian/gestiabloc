@@ -1,3 +1,4 @@
+import { isServiceAutomationAction, terminalServiceAction } from "@/lib/service-automation-action"
 import type { Edge, Node } from "@xyflow/react"
 
 import { formatDateTimeForDisplay } from "@/lib/date-time"
@@ -10,7 +11,7 @@ export type AutomationFlowNodeData = {
   subtitle?: string
   configured?: boolean
   actionType?: AutomationAction["type"]
-  actionGroup?: "INTERNAL" | "OPPORTUNITY" | "CONTACT" | "COMMUNICATION"
+  actionGroup?: "SERVICE" | "INTERNAL" | "OPPORTUNITY" | "CONTACT" | "COMMUNICATION"
   index?: number
   insertionIndex?: number
   actionNodeKey?: string
@@ -74,6 +75,7 @@ const OPPORTUNITY_ACTION_TYPES = new Set<AutomationAction["type"]>([
 ])
 
 function actionVisualGroup(type: AutomationAction["type"]): NonNullable<AutomationFlowNodeData["actionGroup"]> {
+  if (isServiceAutomationAction(type)) return "SERVICE"
   if (CONTACT_ACTION_TYPES.has(type)) return "CONTACT"
   if (OPPORTUNITY_ACTION_TYPES.has(type)) return "OPPORTUNITY"
   return "INTERNAL"
@@ -384,7 +386,7 @@ export function buildAutomationFlowGraph(
     let previousNodeY = startY
     let previousNodeKind: "add" | "action" = "add"
     let y = startY
-    const endsWithTerminal = actions.at(-1)?.type === "DELETE_CONTACT" ||
+    const endsWithTerminal = (actions.at(-1) && terminalServiceAction(actions.at(-1)!)) || actions.at(-1)?.type === "DELETE_CONTACT" ||
       actions.at(-1)?.type === "IF_ELSE" ||
       actions.at(-1)?.type === "SPLIT" ||
       actions.at(-1)?.type === "GO_TO"
@@ -485,7 +487,7 @@ export function buildAutomationFlowGraph(
       data: {
         kind: "complete",
         label: "Complete",
-        subtitle: actions.at(-1)?.type === "DELETE_CONTACT"
+        subtitle: actions.at(-1) && terminalServiceAction(actions.at(-1)!) ? "Workflow ended by service action" : actions.at(-1)?.type === "DELETE_CONTACT"
           ? "Contact deleted"
           : "All actions completed",
       },
