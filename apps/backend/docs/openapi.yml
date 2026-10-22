@@ -4473,11 +4473,13 @@ paths:
   /api/services/{tenantId}/options:
     get:
       tags: [Services]
-      summary: List active tenant services for selection controls
+      summary: List sub-services and their parent services for selection controls
+      description: Active offerings of active parents by default. includeInactive is for historical filters; it does not make inactive services enrollable.
       security:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: query, name: includeInactive, schema: { type: boolean, default: false } }
       responses:
         "200":
           description: Active tenant services returned
@@ -4500,6 +4502,11 @@ paths:
                           type: string
                         name:
                           type: string
+                        kind: { type: string, enum: [OFFERING] }
+                        isActive: { type: boolean }
+                        parentServiceId: { type: string, format: uuid }
+                        parentService:
+                          $ref: "#/components/schemas/ServiceParentIdentity"
         "401":
           description: Not authenticated
           content:
@@ -4512,6 +4519,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/catalog:
+    get:
+      tags: [Services]
+      summary: List active sub-services with their effective workflow configuration
+      description: Any active tenant member can read this catalog. Inherited steps, checklist and professionals are resolved; automation summaries exclude other sub-services. Only active offerings of active parents are returned.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: query, name: page, schema: { type: integer, minimum: 1, maximum: 1000000, default: 1 } }
+        - { in: query, name: pageSize, schema: { type: integer, enum: [10, 25], default: 10 } }
+        - { in: query, name: search, description: Matches offering name, description or parent name., schema: { type: string, maxLength: 200 } }
+        - { in: query, name: serviceGroupId, schema: { type: string, format: uuid } }
+        - { in: query, name: serviceId, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Effective sub-service configuration page with items and pagination
+        "400": { description: Invalid query }
+        "401": { description: Not authenticated }
+        "403": { description: Tenant access denied }
   /api/services/{tenantId}/catalog-summary:
     get:
       tags: [Services]
@@ -4521,6 +4547,8 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: query, name: serviceGroupId, description: Parent service scope; intersects serviceId when both are supplied., schema: { type: string, format: uuid } }
+        - { in: query, name: serviceId, description: Exact sub-service scope., schema: { type: string, format: uuid } }
         - in: query
           name: preset
           required: false
@@ -4611,6 +4639,7 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: query, name: serviceGroupId, description: Parent service scope; intersects serviceId when both are supplied., schema: { type: string, format: uuid } }
         - in: query
           name: page
           schema:
@@ -4694,6 +4723,7 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: query, name: serviceGroupId, description: Parent service scope; intersects serviceId when both are supplied., schema: { type: string, format: uuid } }
         - in: query
           name: page
           schema:
@@ -4935,12 +4965,14 @@ paths:
         Includes service-owned steps and existing template work. Uses latest saved entries and a
         consistent response asOf time. Filters and ordering apply before pagination. Scheduled
         completion automation work is separate from actionable deadlines. Unentered, superseded,
-        completed and paused work cannot be overdue. Summary counts cover unfinished tenant work
-        independently of list filters. No configuration or workflow changes are made.
+        completed and paused work cannot be overdue. Summary counts cover unfinished work within the selected service/sub-service scope
+        independently of other list filters. No configuration or workflow changes are made.
       security:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: query, name: serviceGroupId, description: Parent service scope; intersects serviceId when both are supplied., schema: { type: string, format: uuid } }
+        - { in: query, name: serviceId, description: Exact sub-service scope., schema: { type: string, format: uuid } }
         - { in: query, name: page, schema: { type: integer, minimum: 1, maximum: 1000000, default: 1 } }
         - { in: query, name: pageSize, schema: { type: integer, enum: [10, 25], default: 10 } }
         - { in: query, name: search, schema: { type: string, maxLength: 200 } }
@@ -12664,6 +12696,13 @@ components:
         defaultTaxRatePercent:
           type: number
           nullable: true
+    ServiceParentIdentity:
+      type: object
+      nullable: true
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        isActive: { type: boolean }
     ServiceCatalogChecklistItem:
       type: object
       properties:
@@ -12740,6 +12779,13 @@ components:
               type: string
             name:
               type: string
+            parentService:
+              $ref: "#/components/schemas/ServiceParentIdentity"
+            steps:
+              type: array
+              description: Ordered effective steps with applicable linked automation summaries.
+              items:
+                $ref: "#/components/schemas/ServiceStep"
             description:
               type: string
               nullable: true
@@ -12839,6 +12885,8 @@ components:
               type: string
             name:
               type: string
+            parentService:
+              $ref: "#/components/schemas/ServiceParentIdentity"
         currency:
           type: string
         totalPriceCents:
@@ -12914,6 +12962,8 @@ components:
       type: object
       required: [id, contact, service, template, status, coordinator, startedAt, lastActivityAt]
       properties:
+        workflowKind:
+          $ref: "#/components/schemas/ServiceWorkflowKind"
         id:
           type: string
         contact:
@@ -12938,6 +12988,8 @@ components:
               type: string
             name:
               type: string
+            parentService:
+              $ref: "#/components/schemas/ServiceParentIdentity"
         template:
           type: object
           nullable: true
@@ -13099,6 +13151,19 @@ components:
           description: Saved definitions with occurrence history, returned by enrollment workspace views.
           items:
             $ref: "#/components/schemas/EnrolledServiceStep"
+        stepMovements:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceStepMovement"
+        stepProgress:
+          type: object
+          nullable: true
+          description: Latest saved occurrence state plus bypassed steps; revisits reset the affected step.
+          properties:
+            total: { type: integer }
+            completed: { type: integer }
+            remaining: { type: integer }
+            percentage: { type: integer }
         id:
           type: string
         status:
@@ -13150,6 +13215,8 @@ components:
               type: string
             name:
               type: string
+            parentService:
+              $ref: "#/components/schemas/ServiceParentIdentity"
             description:
               type: string
               nullable: true
@@ -13552,6 +13619,10 @@ components:
       type: object
       required: [contactId, serviceId]
       properties:
+        workflowKind:
+          type: string
+          enum: [SERVICE_STEPS]
+          description: New interface always supplies SERVICE_STEPS. Rejects zero-step configuration and explicit template selection; omitted only for legacy API compatibility until Chunk 20.
         contactId:
           type: string
         serviceId:
@@ -13562,7 +13633,7 @@ components:
         followUpAssignedToUserId:
           type: string
           nullable: true
-          description: Optional initial follow-up coordinator. The same user seeds each generated step assignee at enrollment creation only.
+          description: Optional enrollment coordinator. Service-step owners start unassigned and are set separately; only legacy generated follow-ups inherit this user.
         assignedProfessionalId:
           type: string
           nullable: true

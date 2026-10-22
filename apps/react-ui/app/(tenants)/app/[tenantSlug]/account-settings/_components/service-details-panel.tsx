@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   closestCenter,
@@ -408,6 +408,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
   const checklistInherited = !isGroup && sectionModes.checklistMode === "INHERIT"
   const professionalsInherited = !isGroup && sectionModes.professionalsMode === "INHERIT"
   const router = useRouter()
+  const configurationQuery = useSearchParams()
   const [activeTab, setActiveTab] = useState<
     | "overview"
     | "fit-rules"
@@ -417,7 +418,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     | "sub-services"
     | "steps"
     | "updates"
-  >(service.kind === "GROUP" ? "sub-services" : "overview")
+  >(configurationQuery.get("tab") === "steps" ? "steps" : service.kind === "GROUP" ? "sub-services" : "overview")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const saveInFlight = useRef(false)
   const [isChecklistSaving, setIsChecklistSaving] = useState(false)
@@ -534,10 +535,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
   const checklistComplete = checklistItems.some((item) => item.label.trim())
   const requiredChecklistCount = checklistItems.filter((item) => item.isRequired).length
   const optionalChecklistCount = checklistItems.length - requiredChecklistCount
-  const followUpsComplete =
-    configuredSteps.length > 0 ||
-    service.followUpTemplates.length > 0 ||
-    service.followUpTemplateSteps.length > 0
+  const followUpsComplete = configuredSteps.length > 0
   const totalTemplateNodes = useMemo(
     () =>
       service.followUpTemplates.reduce(
@@ -671,14 +669,6 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         isComplete: configuredSteps.length > 0,
       },
       {
-        key: "follow-up-templates" as const,
-        label: "Follow-Up Templates",
-        value: service.followUpTemplates.length,
-        hint: followUpsComplete ? "Ready to enroll" : "No template yet",
-        icon: Route,
-        isComplete: followUpsComplete,
-      },
-      {
         key: "professionals" as const,
         label: "Professionals",
         value: professionals.length,
@@ -692,13 +682,11 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       configuredSteps.length,
       checklistComplete,
       checklistItems.length,
-      followUpsComplete,
       installmentCountNumber,
       isTaxExempt,
       overviewComplete,
       professionals.length,
       professionalsComplete,
-      service.followUpTemplates.length,
       service.tenantBilling.taxEnabled,
       tenantTaxRatePercent,
     ],
@@ -1202,7 +1190,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
             <p className="text-sm text-slate-600">
               {isGroup
                 ? "Set the billing, checklist, step, and professional defaults your sub-services can inherit."
-                : "Configure overview, checklist, follow-up templates, and professionals from one workspace."}
+                : "Configure billing, checklist, steps, automations and professionals from one workspace."}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -1236,9 +1224,6 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       <section className="rounded-[20px] border border-slate-200 bg-white p-4 md:p-5">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {summaryItems
-            .filter(
-              (item) => item.key !== "follow-up-templates" || (!isGroup && !configuredSteps.length),
-            )
             .map((item) => {
               const Icon = item.icon
 
@@ -1327,14 +1312,6 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
             </TabsTrigger>
             <TabsTrigger value="steps">Steps</TabsTrigger>
             <TabsTrigger value="updates">Enrollment updates</TabsTrigger>
-            {!isGroup ? (
-              <TabsTrigger
-                value="follow-up-templates"
-                className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"
-              >
-                Follow-Up Templates
-              </TabsTrigger>
-            ) : null}
             <TabsTrigger
               value="professionals"
               className="inline-flex h-8 cursor-pointer rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-slate-600 shadow-none transition hover:bg-blue-900/10 hover:text-slate-900 data-[state=active]:bg-blue-950 data-[state=active]:text-white data-[state=active]:shadow-none md:text-sm"

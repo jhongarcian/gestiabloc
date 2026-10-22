@@ -45,6 +45,7 @@ export type CalendarMetaResponse = {
     services: Array<{
       id: string
       name: string
+      parentService?: { id: string; name: string } | null
     }>
   }
 }

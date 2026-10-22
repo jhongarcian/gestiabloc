@@ -1,5 +1,9 @@
 "use client"
 
+import { ServiceWorkflowSummary } from "@/components/service-workflow-summary"
+import { serviceWorkflowError, serviceOfferingLabel } from "@/lib/service-hierarchy"
+import type { ServiceStepItem } from "../../../account-settings/_components/service-steps-panel"
+
 import { format } from "date-fns"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -118,6 +122,8 @@ export type ServiceOverviewPanelProps = {
   tenantId: string
   tenantSlug: string
   service: {
+    steps: ServiceStepItem[]
+    parentService?: { id: string; name: string } | null
     id: string
     name: string
     description: string | null
@@ -174,7 +180,6 @@ type CreateContactServiceResponse = {
 
 type TransactionFormState = {
   contactId: string
-  templateId: string
   assignedProfessionalId: string
   followUpAssignedToUserId: string
   paymentMode: "FULL" | "PARTIAL" | "LATER"
@@ -700,7 +705,6 @@ function CreateTransactionDialog({
   const [contactResults, setContactResults] = useState<ContactSearchResult[]>([])
   const [contactSearchQuery, setContactSearchQuery] = useState("")
   const [debouncedContactSearchQuery, setDebouncedContactSearchQuery] = useState("")
-  const [templateId, setTemplateId] = useState("")
   const [assignedProfessionalId, setAssignedProfessionalId] = useState("")
   const [followUpAssignedToUserId, setFollowUpAssignedToUserId] = useState("")
   const [paymentMode, setPaymentMode] = useState<"FULL" | "PARTIAL" | "LATER">("FULL")
@@ -731,22 +735,10 @@ function CreateTransactionDialog({
     () =>
       z
         .object({
-          templateId: optionalStringIdSchema,
           assignedProfessionalId: optionalStringIdSchema,
           followUpAssignedToUserId: optionalStringIdSchema,
         })
         .superRefine((value, ctx) => {
-          if (
-            value.templateId &&
-            !service.followUpTemplates.some((template) => template.id === value.templateId)
-          ) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["templateId"],
-              message: "Select a valid follow-up template.",
-            })
-          }
-
           if (
             value.assignedProfessionalId &&
             !service.professionals.some(
@@ -773,7 +765,7 @@ function CreateTransactionDialog({
             })
           }
         }),
-    [followUpAssigneeOptions, service.followUpTemplates, service.professionals],
+    [followUpAssigneeOptions, service.professionals],
   )
 
   const paymentStepSchema = useMemo(
@@ -881,8 +873,9 @@ function CreateTransactionDialog({
   }
 
   const validateFollowUpStep = () => {
+    const error = serviceWorkflowError(service)
+    if (error) { toast.error(error); return false }
     const result = followUpStepSchema.safeParse({
-      templateId,
       assignedProfessionalId,
       followUpAssignedToUserId,
     })
@@ -890,7 +883,6 @@ function CreateTransactionDialog({
     if (result.success) {
       setErrors((current) => ({
         ...current,
-        templateId: undefined,
         assignedProfessionalId: undefined,
         followUpAssignedToUserId: undefined,
       }))
@@ -898,7 +890,6 @@ function CreateTransactionDialog({
     }
 
     applySchemaErrors(result, [
-      "templateId",
       "assignedProfessionalId",
       "followUpAssignedToUserId",
     ])
@@ -933,7 +924,6 @@ function CreateTransactionDialog({
     setContactResults([])
     setContactSearchQuery("")
     setDebouncedContactSearchQuery("")
-    setTemplateId("")
     setAssignedProfessionalId("")
     setFollowUpAssignedToUserId("")
     setPaymentMode("FULL")
@@ -1086,6 +1076,8 @@ function CreateTransactionDialog({
           ? 0
           : parseUsdToCents(initialPaymentUsd)
 
+    const workflowError = serviceWorkflowError(service)
+    if (workflowError) { toast.error(workflowError); return }
     setIsSaving(true)
 
     try {
@@ -1094,7 +1086,7 @@ function CreateTransactionDialog({
         {
           contactId: selectedContact.id,
           serviceId: service.id,
-          ...(templateId ? { followUpTemplateId: templateId } : {}),
+          workflowKind: "SERVICE_STEPS",
           ...(followUpAssignedToUserId ? { followUpAssignedToUserId } : {}),
           ...(assignedProfessionalId ? { assignedProfessionalId } : {}),
           ...(initialPaymentCents !== null ? { initialPaymentCents } : {}),
@@ -1141,7 +1133,7 @@ function CreateTransactionDialog({
         <DialogHeader className="shrink-0">
           <DialogTitle>Create service transaction</DialogTitle>
           <DialogDescription>
-            This transaction is already tied to {service.name}.
+            This transaction is already tied to {serviceOfferingLabel(service)}.
           </DialogDescription>
         </DialogHeader>
 
@@ -1149,7 +1141,7 @@ function CreateTransactionDialog({
           <div className="flex items-center gap-2">
             {[
               { value: 1, label: "Contact" },
-              { value: 2, label: "Follow up" },
+              { value: 2, label: "Workflow" },
               { value: 3, label: "Checklist" },
               { value: 4, label: "Payment" },
             ].map((item) => {
@@ -1188,7 +1180,7 @@ function CreateTransactionDialog({
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
               Selected service
             </p>
-            <p className="mt-1 text-sm font-medium text-slate-900">{service.name}</p>
+            <p className="mt-1 text-sm font-medium text-slate-900">{serviceOfferingLabel(service)}</p>
             <p className="mt-1 text-sm text-slate-600">
               {formatCurrency(service.basePriceCents, service.currency)}
             </p>
@@ -1282,53 +1274,14 @@ function CreateTransactionDialog({
             <section className="space-y-3">
               <div className="rounded-2xl border border-violet-100 bg-violet-50/70 p-3.5">
                 <p className="text-sm font-semibold text-violet-950">
-                  Set up the follow-up workflow for this service
+                  Review the service workflow
                 </p>
                 <p className="mt-1 text-sm leading-5 text-violet-900/80">
-                  Choose the template, optionally assign a professional, and decide who should own the follow-up work.
+                  Review the saved steps, optionally assign a professional, and choose an enrollment coordinator.
                 </p>
               </div>
 
-              <FlowStepCard
-                stepNumber="1"
-                title="Which follow-up template should start?"
-                description="Use the default published template or choose one of the published templates already configured for this service."
-              >
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-template">Follow-Up Template</Label>
-                  <Select
-                    value={templateId || "default"}
-                    onValueChange={(value) => {
-                      clearFieldError("templateId")
-                      setTemplateId(value === "default" ? "" : value)
-                    }}
-                  >
-                    <SelectTrigger id="service-transaction-template">
-                      <SelectValue placeholder="Use default template selection" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="default">Use default published template</SelectItem>
-                      {service.followUpTemplates.map((template) => (
-                        <SelectItem key={template.id} value={template.id}>
-                          {template.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {service.followUpTemplates.length === 0 ? (
-                    <p className="text-xs text-slate-500">
-                      No published templates are available for this service. The transaction can still proceed if the service has default follow-up steps.
-                    </p>
-                  ) : (
-                    <p className="text-xs text-slate-500">
-                      Leaving this on default uses the service&apos;s standard published template.
-                    </p>
-                  )}
-                  {errors.templateId ? (
-                    <p className="text-xs text-rose-600">{errors.templateId}</p>
-                  ) : null}
-                </div>
-              </FlowStepCard>
+              <ServiceWorkflowSummary steps={service.steps} tenantSlug={tenantSlug} serviceId={service.id} />
 
               <FlowStepCard
                 stepNumber="2"
@@ -1362,11 +1315,11 @@ function CreateTransactionDialog({
 
               <FlowStepCard
                 stepNumber="3"
-                title="Who should be in charge of the follow up?"
-                description="Optional. This user will be assigned to the follow-up steps created from the selected template."
+                title="Who should coordinate this enrollment?"
+                description="Optional. This person coordinates the enrollment; individual step owners can be assigned separately."
               >
                 <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-follow-up-assignee">Follow-Up Owner</Label>
+                  <Label htmlFor="service-transaction-follow-up-assignee">Enrollment coordinator</Label>
                   <FollowUpAssigneePicker
                     assignees={followUpAssigneeOptions}
                     value={followUpAssignedToUserId}
@@ -1380,7 +1333,7 @@ function CreateTransactionDialog({
                     <p className="text-xs text-slate-500">Loading tenant users...</p>
                   ) : (
                     <p className="text-xs text-slate-500">
-                      You can leave this unassigned and route follow-up later.
+                      You can leave this unassigned and choose a coordinator later.
                     </p>
                   )}
                   {errors.followUpAssignedToUserId ? (
@@ -1412,7 +1365,7 @@ function CreateTransactionDialog({
                 <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
                   <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
                     <p className="text-sm font-semibold text-slate-900">
-                      Checklist for {service.name}
+                      Checklist for {serviceOfferingLabel(service)}
                     </p>
                     <p className="mt-1 text-sm text-slate-600">
                       Required items should be completed for the contact before the service is considered finished.
@@ -1543,7 +1496,7 @@ function CreateTransactionDialog({
                     </Avatar>
                     <div className="min-w-0">
                       <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">
-                        Follow-up owner
+                        Enrollment coordinator
                       </p>
                       <p className="truncate font-medium text-slate-900">
                         {selectedFollowUpAssignee?.label ?? "Assigned user"}
@@ -1674,10 +1627,6 @@ export function ServiceOverviewPanel({
   const internalProfessionalsCount = service.professionals.filter(
     (item) => item.kind === "INTERNAL_USER",
   ).length
-  const totalTemplateNodes = service.followUpTemplates.reduce(
-    (total, template) => total + template.flowNodeCount,
-    0,
-  )
   const customDateRange = useMemo<DateRange | undefined>(
     () => ({
       from: parseDateOnlyToLocalDate(customFrom),
@@ -1832,7 +1781,7 @@ export function ServiceOverviewPanel({
                   Service overview
                 </p>
                 <h1 className="max-w-3xl text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">
-                  {service.name}
+                  {serviceOfferingLabel(service)}
                 </h1>
                 <p className="max-w-3xl text-sm leading-6 text-slate-600">
                   {service.description?.trim() || "Review pricing, delivery requirements, and recent service performance."}
@@ -2100,7 +2049,7 @@ export function ServiceOverviewPanel({
                 <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                   <p className="text-sm font-medium text-slate-900">What to expect</p>
                   <p className="mt-2 text-sm leading-6 text-slate-600">
-                    This service has {service.checklistItems.length} checklist item{service.checklistItems.length === 1 ? "" : "s"}, {service.followUpTemplates.length} published follow-up template{service.followUpTemplates.length === 1 ? "" : "s"}, and {service.professionals.length} available professional{service.professionals.length === 1 ? "" : "s"}.
+                    This service has {service.checklistItems.length} checklist item{service.checklistItems.length === 1 ? "" : "s"}, {service.steps.length} service step{service.steps.length === 1 ? "" : "s"}, and {service.professionals.length} available professional{service.professionals.length === 1 ? "" : "s"}.
                   </p>
                 </div>
               </div>
@@ -2261,105 +2210,9 @@ export function ServiceOverviewPanel({
             </div>
             </section>
 
-            <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-4 py-4 sm:px-5">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="space-y-1">
-                  <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
-                    <Route className="h-5 w-5 text-blue-700" />
-                    Follow-up templates
-                  </h2>
-                  <p className="text-sm text-slate-500">
-                    Published templates available for this service.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge className="border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-50">
-                    {service.followUpTemplates.length} templates
-                  </Badge>
-                  <Badge variant="secondary" className="border-slate-200 bg-slate-100 text-slate-700">
-                    {totalTemplateNodes} nodes
-                  </Badge>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-4 sm:p-5">
-              {service.followUpTemplates.length ? (
-                <>
-                  <div className="space-y-3 md:hidden">
-                    {service.followUpTemplates.map((template, index) => (
-                      <article key={template.id} className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
-                        <div className="flex items-start gap-3">
-                          <span className="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
-                            {index + 1}
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <p className="font-medium text-slate-950">{template.name}</p>
-                            <div className="mt-3 grid grid-cols-2 gap-3 border-t border-slate-200 pt-3">
-                              <div>
-                                <p className="text-xs font-medium text-slate-500">Steps</p>
-                                <p className="mt-1 text-sm font-semibold text-slate-900">{template.flowNodeCount}</p>
-                              </div>
-                              <div>
-                                <p className="text-xs font-medium text-slate-500">Connections</p>
-                                <p className="mt-1 text-sm font-semibold text-slate-900">{template.flowEdgeCount}</p>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                  <div className="hidden overflow-auto rounded-2xl border border-slate-200 md:block">
-                    <Table className="[&_td]:py-3 [&_th]:h-10">
-                    <TableHeader className="bg-slate-50/80">
-                      <TableRow>
-                        <TableHead className="min-w-14 text-xs">#</TableHead>
-                        <TableHead className="min-w-56 text-xs">Template</TableHead>
-                        <TableHead className="min-w-28 text-xs">Nodes</TableHead>
-                        <TableHead className="min-w-28 text-xs">Connections</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {service.followUpTemplates.map((template, index) => (
-                        <TableRow key={template.id} className="hover:bg-blue-50/40">
-                          <TableCell>
-                            <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
-                              {index + 1}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            <div className="space-y-0.5">
-                              <p className="font-medium text-slate-900">{template.name}</p>
-                              <p className="text-sm text-slate-500">Published follow-up path</p>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                              {template.flowNodeCount}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                              {template.flowEdgeCount}
-                            </span>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                    </Table>
-                  </div>
-                </>
-              ) : (
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
-                  <p className="text-base font-medium text-slate-900">No follow-up templates available</p>
-                  <p className="mt-2 text-sm text-slate-500">
-                    This service does not currently expose any published follow-up templates.
-                  </p>
-                </div>
-              )}
-            </div>
+            <section className="flex flex-col gap-4 rounded-xl border bg-card p-5">
+              <h2 className="text-xl font-semibold">Steps and automations</h2>
+              <ServiceWorkflowSummary steps={service.steps} tenantSlug={tenantSlug} serviceId={service.id} />
             </section>
 
             <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">

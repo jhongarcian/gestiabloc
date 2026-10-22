@@ -227,6 +227,21 @@ Replace template selection with sub-service selection. Finish the Steps workspac
 
 Update transactions, service-fit suggestions, appointment pickers, and reports.
 
+**Implemented:** New enrollment dialogs choose a service and sub-service, review effective steps and
+linked entry/completion automations, and create service-step work explicitly. Missing steps block new
+enrollment instead of falling back to a template. Public catalog access supports ordinary tenant members.
+The settings Steps workspace links to existing workflows and creates additional automations with the
+service, sub-service, step and event preselected. Template setup is removed from the normal settings navigation.
+
+Contact summaries and the enrollment Steps workspace use saved definitions, occurrence history,
+movement bypasses, owners and deadlines. Service/sub-service filters scope the catalog, follow-up queue,
+enrollments, transactions and their financial totals. Service-fit suggestions and calendar selections show
+parent/sub-service identity. Historical inactive services remain available in report filters.
+
+Existing template enrollment history and compatibility APIs remain for Chunk 20. No database migration,
+queue policy change or automatic conversion is introduced. Verification is recorded in
+`apps/backend/docs/service-interface-verification.md`.
+
 **Done when:** The complete Medicare workflow can be configured and operated without opening a template screen.
 
 ### 20. Cut over and remove templates

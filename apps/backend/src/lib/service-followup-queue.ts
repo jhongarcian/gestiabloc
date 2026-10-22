@@ -1,3 +1,4 @@
+import { enrolledStepProgress, serviceScopeWhere } from "./service-presentation.js"
 import { Prisma } from "../generated/prisma/index.js"
 import { getFollowUpListDateRanges } from "./service-followup-list-date-range.js"
 import {
@@ -43,6 +44,7 @@ const queueSelect = {
   id: true,
   status: true,
   workflowKind: true,
+  stepMovements: { orderBy: { createdAt: "asc" }, select: { skippedStepIds: true, createdAt: true } },
   startedAt: true,
   updatedAt: true,
   service: {
@@ -197,8 +199,7 @@ function serviceStepProjection(service: QueueService, resumes: Map<string, Date>
         }
       : null,
     totalCount: service.serviceSteps.length,
-    completedCount: entries.filter(({ entry }) => ["COMPLETED", "SKIPPED"].includes(entry.status))
-      .length,
+    completedCount: enrolledStepProgress(service.serviceSteps, service.stepMovements).completed,
   }
 }
 
@@ -209,6 +210,8 @@ type QueueQuery = {
   sort: string
   status?: string
   dueDatePreset?: string
+  serviceGroupId?: string
+  serviceId?: string
   followUpTemplateId?: string
   assignedToUserId?: string
   queueState?: FollowUpQueueState
@@ -312,6 +315,7 @@ export async function getServiceFollowUpQueue(
   const services = await client.contactService.findMany({
     where: {
       tenantId,
+      ...serviceScopeWhere(query),
       status: { in: ["IN_PROGRESS", "PENDING_PAYMENT", "COMPLETED"] },
       OR: [
         { workflowKind: "SERVICE_STEPS", serviceSteps: { some: {} } },

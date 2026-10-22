@@ -210,6 +210,7 @@ type AutomationFlowBuilderProps = {
   timezone?: string | null
   libraryQuery?: string
   newFolderId?: string | null
+  newServiceStepTrigger?: { serviceGroupId: string; serviceOfferingId?: string; serviceStepId: string; type: "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" }
 }
 
 type Draft = {
@@ -2386,7 +2387,7 @@ function automationPayload(draft: Draft, isEnabled = draft.isEnabled) {
   }
 }
 
-export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, timezone, libraryQuery = "view=grid", newFolderId }: AutomationFlowBuilderProps) {
+export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, timezone, libraryQuery = "view=grid", newFolderId, newServiceStepTrigger }: AutomationFlowBuilderProps) {
   const router = useRouter()
   const libraryHref = `/app/${tenantSlug}/account-settings/automations?${libraryQuery}`
   const [linkedServiceStep, setLinkedServiceStep] = useState<AutomationRecord["serviceStep"]>(null)
@@ -2444,6 +2445,12 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
           setLastSavedDraft(cloneDraft(loadedDraft))
         } else {
           const emptyDraft = cloneDraft(EMPTY_DRAFT)
+          if (newServiceStepTrigger) {
+            const group = nextCatalog.serviceStepServices?.find(item => item.id === newServiceStepTrigger.serviceGroupId)
+            const offering = group?.subServices.find(item => item.id === newServiceStepTrigger.serviceOfferingId)
+            const step = (offering?.steps ?? group?.subServices.flatMap(item => item.steps) ?? []).find(item => item.id === newServiceStepTrigger.serviceStepId)
+            if (step) Object.assign(emptyDraft, { name: `New ${newServiceStepTrigger.type === "SERVICE_STEP_ENTERED" ? "entry" : "completion"} automation: ${step.title}`, triggerType: newServiceStepTrigger.type, serviceGroupId: group!.id, serviceOfferingId: offering?.id ?? "", serviceStepId: step.id })
+          }
           setDraft(emptyDraft)
           setLastSavedDraft(cloneDraft(emptyDraft))
         }
@@ -2456,7 +2463,7 @@ export function AutomationFlowBuilder({ tenantId, tenantSlug, automationId, time
     return () => {
       cancelled = true
     }
-  }, [automationId, tenantId])
+  }, [automationId, tenantId, newServiceStepTrigger])
 
   const loadWaitNodeCounts = useCallback(async () => {
     if (!automationId) {

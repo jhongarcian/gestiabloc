@@ -1,5 +1,10 @@
 "use client"
 
+import Link from "next/link"
+import { enrolledServiceStepLabel, serviceOfferingLabel } from "@/lib/service-hierarchy"
+import { getServiceEnrollmentFollowUpHref } from "@/lib/routes"
+import type { EnrolledServiceStep } from "../../../services/enrollments/[contactServiceId]/_components/service-step-snapshot"
+
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 import { ChevronDown, ListTodo, Loader2, NotebookPen, Plus } from "lucide-react"
@@ -73,10 +78,15 @@ type FollowUpStep = {
 }
 
 type ContactServiceItem = {
+  workflowKind?: "SERVICE_STEPS" | "LEGACY_TEMPLATE" | "NONE"
+  stepMovements?: Array<{ skippedStepIds: string[]; createdAt: string }>
+  serviceSteps?: EnrolledServiceStep[]
+  stepProgress?: { total: number; completed: number; percentage: number } | null
   id: string
   service: {
     id: string
     name: string
+    parentService?: { id: string; name: string } | null
   }
   followUpTemplate: {
     id: string
@@ -120,6 +130,7 @@ type ServiceFollowUpView = {
 }
 
 type ContactFollowUpsPanelProps = {
+  tenantSlug: string
   tenantId: string
   contactId: string
   tenantTimezone?: string | null
@@ -222,6 +233,7 @@ const getStepTimeMeta = (
 }
 
 export function ContactFollowUpsPanel({
+  tenantSlug,
   tenantId,
   contactId,
   tenantTimezone,
@@ -280,7 +292,7 @@ export function ContactFollowUpsPanel({
   }, [loadData])
 
   const servicesView = useMemo<ServiceFollowUpView[]>(() => {
-    return services.map((service) => {
+    return services.filter(service => service.workflowKind !== "SERVICE_STEPS").map((service) => {
       const steps = (service.followUpSteps ?? [])
         .map((step) => ({
           ...step,
@@ -591,6 +603,7 @@ export function ContactFollowUpsPanel({
           </div>
           <Button
             type="button"
+            disabled={!services.some(service => service.workflowKind !== "SERVICE_STEPS")}
             onClick={() => setIsCreateOpen(true)}
             className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90 md:self-center"
           >
@@ -599,6 +612,11 @@ export function ContactFollowUpsPanel({
           </Button>
         </div>
       </div>
+
+      {services.filter(service => service.workflowKind === "SERVICE_STEPS").map(service => <section key={service.id} className="flex flex-col gap-4 rounded-xl border bg-card p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold">{serviceOfferingLabel(service.service)}</h2><p className="text-sm text-muted-foreground">{service.stepProgress?.completed ?? 0} of {service.stepProgress?.total ?? service.serviceSteps?.length ?? 0} steps finished</p></div><Button asChild variant="outline"><Link href={getServiceEnrollmentFollowUpHref({ tenantSlug, contactServiceId: service.id })}>Open steps</Link></Button></div>
+        <ol className="flex flex-col gap-2">{service.serviceSteps?.map((step, index) => { return <li key={step.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"><span>{index + 1}. {step.title}</span><Badge variant="secondary">{enrolledServiceStepLabel(step, service.stepMovements ?? [])}</Badge></li> })}</ol>
+      </section>)}
 
       {isLoading ? (
         <div className="rounded-[20px] border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
@@ -832,7 +850,7 @@ export function ContactFollowUpsPanel({
           ))}
           </div>
         </TooltipProvider>
-      ) : (
+      ) : services.some(service => service.workflowKind === "SERVICE_STEPS") ? null : (
         <div className="rounded-[20px] border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
           No follow-up services enrolled yet.
         </div>
@@ -852,7 +870,7 @@ export function ContactFollowUpsPanel({
                   <SelectValue placeholder="Select enrolled service" />
                 </SelectTrigger>
                 <SelectContent>
-                  {services.map((service) => (
+                  {services.filter(service => service.workflowKind !== "SERVICE_STEPS").map((service) => (
                     <SelectItem key={service.id} value={service.id} className="cursor-pointer">
                       {service.service.name}
                     </SelectItem>

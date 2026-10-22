@@ -1,3 +1,4 @@
+import type { ServiceStepItem } from "../../account-settings/_components/service-steps-panel"
 import { isAxiosError } from "axios"
 import { redirect } from "next/navigation"
 
@@ -9,6 +10,8 @@ import { ServiceOverviewPanel } from "./_components/service-overview-panel"
 type ServiceOverviewResponse = {
   ok: boolean
   service: {
+    steps: ServiceStepItem[]
+    parentService?: { id: string; name: string } | null
     id: string
     name: string
     description: string | null

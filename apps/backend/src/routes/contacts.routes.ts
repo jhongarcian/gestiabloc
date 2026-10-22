@@ -1554,21 +1554,22 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
               status: {
                 in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
               },
-              followUpSteps: {
-                some: {},
-              },
+              OR: [{ followUpSteps: { some: {} } }, { workflowKind: "SERVICE_STEPS", serviceSteps: { some: {} } }],
             },
             select: {
               status: true,
+              workflowKind: true,
               _count: {
                 select: {
                   followUpSteps: true,
+                  serviceSteps: true,
                 },
               },
               service: {
                 select: {
                   id: true,
                   name: true,
+                  parentService: { select: { name: true } },
                 },
               },
             },
@@ -1593,8 +1594,11 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
         const activeFollowUpServices = summarizeVisibleContactFollowUpServices(
           contact.serviceProcesses.map((serviceProcess) => ({
             status: serviceProcess.status,
-            followUpStepCount: serviceProcess._count.followUpSteps,
-            service: serviceProcess.service,
+            followUpStepCount: serviceProcess.workflowKind === "SERVICE_STEPS" ? serviceProcess._count.serviceSteps : serviceProcess._count.followUpSteps,
+            service: {
+              id: serviceProcess.service.id,
+              name: serviceProcess.service.parentService ? `${serviceProcess.service.parentService.name} / ${serviceProcess.service.name}` : serviceProcess.service.name,
+            },
           })),
         )
 

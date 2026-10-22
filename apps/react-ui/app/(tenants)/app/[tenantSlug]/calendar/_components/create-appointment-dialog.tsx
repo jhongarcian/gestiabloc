@@ -1,5 +1,7 @@
 "use client"
 
+import { serviceOfferingLabel } from "@/lib/service-hierarchy"
+
 import { isAxiosError } from "axios"
 import { CalendarClock, Check, ChevronDown, LoaderCircle, Plus, X } from "lucide-react"
 import { useRouter } from "next/navigation"
@@ -83,6 +85,7 @@ type CreateAppointmentDialogProps = {
   serviceOptions: Array<{
     id: string
     name: string
+    parentService?: { id: string; name: string } | null
   }>
   assigneeOptions: Array<{
     id: string
@@ -417,7 +420,7 @@ export function CreateAppointmentDialog({
 
   const selectedServiceName =
     serviceId !== "__NONE__"
-      ? serviceOptions.find((option) => option.id === serviceId)?.name ?? null
+      ? (serviceOptions.find((option) => option.id === serviceId) ? serviceOfferingLabel(serviceOptions.find((option) => option.id === serviceId)!) : null)
       : null
 
   const isSearchingServices =
@@ -431,7 +434,7 @@ export function CreateAppointmentDialog({
     const normalizedQuery = debouncedServiceQuery.trim().toLocaleLowerCase()
     const matchingOptions = normalizedQuery
       ? serviceOptions.filter((option) =>
-          option.name.toLocaleLowerCase().includes(normalizedQuery),
+          serviceOfferingLabel(option).toLocaleLowerCase().includes(normalizedQuery),
         )
       : serviceOptions
 
@@ -800,7 +803,7 @@ export function CreateAppointmentDialog({
 
                   <Field data-disabled={isSubmitting} className="gap-2">
                     <FieldLabel htmlFor="create-appointment-service">
-                      Service <span className="text-xs font-normal text-slate-500">Optional</span>
+                      Sub-service <span className="text-xs font-normal text-slate-500">Optional</span>
                     </FieldLabel>
                     <Popover
                       open={servicePickerOpen}
@@ -847,7 +850,7 @@ export function CreateAppointmentDialog({
                                 ? "Searching services..."
                                 : "No services found."}
                             </CommandEmpty>
-                            <CommandGroup heading="Services">
+                            <CommandGroup heading="Sub-services">
                               {serviceQuery.trim().length === 0 ? (
                                 <CommandItem
                                   value="No service"
@@ -875,7 +878,7 @@ export function CreateAppointmentDialog({
                               {visibleServiceOptions.map((service) => (
                                 <CommandItem
                                   key={service.id}
-                                  value={`${service.name} ${service.id}`}
+                                  value={`${serviceOfferingLabel(service)} ${service.id}`}
                                   onSelect={() => {
                                     setServiceId(service.id)
                                     setServicePickerOpen(false)
@@ -885,7 +888,7 @@ export function CreateAppointmentDialog({
                                   className="cursor-pointer gap-3 py-2.5"
                                 >
                                   <span className="min-w-0 flex-1 truncate rounded-full bg-blue-50 px-2.5 py-1 text-sm font-medium text-blue-950">
-                                    {service.name}
+                                    {serviceOfferingLabel(service)}
                                   </span>
                                   <Check
                                     className={cn(

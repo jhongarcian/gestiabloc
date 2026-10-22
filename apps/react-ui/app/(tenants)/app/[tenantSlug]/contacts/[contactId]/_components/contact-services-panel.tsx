@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { isAxiosError } from "axios"
 import { z } from "zod"
 import {
@@ -93,6 +93,10 @@ import {
   type ContactServicesPageSize,
 } from "@/lib/routes"
 import { cn } from "@/lib/utils"
+import { ServiceOfferingPicker } from "@/components/service-scope-fields"
+import { ServiceWorkflowSummary } from "@/components/service-workflow-summary"
+import { serviceOfferingLabel, serviceWorkflowError, type ServiceOfferingOption } from "@/lib/service-hierarchy"
+import type { ServiceStepItem } from "../../../account-settings/_components/service-steps-panel"
 import {
   FIT_STATUS_STYLES,
   type ServiceFitScanItem,
@@ -101,6 +105,9 @@ import {
 } from "../_lib/service-fit"
 
 type ContactServiceItem = {
+  workflowKind?: "SERVICE_STEPS" | "LEGACY_TEMPLATE" | "NONE"
+  serviceSteps?: Array<{ id: string; assignedTo?: { id: string; name: string | null; email: string | null } | null }>
+  stepProgress?: { total: number; completed: number; remaining: number; percentage: number } | null
   id: string
   status: "IN_PROGRESS" | "PENDING_PAYMENT" | "COMPLETED" | "CANCELED"
   purchasedAt?: string | null
@@ -118,6 +125,7 @@ type ContactServiceItem = {
   service: {
     id: string
     name: string
+    parentService?: { id: string; name: string } | null
     checklistItems?: Array<{
       id: string
     }>
@@ -179,13 +187,7 @@ type ContactServicesResponse = {
 
 const PAGE_SIZE_OPTIONS = CONTACT_SERVICES_PAGE_SIZES
 
-type ServiceOptionsResponse = {
-  ok: boolean
-  items: Array<{
-    id: string
-    name: string
-  }>
-}
+type ServiceOptionsResponse = { ok: boolean; items: ServiceOfferingOption[] }
 
 type ServiceProfessional = {
   id: string
@@ -221,7 +223,7 @@ type ServiceDetailsResponse = {
       isRequired: boolean
       sortOrder: number
     }>
-    steps: Array<{ id: string; title: string }>
+    steps: ServiceStepItem[]
     followUpTemplates: Array<{
       id: string
       name: string
@@ -434,6 +436,7 @@ function getFollowUpParticipants(item: ContactServiceItem) {
   }
 
   addParticipant(item.followUpCoordinator, "COORDINATOR")
+  item.serviceSteps?.forEach(step => { if (step.assignedTo) addParticipant({ ...step.assignedTo, image: null }, "ASSIGNEE") })
   item.followUpSteps.forEach((step) => {
     addParticipant(step.assignedTo, "ASSIGNEE")
     addParticipant(step.resolvedBy, "RESOLVER")
@@ -448,7 +451,7 @@ function getFollowUpParticipantLabel(participant: FollowUpParticipant) {
 
 function getFollowUpParticipantRoles(participant: FollowUpParticipant) {
   const roles: string[] = []
-  if (participant.isCoordinator) roles.push("Follow-up coordinator")
+  if (participant.isCoordinator) roles.push("Enrollment coordinator")
   if (participant.assignedStepCount) {
     roles.push(
       `Assigned to ${participant.assignedStepCount} ${participant.assignedStepCount === 1 ? "step" : "steps"}`,
@@ -591,99 +594,6 @@ function FlowStepCard({
   )
 }
 
-function ServicePicker({
-  services,
-  value,
-  onValueChange,
-  disabled,
-  isLoading,
-  ariaInvalid,
-}: {
-  services: Array<{ id: string; name: string }>
-  value: string
-  onValueChange: (value: string) => void
-  disabled?: boolean
-  isLoading?: boolean
-  ariaInvalid?: boolean
-}) {
-  const [open, setOpen] = useState(false)
-  const selectedService = useMemo(
-    () => services.find((service) => service.id === value) ?? null,
-    [services, value],
-  )
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          id="contact-service-transaction-service"
-          type="button"
-          variant="outline"
-          disabled={disabled}
-          aria-invalid={ariaInvalid}
-          aria-expanded={open}
-          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
-        >
-          <span className="flex min-w-0 items-center gap-2.5">
-            <Avatar size="sm" className="ring-2 ring-blue-50">
-              <AvatarFallback className="bg-blue-50 font-semibold text-blue-950">
-                {selectedService ? getInitials(selectedService.name) : "—"}
-              </AvatarFallback>
-            </Avatar>
-            <span className="truncate font-medium text-slate-800">
-              {selectedService?.name ?? (isLoading ? "Loading services..." : "Select a service")}
-            </span>
-          </span>
-          {isLoading ? (
-            <Loader2 data-icon="inline-end" className="ml-auto animate-spin text-slate-400" />
-          ) : (
-            <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
-          )}
-        </Button>
-      </PopoverTrigger>
-
-      <PopoverContent
-        align="start"
-        className="w-[var(--radix-popover-trigger-width)] p-0"
-      >
-        <Command>
-          <CommandInput placeholder="Search services..." />
-          <CommandList>
-            <CommandEmpty>No services found.</CommandEmpty>
-            <CommandGroup heading="Services">
-              {services.map((service) => (
-                <CommandItem
-                  key={service.id}
-                  value={`${service.name} ${service.id}`}
-                  onSelect={() => {
-                    onValueChange(service.id)
-                    setOpen(false)
-                  }}
-                  className="cursor-pointer gap-3 py-2.5"
-                >
-                  <Avatar size="sm" className="ring-2 ring-blue-50">
-                    <AvatarFallback className="bg-blue-50 font-semibold text-blue-950">
-                      {getInitials(service.name)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="min-w-0 flex-1 truncate font-medium text-slate-900">
-                    {service.name}
-                  </span>
-                  <Check
-                    className={cn(
-                      "text-blue-800",
-                      selectedService?.id === service.id ? "opacity-100" : "opacity-0",
-                    )}
-                  />
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
-  )
-}
 
 function AssignedProfessionalPicker({
   professionals,
@@ -1024,11 +934,11 @@ export function ContactServicesPanel({
   const [isLoadingServiceOptions, setIsLoadingServiceOptions] = useState(false)
   const [isLoadingServiceDetails, setIsLoadingServiceDetails] = useState(false)
   const [isLoadingAssignees, setIsLoadingAssignees] = useState(false)
-  const [serviceOptions, setServiceOptions] = useState<Array<{ id: string; name: string }>>([])
+  const [serviceOptions, setServiceOptions] = useState<ServiceOfferingOption[]>([])
   const [followUpAssigneeOptions, setFollowUpAssigneeOptions] = useState<TenantAssigneeOption[]>([])
   const [createServiceDetails, setCreateServiceDetails] = useState<ServiceDetailsResponse["service"] | null>(null)
+  const serviceDetailsRequest = useRef(0)
   const [createServiceId, setCreateServiceId] = useState("")
-  const [createTemplateId, setCreateTemplateId] = useState("")
   const [createAssignedProfessionalId, setCreateAssignedProfessionalId] = useState("")
   const [createFollowUpAssignedToUserId, setCreateFollowUpAssignedToUserId] = useState("")
   const [createPaymentMode, setCreatePaymentMode] = useState<"FULL" | "PARTIAL" | "LATER">("FULL")
@@ -1038,7 +948,6 @@ export function ContactServicesPanel({
     Partial<
       Record<
         | "serviceId"
-        | "templateId"
         | "assignedProfessionalId"
         | "followUpAssignedToUserId"
         | "paymentMode"
@@ -1067,9 +976,10 @@ export function ContactServicesPanel({
   }, [currentListHref, initialCreateOpen, router])
 
   const resetCreate = useCallback(() => {
+    serviceDetailsRequest.current += 1
+    setIsLoadingServiceDetails(false)
     setCreateStep(1)
     setCreateServiceId("")
-    setCreateTemplateId("")
     setCreateAssignedProfessionalId("")
     setCreateFollowUpAssignedToUserId("")
     setCreatePaymentMode("FULL")
@@ -1152,7 +1062,7 @@ export function ContactServicesPanel({
     setIsLoadingServiceOptions(true)
     try {
       const { data } = await api.get<ServiceOptionsResponse>(
-        `/api/account-settings/${encodeURIComponent(tenantId)}/services/options`,
+        `/api/services/${encodeURIComponent(tenantId)}/options`,
       )
       setServiceOptions(data.items)
     } catch {
@@ -1179,6 +1089,7 @@ export function ContactServicesPanel({
   }, [tenantId])
 
   const loadServiceDetails = useCallback(async (serviceId: string) => {
+    const requestId = ++serviceDetailsRequest.current
     if (!serviceId) {
       setCreateServiceDetails(null)
       return
@@ -1187,14 +1098,12 @@ export function ContactServicesPanel({
     setCreateServiceDetails(null)
     try {
       const { data } = await api.get<ServiceDetailsResponse>(
-        `/api/account-settings/${encodeURIComponent(tenantId)}/services/${encodeURIComponent(serviceId)}`,
+        `/api/services/${encodeURIComponent(tenantId)}/catalog/${encodeURIComponent(serviceId)}`,
       )
+      if (requestId !== serviceDetailsRequest.current) return
       setCreateServiceDetails(data.service)
       setCreateAssignedProfessionalId((current) =>
         data.service.professionals.some((item) => item.id === current) ? current : "",
-      )
-      setCreateTemplateId((current) =>
-        data.service.followUpTemplates.some((item) => item.id === current) ? current : "",
       )
       setCreatePaymentMode((prev) => {
         if (prev === "PARTIAL" && !data.service.allowPartialPayments) {
@@ -1203,10 +1112,11 @@ export function ContactServicesPanel({
         return prev
       })
     } catch {
+        if (requestId !== serviceDetailsRequest.current) return
       setCreateServiceDetails(null)
       toast.error("Could not load service details.")
     } finally {
-      setIsLoadingServiceDetails(false)
+      if (requestId === serviceDetailsRequest.current) setIsLoadingServiceDetails(false)
     }
   }, [tenantId])
 
@@ -1244,7 +1154,6 @@ export function ContactServicesPanel({
   useEffect(() => {
     if (!createServiceDetails) {
       setCreateAssignedProfessionalId("")
-      setCreateTemplateId("")
       return
     }
 
@@ -1256,12 +1165,7 @@ export function ContactServicesPanel({
       setCreateAssignedProfessionalId("")
     }
 
-    if (
-      !createServiceDetails.followUpTemplates.some((item) => item.id === createTemplateId)
-    ) {
-      setCreateTemplateId("")
-    }
-  }, [createAssignedProfessionalId, createServiceDetails, createTemplateId])
+  }, [createAssignedProfessionalId, createServiceDetails])
 
   useEffect(() => {
     if (!initialCreateOpen) return
@@ -1276,7 +1180,6 @@ export function ContactServicesPanel({
   const clearCreateError = (
     field:
       | "serviceId"
-      | "templateId"
       | "assignedProfessionalId"
       | "followUpAssignedToUserId"
       | "paymentMode"
@@ -1319,23 +1222,9 @@ export function ContactServicesPanel({
     () =>
       z
         .object({
-          templateId: optionalStringIdSchema,
           followUpAssignedToUserId: optionalStringIdSchema,
         })
         .superRefine((value, ctx) => {
-          if (
-            value.templateId &&
-            !createServiceDetails?.followUpTemplates.some(
-              (template) => template.id === value.templateId,
-            )
-          ) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["templateId"],
-              message: "Select a valid follow-up template.",
-            })
-          }
-
           if (
             value.followUpAssignedToUserId &&
             !followUpAssigneeOptions.some(
@@ -1349,7 +1238,7 @@ export function ContactServicesPanel({
             })
           }
         }),
-    [createServiceDetails, followUpAssigneeOptions],
+    [followUpAssigneeOptions],
   )
 
   const paymentStepSchema = useMemo(
@@ -1417,7 +1306,6 @@ export function ContactServicesPanel({
   const applyCreateSchemaErrors = <
     T extends
       | "serviceId"
-      | "templateId"
       | "assignedProfessionalId"
       | "followUpAssignedToUserId"
       | "paymentMode"
@@ -1444,6 +1332,8 @@ export function ContactServicesPanel({
   }
 
   const validateCreateServiceStep = () => {
+    const error = serviceWorkflowError(createServiceDetails?.id === createServiceId ? createServiceDetails : null)
+    if (error) { toast.error(error); return false }
     const result = serviceStepSchema.safeParse({
       serviceId: createServiceId,
       assignedProfessionalId: createAssignedProfessionalId,
@@ -1464,20 +1354,18 @@ export function ContactServicesPanel({
 
   const validateCreateFollowUpStep = () => {
     const result = followUpStepSchema.safeParse({
-      templateId: createTemplateId,
       followUpAssignedToUserId: createFollowUpAssignedToUserId,
     })
 
     if (result.success) {
       setCreateErrors((current) => ({
         ...current,
-        templateId: undefined,
         followUpAssignedToUserId: undefined,
       }))
       return true
     }
 
-    applyCreateSchemaErrors(result, ["templateId", "followUpAssignedToUserId"])
+    applyCreateSchemaErrors(result, ["followUpAssignedToUserId"])
     return false
   }
 
@@ -1563,6 +1451,7 @@ export function ContactServicesPanel({
   }, [page, pagination.totalPages])
 
   const getServiceProgress = (item: ContactServiceItem) => {
+    if (item.workflowKind === "SERVICE_STEPS" && item.stepProgress) return item.stepProgress
     const total = item.followUpSteps.length
     const completed = item.followUpSteps.filter(
       (step) =>
@@ -1630,6 +1519,8 @@ export function ContactServicesPanel({
           ? 0
           : parseUsdToCents(createInitialPaymentUsd)
 
+    const workflowError = serviceWorkflowError(createServiceDetails?.id === createServiceId ? createServiceDetails : null)
+    if (workflowError) { toast.error(workflowError); return }
     setIsSaving(true)
     try {
       const { data } = await api.post<{ contactService: { id: string } }>(
@@ -1637,7 +1528,7 @@ export function ContactServicesPanel({
         {
         contactId,
         serviceId: createServiceId,
-        ...(createTemplateId ? { followUpTemplateId: createTemplateId } : {}),
+        workflowKind: "SERVICE_STEPS",
         ...(createFollowUpAssignedToUserId
           ? { followUpAssignedToUserId: createFollowUpAssignedToUserId }
           : {}),
@@ -1834,14 +1725,14 @@ export function ContactServicesPanel({
                     </TableHead>
                     <TableHead className="w-[15%] border-y bg-background px-4">
                       <div className="flex items-center gap-1">
-                        <span>Follow-up team</span>
+                        <span>Service team</span>
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <button
                               type="button"
                               className="inline-flex size-4 cursor-pointer items-center justify-center text-slate-400 transition hover:text-slate-600"
                               onClick={(event) => event.stopPropagation()}
-                              aria-label="Follow-up team column help"
+                              aria-label="Service team column help"
                             >
                               <CircleHelp className="h-3.5 w-3.5" />
                             </button>
@@ -1888,10 +1779,10 @@ export function ContactServicesPanel({
                                   returnTo: currentListHref,
                                 })}
                                 className="block truncate font-medium text-foreground transition-colors before:absolute before:inset-0 before:z-10 before:rounded-md hover:text-blue-800 focus-visible:outline-none focus-visible:before:ring-2 focus-visible:before:ring-ring focus-visible:before:ring-offset-1"
-                                title={item.service.name}
-                                aria-label={`Open ${item.service.name}`}
+                                title={serviceOfferingLabel(item.service)}
+                                aria-label={`Open ${serviceOfferingLabel(item.service)}`}
                               >
-                                {item.service.name}
+                                {serviceOfferingLabel(item.service)}
                               </Link>
                             </TableCell>
                             <TableCell className="px-4 py-0">
@@ -2099,7 +1990,7 @@ export function ContactServicesPanel({
             <div className="grid grid-cols-4 gap-2" aria-label={`Step ${createStep} of 4`}>
               {[
                 { value: 1, label: "Service" },
-                { value: 2, label: "Follow up" },
+                { value: 2, label: "Workflow" },
                 { value: 3, label: "Checklist" },
                 { value: 4, label: "Payment" },
               ].map((item) => {
@@ -2180,14 +2071,13 @@ export function ContactServicesPanel({
                           onClick={() => {
                             clearCreateError("serviceId")
                             setCreateServiceId(item.serviceId)
-                            setCreateTemplateId("")
-                            setCreateAssignedProfessionalId("")
+                                                    setCreateAssignedProfessionalId("")
                           }}
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div className="flex min-w-0 flex-col gap-1">
                               <p className="text-sm font-semibold text-slate-900">
-                                {item.serviceName}
+                                {item.serviceGroupName ? `${item.serviceGroupName} / ` : ""}{item.serviceName}
                               </p>
                               <p className="text-xs text-slate-500">
                                 {item.explanation ||
@@ -2224,19 +2114,7 @@ export function ContactServicesPanel({
                     <FieldLabel htmlFor="contact-service-transaction-service">
                       Service
                     </FieldLabel>
-                    <ServicePicker
-                      services={serviceOptions}
-                      value={createServiceId}
-                      onValueChange={(value) => {
-                        clearCreateError("serviceId")
-                        setCreateServiceId(value)
-                        setCreateTemplateId("")
-                        setCreateAssignedProfessionalId("")
-                      }}
-                      disabled={isLoadingServiceOptions || isSaving}
-                      isLoading={isLoadingServiceOptions}
-                      ariaInvalid={Boolean(createErrors.serviceId)}
-                    />
+                    <ServiceOfferingPicker options={serviceOptions} value={createServiceId} disabled={isLoadingServiceOptions || isSaving} onValueChange={value => { clearCreateError("serviceId"); serviceDetailsRequest.current += 1; setCreateServiceId(value); setCreateServiceDetails(null); setCreateAssignedProfessionalId("") }} />
                     <FieldDescription>
                       Search by service name. Selecting a service loads its price, workflow, and professionals.
                     </FieldDescription>
@@ -2322,94 +2200,20 @@ export function ContactServicesPanel({
             {createStep === 2 ? (
               <section className="mt-6 flex flex-col gap-5">
                 <div className="flex flex-col gap-1">
-                  <p className="text-xs font-semibold text-blue-700">Follow-up workflow</p>
+                  <p className="text-xs font-semibold text-blue-700">Service workflow</p>
                   <h3 className="text-base font-semibold text-slate-950">
                     Set up the service follow-up
                   </h3>
                   <p className="text-sm leading-6 text-slate-600">
-                    {(createServiceDetails?.steps.length ?? 0) > 0
-                      ? "Review the service steps and choose who should coordinate the follow-up work."
-                      : "Choose which follow-up template should start and who should be in charge of the follow-up work."}
+                    Review the sub-service steps and choose who should coordinate the follow-up work.
                   </p>
                 </div>
 
-                <FlowStepCard
-                  stepNumber="1"
-                  title={
-                    (createServiceDetails?.steps.length ?? 0) > 0
-                      ? "Service steps"
-                      : "Which follow-up plan should start?"
-                  }
-                  description={
-                    (createServiceDetails?.steps.length ?? 0) > 0
-                      ? "This enrollment keeps its own copy of the service steps and instructions."
-                      : "Use the default published template or choose a different published template for this transaction."
-                  }
-                  disabled={!createServiceId}
-                >
-                  {(createServiceDetails?.steps.length ?? 0) > 0 ? (
-                    <p className="text-sm text-slate-600">
-                      {createServiceDetails?.steps.length} saved steps will be included. The first step
-                      starts when the enrollment is created.
-                    </p>
-                  ) : (
-                    <Field
-                      data-invalid={Boolean(createErrors.templateId)}
-                      data-disabled={!createServiceDetails || isSaving}
-                      className="gap-2"
-                    >
-                      <FieldLabel htmlFor="contact-service-transaction-template">
-                        Follow-up template
-                      </FieldLabel>
-                      <Select
-                        value={createTemplateId || "default"}
-                        onValueChange={(value) => {
-                          clearCreateError("templateId")
-                          setCreateTemplateId(value === "default" ? "" : value)
-                        }}
-                        disabled={!createServiceDetails || isSaving}
-                      >
-                        <SelectTrigger
-                          id="contact-service-transaction-template"
-                          aria-invalid={Boolean(createErrors.templateId)}
-                          className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none data-[size=default]:h-11"
-                        >
-                          <SelectValue placeholder="Use default template selection" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            <SelectItem value="default" className="cursor-pointer">
-                              Use default published template
-                            </SelectItem>
-                            {(createServiceDetails?.followUpTemplates ?? []).map((template) => (
-                              <SelectItem key={template.id} value={template.id} className="cursor-pointer">
-                                {template.name}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      {!createServiceId ? (
-                        <FieldDescription>
-                          Choose a service first to load its available follow-up templates.
-                        </FieldDescription>
-                      ) : (createServiceDetails?.followUpTemplates.length ?? 0) === 0 ? (
-                        <FieldDescription>
-                          No published templates are available for this service. The transaction can still proceed if the service has default follow-up steps.
-                        </FieldDescription>
-                      ) : (
-                        <FieldDescription>
-                          Leaving this on default uses the service&apos;s standard published template.
-                        </FieldDescription>
-                      )}
-                      <FieldError>{createErrors.templateId}</FieldError>
-                    </Field>
-                  )}
-                </FlowStepCard>
+                <ServiceWorkflowSummary steps={createServiceDetails?.steps ?? []} tenantSlug={tenantSlug} serviceId={createServiceId} />
 
                 <FlowStepCard
                   stepNumber="2"
-                  title="Who should be in charge of the follow up?"
+                  title="Who should coordinate this enrollment?"
                   description="Optional. Choose the person responsible for coordinating this enrollment’s follow-up work."
                   disabled={!createServiceId}
                 >
@@ -2419,7 +2223,7 @@ export function ContactServicesPanel({
                     className="gap-2"
                   >
                     <FieldLabel htmlFor="contact-service-transaction-follow-up-owner">
-                      Follow-up owner <span className="font-normal text-slate-500">(optional)</span>
+                      Enrollment coordinator <span className="font-normal text-slate-500">(optional)</span>
                     </FieldLabel>
                     <FollowUpAssigneePicker
                       id="contact-service-transaction-follow-up-owner"
@@ -2440,7 +2244,7 @@ export function ContactServicesPanel({
                       <FieldDescription>Loading tenant users...</FieldDescription>
                     ) : (
                       <FieldDescription>
-                        You can leave this unassigned and route follow-up later.
+                        You can leave this unassigned and choose a coordinator later.
                       </FieldDescription>
                     )}
                     <FieldError>{createErrors.followUpAssignedToUserId}</FieldError>
@@ -2633,7 +2437,7 @@ export function ContactServicesPanel({
 
                 {createFollowUpAssignedToUserId ? (
                   <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    Follow-up owner:{" "}
+                    Enrollment coordinator:{" "}
                     <span className="font-medium text-slate-900">
                       {followUpAssigneeOptions.find(
                         (item) => item.value === createFollowUpAssignedToUserId,

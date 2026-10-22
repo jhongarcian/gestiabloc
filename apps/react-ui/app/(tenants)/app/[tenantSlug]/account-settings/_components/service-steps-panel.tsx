@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { isAxiosError } from "axios"
 import { ArrowDown, ArrowUp, GripVertical, Pencil, Plus } from "lucide-react"
@@ -80,12 +80,16 @@ function StepRow({
   onEdit,
   onMove,
   tenantSlug,
+  serviceId,
+  parentServiceId,
 }: {
   step: ServiceStepItem
   index: number
   count: number
   disabled: boolean
   tenantSlug: string
+  serviceId: string
+  parentServiceId: string | null
   onEdit: () => void
   onMove: (to: number) => void
 }) {
@@ -136,6 +140,7 @@ function StepRow({
             </div>
           )
         })}
+        <div className="flex flex-wrap gap-2">{["entered", "completed"].map(event => <Button key={event} variant="outline" size="sm" asChild><Link href={`/app/${tenantSlug}/account-settings/automations/new?serviceStepId=${step.id}&serviceGroupId=${parentServiceId ?? serviceId}&stepEvent=${event}${parentServiceId ? `&serviceOfferingId=${serviceId}` : ""}`}>Add {event === "entered" ? "entry" : "completion"} automation</Link></Button>)}</div>
       </div>
       <div className="flex shrink-0 gap-1">
         <Button
@@ -192,6 +197,17 @@ export function ServiceStepsPanel({
   const [draft, setDraft] = useState<StepDraft | null>(null)
   const [busy, setBusy] = useState(false)
   const saving = useRef(false)
+  useEffect(() => {
+    const refresh = async () => {
+      try {
+        const { data } = await api.get<{ service: { steps: ServiceStepItem[] } }>(`/api/account-settings/${tenantId}/services/${serviceId}`)
+        if (saving.current) return
+        setSteps(current => current.map(step => ({ ...step, automations: data.service.steps.find(item => item.id === step.id)?.automations ?? step.automations })))
+      } catch { /* Keep the saved summary if a background refresh fails. */ }
+    }
+    window.addEventListener("focus", refresh)
+    return () => window.removeEventListener("focus", refresh)
+  }, [tenantId, serviceId])
   const inherited = !!parentService && mode === "INHERIT"
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -323,6 +339,8 @@ export function ServiceStepsPanel({
                       index={index}
                       count={steps.length}
                       tenantSlug={tenantSlug}
+                serviceId={serviceId}
+                parentServiceId={parentService?.id ?? null}
                       disabled={busy || inherited}
                       onEdit={() => setDraft({ ...step })}
                       onMove={(to) => move(index, to)}

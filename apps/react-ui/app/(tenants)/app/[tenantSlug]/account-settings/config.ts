@@ -24,7 +24,7 @@ export const ACCOUNT_SETTINGS_COPY: Record<AccountSettingsSection, string> = {
   "account": "Manage account profile details and contact information.",
   calendar: "Configure account-wide calendar hours and blocked periods.",
   opportunities: "Define tenant opportunity pipelines and their stages.",
-  automations: "Build opportunity-triggered workflows for contact data.",
+  automations: "Build workflows for services, contacts, and your team's work.",
   users: "Manage account users and access levels.",
   services: "Manage service catalog options for your account.",
   professionals: "Manage professionals and assignment settings.",

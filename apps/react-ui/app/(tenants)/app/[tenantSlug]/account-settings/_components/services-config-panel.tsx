@@ -230,9 +230,7 @@ function ServiceRow({
   const ready =
     service.checklistItems.length > 0 &&
     service.professionals.length > 0 &&
-    (service.steps.length > 0 ||
-      (service.followUpTemplates?.length ?? 0) > 0 ||
-      service.followUpTemplateSteps.length > 0)
+    service.steps.length > 0
   return (
     <TableRow
       ref={setNodeRef}
@@ -409,7 +407,7 @@ export function ServicesConfigPanel({
           </h2>
           <p className="max-w-xl text-sm leading-6 text-muted-foreground">
             {parentService
-              ? `Choose an offering under ${parentService.name} to configure its billing, checklist, follow-ups, and professionals.`
+              ? `Choose a sub-service under ${parentService.name} to configure its billing, checklist, steps, automations, and professionals.`
               : "Organize your offerings by service. Open a parent service to create and manage the sub-services contacts enroll into."}
           </p>
         </div>

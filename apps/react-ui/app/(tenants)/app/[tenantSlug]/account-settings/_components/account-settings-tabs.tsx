@@ -20,7 +20,7 @@ export function AccountSettingsTabs({ tenantSlug }: AccountSettingsTabsProps) {
     <nav aria-label="Account settings sections" className="w-full">
       <div className="overflow-x-auto pb-1 md:hidden">
         <div className="inline-flex min-w-max items-center gap-2 px-1">
-          {ACCOUNT_SETTINGS_TABS.map((tab) => {
+          {ACCOUNT_SETTINGS_TABS.filter(tab => tab.key !== "follow-ups").map((tab) => {
             const href = `/app/${tenantSlug}/account-settings/${tab.key}`
             const isActive = isTabActive(href)
 
@@ -44,7 +44,7 @@ export function AccountSettingsTabs({ tenantSlug }: AccountSettingsTabsProps) {
       </div>
 
       <div className="hidden flex-wrap items-center gap-2 md:flex">
-        {ACCOUNT_SETTINGS_TABS.map((tab) => {
+        {ACCOUNT_SETTINGS_TABS.filter(tab => tab.key !== "follow-ups").map((tab) => {
           const href = `/app/${tenantSlug}/account-settings/${tab.key}`
           const isActive = isTabActive(href)
 

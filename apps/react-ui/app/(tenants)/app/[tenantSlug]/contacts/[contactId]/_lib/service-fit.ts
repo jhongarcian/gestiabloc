@@ -1,5 +1,7 @@
 export type ServiceFitScanItem = {
   serviceId: string
+  serviceGroupId?: string | null
+  serviceGroupName?: string | null
   serviceName: string
   description: string | null
   fitProfile: {

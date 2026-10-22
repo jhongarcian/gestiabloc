@@ -1,3 +1,4 @@
+import { serviceScopeWhere, offeringSteps, enrolledStepProgress, unfinishedServiceWorkWhere } from "../lib/service-presentation.js"
 import { mutateServicePaymentTx } from "../lib/service-payment-mutations.js"
 import { captureServiceAutomationsTx } from "../lib/service-automation-snapshots.js"
 import { previewServiceConfigurationTx, applyServiceConfigurationTx } from "../lib/service-configuration-review.js"
@@ -505,6 +506,8 @@ const OptionalDateOnlySchema = z.preprocess(
 
 const ServicesCatalogSummaryQuerySchema = z
   .object({
+    serviceGroupId: ServiceTransactionIdSchema.optional(),
+    serviceId: ServiceTransactionIdSchema.optional(),
     preset: ServicesCatalogSummaryPresetSchema.default("THIS_MONTH"),
     from: OptionalDateOnlySchema,
     to: OptionalDateOnlySchema,
@@ -545,6 +548,7 @@ const ServiceTransactionsListQuerySchema = z
       z.string().max(SERVICE_TRANSACTION_SEARCH_MAX_LENGTH).optional(),
     ),
     sort: ServiceTransactionSortSchema.default("PURCHASED_DESC"),
+    serviceGroupId: ServiceTransactionIdSchema.optional(),
     serviceId: ServiceTransactionIdSchema.optional(),
     status: ContactServiceStatusSchema.optional(),
     rangePreset: ServiceTransactionsRangePresetSchema.default("ALL_TIME"),
@@ -593,6 +597,8 @@ const FollowUpsListQuerySchema = z.object({
   dueDatePreset: z
     .enum(["OVERDUE", "DUE_SOON", "TODAY", "NEXT_7_DAYS", "NO_DUE_DATE"])
     .optional(),
+  serviceGroupId: ServiceTransactionIdSchema.optional(),
+  serviceId: ServiceTransactionIdSchema.optional(),
   followUpTemplateId: ServiceTransactionIdSchema.optional(),
   assignedToUserId: ServiceTransactionIdSchema.optional(),
 })
@@ -601,6 +607,7 @@ const CreateContactServiceSchema = z
   .object({
     contactId: ServiceTransactionIdSchema,
     serviceId: ServiceTransactionIdSchema,
+    workflowKind: z.literal("SERVICE_STEPS").optional(),
     followUpTemplateId: ServiceTransactionIdSchema.optional(),
     followUpAssignedToUserId: ServiceTransactionIdSchema.optional(),
     assignedProfessionalId: ServiceTransactionIdSchema.optional(),
@@ -1074,6 +1081,7 @@ async function serializeContactServiceWorkspaceBase(item: any, paidCents: number
     service: {
       id: item.service.id,
       name: item.service.name,
+      parentService: item.service.parentService,
       description: item.service.description,
       basePriceCents: item.service.basePriceCents,
       isTaxExempt: item.service.isTaxExempt,
@@ -1096,6 +1104,10 @@ async function serializeContactServiceWorkspaceBase(item: any, paidCents: number
 }
 
 function serializeContactServiceListFollowUpMetadata(item: any) {
+  if (item.workflowKind === "SERVICE_STEPS") {
+    const current = (item.serviceSteps ?? []).flatMap((step: any) => step.occurrences.filter((entry: any) => !entry.supersededAt && entry.status === "ACTIVE").map((entry: any) => ({ step, entry })))[0]
+    return { nextFollowUp: current ? { at: current.entry.dueAt, stepId: current.step.id, source: "STEP_DUE", projected: false } : null, followUpRun: null, followUpSteps: [] }
+  }
   const {
     definition,
     waitingAction,
@@ -1625,6 +1637,7 @@ async function evaluateServiceFitScan(params: {
       select: {
         id: true,
         name: true,
+        parentService: { select: { id: true, name: true } },
         description: true,
         fitProfile: true,
       },
@@ -1743,6 +1756,8 @@ async function evaluateServiceFitScan(params: {
       return {
         serviceId: service.id,
         serviceName: service.name,
+        serviceGroupId: service.parentService?.id ?? null,
+        serviceGroupName: service.parentService?.name ?? null,
         description: service.description ?? null,
         fitProfile: profile,
         ...enrollmentSummary,
@@ -1970,16 +1985,20 @@ router.get("/:tenantId/options", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
+    const { includeInactive } = z.object({ includeInactive: z.enum(["true", "false"]).optional() }).parse(req.query)
     const items = await prismaWithServices.service.findMany({
       where: {
-        ...enrollableServiceWhere,
         tenantId,
-        isActive: true,
+        ...(includeInactive === "true" ? { kind: "OFFERING" as const } : enrollableServiceWhere),
       },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       select: {
         id: true,
         name: true,
+        kind: true,
+        isActive: true,
+        parentServiceId: true,
+        parentService: { select: { id: true, name: true, isActive: true } },
       },
     })
 
@@ -1987,6 +2006,20 @@ router.get("/:tenantId/options", requireAuth, async (req, res, next) => {
   } catch (error) {
     return next(error)
   }
+})
+
+router.get("/:tenantId/catalog", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const query = z.object({ page: z.coerce.number().int().min(1).max(1000000).default(1), pageSize: z.coerce.number().refine(value => value === 10 || value === 25).default(10), search: z.string().trim().max(200).optional(), serviceGroupId: z.uuid().optional(), serviceId: z.uuid().optional() }).parse(req.query)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    const where: Prisma.ServiceWhereInput = { tenantId, ...enrollableServiceWhere, ...(query.serviceId ? { id: query.serviceId } : {}), ...(query.serviceGroupId ? { parentServiceId: query.serviceGroupId } : {}),
+      ...(query.search ? { OR: [{ name: { contains: query.search, mode: "insensitive" } }, { description: { contains: query.search, mode: "insensitive" } }, { parentService: { name: { contains: query.search, mode: "insensitive" } } }] } : {}) }
+    const [total, rows] = await prisma.$transaction([prisma.service.count({ where }), prisma.service.findMany({ where, orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }], skip: (query.page - 1) * query.pageSize, take: query.pageSize, select: { ...serviceConfigurationSelect, isActive: true, sortOrder: true } })])
+    return res.json({ ok: true, items: rows.map(row => { const service = resolveServiceConfiguration(row); return { ...service, steps: offeringSteps(service.steps, service.id), followUpTemplates: [] } }), pagination: { page: query.page, pageSize: query.pageSize, total, totalPages: Math.max(1, Math.ceil(total / query.pageSize)) } })
+  } catch (error) { return next(error) }
 })
 
 router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) => {
@@ -2079,6 +2112,8 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
       service: {
         id: service.id,
         name: service.name,
+        parentServiceId: service.parentServiceId,
+        parentService: service.parentService,
         description: service.description,
         basePriceCents: service.basePriceCents,
         currency: service.currency,
@@ -2089,7 +2124,7 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
         installmentFrequency: service.installmentFrequency,
         isActive: service.isActive,
         checklistItems: service.checklistItems,
-        steps: service.steps,
+        steps: offeringSteps(service.steps, service.id),
         followUpTemplates: (service.steps.length ? [] : service.followUpTemplates).map((template: any) => ({
           id: template.id,
           name: template.name,
@@ -2138,6 +2173,7 @@ router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => 
     })
     const timezone = getSafeTimezone(tenant?.timezone)
     const range = getServicesCatalogSummaryRange(query, timezone)
+    const scope = serviceScopeWhere(query)
     const salesDateWhere = {
       OR: [
         {
@@ -2160,7 +2196,7 @@ router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => 
       await Promise.all([
         prismaWithServices.contactService.aggregate({
           where: {
-            tenantId,
+            tenantId, ...scope,
             status: {
               not: "CANCELED",
             },
@@ -2172,7 +2208,7 @@ router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => 
         }),
         prismaWithServices.contactService.count({
           where: {
-            tenantId,
+            tenantId, ...scope,
             status: {
               not: "CANCELED",
             },
@@ -2181,22 +2217,16 @@ router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => 
         }),
         prismaWithServices.contactService.count({
           where: {
-            tenantId,
+            tenantId, ...scope,
             status: {
               not: "CANCELED",
             },
-            followUpSteps: {
-              some: {
-                status: {
-                  in: ["PENDING", "ACTIVE", "POSTPONED"] as const,
-                },
-              },
-            },
+            ...unfinishedServiceWorkWhere,
           },
         }),
         prismaWithServices.contactService.aggregate({
           where: {
-            tenantId,
+            tenantId, ...scope,
             status: {
               not: "CANCELED",
             },
@@ -2209,7 +2239,7 @@ router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => 
           where: {
             tenantId,
             contactService: {
-              tenantId,
+              tenantId, ...scope,
               status: {
                 not: "CANCELED",
               },
@@ -2323,13 +2353,7 @@ router.get("/:tenantId/catalog/:serviceId/summary", requireAuth, async (req, res
             status: {
               not: "CANCELED",
             },
-            followUpSteps: {
-              some: {
-                status: {
-                  in: ["PENDING", "ACTIVE", "POSTPONED"] as const,
-                },
-              },
-            },
+            ...unfinishedServiceWorkWhere,
           },
         }),
         prismaWithServices.contactService.aggregate({
@@ -2426,9 +2450,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
       andClauses.push({
         OR: [
           {
-            service: {
-              name: { contains: searchableValue, mode: "insensitive" as const },
-            },
+            service: { OR: [{ name: { contains: searchableValue, mode: "insensitive" as const } }, { parentService: { name: { contains: searchableValue, mode: "insensitive" as const } } }] },
           },
           {
             contact: buildRelatedContactSearchWhere(searchableValue),
@@ -2439,7 +2461,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
 
     const where = {
       tenantId,
-      ...(query.serviceId ? { serviceId: query.serviceId } : {}),
+      ...serviceScopeWhere(query),
       ...(query.status ? { status: query.status } : {}),
       ...(andClauses.length ? { AND: andClauses } : {}),
     }
@@ -2498,6 +2520,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
             select: {
               id: true,
               name: true,
+              parentService: { select: { id: true, name: true } },
             },
           },
           payments: {
@@ -2617,6 +2640,7 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
         Prisma.sql`cs."status"::text IN (${Prisma.join(query.statuses)})`,
       )
     }
+    if (query.serviceGroupId) conditions.push(Prisma.sql`s."parentServiceId" = ${query.serviceGroupId}`)
     if (query.serviceId) {
       conditions.push(Prisma.sql`cs."serviceId" = ${query.serviceId}`)
     }
@@ -2641,6 +2665,7 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
         OR COALESCE(c."phone", '') ILIKE ${searchPattern}
         OR COALESCE(c."email", '') ILIKE ${searchPattern}
         OR s."name" ILIKE ${searchPattern}
+        OR EXISTS (SELECT 1 FROM "Service" service_group WHERE service_group."tenantId"=cs."tenantId" AND service_group.id=s."parentServiceId" AND service_group.name ILIKE ${searchPattern})
         OR COALESCE(template."name", '') ILIKE ${searchPattern}
         OR COALESCE(coordinator."name", '') ILIKE ${searchPattern}
         OR COALESCE(coordinator."email", '') ILIKE ${searchPattern}
@@ -2724,6 +2749,22 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
                 AND follow_up_step."contactServiceId" = cs."id"
             ), cs."updatedAt"),
             COALESCE((
+              SELECT MAX(saved_step."createdAt") FROM "ContactServiceStep" saved_step
+              WHERE saved_step."tenantId" = ${tenantId} AND saved_step."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(GREATEST(step_entry."createdAt", step_entry."enteredAt", step_entry."resolvedAt", step_entry."supersededAt", step_entry."advancedAt")) FROM "ServiceStepOccurrence" step_entry
+              WHERE step_entry."tenantId" = ${tenantId} AND step_entry."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(deadline_change."createdAt") FROM "ServiceStepDeadlineChange" deadline_change
+              WHERE deadline_change."tenantId" = ${tenantId} AND deadline_change."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(step_move."createdAt") FROM "ServiceStepMovement" step_move
+              WHERE step_move."tenantId" = ${tenantId} AND step_move."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
               SELECT MAX(follow_up_run."updatedAt")
               FROM "ContactServiceFollowUpRun" follow_up_run
               WHERE follow_up_run."tenantId" = ${tenantId}
@@ -2759,6 +2800,7 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
           },
           select: {
             id: true,
+            workflowKind: true,
             status: true,
             startedAt: true,
             updatedAt: true,
@@ -2776,6 +2818,7 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
               select: {
                 id: true,
                 name: true,
+                parentService: { select: { id: true, name: true } },
               },
             },
             followUpTemplate: {
@@ -2823,6 +2866,7 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
             email: enrollment.contact.email,
           },
           service: enrollment.service,
+          workflowKind: enrollment.workflowKind,
           template: enrollment.followUpTemplate,
           status: enrollment.status,
           coordinator: coordinator
@@ -3074,6 +3118,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               name: true,
+              parentService: { select: { id: true, name: true } },
               checklistItems: {
                 where: { archivedAt: null },
                 select: {
@@ -3240,6 +3285,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               name: true,
+              parentService: { select: { id: true, name: true } },
               checklistItems: {
                 where: { archivedAt: null },
                 select: {
@@ -3373,6 +3419,10 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           currency: item.currency,
           followUpCoordinatorUserId: item.followUpCoordinatorUserId,
           followUpCoordinator: item.followUpCoordinator,
+          workflowKind: item.workflowKind,
+          serviceSteps: item.serviceSteps ?? [],
+          stepMovements: item.stepMovements ?? [],
+          stepProgress: item.workflowKind === "SERVICE_STEPS" ? enrolledStepProgress(item.serviceSteps ?? [], item.stepMovements ?? []) : null,
           service: item.service,
           nextFollowUp: followUpMetadata.nextFollowUp,
           followUpRun: followUpMetadata.followUpRun,
@@ -3553,6 +3603,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
       }
       const activeChecklist = effective.checklistItems
+      if (payload.workflowKind === "SERVICE_STEPS" && (payload.followUpTemplateId || !effective.steps.length)) throw new ServiceCollectionError("SERVICE_STEPS_REQUIRED")
       const usesServiceSteps = !payload.followUpTemplateId && effective.steps.length > 0
       const workflowKind = usesServiceSteps ? "SERVICE_STEPS" : selectedPublishedTemplate || templateStepsForEnrollment.length ? "LEGACY_TEMPLATE" : "NONE"
       const serviceAutomations = usesServiceSteps ? await captureServiceAutomationsTx(tx, {
@@ -4765,6 +4816,7 @@ router.get(
           service: {
             id: item.service.id,
             name: item.service.name,
+            parentService: item.service.parentService,
             description: item.service.description,
             basePriceCents: item.service.basePriceCents,
             isTaxExempt: item.service.isTaxExempt,

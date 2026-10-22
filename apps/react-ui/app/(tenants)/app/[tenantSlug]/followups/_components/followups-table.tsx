@@ -1,4 +1,7 @@
 "use client"
+import { ServiceScopeFields } from "@/components/service-scope-fields"
+import { type ServiceOfferingOption } from "@/lib/service-hierarchy"
+
 
 import { isAxiosError } from "axios"
 import {
@@ -158,10 +161,7 @@ type FollowUpsResponse = {
   }
 }
 
-type FollowUpTemplateOption = {
-  id: string
-  name: string
-}
+type FollowUpTemplateOption = ServiceOfferingOption
 
 type AssigneeOption = {
   value: string
@@ -174,7 +174,7 @@ const PAGE_SIZE_OPTIONS = [10, 25] as const
 const ALL_STATUS = "ALL"
 const DEFAULT_STATUS = ALL_STATUS
 const ALL_DUE_DATE_PRESETS = "ALL"
-const ALL_TEMPLATE_FILTER = "ALL"
+const ALL_GROUP_FILTER = "ALL"
 const ALL_ASSIGNEE_FILTER = "ALL"
 const DEFAULT_SORT: FollowUpSort = "URGENCY"
 const MAX_FOLLOW_UP_PAGE = 1_000_000
@@ -525,8 +525,8 @@ function FollowUpMobileCard({
       <CardContent className="flex flex-col gap-4 px-4 pb-4">
         <div className="flex min-w-0 flex-col gap-1">
           <p className="text-xs font-medium text-slate-500">Service</p>
-          <p className="truncate text-sm font-medium text-slate-800" title={item.serviceName}>
-            {item.serviceName}
+          <p className="truncate text-sm font-medium text-slate-800" title={[item.parentService?.name, item.serviceName].filter(Boolean).join(" / ")}>
+            {item.parentService?.name ? `${item.parentService?.name} / ` : ""}{item.serviceName}
           </p>
         </div>
 
@@ -636,9 +636,11 @@ export function FollowUpsTable({
   const [dueDatePreset, setDueDatePreset] = useState(
     () => sanitizeDueDateTab(searchParams.get("dueDatePreset")),
   )
-  const [templateFilter, setTemplateFilter] = useState(
-    () => searchParams.get("followUpTemplateId") ?? ALL_TEMPLATE_FILTER,
+  const [groupFilter, setGroupFilter] = useState(
+    () => searchParams.get("serviceGroupId") ?? ALL_GROUP_FILTER,
   )
+  const [offeringFilter, setOfferingFilter] = useState(() => searchParams.get("serviceId") ?? "")
+  const [draftOfferingFilter, setDraftOfferingFilter] = useState(offeringFilter)
   const [assigneeFilter, setAssigneeFilter] = useState(
     () => searchParams.get("assignedToUserId") ?? ALL_ASSIGNEE_FILTER,
   )
@@ -652,8 +654,8 @@ export function FollowUpsTable({
   const [draftStatusFilter, setDraftStatusFilter] = useState(
     () => sanitizeStatus(searchParams.get("status")),
   )
-  const [draftTemplateFilter, setDraftTemplateFilter] = useState(
-    () => searchParams.get("followUpTemplateId") ?? ALL_TEMPLATE_FILTER,
+  const [draftGroupFilter, setDraftGroupFilter] = useState(
+    () => searchParams.get("serviceGroupId") ?? ALL_GROUP_FILTER,
   )
   const [draftAssigneeFilter, setDraftAssigneeFilter] = useState(
     () => searchParams.get("assignedToUserId") ?? ALL_ASSIGNEE_FILTER,
@@ -666,7 +668,7 @@ export function FollowUpsTable({
   const [isLoading, setIsLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [data, setData] = useState<FollowUpsResponse | null>(null)
-  const [templateOptions, setTemplateOptions] = useState<FollowUpTemplateOption[]>([])
+  const [serviceOptions, setServiceOptions] = useState<FollowUpTemplateOption[]>([])
   const [assigneeOptions, setAssigneeOptions] = useState<AssigneeOption[]>([])
 
   useEffect(() => {
@@ -682,13 +684,14 @@ export function FollowUpsTable({
 
   useEffect(() => {
     const nextParams = new URLSearchParams()
+    if (offeringFilter) nextParams.set("serviceId", offeringFilter)
     if (queueFilter !== "ALL") nextParams.set("queueState", queueFilter)
 
     if (debouncedQuery) nextParams.set("search", debouncedQuery)
     if (statusFilter !== DEFAULT_STATUS) nextParams.set("status", statusFilter)
     if (dueDatePreset !== ALL_DUE_DATE_PRESETS) nextParams.set("dueDatePreset", dueDatePreset)
-    if (templateFilter !== ALL_TEMPLATE_FILTER) {
-      nextParams.set("followUpTemplateId", templateFilter)
+    if (groupFilter !== ALL_GROUP_FILTER) {
+      nextParams.set("serviceGroupId", groupFilter)
     }
     if (assigneeFilter !== ALL_ASSIGNEE_FILTER) {
       nextParams.set("assignedToUserId", assigneeFilter)
@@ -718,7 +721,8 @@ export function FollowUpsTable({
     queueFilter,
     sort,
     statusFilter,
-    templateFilter,
+    groupFilter,
+    offeringFilter,
   ])
 
   const loadFollowUps = useCallback(async (background = false) => {
@@ -743,8 +747,9 @@ export function FollowUpsTable({
               : statusFilter || undefined,
           dueDatePreset:
             dueDatePreset === ALL_DUE_DATE_PRESETS ? undefined : dueDatePreset,
-          followUpTemplateId:
-            templateFilter === ALL_TEMPLATE_FILTER ? undefined : templateFilter,
+          serviceGroupId:
+            groupFilter === ALL_GROUP_FILTER ? undefined : groupFilter,
+          serviceId: offeringFilter || undefined,
           assignedToUserId:
             assigneeFilter === ALL_ASSIGNEE_FILTER ? undefined : assigneeFilter,
           sort,
@@ -776,7 +781,8 @@ export function FollowUpsTable({
     pageSize,
     sort,
     statusFilter,
-    templateFilter,
+    groupFilter,
+    offeringFilter,
     tenantId,
     queueFilter,
   ])
@@ -814,13 +820,13 @@ export function FollowUpsTable({
         const { data: response } = await api.get<{
           ok: boolean
           items: FollowUpTemplateOption[]
-        }>(`/api/services/${encodeURIComponent(tenantId)}/follow-up-template-options`)
+        }>(`/api/services/${encodeURIComponent(tenantId)}/options`, { params: { includeInactive: true } })
 
         if (cancelled) return
-        setTemplateOptions(response.items ?? [])
+        setServiceOptions(response.items ?? [])
       } catch {
         if (cancelled) return
-        setTemplateOptions([])
+        setServiceOptions([])
       }
     }
 
@@ -871,7 +877,7 @@ export function FollowUpsTable({
   const canGoNext = page < totalPages
   const activeFilterCount =
     (statusFilter !== DEFAULT_STATUS ? 1 : 0) +
-    (templateFilter !== ALL_TEMPLATE_FILTER ? 1 : 0) +
+    (groupFilter !== ALL_GROUP_FILTER ? 1 : 0) + (offeringFilter ? 1 : 0) +
     (assigneeFilter !== ALL_ASSIGNEE_FILTER ? 1 : 0)
   const hasAppliedFilters = activeFilterCount > 0
   const hasActiveRefinements =
@@ -881,7 +887,8 @@ export function FollowUpsTable({
     dueDatePreset !== ALL_DUE_DATE_PRESETS
   const hasDraftFilters =
     draftStatusFilter !== DEFAULT_STATUS ||
-    draftTemplateFilter !== ALL_TEMPLATE_FILTER ||
+    draftGroupFilter !== ALL_GROUP_FILTER ||
+    Boolean(draftOfferingFilter) ||
     draftAssigneeFilter !== ALL_ASSIGNEE_FILTER
   const placeholderRowCount =
     enrollments.length === 0
@@ -914,24 +921,28 @@ export function FollowUpsTable({
   const clearFilters = () => {
     setQueueFilter("ALL")
     setStatusFilter(DEFAULT_STATUS)
-    setTemplateFilter(ALL_TEMPLATE_FILTER)
+    setOfferingFilter("")
+    setDraftOfferingFilter("")
+    setGroupFilter(ALL_GROUP_FILTER)
     setAssigneeFilter(ALL_ASSIGNEE_FILTER)
     setDraftStatusFilter(DEFAULT_STATUS)
-    setDraftTemplateFilter(ALL_TEMPLATE_FILTER)
+    setDraftGroupFilter(ALL_GROUP_FILTER)
     setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
     setPage(1)
   }
 
   const openFilterSheet = () => {
     setDraftStatusFilter(statusFilter)
-    setDraftTemplateFilter(templateFilter)
+    setDraftOfferingFilter(offeringFilter)
+    setDraftGroupFilter(groupFilter)
     setDraftAssigneeFilter(assigneeFilter)
     setIsFilterSheetOpen(true)
   }
 
   const applyFilters = () => {
     setStatusFilter(sanitizeStatus(draftStatusFilter))
-    setTemplateFilter(draftTemplateFilter)
+    setOfferingFilter(draftOfferingFilter)
+    setGroupFilter(draftGroupFilter)
     setAssigneeFilter(draftAssigneeFilter)
     setPage(1)
     setIsFilterSheetOpen(false)
@@ -1184,7 +1195,7 @@ export function FollowUpsTable({
                   Refine follow-ups
                 </SheetTitle>
                 <SheetDescription className="max-w-xl text-sm leading-6 text-slate-600">
-                  Filter service paths by step status, template, and owner.
+                  Filter service work by service, sub-service, step status and owner.
                 </SheetDescription>
               </div>
             </div>
@@ -1220,30 +1231,7 @@ export function FollowUpsTable({
                 </FieldDescription>
               </Field>
 
-              <Field className="gap-2">
-                <FieldLabel htmlFor="follow-up-template-filter" className="text-slate-800">
-                  Template
-                </FieldLabel>
-                <Select value={draftTemplateFilter} onValueChange={setDraftTemplateFilter}>
-                  <SelectTrigger
-                    id="follow-up-template-filter"
-                    className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
-                  >
-                    <SelectValue placeholder="Template" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ALL_TEMPLATE_FILTER}>All templates</SelectItem>
-                    {templateOptions.map((template) => (
-                      <SelectItem key={template.id} value={template.id}>
-                        {template.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FieldDescription className="text-xs">
-                  Focus on a specific follow-up template across the selected due-date tab.
-                </FieldDescription>
-              </Field>
+              <ServiceScopeFields options={serviceOptions} groupId={draftGroupFilter === ALL_GROUP_FILTER ? "" : draftGroupFilter} offeringId={draftOfferingFilter} onChange={(group, offering) => { setDraftGroupFilter(group || ALL_GROUP_FILTER); setDraftOfferingFilter(offering) }} />
 
               <Field className="gap-2">
                 <FieldLabel htmlFor="follow-up-assignee-filter" className="text-slate-800">
@@ -1492,7 +1480,7 @@ export function FollowUpsTable({
                       </TableCell>
                       <TableCell className="px-4 py-0">
                         <p className="truncate font-medium text-slate-900">
-                          {item.serviceName}
+                          {item.parentService?.name ? `${item.parentService?.name} / ` : ""}{item.serviceName}
                         </p>
                       </TableCell>
                       <TableCell className="px-4 py-0">

@@ -11,6 +11,7 @@ export default async function ContactFollowUpsPage({
 
   return (
     <ContactFollowUpsPanel
+      tenantSlug={tenantSlug}
       tenantId={tenantId}
       contactId={contactId}
       tenantTimezone={tenantTimezone}

@@ -1,4 +1,7 @@
 "use client"
+import { ServiceScopeFields } from "@/components/service-scope-fields"
+import { serviceOfferingLabel, type ServiceOfferingOption } from "@/lib/service-hierarchy"
+
 
 import { isAxiosError } from "axios"
 import {
@@ -91,6 +94,7 @@ type EnrollmentSort =
 
 type EnrollmentItem = {
   id: string
+  workflowKind?: "SERVICE_STEPS" | "LEGACY_TEMPLATE" | "NONE"
   contact: {
     id: string
     displayName: string
@@ -100,6 +104,7 @@ type EnrollmentItem = {
   service: {
     id: string
     name: string
+    parentService?: { id: string; name: string } | null
   }
   template: {
     id: string
@@ -127,16 +132,8 @@ type EnrollmentsResponse = {
   }
 }
 
-type ServiceOption = {
-  id: string
-  name: string
-  isActive: boolean
-}
+type ServiceOption = ServiceOfferingOption
 
-type TemplateOption = {
-  id: string
-  name: string
-}
 
 type CoordinatorOption = {
   value: string
@@ -147,8 +144,7 @@ type CoordinatorOption = {
 
 const PAGE_SIZE_OPTIONS = [10, 25] as const
 const ALL_SERVICES = "ALL_SERVICES"
-const ALL_TEMPLATES = "ALL_TEMPLATES"
-const NO_TEMPLATE = "NO_TEMPLATE"
+const ALL_GROUPS = "ALL_GROUPS"
 const ALL_COORDINATORS = "ALL_COORDINATORS"
 const UNASSIGNED = "UNASSIGNED"
 const DEFAULT_SORT: EnrollmentSort = "LAST_ACTIVITY_DESC"
@@ -240,7 +236,7 @@ function EnrollmentMobileCard({
     <Card
       role="link"
       tabIndex={0}
-      aria-label={`Open ${enrollment.contact.displayName} ${enrollment.service.name} enrollment`}
+      aria-label={`Open ${enrollment.contact.displayName} ${serviceOfferingLabel(enrollment.service)} enrollment`}
       className={cn(
         "group cursor-pointer gap-0 rounded-[22px] border-slate-200 bg-white py-0 shadow-sm outline-none transition-[border-color,box-shadow,background-color,transform] hover:border-blue-200 hover:shadow-md focus-visible:border-blue-300 focus-visible:ring-2 focus-visible:ring-blue-500/40 active:scale-[0.995] motion-reduce:transform-none motion-reduce:transition-none",
         isCanceled && "bg-slate-50/80",
@@ -272,9 +268,9 @@ function EnrollmentMobileCard({
               "truncate font-medium text-slate-700",
               isCanceled && "text-slate-500",
             )}
-            title={enrollment.service.name}
+            title={serviceOfferingLabel(enrollment.service)}
           >
-            {enrollment.service.name}
+            {serviceOfferingLabel(enrollment.service)}
           </span>
         </CardDescription>
         <CardAction className="flex items-center gap-1.5">
@@ -294,7 +290,7 @@ function EnrollmentMobileCard({
       <CardContent className="grid min-w-0 grid-cols-2 items-start gap-4 px-4 pb-4">
         <div className="flex min-w-0 flex-col gap-1">
           <p className="text-xs font-medium text-slate-500">
-            Template
+            Workflow
           </p>
           <p
             className={cn(
@@ -303,7 +299,7 @@ function EnrollmentMobileCard({
               isCanceled && "text-slate-500",
             )}
           >
-            {enrollment.template?.name ?? "Manual flow"}
+            {enrollment.workflowKind === "SERVICE_STEPS" ? "Service steps" : enrollment.template?.name ?? "Manual flow"}
           </p>
         </div>
 
@@ -595,11 +591,7 @@ export function EnrollmentsRegister({
   const [serviceFilter, setServiceFilter] = useState(
     () => searchParams.get("serviceId") ?? ALL_SERVICES,
   )
-  const [templateFilter, setTemplateFilter] = useState(() =>
-    searchParams.get("withoutTemplate") === "true"
-      ? NO_TEMPLATE
-      : searchParams.get("followUpTemplateId") ?? ALL_TEMPLATES,
-  )
+  const [groupFilter, setGroupFilter] = useState(() => searchParams.get("serviceGroupId") ?? ALL_GROUPS)
   const [coordinatorFilter, setCoordinatorFilter] = useState(() =>
     searchParams.get("unassigned") === "true"
       ? UNASSIGNED
@@ -613,11 +605,10 @@ export function EnrollmentsRegister({
   const [isSortSheetOpen, setIsSortSheetOpen] = useState(false)
   const [draftStatusFilters, setDraftStatusFilters] = useState(statusFilters)
   const [draftServiceFilter, setDraftServiceFilter] = useState(serviceFilter)
-  const [draftTemplateFilter, setDraftTemplateFilter] = useState(templateFilter)
+  const [draftGroupFilter, setDraftGroupFilter] = useState(groupFilter)
   const [draftCoordinatorFilter, setDraftCoordinatorFilter] = useState(coordinatorFilter)
   const [data, setData] = useState<EnrollmentsResponse | null>(null)
   const [serviceOptions, setServiceOptions] = useState<ServiceOption[]>([])
-  const [templateOptions, setTemplateOptions] = useState<TemplateOption[]>([])
   const [coordinatorOptions, setCoordinatorOptions] = useState<CoordinatorOption[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -641,11 +632,7 @@ export function EnrollmentsRegister({
     if (sort !== DEFAULT_SORT) nextParams.set("sort", sort)
     if (statusFilters.length) nextParams.set("statuses", statusFilters.join(","))
     if (serviceFilter !== ALL_SERVICES) nextParams.set("serviceId", serviceFilter)
-    if (templateFilter === NO_TEMPLATE) {
-      nextParams.set("withoutTemplate", "true")
-    } else if (templateFilter !== ALL_TEMPLATES) {
-      nextParams.set("followUpTemplateId", templateFilter)
-    }
+    if (groupFilter !== ALL_GROUPS) nextParams.set("serviceGroupId", groupFilter)
     if (coordinatorFilter === UNASSIGNED) {
       nextParams.set("unassigned", "true")
     } else if (coordinatorFilter !== ALL_COORDINATORS) {
@@ -663,7 +650,7 @@ export function EnrollmentsRegister({
     serviceFilter,
     sort,
     statusFilters,
-    templateFilter,
+    groupFilter,
   ])
 
   useEffect(() => {
@@ -691,11 +678,7 @@ export function EnrollmentsRegister({
             sort,
             statuses: statusFilters.length ? statusFilters.join(",") : undefined,
             serviceId: serviceFilter === ALL_SERVICES ? undefined : serviceFilter,
-            followUpTemplateId:
-              templateFilter === ALL_TEMPLATES || templateFilter === NO_TEMPLATE
-                ? undefined
-                : templateFilter,
-            withoutTemplate: templateFilter === NO_TEMPLATE ? true : undefined,
+            serviceGroupId: groupFilter === ALL_GROUPS ? undefined : groupFilter,
             assignedToUserId:
               coordinatorFilter === ALL_COORDINATORS || coordinatorFilter === UNASSIGNED
                 ? undefined
@@ -732,7 +715,7 @@ export function EnrollmentsRegister({
     serviceFilter,
     sort,
     statusFilters,
-    templateFilter,
+    groupFilter,
     tenantId,
   ])
 
@@ -744,13 +727,10 @@ export function EnrollmentsRegister({
     let cancelled = false
 
     const loadFilterOptions = async () => {
-      const [servicesResult, templatesResult, coordinatorsResult] = await Promise.allSettled([
+      const [servicesResult, coordinatorsResult] = await Promise.allSettled([
         api.get<{ ok: boolean; items: ServiceOption[] }>(
-          `/api/account-settings/${encodeURIComponent(tenantId)}/services/options`,
+          `/api/services/${encodeURIComponent(tenantId)}/options`,
           { params: { includeInactive: true } },
-        ),
-        api.get<{ ok: boolean; items: TemplateOption[] }>(
-          `/api/services/${encodeURIComponent(tenantId)}/follow-up-template-options`,
         ),
         api.get<{ ok: boolean; items: CoordinatorOption[] }>(
           `/api/tasks/${encodeURIComponent(tenantId)}/assignees`,
@@ -761,9 +741,6 @@ export function EnrollmentsRegister({
 
       setServiceOptions(
         servicesResult.status === "fulfilled" ? servicesResult.value.data.items ?? [] : [],
-      )
-      setTemplateOptions(
-        templatesResult.status === "fulfilled" ? templatesResult.value.data.items ?? [] : [],
       )
       setCoordinatorOptions(
         coordinatorsResult.status === "fulfilled"
@@ -788,13 +765,13 @@ export function EnrollmentsRegister({
   const activeFilterCount =
     statusFilters.length +
     (serviceFilter !== ALL_SERVICES ? 1 : 0) +
-    (templateFilter !== ALL_TEMPLATES ? 1 : 0) +
+    (groupFilter !== ALL_GROUPS ? 1 : 0) +
     (coordinatorFilter !== ALL_COORDINATORS ? 1 : 0)
   const hasActiveSearchOrFilters = Boolean(debouncedQuery) || activeFilterCount > 0
   const hasDraftFilters =
     draftStatusFilters.length > 0 ||
     draftServiceFilter !== ALL_SERVICES ||
-    draftTemplateFilter !== ALL_TEMPLATES ||
+    draftGroupFilter !== ALL_GROUPS ||
     draftCoordinatorFilter !== ALL_COORDINATORS
   const placeholderRowCount =
     enrollments.length === 0 ? pageSize - 1 : Math.max(0, pageSize - enrollments.length)
@@ -816,11 +793,11 @@ export function EnrollmentsRegister({
   const clearFilters = () => {
     setStatusFilters([])
     setServiceFilter(ALL_SERVICES)
-    setTemplateFilter(ALL_TEMPLATES)
+    setGroupFilter(ALL_GROUPS)
     setCoordinatorFilter(ALL_COORDINATORS)
     setDraftStatusFilters([])
     setDraftServiceFilter(ALL_SERVICES)
-    setDraftTemplateFilter(ALL_TEMPLATES)
+    setDraftGroupFilter(ALL_GROUPS)
     setDraftCoordinatorFilter(ALL_COORDINATORS)
     setPage(1)
   }
@@ -858,7 +835,7 @@ export function EnrollmentsRegister({
               onChange={(event) => {
                 setQuery(event.target.value)
               }}
-              aria-label="Search enrollments by contact, service, template, or coordinator"
+              aria-label="Search enrollments by contact, service, or coordinator"
               className="h-11 w-full rounded-xl border-white/80 bg-white/85 pr-14 pl-4 text-sm shadow-sm backdrop-blur placeholder:text-slate-400 focus-visible:border-blue-300 focus-visible:ring-blue-100"
             />
             <Button
@@ -886,7 +863,7 @@ export function EnrollmentsRegister({
               onClick={() => {
                 setDraftStatusFilters(statusFilters)
                 setDraftServiceFilter(serviceFilter)
-                setDraftTemplateFilter(templateFilter)
+                setDraftGroupFilter(groupFilter)
                 setDraftCoordinatorFilter(coordinatorFilter)
                 setIsFilterSheetOpen(true)
               }}
@@ -1032,7 +1009,7 @@ export function EnrollmentsRegister({
                 Refine enrollments
               </SheetTitle>
               <SheetDescription className="mt-1.5 max-w-xl text-sm leading-6 text-slate-600">
-                Filter by workflow status, service, template, and coordinator.
+                Filter by workflow status, service, sub-service, and coordinator.
               </SheetDescription>
             </div>
           </SheetHeader>
@@ -1084,55 +1061,9 @@ export function EnrollmentsRegister({
 
               <Separator />
 
-              <Field>
-                <FieldLabel htmlFor="enrollment-service-filter">Service</FieldLabel>
-                <Select value={draftServiceFilter} onValueChange={setDraftServiceFilter}>
-                  <SelectTrigger
-                    id="enrollment-service-filter"
-                    className="h-11 w-full rounded-xl border-blue-100 bg-white"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value={ALL_SERVICES}>All services</SelectItem>
-                      {serviceOptions.map((service) => (
-                        <SelectItem key={service.id} value={service.id}>
-                          {service.name}{service.isActive ? "" : " (Inactive)"}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
+              <ServiceScopeFields options={serviceOptions} groupId={draftGroupFilter === ALL_GROUPS ? "" : draftGroupFilter} offeringId={draftServiceFilter === ALL_SERVICES ? "" : draftServiceFilter} onChange={(group, offering) => { setDraftGroupFilter(group || ALL_GROUPS); setDraftServiceFilter(offering || ALL_SERVICES) }} />
 
               <Separator />
-
-              <Field>
-                <FieldLabel htmlFor="enrollment-template-filter">Template</FieldLabel>
-                <Select value={draftTemplateFilter} onValueChange={setDraftTemplateFilter}>
-                  <SelectTrigger
-                    id="enrollment-template-filter"
-                    className="h-11 w-full rounded-xl border-blue-100 bg-white"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value={ALL_TEMPLATES}>All templates</SelectItem>
-                      <SelectItem value={NO_TEMPLATE}>No template</SelectItem>
-                      {templateOptions.map((template) => (
-                        <SelectItem key={template.id} value={template.id}>
-                          {template.name}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <FieldDescription className="text-xs">
-                  No template identifies enrollments using a manual flow.
-                </FieldDescription>
-              </Field>
 
               <Separator />
 
@@ -1177,7 +1108,7 @@ export function EnrollmentsRegister({
                   ),
                 )
                 setServiceFilter(draftServiceFilter)
-                setTemplateFilter(draftTemplateFilter)
+                setGroupFilter(draftGroupFilter)
                 setCoordinatorFilter(draftCoordinatorFilter)
                 setPage(1)
                 setIsFilterSheetOpen(false)
@@ -1255,7 +1186,7 @@ export function EnrollmentsRegister({
                   Service name
                 </TableHead>
                 <TableHead className="w-[17%] border-y bg-slate-50 px-4 text-xs text-slate-600">
-                  Template
+                  Workflow
                 </TableHead>
                 <TableHead className="w-[13%] border-y bg-slate-50 px-4 text-xs text-slate-600">
                   Status
@@ -1329,7 +1260,7 @@ export function EnrollmentsRegister({
                       key={enrollment.id}
                       tabIndex={0}
                       role="link"
-                      aria-label={`Open ${enrollment.contact.displayName} ${enrollment.service.name} enrollment`}
+                      aria-label={`Open ${enrollment.contact.displayName} ${serviceOfferingLabel(enrollment.service)} enrollment`}
                       className={cn(
                         "h-14 cursor-pointer outline-none hover:bg-blue-50/50 focus-visible:bg-blue-50/50 focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-inset",
                         isCanceled && "bg-slate-50/70",
@@ -1359,9 +1290,9 @@ export function EnrollmentsRegister({
                             "block truncate font-medium text-slate-800",
                             isCanceled && "text-slate-500",
                           )}
-                          title={enrollment.service.name}
+                          title={serviceOfferingLabel(enrollment.service)}
                         >
-                          {enrollment.service.name}
+                          {serviceOfferingLabel(enrollment.service)}
                         </span>
                       </TableCell>
                       <TableCell className="px-4 py-0">
@@ -1371,9 +1302,9 @@ export function EnrollmentsRegister({
                             !enrollment.template && "italic text-slate-500",
                             isCanceled && "text-slate-500",
                           )}
-                          title={enrollment.template?.name ?? "Manual flow"}
+                          title={enrollment.workflowKind === "SERVICE_STEPS" ? "Service steps" : enrollment.template?.name ?? "Manual flow"}
                         >
-                          {enrollment.template?.name ?? "Manual flow"}
+                          {enrollment.workflowKind === "SERVICE_STEPS" ? "Service steps" : enrollment.template?.name ?? "Manual flow"}
                         </span>
                       </TableCell>
                       <TableCell className="px-4 py-0">

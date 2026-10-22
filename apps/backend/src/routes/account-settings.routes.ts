@@ -4928,8 +4928,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
                 service.installmentFrequency !== null)),
           checklistComplete: service.checklistItems.length > 0,
           followUpsComplete:
-            service.kind === "GROUP" || service.steps.length > 0 || service.followUpTemplates.length > 0 ||
-            service.followUpTemplateSteps.length > 0,
+            service.kind === "GROUP" || service.steps.length > 0,
           professionalsComplete: service.professionals.length > 0,
           isComplete:
             service.name.trim().length > 0 &&
@@ -4940,8 +4939,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
                 service.installmentCount !== null &&
                 service.installmentFrequency !== null)) &&
             service.checklistItems.length > 0 &&
-            (service.kind === "GROUP" || service.steps.length > 0 || service.followUpTemplates.length > 0 ||
-              service.followUpTemplateSteps.length > 0) &&
+            (service.kind === "GROUP" || service.steps.length > 0) &&
             service.professionals.length > 0,
         },
       },

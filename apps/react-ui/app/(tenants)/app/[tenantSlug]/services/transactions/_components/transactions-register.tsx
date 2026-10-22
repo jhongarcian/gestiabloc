@@ -1,4 +1,7 @@
 "use client"
+import { ServiceScopeFields } from "@/components/service-scope-fields"
+import { serviceOfferingLabel, type ServiceOfferingOption } from "@/lib/service-hierarchy"
+
 
 import { isAxiosError } from "axios"
 import {
@@ -103,6 +106,7 @@ type TransactionItem = {
   service: {
     id: string
     name: string
+    parentService?: { id: string; name: string } | null
   }
   currency: string
   totalPriceCents: number
@@ -139,11 +143,7 @@ type TransactionsResponse = {
   }
 }
 
-type ServiceOption = {
-  id: string
-  name: string
-  isActive: boolean
-}
+type ServiceOption = ServiceOfferingOption
 
 const PAGE_SIZE_OPTIONS = [10, 25] as const
 const ALL_SERVICES = "ALL_SERVICES"
@@ -278,7 +278,7 @@ function TransactionMobileCard({
     <Card
       role="link"
       tabIndex={0}
-      aria-label={`Open ${transaction.contact.displayName} ${transaction.service.name} transaction`}
+      aria-label={`Open ${transaction.contact.displayName} ${serviceOfferingLabel(transaction.service)} transaction`}
       className={cn(
         "group cursor-pointer gap-0 rounded-[22px] border-slate-200 bg-white py-0 shadow-sm outline-none transition-[border-color,box-shadow,background-color,transform] hover:border-blue-200 hover:shadow-md focus-visible:border-blue-300 focus-visible:ring-2 focus-visible:ring-blue-500/40 active:scale-[0.995] motion-reduce:transform-none motion-reduce:transition-none",
         isCanceled && "bg-slate-50/80",
@@ -323,9 +323,9 @@ function TransactionMobileCard({
               "truncate text-sm font-medium text-slate-800",
               isCanceled && "text-slate-500",
             )}
-            title={transaction.service.name}
+            title={serviceOfferingLabel(transaction.service)}
           >
-            {transaction.service.name}
+            {serviceOfferingLabel(transaction.service)}
           </p>
         </div>
 
@@ -487,6 +487,8 @@ export function TransactionsRegister({
   const [draftRangePreset, setDraftRangePreset] = useState(rangePreset)
   const [draftCustomFrom, setDraftCustomFrom] = useState(customFrom)
   const [draftCustomTo, setDraftCustomTo] = useState(customTo)
+  const [groupId, setGroupId] = useState(() => searchParams.get("serviceGroupId") ?? "")
+  const [draftGroupId, setDraftGroupId] = useState(groupId)
   const [draftServiceId, setDraftServiceId] = useState(serviceId)
   const [draftStatus, setDraftStatus] = useState(status)
   const [data, setData] = useState<TransactionsResponse | null>(null)
@@ -516,6 +518,7 @@ export function TransactionsRegister({
       if (customFrom) nextParams.set("from", customFrom)
       if (customTo) nextParams.set("to", customTo)
     }
+    if (groupId) nextParams.set("serviceGroupId", groupId)
     if (serviceId !== ALL_SERVICES) nextParams.set("serviceId", serviceId)
     if (status !== ALL_STATUSES) nextParams.set("status", status)
     if (page > 1) nextParams.set("page", String(page))
@@ -538,6 +541,7 @@ export function TransactionsRegister({
     router,
     searchParams,
     serviceId,
+    groupId,
     sort,
     status,
   ])
@@ -573,6 +577,7 @@ export function TransactionsRegister({
             rangePreset,
             from: rangePreset === "CUSTOM" ? customFrom : undefined,
             to: rangePreset === "CUSTOM" ? customTo : undefined,
+            serviceGroupId: groupId || undefined,
             serviceId: serviceId === ALL_SERVICES ? undefined : serviceId,
             status: status === ALL_STATUSES ? undefined : status,
           },
@@ -610,6 +615,7 @@ export function TransactionsRegister({
     pageSize,
     rangePreset,
     serviceId,
+    groupId,
     sort,
     status,
     tenantId,
@@ -628,7 +634,7 @@ export function TransactionsRegister({
     const loadServiceOptions = async () => {
       try {
         const { data: response } = await api.get<{ ok: boolean; items: ServiceOption[] }>(
-          `/api/account-settings/${encodeURIComponent(tenantId)}/services/options`,
+          `/api/services/${encodeURIComponent(tenantId)}/options`,
           { params: { includeInactive: true } },
         )
         if (!cancelled) {
@@ -680,7 +686,7 @@ export function TransactionsRegister({
     : "No transactions found"
   const activeFilterCount =
     (rangePreset !== "ALL_TIME" ? 1 : 0) +
-    (serviceId !== ALL_SERVICES ? 1 : 0) +
+    (serviceId !== ALL_SERVICES ? 1 : 0) + (groupId ? 1 : 0) +
     (status !== ALL_STATUSES ? 1 : 0)
   const hasActiveRefinements = Boolean(query.trim()) || activeFilterCount > 0
   const hasAppliedFilters = activeFilterCount > 0
@@ -711,6 +717,8 @@ export function TransactionsRegister({
     setRangePreset("ALL_TIME")
     setCustomFrom("")
     setCustomTo("")
+    setGroupId("")
+    setDraftGroupId("")
     setServiceId(ALL_SERVICES)
     setStatus(ALL_STATUSES)
     setDraftRangePreset("ALL_TIME")
@@ -725,6 +733,7 @@ export function TransactionsRegister({
     setDraftRangePreset(rangePreset)
     setDraftCustomFrom(customFrom)
     setDraftCustomTo(customTo)
+    setDraftGroupId(groupId)
     setDraftServiceId(serviceId)
     setDraftStatus(status)
     setIsFilterSheetOpen(true)
@@ -743,6 +752,7 @@ export function TransactionsRegister({
     setRangePreset(nextRangePreset)
     setCustomFrom(nextRangePreset === "CUSTOM" ? sanitizeDateOnly(draftCustomFrom) : "")
     setCustomTo(nextRangePreset === "CUSTOM" ? sanitizeDateOnly(draftCustomTo) : "")
+    setGroupId(draftGroupId)
     setServiceId(nextServiceId)
     setStatus(sanitizeStatus(draftStatus))
     setPage(1)
@@ -1077,37 +1087,7 @@ export function TransactionsRegister({
 
               <Separator />
 
-              <Field>
-                <FieldLabel htmlFor="transaction-service-filter">Service</FieldLabel>
-                <Select
-                  value={draftServiceId}
-                  onValueChange={(value) =>
-                    setDraftServiceId(
-                      value === ALL_SERVICES ||
-                        serviceOptions.some((service) => service.id === value)
-                        ? value
-                        : ALL_SERVICES,
-                    )
-                  }
-                >
-                  <SelectTrigger
-                    id="transaction-service-filter"
-                    className="h-11 w-full rounded-xl border-blue-100 bg-white"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value={ALL_SERVICES}>All services</SelectItem>
-                      {serviceOptions.map((service) => (
-                        <SelectItem key={service.id} value={service.id}>
-                          {service.name}{service.isActive ? "" : " (Inactive)"}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
+              <ServiceScopeFields options={serviceOptions} groupId={draftGroupId} offeringId={draftServiceId === ALL_SERVICES ? "" : draftServiceId} onChange={(group, offering) => { setDraftGroupId(group); setDraftServiceId(offering || ALL_SERVICES) }} />
 
               <Separator />
 
@@ -1307,7 +1287,7 @@ export function TransactionsRegister({
                       key={transaction.id}
                       role="link"
                       tabIndex={0}
-                      aria-label={`Open ${transaction.contact.displayName} ${transaction.service.name} transaction`}
+                      aria-label={`Open ${transaction.contact.displayName} ${serviceOfferingLabel(transaction.service)} transaction`}
                       onClick={() => openTransaction(transaction.id)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
@@ -1336,8 +1316,8 @@ export function TransactionsRegister({
                         </p>
                       </TableCell>
                       <TableCell className="px-4 py-0">
-                        <span className={cn("block truncate font-medium text-slate-800", isCanceled && "text-slate-500")} title={transaction.service.name}>
-                          {transaction.service.name}
+                        <span className={cn("block truncate font-medium text-slate-800", isCanceled && "text-slate-500")} title={serviceOfferingLabel(transaction.service)}>
+                          {serviceOfferingLabel(transaction.service)}
                         </span>
                       </TableCell>
                       <TableCell className="px-4 py-0">

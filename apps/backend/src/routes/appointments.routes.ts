@@ -498,6 +498,7 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
         select: {
           id: true,
           name: true,
+          parentService: { select: { id: true, name: true } },
         },
       }),
       prisma.calendarStaffGroup.findMany({
@@ -1085,6 +1086,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
             where: {
               id: payload.serviceId,
               tenantId,
+              ...enrollableServiceWhere,
             },
             select: {
               id: true,
@@ -1276,6 +1278,7 @@ router.patch("/:tenantId/:appointmentId", requireAuth, async (req, res, next) =>
             where: {
               id: nextServiceId,
               tenantId,
+              ...(nextServiceId !== existingAppointment.serviceId ? enrollableServiceWhere : {}),
             },
             select: {
               id: true,

@@ -271,9 +271,9 @@ export function ContactSupportingSidebar({
                 </span>
               </span>
             </summary>
-            <p className="mt-1 pl-8 text-sm leading-6 text-slate-500">
-              No follow-up activity available yet.
-            </p>
+            <Link href={`/app/${tenantSlug}/contacts/${contactId}/follow-ups`} className="mt-1 block pl-8 text-sm leading-6 text-primary underline underline-offset-4">
+              View service steps and follow-ups
+            </Link>
           </details>
 
           <div className="mx-1 h-px bg-white/70" />

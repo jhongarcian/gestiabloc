@@ -98,6 +98,8 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       ).default,
     )
     app.use("/api/services", services)
+    app.use("/api/contacts", (require("../routes/contacts.routes.js") as typeof import("../routes/contacts.routes.js")).default)
+    app.use("/api/appointments", (require("../routes/appointments.routes.js") as typeof import("../routes/appointments.routes.js")).default)
     app.use(
       (
         error: unknown,
@@ -4710,6 +4712,125 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       assert.equal(run.status, entry.type === "SERVICE_STATUS_CHANGED" ? "EXITED" : "SUCCEEDED", `${entry.type}: ${run.failureMessage}`)
       assert.equal(await db.serviceAutomationActionResult.count({ where: { runId: run.id } }), 1)
     }
+  })
+
+  test("public catalog exposes inherited steps and parent identity without requiring settings access", async () => {
+    const configured = await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [{ title: "Review" }, { title: "Submit" }] })
+    assert.equal(configured.status, 200)
+    const child = (await createChild()).data.service
+    const other = (await createChild("Part A")).data.service
+    const workflow = configured.data.service.steps[0].automations[0]
+    await db.automation.update({ where: { id: workflow.id }, data: { serviceOfferingId: other.id } })
+    await db.membership.update({ where: { userId_tenantId: { tenantId, userId } }, data: { role: "TENANT_USER", securityLevel: "LOW" } })
+    const catalog = await request(`/api/services/${tenantId}/catalog?serviceGroupId=${parentId}&serviceId=${child.id}&search=Medicare`)
+    assert.equal(catalog.status, 200, JSON.stringify(catalog.data))
+    assert.equal(catalog.data.pagination.total, 1)
+    assert.equal(catalog.data.items[0].parentService.id, parentId)
+    assert.equal(catalog.data.items[0].steps.length, 2)
+    assert.equal(catalog.data.items[0].steps[0].id, configured.data.service.steps[0].id)
+    assert.equal(catalog.data.items[0].steps[0].automations.some((item: any) => item.id === workflow.id), false)
+    const detail = await request(`/api/services/${tenantId}/catalog/${child.id}`)
+    assert.equal(detail.data.service.steps[0].automations.some((item: any) => item.id === workflow.id), false)
+    const options = await request(`/api/services/${tenantId}/options`)
+    assert.ok(options.data.items.every((item: any) => item.parentService.id === parentId))
+    await db.service.update({ where: { id: parentId }, data: { isActive: false } })
+    assert.equal((await request(`/api/services/${tenantId}/catalog`)).data.pagination.total, 0)
+    const historical = await request(`/api/services/${tenantId}/options?includeInactive=true`)
+    assert.equal(historical.data.items.length, 2)
+    assert.equal(historical.data.items[0].parentService.isActive, false)
+  })
+
+  test("explicit step enrollment rejects missing configuration and initializes saved work without templates", async () => {
+    const child = (await createChild()).data.service
+    await db.serviceFollowUpTemplate.create({ data: { tenantId, serviceId: child.id, name: "Legacy setup" } })
+    const readiness = await request(`${settingsPath()}/${child.id}`)
+    assert.equal(readiness.data.service.configStatus.followUpsComplete, false)
+    const contact = await createContact()
+    const body = { serviceId: child.id, contactId: contact.id, workflowKind: "SERVICE_STEPS" }
+    const rejected = await request(`/api/services/${tenantId}/contact-services`, "POST", body)
+    assert.equal(rejected.status, 400)
+    assert.equal(rejected.data.error, "SERVICE_STEPS_REQUIRED")
+    assert.equal(await db.contactService.count({ where: { tenantId } }), 0)
+    const configured = await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [{ title: "Review", instructions: "Saved instructions" }, { title: "Submit" }] })
+    assert.equal(configured.status, 200)
+    const enrolled = await request(`/api/services/${tenantId}/contact-services`, "POST", { ...body, followUpAssignedToUserId: userId })
+    assert.equal(enrolled.status, 201, JSON.stringify(enrolled.data))
+    const id = enrolled.data.contactService.id
+    const saved = await db.contactService.findUniqueOrThrow({ where: { id }, include: { serviceSteps: true, followUpSteps: true } })
+    assert.equal(saved.workflowKind, "SERVICE_STEPS")
+    assert.equal(saved.followUpTemplateId, null)
+    assert.equal(saved.followUpCoordinatorUserId, userId)
+    assert.equal(saved.serviceSteps.length, 2)
+    assert.equal(saved.followUpSteps.length, 0)
+    const list = await request(`/api/services/${tenantId}/contact-services?contactId=${contact.id}`)
+    assert.equal(list.data.items[0].stepProgress.total, 2)
+    assert.equal(list.data.items[0].service.parentService.id, parentId)
+    assert.ok(list.data.items[0].nextFollowUp.at)
+    assert.equal(list.data.items[0].followUpRun, null)
+    const contacts = await request(`/api/contacts/${tenantId}`)
+    assert.deepEqual(contacts.data.items[0].activeFollowUpServices, [{ id: child.id, name: "Medicare / Medicare Advantage" }])
+    const appointmentMeta = await request(`/api/appointments/${tenantId}/meta`)
+    assert.equal(appointmentMeta.status, 200, JSON.stringify(appointmentMeta.data))
+    assert.equal(appointmentMeta.data.filters.services[0].parentService.id, parentId)
+    const invalidAppointment = await request(`/api/appointments/${tenantId}`, "POST", {
+      contactId: contact.id, serviceId: parentId, assignedToUserId: userId,
+      startAt: "2026-11-02T15:00:00Z", endAt: "2026-11-02T15:30:00Z",
+    })
+    assert.equal(invalidAppointment.status, 404)
+    assert.equal(invalidAppointment.data.error, "SERVICE_NOT_FOUND")
+  })
+
+  test("parent and offering filters scope catalog totals, transactions, enrollments and the follow-up queue", async () => {
+    const fixture = await completionFixture()
+    const second = (await createChild("Part B")).data.service
+    const secondEnrollment = await request(`/api/services/${tenantId}/contact-services`, "POST", { serviceId: second.id, contactId: fixture.contact.id, workflowKind: "SERVICE_STEPS" })
+    assert.equal(secondEnrollment.status, 201)
+    const foreignGroup = await db.service.create({ data: { tenantId, name: "Other service", kind: "GROUP", basePriceCents: 0 } })
+    const another = await request(settingsPath(), "POST", { name: "Other offering", kind: "OFFERING", parentServiceId: foreignGroup.id, basePriceCents: 5000 })
+    assert.equal(another.status, 201)
+    assert.equal((await request(`${settingsPath()}/${foreignGroup.id}`, "PATCH", { steps: [{ title: "Other work" }] })).status, 200)
+    assert.equal((await request(`/api/services/${tenantId}/contact-services`, "POST", { serviceId: another.data.service.id, contactId: fixture.contact.id, workflowKind: "SERVICE_STEPS" })).status, 201)
+    for (const endpoint of ["transactions", "enrollments", "follow-ups"]) {
+      const scoped = await request(`/api/services/${tenantId}/${endpoint}?serviceGroupId=${parentId}`)
+      assert.equal(scoped.status, 200, JSON.stringify(scoped.data))
+      assert.equal(scoped.data.pagination.total, 2, endpoint)
+      const exact = await request(`/api/services/${tenantId}/${endpoint}?serviceGroupId=${parentId}&serviceId=${fixture.child.data.service.id}`)
+      assert.equal(exact.data.pagination.total, 1, endpoint)
+      if (endpoint === "enrollments") assert.equal(exact.data.items[0].workflowKind, "SERVICE_STEPS")
+      const mismatch = await request(`/api/services/${tenantId}/${endpoint}?serviceGroupId=${foreignGroup.id}&serviceId=${fixture.child.data.service.id}`)
+      assert.equal(mismatch.data.pagination.total, 0, endpoint)
+      if (endpoint === "transactions") assert.equal(scoped.data.summary.totalsByCurrency[0].grossSalesCents, 20000)
+    }
+    const summary = await request(`/api/services/${tenantId}/catalog-summary?serviceGroupId=${parentId}`)
+    assert.equal(summary.data.summary.servicesSold, 2)
+    assert.equal(summary.data.summary.grossSalesCents, 20000)
+    assert.equal(summary.data.summary.activeFollowUpServices, 2)
+    const empty = await request(`/api/services/${tenantId}/catalog-summary?serviceGroupId=${randomUUID()}`)
+    assert.equal(empty.data.summary.grossSalesCents, 0)
+    assert.equal(empty.data.summary.activeFollowUpServices, 0)
+    await db.service.update({ where: { id: fixture.child.data.service.id }, data: { isActive: false } })
+    assert.equal((await request(`/api/services/${tenantId}/transactions?serviceId=${fixture.child.data.service.id}`)).data.pagination.total, 1)
+    assert.equal((await request(`/api/services/${tenantId}/catalog?serviceId=${fixture.child.data.service.id}`)).data.pagination.total, 0)
+  })
+
+  test("contact progress and report work counts follow completion and movement while retaining saved history", async () => {
+    const fixture = await completionFixture()
+    assert.equal((await request(completePath(fixture.id, fixture.occurrence.id), "POST")).status, 200)
+    const list = await request(`/api/services/${tenantId}/contact-services?contactId=${fixture.contact.id}`)
+    const item = list.data.items[0]
+    assert.equal(item.stepProgress.completed, 1)
+    assert.equal(item.stepProgress.percentage, 50)
+    assert.equal(item.serviceSteps[0].title, "Review")
+    assert.equal(item.nextFollowUp.stepId, item.serviceSteps[1].id)
+    assert.equal((await request(`/api/services/${tenantId}/catalog/${fixture.child.data.service.id}/summary`)).data.summary.activeFollowUpServices, 1)
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [{ id: fixture.source.id, title: "Changed future label" }] })
+    const history = await request(`/api/services/${tenantId}/contact-services?contactId=${fixture.contact.id}`)
+    assert.equal(history.data.items[0].serviceSteps[0].title, "Review")
+    assert.equal(history.data.items[0].stepProgress.percentage, 50)
+    const activity = new Date(Date.now() + 60000)
+    await db.serviceStepOccurrence.update({ where: { id: fixture.occurrence.id }, data: { advancedAt: activity } })
+    const register = await request(`/api/services/${tenantId}/enrollments?serviceId=${fixture.child.data.service.id}`)
+    assert.equal(register.data.items[0].lastActivityAt, activity.toISOString())
   })
 
   test("migration groups old services without changing IDs, names, prices, or enrollment links", async () => {

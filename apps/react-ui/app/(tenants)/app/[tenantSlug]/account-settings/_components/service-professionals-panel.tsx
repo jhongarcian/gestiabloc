@@ -244,7 +244,7 @@ export function ServiceProfessionalsPanel({
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-200/90">Current service</p>
               <p className="text-lg font-semibold">{serviceName || "Select a service"}</p>
               <p className="text-sm leading-6 text-slate-300">
-                Configure professionals here, then continue in Follow Ups.
+                Configure professionals here, then review steps and automations.
               </p>
             </div>
             <div className="mt-6 space-y-2">
@@ -261,12 +261,12 @@ export function ServiceProfessionalsPanel({
                 variant="outline"
                 className="w-full border-white/20 bg-transparent text-white hover:bg-white/10 hover:text-white"
               >
-                <Link href={`/app/${tenantSlug}/account-settings/follow-ups?serviceId=${selectedServiceId}`}>
-                  Go to follow ups
+                <Link href={`${selectedServiceHref}?tab=steps`}>
+                  Go to steps
                 </Link>
               </Button>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-sm text-slate-300">
-                Keep this service aligned by finishing professionals and follow-up templates.
+                Keep this service aligned by finishing professionals, steps, and automations.
               </div>
             </div>
           </div>

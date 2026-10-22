@@ -1,5 +1,7 @@
 "use client"
 
+import { enrolledServiceStepLabel, enrolledServiceStepProgress, serviceOfferingLabel } from "@/lib/service-hierarchy"
+
 import type { StepMovement } from "@/lib/service-step-movement"
 
 import Link from "next/link"
@@ -257,6 +259,7 @@ type ContactServiceDetails = {
   service: {
     id: string
     name: string
+    parentService?: { id: string; name: string } | null
     description: string | null
     basePriceCents: number
     isTaxExempt: boolean
@@ -2272,10 +2275,11 @@ export function ContactServiceDetailsPanel({
     () => (followUpSteps.length ? Math.round((followUpCompletedCount / followUpSteps.length) * 100) : 0),
     [followUpCompletedCount, followUpSteps.length],
   )
+  const savedStepProgress = serviceData?.workflowKind === "SERVICE_STEPS" ? enrolledServiceStepProgress(serviceData.serviceSteps ?? [], serviceData.stepMovements ?? []) : null
   const overviewFollowUpTotalCount =
-    overview?.followUpSummary?.totalCount ?? followUpSteps.length
+    savedStepProgress?.total ?? overview?.followUpSummary?.totalCount ?? followUpSteps.length
   const overviewFollowUpCompletedCount =
-    overview?.followUpSummary?.completedCount ?? followUpCompletedCount
+    savedStepProgress?.completed ?? overview?.followUpSummary?.completedCount ?? followUpCompletedCount
   const overviewFollowUpCompletionPercentage = overviewFollowUpTotalCount
     ? Math.round((overviewFollowUpCompletedCount / overviewFollowUpTotalCount) * 100)
     : 0
@@ -3195,7 +3199,7 @@ export function ContactServiceDetailsPanel({
             </div>
 
             <div className="flex w-full max-w-full shrink-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] xl:w-auto xl:justify-end xl:overflow-visible xl:pb-0 [&::-webkit-scrollbar]:hidden">
-            {activeView === "follow-up" ? <Tooltip>
+            {activeView === "follow-up" && serviceData.workflowKind !== "SERVICE_STEPS" ? <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   type="button"
@@ -3352,7 +3356,7 @@ export function ContactServiceDetailsPanel({
                       <Button
                         type="button"
                         variant="ghost"
-                        aria-label="Change follow-up coordinator"
+                        aria-label="Change enrollment coordinator"
                         className="h-8 max-w-[260px] cursor-pointer rounded-full border border-white/70 bg-white/70 px-2 py-1 shadow-sm backdrop-blur hover:bg-white/90"
                         disabled={isSavingFollowUpOwner || isLoadingAssignees}
                       >
@@ -3403,7 +3407,7 @@ export function ContactServiceDetailsPanel({
                 </Tooltip>
                 <PopoverContent align="end" className="w-[320px] p-0">
                   <Command>
-                    <CommandInput placeholder="Change follow-up coordinator..." />
+                    <CommandInput placeholder="Change enrollment coordinator..." />
                     <CommandList>
                       <CommandEmpty>No team members found.</CommandEmpty>
                       <CommandGroup heading="Coordinator">
@@ -3527,7 +3531,7 @@ export function ContactServiceDetailsPanel({
 
         <div className="flex shrink-0 flex-col gap-2 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_46%,#fff7ed_100%)] px-4 py-3 md:px-5">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
-            <span className="font-semibold text-slate-950">{serviceData.service.name}</span>
+            <span className="font-semibold text-slate-950">{serviceOfferingLabel(serviceData.service)}</span>
             {serviceData.followUpTemplate?.name ? (
               <>
                 <span className="size-1 rounded-full bg-slate-300" aria-hidden="true" />
@@ -3665,7 +3669,7 @@ export function ContactServiceDetailsPanel({
                 <span className="block">
                   This will permanently delete{" "}
                   <span className="font-medium text-slate-900">
-                    {serviceData.service.name}
+                    {serviceOfferingLabel(serviceData.service)}
                   </span>{" "}
                   for{" "}
                   <span className="font-medium text-slate-900">
@@ -3736,7 +3740,7 @@ export function ContactServiceDetailsPanel({
                       : "text-slate-600 hover:bg-white/75 hover:text-slate-950",
                   )}
                 >
-                  {section.label}
+                  {section.value === "follow-up" && serviceData.workflowKind === "SERVICE_STEPS" ? "Steps" : section.label}
                 </Link>
               ))}
             </div>
@@ -3747,7 +3751,7 @@ export function ContactServiceDetailsPanel({
           id="service-workspace-content"
           className="min-h-0 min-w-0 flex-1 scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] bg-background px-4 py-5 md:px-5 md:py-6"
         >
-        {serviceData.workflowKind === "SERVICE_STEPS" && (activeView === "overview" || activeView === "follow-up") ?
+        {serviceData.workflowKind === "SERVICE_STEPS" && activeView === "follow-up" ?
           <ServiceStepSnapshot assignees={followUpAssigneeOptions} steps={serviceData.serviceSteps ?? []} movements={serviceData.stepMovements ?? []} timezone={serviceData.timezone} tenantId={tenantId} contactServiceId={contactServiceId} canComplete={(membershipRole === "TENANT_ADMIN" || canManageSensitiveServiceActions) && serviceData.status !== "CANCELED" && serviceData.status !== "COMPLETED"} onRefresh={() => refreshData(Boolean(item))} /> : null}
         {activeView === "overview" ? (
           <section aria-labelledby="service-overview-title">
@@ -3881,7 +3885,7 @@ export function ContactServiceDetailsPanel({
                   <div className="rounded-t-[25px] border-b border-blue-100 bg-[linear-gradient(145deg,#f8fbff_0%,#eef6ff_58%,#fffaf0_100%)] p-5">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-xs font-semibold text-blue-700">Follow-up timeline</p>
+                        <p className="text-xs font-semibold text-blue-700">Workflow timeline</p>
                         <h3 id="overview-follow-up-title" className="mt-1 text-lg font-semibold text-slate-950">
                           Workflow progression
                         </h3>
@@ -3896,8 +3900,8 @@ export function ContactServiceDetailsPanel({
                           returnTo,
                         })}
                         className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-white/80 bg-white/80 text-slate-700 shadow-sm transition hover:bg-white hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
-                        aria-label="Open follow-up workspace"
-                        title="Open follow-up workspace"
+                        aria-label="Open workflow workspace"
+                        title="Open workflow workspace"
                       >
                         <ArrowRight className="size-4" aria-hidden="true" />
                       </Link>
@@ -3907,7 +3911,7 @@ export function ContactServiceDetailsPanel({
                       <div className="mt-4">
                         <LabeledProgress
                           value={overviewFollowUpCompletionPercentage}
-                          ariaLabel="Follow-up workflow progress"
+                          ariaLabel="Service workflow progress"
                           ariaValueText={`${overviewFollowUpCompletionPercentage}% complete, ${overviewFollowUpCompletedCount} of ${overviewFollowUpTotalCount} follow-up steps resolved`}
                           summaryLabel={`${overviewFollowUpCompletedCount} of ${overviewFollowUpTotalCount} steps`}
                           size="compact"
@@ -3944,7 +3948,7 @@ export function ContactServiceDetailsPanel({
                     </div>
                   ) : null}
 
-                  {followUpSteps.length ? (
+                  {serviceData.workflowKind === "SERVICE_STEPS" ? <ol aria-label="Saved service steps" className="flex flex-col gap-3 p-5">{serviceData.serviceSteps?.map((step, index) => { return <li key={step.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"><span className="text-sm">{index + 1}. {step.title}</span><Badge variant="secondary">{enrolledServiceStepLabel(step, serviceData.stepMovements ?? [])}</Badge></li> })}</ol> : followUpSteps.length ? (
                     <ol aria-label="Follow-up workflow steps" className="p-5">
                       {followUpSteps.map((step, index) => {
                         const status = step.status ?? "PENDING"
@@ -5391,7 +5395,7 @@ export function ContactServiceDetailsPanel({
                   {serviceNoteDialogMode === "create" ? "Create a note" : "Edit note"}
                 </DialogTitle>
                 <DialogDescription className="max-w-xl text-sm leading-6 text-slate-600">
-                  Capture the context your team needs and keep supporting files with {serviceData.service.name}.
+                  Capture the context your team needs and keep supporting files with {serviceOfferingLabel(serviceData.service)}.
                 </DialogDescription>
               </div>
             </div>
@@ -5690,7 +5694,7 @@ export function ContactServiceDetailsPanel({
                 Review checklist
               </SheetTitle>
               <SheetDescription className="mt-1.5 max-w-md text-sm leading-6 text-slate-600">
-                Track what is happening with every required item for {serviceData.service.name}.
+                Track what is happening with every required item for {serviceOfferingLabel(serviceData.service)}.
               </SheetDescription>
             </div>
           </SheetHeader>
@@ -5916,7 +5920,7 @@ export function ContactServiceDetailsPanel({
               </SheetTitle>
               <SheetDescription className="mt-2 max-w-md text-sm leading-6 text-slate-600">
                 See payments, checklist status changes, notes, and follow-up changes for{" "}
-                {serviceData.service.name}.
+                {serviceOfferingLabel(serviceData.service)}.
               </SheetDescription>
             </div>
           </SheetHeader>
