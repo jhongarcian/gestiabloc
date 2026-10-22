@@ -5,26 +5,6 @@ export type ServiceFollowUpOwnershipStepStatus =
   | "SKIPPED"
   | "POSTPONED"
 
-export type ServiceFollowUpOwnershipRunStatus =
-  | "RUNNING"
-  | "WAITING"
-  | "AWAITING_STEP"
-  | "COMPLETED"
-  | "FAILED"
-  | "NEEDS_REVIEW"
-  | "CANCELED"
-
-export function isServiceFollowUpWorkflowCompleted(params: {
-  runStatus?: ServiceFollowUpOwnershipRunStatus | null
-  stepStatuses: ServiceFollowUpOwnershipStepStatus[]
-}) {
-  if (params.runStatus === "COMPLETED") return true
-  if (params.stepStatuses.length === 0) return false
-  return params.stepStatuses.every((status) =>
-    status === "COMPLETED" || status === "SKIPPED",
-  )
-}
-
 export function resolveUnanimousFollowUpCoordinator(
   steps: Array<{
     status: ServiceFollowUpOwnershipStepStatus

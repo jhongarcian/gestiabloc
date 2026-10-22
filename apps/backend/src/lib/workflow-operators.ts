@@ -1,9 +1,3 @@
-import type {
-  WorkflowBranchV2,
-  WorkflowConditionV2,
-  WorkflowDefinitionV2,
-} from "./service-followup-definition.js"
-
 function isEmpty(value: unknown) {
   if (value === null || value === undefined) return true
   if (typeof value === "string") return value.trim().length === 0
@@ -29,7 +23,7 @@ function comparableDate(value: unknown) {
   return null
 }
 
-export function evaluateWorkflowOperator(condition: WorkflowConditionV2, left: unknown) {
+export function evaluateWorkflowOperator<T extends { operator: string; valueType: string; compareValue?: unknown }>(condition: T, left: unknown) {
   if (condition.operator === "is_empty") return isEmpty(left)
   if (condition.operator === "is_not_empty") return !isEmpty(left)
   if (condition.valueType === "number") {
@@ -68,55 +62,5 @@ export function evaluateWorkflowOperator(condition: WorkflowConditionV2, left: u
   if (condition.operator === "eq") return leftText === rightText
   if (condition.operator === "neq") return leftText !== rightText
   return false
-}
-
-export function selectFirstMatchingBranch(
-  branches: WorkflowBranchV2[],
-  resolveValue: (condition: WorkflowConditionV2) => unknown,
-) {
-  return (
-    branches.find((branch) => {
-      if (branch.isDefault) return false
-      const results = branch.conditions.map((condition) =>
-        evaluateWorkflowOperator(condition, resolveValue(condition)),
-      )
-      return branch.matchMode === "ANY" ? results.some(Boolean) : results.every(Boolean)
-    }) ?? branches.find((branch) => branch.isDefault)
-  )
-}
-
-function reachableNodeIds(definition: WorkflowDefinitionV2, startId: string) {
-  const found = new Set<string>()
-  const stack = [startId]
-  while (stack.length) {
-    const nodeId = stack.pop() as string
-    if (found.has(nodeId)) continue
-    found.add(nodeId)
-    for (const edge of definition.edges.filter((item) => item.source === nodeId)) {
-      stack.push(edge.target)
-    }
-  }
-  return found
-}
-
-export function branchExclusiveStepNodeIds(
-  definition: WorkflowDefinitionV2,
-  conditionalNodeId: string,
-  selectedEdgeId: string,
-) {
-  const branchEdges = definition.edges.filter((edge) => edge.source === conditionalNodeId)
-  const selectedEdge = branchEdges.find((edge) => edge.id === selectedEdgeId)
-  if (!selectedEdge) return []
-  const selectedReachable = reachableNodeIds(definition, selectedEdge.target)
-  const unselectedReachable = new Set<string>()
-  for (const edge of branchEdges) {
-    if (edge.id === selectedEdge.id) continue
-    for (const nodeId of reachableNodeIds(definition, edge.target)) unselectedReachable.add(nodeId)
-  }
-  return [...unselectedReachable].filter(
-    (nodeId) =>
-      !selectedReachable.has(nodeId) &&
-      definition.nodes.find((node) => node.id === nodeId)?.kind === "step",
-  )
 }
 

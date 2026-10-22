@@ -1,3 +1,4 @@
+import { patchSavedFollowUpTx } from "./service-saved-followups.js"
 import { changeServiceStepDeadlineTx } from "./service-step-deadlines.js"
 import { reconcileServiceStepEnrollmentTx } from "./service-step-progression.js"
 import { moveServiceStepTx } from "./service-step-movement.js"
@@ -97,6 +98,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
         require("../routes/automations.routes.js") as typeof import("../routes/automations.routes.js")
       ).default,
     )
+    app.use("/api/tasks", (require("../routes/tasks.routes.js") as typeof import("../routes/tasks.routes.js")).default)
     app.use("/api/services", services)
     app.use("/api/contacts", (require("../routes/contacts.routes.js") as typeof import("../routes/contacts.routes.js")).default)
     app.use("/api/appointments", (require("../routes/appointments.routes.js") as typeof import("../routes/appointments.routes.js")).default)
@@ -278,6 +280,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     })
     assert.equal(rejected.status, 400)
     assert.equal(rejected.data.error, "SUB_SERVICE_REQUIRED")
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [{ title: "Review", completionDuration: 1, completionUnit: "DAYS" }] })
     const enrolled = await request(enrollmentPath, "POST", {
       contactId: contact.id,
       serviceId: childId,
@@ -404,6 +407,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
 
   test("checklist and professional sections inherit independently and restore without losing enrollment records", async () => {
     const parent = await configureParent()
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [{ title: "Review", completionDuration: 1, completionUnit: "DAYS" }] })
     const child = (await createChild()).data.service
     const sibling = (await createChild("Medicare Part A")).data.service
     const contact = await createContact()
@@ -565,6 +569,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       where: { id: tenantId },
       data: { taxEnabled: true, defaultTaxRateBps: 1000, taxLabel: "Sales tax" },
     })
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [{ title: "Review", completionDuration: 1, completionUnit: "DAYS" }] })
     const child = (await createChild()).data.service
     const contact = await createContact()
     const path = `/api/services/${tenantId}/contact-services`
@@ -4740,9 +4745,116 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     assert.equal(historical.data.items[0].parentService.isActive, false)
   })
 
+  test("retired saved work preserves history, assignments and attribution with manual controls only", async () => {
+    const child = (await createChild()).data.service
+    const contact = await createContact()
+    const completedAt = new Date("2026-10-01T12:00:00.000Z")
+    const archive = { schemaVersion: 1, retiredAt: "2026-10-22T00:00:00.000Z", template: { id: "old-template", name: "Original workflow", draftDefinition: { private: true } }, version: { id: "old-version", versionNumber: 2, definition: { private: true } }, run: { id: "old-run", status: "WAITING", variables: { private: true } } }
+    const enrollment = await db.contactService.create({ data: { tenantId, serviceId: child.id, contactId: contact.id, workflowKind: "LEGACY_TEMPLATE", totalPriceCents: 100, followUpTemplateId: "old-template", retiredWorkflowSnapshot: archive } })
+    const saved = await db.contactServiceFollowUpStep.create({ data: { tenantId, contactServiceId: enrollment.id, runId: "old-run", title: "Already completed", status: "COMPLETED", completedAt, resolvedAt: completedAt, resolvedByUserId: userId, assignedToUserId: userId, sortOrder: 0 } })
+    const current = await db.contactServiceFollowUpStep.create({ data: { tenantId, contactServiceId: enrollment.id, runId: "old-run", title: "Review remaining work", status: "ACTIVE", assignedToUserId: userId, sortOrder: 10 } })
+    const next = await db.contactServiceFollowUpStep.create({ data: { tenantId, contactServiceId: enrollment.id, runId: "old-run", title: "Submit manually", sortOrder: 20 } })
+    const path = `/api/services/${tenantId}/contact-services/${enrollment.id}`
+    const detail = await request(path)
+    assert.equal(detail.status, 200, JSON.stringify(detail.data))
+    assert.equal(detail.data.contactService.retiredWorkflow.template.name, "Original workflow")
+    assert.equal(detail.data.contactService.retiredWorkflow.hadUnfinishedWork, true)
+    assert.doesNotMatch(JSON.stringify(detail.data), /draftDefinition|variables|private/)
+    const register = await request(`/api/services/${tenantId}/contact-services?contactId=${contact.id}`)
+    assert.equal(register.data.items[0].retiredWorkflow.template.name, "Original workflow")
+    assert.equal((await request(`${path}/follow-up-steps/${saved.id}`, "DELETE")).status, 409)
+    assert.equal((await request(`${path}/follow-up-steps/${saved.id}`, "PATCH", { assignedToUserId: null })).status, 409)
+    const before = await db.contactServiceFollowUpStep.findUniqueOrThrow({ where: { id: current.id } })
+    const invalid = await request(`${path}/follow-up-steps/${current.id}`, "PATCH", { title: "Must roll back", assignedToUserId: randomUUID() })
+    assert.equal(invalid.data.error, "INVALID_ASSIGNEE")
+    assert.equal((await db.contactServiceFollowUpStep.findUniqueOrThrow({ where: { id: current.id } })).title, before.title)
+    const other = await db.contactService.create({ data: { tenantId, serviceId: child.id, contactId: contact.id, totalPriceCents: 0 } })
+    assert.equal((await request(`/api/services/${tenantId}/contact-services/${other.id}/follow-up-steps/${current.id}`, "PATCH", { status: "COMPLETED" })).status, 404)
+    assert.equal((await request(`${path}/follow-up-steps/${current.id}`, "PATCH", { title: "Updated saved instructions", note: "Reviewed manually" })).status, 200)
+    const note = await request(`/api/contacts/${tenantId}/${contact.id}/notes`, "POST", { contactServiceId: enrollment.id, contactServiceFollowUpStepId: current.id, title: "History retained", body: "Reviewed", attachmentFileIds: [] })
+    assert.equal(note.status, 201, JSON.stringify(note.data))
+    const storedNote = await db.contactNote.findFirstOrThrow({ where: { tenantId, title: "History retained" } })
+    assert.equal((storedNote.retiredWorkflowSnapshot as any).template.name, "Original workflow")
+    assert.doesNotMatch(JSON.stringify(storedNote.retiredWorkflowSnapshot), /definition|variables/i)
+    const task = await request(`/api/tasks/${tenantId}`, "POST", { name: "Retained manual task", contactId: contact.id, contactServiceId: enrollment.id, contactServiceFollowUpStepId: current.id, startedAt: new Date().toISOString() })
+    assert.equal(task.status, 201, JSON.stringify(task.data))
+    const storedTask = await db.task.findFirstOrThrow({ where: { tenantId, name: "Retained manual task" } })
+    assert.equal((storedTask.retiredWorkflowSnapshot as any).template.name, "Original workflow")
+    assert.doesNotMatch(JSON.stringify(storedTask.retiredWorkflowSnapshot), /definition|variables/i)
+    const results = await Promise.all([request(`${path}/follow-up-steps/${current.id}`, "PATCH", { status: "COMPLETED" }), request(`${path}/follow-up-steps/${current.id}`, "PATCH", { status: "COMPLETED" })])
+    assert.ok(results.every(result => result.status === 200), JSON.stringify(results))
+    assert.equal(await db.serviceFollowUpExecutionLog.count({ where: { tenantId, stepId: current.id, eventType: "SAVED_FOLLOW_UP_UPDATED", payload: { path: ["status"], equals: "COMPLETED" } } }), 1)
+    const completed = await db.contactServiceFollowUpStep.findUniqueOrThrow({ where: { id: current.id } })
+    assert.equal(completed.assignedToUserId, userId)
+    assert.equal(completed.resolvedByUserId, userId)
+    assert.equal((await db.contactServiceFollowUpStep.findUniqueOrThrow({ where: { id: next.id } })).status, "ACTIVE")
+    assert.equal((await request(`${path}/follow-up-steps/${next.id}`, "PATCH", { status: "COMPLETED" })).status, 200)
+    assert.equal((await db.contactService.findUniqueOrThrow({ where: { id: enrollment.id } })).status, "PENDING_PAYMENT")
+    const original = await db.contactServiceFollowUpStep.findUniqueOrThrow({ where: { id: saved.id } })
+    assert.equal(original.completedAt?.getTime(), completedAt.getTime())
+    assert.equal(original.assignedToUserId, userId)
+    assert.equal(await db.automationEvent.count({ where: { tenantId } }), 0)
+    for (const [url, method] of [[`${settingsPath()}/${child.id}/follow-up-templates`, "GET"], [`${path}/follow-up-run/continue-now`, "POST"]]) {
+      assert.equal((await fetch(`${base}${url}`, { method, headers: { Cookie: `sid=${token}` } })).status, 404)
+    }
+    assert.equal((await request(`${settingsPath()}/${child.id}`, "PATCH", { followUpTemplateSteps: [] })).status, 400)
+    assert.equal((await request(`/api/services/${tenantId}/contact-services`, "POST", { contactId: contact.id, serviceId: child.id, followUpTemplateId: "old-template" })).status, 400)
+    assert.equal((await request(`/api/services/${tenantId}/contact-services`, "POST", { contactId: contact.id, serviceId: child.id })).data.error, "SERVICE_STEPS_REQUIRED")
+    await db.contactService.delete({ where: { id: enrollment.id } })
+    const editedTask = await request(`/api/tasks/${tenantId}/${storedTask.id}`, "PATCH", { name: "Reviewed retained task" })
+    assert.equal(editedTask.status, 200, JSON.stringify(editedTask.data))
+    const orphan = await db.task.findUniqueOrThrow({ where: { id: storedTask.id } })
+    assert.equal(orphan.contactServiceId, null)
+    assert.equal(orphan.followUpTemplateId, "old-template")
+    assert.equal((orphan.retiredWorkflowSnapshot as any).template.name, "Original workflow")
+    assert.equal((await db.contactNote.findUniqueOrThrow({ where: { id: storedNote.id } })).contactServiceId, null)
+  })
+
+  test("saved manual scheduling, reopening and failed transactions preserve state and complete audit values", async () => {
+    const child = (await createChild()).data.service
+    const contact = await createContact()
+    const enrollment = await db.contactService.create({ data: { tenantId, serviceId: child.id, contactId: contact.id, totalPriceCents: 0, workflowKind: "LEGACY_TEMPLATE" } })
+    const oldDate = new Date(Date.now() + 86400000)
+    const laterDate = new Date(oldDate.getTime() + 86400000)
+    const current = await db.contactServiceFollowUpStep.create({ data: { tenantId, contactServiceId: enrollment.id, title: "Current", status: "ACTIVE", dueAt: oldDate, availableAt: new Date(), assignedToUserId: userId, overdueNotifiedAt: new Date(), overdueNotifiedDueAt: oldDate, sortOrder: 0 } })
+    const next = await db.contactServiceFollowUpStep.create({ data: { tenantId, contactServiceId: enrollment.id, title: "Next", dueAt: laterDate, availableAt: oldDate, sortOrder: 10 } })
+    const path = `/api/services/${tenantId}/contact-services/${enrollment.id}/follow-up-steps`
+    const postponeTo = new Date(oldDate.getTime() + 3600000).toISOString()
+    const postponed = await request(`${path}/${current.id}`, "PATCH", { status: "POSTPONED", postponeTo })
+    assert.equal(postponed.status, 200, JSON.stringify(postponed.data))
+    assert.equal(postponed.data.followUpStep.dueAt, postponeTo)
+    assert.equal(postponed.data.followUpStep.overdueNotifiedAt, null)
+    const shifted = await db.contactServiceFollowUpStep.findUniqueOrThrow({ where: { id: next.id } })
+    assert.equal(shifted.dueAt?.getTime(), laterDate.getTime() + 3600000)
+    assert.equal(shifted.availableAt?.getTime(), oldDate.getTime() + 3600000)
+    assert.equal((await request(`${path}/${next.id}`, "PATCH", { status: "COMPLETED" })).status, 409)
+    assert.equal((await request(`${path}/${current.id}`, "PATCH", { nextFollowUpAt: postponeTo })).status, 400)
+    const input = { tenantId, contactServiceId: enrollment.id, stepId: current.id, actorUserId: userId }
+    const logCount = await db.serviceFollowUpExecutionLog.count({ where: { tenantId } })
+    await assert.rejects(db.$transaction(async tx => { await patchSavedFollowUpTx(tx, { ...input, patch: { title: "Must roll back" } }); throw Error("forced failure") }), /forced failure/)
+    assert.equal((await db.contactServiceFollowUpStep.findUniqueOrThrow({ where: { id: current.id } })).title, "Current")
+    assert.equal(await db.serviceFollowUpExecutionLog.count({ where: { tenantId } }), logCount)
+    assert.equal((await request(`${path}/${current.id}`, "PATCH", { status: "COMPLETED" })).status, 200)
+    const completed = await db.contactServiceFollowUpStep.findUniqueOrThrow({ where: { id: current.id } })
+    assert.ok(completed.completedAt)
+    const unchanged = await request(`${path}/${current.id}`, "PATCH", { title: "Current" })
+    assert.equal(unchanged.data.followUpStep.assignedTo.id, userId)
+    assert.equal((await db.contactServiceFollowUpStep.findUniqueOrThrow({ where: { id: current.id } })).updatedAt.getTime(), completed.updatedAt.getTime())
+    assert.equal((await request(`${path}/${current.id}`, "PATCH", { action: "REOPEN" })).status, 200)
+    const reopened = await db.contactServiceFollowUpStep.findUniqueOrThrow({ where: { id: current.id } })
+    assert.equal(reopened.status, "ACTIVE")
+    assert.equal(reopened.resolvedAt, null)
+    assert.equal(reopened.completedAt, null)
+    assert.equal(reopened.assignedToUserId, userId)
+    const activity = await db.serviceFollowUpExecutionLog.findFirstOrThrow({ where: { tenantId, stepId: current.id, payload: { path: ["previousStatus"], equals: "COMPLETED" } } })
+    assert.equal((activity.payload as any).before.completedAt, completed.completedAt?.toISOString())
+    assert.equal((activity.payload as any).before.resolvedByUserId, userId)
+    assert.equal((activity.payload as any).after.completedAt, null)
+    assert.equal((await db.contactService.findUniqueOrThrow({ where: { id: enrollment.id } })).status, "IN_PROGRESS")
+  })
+
   test("explicit step enrollment rejects missing configuration and initializes saved work without templates", async () => {
     const child = (await createChild()).data.service
-    await db.serviceFollowUpTemplate.create({ data: { tenantId, serviceId: child.id, name: "Legacy setup" } })
     const readiness = await request(`${settingsPath()}/${child.id}`)
     assert.equal(readiness.data.service.configStatus.followUpsComplete, false)
     const contact = await createContact()
@@ -4766,7 +4878,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     assert.equal(list.data.items[0].stepProgress.total, 2)
     assert.equal(list.data.items[0].service.parentService.id, parentId)
     assert.ok(list.data.items[0].nextFollowUp.at)
-    assert.equal(list.data.items[0].followUpRun, null)
+    assert.equal(list.data.items[0].followUpRun, undefined)
     const contacts = await request(`/api/contacts/${tenantId}`)
     assert.deepEqual(contacts.data.items[0].activeFollowUpServices, [{ id: child.id, name: "Medicare / Medicare Advantage" }])
     const appointmentMeta = await request(`/api/appointments/${tenantId}/meta`)

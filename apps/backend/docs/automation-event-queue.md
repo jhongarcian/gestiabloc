@@ -1,4 +1,14 @@
-# Opportunity automation event queue
+# Automation event queue
+
+## Template retirement (Chunk 20)
+
+Template graphs and their separate executor have been removed. The existing event/run workers,
+shared global/tenant admission, retries, checkpoints, leases and completion gates are unchanged.
+Old template cursors are archived as history and never replayed through this queue. Saved manual
+follow-up steps remain in the staff queue and keep overdue reminders; that reminder poller does not
+execute workflow actions. All new enrollments require service steps, including requests that omit
+`workflowKind`. Removed template APIs and run retry/reschedule/continue endpoints return 404.
+See [retirement and deployment](service-template-retirement.md) before applying the cutover migration.
 
 ## Reviewed service configuration (Chunk 18)
 
@@ -224,8 +234,8 @@ fails, and edit dialogs retain their drafts after save errors.
 
 ## Follow-up queue urgency (Chunk 15)
 
-`GET /api/services/:tenantId/follow-ups` combines service-owned step work and existing template
-follow-ups. It reads saved enrollment steps and only their latest entry, never live service definitions,
+`GET /api/services/:tenantId/follow-ups` combines service-owned step work and retained manual
+follow-ups from retired workflows. It reads saved enrollment steps and only their latest entry, never live service definitions,
 old deadline changes or superseded occurrences. Canceled enrollments are excluded.
 
 - **Actionable:** An active entry. Its effective deadline is `dueAt`; elapsed time starts at `enteredAt`.
@@ -252,8 +262,8 @@ select one of those four groups; date presets also accept DUE_SOON. OVERDUE and 
 only actionable elapsed deadlines. TODAY/NEXT_7_DAYS use the tenant's calendar for deadlines or
 scheduled resume times. NO_DUE_DATE matches work with no deadline/resume time. Summary counts
 cover unfinished work across the tenant, independent of list filters; overdue/due-today counts exclude
-scheduled work. Existing template and assignee filters remain supported; service-step owner assignment
-is part of Chunk 16.
+scheduled work. Service, sub-service and assignee filters remain supported. Template selection filters were removed
+in Chunk 20; service-step owners are supported by Chunk 16.
 
 Each request reads a consistent database snapshot and computes all timing from the response's `asOf`.
 The client reloads on navigation/focus/visibility and every 30 seconds while visible, preserving filters

@@ -110,20 +110,6 @@ export type ServiceDetailsPanelProps = {
       isRequired: boolean
       sortOrder: number
     }>
-    followUpTemplateSteps: Array<{
-      id: string
-      title: string
-      notesTemplate: string | null
-      dueDaysFromStart: number
-      sortOrder: number
-    }>
-    followUpTemplates: Array<{
-      id: string
-      name: string
-      sortOrder: number
-      flowNodes: unknown[] | null
-      flowEdges: unknown[] | null
-    }>
     professionals: Array<{
       id: string
       kind: "INTERNAL_USER" | "EXTERNAL"
@@ -413,7 +399,6 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     | "overview"
     | "fit-rules"
     | "checklists"
-    | "follow-up-templates"
     | "professionals"
     | "sub-services"
     | "steps"
@@ -536,24 +521,6 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
   const requiredChecklistCount = checklistItems.filter((item) => item.isRequired).length
   const optionalChecklistCount = checklistItems.length - requiredChecklistCount
   const followUpsComplete = configuredSteps.length > 0
-  const totalTemplateNodes = useMemo(
-    () =>
-      service.followUpTemplates.reduce(
-        (total, template) =>
-          total + (Array.isArray(template.flowNodes) ? template.flowNodes.length : 0),
-        0,
-      ),
-    [service.followUpTemplates],
-  )
-  const totalTemplateEdges = useMemo(
-    () =>
-      service.followUpTemplates.reduce(
-        (total, template) =>
-          total + (Array.isArray(template.flowEdges) ? template.flowEdges.length : 0),
-        0,
-      ),
-    [service.followUpTemplates],
-  )
   const internalProfessionalsCount = useMemo(
     () => professionals.filter((entry) => entry.kind === "INTERNAL_USER").length,
     [professionals],
@@ -1278,8 +1245,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               | "overview"
               | "fit-rules"
               | "checklists"
-              | "follow-up-templates"
-              | "professionals"
+                        | "professionals"
               | "sub-services"
               | "steps"
               | "updates",
@@ -2101,149 +2067,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
           </fieldset>
         </TabsContent>
 
-        <TabsContent value="follow-up-templates" className="mt-0">
-          <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-5 py-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="space-y-1">
-                  <h3 className="inline-flex items-center gap-2 text-lg font-semibold text-slate-900">
-                    <Route className="h-4 w-4 text-blue-700" />
-                    Follow-Up Templates
-                  </h3>
-                  <p className="text-sm text-slate-500">
-                    Each template defines the flow a contact will follow after purchasing this
-                    service.
-                  </p>
-                </div>
-                <Button
-                  asChild
-                  type="button"
-                  size="sm"
-                  className="bg-blue-950 text-white hover:bg-blue-900"
-                >
-                  <Link
-                    href={`/app/${tenantSlug}/account-settings/services/${service.id}/follow-up-templates/new`}
-                  >
-                    Add template
-                  </Link>
-                </Button>
-              </div>
-            </div>
 
-            <div className="p-5">
-              <div className="flex items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-[linear-gradient(135deg,#eff6ff_0%,#f8fafc_100%)] px-4 py-3">
-                <div className="space-y-0.5">
-                  <p className="text-sm font-medium text-slate-900">Template coverage</p>
-                  <p className="text-sm text-slate-600">
-                    Open any row to edit the flow builder, nodes, and path logic for this service.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  <span className="rounded-full border border-blue-200 bg-white px-2.5 py-1 text-xs font-medium text-blue-700">
-                    {service.followUpTemplates.length} template
-                    {service.followUpTemplates.length === 1 ? "" : "s"}
-                  </span>
-                  <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
-                    {totalTemplateNodes} nodes
-                  </span>
-                  <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
-                    {totalTemplateEdges} connections
-                  </span>
-                </div>
-              </div>
-
-              <div className="mt-4">
-                {service.followUpTemplates.length ? (
-                  <div className="overflow-auto rounded-2xl border border-slate-200">
-                    <Table className="[&_td]:py-3 [&_th]:h-10">
-                      <TableHeader className="bg-slate-50/80">
-                        <TableRow>
-                          <TableHead className="min-w-12 text-xs">#</TableHead>
-                          <TableHead className="min-w-56 text-xs">Template</TableHead>
-                          <TableHead className="min-w-36 text-xs">Nodes</TableHead>
-                          <TableHead className="min-w-36 text-xs">Edges</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {service.followUpTemplates.map((template, index) => (
-                          <TableRow
-                            key={template.id}
-                            tabIndex={0}
-                            role="link"
-                            aria-label={`Open ${template.name}`}
-                            className="cursor-pointer transition-colors hover:bg-blue-50/50 focus-visible:bg-blue-50/50"
-                            onClick={() =>
-                              router.push(
-                                `/app/${tenantSlug}/account-settings/services/${service.id}/follow-up-templates/${template.id}`,
-                              )
-                            }
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter" || event.key === " ") {
-                                event.preventDefault()
-                                router.push(
-                                  `/app/${tenantSlug}/account-settings/services/${service.id}/follow-up-templates/${template.id}`,
-                                )
-                              }
-                            }}
-                          >
-                            <TableCell>
-                              <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
-                                {index + 1}
-                              </span>
-                            </TableCell>
-                            <TableCell>
-                              <div className="space-y-0.5">
-                                <p className="font-medium text-slate-900">{template.name}</p>
-                                <p className="text-sm text-slate-500">Open flow builder</p>
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                                {Array.isArray(template.flowNodes) ? template.flowNodes.length : 0}
-                              </span>
-                            </TableCell>
-                            <TableCell>
-                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                                {Array.isArray(template.flowEdges) ? template.flowEdges.length : 0}
-                              </span>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
-                    <p className="text-base font-medium text-slate-900">
-                      No follow-up templates yet
-                    </p>
-                    <p className="mt-2 text-sm text-slate-500">
-                      Create a template and build its workflow with React Flow.
-                    </p>
-                    <p className="mt-3 text-xs uppercase tracking-[0.18em] text-slate-400">
-                      Common templates
-                    </p>
-                    <p className="mt-2 text-sm text-slate-500">
-                      Welcome sequence · Payment reminders · Post-service check-in
-                    </p>
-                    <Button
-                      asChild
-                      type="button"
-                      size="sm"
-                      className="mt-5 bg-blue-950 text-white hover:bg-blue-900"
-                    >
-                      <Link
-                        href={`/app/${tenantSlug}/account-settings/services/${service.id}/follow-up-templates/new`}
-                      >
-                        Create first template
-                      </Link>
-                    </Button>
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-        </TabsContent>
 
         <TabsContent value="professionals" className="mt-0">
           {inheritanceControl("professionalsMode", "Professionals")}

@@ -1,8 +1,8 @@
-Status: Chunks 1–18 implemented. Chunk 19 is next.
+Status: Chunks 1–20 implemented. Production cutover requires the Chunk 20 rollout procedure.
 
 # Build the transition in small, reviewable chunks
 
-Keep each chunk focused on one behavior, include its relevant tests, and finish its acceptance check before moving on. **Next: Chunk 19.**
+Keep each chunk focused on one behavior, include its relevant tests, and finish its acceptance check before moving on. **Implementation complete through Chunk 20.**
 
 The agreed direction stays the same: parent services group enrollable sub-services; configuration inherits by section; Automations handles actions; active enrollments receive reviewed updates. No customer-data backfill is needed.
 
@@ -238,7 +238,7 @@ movement bypasses, owners and deadlines. Service/sub-service filters scope the c
 enrollments, transactions and their financial totals. Service-fit suggestions and calendar selections show
 parent/sub-service identity. Historical inactive services remain available in report filters.
 
-Existing template enrollment history and compatibility APIs remain for Chunk 20. No database migration,
+At the Chunk 19 milestone, template history and compatibility APIs remained for Chunk 20. No database migration,
 queue policy change or automatic conversion is introduced. Verification is recorded in
 `apps/backend/docs/service-interface-verification.md`.
 
@@ -247,7 +247,16 @@ queue policy change or automatic conversion is introduced. Verification is recor
 ### 20. Cut over and remove templates
 After the new flow passes end-to-end checks, remove template models, builders, routes, backfill commands, and the separate follow-up executor. Update documentation and OpenAPI.
 
+**Implemented:** New enrollments always require configured service steps. Template builders, configuration
+APIs, models, backfill commands and the separate executor are removed. The retirement migration freezes
+original template/version/run/node provenance before dropping those executable tables. Saved enrolled
+manual steps, assignments, resolution timestamps, notes, tasks and activity remain available. Existing
+unfinished template actions stop; a retirement notice directs staff to finish saved work manually.
+Nothing is converted, guessed or replayed through the new queue. Ordinary and service automations
+continue using the shared queue. Deployment and verification are documented in
+`apps/backend/docs/service-template-retirement.md`.
+
 **Done when:** Backend tests, both app type checks, frontend lint, and production build pass; existing unrelated automations still work.
 
-**First milestone:** Complete Chunks 1–4. This fixes current data-loss risks and makes the Medicare/sub-service structure visible before taking on the automation engine.
+**Rollout:** Stop every old backend/worker, back up the database, and apply the retirement migration before starting the new application. The migration rejects active legacy leases. Production rollout is separate from local implementation verification.
 

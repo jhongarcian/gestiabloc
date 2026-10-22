@@ -16,15 +16,12 @@ export function AccountSettingsLayoutShell({
   children,
 }: AccountSettingsLayoutShellProps) {
   const pathname = usePathname() ?? ""
-  const isFollowUpBuilderRoute =
-    pathname.includes(`/app/${tenantSlug}/account-settings/services/`) &&
-    pathname.includes("/follow-up-templates/")
   const isAutomationBuilderRoute =
     pathname.includes(`/app/${tenantSlug}/account-settings/automations/`)
   const isAutomationListRoute =
     pathname === `/app/${tenantSlug}/account-settings/automations`
 
-  if (isFollowUpBuilderRoute || isAutomationBuilderRoute) {
+  if (isAutomationBuilderRoute) {
     return <section className="flex h-full min-h-0 flex-col">{children}</section>
   }
 

@@ -1,5 +1,15 @@
 # Service Configuration Feature Spec
 
+## Template cutover (Chunk 20)
+
+Service steps and linked Automations replace template configuration. All new enrollments require
+configured steps; there is no template picker or fallback. Template builders, routes, runtime models,
+and backfill commands have been removed. Existing saved manual follow-ups and historical attribution
+remain usable. References to template configuration in the original specification below describe
+historical behavior, superseded by [Chunks 19–20](service-automation-transition.md).
+See [the deployment guide](../../../apps/backend/docs/service-template-retirement.md) for the required
+backup, old-worker shutdown and archival migration order.
+
 ## Service hierarchy (implemented in Chunks 3–4)
 
 The catalog has exactly two levels:

@@ -1,5 +1,12 @@
 # Service Management Feature Spec
 
+> Historical specification: template behavior below was replaced by Chunks 19–20. Current enrollment
+> uses configured service/sub-service steps and Automations. Template configuration and execution
+> endpoints/models have been removed; existing saved manual work and attribution are retained.
+> See [the transition plan](service-automation-transition.md) and
+> [the cutover guide](../../../apps/backend/docs/service-template-retirement.md).
+
+
 ## 1. Scope
 
 This spec documents the service experience that is currently implemented for:

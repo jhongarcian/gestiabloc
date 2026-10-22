@@ -382,14 +382,14 @@ export function TenantShell({
     [tenantSlug],
   )
   const hasMoreNotifications = notificationsPage < notificationsTotalPages
-  const isFlowBuilderRoute = useMemo(
+  const isAutomationBuilderRoute = useMemo(
     () =>
       segments[0] === "account-settings" &&
-      segments[1] === "services" &&
-      segments[3] === "follow-up-templates",
+      segments[1] === "automations" &&
+      segments.length > 2,
     [segments],
   )
-  const isCompactSearchActive = !isFlowBuilderRoute && isCompactSearchOpen
+  const isCompactSearchActive = !isAutomationBuilderRoute && isCompactSearchOpen
   const compactLocationLabel = useMemo(
     () => getCompactLocationLabel(segments),
     [segments],
@@ -424,12 +424,6 @@ export function TenantShell({
         (segments[0] === "services" &&
           index === (isServiceEnrollmentRoute ? 2 : 1) &&
           !isServicesWorkspaceSegment)
-      const isServiceFollowUpsSegment =
-        segments[0] === "account-settings" &&
-        segments[1] === "services" &&
-        index === 3 &&
-        segment === "follow-up-templates"
-
       if (isContactIdSegment && !contactCrumbLabel) {
         return
       }
@@ -453,9 +447,7 @@ export function TenantShell({
           : isServiceIdSegment
             ? (serviceCrumbLabel ?? "")
             : formatSegment(segment),
-        href: isServiceFollowUpsSegment
-          ? `${basePath}/account-settings/follow-ups?serviceId=${segments[2]}`
-          : acc,
+        href: acc,
       })
     })
     return items
@@ -1005,7 +997,7 @@ export function TenantShell({
 
   return (
     <SidebarProvider className="min-h-screen w-full bg-slate-50">
-      {!isFlowBuilderRoute ? (
+      {!isAutomationBuilderRoute ? (
         <>
           <AppSidebar
             tenantSlug={tenantSlug}
@@ -1026,14 +1018,14 @@ export function TenantShell({
         >
           <div
             className={`flex items-center gap-2 px-3 sm:px-4 ${
-              isFlowBuilderRoute ? "py-2" : "py-3"
+              isAutomationBuilderRoute ? "py-2" : "py-3"
             }`}
           >
-            {!isFlowBuilderRoute ? (
+            {!isAutomationBuilderRoute ? (
               <SidebarTrigger className="size-10 shrink-0 cursor-pointer rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700 lg:hidden" />
             ) : null}
 
-            {!isFlowBuilderRoute && !isCompactSearchActive ? (
+            {!isAutomationBuilderRoute && !isCompactSearchActive ? (
               <div className="min-w-0 flex-1 lg:hidden">
                 <span
                   className="block truncate text-sm font-semibold tracking-[-0.01em] text-slate-800 sm:text-base"
@@ -1108,7 +1100,7 @@ export function TenantShell({
                 isCompactSearchActive ? "hidden lg:flex" : "flex"
               }`}
             >
-              {!isFlowBuilderRoute ? (
+              {!isAutomationBuilderRoute ? (
                 <>
                   <Button
                     ref={compactSearchTriggerRef}
@@ -1143,7 +1135,7 @@ export function TenantShell({
                 size="icon"
                 type="button"
                 className={`relative shrink-0 rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm cursor-pointer transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700 ${
-                  isFlowBuilderRoute ? "h-9 w-9" : "h-10 w-10"
+                  isAutomationBuilderRoute ? "h-9 w-9" : "h-10 w-10"
                 }`}
                 aria-label="Notifications"
                 onClick={() => setNotificationsOpen(true)}
@@ -1164,7 +1156,7 @@ export function TenantShell({
               >
                 <Avatar
                   className={`border-2 border-blue-950 bg-slate-100 ${
-                    isFlowBuilderRoute ? "h-8 w-8" : "h-9 w-9"
+                    isAutomationBuilderRoute ? "h-8 w-8" : "h-9 w-9"
                   }`}
                 >
                   {avatarUrl || currentUser.image ? (
@@ -1185,7 +1177,7 @@ export function TenantShell({
 
         <div
           className={`flex flex-1 min-h-0 ${
-            isFlowBuilderRoute
+            isAutomationBuilderRoute
               ? "bg-slate-50 px-0 py-0"
               : "bg-slate-100 px-4 py-4 md:px-6 md:py-6"
           }`}

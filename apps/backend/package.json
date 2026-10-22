@@ -9,9 +9,7 @@
     "worker:contact-imports:dev": "node --import tsx src/workers/contact-import-worker.ts",
     "build": "tsc",
     "test": "node --import tsx --test src/**/*.test.ts",
-    "db:seed": "node --import tsx prisma/seed.ts",
-    "db:backfill-followups-v2": "node --import tsx prisma/backfill-followup-v2.ts",
-    "db:backfill-followups-v3": "node --import tsx prisma/backfill-followup-v3.ts"
+    "db:seed": "node --import tsx prisma/seed.ts"
   },
   "prisma": {
     "seed": "node --import tsx prisma/seed.ts"

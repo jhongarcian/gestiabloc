@@ -109,15 +109,6 @@ type ServiceChecklistItem = {
   sortOrder: number
 }
 
-type ServiceFollowUpTemplate = {
-  id: string
-  name: string
-  isPublished: boolean
-  sortOrder: number
-  flowNodeCount: number
-  flowEdgeCount: number
-}
-
 export type ServiceOverviewPanelProps = {
   tenantId: string
   tenantSlug: string
@@ -136,7 +127,6 @@ export type ServiceOverviewPanelProps = {
     installmentFrequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null
     isActive: boolean
     checklistItems: ServiceChecklistItem[]
-    followUpTemplates: ServiceFollowUpTemplate[]
     professionals: ServiceProfessional[]
     tenantBilling: {
       taxEnabled: boolean

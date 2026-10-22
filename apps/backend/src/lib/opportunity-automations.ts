@@ -90,7 +90,7 @@ import { NoteBodyInputSchema, NoteTitleInputSchema } from "./note-inputs.js"
 import { deletePrivateObject } from "./private-storage.js"
 import { emitStoredNotifications } from "./task-notifications.js"
 import { getTaskPriorityFromDueDate, isCompletedStatusName } from "./task-priority-values.js"
-import { evaluateWorkflowOperator } from "./service-followup-runtime.js"
+import { evaluateWorkflowOperator } from "./workflow-operators.js"
 
 export const AUTOMATION_TRIGGER_TYPES = [
   "SERVICE_ENROLLED", "SERVICE_STATUS_CHANGED", "SERVICE_CHECKLIST_STATUS_CHANGED", "SERVICE_PAYMENT_CHANGED",

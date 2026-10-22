@@ -111,11 +111,6 @@ type EnrollmentRow = {
   followUpTemplateId: string | null
   followUpTemplateName: string | null
   followUpTemplateVersion?: { id: string; versionNumber: number } | null
-  followUpRun?: {
-    id: string
-    status: "RUNNING" | "WAITING" | "AWAITING_STEP" | "COMPLETED" | "FAILED" | "NEEDS_REVIEW" | "CANCELED"
-    failureMessage: string | null
-  } | null
   currentStep: {
     id: string
     title: string
@@ -123,7 +118,7 @@ type EnrollmentRow = {
     availableAt: string | null
     dueAt: string | null
     effectiveDueAt: string | null
-    effectiveDueSource: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE" | null
+    effectiveDueSource: "STEP_DUE" | "STEP_AVAILABLE" | null
     effectiveDueProjected: boolean
     completedAt: string | null
     assignedToUserId: string | null
@@ -554,12 +549,7 @@ function FollowUpMobileCard({
               <p className="truncate text-sm text-slate-700" title={templateName}>
                 {templateName}
               </p>
-              {item.followUpRun?.status === "FAILED" ||
-              item.followUpRun?.status === "NEEDS_REVIEW" ? (
-                <Badge className="shrink-0 border-0 bg-rose-100 text-rose-700">
-                  {item.followUpRun.status === "FAILED" ? "Paused" : "Review"}
-                </Badge>
-              ) : null}
+
             </div>
           </div>
         </div>
@@ -1510,14 +1500,7 @@ export function FollowUpsTable({
                               ? ` v${item.followUpTemplateVersion.versionNumber}`
                               : ""}
                           </span>
-                          {item.followUpRun?.status === "FAILED" ||
-                          item.followUpRun?.status === "NEEDS_REVIEW" ? (
-                            <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
-                              {item.followUpRun.status === "FAILED"
-                                ? "Paused"
-                                : "Review"}
-                            </span>
-                          ) : null}
+
                         </div>
                       </TableCell>
                       <TableCell className="px-4 py-0">

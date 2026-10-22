@@ -1,3 +1,4 @@
+import { retiredTemplate } from "./service-retired-workflows.js"
 import { enrolledStepProgress, serviceScopeWhere } from "./service-presentation.js"
 import { Prisma } from "../generated/prisma/index.js"
 import { getFollowUpListDateRanges } from "./service-followup-list-date-range.js"
@@ -5,10 +6,6 @@ import {
   resolveEffectiveNextFollowUp,
   selectFollowUpListStep,
 } from "./service-followup-next-follow-up.js"
-import {
-  getUserScheduledWaitByActionId,
-  getWorkflowWaitByActionId,
-} from "./service-followup-v3-definition.js"
 
 export type FollowUpQueueState = "ACTIONABLE" | "SCHEDULED" | "NEEDS_ATTENTION" | "FINISHED"
 export function followUpUrgency(
@@ -51,17 +48,6 @@ const queueSelect = {
     select: { id: true, name: true, parentService: { select: { id: true, name: true } } },
   },
   contact: { select: { id: true, firstName: true, middleName: true, lastName: true, phone: true } },
-  followUpTemplate: { select: { id: true, name: true } },
-  followUpTemplateVersion: { select: { id: true, versionNumber: true, definition: true } },
-  followUpRun: {
-    select: {
-      id: true,
-      status: true,
-      resumeAt: true,
-      waitingNodeId: true,
-      failureMessage: true,
-    },
-  },
   followUpSteps: {
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }, { id: "asc" }],
     select: {
@@ -105,6 +91,7 @@ const queueSelect = {
       },
     },
   },
+  retiredWorkflowSnapshot: true
 } satisfies Prisma.ContactServiceSelect
 type QueueService = Prisma.ContactServiceGetPayload<{ select: typeof queueSelect }>
 type QueueStep = {
@@ -181,22 +168,22 @@ function serviceStepProjection(service: QueueService, resumes: Map<string, Date>
     enteredAt: queueState === "ACTIONABLE" ? entry!.enteredAt : null,
     currentStep: current
       ? {
-          id: current.step.id,
-          occurrenceId: current.entry.id,
-          title: current.step.title,
-          status: current.entry.status,
-          availableAt: current.entry.enteredAt,
-          dueAt,
-          effectiveDueAt: dueAt,
-          effectiveDueSource: dueAt ? "STEP_DUE" : null,
-          effectiveDueProjected: false,
-          completedAt: current.entry.resolvedAt,
-          assignedToUserId: current.step.assignedToUserId,
-          assignedToName: current.step.assignedTo?.name?.trim() || current.step.assignedTo?.email || null,
-          note: current.step.instructions,
-          sortOrder: current.step.sortOrder,
-          stepNumber: current.index + 1,
-        }
+        id: current.step.id,
+        occurrenceId: current.entry.id,
+        title: current.step.title,
+        status: current.entry.status,
+        availableAt: current.entry.enteredAt,
+        dueAt,
+        effectiveDueAt: dueAt,
+        effectiveDueSource: dueAt ? "STEP_DUE" : null,
+        effectiveDueProjected: false,
+        completedAt: current.entry.resolvedAt,
+        assignedToUserId: current.step.assignedToUserId,
+        assignedToName: current.step.assignedTo?.name?.trim() || current.step.assignedTo?.email || null,
+        note: current.step.instructions,
+        sortOrder: current.step.sortOrder,
+        stepNumber: current.index + 1,
+      }
       : null,
     totalCount: service.serviceSteps.length,
     completedCount: enrolledStepProgress(service.serviceSteps, service.stepMovements).completed,
@@ -212,7 +199,6 @@ type QueueQuery = {
   dueDatePreset?: string
   serviceGroupId?: string
   serviceId?: string
-  followUpTemplateId?: string
   assignedToUserId?: string
   queueState?: FollowUpQueueState
 }
@@ -223,14 +209,7 @@ function legacyProjection(
   now: Date,
   matchesDate: (date: Date | null) => boolean,
 ): QueueProjection | null {
-  const definition = service.followUpTemplateVersion?.definition
-  const waitId = service.followUpRun?.waitingNodeId
-  const effective = resolveEffectiveNextFollowUp({
-    steps: service.followUpSteps,
-    run: service.followUpRun,
-    isWorkflowWait: Boolean(waitId && getWorkflowWaitByActionId(definition, waitId)),
-    isUserScheduledWait: Boolean(waitId && getUserScheduledWaitByActionId(definition, waitId)),
-  })
+  const effective = resolveEffectiveNextFollowUp({ steps: service.followUpSteps })
   const candidates = service.followUpSteps.filter((step) => {
     if (query.assignedToUserId && step.assignedToUserId !== query.assignedToUserId) return false
     const due = effective?.stepId === step.id ? effective.at : step.dueAt
@@ -249,18 +228,13 @@ function legacyProjection(
   const queueState: FollowUpQueueState =
     service.status === "COMPLETED" || terminal
       ? "FINISHED"
-      : ["FAILED", "NEEDS_REVIEW", "CANCELED"].includes(service.followUpRun?.status ?? "")
-        ? "NEEDS_ATTENTION"
-        : scheduled
-          ? "SCHEDULED"
-          : "ACTIONABLE"
+      : scheduled
+        ? "SCHEDULED"
+        : "ACTIONABLE"
   const dueAt = terminal ? null : (effectiveForStep?.at ?? step.dueAt ?? step.availableAt)
   return {
     queueState,
-    queueMessage:
-      queueState === "NEEDS_ATTENTION"
-        ? (service.followUpRun?.failureMessage ?? "Review this workflow before continuing.")
-        : null,
+    queueMessage: service.retiredWorkflowSnapshot ? "Earlier workflow retired; finish saved steps manually." : null,
     scheduledAt:
       queueState === "SCHEDULED"
         ? effectiveForStep?.projected
@@ -310,8 +284,7 @@ export async function getServiceFollowUpQueue(
   }
   // Summary and pagination use one projection of both workflow types. In particular,
   // never sort a fetched page: deadline overrides must move rows across page boundaries.
-  // Omit deadline histories and service automation snapshots. Legacy definitions are
-  // still needed to identify workflow waits until the template cutover.
+  // Omit deadline histories and automation snapshots. Retired workflows supply attribution only.
   const services = await client.contactService.findMany({
     where: {
       tenantId,
@@ -337,18 +310,18 @@ export async function getServiceFollowUpQueue(
   )
   const waits = eventIds.length
     ? await client.automationRun.findMany({
-        where: {
-          tenantId,
-          eventSource: "SERVICE_STEP_COMPLETED",
-          exitRequestedAt: null,
-          status: { in: ["WAITING", "RUNNING"] },
-          resumeAt: { not: null },
-          waitingNodeExecutionId: { not: null },
-          dispatch: { eventId: { in: eventIds }, event: { tenantId } },
-        },
-        select: { resumeAt: true, dispatch: { select: { eventId: true } } },
-        orderBy: [{ resumeAt: "asc" }, { id: "asc" }],
-      })
+      where: {
+        tenantId,
+        eventSource: "SERVICE_STEP_COMPLETED",
+        exitRequestedAt: null,
+        status: { in: ["WAITING", "RUNNING"] },
+        resumeAt: { not: null },
+        waitingNodeExecutionId: { not: null },
+        dispatch: { eventId: { in: eventIds }, event: { tenantId } },
+      },
+      select: { resumeAt: true, dispatch: { select: { eventId: true } } },
+      orderBy: [{ resumeAt: "asc" }, { id: "asc" }],
+    })
     : []
   const resumes = new Map<string, Date>()
   for (const wait of waits)
@@ -383,15 +356,8 @@ export async function getServiceFollowUpQueue(
       serviceId: service.service.id,
       serviceName: service.service.name,
       parentService: service.service.parentService,
-      followUpTemplateId: service.followUpTemplate?.id ?? null,
-      followUpTemplateName: service.followUpTemplate?.name ?? null,
-      followUpTemplateVersion: service.followUpTemplateVersion
-        ? {
-            id: service.followUpTemplateVersion.id,
-            versionNumber: service.followUpTemplateVersion.versionNumber,
-          }
-        : null,
-      followUpRun: service.followUpRun,
+      followUpTemplateId: retiredTemplate(service.retiredWorkflowSnapshot)?.id ?? null,
+      followUpTemplateName: retiredTemplate(service.retiredWorkflowSnapshot)?.name ?? null,
       progress: {
         totalCount,
         completedCount,
@@ -400,7 +366,7 @@ export async function getServiceFollowUpQueue(
       },
       overdue: timing.status === "OVERDUE",
       updatedAt: service.updatedAt,
-      startedAt: service.startedAt,
+      startedAt: service.startedAt
     }
   }
   const summaryItems = services
@@ -421,9 +387,9 @@ export async function getServiceFollowUpQueue(
     ).length,
     averageProgress: summaryItems.length
       ? Math.round(
-          summaryItems.reduce((sum, item) => sum + item.progress.completionPercentage, 0) /
-            summaryItems.length,
-        )
+        summaryItems.reduce((sum, item) => sum + item.progress.completionPercentage, 0) /
+        summaryItems.length,
+      )
       : 0,
     dueSoon: summaryItems.filter((item) => item.timing.status === "DUE_SOON").length,
     actionable: summaryItems.filter((item) => item.queueState === "ACTIONABLE").length,
@@ -437,7 +403,6 @@ export async function getServiceFollowUpQueue(
       !item ||
       (query.queueState && item.queueState !== query.queueState) ||
       (query.status && item.currentStep?.status !== query.status) ||
-      (query.followUpTemplateId && item.followUpTemplateId !== query.followUpTemplateId) ||
       (query.assignedToUserId && item.currentStep?.assignedToUserId !== query.assignedToUserId)
     )
       return []

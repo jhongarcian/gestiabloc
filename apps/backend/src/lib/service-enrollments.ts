@@ -66,20 +66,11 @@ export const ServiceEnrollmentsListQuerySchema = z
     statuses: EnrollmentStatusesQuerySchema,
     serviceGroupId: z.string().trim().min(1).optional(),
     serviceId: z.string().trim().min(1).optional(),
-    followUpTemplateId: z.string().trim().min(1).optional(),
-    withoutTemplate: OptionalBooleanQuerySchema,
     assignedToUserId: z.string().trim().min(1).optional(),
     unassigned: OptionalBooleanQuerySchema,
   })
+  .strict()
   .superRefine((value, context) => {
-    if (value.followUpTemplateId && value.withoutTemplate) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["withoutTemplate"],
-        message: "withoutTemplate cannot be combined with followUpTemplateId",
-      })
-    }
-
     if (value.assignedToUserId && value.unassigned) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

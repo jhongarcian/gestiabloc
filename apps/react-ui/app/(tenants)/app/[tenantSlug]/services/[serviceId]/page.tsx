@@ -30,14 +30,6 @@ type ServiceOverviewResponse = {
       isRequired: boolean
       sortOrder: number
     }>
-    followUpTemplates: Array<{
-      id: string
-      name: string
-      isPublished: boolean
-      sortOrder: number
-      flowNodeCount: number
-      flowEdgeCount: number
-    }>
     professionals: Array<{
       id: string
       kind: "INTERNAL_USER" | "EXTERNAL"

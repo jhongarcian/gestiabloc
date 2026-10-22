@@ -5,40 +5,8 @@ import test from "node:test"
 
 import {
   buildFollowUpStepResolutionUpdate,
-  isServiceFollowUpWorkflowCompleted,
   resolveUnanimousFollowUpCoordinator,
 } from "./service-followup-ownership.js"
-
-test("a completed run is locked even when step data is incomplete", () => {
-  assert.equal(
-    isServiceFollowUpWorkflowCompleted({
-      runStatus: "COMPLETED",
-      stepStatuses: ["ACTIVE"],
-    }),
-    true,
-  )
-})
-
-test("legacy workflows are complete only when every enrolled step is resolved", () => {
-  assert.equal(
-    isServiceFollowUpWorkflowCompleted({
-      runStatus: null,
-      stepStatuses: ["COMPLETED", "SKIPPED"],
-    }),
-    true,
-  )
-  assert.equal(
-    isServiceFollowUpWorkflowCompleted({
-      runStatus: null,
-      stepStatuses: ["COMPLETED", "PENDING"],
-    }),
-    false,
-  )
-  assert.equal(
-    isServiceFollowUpWorkflowCompleted({ runStatus: null, stepStatuses: [] }),
-    false,
-  )
-})
 
 test("coordinator inference requires one unanimous non-null relevant assignee", () => {
   assert.equal(

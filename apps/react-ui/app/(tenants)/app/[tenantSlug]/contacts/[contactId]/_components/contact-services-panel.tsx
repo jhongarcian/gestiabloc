@@ -133,7 +133,7 @@ type ContactServiceItem = {
   nextFollowUp?: {
     at: string
     stepId: string | null
-    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    source: "STEP_DUE" | "STEP_AVAILABLE"
     projected: boolean
   } | null
   followUpSteps: Array<{
@@ -224,12 +224,6 @@ type ServiceDetailsResponse = {
       sortOrder: number
     }>
     steps: ServiceStepItem[]
-    followUpTemplates: Array<{
-      id: string
-      name: string
-      isPublished: boolean
-      sortOrder: number
-    }>
     professionals: ServiceProfessional[]
     tenantBilling: {
       taxEnabled: boolean

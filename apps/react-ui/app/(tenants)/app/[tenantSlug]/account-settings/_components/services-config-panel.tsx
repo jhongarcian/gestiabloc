@@ -71,8 +71,6 @@ type ServiceItem = {
   sortOrder: number
   _count: { subServices: number }
   checklistItems: Array<{ id: string }>
-  followUpTemplateSteps: Array<{ id: string }>
-  followUpTemplates?: Array<{ id: string }>
   professionals: Array<{ id: string }>
   steps: Array<{ id: string }>
 }

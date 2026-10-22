@@ -1,3 +1,5 @@
+import { Prisma } from "../generated/prisma/index.js"
+import { retiredWorkflowAttribution } from "../lib/service-retired-workflows.js"
 import { type Response, Router } from "express"
 import { z } from "zod"
 
@@ -186,6 +188,7 @@ async function getTaskForTenant(tenantId: string, taskId: string) {
       contactId: true,
       contactServiceId: true,
       followUpTemplateId: true,
+      retiredWorkflowSnapshot: true,
       contactServiceFollowUpStepId: true,
       linkedEntityName: true,
       linkedEntityType: true,
@@ -303,6 +306,7 @@ async function resolveTaskMutationPayload(
     }
   }
 
+  let retiredWorkflowSnapshot: ReturnType<typeof retiredWorkflowAttribution> = null
   let resolvedContactServiceId: string | null = null
   let resolvedFollowUpTemplateId: string | null = null
   let resolvedContactServiceFollowUpStepId: string | null = null
@@ -321,6 +325,7 @@ async function resolveTaskMutationPayload(
         id: true,
         contactId: true,
         followUpTemplateId: true,
+        retiredWorkflowSnapshot: true,
       },
     })
 
@@ -355,6 +360,7 @@ async function resolveTaskMutationPayload(
       resolvedContactServiceFollowUpStepId = followUpStep.id
     }
 
+    retiredWorkflowSnapshot = retiredWorkflowAttribution(contactService.retiredWorkflowSnapshot)
     resolvedContactServiceId = contactService.id
     resolvedFollowUpTemplateId = followUpTemplateId ?? contactService.followUpTemplateId ?? null
   }
@@ -370,6 +376,7 @@ async function resolveTaskMutationPayload(
   return {
     contactId,
     contactServiceId: resolvedContactServiceId,
+    retiredWorkflowSnapshot,
     followUpTemplateId: resolvedFollowUpTemplateId,
     contactServiceFollowUpStepId: resolvedContactServiceFollowUpStepId,
     statusConfigId,
@@ -765,6 +772,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
           tenantId,
           contactId,
           contactServiceId,
+          retiredWorkflowSnapshot: resolvedPayload.retiredWorkflowSnapshot ?? Prisma.DbNull,
           followUpTemplateId,
           contactServiceFollowUpStepId,
           priority: getTaskPriorityFromDueDate(
@@ -931,7 +939,14 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
       reminderAt: payload.reminderAt,
     }
 
-    const resolvedPayload = await resolveTaskMutationPayload(tenantId, mergedPayload)
+    // Frozen provenance survives ordinary edits after the enrollment/step was deleted.
+    const retainOrphanedSource = !mergedPayload.contactServiceId && Boolean(existingTask.retiredWorkflowSnapshot) &&
+      payload.contactId === undefined && payload.contactServiceId === undefined &&
+      payload.followUpTemplateId === undefined && payload.contactServiceFollowUpStepId === undefined
+    const resolvedPayload = await resolveTaskMutationPayload(tenantId, {
+      ...mergedPayload,
+      ...(retainOrphanedSource ? { followUpTemplateId: null, contactServiceFollowUpStepId: null } : {}),
+    })
     if ("error" in resolvedPayload) {
       return res.status(400).json({ error: resolvedPayload.error })
     }
@@ -971,7 +986,9 @@ router.patch("/:tenantId/:taskId", requireAuth, async (req, res, next) => {
           description: mergedPayload.description ? sanitizeMultilineText(mergedPayload.description) : null,
           contactId: nextContactId,
           contactServiceId: resolvedPayload.contactServiceId,
-          followUpTemplateId: resolvedPayload.followUpTemplateId,
+          followUpTemplateId: retainOrphanedSource ? existingTask.followUpTemplateId : resolvedPayload.followUpTemplateId,
+          retiredWorkflowSnapshot: resolvedPayload.retiredWorkflowSnapshot ??
+            (retainOrphanedSource ? retiredWorkflowAttribution(existingTask.retiredWorkflowSnapshot) : null) ?? Prisma.DbNull,
           contactServiceFollowUpStepId: resolvedPayload.contactServiceFollowUpStepId,
           linkedEntityName:
             resolvedPayload.linkedEntityName

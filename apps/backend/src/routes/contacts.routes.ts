@@ -1,3 +1,5 @@
+import { Prisma } from "../generated/prisma/index.js"
+import { retiredTemplate, retiredWorkflowAttribution } from "../lib/service-retired-workflows.js"
 import { SERVICE_TRIGGER_TYPES } from "../lib/service-automation-triggers.js"
 import { type NextFunction, type Response, Router } from "express"
 import { z } from "zod"
@@ -395,9 +397,9 @@ function canReadSensitiveFieldValue(
 function isGrantActive(
   grant:
     | {
-        expiresAt: Date | null
-        remainingReads: number | null
-      }
+      expiresAt: Date | null
+      remainingReads: number | null
+    }
     | undefined,
   now = new Date(),
 ) {
@@ -553,6 +555,7 @@ function serializeContactNote(
         name: string
       }
     } | null
+    retiredWorkflowSnapshot?: unknown
     followUpTemplate?: {
       id: string
       name: string
@@ -575,17 +578,17 @@ function serializeContactNote(
   userId: string,
   source?:
     | {
-        type: "CONTACT" | "SERVICE"
-        contactServiceId?: string
-        serviceName?: string
-        followUpTemplateName?: string
-        followUpStepTitle?: string
-      }
+      type: "CONTACT" | "SERVICE"
+      contactServiceId?: string
+      serviceName?: string
+      followUpTemplateName?: string
+      followUpStepTitle?: string
+    }
     | {
-        type: "AUTOMATION"
-        automationId?: string
-        automationName: string
-      },
+      type: "AUTOMATION"
+      automationId?: string
+      automationName: string
+    },
 ) {
   return {
     id: note.id,
@@ -595,24 +598,24 @@ function serializeContactNote(
     updatedAt: note.updatedAt,
     author: note.automationName
       ? {
-          type: "AUTOMATION" as const,
-          id: null,
-          name: `Automation · ${note.automationName}`,
-          email: null,
-        }
+        type: "AUTOMATION" as const,
+        id: null,
+        name: `Automation · ${note.automationName}`,
+        email: null,
+      }
       : note.createdBy
         ? {
-            type: "USER" as const,
-            id: note.createdBy.id,
-            name: note.createdBy.name ?? note.createdBy.email,
-            email: note.createdBy.email,
-          }
+          type: "USER" as const,
+          id: note.createdBy.id,
+          name: note.createdBy.name ?? note.createdBy.email,
+          email: note.createdBy.email,
+        }
         : {
-            type: "FORMER_USER" as const,
-            id: null,
-            name: "Former user",
-            email: null,
-          },
+          type: "FORMER_USER" as const,
+          id: null,
+          name: "Former user",
+          email: null,
+        },
     permissions: {
       canEdit: canManageContactNote(membership, note.createdById, userId, note.automationName),
       canDelete: canManageContactNote(membership, note.createdById, userId, note.automationName),
@@ -640,6 +643,7 @@ function buildContactNoteSource(note: {
       name: string
     }
   } | null
+  retiredWorkflowSnapshot?: unknown
   followUpTemplate?: {
     id: string
     name: string
@@ -657,7 +661,7 @@ function buildContactNoteSource(note: {
     }
   }
 
-  if (!note.contactService && !note.followUpTemplate && !note.contactServiceFollowUpStep) {
+  if (!note.contactService && !retiredTemplate(note.retiredWorkflowSnapshot) && !note.contactServiceFollowUpStep) {
     return undefined
   }
 
@@ -665,7 +669,7 @@ function buildContactNoteSource(note: {
     type: "SERVICE" as const,
     contactServiceId: note.contactService?.id,
     serviceName: note.contactService?.service?.name,
-    followUpTemplateName: note.followUpTemplate?.name,
+    followUpTemplateName: retiredTemplate(note.retiredWorkflowSnapshot)?.name,
     followUpStepTitle: note.contactServiceFollowUpStep?.title,
   }
 }
@@ -705,13 +709,13 @@ type StoredCustomFieldValue = {
 }
 
 const EMPTY_STORED_CUSTOM_FIELD_VALUE: Omit<StoredCustomFieldValue, "fieldId"> =
-  {
-    value: null,
-    valueCiphertext: null,
-    valueIv: null,
-    valueAuthTag: null,
-    valueKeyVersion: null,
-  }
+{
+  value: null,
+  valueCiphertext: null,
+  valueIv: null,
+  valueAuthTag: null,
+  valueKeyVersion: null,
+}
 
 function areCustomFieldValuesEqual(left: unknown, right: unknown) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null)
@@ -1145,11 +1149,11 @@ function getContactSearchMetrics(
   const middleNameStrength =
     queryTokens.length > 2
       ? queryTokens
-          .slice(1, -1)
-          .reduce(
-            (best, token) => Math.min(best, getBestTokenStrength(middleNameTokens, token)),
-            Number.POSITIVE_INFINITY,
-          )
+        .slice(1, -1)
+        .reduce(
+          (best, token) => Math.min(best, getBestTokenStrength(middleNameTokens, token)),
+          Number.POSITIVE_INFINITY,
+        )
       : Number.POSITIVE_INFINITY
   const lastNameStrength = lastQueryToken
     ? getBestTokenStrength(lastNameTokens, lastQueryToken)
@@ -1347,62 +1351,62 @@ router.get("/:tenantId/search", requireAuth, async (req, res, next) => {
       .sort((left, right) => {
         const leftMetrics = left.metrics
         const rightMetrics = right.metrics
-      const rankDiff = leftMetrics.rank - rightMetrics.rank
-      if (rankDiff !== 0) return rankDiff
+        const rankDiff = leftMetrics.rank - rightMetrics.rank
+        if (rankDiff !== 0) return rankDiff
 
-      const structuredMatchDiff =
-        Number(rightMetrics.hasStructuredMultiTokenNameMatch) -
-        Number(leftMetrics.hasStructuredMultiTokenNameMatch)
-      if (structuredMatchDiff !== 0) return structuredMatchDiff
+        const structuredMatchDiff =
+          Number(rightMetrics.hasStructuredMultiTokenNameMatch) -
+          Number(leftMetrics.hasStructuredMultiTokenNameMatch)
+        if (structuredMatchDiff !== 0) return structuredMatchDiff
 
-      const matchedTokenDiff =
-        rightMetrics.matchedTokenCount - leftMetrics.matchedTokenCount
-      if (matchedTokenDiff !== 0) return matchedTokenDiff
+        const matchedTokenDiff =
+          rightMetrics.matchedTokenCount - leftMetrics.matchedTokenCount
+        if (matchedTokenDiff !== 0) return matchedTokenDiff
 
-      const exactTokenDiff = rightMetrics.exactTokenCount - leftMetrics.exactTokenCount
-      if (exactTokenDiff !== 0) return exactTokenDiff
+        const exactTokenDiff = rightMetrics.exactTokenCount - leftMetrics.exactTokenCount
+        if (exactTokenDiff !== 0) return exactTokenDiff
 
-      const middleNameExactDiff =
-        rightMetrics.middleNameExactTokenCount - leftMetrics.middleNameExactTokenCount
-      if (middleNameExactDiff !== 0) return middleNameExactDiff
+        const middleNameExactDiff =
+          rightMetrics.middleNameExactTokenCount - leftMetrics.middleNameExactTokenCount
+        if (middleNameExactDiff !== 0) return middleNameExactDiff
 
-      const middleNameMatchDiff =
-        rightMetrics.middleNameMatchedTokenCount - leftMetrics.middleNameMatchedTokenCount
-      if (middleNameMatchDiff !== 0) return middleNameMatchDiff
+        const middleNameMatchDiff =
+          rightMetrics.middleNameMatchedTokenCount - leftMetrics.middleNameMatchedTokenCount
+        if (middleNameMatchDiff !== 0) return middleNameMatchDiff
 
-      const firstNameStrengthDiff = compareMatchStrength(
-        leftMetrics.firstNameStrength,
-        rightMetrics.firstNameStrength,
-      )
-      if (firstNameStrengthDiff !== 0) return firstNameStrengthDiff
+        const firstNameStrengthDiff = compareMatchStrength(
+          leftMetrics.firstNameStrength,
+          rightMetrics.firstNameStrength,
+        )
+        if (firstNameStrengthDiff !== 0) return firstNameStrengthDiff
 
-      const lastNameStrengthDiff = compareMatchStrength(
-        leftMetrics.lastNameStrength,
-        rightMetrics.lastNameStrength,
-      )
-      if (lastNameStrengthDiff !== 0) return lastNameStrengthDiff
+        const lastNameStrengthDiff = compareMatchStrength(
+          leftMetrics.lastNameStrength,
+          rightMetrics.lastNameStrength,
+        )
+        if (lastNameStrengthDiff !== 0) return lastNameStrengthDiff
 
-      const middleNameStrengthDiff = compareMatchStrength(
-        leftMetrics.middleNameStrength,
-        rightMetrics.middleNameStrength,
-      )
-      if (middleNameStrengthDiff !== 0) return middleNameStrengthDiff
+        const middleNameStrengthDiff = compareMatchStrength(
+          leftMetrics.middleNameStrength,
+          rightMetrics.middleNameStrength,
+        )
+        if (middleNameStrengthDiff !== 0) return middleNameStrengthDiff
 
-      const tokenStrengthDiff =
-        leftMetrics.aggregateTokenStrength - rightMetrics.aggregateTokenStrength
-      if (tokenStrengthDiff !== 0) return tokenStrengthDiff
+        const tokenStrengthDiff =
+          leftMetrics.aggregateTokenStrength - rightMetrics.aggregateTokenStrength
+        if (tokenStrengthDiff !== 0) return tokenStrengthDiff
 
-      const fuzzyTokenDiff = leftMetrics.fuzzyTokenCount - rightMetrics.fuzzyTokenCount
-      if (fuzzyTokenDiff !== 0) return fuzzyTokenDiff
+        const fuzzyTokenDiff = leftMetrics.fuzzyTokenCount - rightMetrics.fuzzyTokenCount
+        if (fuzzyTokenDiff !== 0) return fuzzyTokenDiff
 
-      const leftFullName = [left.contact.firstName, left.contact.middleName, left.contact.lastName]
-        .filter(Boolean)
-        .join(" ")
-      const rightFullName = [right.contact.firstName, right.contact.middleName, right.contact.lastName]
-        .filter(Boolean)
-        .join(" ")
+        const leftFullName = [left.contact.firstName, left.contact.middleName, left.contact.lastName]
+          .filter(Boolean)
+          .join(" ")
+        const rightFullName = [right.contact.firstName, right.contact.middleName, right.contact.lastName]
+          .filter(Boolean)
+          .join(" ")
 
-      return leftFullName.localeCompare(rightFullName)
+        return leftFullName.localeCompare(rightFullName)
       })
 
     return res.json({
@@ -1448,77 +1452,77 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
     const orderBy =
       sort === "NAME_DESC"
         ? [
-            { lastName: "desc" as const },
-            { firstName: "desc" as const },
-            { id: "desc" as const },
-          ]
+          { lastName: "desc" as const },
+          { firstName: "desc" as const },
+          { id: "desc" as const },
+        ]
         : sort === "CREATED_DESC"
           ? [
-              { createdAt: "desc" as const },
-              { id: "desc" as const },
-            ]
+            { createdAt: "desc" as const },
+            { id: "desc" as const },
+          ]
           : sort === "CREATED_ASC"
             ? [
-                { createdAt: "asc" as const },
-                { id: "asc" as const },
-              ]
+              { createdAt: "asc" as const },
+              { id: "asc" as const },
+            ]
             : sort === "UPDATED_DESC"
               ? [
-                  { updatedAt: "desc" as const },
-                  { id: "desc" as const },
-                ]
+                { updatedAt: "desc" as const },
+                { id: "desc" as const },
+              ]
               : [
-                  { lastName: "asc" as const },
-                  { firstName: "asc" as const },
-                  { id: "asc" as const },
-                ]
+                { lastName: "asc" as const },
+                { firstName: "asc" as const },
+                { id: "asc" as const },
+              ]
 
     const where = {
       tenantId,
       ...(selectedStatusConfigIds.length > 0
         ? {
-            statusConfigId: {
-              in: selectedStatusConfigIds,
-            },
-          }
+          statusConfigId: {
+            in: selectedStatusConfigIds,
+          },
+        }
         : {}),
       ...(selectedTagIds.length > 0
         ? {
-            tags: {
-              some: {
-                tagId: {
-                  in: selectedTagIds,
-                },
+          tags: {
+            some: {
+              tagId: {
+                in: selectedTagIds,
               },
             },
-          }
+          },
+        }
         : {}),
       ...(assignedToUserIdFilter
         ? assignedToUserIdFilter === "__UNASSIGNED__"
           ? {
-              assignedToUserId: null,
-            }
+            assignedToUserId: null,
+          }
           : {
-              assignedToUserId: assignedToUserIdFilter,
-              assignedToMembership: {
-                is: {
-                  status: "ACTIVE" as const,
-                },
+            assignedToUserId: assignedToUserIdFilter,
+            assignedToMembership: {
+              is: {
+                status: "ACTIVE" as const,
               },
-            }
+            },
+          }
         : {}),
       ...(search
         ? {
-            OR: [
-              { firstName: { contains: search, mode: "insensitive" as const } },
-              {
-                middleName: { contains: search, mode: "insensitive" as const },
-              },
-              { lastName: { contains: search, mode: "insensitive" as const } },
-              { email: { contains: search, mode: "insensitive" as const } },
-              { phone: { contains: search, mode: "insensitive" as const } },
-            ],
-          }
+          OR: [
+            { firstName: { contains: search, mode: "insensitive" as const } },
+            {
+              middleName: { contains: search, mode: "insensitive" as const },
+            },
+            { lastName: { contains: search, mode: "insensitive" as const } },
+            { email: { contains: search, mode: "insensitive" as const } },
+            { phone: { contains: search, mode: "insensitive" as const } },
+          ],
+        }
         : {}),
     }
 
@@ -1612,13 +1616,13 @@ router.get("/:tenantId", requireAuth, async (req, res, next) => {
           email: contact.email ?? null,
           assignedTo: contact.assignedToMembership
             ? {
-                userId: contact.assignedToMembership.userId,
-                name:
-                  contact.assignedToMembership.user.name?.trim() ||
-                  contact.assignedToMembership.user.email,
-                email: contact.assignedToMembership.user.email,
-                image: contact.assignedToMembership.user.image ?? null,
-              }
+              userId: contact.assignedToMembership.userId,
+              name:
+                contact.assignedToMembership.user.name?.trim() ||
+                contact.assignedToMembership.user.email,
+              email: contact.assignedToMembership.user.email,
+              image: contact.assignedToMembership.user.image ?? null,
+            }
             : null,
           activeFollowUpServices,
           status: contact.statusConfig.name,
@@ -1882,57 +1886,57 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
     const [grants, ownPendingRequests, approverPendingRequests] = await Promise.all([
       sensitiveFieldIds.length > 0
         ? prismaWithContacts.contactCustomFieldAccessGrant.findMany({
-            where: {
-              tenantId,
-              userId: authed.user.id,
-              fieldId: { in: sensitiveFieldIds },
-            },
-            select: {
-              id: true,
-              fieldId: true,
-              expiresAt: true,
-              remainingReads: true,
-            },
-          })
+          where: {
+            tenantId,
+            userId: authed.user.id,
+            fieldId: { in: sensitiveFieldIds },
+          },
+          select: {
+            id: true,
+            fieldId: true,
+            expiresAt: true,
+            remainingReads: true,
+          },
+        })
         : Promise.resolve([]),
       sensitiveFieldIds.length > 0
         ? prismaWithContacts.contactCustomFieldAccessRequest.findMany({
-            where: {
-              tenantId,
-              requesterUserId: authed.user.id,
-              fieldId: { in: sensitiveFieldIds },
-              status: "PENDING",
-            },
-            select: {
-              id: true,
-              fieldId: true,
-              status: true,
-              createdAt: true,
-            },
-          })
+          where: {
+            tenantId,
+            requesterUserId: authed.user.id,
+            fieldId: { in: sensitiveFieldIds },
+            status: "PENDING",
+          },
+          select: {
+            id: true,
+            fieldId: true,
+            status: true,
+            createdAt: true,
+          },
+        })
         : Promise.resolve([]),
       canApproveSensitiveFieldAccess(membership) && sensitiveFieldIds.length > 0
         ? prismaWithContacts.contactCustomFieldAccessRequest.findMany({
-            where: {
-              tenantId,
-              status: "PENDING",
-              fieldId: { in: sensitiveFieldIds },
-            },
-            orderBy: [{ createdAt: "asc" }],
-            select: {
-              id: true,
-              fieldId: true,
-              status: true,
-              createdAt: true,
-              requesterUserId: true,
-              requester: {
-                select: {
-                  name: true,
-                  email: true,
-                },
+          where: {
+            tenantId,
+            status: "PENDING",
+            fieldId: { in: sensitiveFieldIds },
+          },
+          orderBy: [{ createdAt: "asc" }],
+          select: {
+            id: true,
+            fieldId: true,
+            status: true,
+            createdAt: true,
+            requesterUserId: true,
+            requester: {
+              select: {
+                name: true,
+                email: true,
               },
             },
-          })
+          },
+        })
         : Promise.resolve([]),
     ])
 
@@ -2031,13 +2035,13 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
         leadOtherSource: contact.leadOtherSource ?? null,
         assignedTo: contact.assignedToMembership
           ? {
-              userId: contact.assignedToMembership.userId,
-              name:
-                contact.assignedToMembership.user.name?.trim() ||
-                contact.assignedToMembership.user.email,
-              email: contact.assignedToMembership.user.email,
-              image: contact.assignedToMembership.user.image ?? null,
-            }
+            userId: contact.assignedToMembership.userId,
+            name:
+              contact.assignedToMembership.user.name?.trim() ||
+              contact.assignedToMembership.user.email,
+            email: contact.assignedToMembership.user.email,
+            image: contact.assignedToMembership.user.image ?? null,
+          }
           : null,
         status: contact.statusConfig.name,
         statusConfigId: contact.statusConfig.id,
@@ -2070,10 +2074,10 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
               hasAccessGrant: hasGrant,
               pendingAccessRequest: ownPendingRequest
                 ? {
-                    id: ownPendingRequest.id,
-                    status: ownPendingRequest.status,
-                    createdAt: ownPendingRequest.createdAt,
-                  }
+                  id: ownPendingRequest.id,
+                  status: ownPendingRequest.status,
+                  createdAt: ownPendingRequest.createdAt,
+                }
                 : null,
               pendingApprovals: pendingApprovals.map((request) => ({
                 id: request.id,
@@ -2085,10 +2089,10 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
               })),
               value: canReadSensitiveValue
                 ? decodeCustomFieldValue(
-                    field,
-                    storedValueByFieldId.get(field.id) ??
-                      EMPTY_STORED_CUSTOM_FIELD_VALUE,
-                  )
+                  field,
+                  storedValueByFieldId.get(field.id) ??
+                  EMPTY_STORED_CUSTOM_FIELD_VALUE,
+                )
                 : null,
             }
           })(),
@@ -2110,8 +2114,8 @@ router.get("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           const relationshipType: z.infer<
             typeof ContactRelationshipTypeSchema
           > = isSource
-            ? relationship.relationshipType
-            : relationship.reciprocalRelationshipType
+              ? relationship.relationshipType
+              : relationship.reciprocalRelationshipType
 
           return {
             id: relationship.id,
@@ -2285,10 +2289,10 @@ router.get("/:tenantId/:contactId/summary", requireAuth, async (req, res, next) 
         overdueTaskCount,
         nextAppointment: nextAppointment
           ? {
-              id: nextAppointment.id,
-              title: nextAppointment.title,
-              startAt: nextAppointment.startAt.toISOString(),
-            }
+            id: nextAppointment.id,
+            title: nextAppointment.title,
+            startAt: nextAppointment.startAt.toISOString(),
+          }
           : null,
       },
     })
@@ -2489,18 +2493,18 @@ router.post(
       const grantData =
         payload.grantMode === "ONCE"
           ? {
-              expiresAt: null,
-              remainingReads: 1,
-            }
+            expiresAt: null,
+            remainingReads: 1,
+          }
           : payload.grantMode === "MINUTES"
             ? {
-                expiresAt: new Date(now.getTime() + (payload.durationValue ?? 0) * 60_000),
-                remainingReads: null,
-              }
+              expiresAt: new Date(now.getTime() + (payload.durationValue ?? 0) * 60_000),
+              remainingReads: null,
+            }
             : {
-                expiresAt: new Date(now.getTime() + (payload.durationValue ?? 0) * 3_600_000),
-                remainingReads: null,
-              }
+              expiresAt: new Date(now.getTime() + (payload.durationValue ?? 0) * 3_600_000),
+              remainingReads: null,
+            }
       const grantSummary =
         payload.grantMode === "ONCE"
           ? "for one-time view"
@@ -2659,19 +2663,19 @@ router.get(
         contactId,
         ...(q
           ? {
-              OR: [
-                { title: { contains: q, mode: "insensitive" as const } },
-                { body: { contains: q, mode: "insensitive" as const } },
-                {
-                  createdBy: {
-                    name: { contains: q, mode: "insensitive" as const },
-                  },
+            OR: [
+              { title: { contains: q, mode: "insensitive" as const } },
+              { body: { contains: q, mode: "insensitive" as const } },
+              {
+                createdBy: {
+                  name: { contains: q, mode: "insensitive" as const },
                 },
-                {
-                  automationName: { contains: q, mode: "insensitive" as const },
-                },
-              ],
-            }
+              },
+              {
+                automationName: { contains: q, mode: "insensitive" as const },
+              },
+            ],
+          }
           : {}),
       }
       const serviceNotesWhere = {
@@ -2681,23 +2685,23 @@ router.get(
         },
         ...(q
           ? {
-              OR: [
-                { title: { contains: q, mode: "insensitive" as const } },
-                { body: { contains: q, mode: "insensitive" as const } },
-                {
-                  createdBy: {
+            OR: [
+              { title: { contains: q, mode: "insensitive" as const } },
+              { body: { contains: q, mode: "insensitive" as const } },
+              {
+                createdBy: {
+                  name: { contains: q, mode: "insensitive" as const },
+                },
+              },
+              {
+                contactService: {
+                  service: {
                     name: { contains: q, mode: "insensitive" as const },
                   },
                 },
-                {
-                  contactService: {
-                    service: {
-                      name: { contains: q, mode: "insensitive" as const },
-                    },
-                  },
-                },
-              ],
-            }
+              },
+            ],
+          }
           : {}),
       }
 
@@ -2734,12 +2738,6 @@ router.get(
                 },
               },
             },
-            followUpTemplate: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
             contactServiceFollowUpStep: {
               select: {
                 id: true,
@@ -2760,6 +2758,7 @@ router.get(
                 },
               },
             },
+            retiredWorkflowSnapshot: true
           },
         }),
         prismaWithContacts.contactServiceNote.findMany({
@@ -2781,17 +2780,12 @@ router.get(
             contactService: {
               select: {
                 id: true,
-                followUpTemplate: {
-                  select: {
-                    id: true,
-                    name: true,
-                  },
-                },
                 service: {
                   select: {
                     name: true,
                   },
                 },
+                retiredWorkflowSnapshot: true
               },
             },
             attachments: {
@@ -2845,7 +2839,7 @@ router.get(
             type: "SERVICE" as const,
             contactServiceId: note.contactService.id,
             serviceName: note.contactService.service.name,
-            followUpTemplateName: note.contactService.followUpTemplate?.name,
+            followUpTemplateName: retiredTemplate(note.contactService.retiredWorkflowSnapshot)?.name,
           },
           attachments: note.attachments.map((attachment: any) => ({
             id: attachment.id,
@@ -2917,16 +2911,17 @@ router.post(
         getValidatedNoteFiles(tenantId, payload.attachmentFileIds),
         payload.contactServiceId
           ? prismaWithContacts.contactService.findFirst({
-              where: {
-                id: payload.contactServiceId,
-                tenantId,
-                contactId,
-              },
-              select: {
-                id: true,
-                followUpTemplateId: true,
-              },
-            })
+            where: {
+              id: payload.contactServiceId,
+              tenantId,
+              contactId,
+            },
+            select: {
+              id: true,
+              followUpTemplateId: true,
+              retiredWorkflowSnapshot: true,
+            },
+          })
           : Promise.resolve(null),
       ])
 
@@ -2991,6 +2986,7 @@ router.post(
             tenantId,
             contactId,
             contactServiceId: resolvedContactServiceId,
+            retiredWorkflowSnapshot: retiredWorkflowAttribution(linkedContactService?.retiredWorkflowSnapshot) ?? Prisma.DbNull,
             followUpTemplateId: resolvedFollowUpTemplateId,
             contactServiceFollowUpStepId: resolvedContactServiceFollowUpStepId,
             title: payload.title,
@@ -3029,12 +3025,6 @@ router.post(
                 },
               },
             },
-            followUpTemplate: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
             contactServiceFollowUpStep: {
               select: {
                 id: true,
@@ -3055,6 +3045,7 @@ router.post(
                 },
               },
             },
+            retiredWorkflowSnapshot: true
           },
         })
 
@@ -3211,12 +3202,6 @@ router.patch(
                 },
               },
             },
-            followUpTemplate: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
             contactServiceFollowUpStep: {
               select: {
                 id: true,
@@ -3237,6 +3222,7 @@ router.patch(
                 },
               },
             },
+            retiredWorkflowSnapshot: true
           },
         })
       })
@@ -3415,9 +3401,9 @@ router.post(
           relationshipType: created.relationshipType,
           relationshipLabel:
             RELATIONSHIP_LABELS[
-              created.relationshipType as z.infer<
-                typeof ContactRelationshipTypeSchema
-              >
+            created.relationshipType as z.infer<
+              typeof ContactRelationshipTypeSchema
+            >
             ],
           relatedContact: {
             id: created.relatedContact.id,
@@ -3520,7 +3506,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
     const tagIds = payload.tagIds ?? []
     const customFieldValues = payload.customFieldValues ?? []
     if (new Set(tagIds).size !== tagIds.length ||
-        new Set(customFieldValues.map((item) => item.fieldId)).size !== customFieldValues.length) {
+      new Set(customFieldValues.map((item) => item.fieldId)).size !== customFieldValues.length) {
       return res.status(400).json({ error: "DUPLICATE_CONTACT_CREATE_VALUE" })
     }
     const [tags, fields] = await Promise.all([
@@ -3529,9 +3515,9 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
         : Promise.resolve([]),
       customFieldValues.length > 0
         ? prismaWithContacts.contactCustomField.findMany({
-            where: { tenantId, id: { in: customFieldValues.map((item) => item.fieldId) } },
-            select: { id: true, label: true, fieldType: true, isRequired: true, isActive: true, isEncrypted: true, isSensitive: true, options: true },
-          })
+          where: { tenantId, id: { in: customFieldValues.map((item) => item.fieldId) } },
+          select: { id: true, label: true, fieldType: true, isRequired: true, isActive: true, isEncrypted: true, isSensitive: true, options: true },
+        })
         : Promise.resolve([]),
     ])
     if (tags.length !== tagIds.length) return res.status(400).json({ error: "INVALID_TAG" })
@@ -3645,10 +3631,10 @@ router.get("/:tenantId/:contactId/tags/search", requireAuth, async (req, res, ne
       tenantId,
       ...(normalizedQuery
         ? {
-            name: {
-              contains: normalizedQuery,
-            },
-          }
+          name: {
+            contains: normalizedQuery,
+          },
+        }
         : {}),
       contactTags: {
         none: {
@@ -3839,25 +3825,25 @@ router.patch("/:tenantId/:contactId/assignee", requireAuth, async (req, res, nex
       const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
       if (!before) throw new Error("Contact not found while assigning a user.")
       const updatedContact = await tx.contact.update({
-      where: { id: contactId },
-      data: {
-        assignedToUserId: resolvedAssignedToUserId,
-      },
-      select: {
-        id: true,
-        assignedToMembership: {
-          select: {
-            userId: true,
-            user: {
-              select: {
-                name: true,
-                email: true,
-                image: true,
+        where: { id: contactId },
+        data: {
+          assignedToUserId: resolvedAssignedToUserId,
+        },
+        select: {
+          id: true,
+          assignedToMembership: {
+            select: {
+              userId: true,
+              user: {
+                select: {
+                  name: true,
+                  email: true,
+                  image: true,
+                },
               },
             },
           },
         },
-      },
       })
       const automation = await queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
       return { updatedContact, automation }
@@ -3870,13 +3856,13 @@ router.patch("/:tenantId/:contactId/assignee", requireAuth, async (req, res, nex
         id: updatedContact.id,
         assignedTo: updatedContact.assignedToMembership
           ? {
-              userId: updatedContact.assignedToMembership.userId,
-              name:
-                updatedContact.assignedToMembership.user.name?.trim() ||
-                updatedContact.assignedToMembership.user.email,
-              email: updatedContact.assignedToMembership.user.email,
-              image: updatedContact.assignedToMembership.user.image ?? null,
-            }
+            userId: updatedContact.assignedToMembership.userId,
+            name:
+              updatedContact.assignedToMembership.user.name?.trim() ||
+              updatedContact.assignedToMembership.user.email,
+            email: updatedContact.assignedToMembership.user.email,
+            image: updatedContact.assignedToMembership.user.image ?? null,
+          }
           : null,
       },
     })
@@ -3928,21 +3914,21 @@ router.patch("/:tenantId/:contactId/status", requireAuth, async (req, res, next)
       const before = await loadContactChangeSnapshot(tx, tenantId, contactId)
       if (!before) throw new Error("Contact not found while updating status.")
       const updatedContact = await tx.contact.update({
-      where: { id: contactId },
-      data: {
-        statusConfigId: resolvedStatusConfigId,
-      },
-      select: {
-        id: true,
-        statusConfig: {
-          select: {
-            id: true,
-            name: true,
-            bgColor: true,
-            textColor: true,
+        where: { id: contactId },
+        data: {
+          statusConfigId: resolvedStatusConfigId,
+        },
+        select: {
+          id: true,
+          statusConfig: {
+            select: {
+              id: true,
+              name: true,
+              bgColor: true,
+              textColor: true,
+            },
           },
         },
-      },
       })
       const automation = await queueContactChangedAutomationEvent(tx, { tenantId, contactId, actorUserId: authed.user.id, before })
       return { updatedContact, automation }
@@ -4024,18 +4010,18 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
       .map((field) => field.id)
     const grants = sensitiveFieldIds.length
       ? await prismaWithContacts.contactCustomFieldAccessGrant.findMany({
-          where: {
-            tenantId,
-            userId: authed.user.id,
-            fieldId: { in: sensitiveFieldIds },
-          },
-          select: {
-            id: true,
-            fieldId: true,
-            expiresAt: true,
-            remainingReads: true,
-          },
-        })
+        where: {
+          tenantId,
+          userId: authed.user.id,
+          fieldId: { in: sensitiveFieldIds },
+        },
+        select: {
+          id: true,
+          fieldId: true,
+          expiresAt: true,
+          remainingReads: true,
+        },
+      })
       : []
     const now = new Date()
     const grantFieldIds = new Set(
@@ -4229,16 +4215,16 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
 
       const persistenceData = item.isEncrypted
         ? {
-            value: null,
-            ...encryptCustomFieldValue(item.value),
-          }
+          value: null,
+          ...encryptCustomFieldValue(item.value),
+        }
         : {
-            value: item.value as any,
-            valueCiphertext: null,
-            valueIv: null,
-            valueAuthTag: null,
-            valueKeyVersion: null,
-          }
+          value: item.value as any,
+          valueCiphertext: null,
+          valueIv: null,
+          valueAuthTag: null,
+          valueKeyVersion: null,
+        }
 
       nextDecodedValueByFieldId.set(item.fieldId, item.value)
 
@@ -4275,10 +4261,10 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
             : {}),
           ...(payload.dateOfBirth !== undefined
             ? {
-                dateOfBirth: payload.dateOfBirth
-                  ? new Date(payload.dateOfBirth)
-                  : null,
-              }
+              dateOfBirth: payload.dateOfBirth
+                ? new Date(payload.dateOfBirth)
+                : null,
+            }
             : {}),
           ...(payload.phone !== undefined ? { phone: payload.phone } : {}),
           ...(payload.secondaryPhone !== undefined
@@ -4325,27 +4311,27 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
             : {}),
           ...(payload.emergencyContactRelationship !== undefined
             ? {
-                emergencyContactRelationship:
-                  payload.emergencyContactRelationship,
-              }
+              emergencyContactRelationship:
+                payload.emergencyContactRelationship,
+            }
             : {}),
           ...(payload.gender !== undefined ? { gender: payload.gender } : {}),
           ...(payload.height !== undefined ? { height: payload.height } : {}),
           ...(payload.weight !== undefined ? { weight: payload.weight } : {}),
           ...(payload.deceasedAt !== undefined
             ? {
-                deceasedAt: payload.deceasedAt
-                  ? new Date(payload.deceasedAt)
-                  : null,
-              }
+              deceasedAt: payload.deceasedAt
+                ? new Date(payload.deceasedAt)
+                : null,
+            }
             : {}),
           ...(payload.smokerStatus !== undefined
             ? { smokerStatus: payload.smokerStatus }
             : {}),
           ...(payload.leadDate !== undefined
             ? {
-                leadDate: payload.leadDate ? new Date(payload.leadDate) : null,
-              }
+              leadDate: payload.leadDate ? new Date(payload.leadDate) : null,
+            }
             : {}),
           ...(payload.leadSource !== undefined
             ? { leadSource: resolvedLeadSource }
@@ -4542,13 +4528,13 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
         leadOtherSource: updated.updatedContact.leadOtherSource ?? null,
         assignedTo: updated.updatedContact.assignedToMembership
           ? {
-              userId: updated.updatedContact.assignedToMembership.userId,
-              name:
-                updated.updatedContact.assignedToMembership.user.name?.trim() ||
-                updated.updatedContact.assignedToMembership.user.email,
-              email: updated.updatedContact.assignedToMembership.user.email,
-              image: updated.updatedContact.assignedToMembership.user.image ?? null,
-            }
+            userId: updated.updatedContact.assignedToMembership.userId,
+            name:
+              updated.updatedContact.assignedToMembership.user.name?.trim() ||
+              updated.updatedContact.assignedToMembership.user.email,
+            email: updated.updatedContact.assignedToMembership.user.email,
+            image: updated.updatedContact.assignedToMembership.user.image ?? null,
+          }
           : null,
         status: updated.updatedContact.statusConfig.name,
         statusConfigId: updated.updatedContact.statusConfig.id,
@@ -4574,7 +4560,7 @@ router.patch("/:tenantId/:contactId", requireAuth, async (req, res, next) => {
           sortOrder: field.sortOrder,
           value:
             field.isSensitive &&
-            !canReadSensitiveFieldValue(membership, grantFieldIds.has(field.id))
+              !canReadSensitiveFieldValue(membership, grantFieldIds.has(field.id))
               ? null
               : nextDecodedValueByFieldId.get(field.id) ?? null,
           isValueRestricted:

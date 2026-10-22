@@ -55,8 +55,8 @@ Proof screenshot: `/private/tmp/gestiabloc-chunk19-steps.png`.
 
 ## Rollout boundary
 
-No additive migration is needed for Chunk 19. Existing template models, compatibility APIs, executor
-and historical enrollments remain for Chunk 20. There is no automatic historical conversion or replay.
+No additive migration was needed for Chunk 19. The template models, compatibility APIs and executor
+retained at that milestone are removed by [Chunk 20](service-template-retirement.md); saved enrollment history remains. There is no automatic historical conversion or replay.
 Queue admission, fairness, leases, checkpoints and the 4-global/2-per-tenant limits are unchanged;
 the earlier 5,000-job load test was not repeated for these interface changes. Temporary preview
 servers were stopped and the normal frontend build restored after verification.

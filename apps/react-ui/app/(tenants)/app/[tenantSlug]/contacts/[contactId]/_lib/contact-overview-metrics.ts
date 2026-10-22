@@ -19,7 +19,7 @@ export type ContactServiceSummaryItem = {
   nextFollowUp?: {
     at: string
     stepId: string | null
-    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    source: "STEP_DUE" | "STEP_AVAILABLE"
     projected: boolean
   } | null
   followUpSteps: Array<{

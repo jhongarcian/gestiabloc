@@ -1,5 +1,7 @@
 "use client"
 
+import { RetiredServiceWorkflowNotice, type RetiredServiceWorkflow } from "@/components/retired-service-workflow-notice"
+
 import { enrolledServiceStepLabel, enrolledServiceStepProgress, serviceOfferingLabel } from "@/lib/service-hierarchy"
 
 import type { StepMovement } from "@/lib/service-step-movement"
@@ -231,6 +233,7 @@ type ServiceProfessional = {
 import { ServiceStepSnapshot, type EnrolledServiceStep } from "./service-step-snapshot"
 
 type ContactServiceDetails = {
+  retiredWorkflow?: RetiredServiceWorkflow | null
   workflowKind?: "LEGACY_TEMPLATE" | "SERVICE_STEPS" | "NONE"
   serviceSteps?: EnrolledServiceStep[]
   stepMovements?: StepMovement[]
@@ -281,27 +284,10 @@ type ContactServiceDetails = {
     id: string
     versionNumber: number
   } | null
-  followUpRun?: {
-    id: string
-    status: "RUNNING" | "WAITING" | "AWAITING_STEP" | "COMPLETED" | "FAILED" | "NEEDS_REVIEW" | "CANCELED"
-    resumeAt: string | null
-    failureNodeId: string | null
-    failureCode: string | null
-    failureMessage: string | null
-    failedAt: string | null
-    canContinueNow?: boolean
-    manualWait?: {
-      actionId: string
-      prompt: string
-      scheduledFor: string
-      canReschedule: boolean
-      canContinueNow: boolean
-    } | null
-  } | null
   nextFollowUp?: {
     at: string
     stepId: string | null
-    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    source: "STEP_DUE" | "STEP_AVAILABLE"
     projected: boolean
   } | null
   assignedProfessional?: ServiceProfessional | null
@@ -313,7 +299,7 @@ type ContactServiceDetails = {
     availableAt: string | null
     dueAt: string | null
     effectiveDueAt?: string | null
-    effectiveDueSource?: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE" | null
+    effectiveDueSource?: "STEP_DUE" | "STEP_AVAILABLE" | null
     completedAt: string | null
     resolutionSource?: "USER_COMPLETED" | "USER_SKIPPED" | "CONDITION_SKIPPED" | "FLOW_SKIPPED" | null
     resolutionReason?: string | null
@@ -335,12 +321,6 @@ type ContactServiceDetails = {
     note?: string | null
     sortOrder: number
     canCompleteNow?: boolean
-    completionRequirement?: {
-      type: "NEXT_FOLLOW_UP_AT"
-      actionId: string
-      prompt: string
-      timezone: string
-    } | null
   }>
   payments: Array<{
     id: string
@@ -406,9 +386,6 @@ type ContactServiceOverview = Omit<
   followUpSummary?: {
     totalCount: number
     completedCount: number
-    runStatus: NonNullable<ContactServiceDetails["followUpRun"]>["status"] | null
-    failureMessage: string | null
-    failedAt: string | null
     items: ContactServiceDetails["followUpSteps"]
   }
   checklistSummary?: {
@@ -807,13 +784,7 @@ const getStepTimeMeta = (
     }
   }
 
-  if (step.effectiveDueSource === "USER_SCHEDULED_WAIT") {
-    return {
-      label: "Scheduled",
-      helper: `Scheduled for ${formatDateTimeForDisplay(effectiveDueAt, timezone)}`,
-      badgeClassName: "bg-blue-100 text-blue-800 hover:bg-blue-100",
-    }
-  }
+
 
   if (step.effectiveDueSource === "STEP_AVAILABLE") {
     return {
@@ -1161,9 +1132,6 @@ const normalizeContactServiceOverview = (
         followUpSteps.filter(
           (step) => step.status === "COMPLETED" || step.status === "SKIPPED",
         ).length,
-      runStatus: details.followUpSummary?.runStatus ?? null,
-      failureMessage: details.followUpSummary?.failureMessage ?? null,
-      failedAt: details.followUpSummary?.failedAt ?? null,
       items: followUpSteps,
     },
     checklistSummary: {
@@ -1293,11 +1261,6 @@ export function ContactServiceDetailsPanel({
   const [stepStatusValue, setStepStatusValue] = useState<FollowUpStepStatus>("PENDING")
   const [stepStatusNote, setStepStatusNote] = useState("")
   const [stepPostponeInput, setStepPostponeInput] = useState<DateTimeDraft>({ date: "", time: "" })
-  const [stepNextFollowUpInput, setStepNextFollowUpInput] = useState<DateTimeDraft>({ date: "", time: "" })
-  const [isRescheduleWaitOpen, setIsRescheduleWaitOpen] = useState(false)
-  const [rescheduleWaitInput, setRescheduleWaitInput] = useState<DateTimeDraft>({ date: "", time: "" })
-  const [isReschedulingWait, setIsReschedulingWait] = useState(false)
-  const [isContinuingWait, setIsContinuingWait] = useState(false)
   const [isSavingStepStatus, setIsSavingStepStatus] = useState(false)
   const [isSavingFollowUpOwner, setIsSavingFollowUpOwner] = useState(false)
   const [stepAssignedToUserId, setStepAssignedToUserId] = useState(
@@ -2394,7 +2357,6 @@ export function ContactServiceDetailsPanel({
   const currentStatusOption = serviceData ? STATUS_OPTION_BY_VALUE[serviceData.status] : null
   const followUpCoordinator = serviceData?.followUpCoordinator ?? null
   const isFollowUpWorkflowCompleted = Boolean(
-    serviceData?.followUpRun?.status === "COMPLETED" ||
       (followUpSteps.length > 0 &&
         followUpSteps.every(
           (step) => step.status === "COMPLETED" || step.status === "SKIPPED",
@@ -2404,7 +2366,7 @@ export function ContactServiceDetailsPanel({
     canManageSensitiveServiceActions &&
       (serviceData?.workflowKind === "SERVICE_STEPS"
         ? serviceData.serviceSteps?.some(step => step.occurrences.some(entry => !entry.supersededAt && (entry.status === "ACTIVE" || ["WAITING_AUTOMATION", "PAUSED"].includes(entry.progressionStatus))))
-        : (serviceData?.followUpRun || followUpSteps.length > 0) && !isFollowUpWorkflowCompleted),
+        : (followUpSteps.length > 0) && !isFollowUpWorkflowCompleted),
   )
   const nextFollowUpStep = useMemo(
     () =>
@@ -2511,7 +2473,7 @@ export function ContactServiceDetailsPanel({
     setStepStatusValue("COMPLETED")
     setStepStatusNote("")
     setStepPostponeInput(formatUtcIsoToDateTimeDraft(step.dueAt, item?.timezone))
-    setStepNextFollowUpInput({ date: "", time: "" })
+
   }
 
   const prepareInlineStepStatusEditor = async (
@@ -2525,27 +2487,7 @@ export function ContactServiceDetailsPanel({
     if (step.status !== "PENDING" || !step.canCompleteNow) return
 
     setMutatingStepId(step.id)
-    try {
-      if (item.followUpRun) {
-        const { data } = await api.post(
-          `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-run/continue-now`,
-        )
-        const activeStepId = data?.result?.activeStepId
-        await refreshData(true)
-        router.refresh()
-        if (data?.result?.status === "FAILED") {
-          toast.error("The follow-up could not continue because an automation action failed.")
-          return
-        }
-        if (data?.result?.status === "WAITING") {
-          toast.success("The follow-up continued to its next scheduled wait.")
-          return
-        }
-        if (activeStepId !== step.id) {
-          toast.success("The follow-up continued and selected the next applicable step.")
-          return
-        }
-      } else {
+    try {{
         await api.patch(
           `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-steps/${step.id}`,
           { status: "ACTIVE" },
@@ -2643,7 +2585,6 @@ export function ContactServiceDetailsPanel({
     nextStatus: FollowUpStepStatus,
     note?: string,
     postponeTo?: string,
-    nextFollowUpAt?: string,
   ) => {
     if (!item || !nextStatus) return
     setMutatingStepId(step.id)
@@ -2654,7 +2595,6 @@ export function ContactServiceDetailsPanel({
           status: nextStatus,
           ...(note?.trim() ? { note: note.trim() } : {}),
           ...(postponeTo ? { postponeTo, cascadeFutureSteps: true } : {}),
-          ...(nextFollowUpAt ? { nextFollowUpAt } : {}),
         },
       )
       toast.success(nextStatus === "COMPLETED" ? "Step marked as completed." : "Step status updated.")
@@ -2729,23 +2669,6 @@ export function ContactServiceDetailsPanel({
       stepStatusValue !== "POSTPONED" || isDateTimeDraftEmpty(stepPostponeInput)
         ? undefined
         : dateTimeDraftToUtcIso(stepPostponeInput, item?.timezone) ?? undefined
-    const needsNextFollowUp =
-      stepStatusValue === "COMPLETED" &&
-      expandedStep.completionRequirement?.type === "NEXT_FOLLOW_UP_AT"
-    if (
-      needsNextFollowUp &&
-      (!isDateTimeDraftComplete(stepNextFollowUpInput) || isDateTimeDraftEmpty(stepNextFollowUpInput))
-    ) {
-      toast.error("Next follow-up date and time are required.")
-      return
-    }
-    const nextFollowUpAt = needsNextFollowUp
-      ? dateTimeDraftToUtcIso(stepNextFollowUpInput, item?.timezone)
-      : undefined
-    if (needsNextFollowUp && (!nextFollowUpAt || new Date(nextFollowUpAt).getTime() <= Date.now())) {
-      toast.error("Select a future next follow-up date and time.")
-      return
-    }
     const stepToUpdate = expandedStep
     const nextStatusValue = stepStatusValue
     const nextStatusNote = stepStatusNote
@@ -2757,72 +2680,16 @@ export function ContactServiceDetailsPanel({
         nextStatusValue,
         nextStatusNote,
         postponeToIso,
-        nextFollowUpAt ?? undefined,
-      )
+        )
       if (!didSave) return
 
       setExpandedStepId(null)
       setExpandedStepPanelMode(null)
       setStepStatusNote("")
       setStepPostponeInput({ date: "", time: "" })
-      setStepNextFollowUpInput({ date: "", time: "" })
+
     } finally {
       setIsSavingStepStatus(false)
-    }
-  }
-
-  const rescheduleManualWait = async () => {
-    if (!item || !item.followUpRun?.manualWait) return
-    if (!isDateTimeDraftComplete(rescheduleWaitInput) || isDateTimeDraftEmpty(rescheduleWaitInput)) {
-      toast.error("Next follow-up date and time are required.")
-      return
-    }
-    const nextFollowUpAt = dateTimeDraftToUtcIso(rescheduleWaitInput, item.timezone)
-    if (!nextFollowUpAt || new Date(nextFollowUpAt).getTime() <= Date.now()) {
-      toast.error("Select a future next follow-up date and time.")
-      return
-    }
-    setIsReschedulingWait(true)
-    try {
-      await api.patch(
-        `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-run/next-follow-up`,
-        { nextFollowUpAt },
-      )
-      toast.success("Next follow-up rescheduled.")
-      setIsRescheduleWaitOpen(false)
-      await refreshData(true)
-      router.refresh()
-    } catch (error) {
-      const backendError = isAxiosError(error) ? error.response?.data?.error : null
-      toast.error(
-        typeof backendError === "string"
-          ? backendError.replace(/_/g, " ")
-          : "Could not reschedule the next follow-up.",
-      )
-    } finally {
-      setIsReschedulingWait(false)
-    }
-  }
-
-  const continueManualWaitNow = async () => {
-    if (!item?.followUpRun?.manualWait) return
-    setIsContinuingWait(true)
-    try {
-      await api.post(
-        `/api/services/${encodedTenantId}/contact-services/${item.id}/follow-up-run/continue-now`,
-      )
-      toast.success("Follow-up continued. The next routed step is ready.")
-      await refreshData(true)
-      router.refresh()
-    } catch (error) {
-      const backendError = isAxiosError(error) ? error.response?.data?.error : null
-      toast.error(
-        typeof backendError === "string"
-          ? backendError.replace(/_/g, " ")
-          : "Could not continue the follow-up.",
-      )
-    } finally {
-      setIsContinuingWait(false)
     }
   }
 
@@ -3462,7 +3329,7 @@ export function ContactServiceDetailsPanel({
                   </Command>
                 </PopoverContent>
               </Popover>
-            ) : activeView === "follow-up" && (serviceData.followUpRun || followUpSteps.length) ? (
+            ) : activeView === "follow-up" && followUpSteps.length > 0 ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span
@@ -3751,6 +3618,7 @@ export function ContactServiceDetailsPanel({
           id="service-workspace-content"
           className="min-h-0 min-w-0 flex-1 scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] bg-background px-4 py-5 md:px-5 md:py-6"
         >
+        <RetiredServiceWorkflowNotice workflow={serviceData.retiredWorkflow} timezone={serviceData.timezone} />
         {serviceData.workflowKind === "SERVICE_STEPS" && activeView === "follow-up" ?
           <ServiceStepSnapshot assignees={followUpAssigneeOptions} steps={serviceData.serviceSteps ?? []} movements={serviceData.stepMovements ?? []} timezone={serviceData.timezone} tenantId={tenantId} contactServiceId={contactServiceId} canComplete={(membershipRole === "TENANT_ADMIN" || canManageSensitiveServiceActions) && serviceData.status !== "CANCELED" && serviceData.status !== "COMPLETED"} onRefresh={() => refreshData(Boolean(item))} /> : null}
         {activeView === "overview" ? (
@@ -3933,20 +3801,7 @@ export function ContactServiceDetailsPanel({
                     ) : null}
                   </div>
 
-                  {overview?.followUpSummary?.runStatus === "FAILED" ||
-                  overview?.followUpSummary?.runStatus === "NEEDS_REVIEW" ? (
-                    <div role="status" className="mx-5 mt-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-900">
-                      <p className="text-sm font-semibold">
-                        {overview.followUpSummary.runStatus === "FAILED"
-                          ? "Workflow paused"
-                          : "Workflow needs review"}
-                      </p>
-                      <p className="mt-1 text-xs leading-5 text-rose-700">
-                        {overview.followUpSummary.failureMessage ??
-                          "Review the dedicated follow-up workspace before continuing this workflow."}
-                      </p>
-                    </div>
-                  ) : null}
+
 
                   {serviceData.workflowKind === "SERVICE_STEPS" ? <ol aria-label="Saved service steps" className="flex flex-col gap-3 p-5">{serviceData.serviceSteps?.map((step, index) => { return <li key={step.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"><span className="text-sm">{index + 1}. {step.title}</span><Badge variant="secondary">{enrolledServiceStepLabel(step, serviceData.stepMovements ?? [])}</Badge></li> })}</ol> : followUpSteps.length ? (
                     <ol aria-label="Follow-up workflow steps" className="p-5">
@@ -4225,68 +4080,8 @@ export function ContactServiceDetailsPanel({
                   />
                 </div>
               ) : null}
-              {item.followUpRun?.status === "FAILED" || item.followUpRun?.status === "NEEDS_REVIEW" ? (
-                <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
-                  <p className="font-semibold">
-                    {item.followUpRun.status === "FAILED"
-                      ? "Workflow paused after an automation error"
-                      : "Workflow needs administrator review"}
-                  </p>
-                  <p className="mt-1 text-xs text-rose-700">
-                    {item.followUpRun.failureMessage ??
-                      "The existing steps were preserved and new automation is paused."}
-                  </p>
-                </div>
-              ) : null}
-              {item.followUpRun?.status === "WAITING" && item.followUpRun.manualWait ? (
-                <div className="mb-4 flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-950 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="font-semibold">Next follow-up scheduled</p>
-                    <p className="mt-1 text-xs text-blue-800">
-                      {item.followUpRun.manualWait.prompt}
-                    </p>
-                    <p className="mt-1 text-sm font-medium text-blue-950">
-                      {formatDateTimeForDisplay(item.followUpRun.manualWait.scheduledFor, item.timezone)}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {item.followUpRun.manualWait.canReschedule ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="cursor-pointer border-blue-200 bg-white"
-                        disabled={isContinuingWait}
-                        onClick={() => {
-                          setRescheduleWaitInput(
-                            formatUtcIsoToDateTimeDraft(
-                              item.followUpRun?.manualWait?.scheduledFor ?? null,
-                              item.timezone,
-                            ),
-                          )
-                          setIsRescheduleWaitOpen(true)
-                        }}
-                      >
-                        Change date
-                      </Button>
-                    ) : null}
-                    {item.followUpRun.manualWait.canContinueNow ? (
-                      <Button
-                        type="button"
-                        className="cursor-pointer bg-blue-950 text-white hover:bg-blue-900"
-                        disabled={isContinuingWait}
-                        onClick={() => void continueManualWaitNow()}
-                      >
-                        {isContinuingWait ? (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-                        ) : (
-                          <Play className="mr-2 h-4 w-4" aria-hidden="true" />
-                        )}
-                        Continue now
-                      </Button>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
+
+
               <div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-3 sm:flex-row sm:items-center sm:justify-between">
                 <div role="group" aria-label="Filter follow-up steps" className="flex w-full gap-1 rounded-xl bg-slate-100 p-1 sm:w-auto">
                   {([
@@ -4702,7 +4497,7 @@ export function ContactServiceDetailsPanel({
                                     </div>
                                   ) : expandedStepPanelMode === "STATUS" ? (
                                     <div className="flex flex-col gap-4">
-                                      {step.effectiveDueAt &&
+                                      {step.status === "PENDING" && step.effectiveDueAt &&
                                       new Date(step.effectiveDueAt).getTime() > Date.now() ? (
                                         <p className="border-l-2 border-blue-600 pl-3 text-sm text-slate-600">
                                           This step is scheduled for later. Starting it now keeps the
@@ -4728,7 +4523,7 @@ export function ContactServiceDetailsPanel({
                                               setStepPostponeInput({ date: "", time: "" })
                                             }
                                             if (nextValue !== "COMPLETED") {
-                                              setStepNextFollowUpInput({ date: "", time: "" })
+
                                             }
                                           }}
                                           className="grid w-full grid-cols-3"
@@ -4791,32 +4586,7 @@ export function ContactServiceDetailsPanel({
                                           </p>
                                         </div>
                                       ) : null}
-                                      {stepStatusValue === "COMPLETED" &&
-                                      step.completionRequirement?.type === "NEXT_FOLLOW_UP_AT" ? (
-                                        <div className="grid gap-2 border-l-2 border-blue-600 pl-3">
-                                          <Label htmlFor={`follow-up-next-date-${step.id}`}>
-                                            {step.completionRequirement.prompt}
-                                          </Label>
-                                          <Label
-                                            htmlFor={`follow-up-next-time-${step.id}`}
-                                            className="sr-only"
-                                          >
-                                            Next follow-up time
-                                          </Label>
-                                          <DateTimeInput
-                                            id={`follow-up-next-date-${step.id}`}
-                                            timeId={`follow-up-next-time-${step.id}`}
-                                            value={stepNextFollowUpInput}
-                                            onValueChange={setStepNextFollowUpInput}
-                                            disabled={isSavingStepStatus}
-                                            disabledDate={isBeforeToday}
-                                          />
-                                          <p className="text-xs text-slate-500">
-                                            The workflow will pause and activate the selected next
-                                            step at this time.
-                                          </p>
-                                        </div>
-                                      ) : null}
+
                                       <div className="flex flex-col-reverse gap-2 border-t border-slate-200 pt-4 sm:flex-row sm:justify-end">
                                         <Button
                                           type="button"
@@ -4828,7 +4598,7 @@ export function ContactServiceDetailsPanel({
                                             setExpandedStepPanelMode(null)
                                             setStepStatusNote("")
                                             setStepPostponeInput({ date: "", time: "" })
-                                            setStepNextFollowUpInput({ date: "", time: "" })
+
                                           }}
                                         >
                                           Cancel
@@ -5273,7 +5043,7 @@ export function ContactServiceDetailsPanel({
                                   {getServiceNoteSourceLabel(note)}
                                 </Badge>
                                 {note.followUpTemplateName ? (
-                                  <span>Template: <span className="font-medium text-slate-700">{note.followUpTemplateName}</span></span>
+                                  <span>Saved workflow: <span className="font-medium text-slate-700">{note.followUpTemplateName}</span></span>
                                 ) : null}
                                 {note.followUpStepTitle ? (
                                   <span>Step: <span className="font-medium text-slate-700">{note.followUpStepTitle}</span></span>
@@ -6381,49 +6151,7 @@ export function ContactServiceDetailsPanel({
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={isRescheduleWaitOpen}
-        onOpenChange={(open) => {
-          setIsRescheduleWaitOpen(open)
-          if (!open) setRescheduleWaitInput({ date: "", time: "" })
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Change next follow-up</DialogTitle>
-            <DialogDescription>
-              {item?.followUpRun?.manualWait?.prompt ?? "Select the next follow-up date and time."}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-2 py-1">
-            <Label>Next follow-up date and time</Label>
-            <DateTimeInput
-              value={rescheduleWaitInput}
-              onValueChange={setRescheduleWaitInput}
-              disabledDate={isBeforeToday}
-            />
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              className="cursor-pointer"
-              disabled={isReschedulingWait}
-              onClick={() => setIsRescheduleWaitOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              className="cursor-pointer"
-              disabled={isReschedulingWait}
-              onClick={() => void rescheduleManualWait()}
-            >
-              {isReschedulingWait ? "Saving..." : "Save date"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+
 
       <Dialog
         open={isStepNoteDialogOpen}

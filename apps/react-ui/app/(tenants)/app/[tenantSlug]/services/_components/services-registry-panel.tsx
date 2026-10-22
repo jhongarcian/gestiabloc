@@ -130,12 +130,6 @@ type ServiceChecklistItem = {
   sortOrder: number
 }
 
-type ServiceFollowUpTemplate = {
-  id: string
-  name: string
-  isPublished: boolean
-}
-
 type ServiceListItem = {
   parentService?: { id: string; name: string } | null
   steps: ServiceStepItem[]
@@ -149,7 +143,6 @@ type ServiceListItem = {
   isActive: boolean
   sortOrder: number
   checklistItems: ServiceChecklistItem[]
-  followUpTemplates: ServiceFollowUpTemplate[]
   professionals: ServiceProfessional[]
 }
 
